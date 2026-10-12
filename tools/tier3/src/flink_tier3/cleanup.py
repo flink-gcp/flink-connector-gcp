@@ -36,19 +36,16 @@ from .environment import retry_conflicts
 from .model import Phase
 from .policy import (
     BIGQUERY,
-    BIGQUERY_CEILINGS,
     BIGQUERY_STATE,
-    CEILINGS,
     OPERATOR,
     POD_RESOURCES,
     POLL,
     PUBSUB,
-    PUBSUB_CEILINGS,
     PUBSUB_STATE,
     STATE,
+    STATE_OBJECTS,
     SYSTEM,
 )
-from .pubsub.handoff import runner_released
 from .pubsub.lifecycle import require_pubsub_clean
 
 
@@ -117,17 +114,7 @@ class Cleanup:
             )
         self.env = env
         self.bigquery, self.pubsub, self.quiesce = bigquery, pubsub, quiesce
-        # The supervisor Pod a replacement displaced, set by its supervisor.
-        self.former_supervisor = None
         self.last_inventory = []
-
-    @property
-    def ceilings(self):
-        if self.env.approval.scenario == "pubsub-recovery":
-            return PUBSUB_CEILINGS
-        if self.env.approval.scenario == "bigquery-recovery":
-            return BIGQUERY_CEILINGS
-        return CEILINGS
 
     def state_prefixes(self):
         run_id = self.env.approval.run_id
@@ -141,8 +128,7 @@ class Cleanup:
             ]
         return [(f"runs/{run_id}/", STATE)]
 
-    def remaining_state(self, maximum=None):
-        maximum = self.ceilings["state_objects"] if maximum is None else maximum
+    def remaining_state(self, maximum=STATE_OBJECTS):
         remaining = []
         for prefix, bucket in self.state_prefixes():
             # Every prefix holds one run's state, and they share the ceiling.
@@ -237,9 +223,7 @@ class Cleanup:
     def inventory(self):
         self.env.namespaces()
         self.env.refresh()
-        self.last_inventory = self.env.kube.inventory(
-            self.env.approval.application_namespace
-        )
+        self.last_inventory = self.env.kube.inventory()
         known = ownership(
             self.last_inventory,
             set(self.env.observed) | {r["uid"] for r in self.env.roots.values()},
@@ -253,8 +237,8 @@ class Cleanup:
         if discovered:
             try:
                 self.env.records.observe(discovered)
-            except Failure:
-                self.env.evidence_failed = True
+            except Failure as error:
+                self.env.evidence_lost("observe", error)
         return self.last_inventory
 
     def owned(self, items, keys):
@@ -278,9 +262,7 @@ class Cleanup:
             "probe": approval.images["supervisor"],
             "operator": approval.images["operator"],
             "application": approval.images[
-                "smoke"
-                if approval.scenario in ("smoke", "generic-recovery")
-                else "application"
+                "smoke" if approval.scenario == "smoke" else "application"
             ],
         }
         known = (
@@ -295,19 +277,9 @@ class Cleanup:
                 raise Failure(
                     "Unexpected object outside the baseline and run ownership graph"
                 )
+        # The ResourceQuotas bound how many Pods and PVCs there are; this
+        # checks what each Pod is.
         pods = [obj for obj in items if obj["kind"] == "Pod"]
-        # A supervisor attempt the Job retains after a disruption holds no
-        # capacity; the Job's backoff limit bounds how many there can be.
-        counted = [
-            pod
-            for pod in pods
-            if pod["metadata"]["uid"] not in groups["supervisor"]
-            or pod.get("status", {}).get("phase") not in ("Succeeded", "Failed")
-        ]
-        if len(counted) > self.ceilings["pods"] or any(
-            obj["kind"] == "PersistentVolumeClaim" for obj in items
-        ):
-            raise Failure("Pod/PVC count ceiling exceeded")
         for pod in pods:
             role = next(
                 (k for k, uids in groups.items() if pod["metadata"]["uid"] in uids),
@@ -333,13 +305,10 @@ class Cleanup:
                 expected,
                 spot=spot,
             )
-        state = self.remaining_state()
-        if sum(int(obj["size"]) for obj, _ in state) > self.ceilings["state_bytes"]:
-            raise Failure("State byte ceiling exceeded")
         return items, pods
 
     def clean_state(self):
-        objects = self.remaining_state(self.ceilings["state_objects"] + 1)
+        objects = self.remaining_state(STATE_OBJECTS + 1)
         state_deadline = self.env.clock() + self.env.schedule.state_cleanup_seconds
         for obj, bucket in objects:
             if self.env.clock() >= state_deadline:
@@ -381,21 +350,14 @@ class Cleanup:
             return None
         try:
             self.env.remember("probe", obj)
-        except Failure:
+        except Failure as error:
             # The record could not be updated; the Pod is still ours to delete
             # in this pass.
-            self.env.evidence_failed = True
+            self.env.evidence_lost("remember-probe", error)
         return obj
 
-    def run(self, reason, success=False, *, keep_verdict=False):
-        """Clean the run's resources and record the cleaned phase.
-
-        `keep_verdict` means a success receipt already fixed the verdict, so
-        this pass records its state observation but leaves `success` and
-        `evidence_failed` unchanged, and `success` only informs the
-        `cleanup-ready` evidence; the caller fails on its own evidence
-        failure instead of recording it.
-        """
+    def run(self, reason, success=False):
+        """Clean the run's resources and record the cleaned phase."""
         self.env.namespaces()
         self.env.assert_owner()
         self.env.refresh()
@@ -405,12 +367,12 @@ class Cleanup:
         ):
             try:
                 self.env.records.request_stop()
-            except Failure:
-                self.env.evidence_failed = True
+            except Failure as error:
+                self.env.evidence_lost("request-stop", error)
         try:
             self.env.records.begin_cleanup(reason)
-        except Failure:
-            self.env.evidence_failed = True
+        except Failure as error:
+            self.env.evidence_lost("begin-cleanup", error)
         self.env.emit("cleanup-start", {"reason": reason, "roots": self.env.roots})
         schedule = self.env.schedule.cleanup_window(self.env.clock())
         end, force_at = schedule.cleanup_end, schedule.force_at
@@ -521,17 +483,14 @@ class Cleanup:
         clean = success and state_clean and not self.env.evidence_failed
         self.env.emit("cleanup-ready", {"success": clean, "state_clean": state_clean})
         try:
-            if keep_verdict:
-                self.env.records.set_phase(Phase.CLEANED, state_clean=state_clean)
-            else:
-                self.env.records.set_phase(
-                    Phase.CLEANED,
-                    success=clean,
-                    state_clean=state_clean,
-                    evidence_failed=self.env.evidence_failed,
-                )
-        except Failure:
-            self.env.evidence_failed = True
+            self.env.records.set_phase(
+                Phase.CLEANED,
+                success=clean,
+                state_clean=state_clean,
+                evidence_failure=self.env.evidence_failure,
+            )
+        except Failure as error:
+            self.env.evidence_lost("record-cleaned", error)
 
     def finish_bigquery(self, deadline):
         """After workload teardown, wait for release and the writer fence."""
@@ -554,31 +513,16 @@ class Cleanup:
         if self.env.refresh().pubsub is None:
             return
         if self.pubsub is not None:
-            if self.pubsub.supervisor_binding() == "other":
-                # A replacement for a supervisor that joined: that authority is
-                # reclaimed once the runner released and the former Pod ended.
-                self.env.wait(
-                    lambda: (
-                        self.former_gone(self.pubsub.actors())
-                        and self.reap_probe()
-                        # Reclaim refuses rather than waits on a pending
-                        # barrier, so it is asked only once the barrier passes.
-                        and self.quiesce() is True
-                        and self.pubsub.reclaim(self.reclamation_proof)
-                    ),
-                    deadline,
-                )
-            else:
-                self.pubsub.release()
-                self.env.wait(
-                    lambda: (
-                        self.pubsub.released()
-                        and self.reap_probe()
-                        and self.quiesce() is True
-                        and self.pubsub.cleanup(self.quiesce)
-                    ),
-                    deadline,
-                )
+            self.pubsub.release()
+            self.env.wait(
+                lambda: (
+                    self.pubsub.released()
+                    and self.reap_probe()
+                    and self.quiesce() is True
+                    and self.pubsub.cleanup(self.quiesce)
+                ),
+                deadline,
+            )
         require_pubsub_clean(self.env.refresh())
 
     def reap_probe(self):
@@ -613,29 +557,6 @@ class Cleanup:
                 pass  # Retried on the barrier's next poll.
         return True
 
-    def former_gone(self, actors):
-        """Whether the former supervisor and the runner can no longer act.
-
-        The runner must have released its own authority: it runs outside the
-        cluster, where nothing here can observe it. The former supervisor Pod
-        must have ended or be gone, which the Job's own Pods show; a Pod that
-        cannot run cannot send a request, and the namespace barrier then
-        covers the workload.
-        """
-        if not runner_released(actors) or not self.former_supervisor:
-            return False
-        for obj in self.inventory():
-            if (
-                obj["kind"] == "Pod"
-                and obj["metadata"]["uid"] == self.former_supervisor
-            ):
-                return obj.get("status", {}).get("phase") in ("Succeeded", "Failed")
-        return True
-
-    def reclamation_proof(self, snapshot):
-        """The external proof `reclaim` records, rechecked on its own snapshot."""
-        return self.former_gone(snapshot["actors"]) and self.quiesce() is True
-
 
 def verify_idle(env):
     env.namespaces()
@@ -643,7 +564,7 @@ def verify_idle(env):
     require_bigquery_clean(control)
     require_pubsub_clean(control)
     kube, approval = env.kube, env.approval
-    items = kube.inventory(approval.application_namespace)
+    items = kube.inventory()
     baseline = set(approval.baseline_uids)
     for obj in items:
         uid = obj["metadata"]["uid"]

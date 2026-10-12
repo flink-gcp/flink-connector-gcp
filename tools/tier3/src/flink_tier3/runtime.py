@@ -27,10 +27,8 @@ from pathlib import Path
 import flink_tier3.bigquery.actors as bigquery_actors
 import flink_tier3.pubsub.actors as pubsub_actors
 
-from .bundle import delivery_digest
 from .common import Failure, digest
 from .environment import Environment
-from .exercise import validate_manifests
 from .google import Storage
 from .kubernetes import Kubernetes, KubernetesTransport
 from .model import Approval
@@ -47,34 +45,21 @@ def mounted(directory, name):
 
 
 def verify_delivery(directory):
-    """The mounted delivery, checked against its own approval before anything runs.
+    """The mounted manifests, checked against the mounted approval's pins.
 
     Pure: it reads only the mount, so a test can prove a delivery is admitted
     as well as that a bad one is refused.
     """
     approval = mounted(directory, "approval.json")
-    # The mount is a subset, so the complete package's digest is not
-    # computable here; the runner verified that one at dispatch.
-    if delivery_digest() != approval["delivery_sha256"]:
-        raise Failure("Supervisor source differs from approval")
     application = mounted(directory, "application.json")
     if digest(application) != approval["application_sha256"]:
         raise Failure("Supervisor application differs from approval")
     approved = Approval.from_dict(approval)
     upgrade = None
-    if approved.scenario in (
-        "generic-recovery",
-        "bigquery-recovery",
-        "pubsub-recovery",
-    ):
+    if approved.scenario != "smoke":
         upgrade = mounted(directory, "upgrade-application.json")
         if digest(upgrade) != approved.upgrade_application_sha256:
             raise Failure("Supervisor upgrade differs from approval")
-    if approved.scenario == "generic-recovery":
-        # The generic payload's fixed arguments. A BigQuery application has
-        # its own, which `bigquery_plan.prepare` checked when it rendered the
-        # manifests these two digests pin; this check would refuse every one.
-        validate_manifests(application, upgrade)
     return approval, approved, application, upgrade
 
 
@@ -120,9 +105,9 @@ def supervisor_main(directory):
             supervisor.supervise(os.environ["POD_UID"])
         return
     if approved.scenario == "pubsub-recovery":
-        # The factory checks both mounted manifests against the trial, builds
-        # the barrier and authenticates; the session serves the whole run.
-        with pubsub_actors.supervisor(env, application, upgrade) as supervisor:
+        # The factory builds the barrier and authenticates; the session serves
+        # the whole run.
+        with pubsub_actors.supervisor(env, upgrade) as supervisor:
             supervisor.supervise(os.environ["POD_UID"])
         return
     Supervisor(env, upgrade).supervise(os.environ["POD_UID"])

@@ -25,34 +25,13 @@ import (
 // Each scenario declares its application expression and its application.json
 // entry inside one body: a field declared in a comprehension body is visible
 // only to references inside that body.
-if scenario == "smoke" || scenario == "generic-recovery" {
+if scenario == "smoke" {
 	application: (runPolicy & {
 		run: {id: runID, expiresAt: expires, image: images.smoke}
-		delivery: resources: app: (smoke.#Application & {run: {
-			id: runID, image: images.smoke
-			if scenario == "generic-recovery" {records: 12000}
-		}}).resource & {
+		delivery: resources: app: (smoke.#Application & {run: {id: runID, image: images.smoke}}).resource & {
 			metadata: annotations: "flink-gcp.io/approval": nonce
 			metadata: annotations: "flink-gcp.io/scenario": scenario
-			if scenario == "generic-recovery" {
-				spec: flinkConfiguration: "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false"
-				spec: flinkConfiguration: "kubernetes.operator.snapshot.resource.enabled":               "false"
-			}
 		}
 	}).delivery.resources.app
 	delivery: resources: config: data: "application.json": json.Marshal(application)
-}
-
-if scenario == "generic-recovery" {
-	upgradeApplication: (runPolicy & {
-		run: {id: runID, expiresAt: expires, image: images.smoke}
-		delivery: resources: app: (smoke.#Application & {
-			run: {id: runID, image: images.smoke, phase: "upgrade", records: 12000}
-		}).resource & {
-			metadata: annotations: "flink-gcp.io/approval":                                          nonce
-			metadata: annotations: "flink-gcp.io/scenario":                                          scenario
-			spec: flinkConfiguration: "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false"
-			spec: flinkConfiguration: "kubernetes.operator.snapshot.resource.enabled":               "false"
-		}
-	}).delivery.resources.app
 }

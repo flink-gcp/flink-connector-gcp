@@ -15,15 +15,12 @@
 """Shared policy and lifecycle components for the runner and supervisor."""
 
 from .bundle import delivered_sources as delivered_sources
-from .bundle import delivery_digest as delivery_digest
-from .bundle import source_digest as source_digest
 from .cleanup import Cleanup as Cleanup
 from .cleanup import verify_idle as verify_idle
 from .common import USABLE as USABLE
 from .common import ApiError as ApiError
 from .common import Failure as Failure
 from .common import IdlePending as IdlePending
-from .common import Superseded as Superseded
 from .common import command as command
 from .common import contains as contains
 from .common import digest as digest
@@ -51,9 +48,9 @@ from .model import Approval as Approval
 from .model import Phase as Phase
 from .model import RunRecord as RunRecord
 from .model import Schedule as Schedule
+from .model import check_window as check_window
 from .model import estimated_cost as estimated_cost
 from .model import validate_approval as validate_approval
-from .policy import CEILINGS as CEILINGS
 from .policy import CLOUDTASKS as CLOUDTASKS
 from .policy import CONTEXT as CONTEXT
 from .policy import COST_RATES as COST_RATES
@@ -76,6 +73,7 @@ from .policy import SHA as SHA
 from .policy import SMOKE as SMOKE
 from .policy import STATE as STATE
 from .policy import SYSTEM as SYSTEM
+from .policy import WINDOWS as WINDOWS
 from .records import EnvironmentLock as EnvironmentLock
 from .records import Records as Records
 from .records import write_artifact as write_artifact

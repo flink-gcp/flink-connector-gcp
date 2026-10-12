@@ -74,8 +74,8 @@ The job enables checkpoints every 30 seconds in the Storage Write modes and ever
 FILE_LOADS refuses an interval below its `minCheckpointInterval`, two minutes by default, because each checkpoint issues a load job per destination table against a daily per-table modification quota.
 Writer and buffered-stream options retain their production defaults; this workload does not search capacity or tune those defaults.
 The FILE_LOADS sink appends to the provisioned tables and stages under `gs://flink-gcp-tier3-bigquery/runs/<run-id>/staging`, inside the run prefix that the state IAM condition, the bucket lifecycle rule and cleanup already cover.
-Staged files therefore also count against the run's 1 GiB and 10,000-object state ceilings, which the supervisor's audit checks on every poll and refuses by failing the run.
-At the 1 MiB/s offered rate and the 120-second interval a checkpoint stages roughly 120 MiB before conversion, and its commit deletes those files; a commit backlog of several intervals, or leftovers from failed commits, could reach the byte ceiling; the `fl-10` trial's [findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) had neither, and record no peak state-prefix size.
+Staged files therefore also count against the 10,000 objects cleanup lists under the run prefix.
+At the 1 MiB/s offered rate and the 120-second interval a checkpoint stages roughly 120 MiB before conversion, and its commit deletes those files; the `fl-10` trial's [findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) record no commit backlog and no peak state-prefix size.
 Its five arguments above default to the connector's values.
 The FILE_LOADS sink also names the dataset's location, `us-central1`, so its committer never reads dataset metadata: without a location it looks each destination dataset up to place its load jobs, which would need `bigquery.datasets.get`.
 The Storage Write modes leave the location unset, as before.
@@ -116,7 +116,7 @@ The fixed-delay restart strategy permits three attempts with a ten-second delay;
 For the upgrade, render the same inputs with `run.phase: "upgrade"` and update the same deployment.
 Both phases use `upgradeMode: savepoint` and `allowNonRestoredState: false`; only the phase argument and `--require-restored` change, with the latter becoming `true` on upgrade.
 The definition also sets `kubernetes.operator.job.upgrade.last-state-fallback.enabled=false` so an unavailable savepoint cannot be replaced by last-state recovery, and `kubernetes.operator.snapshot.resource.enabled=false` to use Operator 1.15.0's status-based savepoint reporting instead of separate FlinkStateSnapshot resources.
-These settings follow the [generic recovery exercise](../../lifecycle/README.md#generic-recovery-exercise); an Operator upgrade must revisit this version-specific reporting choice.
+These settings follow the generic recovery exercise that [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran; an Operator upgrade must revisit this version-specific reporting choice.
 The running application's checkpointed identity also rejects changed input parameters on restore.
 The package describes that transition; it does not wait for baseline observations, prove a completed savepoint, apply the upgrade or delete the JobManager.
 
@@ -127,7 +127,7 @@ The [production dispatch](#production-dispatch) path must bind the exact rendere
 ## Offline execution proposal
 
 `flink-tier3 render --scenario bigquery-recovery` combines one trial's proposed limits, initial/upgrade applications and supervisor delivery into a JSON bundle.
-A proposal is not an approval: dispatch admits this scenario only through the [production dispatch](#production-dispatch) below, under its own version 5 approval contract.
+A proposal is not an approval: dispatch admits this scenario only through the [production dispatch](#production-dispatch) below.
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
@@ -154,7 +154,7 @@ The intended window is exactly 90 minutes, reserving its last 15 minutes for cle
 Dates must be whole-second UTC values.
 The example date and synthetic digest are illustrative, not a runnable delivery.
 The initial and upgrade manifests use the same input identity, and the only upgrade changes are the phase and restoration arguments.
-The proposal embeds the `ResourcePlan`, application/upgrade/supervisor hashes and installed runtime-source hash.
+The proposal embeds the `ResourcePlan` and the application/upgrade/supervisor hashes.
 The ConfigMap carries that same proposal as `proposal.json`, separately from the empty approval document.
 The declared revision is a requested source identity: the renderer does not prove checkout cleanliness, GitHub main ancestry, image publication/provenance, registry retention or a live namespace/Operator baseline.
 Those checks and final approval belong to [production dispatch](#production-dispatch).
@@ -361,7 +361,7 @@ The internal runner and supervisor use this controller only with explicitly supp
 Both execution entrypoints reach it only through the authenticated actor factories.
 The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
 The controller binds the complete service plan, run ID, nonce and trial arguments to the approved initial application hash.
-The common model validates the version 5 approval, and [production dispatch](#production-dispatch) performs deployment admission.
+[Production dispatch](#production-dispatch) validates the approval once and performs deployment admission.
 
 Initialization stores the unchanged plan in `RunRecord.bigquery`.
 Provisioning first checks absence, records a creation intent, then creates or reconciles that table and stores its creation receipt.
@@ -410,7 +410,7 @@ The runner reserves a deterministic query slot, submits and polls that job, and 
 Each new observation consumes another slot; repeated polls do not submit a completed or pending job again.
 The supervisor reads the resulting evidence object and checks its recorded generation, hash, intent, observation name and slot without calling the private query-result API.
 Query evidence bytes are divided equally among the reserved slots and checked on the complete serialized artifact before writing and when reading it.
-This bounds those query artifacts, not telemetry or the whole run's evidence; the executor must allocate the other evidence separately.
+This bounds those query artifacts, not telemetry or the whole run's evidence; other evidence has no byte budget, as [Approval and shared resource policy](#approval-and-shared-resource-policy) records.
 Request deadlines must fit inside the shared query window and table expiry.
 An expired uncollected request ends observation processing for the trial; it cannot be abandoned to skip a required baseline or reuse its slot.
 The caller must stop, release and clean up rather than retry a later observation.
@@ -484,10 +484,9 @@ An intent without one, which only a bare controller writes, is never adopted: th
 
 Recorded BigQuery state also gates Operator shutdown, the `CLEANED` transition, settlement, idle verification and finalization, even when no handoff is attached.
 The final receipt retains the complete BigQuery control snapshot, including table receipts and query evidence pointers.
-A conflicting receipt or a concurrent control change leaves the control record and lock in place.
-When finalization deleted the control record but did not release the lock, recovery restores that snapshot from the receipt, including a success verdict the receipt records, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
-A failure of recovery's own settlement after a success receipt fails that recovery and keeps the verdict rather than lowering it, whether or not the record was restored.
-Synthetic tests cover these settlement and receipt-restore paths with fake actors and services.
+A receipt of another run, or a control change after the receipt was derived, leaves the control record and lock in place.
+When finalization deleted the control record but did not release the lock, recovery writes a minimal cleaned record and the retry keeps the receipt, as the [lifecycle runbook](../../lifecycle/README.md#stranded-environment-lock) describes.
+Synthetic tests cover these settlement paths with fake actors and services.
 The internal recovery schedule is described below.
 
 The deployed exercise runs only through [production dispatch](#production-dispatch): its runner and the in-cluster supervisor are both authenticated, and dispatch verifies the published image digest live.
@@ -496,22 +495,22 @@ The conditional GCS grants, including the `.inprogress/` grant [#1498](https://g
 
 ### Approval and shared resource policy
 
-The common model accepts a version 5 `bigquery-recovery` approval, which [production dispatch](#production-dispatch) builds and the internal integration and cleanup tests construct directly.
+[Production dispatch](#production-dispatch) builds a `bigquery-recovery` approval and validates it once, before it takes the lock; the internal integration and cleanup tests construct one directly.
 It binds `bigquery_trial` to the trial's delivery method and destination count, the only fields a trial chooses.
-The approval also pins the initial and upgrade manifest hashes, source hash, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
-A valid document is not authenticated execution permission on its own: dispatch still requires the typed phrase, the environment lock and a verified bundle, and the in-cluster entrypoint builds its supervisor only through the authenticated actor factory.
+The approval also pins the initial and upgrade manifest hashes, the rig commit, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
+Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
+A valid document is not authenticated execution permission on its own: dispatch still requires the environment lock, and the in-cluster entrypoint builds its supervisor only through the authenticated actor factory.
 Internal runner admission requires an explicit environment-bound handoff; internal supervision additionally requires the approved upgrade and a quiescence callback.
 
-The approval requires a 90-minute window with the final 15 minutes reserved for cleanup, at most six Pods and no PVCs.
+The approval requires a 90-minute window with the final 15 minutes reserved for cleanup.
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
 The control quota covers the Operator, supervisor and one Operator replacement while the previous Pod terminates; five Pods run in the steady state.
-State and log limits remain 1 GiB of state, 10,000 state objects and 100 MiB of logs; the approval carries no cost ceiling, because spend is approved from the estimate before dispatch.
+The quotas, not a count in the approval, bound the Pods and PVCs; the approval carries no cost ceiling, because spend is approved from the estimate before dispatch.
 Every trial retains its mode's fixed finite input size; the approval model derives the resource plan rather than accepting another independently editable copy.
 The resource controller refuses a plan that differs from this approval before reading or creating service resources.
 
 Common creation/adoption uses the approved application namespace.
-Inventory includes `tier3-bigquery` for BigQuery approvals, counts its Pods against the six-Pod ceiling, and verifies owner UIDs, image digests and effective resources.
-Recovery of version 1–3 approvals keeps the namespace scope of their saved baseline.
+Inventory covers every Tier-3 namespace and verifies owner UIDs, image digests and effective resources.
 BigQuery cleanup records the tables a pass deleted in one control write, not one per table: trial `bq1312-alo-50-a1` wrote once per table, exceeded Cloud Storage's per-object mutation rate and crashed with most of its fifty tables left.
 Provisioning likewise writes every missing create intent in one control write before the first create, and the receipts in one write after the creates: trial `bq1312-alo-50-a2` wrote twice per table and stopped halfway through fifty.
 A supervisor that stops before admission completes records its reason as an `admission-stopped` event; that trial's supervisor stopped and left none.
@@ -519,49 +518,21 @@ State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-t
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
 They do not establish a functioning quiescence barrier or live service acceptance.
 
-Authenticated actors, writer fencing, evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
-The four allowances are entries under `[bigquery_ceilings]`, and they sum to the `evidence_bytes` they divide: 80 MiB of supervisor receipts, 8 MiB of runner receipts, 10 MiB of query artifacts and 2 MiB for the immutable run documents.
-Those documents — the approval, the application and upgrade manifests, the image receipts and the final result — are weighed against that last allowance before each write, so the run's documents stay inside what it was approved to retain.
-Only the documents directly under the run prefix count against it; the per-actor receipts and the query artifacts live in subdirectories and answer to their own entries.
-The count comes from a fixed roster of those document names rather than from listing the prefix: the prefix also holds every receipt, whose object count reaches the listing's twenty-thousand ceiling long before its byte ceiling, and this accounting runs when the final result is written, so a listing here would fail a run at its last step.
+Authenticated actors, writer fencing, query-evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
+The query artifacts share 10 MiB, `QUERY_EVIDENCE_BYTES`, divided equally among the scenario's 12 query slots; the receipts and run documents have no byte budget, because the window bounds what a run writes and the evidence bucket's 30-day expiry bounds what it retains.
 
 The collected queries' billed bytes are summed into the retained control state as `billed_bytes`.
 Each query was already refused above its own `maximum_bytes_billed`, and the slot count bounds the worst case, but nothing added them up, so a finished trial could not state what it had actually spent.
 A re-collected observation returns on the evidence pointer it already holds and is not counted again, and the total is restated from each query's recorded figure rather than accumulated into, because a conflicting write re-applies the same edit against a record that already carries it.
 
 The shared final receipt records the BigQuery scenario and approved trial, with `success` taken from the execution verdict under *Deployed verdict* below.
-A generic recovery completion flag cannot satisfy that verdict.
-A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
+A finalization retry keeps the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
 
-## Approval-bound delivery bundle
+## Approval-bound delivery
 
-`flink-tier3 bigquery-bundle` prepares the delivery from a separately supplied version 5 approval and verifies it by re-rendering against that approval.
-The checkout HEAD must match the approval SHA, with no tracked Kubernetes input changes or untracked CUE or TOML inputs, including ignored files.
-Repository checks ignore ambient `GIT_*` overrides and bound each Git invocation to 60 seconds.
-The installed package runtime hash, both application hashes and the supervisor image must also match the approval.
-It embeds the approval in the immutable ConfigMap and reduces the supervisor Job's relative deadline to the time remaining at the specified preparation instant.
+Dispatch binds the delivery its proposal rendered and checked: it embeds the approval in the immutable ConfigMap and reduces the supervisor Job's relative deadline to the time remaining when it binds.
 All other rendered delivery fields are retained, and the complete ConfigMap data must fit Kubernetes' 1 MiB limit.
-The original proposal stays visibly unapproved; the enclosing bundle reports `admission_enabled: false`, because the bundle alone authorizes nothing — dispatch admits it only under the typed phrase and the environment lock.
-
-Run from the repository root with the managed CUE and Python tools:
-
-```sh
-mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery-bundle prepare \
-  --approval-file approval.json \
-  --prepared-at 2026-09-21T00:10:00Z > bundle.json
-mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bigquery-bundle verify \
-  --approval-file approval.json --bundle-file bundle.json
-```
-
-The preparation instant must be a whole second between the approved start and cleanup deadline.
-An installed CLI can select the checkout with `flink-tier3 --repository /path/to/checkout bigquery-bundle ...`; CUE must be on its executable path.
-Verification compares the complete bundle, including its embedded source, command, images, deadlines and trial metadata; it requires the external approval file even when the bundle already contains an approval.
-Both input files reject duplicate JSON object fields.
-The commands perform local generation and comparison, including CUE's pinned public dependency downloads when needed, and make no cluster or GCP service calls.
-A matching file does not authenticate its approval or authorize execution.
-The executor must independently authenticate the approval, verify GitHub main ancestry and image publication/provenance/retention, prove current lock/namespace ownership, prepare for the actual admission time, and enforce absolute deadlines, actor fencing and aggregate evidence budgets.
-A previously prepared relative Job deadline is not permission to start that Job later.
-The [production dispatch](#production-dispatch) is that executor, for the checks it can make; image publication and retention remain a live check at dispatch.
+Nothing renders the delivery a second time to compare it with the first, and nothing checks the checkout's revision: the workflow checked the dispatched commit out fresh, and the approval's `sha` names it.
 
 ## Connector-issued jobs
 
@@ -582,7 +553,7 @@ The receipt carries all of this as the `file_loads` part of its `bigquery` recor
 
 ## Production dispatch
 
-The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with four inputs beyond the common ones.
+The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with two inputs beyond the common ones.
 The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md), and its results, every attempt included, are in the [BigQuery trial findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md).
 The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md) and the [BigQuery FILE_LOADS trial findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md).
 
@@ -590,18 +561,16 @@ The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial
 | --- | --- |
 | `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
-| `expires_at` | 90 to 100 minutes ahead; the latest the run may end |
-| `approval` | `APPROVE ONE BIGQUERY TRIAL: 6 PODS, 90 MINUTES`; it confirms the run, and spend is approved beforehand from the estimate |
 
+The owner approves the run's estimate before dispatching it; dispatching is the approval.
 The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget.
-The typed expiry bounds it: dispatch refuses an expiry earlier than the window's end, or more than ten minutes after it.
 
-The checks that need neither the cluster nor the lock run first: the trial and digest, the phrase, the exact approved rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID, an existing run's evidence and the window.
-Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the version 5 approval and prepares the bundle with the approval embedded, so a bundle refusal also arrives before the lock.
+The checks that need neither the cluster nor the lock run first: the trial and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
+Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the approval and binds the delivery with the approval embedded, so a ConfigMap size refusal also arrives before the lock.
 It then acquires the environment lock, checks the foundation again, writes the run documents and runs the authenticated runner inside its session, minting the runner token in this process.
 If the authenticated session cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.
 
-The in-cluster entrypoint verifies the mounted approval, application and upgrade against their pins, refusing a missing document by name, then builds the authenticated supervisor with its quiescence barrier and exercise and holds that session open for the whole supervision.
+The in-cluster entrypoint verifies the mounted application and upgrade against the mounted approval's pins, refusing a missing document by name, then builds the authenticated supervisor with its quiescence barrier and exercise and holds that session open for the whole supervision.
 It is constructed without the runner token and adopts it from the binding, as [Query requests and runner release](#query-requests-and-runner-release) describes.
 
 The workflow job runs for up to 120 minutes for this scenario, because the 90-minute window's serial budget is 114 minutes.
@@ -610,7 +579,7 @@ Enabling the scenario does not approve a run.
 ## Internal recovery execution
 
 The common `Runner.start()` and `Supervisor.supervise()` paths support an explicitly attached BigQuery handoff.
-They are internal integration points: the caller must verify the approval-bound bundle, authenticate each actor, retain exclusive environment ownership and provide the writer/creator quiescence barrier and appropriate HTTP operation deadlines.
+They are internal integration points: the caller must bind the approved delivery, authenticate each actor, retain exclusive environment ownership and provide the writer/creator quiescence barrier and appropriate HTTP operation deadlines.
 The production dispatch and in-cluster entrypoints reach these paths only through the actor factories, and a bare `Runner` or `Supervisor` without its handoff refuses; passing these tests does not approve a paid run.
 A replacement runner must not reconstruct the submitting process's token.
 
@@ -687,16 +656,14 @@ They establish the internal sequencing and refusal behavior, not actual Operator
 ## Authenticated internal actors
 
 [`flink_tier3.bigquery.actors`](../../../tools/tier3/src/flink_tier3/bigquery/actors.py) constructs internal actors with a role-specific BigQuery HTTP session.
-Its `runner` context manager compares the complete bundle with the independently supplied environment approval, including local source, Git revision and CUE rendering checks.
-Its `supervisor` context manager instead binds the initial and upgrade manifests and installed source to that environment approval; it does not run Git or CUE inside the runtime image.
-Both validate the approval, current environment lock and actor role before Google authentication, then recheck ownership before returning the actor.
-Each checks the source pin it can reproduce: the runner compares `runtime_sha256` against its complete installation, and the supervisor compares `delivery_sha256` against the mounted subset it actually runs, which is all it has.
-The runner also checks admission before and after authentication, including its 600-second startup limit.
+Its `runner` context manager takes the application dispatch rendered and approved; its `supervisor` context manager takes the manifests the entrypoint verified against the mounted approval.
+Neither validates the approval or the installed source again: dispatch validated the one, and the dispatched commit is the other.
+Both check the current environment lock and actor role before Google authentication, then recheck ownership before returning the actor.
+The runner also checks admission, including its window and 600-second startup limit, before and after authentication.
 The handoff uses the approved resource plan, cleanup start as the query deadline and the fixed 10 MiB query-evidence budget.
 The runner's caller supplies the original process token; the supervisor takes none and adopts it from the binding the runner writes.
 Each caller keeps its context open through admission and settlement, or supervision and cleanup.
-Because both factories validate the approval against the current clock, neither actor can be constructed once admission closes at the cleanup start, so the cleanup window runs inside a context opened before it.
-Replacing a supervisor inside that window is therefore not a recovery path, and the production entrypoints do not make it one.
+The supervisor Job replaces no Pod, so the cleanup window runs inside the context its one supervisor opened.
 Exiting closes the HTTP session; it does not acknowledge runner release or initiate cleanup automatically.
 
 [`BigQuerySession`](../../../tools/tier3/src/flink_tier3/bigquery/auth.py) uses `google-auth` application default credentials, requesting `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials with suitable scopes.
@@ -716,7 +683,7 @@ Measured against the pinned library, discovery issues no request when the enviro
 These checks do not forcibly interrupt credential discovery, synchronous credential code, blocked reads or server-side execution.
 The resource adapter still enforces the absolute operation deadline while consuming BigQuery responses.
 
-The factories do not authenticate the supplied Kubernetes/storage collaborators or the approval's origin, establish GitHub main ancestry or image provenance, fence another creator/writer, or implement the immutable artifact allowance.
+The factories do not authenticate the supplied Kubernetes/storage collaborators or the approval's origin, establish GitHub main ancestry or image provenance, or fence another creator/writer.
 The supervisor factory builds the [quiescence barrier](#quiescence-barrier) from the run's own identity; constructing a session does not prove that barrier works.
 Synthetic tests exercise the pinned Google auth request adapter, token refresh and rotation, identity refusal, shared time budgets, approval binding and lock loss.
 The deployed trials ran both actors under the deployed WIF and GKE credentials with live IAM access, the quiescence barrier, the upgrade and failover recoveries, and cleanup; these synthetic tests establish none of that.

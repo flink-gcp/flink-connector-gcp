@@ -23,12 +23,17 @@ from flink_tier3 import runtime
 from flink_tier3.bigquery import plan
 from flink_tier3.bigquery.handoff import BigQueryHandoff
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
-from flink_tier3.bundle import delivery_digest, source_digest
 from flink_tier3.cleanup import Cleanup, verify_idle
 from flink_tier3.common import INCONCLUSIVE, Failure, digest
 from flink_tier3.environment import Environment
-from flink_tier3.model import Approval, Phase
-from flink_tier3.policy import BIGQUERY, BIGQUERY_CEILINGS, BIGQUERY_STATE, RECOVERY
+from flink_tier3.model import (
+    APPROVAL_VERSION,
+    Approval,
+    Phase,
+    check_window,
+    validate_approval,
+)
+from flink_tier3.policy import BIGQUERY, BIGQUERY_STATE, CLEANUP_SECONDS
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
@@ -60,12 +65,11 @@ def prepared(env, inputs, renderer):
     saved.update(uid=BIGQUERY + "-uid", quota_uid=BIGQUERY + "-quota")
     approval["namespaces"][BIGQUERY] = saved
     approval.update(
-        version=5,
+        version=APPROVAL_VERSION,
         scenario="bigquery-recovery",
         started_at=proposal["started_at"],
         expires_at=proposal["expires_at"],
         cleanup_at=proposal["cleanup_at"],
-        ceilings=dict(BIGQUERY_CEILINGS),
         bigquery_trial=copy.deepcopy(inputs["trial"]),
         application_sha256=digest(application),
         upgrade_application_sha256=digest(upgrade),
@@ -82,7 +86,7 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
     environment, _, _, _ = prepared
     value = environment.approval.to_dict()
     value["bigquery_trial"].update(mode=mode, destinations=destinations)
-    approval = Approval.from_dict(value, environment.clock())
+    approval = Approval.from_dict(value)
     expected = plan.prepare(
         run_id=approval.run_id,
         nonce=approval.nonce,
@@ -99,9 +103,7 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
     assert rt.timestamp(approval.cleanup_at) == approval.schedule.cleanup_at
     assert expected["cleanup_at"] == approval.cleanup_at
     assert approval.schedule.job_deadline - approval.schedule.started == 5220
-    assert expected["limits"]["cleanup_seconds"] == BIGQUERY_CEILINGS["cleanup_seconds"]
-    assert expected["limits"]["pods"] == BIGQUERY_CEILINGS["pods"]
-    assert expected["limits"]["pvcs"] == BIGQUERY_CEILINGS["pvcs"]
+    assert expected["limits"]["cleanup_seconds"] == CLEANUP_SECONDS
     assert plan.ACTIVE_SECONDS == approval.schedule.active_seconds(
         approval.schedule.started
     )
@@ -113,11 +115,9 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
 @pytest.mark.parametrize(
     "key,value",
     [
-        ("version", 5.0),
-        ("version", 4),
         ("upgrade_application_sha256", ""),
-        ("bigquery_trial", {}),
-        ("recovery_policy", RECOVERY),
+        # A retired field is one dispatch no longer writes.
+        ("recovery_policy", {}),
         ("campaign", "foreign"),
         ("flink_version", "1.20.4"),
         ("expires_at", "2026-09-21T01:00:00Z"),
@@ -128,9 +128,10 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
 def test_inconsistent_approval_is_rejected(prepared, key, value):
     environment, *_ = prepared
     approval = environment.approval.to_dict()
+    validate_approval(approval)
     approval[key] = value
     with pytest.raises(Failure):
-        Approval.from_dict(approval, environment.clock())
+        validate_approval(approval)
     assert environment.kube.calls == []
 
 
@@ -149,45 +150,22 @@ def test_unreviewed_trial_is_rejected(prepared, key, value):
     environment, *_ = prepared
     approval = environment.approval.to_dict()
     approval["bigquery_trial"][key] = value
-    with pytest.raises(Failure, match="approved BigQuery trial"):
-        Approval.from_dict(approval)
+    # The plan is derived from the trial, so no actor can bind an unreviewed one.
+    with pytest.raises(ValueError, match="Trial must select"):
+        _ = Approval.from_dict(approval).bigquery_plan
 
 
-@pytest.mark.parametrize(
-    "key,value",
-    [
-        ("pods", 7),
-        ("pods", 6.0),
-        ("pvcs", False),
-        ("state_bytes", 2**31),
-        ("additional_cost_usd", "10.00"),
-        ("evidence_bytes", 2**30),
-    ],
-)
-def test_ceiling_drift_is_rejected(prepared, key, value):
-    approval = prepared[0].approval.to_dict()
-    approval["ceilings"][key] = value
-    with pytest.raises(Failure, match="resource ceilings"):
-        Approval.from_dict(approval)
-
-
-def test_wrong_namespace_image_and_runtime_binding_are_rejected(prepared):
+def test_wrong_namespace_and_image_are_rejected(prepared):
     original = prepared[0].approval.to_dict()
+    validate_approval(original)
     for edit in (
         lambda a: a["namespaces"].update({rt.SMOKE: a["namespaces"].pop(BIGQUERY)}),
         lambda a: a["images"].update(application=rt.GAR + "smoke@sha256:" + "e" * 64),
-        lambda a: a.update(runtime_sha256="bad"),
     ):
         value = copy.deepcopy(original)
         edit(value)
         with pytest.raises(Failure):
-            Approval.from_dict(value)
-
-
-def test_old_approval_cannot_smuggle_bigquery_fields(env, trial):
-    env[2]["bigquery_trial"] = trial
-    with pytest.raises(Failure, match="Only BigQuery"):
-        Approval.from_dict(env[2])
+            validate_approval(value)
 
 
 def test_admission_window_is_enforced_and_the_rates_age_is_not(prepared):
@@ -195,7 +173,7 @@ def test_admission_window_is_enforced_and_the_rates_age_is_not(prepared):
     value = environment.approval.to_dict()
     for now in (environment.schedule.started - 31, environment.schedule.cleanup_at):
         with pytest.raises(Failure, match="admission window"):
-            Approval.from_dict(value, now)
+            check_window(Approval.from_dict(value), now)
     # Spend is approved from the estimate before dispatch; a run long after
     # the rates were reviewed is admitted like any other.
     value.update(
@@ -203,8 +181,7 @@ def test_admission_window_is_enforced_and_the_rates_age_is_not(prepared):
         expires_at="2027-01-21T01:30:00Z",
         cleanup_at="2027-01-21T01:15:00Z",
     )
-    late = rt.timestamp(value["started_at"])
-    assert Approval.from_dict(value, late).started_at == value["started_at"]
+    check_window(Approval.from_dict(value), rt.timestamp(value["started_at"]))
 
 
 def test_three_application_pods_and_the_control_pods_fit_their_quotas(prepared):
@@ -413,8 +390,6 @@ def test_an_actor_without_its_authenticated_handoff_refuses_before_mutation(
 
 def mount(directory, environment, application, upgrade, **approval_changes):
     approval = environment.approval.to_dict()
-    approval["runtime_sha256"] = source_digest()
-    approval["delivery_sha256"] = delivery_digest()
     approval.update(approval_changes)
     (directory / "approval.json").write_text(json.dumps(approval))
     (directory / "application.json").write_text(json.dumps(application))
@@ -448,8 +423,6 @@ def test_a_valid_bigquery_delivery_is_admitted_by_the_entrypoint(prepared, tmp_p
         ("missing-upgrade", "missing upgrade-application.json"),
         ("changed-upgrade", "upgrade differs from approval"),
         ("changed-application", "application differs from approval"),
-        ("changed-source", "source differs from approval"),
-        ("unknown-scenario", "Unknown approved scenario"),
     ],
 )
 def test_the_supervisor_entrypoint_refuses_a_delivery_its_approval_does_not_fix(
@@ -469,46 +442,18 @@ def test_the_supervisor_entrypoint_refuses_a_delivery_its_approval_does_not_fix(
         upgrade = dict(upgrade, changed=True)
     elif case == "changed-application":
         application = dict(application, changed=True)
-    elif case == "changed-source":
-        changes["delivery_sha256"] = "0" * 64
-    elif case == "unknown-scenario":
-        changes["scenario"] = "bigquery-replay"
     mount(tmp_path, environment, application, upgrade, **changes)
     with pytest.raises(Failure, match=match):
         runtime.supervisor_main(tmp_path)
 
 
-@pytest.mark.parametrize("application", [rt.SMOKE, rt.CLOUDTASKS, BIGQUERY])
-def test_live_inventory_scope_matches_approval(application):
+def test_live_inventory_lists_every_namespace():
     calls = []
     kube = rt.Kubernetes("https://example.invalid", None)
     kube.items = lambda kind, namespace: calls.append((kind, namespace)) or []
-    assert kube.inventory(application) == []
-    expected = {rt.SMOKE, rt.CLOUDTASKS, rt.SYSTEM}
-    if application == BIGQUERY:
-        expected.add(BIGQUERY)
-    assert {namespace for _, namespace in calls} == expected
-    calls.clear()
     assert kube.inventory() == []
-    assert {namespace for _, namespace in calls} == {rt.SMOKE, rt.CLOUDTASKS, rt.SYSTEM}
-
-
-@pytest.mark.parametrize("version", [1, 2])
-def test_legacy_recovery_keeps_its_original_inventory_baseline(env, version):
-    kube, store, approval, clock = env
-    if version == 2:
-        approval.update(
-            version=2,
-            scenario="generic-recovery",
-            recovery_policy=copy.deepcopy(RECOVERY),
-            upgrade_application_sha256="f" * 64,
-        )
-    existing = obj("ConfigMap", "kube-root-ca.crt", BIGQUERY)
-    kube.put(existing)
-    environment = Environment(kube, store, approval, clock, clock.sleep)
-    Cleanup(environment).audit()
-    verify_idle(environment)
-    assert kube.get("ConfigMap", BIGQUERY, "kube-root-ca.crt") == existing
+    assert {namespace for _, namespace in calls} == set(rt.NAMESPACES)
+    assert BIGQUERY in rt.NAMESPACES
 
 
 def test_bigquery_inventory_still_refuses_unowned_namespace_objects(prepared):
@@ -577,7 +522,7 @@ def five_pods(environment, application):
     return runner.cleanup
 
 
-def test_inventory_accepts_the_budgeted_pods_and_rejects_one_more(prepared):
+def test_inventory_accepts_the_budgeted_pods_and_a_replacement(prepared):
     environment, application, *_ = prepared
     cleanup = five_pods(environment, application)
     assert len(cleanup.audit()[1]) == 5
@@ -587,11 +532,6 @@ def test_inventory_accepts_the_budgeted_pods_and_rejects_one_more(prepared):
         environment, "extra-tm", "application", environment.root("application")
     )
     assert len(cleanup.audit()[1]) == 6
-    workload_pod(
-        environment, "seventh-tm", "application", environment.root("application")
-    )
-    with pytest.raises(Failure, match="Pod/PVC count"):
-        cleanup.audit()
 
 
 @pytest.mark.parametrize("change", ["image", "resources", "unowned"])
@@ -612,30 +552,7 @@ def test_inventory_rejects_unapproved_bigquery_pod(prepared, change):
         cleanup.audit()
 
 
-def test_state_byte_ceiling_is_checked_in_bigquery_bucket(prepared, monkeypatch):
-    environment, application, *_ = prepared
-    cleanup = five_pods(environment, application)
-    objects = environment.store.objects
-
-    def oversized(prefix, bucket=rt.EVIDENCE, maximum=10000):
-        if bucket == BIGQUERY_STATE:
-            return [
-                {
-                    "name": prefix + "large",
-                    "size": str(BIGQUERY_CEILINGS["state_bytes"] + 1),
-                    "generation": "1",
-                }
-            ]
-        return objects(prefix, bucket, maximum)
-
-    monkeypatch.setattr(environment.store, "objects", oversized)
-    with pytest.raises(Failure, match="State byte ceiling"):
-        cleanup.audit()
-
-
-@pytest.mark.parametrize(
-    "change", ["none", "scenario", "bigquery_trial", "success", "plans"]
-)
+@pytest.mark.parametrize("change", ["none", "nonce", "idle"])
 def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, change):
     environment, *_ = prepared
     runner = Runner(environment)
@@ -647,14 +564,11 @@ def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, chang
     assert receipt["scenario"] == "bigquery-recovery"
     assert receipt["bigquery_trial"] == environment.approval.bigquery_trial
     assert not receipt["success"]
-    if change == "scenario":
-        receipt.pop("scenario")
-    elif change == "bigquery_trial":
-        receipt["bigquery_trial"]["destinations"] = 50
-    elif change == "success":
-        receipt["success"] = True
-    elif change == "plans":
-        receipt["plans"]["roots"] = ["unapproved"]
+    # A retry keeps the receipt it finds, unless it is not this run's idle one.
+    if change == "nonce":
+        receipt["nonce"] = "0" * 32
+    elif change == "idle":
+        receipt["idle"] = False
     environment.store.write(path, receipt, generation)
     plans = {**plans, "at": "2026-09-21T01:37:31Z"}
     if change == "none":
@@ -673,8 +587,11 @@ def test_finalization_without_service_intent_keeps_concurrent_control(prepared):
     environment, *_ = prepared
     runner = Runner(environment)
     runner.cleanup.run("stopped before creation")
-    environment.store.before_write = environment.records.mark_evidence_failed
-    with pytest.raises(Failure, match="Run control changed"):
+    environment.store.before_write = lambda: environment.records.mark_evidence_failed(
+        {"operation": "concurrent", "cause": "synthetic"}
+    )
+    # The control deletion is conditional on the generation the receipt read.
+    with pytest.raises(rt.ApiError) as error:
         runner.finalize(
             {
                 "nonce": environment.approval.nonce,
@@ -682,6 +599,7 @@ def test_finalization_without_service_intent_keeps_concurrent_control(prepared):
                 "empty": True,
             }
         )
+    assert error.value.status == 412
     control, _ = environment.store.read(environment.records.path)
     assert control["evidence_failed"]
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
@@ -732,17 +650,14 @@ def lose_lock_release(environment, runner, monkeypatch):
 
 
 @pytest.mark.parametrize("verdict", [rt.USABLE, INCONCLUSIVE])
-def test_recovery_restores_a_cleaned_bigquery_snapshot(prepared, monkeypatch, verdict):
+def test_recovery_keeps_a_cleaned_bigquery_receipt(prepared, monkeypatch, verdict):
     stored = {"stage": "complete", "verdict": verdict}
     environment, runner, *_ = service_cleaned(prepared, stored)
     control = environment.refresh().to_dict()
     plans = lose_lock_release(environment, runner, monkeypatch)
     recovery = Runner(environment)
+    # The restored record is the minimal one; the receipt carries the verdict.
     recovery.restore_control()
-    restored = environment.refresh()
-    assert restored.bigquery == control["bigquery"]
-    assert restored.recovery == stored
-    assert restored.success is (verdict == rt.USABLE)
     recovery.settle(request_stop=True)
     assert Runner(environment).finalize({**plans, "at": "2026-09-21T01:37:31Z"}) is (
         verdict == rt.USABLE
@@ -844,15 +759,11 @@ def test_recovery_evidence_failure_keeps_a_success_verdict(
     environment, plans = stranded_receipt(prepared, monkeypatch, lost)
     restore = fail_event(environment.store, monkeypatch, event)
     first = recovery_runner(environment)
-    with pytest.raises(Failure, match="success receipt"):
-        first.settle(request_stop=True)
+    first.settle(request_stop=True)
     restore()
     assert first.env.evidence_failed
-    control = environment.refresh()
-    assert control.success is True
-    assert not control.evidence_failed
-    # The failure blocked finalization; the next recovery settles cleanly.
-    recovery_runner(environment).settle(request_stop=True)
+    assert environment.refresh().evidence_failed
+    # The receipt predates this recovery's failure, and finalization keeps it.
     assert recovery_runner(environment).finalize(plans) is True
     assert_released(environment)
 
@@ -873,9 +784,7 @@ def test_recovery_state_cleanup_failure_keeps_a_success_verdict(
     # Nothing remains, so the settlement's own remaining-state check passes.
     first.settle(request_stop=True)
     assert calls == [None]
-    control = environment.refresh()
-    assert control.success is True
-    assert not control.state_clean
+    assert not environment.refresh().state_clean
     assert recovery_runner(environment).finalize(plans) is True
     assert_released(environment)
 
@@ -912,7 +821,6 @@ def test_recovery_refuses_remaining_state_without_lowering_the_verdict(
     monkeypatch.setattr(environment.store, "delete", keep_state)
     with pytest.raises(Failure, match="Run state remains"):
         recovery_runner(environment).settle(request_stop=True)
-    assert environment.refresh().success is True
     with pytest.raises(Failure, match="Run state reappeared"):
         recovery_runner(environment).finalize(plans)
     assert_retained(environment)
@@ -929,71 +837,8 @@ def test_recovery_refuses_an_unexpected_object(prepared, monkeypatch, lost):
     environment.kube.put(obj("ConfigMap", "stray", BIGQUERY))
     with pytest.raises(Failure, match="non-baseline object remains"):
         recovery_runner(environment).settle(request_stop=True)
-    assert environment.refresh().success is True
     with pytest.raises(Failure, match="non-baseline object remains"):
         recovery_runner(environment).finalize(plans)
-    assert_retained(environment)
-
-
-def test_settlement_tears_down_when_the_receipt_cannot_be_read(prepared, monkeypatch):
-    environment, plans = stranded_receipt(prepared, monkeypatch, "control")
-    run_id = environment.approval.run_id
-    read = environment.store.read
-
-    def unavailable(name, *args, **kwargs):
-        if name == f"runs/{run_id}/result.json":
-            raise Failure("receipt read unavailable")
-        return read(name, *args, **kwargs)
-
-    monkeypatch.setattr(environment.store, "read", unavailable)
-    runner = recovery_runner(environment)
-    cleanups = []
-    run = runner.cleanup.run
-
-    def counted(*args, **kwargs):
-        cleanups.append(kwargs)
-        return run(*args, **kwargs)
-
-    monkeypatch.setattr(runner.cleanup, "run", counted)
-    runner.settle(request_stop=True)
-    # The failed read neither skipped teardown nor kept a verdict it could
-    # not read; finalization reads the receipt itself.
-    assert cleanups == [{"keep_verdict": False}]
-    events = [
-        read(obj["name"])[0]
-        for obj in environment.store.objects(f"runs/{run_id}/runner/")
-    ]
-    assert [e["payload"] for e in events if e["event"] == "receipt-read-failed"] == [
-        {"cause": "receipt read unavailable"}
-    ]
-    monkeypatch.setattr(environment.store, "read", read)
-    assert recovery_runner(environment).finalize(plans) is True
-    assert_released(environment)
-
-
-def test_recovery_keeps_an_evidence_failure_another_writer_recorded(
-    prepared, monkeypatch
-):
-    stored = {"stage": "complete", "verdict": rt.USABLE}
-    environment, runner, *_ = service_cleaned(prepared, stored)
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:30:00Z",
-    }
-    # Another writer records an evidence failure as the receipt is written.
-    environment.store.before_write = environment.records.mark_evidence_failed
-    with pytest.raises(Failure, match="Run control changed"):
-        runner.finalize(plans)
-    receipt, _ = environment.store.read(
-        f"runs/{environment.approval.run_id}/result.json"
-    )
-    assert receipt["success"] is True
-    recovery_runner(environment).settle(request_stop=True)
-    assert environment.refresh().evidence_failed
-    with pytest.raises(Failure, match="Final receipt conflicts"):
-        recovery_runner(environment).finalize({**plans, "at": "2026-09-21T01:37:31Z"})
     assert_retained(environment)
 
 
@@ -1028,34 +873,8 @@ def test_recovery_without_a_receipt_writes_the_minimal_record(prepared):
     )
 
 
-@pytest.mark.parametrize("change", ["success", "cleaned", "released", "trial"])
-def test_recovery_refuses_a_bigquery_receipt_that_does_not_reproduce(
-    prepared, monkeypatch, change
-):
-    stored = {"stage": "complete", "verdict": INCONCLUSIVE}
-    environment, runner, *_ = service_cleaned(prepared, stored)
-    lose_lock_release(environment, runner, monkeypatch)
-    path = f"runs/{environment.approval.run_id}/result.json"
-    receipt, generation = environment.store.read(path)
-    if change == "success":
-        # Success needs the exercise's verdict, which this run did not reach.
-        receipt["success"] = True
-    elif change == "cleaned":
-        receipt["bigquery"]["cleaned"] = False
-    elif change == "released":
-        receipt["bigquery"]["handoff"]["released"] = False
-    elif change == "trial":
-        receipt["bigquery_trial"]["destinations"] = 50
-    environment.store.write(path, receipt, generation)
-    with pytest.raises(Failure, match="investigate before any repair"):
-        Runner(environment).restore_control()
-    assert environment.store.objects("_control/runs/") == []
-    assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-
-
-@pytest.mark.parametrize("case", ["clean", "tampered", "evidence"])
 def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
-    prepared, monkeypatch, tmp_path, case
+    prepared, monkeypatch, tmp_path
 ):
     from types import SimpleNamespace
 
@@ -1068,11 +887,6 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
         f"runs/{environment.approval.run_id}/approval.json", approval
     )
     plans = lose_lock_release(environment, runner, monkeypatch)
-    if case == "tampered":
-        path = f"runs/{environment.approval.run_id}/result.json"
-        receipt, generation = environment.store.read(path)
-        receipt["bigquery_trial"]["destinations"] = 50
-        environment.store.write(path, receipt, generation)
     owner = approval["lock_owner"]
     monkeypatch.setenv("GITHUB_RUN_ID", "456")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
@@ -1110,35 +924,9 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
         directory=tmp_path,
         kubeconfig=tmp_path / "kubeconfig",
     )
-    if case == "tampered":
-        # Refused on every attempt, without a record, until investigated.
-        for _ in range(2):
-            with pytest.raises(Failure, match="investigate before any repair"):
-                cli.recover(args, environment.store)
-        assert preflights == [args.kubeconfig] * 2
-        assert environment.store.objects("_control/runs/") == []
-        assert environment.store.read(rt.ENVIRONMENT)[0] == owner
-        with pytest.raises(rt.ApiError):
-            rt.EnvironmentLock(environment.store).acquire(
-                {**owner, "nonce": "f" * 32, "github_run_id": "789"}
-            )
-        return
-    if case == "evidence":
-        # Recovery's own idle receipt fails: the recover step fails before it
-        # reports idle, so the workflow never reaches finish.
-        restore = fail_event(environment.store, monkeypatch, "idle")
-        with pytest.raises(Failure, match="success receipt"):
-            cli.recover(args, environment.store)
-        restore()
-        assert not (tmp_path / "recovered.json").exists()
-        assert environment.store.read(environment.records.path)[0]["success"]
-        assert environment.store.read(rt.ENVIRONMENT)[0] == owner
-        # A later recovery execution finds the restored record and settles.
-        monkeypatch.setenv("GITHUB_RUN_ID", "457")
     cli.recover(args, environment.store)
     assert preflights == [args.kubeconfig]
     restored = environment.store.read(environment.records.path)[0]
-    assert restored["bigquery"]["cleaned"]
     # Settlement ran over the restored record and rechecked state cleanup.
     assert restored["state_clean"]
     assert environment.store.read(rt.ENVIRONMENT)[0] == owner
@@ -1155,22 +943,3 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
     )
     assert receipt["success"] is True
     assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
-
-
-def test_the_four_allowances_partition_the_approved_evidence_ceiling():
-    """Four figures in one place, summing to the ceiling they divide."""
-    from flink_tier3.policy import BIGQUERY_CEILINGS, MIB
-
-    parts = (
-        "receipt_bytes_supervisor",
-        "receipt_bytes_runner",
-        "query_bytes",
-        "artifact_bytes",
-    )
-    assert (
-        sum(BIGQUERY_CEILINGS[part] for part in parts)
-        == (BIGQUERY_CEILINGS["evidence_bytes"])
-    )
-    # The handoff and the receipts read those entries rather than literals.
-    assert BIGQUERY_CEILINGS["query_bytes"] == 10 * MIB
-    assert BIGQUERY_CEILINGS["artifact_bytes"] == 2 * MIB

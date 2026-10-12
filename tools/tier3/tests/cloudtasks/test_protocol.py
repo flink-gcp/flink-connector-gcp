@@ -62,9 +62,8 @@ def test_pin_ships_with_the_package_but_not_with_the_supervisor_delivery():
     sources = package_sources()
     pin = "cloudtasks/" + protocol.PROTOCOL_FILE
     assert pin in sources
-    # `runtime_sha256` still covers the pin, because it hashes the complete
-    # package; nothing the supervisor entrypoint imports reaches it, so it is
-    # not in the delivery that `delivery_sha256` pins.
+    # The pin ships in the package, but nothing the supervisor entrypoint
+    # imports reaches it, so it is not delivered.
     assert pin not in delivered_sources()
     assert "analyze.py" not in delivered_sources()
     assert PIN.read_text().startswith("# Copyright 2026 The flink-gcp authors")

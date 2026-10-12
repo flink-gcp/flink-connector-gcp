@@ -25,7 +25,6 @@ import google.auth
 import requests
 from google.auth.transport.requests import Request
 
-from .bundle import delivery_digest, source_digest
 from .common import Failure, TransportError
 from .policy import HTTP_TIMEOUT, PROJECT
 
@@ -231,20 +230,6 @@ class ActorSession(AbstractContextManager):
 
     def _sending(self, method, url):
         """Called once the request is about to leave, after identity checks."""
-
-
-def require_installed_source(env, role, service):
-    """Refuse an actor whose installed source is not the one approved for it.
-
-    The runner runs from a complete installation; the supervisor runs from a
-    mounted subset, whose digest is the pin the approval carries for it.
-    """
-    if role == "supervisor":
-        installed, approved = delivery_digest(), env.approval.delivery_sha256
-    else:
-        installed, approved = source_digest(), env.approval.runtime_sha256
-    if installed != approved:
-        raise Failure(f"{service} actor source differs from approval")
 
 
 def authenticate(env, http, deadline):

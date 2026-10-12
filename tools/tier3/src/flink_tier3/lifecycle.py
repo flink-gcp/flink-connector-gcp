@@ -36,37 +36,12 @@ from . import bootstrap, repository
 from . import runner as runner_api
 from . import workflow as wf
 from .bigquery import actors as bigquery_actors
-from .bigquery import bundle as bigquery_bundle
 from .bigquery import plan as bigquery_plan
-from .exercise import validate_manifests
-from .policy import (
-    BIGQUERY,
-    BIGQUERY_CEILINGS,
-    DIGEST,
-    PUBSUB,
-    PUBSUB_CEILINGS,
-    RECOVERY,
-)
+from .model import APPROVAL_VERSION, SCENARIOS
+from .policy import BIGQUERY, DIGEST, PUBSUB
 from .pubsub import actors as pubsub_actors
-from .pubsub import bundle as pubsub_bundle
 from .pubsub import plan as pubsub_plan
 
-APPROVAL = "APPROVE ONE SMOKE RUN: 5 PODS, 60 MINUTES"
-BIGQUERY_APPROVAL = (
-    f"APPROVE ONE BIGQUERY TRIAL: {BIGQUERY_CEILINGS['pods']} PODS, "
-    f"{BIGQUERY_CEILINGS['seconds'] // 60} MINUTES"
-)
-SCENARIOS = (
-    "smoke",
-    "generic-recovery",
-    "bigquery-recovery",
-    "pubsub-recovery",
-)
-# How far the operator's typed expiry may lie beyond the run's own end. The
-# window starts at admission, so queueing before dispatch costs the run none of
-# its startup budget; the typed expiry is the latest the run may end, and it
-# must not overstate that by more than this.
-EXPIRY_SLACK_SECONDS = 600
 PUBSUB_TRIALS = Path("kubernetes/lifecycle/pubsub-trials")
 
 
@@ -78,27 +53,15 @@ def trial_inputs(args):
     return trial, rt.GAR + "bigquery-recovery@" + args.application_digest
 
 
-def service_window(now, expires_at, seconds, service):
-    """The approved window: it starts at admission and ends by the typed expiry.
+def window(seconds):
+    """The run's window: it starts at admission and lasts `seconds`.
 
-    A service approval requires an exact window on whole seconds, and a bundle
-    cannot be prepared before its start. Starting the window at admission
-    rather than deriving it from the expiry keeps dispatch queueing out of the
-    600-second startup budget that every deadline counts from.
+    Starting at admission rather than at dispatch keeps the job's queueing out
+    of the startup budget every deadline counts from. A service approval
+    requires whole seconds.
     """
-    started = int(now)
-    end = started + seconds
-    if not end <= rt.timestamp(expires_at) <= end + EXPIRY_SLACK_SECONDS:
-        minutes = seconds // 60
-        # Admission follows dispatch by the job's queueing and setup, so an
-        # expiry typed exactly at the lower bound when dispatching is refused.
-        raise rt.Failure(
-            f"{service} expiry must be {minutes} to "
-            f"{minutes + EXPIRY_SLACK_SECONDS // 60} minutes after admission, "
-            f"which follows dispatch by the job's setup; the run ends {minutes} "
-            "minutes after admission, never later than the expiry"
-        )
-    return started, end
+    started = int(time.time())
+    return started, started + seconds
 
 
 def bigquery_approval(
@@ -115,13 +78,13 @@ def bigquery_approval(
     owner,
     actor,
 ):
-    """Assemble the version 5 approval from a rendered, verified proposal.
+    """Assemble the approval from a rendered, verified proposal.
 
     Every digest comes from the proposal, which rendered and checked the
     manifests itself; nothing here renders or hashes a second time.
     """
     return {
-        "version": 5,
+        "version": APPROVAL_VERSION,
         "scenario": "bigquery-recovery",
         "run_id": run_id,
         "nonce": nonce,
@@ -129,28 +92,16 @@ def bigquery_approval(
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "ceilings": dict(BIGQUERY_CEILINGS),
         "bigquery_trial": copy.deepcopy(trial),
         "namespaces": namespaces,
         "operator_uid": operator_uid,
         "baseline_uids": baseline,
         "images": images,
         "lock_owner": owner,
-        "runtime_sha256": proposal["runtime_sha256"],
-        "delivery_sha256": proposal["delivery_sha256"],
         "application_sha256": proposal["application_sha256"],
         "upgrade_application_sha256": proposal["upgrade_application_sha256"],
         "actor": actor,
     }
-
-
-def pubsub_phrase(trial):
-    """The approval phrase: the policy's ceilings and the reviewed trial's own."""
-    return (
-        f"APPROVE ONE PUBSUB TRIAL: {PUBSUB_CEILINGS['pods']} PODS, "
-        f"{PUBSUB_CEILINGS['seconds'] // 60} MINUTES, "
-        f"{trial['records_per_subscription']} RECORDS PER SUBSCRIPTION"
-    )
 
 
 def pubsub_inputs(args):
@@ -179,14 +130,14 @@ def pubsub_approval(
     owner,
     actor,
 ):
-    """Assemble the version 5 approval from a rendered, verified proposal.
+    """Assemble the approval from a rendered, verified proposal.
 
     Every digest comes from the proposal, which rendered and checked the
     manifests itself. The proposal names the second manifest the recovery
     application; the approval keeps the name every service scenario shares.
     """
     return {
-        "version": 5,
+        "version": APPROVAL_VERSION,
         "scenario": "pubsub-recovery",
         "run_id": run_id,
         "nonce": nonce,
@@ -194,15 +145,12 @@ def pubsub_approval(
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "ceilings": dict(PUBSUB_CEILINGS),
         "pubsub_trial": copy.deepcopy(trial),
         "namespaces": namespaces,
         "operator_uid": operator_uid,
         "baseline_uids": baseline,
         "images": images,
         "lock_owner": owner,
-        "runtime_sha256": proposal["runtime_sha256"],
-        "delivery_sha256": proposal["delivery_sha256"],
         "application_sha256": proposal["application_sha256"],
         "upgrade_application_sha256": proposal["recovery_application_sha256"],
         "actor": actor,
@@ -210,19 +158,16 @@ def pubsub_approval(
 
 
 def start_pubsub(args, store):
-    """Dispatch one approved Pub/Sub recovery trial from its reviewed file.
+    """Dispatch one Pub/Sub recovery trial from its reviewed file.
 
     Everything that can refuse without the lock does so first: the cluster's
-    idle state, the image receipts, and the bundle's revision check, rendering
-    and ConfigMap size.
+    idle state, the image receipts, the rendering and the ConfigMap size.
     """
     trial, application_image = pubsub_inputs(args)
-    refuse_before_admission(args, store, pubsub_phrase(trial))
-    started, end = service_window(
-        time.time(), args.expires_at, pubsub_plan.WINDOW_SECONDS, "Pub/Sub"
-    )
+    sha = refuse_before_admission(args, store)
+    started, end = window(pubsub_plan.WINDOW_SECONDS)
     nonce = uuid.uuid4().hex
-    owner = rig_owner(wf.execution("run", nonce), args)
+    owner = rig_owner(wf.execution("run", nonce), args.run_id, sha)
     kube = external(args.kubeconfig, idle=True)
     cluster = bootstrap.Cluster(args.kubeconfig)
     cluster.can_i(True, "create", "flink.apache.org", "flinkdeployments", PUBSUB)
@@ -235,7 +180,7 @@ def start_pubsub(args, store):
         started_at=rt.utc(started),
         expires_at=rt.utc(end),
         active_seconds=pubsub_plan.ACTIVE_SECONDS,
-        revision=args.sha,
+        revision=sha,
         application_image=application_image,
         trial=trial,
     )
@@ -251,7 +196,7 @@ def start_pubsub(args, store):
     approval = pubsub_approval(
         run_id=args.run_id,
         nonce=nonce,
-        sha=args.sha,
+        sha=sha,
         trial=trial,
         proposal=proposal,
         namespaces=namespaces,
@@ -261,8 +206,10 @@ def start_pubsub(args, store):
         owner=owner,
         actor=os.environ["GITHUB_ACTOR"],
     )
-    rt.validate_approval(approval, time.time())
-    bundle = pubsub_bundle.prepare(approval, prepared_at=rt.utc(math.ceil(time.time())))
+    rt.validate_approval(approval)
+    delivery = bind(
+        rt.Approval.from_dict(approval), rendered["delivery"], math.ceil(time.time())
+    )
     run_service_trial(
         args,
         store,
@@ -276,14 +223,35 @@ def start_pubsub(args, store):
             "images.json": receipts,
             "upgrade-application.json": rendered["recovery_application"],
         },
-        actor=functools.partial(pubsub_actors.runner, bundle=bundle),
+        actor=pubsub_actors.runner,
         admitted=(
-            bundle["delivery"]["config"],
-            bundle["delivery"]["supervisor"],
-            bundle["application"],
-            bundle["delivery"]["probe"],
+            delivery["config"],
+            delivery["supervisor"],
+            rendered["application"],
+            delivery["probe"],
         ),
     )
+
+
+def bind(approved, delivery, when):
+    """Embed the approval and the supervisor Job's deadline in a delivery.
+
+    These two fields vary after approval; every other rendered field is the
+    one the proposal checked and the approval pins.
+    """
+    delivery["config"]["data"]["approval.json"] = rt.json_bytes(
+        approved.to_dict()
+    ).decode()
+    delivery["supervisor"]["spec"]["activeDeadlineSeconds"] = (
+        approved.schedule.active_seconds(when)
+    )
+    data = delivery["config"]["data"]
+    if (
+        sum(len(key.encode()) + len(value.encode()) for key, value in data.items())
+        > rt.MIB
+    ):
+        raise rt.Failure("Approved ConfigMap exceeds the Kubernetes data size limit")
+    return delivery
 
 
 def runner_for(approval, kube, store):
@@ -291,52 +259,49 @@ def runner_for(approval, kube, store):
     return runner_api.Runner(rt.Environment(kube, store, approval))
 
 
-def rig_owner(owner, args):
+def rig_owner(owner, run_id, sha):
     """The lock owner, naming the rig commit when it is not the workflow's."""
-    owner = owner | {"run_id": args.run_id}
-    if args.sha != owner["sha"]:
-        owner["rig_sha"] = args.sha
+    owner = owner | {"run_id": run_id}
+    if sha != owner["sha"]:
+        owner["rig_sha"] = sha
     return owner
 
 
-def refuse_before_admission(args, store, phrase):
-    """What every dispatch refuses before it touches the cluster or the lock.
+def refuse_before_admission(args, store):
+    """Refuse what every dispatch refuses before it touches the cluster or the
+    lock, and return the rig commit the run is pinned to.
 
     The workflow always runs from `main`; the rig it checks out is the
-    dispatched `main` commit unless `--rig-sha` names another, which must then
-    be the approved commit. The workflow, not this code, verifies that such a
-    commit heads a branch of this repository, before it checks the rig out.
+    dispatched `main` commit unless `--rig-sha` names another. The workflow,
+    not this code, verifies that such a commit heads a branch of this
+    repository, before it checks the rig out. The owner approves the run's
+    estimate before dispatching it; dispatching is that approval.
     """
-    rig = getattr(args, "rig_sha", None) or os.environ.get("GITHUB_SHA")
-    if (
-        args.approve != phrase
-        or os.environ.get("GITHUB_REF") != "refs/heads/main"
-        or args.sha != rig
-    ):
-        raise rt.Failure(
-            "Dispatch must explicitly approve the ceilings and the exact rig commit"
-        )
+    if os.environ.get("GITHUB_REF") != "refs/heads/main":
+        raise rt.Failure("Dispatch must run from main")
+    sha = getattr(args, "rig_sha", None) or os.environ.get("GITHUB_SHA")
+    if not rt.SHA.fullmatch(sha or ""):
+        raise rt.Failure("Dispatch must name the exact rig commit")
     if not rt.RUN_ID.fullmatch(args.run_id):
         raise rt.Failure("Invalid run ID")
     if store.objects(f"runs/{args.run_id}/"):
         raise rt.Failure("Run ID already has immutable evidence; choose a new ID")
+    return sha
 
 
 def start_bigquery(args, store):
-    """Dispatch one approved BigQuery recovery trial.
+    """Dispatch one BigQuery recovery trial.
 
     Everything that can refuse without the lock does so first, including the
-    bundle's revision check, rendering and ConfigMap size. The runner's token is
-    minted here and lives only in this process and in the binding it writes;
-    the supervisor adopts it from that binding.
+    rendering and ConfigMap size. The runner's token is minted here and lives
+    only in this process and in the binding it writes; the supervisor adopts
+    it from that binding.
     """
     trial, application_image = trial_inputs(args)
-    refuse_before_admission(args, store, BIGQUERY_APPROVAL)
-    started, end = service_window(
-        time.time(), args.expires_at, bigquery_plan.WINDOW_SECONDS, "BigQuery"
-    )
+    sha = refuse_before_admission(args, store)
+    started, end = window(bigquery_plan.WINDOW_SECONDS)
     nonce = uuid.uuid4().hex
-    owner = rig_owner(wf.execution("run", nonce), args)
+    owner = rig_owner(wf.execution("run", nonce), args.run_id, sha)
     kube = external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", BIGQUERY
@@ -348,7 +313,7 @@ def start_bigquery(args, store):
         started_at=rt.utc(started),
         expires_at=rt.utc(end),
         active_seconds=bigquery_plan.ACTIVE_SECONDS,
-        revision=args.sha,
+        revision=sha,
         application_image=application_image,
         trial=trial,
     )
@@ -364,7 +329,7 @@ def start_bigquery(args, store):
     approval = bigquery_approval(
         run_id=args.run_id,
         nonce=nonce,
-        sha=args.sha,
+        sha=sha,
         trial=trial,
         proposal=proposal,
         namespaces=namespaces,
@@ -374,13 +339,12 @@ def start_bigquery(args, store):
         owner=owner,
         actor=os.environ["GITHUB_ACTOR"],
     )
-    rt.validate_approval(approval, time.time())
-    # Prepared before the lock so its revision check, render and ConfigMap
-    # size refuse without holding anything. Its Job deadline is taken now; the
-    # seconds the lock and the documents take extend it by that much, as the
-    # authentication and re-render inside the runner factory already did.
-    bundle = bigquery_bundle.prepare(
-        approval, prepared_at=rt.utc(math.ceil(time.time()))
+    rt.validate_approval(approval)
+    # Bound before the lock so the ConfigMap size refuses without holding
+    # anything. Its Job deadline is taken now; the seconds the lock and the
+    # documents take extend it by that much.
+    delivery = bind(
+        rt.Approval.from_dict(approval), rendered["delivery"], math.ceil(time.time())
     )
     run_service_trial(
         args,
@@ -395,11 +359,13 @@ def start_bigquery(args, store):
             "images.json": receipts,
             "upgrade-application.json": rendered["upgrade_application"],
         },
-        actor=functools.partial(bigquery_actors.runner, bundle=bundle),
+        actor=functools.partial(
+            bigquery_actors.runner, application=rendered["application"]
+        ),
         admitted=(
-            bundle["delivery"]["config"],
-            bundle["delivery"]["supervisor"],
-            bundle["application"],
+            delivery["config"],
+            delivery["supervisor"],
+            rendered["application"],
         ),
     )
 
@@ -423,7 +389,6 @@ def run_service_trial(
     token is minted here and lives only in this process and in the binding it
     writes; the supervisor adopts it from that binding.
     """
-    scenario = approval["scenario"]
     wf.save(args.directory / "owner.json", owner)
     rt.EnvironmentLock(store).acquire(owner)
     # Recheck idle after acquiring exclusivity; the earlier snapshot cannot
@@ -431,9 +396,7 @@ def run_service_trial(
     if wf.snapshot(kube, namespace) != foundation:
         raise rt.Failure("Foundation changed while acquiring the environment lock")
     wf.save(args.directory / "approval.json", approval)
-    artifact = functools.partial(
-        rt.write_artifact, store, args.run_id, scenario=scenario
-    )
+    artifact = functools.partial(rt.write_artifact, store, args.run_id)
     artifact("approval.json", approval)
     for name, value in documents.items():
         artifact(name, value)
@@ -476,13 +439,11 @@ def start(args, store):
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
         return start_pubsub(args, store)
-    refuse_before_admission(args, store, APPROVAL)
-    now = time.time()
-    end = rt.timestamp(args.expires_at)
-    if not 3300 <= end - now <= 3600:
-        raise rt.Failure("Dispatch expiry must be 55 to 60 minutes ahead")
+    sha = refuse_before_admission(args, store)
+    now, end = window(rt.WINDOWS["smoke"])
+    expires_at = rt.utc(end)
     nonce = uuid.uuid4().hex
-    owner = rig_owner(wf.execution("run", nonce), args)
+    owner = rig_owner(wf.execution("run", nonce), args.run_id, sha)
     kube = external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
         True, "create", "flink.apache.org", "flinkdeployments", rt.SMOKE
@@ -490,20 +451,9 @@ def start(args, store):
     namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, rt.SMOKE)
     schedule = rt.Schedule.for_window(now, end)
     active = schedule.active_seconds(time.time())
-    application = wf.render(
-        args.run_id,
-        nonce,
-        args.expires_at,
-        active,
-        scenario=scenario,
-    )
+    application = wf.render(args.run_id, nonce, expires_at, active)
     bundle = wf.render(
-        args.run_id,
-        nonce,
-        args.expires_at,
-        active,
-        expression="delivery.resources",
-        scenario=scenario,
+        args.run_id, nonce, expires_at, active, expression="delivery.resources"
     )
     images = {
         "operator": operator_image,
@@ -513,45 +463,25 @@ def start(args, store):
         "smoke": application["spec"]["image"],
     }
     receipts = wf.image_receipts(
-        rt.authorized_session(rt.GoogleToken()), images, args.expires_at
+        rt.authorized_session(rt.GoogleToken()), images, expires_at
     )
     approval = {
-        "version": 1,
+        "version": APPROVAL_VERSION,
         "run_id": args.run_id,
         "nonce": nonce,
-        "sha": args.sha,
+        "sha": sha,
         "started_at": rt.utc(now),
-        "expires_at": args.expires_at,
+        "expires_at": expires_at,
         "cleanup_at": rt.utc(schedule.cleanup_at),
-        "ceilings": rt.CEILINGS,
         "namespaces": namespaces,
         "operator_uid": operator_uid,
         "baseline_uids": baseline,
         "images": images,
         "lock_owner": owner,
-        "runtime_sha256": rt.source_digest(),
-        "delivery_sha256": rt.delivery_digest(),
         "application_sha256": rt.digest(application),
         "actor": os.environ["GITHUB_ACTOR"],
     }
-    upgrade = None
-    if scenario == "generic-recovery":
-        upgrade = wf.render(
-            args.run_id,
-            nonce,
-            args.expires_at,
-            active,
-            expression="upgradeApplication",
-            scenario=scenario,
-        )
-        approval.update(
-            version=2,
-            scenario=scenario,
-            recovery_policy=RECOVERY,
-            upgrade_application_sha256=rt.digest(upgrade),
-        )
-        validate_manifests(application, upgrade)
-    rt.validate_approval(approval, time.time())
+    rt.validate_approval(approval)
     wf.save(args.directory / "owner.json", owner)
     rt.EnvironmentLock(store).acquire(owner)
     # Recheck idle after acquiring exclusivity; the earlier snapshot cannot
@@ -564,17 +494,10 @@ def start(args, store):
     ):
         raise rt.Failure("Foundation changed while acquiring the environment lock")
     wf.save(args.directory / "approval.json", approval)
-    artifact = functools.partial(
-        rt.write_artifact,
-        store,
-        args.run_id,
-        scenario=approval.get("scenario", "smoke"),
-    )
+    artifact = functools.partial(rt.write_artifact, store, args.run_id)
     artifact("approval.json", approval)
     artifact("application.json", application)
     artifact("images.json", receipts)
-    if upgrade is not None:
-        artifact("upgrade-application.json", upgrade)
     store.write(
         f"_control/runs/{args.run_id}.json",
         {"nonce": nonce, "phase": "approved", "roots": {}, "observed": {}},
@@ -585,11 +508,10 @@ def start(args, store):
     bundle = wf.render(
         args.run_id,
         nonce,
-        args.expires_at,
+        expires_at,
         active,
         approval,
         "delivery.resources",
-        scenario=scenario,
     )
     runner = runner_for(approval, kube, store)
 
@@ -607,38 +529,6 @@ def start(args, store):
         idle_output()
 
 
-def claim_recovery(store, owner):
-    # A source-specific concurrency group covers dispatch and workflow_run.
-    # Completed source + a control CAS also prevents a second recovery writer.
-    recovery_path = "_control/recovery.json"
-    previous, generation = store.read(recovery_path)
-    current_id, current_attempt = (
-        os.environ["GITHUB_RUN_ID"],
-        os.environ["GITHUB_RUN_ATTEMPT"],
-    )
-    if previous:
-        previous_run = wf.github_run(previous["github_run_id"])
-        if previous["github_run_id"] == current_id and int(
-            previous.get("attempt", "0")
-        ) < int(current_attempt):
-            if not previous.get("attempt"):
-                raise rt.Failure(
-                    "Recovery attempt was not recorded; investigate its execution before takeover"
-                )
-            previous_run = wf.github_run(current_id, previous["attempt"])
-        if previous_run["status"] != "completed":
-            raise rt.Failure("Another recovery execution is active")
-    store.write(
-        recovery_path,
-        {
-            "github_run_id": current_id,
-            "attempt": current_attempt,
-            "nonce": owner["nonce"],
-        },
-        generation,
-    )
-
-
 def recover(args, store):
     owner, _ = store.read(rt.ENVIRONMENT)
     if owner is None:
@@ -649,9 +539,13 @@ def recover(args, store):
             print("Completed execution does not hold the environment lock")
             return
         raise rt.Failure("Recovery source does not hold the environment lock")
-    wf.verify_source(owner, completed=True)
+    # The workflow's per-source concurrency group keeps a second recovery of
+    # this source from running beside this one.
+    if wf.github_run(owner["github_run_id"])["status"] != "completed":
+        raise rt.Failure(
+            "Originating execution is still active; recovery cannot race it"
+        )
     wf.save(args.directory / "owner.json", owner)
-    claim_recovery(store, owner)
     approval = None
     if owner["kind"] == "run":
         approval, _ = store.read(f"runs/{owner['run_id']}/approval.json")
@@ -663,9 +557,8 @@ def recover(args, store):
         runner = runner_for(approval, kube, store)
         control, _ = store.read(runner.env.records.path)
         if control is None:
-            # No admission occurs before this record exists. A finalization
-            # crash can also leave only the environment lock, with the final
-            # receipt still carrying the snapshot it deleted.
+            # No admission occurs before this record exists, and finalization
+            # deletes it only after writing the final receipt.
             bootstrap.Cluster(args.kubeconfig).preflight()
             runner.restore_control()
         runner.settle(request_stop=True)
@@ -719,9 +612,6 @@ def finish(args, store):
             )
         rt.EnvironmentLock(store).release(owner)
         success = plans_receipt["empty"]
-    recovery, generation = store.read("_control/recovery.json")
-    if recovery and recovery.get("nonce") == owner["nonce"]:
-        store.delete("_control/recovery.json", generation)
     if not success:
         raise rt.Failure(
             "Environment restored to idle, but the run failed; see immutable evidence"
@@ -849,12 +739,9 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("start")
     run.add_argument("--run-id", required=True)
-    run.add_argument("--sha", required=True)
     run.add_argument(
         "--rig-sha", help="rig commit checked out, when not the workflow's"
     )
-    run.add_argument("--expires-at", required=True)
-    run.add_argument("--approve", required=True)
     run.add_argument("--scenario", choices=SCENARIOS, default="smoke")
     run.add_argument("--application-digest")
     run.add_argument(
@@ -878,31 +765,6 @@ def main(argv=None):
         parser.error("--kubeconfig is required")
     if args.command == "lock" and args.operation == "acquire" and args.kind is None:
         parser.error("lock acquire requires --kind")
-    if args.command == "start":
-        # Each scenario's own inputs, and none of another's: the run workflow
-        # passes exactly these, so a mismatch refuses before cloud access.
-        inputs = {
-            "bigquery-recovery": {"trial", "application_digest"},
-            "pubsub-recovery": {"pubsub_trial", "application_digest"},
-        }.get(args.scenario, set())
-        # Supplied is not the same as non-empty: an empty foreign input is still
-        # another scenario's, and an empty own input is still missing.
-        supplied = {
-            name
-            for name in (
-                "application_digest",
-                "trial",
-                "pubsub_trial",
-            )
-            if getattr(args, name) is not None
-        }
-        if supplied != inputs or not all(getattr(args, name) for name in inputs):
-            flags = sorted("--" + name.replace("_", "-") for name in inputs)
-            parser.error(
-                f"{args.scenario} requires "
-                + (", ".join(flags) if flags else "no scenario inputs")
-                + " and accepts no others"
-            )
     store = rt.Storage()
     {
         "start": start,

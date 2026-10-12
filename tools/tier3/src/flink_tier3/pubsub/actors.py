@@ -17,45 +17,32 @@
 import uuid
 from contextlib import contextmanager
 
-from ..actor_auth import authenticate, require_installed_source
-from ..common import Failure, digest
-from ..model import validate_approval
+from ..actor_auth import authenticate
+from ..common import Failure
 from ..runner import Runner
 from ..supervisor import Supervisor
-from . import bundle as pubsub_bundle
 from .auth import PubSubSession
 from .guard import PubSubGuard, admission_deadline
 from .handoff import PubSubHandoff
 from .lifecycle import PubSubLifecycle
-from .plan import require_trial_jobs
 from .quiesce import barrier
 
 
 def _handoff(env, token, http, role):
-    approval = env.approval
-    if (
-        env.actor != role
-        or approval.scenario != "pubsub-recovery"
-        or approval.version != 5
-    ):
+    if env.actor != role or env.approval.scenario != "pubsub-recovery":
         raise Failure("Pub/Sub actor environment has the wrong role or approval")
-    validate_approval(approval.to_dict(), env.clock())
-    require_installed_source(env, role, "Pub/Sub")
     env.assert_owner()
     controller = PubSubLifecycle(env, http, PubSubGuard(env))
     return PubSubHandoff(controller, actor_token=token, settled=http.settled)
 
 
 @contextmanager
-def runner(env, bundle, *, runner_token, credentials=None):
-    """Verify against the external environment approval, then bind its runner.
+def runner(env, *, runner_token, credentials=None):
+    """Bind the runner to the environment dispatch approved.
 
-    The bundle re-renders against the caller's approval, which checks both
-    manifests' digests and that they run the approved trial. Keep this context
-    open through start and settlement. The caller retains the original process
-    token and owns dispatch authorization and the external fence.
+    Keep this context open through start and settlement. The caller retains the
+    original process token and owns dispatch authorization and the quiescence barrier.
     """
-    pubsub_bundle.validate(bundle, env.approval)
     with PubSubSession("runner", credentials) as http:
         handoff = _handoff(env, runner_token, http, "runner")
         actor = Runner(env, pubsub=handoff)
@@ -66,25 +53,14 @@ def runner(env, bundle, *, runner_token, credentials=None):
 
 
 @contextmanager
-def supervisor(env, application, upgrade, *, credentials=None):
-    """Bind mounted manifests and source to the caller's independent approval.
+def supervisor(env, upgrade, *, credentials=None):
+    """Bind the supervisor to the delivery `verify_delivery` checked.
 
-    Nothing re-renders the mounted manifests, so their digests are checked
-    here, and so is that both run exactly the job the approved trial derives:
-    a digest pins a manifest but does not say what it runs. The quiescence
-    barrier is built here from this run's own identity rather than accepted
-    from the caller, as for BigQuery. Each supervisor process takes a fresh
-    token: joining binds it, and a replacement cannot act on a former
-    process's authority.
+    The quiescence barrier is built here from this run's own identity rather
+    than accepted from the caller, as for BigQuery. Each supervisor process
+    takes a fresh token, which joining binds.
     """
-    approval = env.approval
     quiesce = barrier(env)
-    if (
-        digest(application) != approval.application_sha256
-        or digest(upgrade) != approval.upgrade_application_sha256
-    ):
-        raise Failure("Pub/Sub supervisor manifests differ from approval")
-    require_trial_jobs(approval.run_id, approval.pubsub_trial, application, upgrade)
     with PubSubSession("supervisor", credentials) as http:
         handoff = _handoff(env, uuid.uuid4().hex, http, "supervisor")
         actor = Supervisor(env, upgrade, pubsub=handoff, quiesce=quiesce)

@@ -19,10 +19,10 @@ import re
 import tomllib
 from decimal import Decimal
 
-from ..bundle import delivery_digest, package_sources, source_digest
+from ..bundle import package_sources
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
 from ..model import Schedule, _hourly
-from ..policy import GAR, POD_RESOURCES, PUBSUB_CEILINGS, SHA
+from ..policy import CLEANUP_SECONDS, GAR, POD_RESOURCES, SHA, WINDOWS
 from ..workflow import render
 from .access import probe_spec
 from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
@@ -30,7 +30,7 @@ from .resources import ResourcePlan
 
 TRIALS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
 ENTRY_POINTS = ("datastream", "table")
-WINDOW_SECONDS = PUBSUB_CEILINGS["seconds"]
+WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 # When the rates behind the estimate were read from the official pricing
 # pages: the basis of the number the owner approves, not an admission deadline.
@@ -38,28 +38,17 @@ REVIEWED_AT = "2026-10-10T00:00:00Z"
 RESERVE_USD = Decimal("1.00")
 VERSION = 5
 FIELDS = {"version", "trial", "entry_point", "records_per_subscription"}
-# Version 4 also carried the runtime traffic limits that version 5 removed.
-# An approval written before then is still read, ignoring them, so recovery
-# can settle a run that spans the change; nothing admits such a trial.
-LEGACY_VERSION = 4
-LEGACY_FIELDS = FIELDS | {"traffic_limits"}
 
 
-def validate_trial(value, *, legacy=False):
-    """Validate a trial's kind, entry point and input domain.
-
-    ``legacy`` also accepts a version 4 trial, for reading a stored approval.
-    """
-    version = value.get("version") if isinstance(value, dict) else None
-    old = legacy and type(version) is int and version == LEGACY_VERSION
-    if not isinstance(value, dict) or set(value) != (LEGACY_FIELDS if old else FIELDS):
+def validate_trial(value):
+    """Validate a trial's kind, entry point and input domain."""
+    if not isinstance(value, dict) or set(value) != FIELDS:
         raise Failure(f"Pub/Sub trial fields must match the version {VERSION} schema")
-    for key, low, high in (
-        ("version", LEGACY_VERSION if old else VERSION, VERSION),
-        ("records_per_subscription", 3, 10000),
-    ):
-        if type(value[key]) is not int or not low <= value[key] <= high:
-            raise Failure("Invalid Pub/Sub trial field: " + key)
+    if type(value["version"]) is not int or value["version"] != VERSION:
+        raise Failure("Invalid Pub/Sub trial field: version")
+    records = value["records_per_subscription"]
+    if type(records) is not int or not 3 <= records <= 10000:
+        raise Failure("Invalid Pub/Sub trial field: records_per_subscription")
     if value["trial"] not in TRIALS:
         raise Failure("Unknown Pub/Sub trial")
     if value["entry_point"] not in ENTRY_POINTS:
@@ -69,14 +58,14 @@ def validate_trial(value, *, legacy=False):
 def estimate():
     """Planning estimate for one trial; not a bound on bills or SDK retries.
 
-    It is the same for every trial. It charges all seven Pods of the policy for
-    the whole window, the four application slots at the Flink shape and the
-    three control slots at the Operator's, which is at least the supervisor's,
-    with no Spot or commitment discount. The reserve covers what the input
-    domain and the window bound: Pub/Sub throughput, Cloud Storage operations
-    and storage, Cloud Logging ingestion and the logs and evidence leaving
-    Google Cloud, each a fraction of it at the largest input domain and the
-    exercise's pulls over the whole window.
+    It is the same for every trial. It charges the seven Pod slots the
+    admission quotas hold for the whole window, the four application slots at
+    the Flink shape and the three control slots at the Operator's, which is
+    at least the supervisor's, with no Spot or commitment discount. The
+    reserve covers what the input domain and the window bound: Pub/Sub
+    throughput, Cloud Storage operations and storage, Cloud Logging ingestion
+    and the logs and evidence leaving Google Cloud, each a fraction of it at
+    the largest input domain and the exercise's pulls over the whole window.
     """
     shapes = [POD_RESOURCES["smoke"]] * 4 + [POD_RESOURCES["operator"]] * 3
     compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
@@ -166,9 +155,9 @@ def require_probe(probe, plan, schedule, image):
     verify_pod(probe, "supervisor", image, POD_RESOURCES["supervisor"], spot=False)
 
 
-def input_plan(run_id, trial, *, legacy=False):
+def input_plan(run_id, trial):
     """Validate the trial and derive its exact logical input domain."""
-    validate_trial(trial, legacy=legacy)
+    validate_trial(trial)
     records = trial["records_per_subscription"]
     cohorts = cohort_ranges(records)
     # The helper's payload has no attributes; this excludes service framing.
@@ -344,8 +333,6 @@ def prepare(
         "run_id": run_id,
         "nonce": nonce,
         "revision": revision,
-        "runtime_sha256": source_digest(),
-        "delivery_sha256": delivery_digest(),
         "started_at": utc(start),
         "cleanup_at": utc(schedule.cleanup_at),
         "expires_at": utc(end),
@@ -363,9 +350,7 @@ def prepare(
         "input": planned_input,
         "limits": {
             "seconds": WINDOW_SECONDS,
-            "cleanup_seconds": PUBSUB_CEILINGS["cleanup_seconds"],
-            "pods": PUBSUB_CEILINGS["pods"],
-            "pvcs": 0,
+            "cleanup_seconds": CLEANUP_SECONDS,
         },
         "cost": {
             "kind": "planning-estimate",

@@ -33,9 +33,9 @@ from flink_tier3.pubsub.output import parse
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
+from .test_actors import approval as approval  # noqa: PLC0414
 from .test_actors import prepared as prepared  # noqa: PLC0414
 from .test_admission import admitting as admitting  # noqa: PLC0414
-from .test_bundle import approval as approval  # noqa: PLC0414
 from .test_exercise import RECORDS, World, receipt, stage
 from .test_exercise import trial as trial  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414

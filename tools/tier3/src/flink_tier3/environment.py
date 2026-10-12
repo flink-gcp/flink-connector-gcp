@@ -20,8 +20,8 @@ import json
 import time
 from functools import wraps
 
-from .common import ApiError, Failure, reference
-from .model import Approval, Phase, validate_approval
+from .common import ApiError, Failure, reference, utc
+from .model import Approval, Phase, check_window
 from .policy import POLL
 from .records import EnvironmentLock, Records
 
@@ -45,8 +45,14 @@ class Environment:
         self.schedule = self.approval.schedule
         self.clock, self.sleep, self.actor = clock, sleep, actor
         self.records = Records(store, self.approval, clock)
-        self.evidence_failed = False
+        # The first evidence failure's operation and cause, which the control
+        # record and the final receipt keep.
+        self.evidence_failure = None
         self.stopping = False
+
+    @property
+    def evidence_failed(self):
+        return self.evidence_failure is not None
 
     @property
     def roots(self):
@@ -84,7 +90,7 @@ class Environment:
         self.assert_owner()
         # Last: the control and lock reads above can wait out generation
         # races, and the admission they approve must still be in its window.
-        validate_approval(self.approval.to_dict(), self.clock())
+        check_window(self.approval, self.clock())
 
     def require_running(self, message):
         """Refuse a mutation unless this run is still admitted and owned."""
@@ -105,11 +111,34 @@ class Environment:
         try:
             self.records.evidence(event, payload, self.actor)
         except (Failure, ValueError, OSError) as error:
-            self.evidence_failed = True
-            print(
-                json.dumps({"event": "evidence-failed", "cause": type(error).__name__}),
-                flush=True,
-            )
+            self.evidence_lost("evidence:" + event, error)
+
+    def evidence_lost(self, operation, cause):
+        """Fail this run's evidence, keeping the first failure's cause.
+
+        `cause` is the exception, or a sentence when nothing raised. The cause
+        reaches the control record with the flag, and through it the final
+        receipt; the event and the line on standard output are best effort,
+        because the evidence write may be what failed.
+        """
+        failure = {
+            "operation": operation,
+            "actor": self.actor,
+            "at": utc(self.clock()),
+            "cause": (
+                cause if isinstance(cause, str) else f"{type(cause).__name__}: {cause}"
+            ),
+        }
+        first = not self.evidence_failed
+        if first:
+            self.evidence_failure = failure
+        print(json.dumps({"event": "evidence-failed", **failure}), flush=True)
+        if first and not operation.startswith("evidence:"):
+            # One attempt, unguarded by this method so it cannot recurse.
+            try:
+                self.records.evidence("evidence-failed", failure, self.actor)
+            except (Failure, ValueError, OSError):
+                pass
 
     def remember(self, key, obj):
         self.records.remember_root(key, reference(obj))

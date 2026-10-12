@@ -18,66 +18,26 @@ from __future__ import annotations
 import copy
 import re
 
-from .common import ApiError, Failure, TransportError, contains, digest, timestamp, utc
+from .common import ApiError, Failure, TransportError, contains, timestamp, utc
 from .metrics import FlinkRest
-from .policy import RECOVERY, SMOKE, STATE
-
-
-def validate_manifests(initial, upgrade):
-    """An upgrade changes only the phase and the required-restoration flag."""
-    expected = copy.deepcopy(initial)
-    args = [
-        "--run-id",
-        initial["metadata"]["name"],
-        "--phase",
-        "initial",
-        "--records",
-        str(RECOVERY["records"]),
-        "--records-per-second",
-        str(RECOVERY["records_per_second"]),
-        "--require-restored",
-        "false",
-    ]
-    if initial["spec"]["job"]["args"] != args:
-        raise Failure("Recovery input differs from the fixed payload")
-    if (
-        initial["spec"]["job"]["upgradeMode"] != "savepoint"
-        or initial["spec"]["job"]["allowNonRestoredState"] is not False
-        or initial["spec"]["flinkConfiguration"].get(
-            "kubernetes.operator.job.upgrade.last-state-fallback.enabled"
-        )
-        != "false"
-        or initial["spec"]["flinkConfiguration"].get(
-            "kubernetes.operator.snapshot.resource.enabled"
-        )
-        != "false"
-    ):
-        raise Failure("Recovery requires savepoint upgrades without state fallback")
-    args[3], args[-1] = "upgrade", "true"
-    expected["spec"]["job"]["args"] = args
-    if expected != upgrade:
-        raise Failure("Recovery upgrade changes more than the approved job arguments")
 
 
 class RecoveryExercise:
-    """The supervisor advances this exercise once; recovery only cleans it up."""
+    """The supervisor advances this exercise once; recovery only cleans it up.
 
-    namespace = SMOKE
-    state_bucket = STATE
-    records = RECOVERY["records"]
-    timing = RECOVERY
-    progress_event = "smoke-progress"
-    expected_pods = 2
-    # Whether each transition carries the observation coverage so far: for a
-    # run that stops before its verdict, the record is the only account of
-    # what it read.
-    records_coverage = False
+    A service exercise names its namespace, state bucket and timing, and one
+    that reads application progress also its event, Pod count and records.
+    """
+
+    namespace: str
+    state_bucket: str
+    timing: dict
+    progress_event: str
+    expected_pods: int
+    records: int
 
     def __init__(self, env, upgrade):
-        if (
-            upgrade is None
-            or digest(upgrade) != env.approval.upgrade_application_sha256
-        ):
+        if upgrade is None:
             raise Failure("Recovery requires the approved upgrade manifest")
         self.env, self.upgrade = env, upgrade
         self.stage = "baseline"
@@ -160,8 +120,9 @@ class RecoveryExercise:
         return {name: dict(window) for name, window in self.coverage.items()}
 
     def persist(self, stage, **details):
-        if self.records_coverage:
-            details.setdefault("coverage", self._coverage())
+        # For a run that stops before its verdict, the record is the only
+        # account of what it read.
+        details.setdefault("coverage", self._coverage())
         self.check_open()
         value = {
             "stage": stage,

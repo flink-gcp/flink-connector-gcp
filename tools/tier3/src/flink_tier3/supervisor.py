@@ -22,15 +22,8 @@ import uuid
 
 from .bigquery.exercise import BigQueryExercise, require_handoff
 from .cleanup import Cleanup
-from .common import (
-    ApiError,
-    Failure,
-    Superseded,
-    transient,
-    utc,
-)
-from .exercise import RecoveryExercise
-from .model import Phase, open_for_replacement
+from .common import ApiError, Failure, transient, utc
+from .model import Phase
 from .policy import MIB, POLL, SMOKE
 from .pubsub.exercise import PubSubExercise
 from .pubsub.guard import PubSubGuard, admission_deadline
@@ -52,13 +45,10 @@ class Supervisor:
         self.env = env
         self.bigquery, self.pubsub = bigquery, pubsub
         self.cleanup = Cleanup(env, bigquery=bigquery, pubsub=pubsub, quiesce=quiesce)
-        self.log_bytes = 0
         self.log_since = {}
         self.pod_read_failures = {}
         self.exercise = (
-            RecoveryExercise(env, upgrade)
-            if env.approval.scenario == "generic-recovery"
-            else BigQueryExercise(env, upgrade)
+            BigQueryExercise(env, upgrade)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
             else PubSubExercise(env, upgrade, pubsub)
             if env.approval.scenario == "pubsub-recovery"
@@ -180,19 +170,14 @@ class Supervisor:
                 )
                 continue
             self.pod_read_failures.pop(uid, None)
-            self.log_bytes += len(data)
-            truncated = len(data) >= MIB
-            exhausted = self.log_bytes > self.cleanup.ceilings["log_bytes"]
-            if truncated or exhausted:
+            if len(data) >= MIB:
                 raise Failure(
-                    "Log collection ceiling reached; stop instead of silently truncating"
+                    "Log read would truncate; stop instead of discarding evidence"
                 )
             decoded = data.decode(errors="replace")
             self.env.emit("pod-log", {"uid": uid, "text": decoded})
             if pod["metadata"]["namespace"] == SMOKE:
                 self.inspect_progress(decoded)
-                if self.exercise:
-                    self.exercise.progress(pod, decoded)
             if (
                 self.exercise
                 and self.exercise.namespace != SMOKE
@@ -205,7 +190,10 @@ class Supervisor:
             uid: count for uid, count in self.pod_read_failures.items() if uid in listed
         }
         if self.env.evidence_failed:
-            raise Failure("Durable evidence export failed")
+            raise Failure(
+                "Durable evidence export failed: "
+                + self.env.evidence_failure["operation"]
+            )
 
     def inspect_progress(self, text):
         # SmokeVerifier emits these fields through the application's print sink.
@@ -216,9 +204,7 @@ class Supervisor:
         previous = self.env.refresh().lineage
         for match in re.finditer(pattern, text):
             run_id, phase, lineage, _restored, _processed, _sequence = match.groups()
-            if run_id != self.env.approval.run_id or phase not in (
-                ("initial", "upgrade") if self.exercise else ("initial",)
-            ):
+            if run_id != self.env.approval.run_id or phase != "initial":
                 raise Failure("Smoke progress belongs to another run or phase")
             try:
                 valid = str(uuid.UUID(lineage)) == lineage
@@ -244,12 +230,7 @@ class Supervisor:
             raise Failure("Cancellation or recovery requested")
 
     def participate(self):
-        """Join the Pub/Sub handoff once preparation completes, then probe access.
-
-        A supervisor that finds another process's binding replaces one that
-        joined: it cannot act on that authority, so it stops the run and
-        leaves cleanup to reclaim it on a measured proof.
-        """
+        """Join the Pub/Sub handoff once preparation completes, then probe access."""
         deadline = admission_deadline(self.env)
 
         def prepared():
@@ -263,16 +244,6 @@ class Supervisor:
             )
 
         self.env.wait(prepared, deadline)
-        binding = self.pubsub.supervisor_binding()
-        if binding == "mine" and (
-            "supervisor" in (self.env.refresh().pubsub.get("access") or {})
-        ):
-            return  # this process already joined and probed its access
-        if binding == "other":
-            self.pubsub.stop()
-            raise Failure(
-                "Pub/Sub supervisor replaced after joining; its authority is reclaimed"
-            )
         self.pubsub.join()
         self.pubsub.access(deadline=deadline)
 
@@ -301,11 +272,6 @@ class Supervisor:
         own = self.cleanup.owned(self.cleanup.inventory(), ["supervisor"])
         if pod_uid not in own:
             raise Failure("Supervisor Pod is not owned by the approved Job")
-        # The holder this Pod may displace, which a reclamation must prove gone.
-        self.cleanup.former_supervisor = self.env.refresh().supervisor_pod
-        # Every later control write is fenced on this claim, which the Job's
-        # replacement may take over until the start is recorded below.
-        self.env.records.claim_supervisor(pod_uid)
         reason, success = "interrupted", False
         try:
             if self.pubsub is not None:
@@ -314,13 +280,10 @@ class Supervisor:
             def admitted():
                 control = self.env.refresh()
                 self.cancelled(control)
-                ready = control.phase == Phase.RUNNING and bool(
+                self.env.records.heartbeat()
+                return control.phase == Phase.RUNNING and bool(
                     control.roots.get("application")
                 )
-                # The heartbeat that sees admission complete records the
-                # start, so the takeover window closes without another write.
-                self.env.records.heartbeat(started=ready)
-                return ready
 
             if self.exercise:
                 admitted_by = self.exercise.deadline
@@ -421,37 +384,12 @@ class Supervisor:
     def conclude(self, reason, success):
         """Hand the run on, stop its admission, or return it to idle."""
         control = self.env.refresh()
-        if self.env.records.displaced(control):
-            # The run is the holder's; a Pod that stopped for its own reason
-            # may learn only here that it was displaced.
-            raise Superseded("Another supervisor Pod holds this run")
-        if (
-            self.env.stopping
-            and not self.env.evidence_failed
-            and open_for_replacement(control)
-            # BigQuery resources are cleaned only through this Pod's handoff,
-            # so once provisioned they are not left to a replacement that may
-            # never come.
-            and control.bigquery is None
-            # Nor are Pub/Sub resources, which only a supervisor deletes, and
-            # a joined supervisor's authority, which no other process can
-            # release: this Pod cleans within its grace period.
-            and control.pubsub is None
-        ):
-            # A signal before supervision is the infrastructure taking this
-            # Pod, so the run is left to the Job's replacement; if none comes,
-            # the runner settles the ended Job. The record decides whether
-            # supervision started, so a start whose response was lost counts.
-            self.env.emit("supervisor-replaceable", {"reason": reason})
-            raise Failure(
-                "Supervisor Pod was terminated before supervision began: " + reason
-            )
         if control.phase in (Phase.APPROVED, Phase.READY):
             # Admission may still have an in-flight Kubernetes write. The
             # runner settles after start returns; completed-execution
             # recovery handles a runner that disappears before this handoff.
             if self.env.evidence_failed:
-                self.env.records.mark_evidence_failed()
+                self.env.records.mark_evidence_failed(self.env.evidence_failure)
             self.env.records.request_stop()
             # The reason otherwise survives only in this process, which
             # may end in the wait below without reporting it. The stop is
@@ -474,8 +412,4 @@ class Supervisor:
                 # start() has returned. Let admission record confirmed creation
                 # before teardown; release does not settle an unknown outcome.
                 self.env.wait(self.bigquery.released, self.env.schedule.cleanup_at)
-        elif open_for_replacement(control):
-            # Cleanup absorbs a failed write of its own and keeps deleting, so
-            # the window closes first, where a failure stops this Pod instead.
-            self.env.records.request_stop()
         self.cleanup.run(reason, success)

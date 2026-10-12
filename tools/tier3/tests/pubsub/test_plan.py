@@ -183,7 +183,7 @@ def renderer(monkeypatch):
 
 @pytest.mark.parametrize("kind", plan.TRIALS)
 def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
-    """The dispatch and bundle tests stand on it, so it must pass as the CUE does."""
+    """The dispatch and actor tests stand on it, so it must pass as the CUE does."""
     inputs["trial"]["trial"] = kind
     proposal = plan.prepare(**inputs)["proposal"]
     assert proposal["approved"] is False

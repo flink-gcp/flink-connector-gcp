@@ -66,7 +66,8 @@ limitations under the License.
 - Updated: 2026-10-11 (Pub/Sub deployed trial findings)
 - Updated: 2026-10-11 (Cloud Tasks session path removed from the cluster rig)
 - Updated: 2026-10-11 (Pub/Sub rig cut to what protects cleanup and the verdict)
-- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723), [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722)
+- Updated: 2026-10-11 (lifecycle core cut to cleanup and result protection; evidence-failure causes recorded)
+- Issues: [#38](https://github.com/flink-gcp/flink-connector-gcp/issues/38), [#1307](https://github.com/flink-gcp/flink-connector-gcp/issues/1307), [#1308](https://github.com/flink-gcp/flink-connector-gcp/issues/1308), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312), [#1313](https://github.com/flink-gcp/flink-connector-gcp/issues/1313), [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549), [#1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550), [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551), [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), [#1691](https://github.com/flink-gcp/flink-connector-gcp/issues/1691), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723), [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722), [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725), [#1683](https://github.com/flink-gcp/flink-connector-gcp/issues/1683)
 - Evidence: [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md), [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md), [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), [BigQuery FILE_LOADS trial findings](evidence/0165-bigquery-fileloads-findings-1313.md), [Pub/Sub trial findings](evidence/0165-pubsub-trial-findings-1361.md)
 - Modules: opentofu, kubernetes, CI
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
@@ -225,6 +226,7 @@ Project them through one immutable system-namespace ConfigMap; the Pod runs the 
 This removes CUE's manually maintained source-file inventory and the script loader's file-path/import-order dependency.
 The approval's `runtime_sha256` now hashes the complete bundle's relative paths and file hashes, preserving source/configuration identity after the requested module split.
 The layout change alters source hashes; retain historical approvals and measurement records without rewriting their pins, and require a new approval for execution from the new layout.
+Removed under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): approvals no longer carry source or delivery hashes, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Use the official Kubernetes, Cloud Storage and Google Auth Python clients for API transport and authentication, with dependencies installed in the digest-pinned lifecycle image before publication.
 This replaces the initial standard-library-only transport choice at the owner's request; policy-only source changes still do not require rebuilding the image.
 Manage Tier-3 as a buildable uv workspace member with its own runtime dependencies and `flink-tier3` console entry point, sharing the root `uv.lock`.
@@ -256,10 +258,11 @@ GCS uploads disable the SDK's checksum-triggered automatic deletion path so ever
 The runner owns admission after observing a ready supervisor: it opens quota, scales the Operator to one, waits for readiness, and creates the application.
 The ordinary smoke supervisor only observes and writes toward idle, so recovery can use the same UID-checked cleanup concurrently after admission's final write.
 The separately selected generic recovery exercise permits the two additional, object-conditional operations described below.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the `generic-recovery` scenario is removed, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Publish `running` only after the runner finishes admission and records the application UID.
 Before that phase, a supervisor failure requests stop and leaves settlement to the runner or completed-execution recovery; cleaning sooner could stop the Operator ahead of an in-flight application create.
 This uses the existing phase boundary rather than adding another claim or termination-proof protocol.
-Since [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396) a signal before supervision starts is the exception, leaving the run to the Job's replacement, and a claim in the control record fences the Pod a replacement displaces; the refinement further below records both.
+Since [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396) a signal before supervision starts was the exception, leaving the run to the Job's replacement, and a claim in the control record fenced the Pod a replacement displaced; [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725) removed both, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Admission retries revalidate phase/stop state, and settlement reconciles actual state even after an earlier `cleaned` record.
 This revises the initial supervisor-only admission decision, which required a Pod claim, persisted container termination proofs and a quarantine delay.
 Those protocols are removed; Job completion is used to retain final logs when possible, not as permission to begin cleanup.
@@ -290,6 +293,8 @@ Synthetic tests cover admission refusal, cancellation, lost creation responses, 
 The separately approved [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) exercise supplied one successful live run of the generic recovery path on 2026-09-17, one savepoint upgrade and one JobManager deletion, as its [closing comment](https://github.com/flink-gcp/flink-connector-gcp/issues/1311#issuecomment-5715015774) records; that run exercised the success path, and the failure paths above remain synthetic apart from the deployed-trial failures the [BigQuery trial findings](evidence/0165-bigquery-trial-findings-1312.md) record.
 
 ### Generic recovery exercise
+
+Removed under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725) once [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) was done; this section records the decision as it ran.
 
 Extend the existing workflow with an explicit `generic-recovery` scenario for [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311).
 Use one integrated trial with 12,000 records at ten per second, one savepoint upgrade and one JM Pod deletion; preserve the existing four-Pod, one-hour and USD 1 bounds.
@@ -619,6 +624,7 @@ Final settlement preserves cleaned Pub/Sub intent and observations in the result
 This refuses presence/absence mismatches and stale success receipts after concurrent evidence failures.
 A fresh cleanup attempt returns to `cleaning` even after prior success, so uncertain rechecks close settlement again.
 Before deleting active Pub/Sub control, compare the complete current record with the receipt snapshot and use its observed generation; concurrent changes retain control and the lock.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): finalization deletes the record at the generation it derived the receipt from, and a retry keeps the receipt it finds without comparing it, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 This gate preserves existing behavior for records without Pub/Sub state.
 The controller limits its control portion to 256 KiB and adds guarded logical control accesses; helper-only operation counts do not bound an integrated lifecycle.
 Refined under [#1722](https://github.com/flink-gcp/flink-connector-gcp/issues/1722): the guard no longer sees control accesses, and the controller reads its record as written, as the internal approval section below records.
@@ -676,6 +682,7 @@ It may explicitly reclaim after an external quiescence proof for the exact actor
 The helper records the caller's assertion without measuring process termination or service completion itself.
 This avoids automatic expiry or token takeover, either of which could admit cleanup while an old request still executes.
 The [handoff runbook](../../kubernetes/apps/pubsub/README.md#actor-ownership-and-cleanup-handoff) defines the required external fencing and failure-persistence obligations.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the reclamation path and its `fenced_call` are removed with the replacement supervisor; an unresolved actor keeps the lock for an operator, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Runnable admission and deployed recovery remain subsequent work under [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 
 ### Pub/Sub shared settlement
@@ -687,6 +694,7 @@ That release closes shared admission even without an explicit stop request; wait
 A runner that is not stopping now keeps its authority while it waits, to publish the cohorts the supervisor requests, as refined under [#1601](https://github.com/flink-gcp/flink-connector-gcp/issues/1601) below.
 Keep failed-release diagnostics and a failed outcome even when a later acknowledgement settles.
 An unbound supervisor may stop admission without fabricating a release record; a replacement cannot release a former actor.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): no replacement supervisor exists, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 
 Perform service cleanup after owned workload teardown and before temporary state deletion or Operator shutdown.
 Extend the Pub/Sub clean-state gate to direct shared phase/idle observations as well as final receipt creation.
@@ -702,6 +710,7 @@ Before enabling runnable Pub/Sub admission, render one unapproved trial with the
 The trial names one entry point and applies it to both manifests.
 Keep JM and active-TM replacement separate, with unchanged manifests at parallelism two; savepoint rescaling changes one to two or two to one and requires restored state in the upgrade phase.
 Freeze the run/nonce, supplied source/image identities, installed runtime digest, exact manifests, service settings and grants.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): proposals no longer carry the runtime digest, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Divide each subscription's finite sequence domain into disjoint pre-recovery and post-recovery cohorts, using at most 1,000 messages per publication.
 Refined after Pub/Sub trial `ps1361-tm-a3`, whose runner could not publish the 666-message replay cohort in batches of 100 before the cohort's 90-second deadline: each publication also updates the shared control record several times, about seven seconds a batch under contention, so a publication now carries up to the publish API's 1,000 messages and a cohort takes one per input; a pull still takes at most 100.
 The cohorts define publication intent, not a measured uncheckpointed replay population.
@@ -736,11 +745,13 @@ Refined under [#1437](https://github.com/flink-gcp/flink-connector-gcp/issues/14
 The [lifecycle runbook](../../kubernetes/lifecycle/README.md#stranded-environment-lock) holds the exact conditions.
 Declined: a separate operator command for the restoration, because the existing recovery dispatch already carries the lock-holder authentication a restoration needs; and restoring for every scenario, because only the two service trials compare the whole receipt.
 Earlier internal Pub/Sub fixtures keep their strict full-receipt contract.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the ceilings, the full-receipt comparison and the version gates are removed, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Refined under [#1565](https://github.com/flink-gcp/flink-connector-gcp/issues/1565): a success receipt fixes the verdict, so a later settlement's own failures no longer lower it.
 Recovery settles again before every finalization retry, and a transient failure of its own evidence writes or state cleanup used to reach the record as `success: false` or an evidence failure; the record never regains success once cleaned, so the retry's derived receipt conflicted with the stored one and the lock stayed retained after a successful trial.
 Failures are therefore separated by where they are recorded: one already on the control record, whoever wrote it, still lowers the derived verdict and is refused as a conflict, while one of this settlement's own writes only keeps finalization from running until a retried recovery settles cleanly.
 The [lifecycle runbook](../../kubernetes/lifecycle/README.md#stranded-environment-lock) holds the exact behaviour.
-Declined: relaxing the receipt comparison, which would also accept a receipt that a recorded evidence failure invalidated; a separate control field for settlement failures, because each recovery settles from scratch and the failed settlement already keeps finalization from running; blocking over every receipt, because an unsuccessful receipt has no verdict to protect, and blocking would newly fail an inconclusive or Pub/Sub recovery whose own evidence failure previously finalized; and keeping the verdict when the receipt cannot be read, because before any receipt exists a settlement's failures are the run's own, and keeping them off the record could let a clean later settlement finalize a success they should have lowered.
+Removed under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725) with the restoration of [#1437](https://github.com/flink-gcp/flink-connector-gcp/issues/1437): a retry keeps the receipt it finds, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
+Declined at the time: relaxing the receipt comparison, which would also accept a receipt that a recorded evidence failure invalidated; a separate control field for settlement failures, because each recovery settles from scratch and the failed settlement already keeps finalization from running; blocking over every receipt, because an unsuccessful receipt has no verdict to protect, and blocking would newly fail an inconclusive or Pub/Sub recovery whose own evidence failure previously finalized; and keeping the verdict when the receipt cannot be read, because before any receipt exists a settlement's failures are the run's own, and keeping them off the record could let a clean later settlement finalize a success they should have lowered.
 Keep the Pub/Sub success verdict false until fault/recovery evidence and its oracle are implemented; the verdict refined under [#1624](https://github.com/flink-gcp/flink-connector-gcp/issues/1624) below meets that condition.
 
 This refines the previous blanket refusal to deserialize Pub/Sub, not the prohibition on paid execution.
@@ -764,6 +775,7 @@ Refined under [#1580](https://github.com/flink-gcp/flink-connector-gcp/issues/15
 A Pub/Sub handoff is bound to the runner and the supervisor only through one factory each, which authenticates the actor's own service account, checks its source pin and both manifests' digests, and requires both manifests to run exactly the job the approval's trial derives: parallelism, phase, record count, restore requirement and entry point.
 The digests alone do not establish that: the runner's bundle re-render already compared the rendered jobs with the trial, but a supervisor's mounted manifests, which nothing re-renders, met the trial only through the record count the traffic wrapper compares.
 Each actor's production guard reserves a method's whole operation bound before the method starts, refuses an operation outside the reservation, its phases or its bound, and refuses to start a Pub/Sub request within the session's 20-second request budget of its deadline, or one that an approval no longer validating would issue.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the phrase, the typed expiry, the bundle re-render, the approved-checkout check, the source pins and the guard's approval check are removed; the dispatched commit is checked out fresh, and the supervisor checks only its mounted manifests' digests, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 The deadline is the admission deadline, except for message traffic, which belongs to the exercise and defaults to `cleanup_at`.
 The controller and the traffic wrapper consult the guard after their own control I/O, so the deadline is checked immediately before the request rather than before a control read that could outlast it; the request budget covers the response's status and headers, while a streamed body is bounded only by the transport's per-read timeout and the 1 MiB response cap that the resource helper now applies as the message helper already did.
 A bound is the runbook's measured helper count plus the worst case of twenty-six-attempt conditional control updates and of a call's own markers.
@@ -785,6 +797,7 @@ A missing grant is retested every 15 seconds while a whole further round of test
 A runner-only Role lets the runner create Pods in `tier3-pubsub`; the runner could already reach the same identity through a FlinkDeployment, so this adds no reachable authority.
 The supervisor joins, probes itself and stops at the exercise boundary, which the exercise refined under [#1602](https://github.com/flink-gcp/flink-connector-gcp/issues/1602) below replaces.
 Once the run has Pub/Sub state, a stopped supervisor is not left to a replacement, joined or not, because only a supervisor deletes Pub/Sub resources and no other process can release a joined one's authority; a replacement that finds such a binding stops the run and reclaims only after the runner released, the former supervisor Pod ended or is gone, and the namespace barrier passed, and a supervisor whose cleanup outlasts its grace period keeps the lock for an operator.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the Job replaces no supervisor, so the binding a replacement found and its reclamation are gone, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Declined: a probe that reads a ConfigMap in `tier3-pubsub`, which would need the runner to create ConfigMaps there as well; a Python-built probe manifest, which would leave the only unrendered resource outside CUE's ownership of manifests; having the Operator's service account create the probe, which would borrow another identity's authority; treating a permission test as proof of data access, which the pull adds; publishing only after `RUNNING`, which would race the supervisor's start of supervision; and letting a replacement claim a run its joined predecessor already stopped, which would reopen the claim fence of [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396).
 
 Refined under [#1601](https://github.com/flink-gcp/flink-connector-gcp/issues/1601), the first half of the supervised exercise [#1431](https://github.com/flink-gcp/flink-connector-gcp/issues/1431): the input domain splits into three cohorts per subscription, and the runner publishes the later two when the supervisor asks.
@@ -845,6 +858,7 @@ The begin marker's write also checks that message traffic is still admitted, as 
 A failed evidence upload still marks the run's evidence failed, in a write made only on that failure.
 The trial schema becomes version 5 without `traffic_limits`, so neither the proposal nor the approval carries traffic counters, and the input plan derives the trial's input domain without a feasibility check against them.
 An approval stored with a version 4 trial is still read, ignoring its limits, so recovery can settle a run that spans the change, as the record reader drops the removed Cloud Tasks session's fields; rendering, dispatch and both actors' manifest checks refuse it.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the version 4 reader is removed, because recovery no longer validates a held approval's trial, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Each actor's guard keeps one duty: it refuses a Pub/Sub request that would start within the request budget of its deadline, or one that an approval no longer validating would issue.
 The per-method operation bounds and their reservations are gone; the deadline is still the admission deadline unless a caller holds another, `cleanup_at` for message traffic and none for cleanup.
 The controller and the handoff no longer re-validate the rig's own record, including the actor handoff's and the cohorts' shapes and the distinct process tokens, and the controller no longer re-reads the environment lock on every control access or the record before each resource request; preparation checks the stop at its transitions, including the step from creating resources to installing their grants, verification once at its start, and an access probe before each round of tests and each pull, because its wait for grants can last most of the admission window.
@@ -854,6 +868,7 @@ The runner judges the workload's access probe Pod by its exit status, which the 
 Kept: the call markers, actor release and reclamation, the namespace quiescence barrier, resource ownership and deletion, the cohort protocol, the oracle, the verdict and the exercise, the access probe Pod and the estimate, whose reserve now covers what the input domain and the window bound.
 A call whose begin write landed with its response lost now clears that marker: the call failed before sending anything, and before this change the marker stayed and kept the lock until a reclamation proof, a defect older than this simplification and folded in at the owner's request.
 The preparation's creation intent and a cohort's start mark share that shape and strand nothing: preparation settles its marker through the session's settled-write check, and a started but unpublished cohort only fails the run, whose cleanup it does not block.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the guard's approval check, the actors' manifest and trial-job checks and reclamation are removed; the supervisor entrypoint still checks its mounted manifests' digests, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Declined: removing the call markers, because only a marker tells cleanup that a request may still be in flight, and dropping it would need a redesign of cleanup's safety; and removing the two trial loaders the issue counted as unused, because dispatch reads a reviewed trial file through one and the offline renderer a JSON proposal through the other.
 
 ### Pub/Sub lifecycle IAM preparation
@@ -959,6 +974,7 @@ Keep the dispatch scenario excluded and add explicit runner/supervisor start ref
 This permits real model/environment/controller composition in synthetic tests without silently falling through the smoke execution path.
 The shared final receipt retains the BigQuery scenario and approved trial; at this stage its success stayed false even with a generic recovery completion flag present, because that flag is not this scenario's claim — the deployed verdict below is.
 A BigQuery finalization retry compares all receipt fields except the refreshed plans' observation time (`plans.at`); it retains the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): approvals are version 6, the ceilings and the earlier scenarios' inventory scopes are removed, and a retry keeps the receipt it finds, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 
 ### BigQuery approval-bound delivery
 
@@ -968,6 +984,7 @@ Refuse source, application/upgrade or supervisor-image drift before embedding th
 Only the embedded approval and remaining relative Job deadline change from the proposed delivery; retain its source projection, identities and immutable manifests.
 Require the ConfigMap data to remain within 1 MiB after adding the approval.
 Verify by re-rendering against an independently supplied approval rather than trusting the bundle's embedded copy.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the delivery is bound once at dispatch, without a second rendering or a revision check, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 This is an offline binding check, not authentication, image availability, live resource admission or an absolute start fence.
 Keep both execution entrypoints disabled until the executor supplies those checks and the actor/evidence protocol.
 
@@ -995,6 +1012,7 @@ Require the fixed 10 MiB query-artifact allocation before admission, rejecting b
 Reserve it by reducing version 4 supervisor and runner receipt budgets to 80 MiB and 8 MiB respectively.
 Admission and supervision reject a handoff with a different query budget, plan or environment, or a query deadline other than the approved cleanup start.
 The remaining 2 MiB under the 100 MiB policy is for immutable run artifacts; the future authenticated admission path must account for those artifacts explicitly.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): only the query-evidence budget remains; receipts and run documents have no byte budget, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Declined: adding the query budget above the existing receipt allowances, admitting the CLI with a placeholder writer fence, or treating passing synthetic recovery as issue acceptance.
 
 ### BigQuery operation deadlines
@@ -1021,6 +1039,7 @@ One digest over the delivered set was declined once measured: it would have chan
 Because the delivered set is closed under imports, the runner computes the delivery pin from its complete installation and the supervisor reproduces it from the mount, so a truncated delivery fails that comparison instead of running.
 A module nothing delivered imports is neither delivered nor pinned by the delivery digest, and becomes both as soon as a delivered module imports it; `runtime_sha256` covers it either way.
 Follow a delivered module to the package data it names by literal: a delivery whose data stayed behind is the one incompleteness both sides would compute the same delivery digest over, so no comparison would catch it.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the source and delivery digests are removed; the delivery stays closed under imports, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Declined: per-scenario delivery sets, which the measurement showed are not needed to clear the ceiling and would make the delivered set vary by scenario.
 Refined under [#1628](https://github.com/flink-gcp/flink-connector-gcp/issues/1628): two imports carried modules only the checkout commands use into every delivery, and the 32-cell Cloud Tasks ConfigMap data measured 774,052 bytes against its 786,432-byte bound.
 The CLI, a walk entrypoint, imported the four modules whose repository roots it set from `--repository`, which delivered `lifecycle` and `schemas`; and `workflow`, which `bigquery_plan` and `pubsub_plan` import for rendering, imported `bootstrap` for the cluster client and the root plans, which only the lifecycle commands call.
@@ -1033,6 +1052,7 @@ Tests require that no delivered module imports `bootstrap`, `lifecycle` or `sche
 Provide internal context managers that bind a caller's independent environment approval to the runner bundle or supervisor manifests, installed source, role and current lock owner.
 The runner performs the existing full bundle verification; the in-image supervisor checks approval-bound source and manifest hashes without requiring Git or CUE.
 Check the source pin each actor can reproduce from the tree it runs on: `runtime_sha256` for the runner's complete installation, and `delivery_sha256` for the supervisor's mounted subset, which is a strict subset of what the first covers.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the factories no longer check source pins or re-validate the approval, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Neither authenticates the approval's origin or the supplied Kubernetes/storage clients.
 Retain the caller-supplied original runner token and mandatory external supervisor barrier; a credential session cannot establish process quiescence.
 Close the session on context exit without synthesizing release or cleanup.
@@ -1049,6 +1069,7 @@ State that limit rather than claiming a budget the discovery path does not honou
 Keep service-account/WIF/GKE acceptance, authenticated dispatch, the actual writer fence, immutable artifact accounting and deployed measurements outstanding; synthetic SDK/HTTP tests do not establish those facts.
 
 Both factories validate the approval against the current clock, so neither actor can be constructed once the admission window closes at the cleanup start.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): only the runner's factory checks the admission window, and the Job replaces no supervisor, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 The cleanup window therefore runs inside a context opened before it; replacing a supervisor inside that window is not a recovery path, and the entrypoint work owns whether to make it one.
 Keep the production entrypoints disabled and the final success verdict false until the remaining contracts are implemented and accepted.
 Declined: reusing the shared `GoogleToken` transport that Cloud Tasks, the image workflow and the Kubernetes transport already use, because its adapter timeout and its eager discovery are both fixed at construction and every one of those callers would inherit a change to either; this leaves BigQuery the one scenario with its own session, deliberately. Also declined: narrowing the session's request signature so the overrides become unexpressible, which would move the refusal out of the layer that owns the destination.
@@ -1073,6 +1094,7 @@ Hold the four allowances that divide the BigQuery evidence ceiling as policy ent
 Weigh each immutable document against its own allowance before writing it, counting only the documents directly under the run prefix; the receipts and query artifacts live below it and answer to their own entries.
 Count from a fixed roster of document names rather than by listing that prefix, which also holds every receipt: the listing refuses past twenty thousand objects, a supervisor's receipts reach that long before their byte ceiling, and this runs as the final result is written.
 A run that would exceed the allowance fails at the write rather than retaining more than it was approved to.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the allowances are removed, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 
 Sum the collected queries' billed bytes into the retained state.
 Each query is already refused above its own byte limit and the slot count bounds the worst case, but a bound is not a measurement: without the sum a finished trial cannot state what it spent, which the preregistration's cost row is meant to be checked against.
@@ -1113,6 +1135,7 @@ Declined: passing on a completed recovery alone, which an earlier revision of th
 Admit `bigquery-recovery` at the dispatch boundary and build its supervisor in the in-cluster entrypoint, so that a run is reachable through the reviewed workflow rather than only through actors a test constructs.
 This meets the condition the approval-bound delivery section set — the executor now supplies the authenticated actors, the verified bundle and the actor/evidence protocol — and revises the one the authenticated actor construction section set, which kept the entrypoints closed until the remaining contracts were *accepted*: enabling them is not that acceptance and not an execution approval.
 A paid run still needs a reviewed trial file, a republished application image, the environment lock and the typed phrase, and the first run is itself the acceptance evidence.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the typed phrase is removed, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 It also lifts the exclusion the approval section kept, and the one the internal execution loops kept, while authenticated delivery, query-evidence accounting, recovery scheduling and the external writer fence were outstanding: the delivery and authenticated actor sections supply the first, the evidence partition section the second, the internal execution loops the third and the quiescence barrier the last, and the bare `Runner` and `Supervisor` refusals the approval section added remain.
 
 Mint the runner token in the dispatching process and nowhere else, and construct the supervisor without it.
@@ -1124,6 +1147,7 @@ They were two writes, and a stop or crash between them left an intent that relea
 Declined: reusing the approval's `nonce` as the token, because the recovery workflow constructs its runner from that approval and would hold a matching binding without trying; and delivering a dedicated token through the ConfigMap, which fixes it earlier but publishes it to the cluster and changes the delivery contract for a check the adoption already makes.
 
 Start the window at admission, on the whole second, and treat the typed expiry as the latest the run may end: dispatch admits an expiry 90 to 100 minutes after admission.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the typed expiry and the phrase are removed, and the window still starts at admission, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Declined: deriving the start from the typed expiry, which the approval's exact 90 minutes and the bundle's start both allow, because the queueing it would absorb comes out of the 600-second startup budget every deadline counts from.
 Bind the approval phrase to the trial file's own cost rather than the scenario's maximum, so the operator types the number that will bind the run.
 Give the workflow job a 120-minute timeout for this scenario: the 90-minute window's serial budget is 114 minutes, and the 85 minutes it would otherwise have fallen into would kill the job mid-trial; a test holds the budget against the timeout.
@@ -1133,6 +1157,7 @@ Keep the bare `Runner` and `Supervisor` refusing without their authenticated han
 
 The owner approves a run's spend before it is dispatched, from its estimate, and then dispatches it or does not; nothing at run time manages the budget.
 So no scenario gates execution on cost: approvals carry no `additional_cost_usd` ceiling, admission compares no estimate against one, the confirmation phrases name the run without an amount, and neither `environment.pricing_reviewed` nor `bigquery_plan.REVIEWED_AT` closes admission when it ages.
+Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the confirmation phrases are removed; dispatching is the approval, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Those review dates stay as the recorded basis of an estimate, and `estimated_cost`, `estimated_session_cost` and `bigquery_plan.estimate` stay as the numbers the owner approves.
 This replaces the reviewed trial file and the phrase bound to its cost in the production entrypoints section above, the Pub/Sub proposal's separate cost cap, and the 30-day pricing refusal the approval model applied to every scenario.
 
@@ -1167,8 +1192,8 @@ The attempt's receipt says `success: false`, because the supervisor's evidence-f
 
 The run workflow stays dispatched on `main`, so the runner's Workload Identity binding and recovery are unchanged, and may check out another rig commit through `rig_sha`.
 Confirming a rig fix against the service no longer waits for its merge: on 2026-09-23 two such defects each cost a full review and merge before one dispatch could confirm them.
-The commit must equal the approved `reviewed_sha` and head a branch of this repository, which `main`'s own workflow verifies before any rig source is checked out; a check inside the rig would be the rig vouching for itself, and a fork's commit is reachable through its pull request ref.
-The lock owner records the rig commit as `rig_sha` beside the workflow commit that recovery verifies, and the approval binds the rig commit.
+The commit must head a branch of this repository, and until [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725) removed `reviewed_sha` it also had to equal it, which `main`'s own workflow verifies before any rig source is checked out; a check inside the rig would be the rig vouching for itself, and a fork's commit is reachable through its pull request ref.
+The lock owner records the rig commit as `rig_sha` beside the workflow commit that lock acquisition verifies, and the approval binds the rig commit.
 This runs unreviewed code with the runner's identity, which the owner accepted for speed; whether a run from an unmerged commit counts as a measurement is recorded with the run.
 Declined: letting the workflow itself run from a branch, which would widen the runner's Workload Identity condition from `main` to any ref.
 
@@ -1179,6 +1204,7 @@ In each of those five cases kube-dns took the supervisor about 30 seconds after 
 Declined: a required anti-affinity keeping the supervisor off kube-dns's node, because the scheduler may still preempt the lower-priority supervisor to place a later kube-dns replica on the supervisor's node, so it does not guarantee the protection; and a rig-created placeholder Pod forcing a second node, for the RBAC, cleanup and deadline handling it would add.
 The node listing and its one-permission `tier3NodeReader` custom IAM role are removed with the refusal.
 
+Removed under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the Job replaces no Pod, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records; the rest of this paragraph and the next record the decision of [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396) as it ran.
 A supervisor Pod the infrastructure takes away is replaced, and the replacement may carry the run until supervision starts ([#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396)).
 A `podFailurePolicy` counts a Pod with the `DisruptionTarget` condition, which preemption, eviction and Pod garbage collection set, against a `backoffLimit` of two, and fails the Job on any other non-zero exit, so a crash still ends the run at once.
 With that policy the Job's `podReplacementPolicy` is `Failed`: a replacement starts only after the Pod it replaces is terminal, when the system quota's one supervisor slot is free again.
@@ -1225,3 +1251,51 @@ Every run's inventory still lists the namespace.
 Archived session evidence is read with the revision that produced it, as for the BigQuery verdict above; the analyzer at a later revision no longer reads a cell.
 Every scenario's control record carried the session's fields, empty outside a session, so the record reader drops them rather than refusing a record written before the change; otherwise recovery of any run that spans the merge, or of a lock it stranded, would fail on the record itself.
 A stranded Cloud Tasks session is no longer recoverable from `main`, because its approval names a scenario that no longer exists; none has run since the 2026-09-21 move.
+
+### Lifecycle core cut to cleanup and result protection
+
+The shared lifecycle core keeps what protects the cleanup of paid resources and a trial's result, and drops the checks that guard against misuse one owner dispatching one trial under the environment lock does not produce ([#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725), part of [#1724](https://github.com/flink-gcp/flink-connector-gcp/issues/1724)).
+It refines the decisions above that each of the following paragraphs names; the [lifecycle runbook](../../kubernetes/lifecycle/README.md) holds the current behaviour.
+
+The supervisor Job replaces no Pod: its `backoffLimit` is zero, and the claim, its fencing and the takeover window of [#1396](https://github.com/flink-gcp/flink-connector-gcp/issues/1396) are removed.
+Every measured preemption of the supervisor came about 30 seconds after it started, before admission and with nothing spent, so surviving one saved a redispatch and nothing more.
+A preempted supervisor now ends the Job, the runner settles the run, and the owner redispatches it; a supervisor signalled before admission completes requests a stop, as any other failure there does.
+The Pub/Sub reclamation path, whose only production caller was a replacement supervisor's cleanup, goes with it, and so does the `fenced_call` it recorded: an unresolved actor keeps its marker and the lock for an operator, as an unreleased BigQuery handoff already did.
+A record written before the change still carries the claim's fields, and the record reader drops them as it drops the removed Cloud Tasks session's.
+
+The approval is validated once, by dispatch, before it takes the lock.
+Admission checks only that it is inside its window, and nothing else checks the schema again: neither actor construction, nor the Pub/Sub request guard, nor recovery, which reads a held run's approval as written so that a policy change merged while a run holds the lock no longer strands its recovery.
+The approval no longer carries the ceilings, `runtime_sha256` or `delivery_sha256`, and new approvals are version 6; the reader drops those fields from an older approval, and nothing gates on a version, so the version 4 Pub/Sub trial reader and the earlier scenarios' inventory scopes are removed.
+Service-trial dispatch binds the delivery its proposal rendered and checked, embedding the approval and the Job deadline, instead of rendering it a second time and a third to compare; the `bigquery-bundle` command that verified a bundle that way goes with it.
+The checkout revision check goes too, because the workflow checks out the dispatched commit fresh and the approval's `sha` names it, and so do the source and delivery digests: the runner computed them moments before, and the dispatched commit already pins the source.
+The supervisor keeps one check of what it mounted, the application and upgrade digests against the mounted approval, because the run's result is a claim about those manifests.
+
+Dispatch takes the scenario, the run ID, the rig commit and the scenario's own inputs, and nothing else.
+The typed approval phrase and the per-scenario expiry windows are removed: the owner approves the estimate before dispatching, and dispatching is the approval, as [spend is approved before dispatch](#spend-is-approved-before-dispatch) already recorded for the amount.
+The window starts at admission and lasts the scenario's policy window, so no typed expiry bounds it.
+`reviewed_sha` is removed, because it only restated the commit the workflow runs or the `rig_sha` it checks out; the `rig_sha` branch-head check stays, because it is what stops a fork's commit running with the runner's identity.
+The CLI no longer refuses another scenario's inputs, which the workflow never passes.
+
+Recovery relies on the per-source concurrency group and on the GitHub API reporting the lock holder's execution completed.
+The recovery claim's compare-and-swap on `_control/recovery.json` and the further checks of the source's workflow path, event, commit and attempt are removed; the lock owner's identity was verified when it acquired the lock, and recovery still requires that the source holds it and compares the saved approval.
+
+Receipt restoration ([#1437](https://github.com/flink-gcp/flink-connector-gcp/issues/1437)) and verdict keeping ([#1565](https://github.com/flink-gcp/flink-connector-gcp/issues/1565)) are removed.
+They mattered only after a finalization that had written its receipt failed before releasing the lock, and their byte-for-byte receipt comparison made every finalization retry depend on a record that the restoration had to rebuild exactly.
+Finalization now derives the receipt from the record it read, writes it once, and deletes the record at that read's generation, so a record changed after its receipt was derived keeps the lock; a retry keeps the receipt it finds after checking its nonce and idle claim, and recovery writes a minimal cleaned record when the record is missing.
+A verdict can therefore no longer be lowered by an evidence failure recorded after its receipt was written.
+In a normal finish nothing writes in that window, because the supervisor Job is gone; after a crash past the receipt, the recovery's own settlement does, and its evidence failure is recorded and exported, but the recovery finalizes and the receipt stands, where before the recovery failed and kept the lock.
+
+The duplicate ceilings are removed: the Pod and PVC counts the ResourceQuotas already enforce, the state-byte and cumulative log-byte stops, the per-actor evidence budgets that listed the whole receipt prefix on every write, the run-artifact budget and the ceiling tables in `policy.toml`.
+`policy.toml` keeps each scenario's window, the cleanup reserve and the state listing bound, which cleanup needs to list a run prefix, and BigQuery keeps its 10 MiB query-evidence budget, split across the plan's query slots.
+A log read that would truncate still stops the run, because a truncated read could lose lineage evidence rather than spend.
+The `generic-recovery` scenario is removed, because [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) is done; the recovery exercise base it introduced stays for the BigQuery and Pub/Sub exercises.
+
+Every path that sets the evidence failure now records why ([#1683](https://github.com/flink-gcp/flink-connector-gcp/issues/1683)): the control record keeps the first failure's operation, actor, time and cause, the final receipt copies it, every failure is printed on standard output, and each actor's first one is also exported as an `evidence-failed` event unless it was itself a failed evidence write.
+Trial `bq1313-fl-10-a1` ended `success: false` with a usable verdict and no such cause, because the supervisor's cleanup control writes set the flag without recording anything, as the runner's final-log export could too.
+Its empty `supervisor-final-log` was not a lost capture: the supervisor prints nothing on its normal path.
+
+This change itself merges only while no run holds the environment lock, as the BigQuery trial findings above already required for a policy change.
+A smoke or BigQuery run dispatched before it would be recovered by code that inventories every Tier-3 namespace against a baseline that covered fewer, and its idle check would refuse the objects outside that baseline; and a supervisor still running the code its run's ConfigMap delivered would read the claim the new code no longer writes as lost, and stop without cleaning the service resources only it can delete.
+
+Kept: the environment lock and its CI integration, the temporary quotas and Operator scale, UID-precondition deletion and `Cleanup.run`, settlement and idle verification, the empty plans, recovery of a completed lock holder, image retention and the admission window.
+Declined: keeping the replacement without the claim, because two supervisor Pods could then both write the record and both delete the workload; the claim was the price of the replacement, and the replacement saved only a redispatch.
