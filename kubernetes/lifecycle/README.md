@@ -105,8 +105,10 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f run_id=APPROVED_RUN_ID
 ```
 
-The cluster rig has no Cloud Tasks scenario.
-Its measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM; the `tier3-cloudtasks` namespace and its workload identity remain for a later recovery scenario ([#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362)), and every run's inventory still lists that namespace.
+The cluster rig's Cloud Tasks measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM.
+The [`cloudtasks-recovery`](cloudtasks.cue) delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) renders its initial and upgrade phases in `tier3-cloudtasks` from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given, refuses more than 30 minutes of input, and names the run's queue `ct1362-<run-id>`.
+Dispatch does not offer it yet: [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769) adds the rig scenario that creates the queue, admits the delivery and judges the trial.
+Every run's inventory lists `tier3-cloudtasks`.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.

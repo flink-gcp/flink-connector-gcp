@@ -32,6 +32,7 @@ kubernetes/
   pkg/smoke/application.cue      # Generic stateful smoke application contract
   pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
   pkg/pubsub/application.cue     # Pub/Sub recovery contract
+  pkg/cloudtasks/application.cue # Cloud Tasks recovery trial contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
   apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
@@ -215,7 +216,8 @@ The bootstrap runbook documents credentials, RBAC, initial administrator permiss
 The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
 The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`.
 All four application namespaces retain zero Pod/PVC quotas until separately approved admission.
-No delivery admits a workload to `tier3-cloudtasks`: after calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed; the namespace and its identity remain for [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362).
+After calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed.
+The `tier3-cloudtasks` namespace now has the `cloudtasks-recovery` delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); the rig admits it once [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769) adds the scenario.
 Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
 
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).

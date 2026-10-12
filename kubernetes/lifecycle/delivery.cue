@@ -21,14 +21,14 @@ import (
 	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 )
 
-runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"  @tag(run_id)
-nonce:            string & =~"^[0-9a-f]{32}$"                        @tag(nonce)
-expires:          time.Time                                          @tag(expires_at)
-approval:         *"{}" | string                                     @tag(approval)
-activeSeconds:    int & >0                                           @tag(active_seconds,type=int)
-scenario:         *"smoke" | "bigquery-recovery" | "pubsub-recovery" @tag(scenario)
-applicationImage: *"" | string                                       @tag(application_image)
-// Shared offline proposal document for BigQuery and Pub/Sub.
+runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                          @tag(run_id)
+nonce:            string & =~"^[0-9a-f]{32}$"                                                @tag(nonce)
+expires:          time.Time                                                                  @tag(expires_at)
+approval:         *"{}" | string                                                             @tag(approval)
+activeSeconds:    int & >0                                                                   @tag(active_seconds,type=int)
+scenario:         *"smoke" | "bigquery-recovery" | "pubsub-recovery" | "cloudtasks-recovery" @tag(scenario)
+applicationImage: *"" | string                                                               @tag(application_image)
+// Shared offline proposal document for BigQuery, Pub/Sub and Cloud Tasks.
 proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
 packageSources: {
@@ -40,9 +40,14 @@ packageSources: {
 	[=~"^[a-z0-9_]+(/[a-z0-9_]+)*[.](py|toml)$"]: string
 }
 
-// A smoke run and a Pub/Sub trial have a 60-minute window, a BigQuery trial a 90-minute one.
-if scenario == "smoke" || scenario == "pubsub-recovery" {activeSeconds: <=3420}
-if scenario == "bigquery-recovery" {activeSeconds: <=5220}
+// A smoke run and a Pub/Sub trial have a 60-minute window, a BigQuery or Cloud Tasks trial a
+// 90-minute one.
+activeSeconds: <={
+	"smoke":               3420
+	"pubsub-recovery":     3420
+	"bigquery-recovery":   5220
+	"cloudtasks-recovery": 5220
+}[scenario]
 
 upgradeApplication: _
 
@@ -68,7 +73,7 @@ delivery: resources: {
 			}
 			"approval.json": approval
 			// application.json is declared by the selected scenario file.
-			if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {"upgrade-application.json": json.Marshal(upgradeApplication)}
+			if scenario != "smoke" {"upgrade-application.json": json.Marshal(upgradeApplication)}
 		}
 	}
 	supervisor: {
@@ -125,8 +130,8 @@ delivery: resources: {
 						},
 						{key: "approval.json", path: "approval.json"},
 						{key: "application.json", path: "application.json"},
-						if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "proposal.json", path: "proposal.json"}},
-						if scenario == "bigquery-recovery" || scenario == "pubsub-recovery" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
+						if scenario != "smoke" {{key: "proposal.json", path: "proposal.json"}},
+						if scenario != "smoke" {{key: "upgrade-application.json", path: "upgrade-application.json"}},
 					]}}]
 				}
 			}

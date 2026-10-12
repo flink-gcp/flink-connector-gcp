@@ -12,17 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Issue #1246 runs separately approved workloads on the Tier-3 GKE cluster.
+# The workload identity of the Cloud Tasks recovery trial (#1362) on the Tier-3
+# GKE cluster; its queue role is in tier3-cloudtasks.tf. Its name and bucket
+# predate the trial, from #1246.
 resource "google_service_account" "cloudtasks_benchmark" {
   account_id   = "cloudtasks-benchmark"
   display_name = "Cloud Tasks benchmark workload"
-  description  = "Creates and observes temporary benchmark queues; no VM management or IAM grants"
-}
-
-resource "google_project_iam_member" "cloudtasks_benchmark" {
-  project = local.project_id
-  role    = "roles/cloudtasks.editor"
-  member  = google_service_account.cloudtasks_benchmark.member
+  description  = "Creates tasks in a lifecycle-created queue and stores recovery state; no queue control or IAM grants"
 }
 
 # A separate bucket keeps the worker's checkpoint/artifact access away from
