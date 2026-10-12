@@ -175,8 +175,7 @@ With a PRIMARY KEY, `sink.write-mode` says what an insert or an update does to t
 - **`replace`** replaces the document with the row, creating it if it is missing; fields the table does not declare are removed.
 - **`update`** replaces the table's fields of an existing document; a missing document fails the job. An `update` table takes inserts and updates but no deletes, and an input that carries deletes is refused when the statement is planned: an update reordered after a delete of its document, or replayed after a restart, would meet a missing document and fail the job again on every restart.
   The planner can still send a delete when the query's key differs from the table's PRIMARY KEY, as in an aggregation written into a table keyed by its result, because it then materializes the upsert and turns a retraction into a delete; such a delete fails the job without deleting anything, and the message says to key the query by the PRIMARY KEY or to use `merge` or `replace`.
-  Flink 2.3 ([FLIP-558](https://cwiki.apache.org/confluence/display/FLINK/FLIP-558%3A+Improvements+to+SinkUpsertMaterializer+and+changelog+disorder)) refuses such a statement before it runs and asks for an `ON CONFLICT` clause, so nothing reaches the sink.
-  With `ON CONFLICT DO DEDUPLICATE`, or with `table.exec.sink.require-on-conflict` set to `false`, Flink 2.3 materializes the upsert as 2.2 does, and the delete fails the job as above without deleting anything (measured on the emulator).
+  Flink 2.3 refuses such a statement while planning it, so nothing reaches the sink, as [Flink 2.3 may demand ON CONFLICT](#flink-23-may-demand-on-conflict) explains; with `ON CONFLICT DO DEDUPLICATE` or `table.exec.sink.require-on-conflict = false`, the delete reaches the sink and fails the job as above without deleting anything (measured on the emulator).
 
 Under `merge` and `replace`, a delete deletes the document; deleting a missing document succeeds.
 The default keeps what other writers store in the collection: a job that maintains some fields of documents another application also writes leaves that application's fields in place, and so does a table that declares fewer fields than the documents hold.
@@ -202,6 +201,16 @@ The sink does not keep the order of two writes to one document.
 It sends writes through the client library's `BulkWriter`, which sends several requests at once and applies the writes of one request in no guaranteed order, so a later change of a key can be applied before an earlier one.
 That is harmless when every key changes at most once in a job, as when the input is a table's rows written once, but an input that updates a key repeatedly, such as an aggregation, can leave an older value in the document.
 The Spanner and Bigtable Table sinks share the limitation, and an opt-in mode that keeps each document's order is [#1556]({{< param BookRepo >}}/issues/1556).
+
+### Flink 2.3 may demand ON CONFLICT
+
+Flink 2.3 ([FLIP-558](https://cwiki.apache.org/confluence/display/FLINK/FLIP-558%3A+Improvements+to+SinkUpsertMaterializer+and+changelog+disorder)) refuses to plan an updating statement into a table with a PRIMARY KEY, under any `sink.write-mode`, unless the PRIMARY KEY contains an upsert key the planner infers for the query, or the statement carries one of the `ON CONFLICT DO DEDUPLICATE`, `DO ERROR` or `DO NOTHING` clauses that Flink 2.3 introduces.
+A query keyed by other columns, such as an aggregation written into a table keyed by its result, is refused, and so is one whose upsert key the planner cannot infer.
+The refusal is the planner's, not this connector's: rows with different upsert keys that map to one primary key reach the sink in no defined order, and Flink 2.3 asks the statement to say what that should mean instead of materializing silently, as Flink 2.2 does.
+An aggregation grouped by the key columns plans with no clause, and so does an insert-only statement, `INSERT INTO .. VALUES` included, because the sink answers an insert-only input with an insert-only changelog.
+`ON CONFLICT DO DEDUPLICATE`, or the planner-wide `table.exec.sink.require-on-conflict = false`, plans a refused statement with the materialization Flink 2.2 uses; `DO ERROR` and `DO NOTHING` plan it only when every table the statement scans declares a watermark, while a lookup join's dimension table needs none (measured on 2.3.0).
+Flink 1.20 and 2.2 do not parse the clause, and ignore the setting.
+All of this is streaming behaviour: in batch execution Flink 2.3 plans such a statement with no clause, and accepts an `ON CONFLICT` clause without watermarks but drops it, so the rows reach the sink with no materializer and the clause has no effect (measured on 2.3.0).
 
 ### What a `WITH` clause cannot set
 
