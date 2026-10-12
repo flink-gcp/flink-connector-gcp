@@ -197,65 +197,21 @@ def test_lost_write_response_reconciles_same_persisted_intent(plan, kind):
 
 
 @pytest.mark.parametrize("kind", ["table", "query"])
-@pytest.mark.parametrize("owned", [True, False])
-def test_create_conflict_only_reconciles_matching_intent(plan, kind, owned):
+def test_a_create_conflict_returns_the_resource_it_names(plan, kind):
     value = table(plan) if kind == "table" else job(plan)
-    labels = value["labels"] if kind == "table" else value["configuration"]["labels"]
-    if not owned:
-        labels["tier3_nonce"] = "b" * 32
     api, http = client(plan, Response({}, 404), Response({}, 409), value)
     operation = api.ensure_table if kind == "table" else api.submit_query
-    if owned:
-        assert operation(0) == value
-    else:
-        with pytest.raises(Failure, match="intent"):
-            operation(0)
+    assert operation(0) == value
     assert [c[0] for c in http.calls] == ["GET", "POST", "GET"]
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("labels", {}),
-        ("schema", {"fields": []}),
-        ("tableReference", {}),
-        ("expirationTime", "1700007200000"),
-        ("type", "VIEW"),
-        ("creationTime", None),
-        ("creationTime", "0"),
-        ("creationTime", "1700003600000"),
-        ("timePartitioning", {}),
-        ("cloneDefinition", {}),
-    ],
-)
-def test_refuse_existing_unowned_or_changed_table_without_writes(plan, field, value):
-    observed = table(plan)
-    observed[field] = value
-    api, http = client(plan, observed)
-    with pytest.raises(Failure):
-        api.ensure_table(0)
-    assert [c[0] for c in http.calls] == ["GET"]
-
-
-def test_delete_requires_receipt_and_same_creation_identity(plan):
-    original = table(plan)
-    replacement = {**original, "creationTime": str(NOW * 1000 + 1)}
-    api, http = client(plan, replacement)
-    with pytest.raises(Failure, match="replaced"):
-        api.delete_table(0, original)
-    assert [c[0] for c in http.calls] == ["GET"]
-    with pytest.raises(Failure, match="intent"):
-        api.delete_table(0, {})
-    assert len(http.calls) == 1
 
 
 @pytest.mark.parametrize("status", [200, 404])
 def test_delete_owned_table_and_idempotent_absence(plan, status):
-    api, http = client(plan, table(plan), Response({}, status), Response({}, 404))
-    api.delete_table(0, table(plan))
-    api.delete_table(0, table(plan))
-    assert [c[0] for c in http.calls] == ["GET", "DELETE", "GET"]
-    assert http.calls[0][1] == http.calls[1][1] == http.calls[2][1]
+    api, http = client(plan, Response({}, status), Response({}, 404))
+    api.delete_table(0)
+    api.delete_table(0)
+    assert [c[0] for c in http.calls] == ["DELETE", "DELETE"]
+    assert http.calls[0][1] == http.calls[1][1]
 
 
 def test_query_budget_and_retry_identity(plan):
@@ -279,40 +235,6 @@ def test_query_budget_and_retry_identity(plan):
         with pytest.raises(ValueError):
             api.submit_query(slot)
     assert len(http.calls) == 2
-    changed = replace(plan, maximum_bytes_billed=2 * 1024**3)
-    assert changed.job_body(2)["jobReference"] == body["jobReference"]
-    changed_api, _ = client(changed, job(plan, 2))
-    with pytest.raises(Failure, match="intent"):
-        changed_api.submit_query(2)
-
-
-@pytest.mark.parametrize(
-    "path,value",
-    [
-        (("jobReference", "location"), "US"),
-        (("jobReference", "jobId"), "foreign"),
-        (("configuration", "labels"), {}),
-        (("configuration", "jobTimeoutMs"), "0"),
-        (("configuration", "dryRun"), True),
-        (("configuration", "query", "query"), "SELECT 1"),
-        (("configuration", "query", "maximumBytesBilled"), "2147483648"),
-        (("configuration", "query", "useLegacySql"), True),
-        (("configuration", "query", "useQueryCache"), True),
-    ],
-)
-def test_foreign_or_changed_query_cannot_be_adopted_read_or_cancelled(
-    plan, path, value
-):
-    observed = job(plan, state="RUNNING")
-    target = observed
-    for key in path[:-1]:
-        target = target[key]
-    target[path[-1]] = value
-    for operation in ("submit_query", "cancel_query", "results"):
-        api, http = client(plan, observed)
-        with pytest.raises(Failure, match="intent"):
-            getattr(api, operation)(0)
-        assert [c[0] for c in http.calls] == ["GET"]
 
 
 def test_cancel_is_request_not_completion(plan):
@@ -324,6 +246,9 @@ def test_cancel_is_request_not_completion(plan):
     assert [c[0] for c in http.calls] == ["GET", "POST", "GET", "GET"]
     assert http.calls[1][1].endswith("/cancel")
     assert http.calls[1][2]["params"] == {"location": "us-central1"}
+    # An answer naming no job leaves the caller to ask again.
+    api, _ = client(plan, running, {})
+    assert api.cancel_query(0) is None
 
 
 @pytest.mark.parametrize("mode", ["ALO", "EO"])
@@ -547,10 +472,10 @@ def test_deadline_is_checked_after_empty_stream_finishes(plan):
             now[0] += 2
 
     response = LateEnd(b"", 204)
-    api, http = client(plan, table(plan), response, clock=lambda: now[0])
+    api, http = client(plan, response, clock=lambda: now[0])
     with pytest.raises(Failure, match="deadline"):
-        api.with_deadline(NOW + 2).delete_table(0, table(plan))
-    assert [call[0] for call in http.calls] == ["GET", "DELETE"]
+        api.with_deadline(NOW + 2).delete_table(0)
+    assert [call[0] for call in http.calls] == ["DELETE"]
     assert response.closed
 
 
@@ -784,7 +709,7 @@ def test_attribution_by_configuration_since_the_jobs_carry_no_labels(fl_plan):
         "tableId": "bq_other_d3",
     }
     assert api.connector_job(copy_job) is None
-    # The rig's own query slots are `_verify_job`'s, never the connector's.
+    # The rig's own query slots are never the connector's.
     assert api.connector_job(job(fl_plan, state="RUNNING")) is None
     # A temporary table of the overflow path is a load target too.
     temporary = load(fl_plan, state="RUNNING")

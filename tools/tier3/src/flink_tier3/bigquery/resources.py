@@ -164,6 +164,12 @@ class ResourcePlan:
         }
 
 
+def job_state(job):
+    """A job's state, or None when the response carries none."""
+    status = job.get("status") if isinstance(job, dict) else None
+    return status.get("state") if isinstance(status, dict) else None
+
+
 class BigQueryResources:
     """No automatic retries or polling; failed writes retain their exact identity.
 
@@ -234,42 +240,11 @@ class BigQueryResources:
         table = self.plan.table_body(destination)["tableReference"]["tableId"]
         return f"/datasets/{DATASET}/tables/{table}"
 
-    def _verify_table(self, destination, table):
-        expected = self.plan.table_body(destination)
-        if not isinstance(table, dict) or any(
-            table.get(k) != v for k, v in expected.items()
-        ):
-            raise Failure(
-                "BigQuery table differs from persisted ownership/schema intent"
-            )
-        if table.get("type") != "TABLE" or any(
-            key in table
-            for key in (
-                "view",
-                "materializedView",
-                "externalDataConfiguration",
-                "snapshotDefinition",
-                "cloneDefinition",
-                "timePartitioning",
-                "rangePartitioning",
-                "clustering",
-            )
-        ):
-            raise Failure("Expected an ordinary unpartitioned BigQuery table")
-        try:
-            created = integer(table.get("creationTime"), "creationTime")
-        except ValueError as error:
-            raise Failure("Missing BigQuery table creation identity") from error
-        if not 0 < created < self.plan.expires_ms:
-            raise Failure("Invalid BigQuery table creation identity")
-        return table
-
     def table(self, destination):
-        value = self._call("GET", self._table_path(destination), absent=True)
-        return None if value is None else self._verify_table(destination, value)
+        return self._call("GET", self._table_path(destination), absent=True)
 
     def ensure_table(self, destination):
-        """Create or reconcile this intent; never adopt an unrelated name collision.
+        """Create this intent's table, or return the one an earlier attempt created.
 
         This does not prove emptiness or authorize workload admission. Metadata
         row counts can lag streaming writes; the executor owes a quiescent check.
@@ -280,10 +255,9 @@ class BigQueryResources:
         if current is not None:
             return current
         try:
-            created = self._call(
+            return self._call(
                 "POST", f"/datasets/{DATASET}/tables", self.plan.table_body(destination)
             )
-            return self._verify_table(destination, created)
         except ApiError as error:
             if error.status != 409:
                 raise
@@ -292,50 +266,18 @@ class BigQueryResources:
                 raise Failure("Conflicting BigQuery table is not readable") from error
             return current
 
-    def delete_table(self, destination, receipt):
-        """Delete a verified incarnation under caller-held exclusive access.
+    def delete_table(self, destination):
+        """Delete this intent's table; an absent one is already gone.
 
-        tables.delete has no documented generation precondition. The caller must
-        stop all creators/writers first and exclude replacement through deletion.
+        The caller must stop all creators and writers first.
         """
-        self._verify_table(destination, receipt)
-        current = self.table(destination)
-        if current is None:
-            return
-        if current["creationTime"] != receipt["creationTime"]:
-            raise Failure("BigQuery table was replaced after its receipt")
         self._call("DELETE", self._table_path(destination), absent=True)
-
-    def _verify_job(self, slot, job):
-        expected = self.plan.job_body(slot)
-        config = job.get("configuration") if isinstance(job, dict) else None
-        if not isinstance(config, dict) or not isinstance(config.get("query"), dict):
-            raise Failure("BigQuery job has no query configuration")
-        status = job.get("status")
-        if not isinstance(status, dict) or status.get("state") not in (
-            "PENDING",
-            "RUNNING",
-            "DONE",
-        ):
-            raise Failure("BigQuery job has no usable status")
-        requested = expected["configuration"]
-        if (
-            job.get("jobReference") != expected["jobReference"]
-            or config.get("labels") != requested["labels"]
-            or config.get("jobTimeoutMs") != requested["jobTimeoutMs"]
-            or config.get("dryRun", False) is not False
-            or any(k in config for k in ("load", "copy", "extract"))
-            or any(config["query"].get(k) != v for k, v in requested["query"].items())
-        ):
-            raise Failure("BigQuery job differs from persisted query intent")
-        return job
 
     def connector_job(self, job):
         """What a job the connector issued for this run did, or None if it is not one.
 
-        `_verify_job` refuses every job that is not this run's own query slot;
-        this is the other half, for jobs the application's committer submitted
-        as the workload. They carry no labels, so ownership is read from the
+        This is for jobs the application's committer submitted as the
+        workload, beside the run's own query slots. They carry no labels, so ownership is read from the
         configuration: a load whose every source is a staged file under this
         run's prefix, or a copy or query into one of this run's tables. The
         overflow path's copies between temporary tables name no run table and
@@ -495,10 +437,9 @@ class BigQueryResources:
         return f"/{collection}/{self.plan.job_body(slot)['jobReference']['jobId']}"
 
     def job(self, slot):
-        value = self._call(
+        return self._call(
             "GET", self._job_path(slot), params={"location": REGION}, absent=True
         )
-        return None if value is None else self._verify_job(slot, value)
 
     def submit_query(self, slot):
         """Submit an already reserved slot, or recover its unchanged job ID."""
@@ -506,9 +447,7 @@ class BigQueryResources:
         if current is not None:
             return current
         try:
-            return self._verify_job(
-                slot, self._call("POST", "/jobs", self.plan.job_body(slot))
-            )
+            return self._call("POST", "/jobs", self.plan.job_body(slot))
         except ApiError as error:
             if error.status != 409:
                 raise
@@ -520,17 +459,17 @@ class BigQueryResources:
     def cancel_query(self, slot):
         """Request cancellation of an owned job; the caller must confirm DONE."""
         current = self.job(slot)
-        if current is None or current.get("status", {}).get("state") == "DONE":
+        if current is None or job_state(current) == "DONE":
             return current
         result = self._call(
             "POST", self._job_path(slot) + "/cancel", params={"location": REGION}
         )
-        return self._verify_job(slot, result.get("job", {}))
+        return result.get("job")
 
     def results(self, slot):
         """Collect a successful job's complete bounded aggregate and statistics."""
         job = self.job(slot)
-        if job is None or job.get("status", {}).get("state") != "DONE":
+        if job is None or job_state(job) != "DONE":
             raise Failure("BigQuery query has not completed")
         if job["status"].get("errorResult"):
             raise Failure("BigQuery query failed")
@@ -560,7 +499,7 @@ class BigQueryResources:
                 params["pageToken"] = token
             page = self._call("GET", self._job_path(slot, "queries"), params=params)
             if (
-                page.get("jobReference") != job["jobReference"]
+                page.get("jobReference") != job.get("jobReference")
                 or page.get("jobComplete") is not True
                 or page.get("errors")
                 or page.get("totalRows") != str(self.plan.trial.destinations)

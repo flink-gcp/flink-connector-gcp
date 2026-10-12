@@ -98,15 +98,14 @@ def supervisor_main(directory):
         min(time.time() + 90, env.schedule.cleanup_at),
     )
     if approved.scenario == "bigquery-recovery":
-        # The authenticated actor, the approval-bound handoff, the quiescence
+        # The actor, the approval-bound handoff, the quiescence
         # barrier and the exercise are built together and held open for the
         # whole supervision: the session must outlive every query it serves.
         with bigquery_actors.supervisor(env, application, upgrade) as supervisor:
             supervisor.supervise(os.environ["POD_UID"])
         return
     if approved.scenario == "pubsub-recovery":
-        # The factory builds the barrier and authenticates; the session serves
-        # the whole run.
+        # The factory builds the barrier; the session serves the whole run.
         with pubsub_actors.supervisor(env, upgrade) as supervisor:
             supervisor.supervise(os.environ["POD_UID"])
         return

@@ -12,16 +12,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Construct the authenticated BigQuery actors the production entrypoints run."""
+"""Construct the BigQuery actors the production entrypoints run."""
 
 from contextlib import contextmanager
 
-from ..actor_auth import authenticate
 from ..common import Failure
-from ..policy import BIGQUERY_OBSERVATIONS, QUERY_EVIDENCE_BYTES
+from ..google import actor_session
+from ..policy import QUERY_EVIDENCE_BYTES
 from ..runner import Runner
 from ..supervisor import Supervisor
-from .auth import BigQuerySession
 from .handoff import BigQueryHandoff
 from .lifecycle import BigQueryLifecycle
 from .quiesce import barrier
@@ -50,18 +49,9 @@ def runner(env, application, *, runner_token, credentials=None):
     Keep this context open through start and settlement. The caller retains the
     original process token and owns dispatch authorization and the quiescence barrier.
     """
-    with BigQuerySession("runner", credentials) as http:
+    with actor_session(credentials) as http:
         handoff = _handoff(env, application, runner_token, http, "runner")
         actor = Runner(env, bigquery=handoff)
-        actor.admission_open()
-        authenticate(
-            env,
-            http,
-            min(
-                env.schedule.started + BIGQUERY_OBSERVATIONS["startup_seconds"],
-                env.schedule.cleanup_at,
-            ),
-        )
         actor.admission_open()
         yield actor
 
@@ -70,8 +60,7 @@ def runner(env, application, *, runner_token, credentials=None):
 def supervisor(env, application, upgrade, *, credentials=None):
     """Bind the supervisor to the delivery `verify_delivery` checked.
 
-    This does not authenticate the Kubernetes/storage collaborators. The
-    quiescence barrier is built here from this run's own identity rather than
+    The quiescence barrier is built here from this run's own identity rather than
     accepted from the caller: a `callable` check cannot tell a proof from a
     constant, and `lambda: True` satisfied every check this module used to make.
 
@@ -79,8 +68,6 @@ def supervisor(env, application, upgrade, *, credentials=None):
     the binding, and the handoff adopts the token on its first read.
     """
     quiesce = barrier(env)
-    with BigQuerySession("supervisor", credentials) as http:
+    with actor_session(credentials) as http:
         handoff = _handoff(env, application, None, http, "supervisor")
-        actor = Supervisor(env, upgrade, bigquery=handoff, quiesce=quiesce)
-        authenticate(env, http, env.schedule.cleanup_at)
-        yield actor
+        yield Supervisor(env, upgrade, bigquery=handoff, quiesce=quiesce)

@@ -570,7 +570,7 @@ def test_the_exported_evidence_recomputes_to_the_verdict_the_run_wrote(
     exported = world.export(tmp_path, record)
     assert sorted(path.name for path in exported.iterdir()) == [world.approval.run_id]
     report = analyze.analyze(exported)
-    assert [item["status"] for item in report["bigquery"]] == [rt.USABLE]
+    assert [item["verdict"] for item in report["bigquery"]] == [rt.USABLE]
     item = report["bigquery"][0]
     assert item["run_id"] == world.approval.run_id
     assert item["verdict"] == rt.USABLE
@@ -601,7 +601,7 @@ def test_a_listed_metric_the_job_stopped_publishing_is_not_observed(
     ]
     report = analyze.analyze(world.export(tmp_path, record))
     item = report["bigquery"][0]
-    assert item["status"] == INCONCLUSIVE
+    assert item["verdict"] == INCONCLUSIVE
     assert item["problems"] == []
     assert item["reasons"] == record.recovery["reasons"]
 
@@ -645,9 +645,9 @@ def test_cleanup_waits_for_a_load_job_that_outlived_the_workload(
     deleted = []
     delete_table = world.resources.delete_table
 
-    def delete(destination, receipt):
+    def delete(destination):
         deleted.append(world.connector_listings.count(True))
-        return delete_table(destination, receipt)
+        return delete_table(destination)
 
     monkeypatch.setattr(world.resources, "delete_table", delete)
     record = world.run()

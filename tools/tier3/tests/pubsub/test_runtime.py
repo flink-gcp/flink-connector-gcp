@@ -372,12 +372,12 @@ def test_namespace_routing_and_unguarded_actors_do_not_admit(runtime):
         validate_approval(a.approval.to_dict())
     calls = list(a.kube.calls)
     # The internal fixture's handoff has no production guard.
-    with pytest.raises(Failure, match="authenticated, guarded handoff"):
+    with pytest.raises(Failure, match="guarded handoff"):
         runner.start({}, {}, a.application)
     assert a.kube.calls == calls
     supervisor = Supervisor(a.observer.env, pubsub=a.observer, quiesce=lambda: True)
     before = a.observer.env.refresh().to_dict()
-    with pytest.raises(Failure, match="requires its authenticated handoff"):
+    with pytest.raises(Failure, match="requires its handoff"):
         supervisor.supervise("unused-pod")
     assert a.kube.calls == calls
     assert a.observer.env.refresh().to_dict() == before

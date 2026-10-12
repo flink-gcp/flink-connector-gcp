@@ -133,7 +133,8 @@ def verdict(recovery, mode=None):
     The recomputation is against the rule set in this file as it stands, not
     the one the Pod ran. Evidence re-analyzed after the required families or
     the sampled windows here change can disagree with its own stored verdict
-    for that reason alone, and the analyzer cannot tell that from a forgery,
+    for that reason alone, and the analyzer cannot tell that from any other
+    difference,
     so archived evidence is read with the revision that produced it.
 
     `mode` is the trial's delivery method. FILE_LOADS requires the committer

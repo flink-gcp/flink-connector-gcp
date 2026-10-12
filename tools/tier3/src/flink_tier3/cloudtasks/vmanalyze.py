@@ -62,7 +62,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ..analyze import write_reports as write_report_files
-from ..common import INCONCLUSIVE, INCONSISTENT, USABLE, Failure, digest
+from ..common import INCONCLUSIVE, USABLE, Failure, digest
 from . import groups, vmcampaign
 from .campaign import CLAIMED, FAILED, MANIFEST, OBSERVED, PENDING, STATE
 from .evidence import RECEIPT, DirectorySource, Reconciler, cell_kind, cell_prefix
@@ -97,6 +97,9 @@ UNDIGESTED = (vmcampaign.OUTCOME, vmcampaign.SETTLED)
 CHECKPOINTS = "checkpoints.jsonl"
 
 LOST = "lost"
+#: Evidence that disagrees with itself: not a result that came out badly, but
+#: one nobody may read.
+INCONSISTENT = "inconsistent"
 RUN_FAILED = "failed"
 #: A probe that failed after its source started: the job's own behaviour
 #: under the cell's load, not evidence that was lost.

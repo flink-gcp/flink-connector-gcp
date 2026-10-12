@@ -81,6 +81,18 @@ def authorized_session(token):
     return session
 
 
+def actor_session(credentials=None):
+    """A lifecycle actor's authorized session, which returns a redirect unread.
+
+    Even without following one, requests reads a 3xx body whole to prepare
+    `Response.next`, before any caller's size cap; seeing no target, it
+    returns the response for the caller to refuse as a non-success status.
+    """
+    session = authorized_session(GoogleToken(credentials))
+    session.get_redirect_target = lambda _response: None
+    return session
+
+
 class Storage:
     def __init__(self, client=None, sleep=time.sleep):
         self.sleep = sleep

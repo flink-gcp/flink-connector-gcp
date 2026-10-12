@@ -173,7 +173,7 @@ The generated observation plan records three minutes of warm-up, ten minutes eac
 Every destination is in the fixed `flink-gcp.flink_gcp_tier3_bigquery` dataset.
 Its name is `bq_<run-id with hyphens replaced by underscores>_d<destination>`, with zero-based decimal destination numbers and no zero padding.
 Run IDs do not allow underscores, so this conversion preserves distinct run identities.
-The external runner must pre-create exactly those empty tables and verify their ownership and schema before admission.
+The external runner must pre-create exactly those empty tables before admission.
 The sink uses `CREATE_NEVER`; the workload creates no tables or datasets.
 
 Rows contain nullable `run_id STRING`, `sequence INTEGER`, `destination INTEGER` and `payload BYTES` columns, with a value supplied for every field.
@@ -181,8 +181,8 @@ Padding is deterministic pseudorandom data derived from run ID and sequence, avo
 Replay serializes the same sequence into the same bytes and table.
 The deployed query oracle must require every expected sequence in its correct table; EO and FILE_LOADS additionally require exact uniqueness, while ALO records duplicate multiplicities.
 The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
-The resource adapter and controller below provide internal query, ownership and deletion operations.
-The internal admission path connects those operations to deployment creation, and [production dispatch](#production-dispatch) reaches it through the authenticated actors.
+The resource adapter and controller below provide internal query, table creation and deletion operations.
+The internal admission path connects those operations to deployment creation, and [production dispatch](#production-dispatch) reaches it through the actor factories.
 
 ## State and observations
 
@@ -303,7 +303,7 @@ A substituted or edited aggregate can pass this offline check.
 In particular, generating and assessing an EO trial with `--mode ALO` can permit duplicates when that input count also fits the ALO limit.
 Rows contain no mode field, so this check cannot discover that mistake; the executor must take the mode from the approved application configuration, and the report must be interpreted with its recorded mode.
 
-The [resource adapter](#resource-adapter) supplies table ownership/schema checks and binds a completed query job's SQL and all result pages to a trial.
+The [resource adapter](#resource-adapter) creates the tables and binds a completed query job's result pages to a trial.
 The internal resource controller persists intent, query slots and query evidence as described below.
 The executor must supply the approved cumulative retry/visibility budget and run the final check after the workload has stopped writing.
 The local tests execute the generated SQL unchanged on synthetic SQLite tables to exercise row, NULL, empty-table and duplicate semantics.
@@ -314,7 +314,7 @@ That coverage does not establish BigQuery query acceptance or streaming visibili
 
 [`flink_tier3.bigquery.resources`](../../../tools/tier3/src/flink_tier3/bigquery/resources.py) provides internal REST v2 table and query operations for the BigQuery actors.
 It has no CLI route and does not extend lifecycle admission.
-Its synthetic HTTP tests cover request construction, lost responses, ownership conflicts, cleanup and result pagination; the deployed trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427) and [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) used it against the real service to provision, query and delete their tables, and neither record reports an ownership conflict; the FILE_LOADS trial found no temporary table to delete.
+Its synthetic HTTP tests cover request construction, lost responses, create conflicts, cleanup and result pagination; the deployed trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427) and [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) used it against the real service to provision, query and delete their tables, and neither record reports an ownership conflict; the FILE_LOADS trial found no temporary table to delete.
 
 The caller must persist one `ResourcePlan` before any write: the approved `Trial`, a fresh 32-character hexadecimal nonce, an absolute table expiration, the number of query slots, maximum bytes billed per slot and job timeout.
 These values have no operational defaults or implied approval.
@@ -323,23 +323,22 @@ The plan permits only the trial's 10 or 50 table names in the fixed dataset and 
 Slot count times maximum bytes billed is the planned query-byte ceiling when all actors use that unchanged plan and the same submitting identity; approval must also account for storage, writes, cluster resources and other costs.
 
 Table creation sets the application's four nullable fields, explicit expiration within the next 24 hours, and labels binding run ID, nonce and the complete trial identity.
-A matching existing table can reconcile a lost create response; a same-name table with different ownership, schema or expiration is refused.
-This metadata check does not prove emptiness: admission still requires exclusive access, absence checks and a quiescent data check because streaming metadata can lag.
-Deletion requires a matching receipt and a fresh read with the same creation timestamp.
-The [documented `tables.delete` API](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/tables/delete) exposes no generation precondition, so this read and delete are not atomic.
-Before cleanup, the executor must stop and fence all creators/writers and hold exclusive lifecycle access through deletion; an external actor replacing a table between those calls remains outside that guarantee.
-Missing ownership evidence refuses deletion, and expiration is only a fallback.
+An existing table of the same name, found before the create or after a create conflict, is taken as the one a lost create response left.
+Neither its metadata nor its creation time is compared with the plan: each run has its own table names, one run holds the environment lock at a time, and every table expires within 24 hours, so another table of that name cannot exist ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
+Taking the table does not prove it empty: admission still requires exclusive access and a quiescent data check because streaming metadata can lag.
+Deletion deletes the planned table name, and an absent table is already gone.
+Before cleanup, the executor must stop and fence all creators/writers and hold exclusive lifecycle access through deletion.
+Only a persisted creation intent authorizes deletion, and expiration is only a fallback.
 
 Each query slot has a deterministic job ID that does not change after a timeout or restart.
-Submission checks an existing job or reconciles a create conflict against the exact generated SQL, identity labels, region, byte ceiling, timeout and disabled legacy SQL/query cache.
+Submission returns an existing job of that ID, or the one a create conflict names, without comparing its configuration with the plan, for the same reason as tables.
 There are no automatic retries, fresh retry IDs or polling loops in the adapter.
 A new visibility observation must consume another durably reserved slot; reusing a slot reads the same job's result.
 The [REST job configuration](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfiguration) bounds billed query bytes, but `jobTimeoutMs` is a best-effort service cancellation request.
 The adapter checks the caller's absolute deadline before requests, after response headers and at streamed-body boundaries, caps each response at 1 MiB and bounds request timeouts by the remaining time.
 An operation-specific adapter view shares the session, plan and clock while taking the earlier of the operation deadline and the original adapter deadline; it never mutates or extends the original deadline.
 These checks do not establish a hard wall-clock stop or cancel an already submitted job.
-The authenticated session described below also budgets credential HTTP exchanges and identity checks; it cannot forcibly interrupt synchronous credential code or a blocked socket read.
-Cleanup can request cancellation only after validating that slot's job, and must poll its status separately until `DONE` before treating cancellation as complete.
+Cleanup requests cancellation of that slot's job, and must poll its status separately until `DONE` before treating cancellation as complete.
 
 Result collection requires a successful `DONE` job and billed-byte statistics within its limit.
 It checks every page's job reference, completion, total row count and scalar schema, follows page tokens with a destination-count-plus-one page ceiling, and refuses repeated tokens, missing/duplicate destinations and aggregates over 64 KiB.
@@ -347,7 +346,7 @@ It flattens the returned `f`/`v` cells using the schema, runs the offline oracle
 It does not establish checkpoint provenance, table quiescence or a deployed recovery verdict.
 Collect results as the submitting identity: [anonymous result tables are private to their creator](https://docs.cloud.google.com/bigquery/docs/cached-results#how_cached_results_are_stored), so the supervisor's project-level job get/update grants do not by themselves authorize reading the runner's result table.
 The resource controller below supplies durable intent, query evidence and a cleanup pass.
-The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; actor construction below supplies the BigQuery session; [production dispatch](#production-dispatch) constructs the runner and the in-cluster entrypoint the supervisor, and dispatch verifies idle afterwards.
+The internal handoff and lifecycle loops supply shared deadlines and cleanup accounting; actor construction below supplies the HTTP session; [production dispatch](#production-dispatch) constructs the runner and the in-cluster entrypoint the supervisor, and dispatch verifies idle afterwards.
 Provisioning passes the earlier of the approved start plus 600 seconds and the query window's end to all of its REST operations.
 Query submission, job status and every result page share the requested observation's fixed deadline.
 Common cleanup passes its cleanup deadline separately, allowing cancellation and table deletion after the query window closes without reusing an expired query deadline.
@@ -358,15 +357,14 @@ Expiry rejects late responses, including a 404 or an empty successful body; a fa
 
 [`flink_tier3.bigquery.lifecycle`](../../../tools/tier3/src/flink_tier3/bigquery/lifecycle.py) composes the adapter with generation-checked lifecycle records.
 The internal runner and supervisor use this controller only with explicitly supplied handoffs.
-Both execution entrypoints reach it only through the authenticated actor factories.
-The caller must authorize the resource plan, authenticate the actor, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
+Both execution entrypoints reach it only through the actor factories.
+The caller must authorize the resource plan, retain exclusive environment ownership and provide a resource adapter with the appropriate operation or cleanup deadline.
 The controller binds the complete service plan, run ID, nonce and trial arguments to the approved initial application hash.
 [Production dispatch](#production-dispatch) validates the approval once and performs deployment admission.
 
 Initialization stores the unchanged plan in `RunRecord.bigquery`.
-Provisioning first checks absence, records a creation intent, then creates or reconciles that table and stores its creation receipt.
-A table found before its creation intent is refused even when its labels match.
-A receipt whose table disappeared or was replaced cannot authorize recreation.
+Provisioning records a creation intent, then creates that table or takes the existing one and stores its creation receipt.
+A table with a receipt is never created again, even when it has disappeared.
 The runner reserves a named observation's slot through a conditional control update before submission; retries and process restarts retain the same slot and job ID, and exhaustion refuses another observation.
 Query submission requires all table receipts and a running, unstopped record.
 Concurrent late submission responses cannot overwrite a collected observation's state.
@@ -387,20 +385,20 @@ The controller does not implement or independently verify this barrier.
 After it succeeds, cleanup requests cancellation of every possibly submitted slot and returns incomplete while any job is absent or not `DONE`.
 An absent job after an uncertain submission remains unresolved rather than proving cleanup.
 A slot recorded only as reserved has no submission intent and needs no cancellation.
-Only after these checks does cleanup reconcile lost table receipts from persisted creation intents, delete owned tables and confirm absence.
+Only after these checks does cleanup delete every table with a persisted creation intent, including one whose create response was lost, and confirm absence.
 It never deletes an unrecorded table name except the temporary tables FILE_LOADS cleanup lists and records first, as [Connector-issued jobs](#connector-issued-jobs) describes.
 The supervisor may perform this cleanup without collecting the runner's private query results.
 A completed pass marks only the BigQuery component clean; it does not set run success, remove Kubernetes/GCS state, release the environment lock or declare the environment idle.
 
 Synthetic tests cover conditional-update conflicts, restarts, lost responses, stop races, evidence generations, pending queries and receipt-based cleanup, including composition with the REST adapter.
-They do not establish authenticated handoff, a functioning barrier or real-service acceptance.
+They do not establish a functioning barrier or real-service acceptance.
 
 ### Query requests and runner release
 
 [`flink_tier3.bigquery.handoff`](../../../tools/tier3/src/flink_tier3/bigquery/handoff.py) adds an internal protocol between the submitting runner and the observing supervisor.
 The common runner settlement and supervisor cleanup paths accept this protocol through explicit constructor arguments.
-The common model validates BigQuery approval inputs, and the [production dispatch](#production-dispatch) constructs these actor bindings through the authenticated actor factories.
-The caller must authenticate both actors, allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
+The common model validates BigQuery approval inputs, and the [production dispatch](#production-dispatch) constructs these actor bindings through the actor factories.
+The caller must allocate a query evidence budget and deadline, and give exactly one submitting process a fixed runner token.
 The supervisor is bound without it: its Pod starts before the runner writes the binding, so it binds the fields its own approval fixes and adopts the token from the first binding it reads, refusing a replacement thereafter.
 The token binds records; it is not an authentication credential or a lease that another process may take over.
 After initializing this protocol on an empty resource intent, all runner provisioning and query calls must use it rather than the resource controller directly.
@@ -431,7 +429,7 @@ A completed collection may finish after stop, and the supervisor may read retain
 Release does not prove Flink termination, settle unknown service operations, exclude other lifecycle processes or authorize deletion by itself.
 
 Synthetic tests interleave the two actors through shared generation-checked storage, including stop during provisioning, submission and collection, lost responses, acknowledgement failures, invocation identity, expired requests, actor roles, pending jobs, replaced evidence and byte limits.
-They do not establish authenticated handoff, workload fencing, real-service acceptance or a deployed recovery verdict.
+They do not establish workload fencing, real-service acceptance or a deployed recovery verdict.
 
 ### Common lifecycle loop integration
 
@@ -462,7 +460,7 @@ Pod disappearance observed outside that callback is not a substitute for it.
 
 ## Quiescence barrier
 
-[`flink_tier3.bigquery.quiesce`](../../../tools/tier3/src/flink_tier3/bigquery/quiesce.py) builds that callback from the run's own identity, inside the authenticated supervisor factory, so no caller supplies one: a `callable` check, the only check a supplied callback admits, cannot tell a proof from a constant such as `lambda: True`.
+[`flink_tier3.bigquery.quiesce`](../../../tools/tier3/src/flink_tier3/bigquery/quiesce.py) builds that callback from the run's own identity, inside the supervisor factory, so no caller supplies one: a `callable` check, the only check a supplied callback admits, cannot tell a proof from a constant such as `lambda: True`.
 
 On every call it lists the nine kinds that can run or restore a writer, in the application namespace alone rather than through the four-namespace inventory, and refuses while any object owned by this run's application roots is still among them.
 It is scoped on both axes: the supervisor asking the question is itself a Pod under a root in `tier3-system`, so seeding the ownership closure from every root would make it wait for itself, and `observed` is not namespace-scoped, so the namespace filter is load-bearing on its own.
@@ -489,7 +487,7 @@ When finalization deleted the control record but did not release the lock, recov
 Synthetic tests cover these settlement paths with fake actors and services.
 The internal recovery schedule is described below.
 
-The deployed exercise runs only through [production dispatch](#production-dispatch): its runner and the in-cluster supervisor are both authenticated, and dispatch verifies the published image digest live.
+The deployed exercise runs only through [production dispatch](#production-dispatch): its runner runs in CI under the runner's workload identity and the supervisor in the cluster under its own, and dispatch verifies the published image digest live.
 The application itself does not scale the Operator, admit Pods, inject JobManager failure, submit queries or clean cloud resources.
 The conditional GCS grants, including the `.inprogress/` grant [#1498](https://github.com/flink-gcp/flink-connector-gcp/issues/1498) added, are in the [BigQuery trial foundation](../../../opentofu/README.md#bigquery-trial-foundation); the deployed trials wrote and restored checkpoints and savepoints through them.
 
@@ -499,7 +497,7 @@ The conditional GCS grants, including the `.inprogress/` grant [#1498](https://g
 It binds `bigquery_trial` to the trial's delivery method and destination count, the only fields a trial chooses.
 The approval also pins the initial and upgrade manifest hashes, the rig commit, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
-A valid document is not authenticated execution permission on its own: dispatch still requires the environment lock, and the in-cluster entrypoint builds its supervisor only through the authenticated actor factory.
+A valid document is not execution permission on its own: dispatch still requires the environment lock, and the in-cluster entrypoint builds its supervisor only through the actor factory.
 Internal runner admission requires an explicit environment-bound handoff; internal supervision additionally requires the approved upgrade and a quiescence callback.
 
 The approval requires a 90-minute window with the final 15 minutes reserved for cleanup.
@@ -518,7 +516,7 @@ State cleanup lists and generation-deletes only `runs/<run-id>/` in `flink-gcp-t
 Synthetic tests cover these boundaries and compose the real approval, environment, handoff and common cleanup with fake Kubernetes/storage/BigQuery services.
 They do not establish a functioning quiescence barrier or live service acceptance.
 
-Authenticated actors, writer fencing, query-evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
+The actor factories, writer fencing, query-evidence accounting, measurement collection and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
 The query artifacts share 10 MiB, `QUERY_EVIDENCE_BYTES`, divided equally among the scenario's 12 query slots; the receipts and run documents have no byte budget, because the window bounds what a run writes and the evidence bucket's 30-day expiry bounds what it retains.
 
 The collected queries' billed bytes are summed into the retained control state as `billed_bytes`.
@@ -567,10 +565,10 @@ The window starts when dispatch admits the run, on the whole second, and lasts e
 
 The checks that need neither the cluster nor the lock run first: the trial and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
 Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the approval and binds the delivery with the approval embedded, so a ConfigMap size refusal also arrives before the lock.
-It then acquires the environment lock, checks the foundation again, writes the run documents and runs the authenticated runner inside its session, minting the runner token in this process.
-If the authenticated session cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.
+It then acquires the environment lock, checks the foundation again, writes the run documents and runs the runner inside its session, minting the runner token in this process.
+If the actor cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.
 
-The in-cluster entrypoint verifies the mounted application and upgrade against the mounted approval's pins, refusing a missing document by name, then builds the authenticated supervisor with its quiescence barrier and exercise and holds that session open for the whole supervision.
+The in-cluster entrypoint verifies the mounted application and upgrade against the mounted approval's pins, refusing a missing document by name, then builds the supervisor with its quiescence barrier and exercise and holds that session open for the whole supervision.
 It is constructed without the runner token and adopts it from the binding, as [Query requests and runner release](#query-requests-and-runner-release) describes.
 
 The workflow job runs for up to 120 minutes for this scenario, because the 90-minute window's serial budget is 114 minutes.
@@ -579,7 +577,7 @@ Enabling the scenario does not approve a run.
 ## Internal recovery execution
 
 The common `Runner.start()` and `Supervisor.supervise()` paths support an explicitly attached BigQuery handoff.
-They are internal integration points: the caller must bind the approved delivery, authenticate each actor, retain exclusive environment ownership and provide the writer/creator quiescence barrier and appropriate HTTP operation deadlines.
+They are internal integration points: the caller must bind the approved delivery, retain exclusive environment ownership and provide the writer/creator quiescence barrier and appropriate HTTP operation deadlines.
 The production dispatch and in-cluster entrypoints reach these paths only through the actor factories, and a bare `Runner` or `Supervisor` without its handoff refuses; passing these tests does not approve a paid run.
 A replacement runner must not reconstruct the submitting process's token.
 
@@ -639,52 +637,41 @@ A family counts as observed only where a reading returned it. Discovery lists a 
 It reports no measured value, and it must not. A throughput or a memory figure from this trial is a finding to publish, not a threshold to pass; #1312 forbids reusing component throughput as a production target, and a verdict that encoded one would be exactly that.
 The verdict is decided and written with the transition that completes the run, so it reaches the `recovery-complete` evidence record and not only the final receipt.
 
-`just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` then recomputes it offline from the exported evidence rather than reading the receipt's answer, and reports each run's status, verdict, reasons, sample count and problems.
-It rebuilds the coverage from the readings themselves. Each sample was exported as its own record beside the completed one, so the same fold the Pod ran is run again over those readings, and the verdict is decided over what they support rather than over the `coverage` the record claims — recomputing from a field the same hand could edit would only restate the record to itself.
-Only a claim the evidence denies is `tampered`: a record claiming an attempt or a family its readings do not support, a verdict of `usable` they do not support, or a receipt claiming `success`, which the runner computes from a usable verdict and nothing else. The claim can be made in either document, so both are read. Every other disagreement is `inconsistent` — a receipt at odds with the evidence beside it, a completed record accounting for fewer readings than the run emitted, a stored verdict more conservative than the readings warrant, or two completion records. Under-reporting is not forgery.
-An evidence set missing the run's account of itself is `unexported`, and so is one holding a sample record the fold cannot read or place, or one whose record says the run completed with no completion evidence beside it — an absent object is named only by the record it should have accompanied.
-That last shape is also what a wholly fabricated receipt looks like, and the two are told apart only by the readings: a missing object on its own is `unexported` and re-fetchable, while the same record or receipt claiming coverage, a verdict or a success the readings do not support stays `tampered`. Where the readings are gone too, nothing distinguishes a truncated export from a fabrication, and the severe label is reported; fetch the evidence again and ask once more. That is a truncated download, not a dishonest run: the lost reading lowers the rebuilt coverage, so continuing would report the record as claiming more than its readings support. Fetch the evidence again.
+`just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` then recomputes it offline from the exported evidence rather than reading the receipt's answer, and reports each run's recomputed verdict, the verdict the run stored, its reasons, sample count and problems.
+It rebuilds the coverage from the readings themselves. Each sample was exported as its own record beside the completed one, so the same fold the Pod ran is run again over those readings, and the verdict is decided over what they support rather than over the `coverage` the record claims.
+A stored verdict, or stored reasons, other than the recomputed ones is reported as `verdict-differs-from-the-record`; the receipt's other claims decide nothing.
+An evidence set missing the run's account of itself has no verdict, and neither has one holding a sample record the fold cannot read or place, one holding fewer samples in a window than the record counted there (`missing-samples`), or one whose record says the run completed with no completion evidence beside it: the lost record would lower the rebuilt coverage for what is only a truncated download, so fetch the evidence again.
+A run that did not complete exported its account of itself, which says so, and is `inconclusive`.
 
-What this does not do is make the evidence unforgeable. The readings are files like any other, so a forger who fabricates one per window alongside the edited record still passes; what the rebuild removes is the single-field edit, and what it costs is one file per sample instead.
-Those are the excluded statuses the Cloud Tasks analysis uses and none of them is a measurement — but a run that simply did not complete is not one of them: it exported its account of itself, and that account is `inconclusive`.
-The receipt's `success` is checked in one direction only. It is a conjunction the runner may refuse for reasons of its own, so `false` beside a usable verdict is the runner obeying its rules; `true` beside a verdict that is not usable is the forgery.
+The analysis does not classify a disagreement as an edited record or as an inconsistent export ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
+The readings are files the same owner writes, so such a classification would raise the cost of a forged record without excluding one, and the owner who runs a trial is also the one who reads it.
 The recomputation uses the rule set as it stands, so evidence re-analyzed after the required families or the sampled windows change can disagree with its own stored verdict for that reason alone; archived evidence is read with the revision that produced it.
 
 Synthetic controller/service tests exercise both Storage Write modes at both destination counts and FILE_LOADS at 10, including a load job that outlives the Pods and one still running when the oracle would read, plus failed recovery proofs, early completion, delayed visibility, cancellation, budget exhaustion, provisioning failure and an unresolved quiescence barrier.
 They establish the internal sequencing and refusal behavior, not actual Operator recovery, BigQuery visibility latency or a working writer fence.
 
-## Authenticated internal actors
+## Internal actors
 
-[`flink_tier3.bigquery.actors`](../../../tools/tier3/src/flink_tier3/bigquery/actors.py) constructs internal actors with a role-specific BigQuery HTTP session.
+[`flink_tier3.bigquery.actors`](../../../tools/tier3/src/flink_tier3/bigquery/actors.py) constructs internal actors with a BigQuery HTTP session.
 Its `runner` context manager takes the application dispatch rendered and approved; its `supervisor` context manager takes the manifests the entrypoint verified against the mounted approval.
 Neither validates the approval or the installed source again: dispatch validated the one, and the dispatched commit is the other.
-Both check the current environment lock and actor role before Google authentication, then recheck ownership before returning the actor.
-The runner also checks admission, including its window and 600-second startup limit, before and after authentication.
+Both check the current environment lock and actor role before they return the actor.
+The runner also checks admission, including its window and 600-second startup limit.
 The handoff uses the approved resource plan, cleanup start as the query deadline and the fixed 10 MiB query-evidence budget.
 The runner's caller supplies the original process token; the supervisor takes none and adopts it from the binding the runner writes.
 Each caller keeps its context open through admission and settlement, or supervision and cleanup.
-The supervisor Job replaces no Pod, so the cleanup window runs inside the context its one supervisor opened.
+The supervisor Job replaces no Pod, so the cleanup window runs inside the context its one supervisor opened, and nothing refuses constructing a supervisor inside that window.
 Exiting closes the HTTP session; it does not acknowledge runner release or initiate cleanup automatically.
 
-[`BigQuerySession`](../../../tools/tier3/src/flink_tier3/bigquery/auth.py) uses `google-auth` application default credentials, requesting `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials with suitable scopes.
-Before the first BigQuery request with each distinct bearer header, it calls Google's [OAuth2 userinfo endpoint](https://developers.google.com/resources/api-libraries/documentation/oauth2/v2/python/latest/oauth2_v2.userinfo.html) using that same header.
-It requires a verified email equal to `tier3-runner@flink-gcp.iam.gserviceaccount.com` or `tier3-supervisor@flink-gcp.iam.gserviceaccount.com`, according to the actor role.
-It does not infer the authenticated principal from credential configuration or email metadata.
-The identity response is capped at 16 KiB; malformed, unverified, mismatched and unsuccessful responses refuse the actor or resource request.
-
-Credential HTTP requests made through the supplied auth adapter, identity checks and the resource request share one monotonic budget capped at 20 seconds and the caller's remaining operation time.
-Each subsequent request receives the remaining budget; a shorter credential-supplied timeout is preserved.
-Nonblocking credential refresh is rejected, redirects and environment-derived proxies are disabled, and BigQuery/identity requests are not retried or replayed on 401.
-Credential-library retries may still occur within that library, but each HTTP attempt through the adapter must fit the remaining budget.
-The adapter covers every token refresh and the in-cluster metadata credential; it does not cover credential discovery that builds its own transport.
-The pinned `google-auth` forwards the caller's request object only to its Compute Engine checker, so an external-account credential file resolves its project with that library's own timeout, proxy handling and redirect policy rather than this session's.
-The two actors reach Google differently: the supervisor runs as `tier3-system/tier3-supervisor` bound to its Google service account, and the runner authenticates through workload identity federation in CI, which is the external-account form.
-Measured against the pinned library, discovery issues no request when the environment supplies a project and enters the credential exchange on the library's own transport when it does not; that part of construction is then bounded by the caller's deadline check rather than by this budget.
-These checks do not forcibly interrupt credential discovery, synchronous credential code, blocked reads or server-side execution.
-The resource adapter still enforces the absolute operation deadline while consuming BigQuery responses.
+The session is the authorized session the evidence Storage client and the image workflow already use, over `google-auth` application default credentials requesting the `cloud-platform` and `userinfo.email` scopes, unless the caller provides credentials.
+It follows no redirect, ignores environment-derived proxies and does not refresh a token again after a 401.
+The actors' copy also returns a redirect unread, which the adapter refuses as a non-success status: without that, requests reads a 3xx body whole before the adapter's 1 MiB cap applies.
+Each request takes the resource adapter's remaining operation time as its timeout, and the adapter enforces the absolute operation deadline while consuming the response.
+The two actors reach Google differently: the supervisor runs as `tier3-system/tier3-supervisor` bound to its Google service account, and the runner authenticates through workload identity federation in CI.
+Constructing an actor sends no BigQuery request and does not check which principal the credentials name, although discovering the default credentials may ask the metadata server: each actor takes the credentials of the environment it runs in, the runner's workload identity federation in CI and the supervisor's Kubernetes service account, so a wrong identity needs a misconfigured environment, and IAM then refuses the first call that identity has no permission for ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
 
 The factories do not authenticate the supplied Kubernetes/storage collaborators or the approval's origin, establish GitHub main ancestry or image provenance, or fence another creator/writer.
 The supervisor factory builds the [quiescence barrier](#quiescence-barrier) from the run's own identity; constructing a session does not prove that barrier works.
-Synthetic tests exercise the pinned Google auth request adapter, token refresh and rotation, identity refusal, shared time budgets, approval binding and lock loss.
+Synthetic tests exercise approval binding, admission and lock loss, and that construction sends nothing.
 The deployed trials ran both actors under the deployed WIF and GKE credentials with live IAM access, the quiescence barrier, the upgrade and failover recoveries, and cleanup; these synthetic tests establish none of that.
 The overall BigQuery receipt reports success only for the [deployed verdict](#deployed-verdict)'s `usable`.

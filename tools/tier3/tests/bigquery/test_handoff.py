@@ -105,14 +105,13 @@ def test_provisioning_rest_calls_share_the_startup_deadline(actors):
     a = actors
     a.now[0] = NOW + 598
     plan = a.runner.controller.plan
-    # Every destination is checked absent before the one intent write, then
-    # each is created.
-    replies = [Response({}, 404) for _ in range(plan.trial.destinations)]
+    # One intent write for every destination, then each is created.
+    replies = []
     for destination in range(plan.trial.destinations):
         replies.extend([Response({}, 404), table(plan, destination)])
     api, http = transport(a, *replies)
     a.runner.provision()
-    assert len(http.calls) == 3 * plan.trial.destinations
+    assert len(http.calls) == 2 * plan.trial.destinations
     assert all(call[2]["timeout"] == 2 for call in http.calls)
     assert api.deadline == NOW + 3600
     assert a.runner.controller._read()["handoff"]["inflight"] is None
@@ -121,6 +120,7 @@ def test_provisioning_rest_calls_share_the_startup_deadline(actors):
 def test_late_provisioning_read_does_not_start_a_create_and_retains_marker(actors):
     a = actors
     a.now[0] = NOW + 599
+    plan = a.runner.controller.plan
 
     class LateAbsent(Response):
         def __enter__(self):
@@ -134,7 +134,10 @@ def test_late_provisioning_read_does_not_start_a_create_and_retains_marker(actor
     assert len(http.calls) == 1
     assert http.calls[0][0] == "GET"
     assert response.closed
-    assert a.runner.controller._read()["tables"] == {}
+    # The intents precede the read, so cleanup still owns every table.
+    tables = a.runner.controller._read()["tables"]
+    assert len(tables) == plan.trial.destinations
+    assert all(value["receipt"] is None for value in tables.values())
     with pytest.raises(Failure, match="in flight or unresolved"):
         a.runner.release()
 
@@ -153,7 +156,6 @@ def test_submit_status_and_paginated_collection_use_one_requested_deadline(actor
 
     _, http = transport(
         a,
-        *(table(plan, i) for i in range(plan.trial.destinations)),
         Response({}, 404),
         job(plan),
         job(plan),
@@ -162,7 +164,7 @@ def test_submit_status_and_paginated_collection_use_one_requested_deadline(actor
         page(plan, 5),
     )
     assert a.runner.poll() == "final"
-    assert len(http.calls) == plan.trial.destinations + 6
+    assert len(http.calls) == 6
     assert [call[2]["timeout"] for call in http.calls] == [3] * (
         len(http.calls) - 1
     ) + [2]
@@ -203,17 +205,10 @@ def test_cleanup_uses_its_own_deadline_after_query_window_has_closed(actors):
     plan = a.supervisor.controller.plan
     replies = [job(plan, state="RUNNING"), {"job": job(plan)}]
     for destination in range(plan.trial.destinations):
-        replies.extend(
-            [
-                table(plan, destination),
-                table(plan, destination),
-                Response(b"", 204),
-                Response({}, 404),
-            ]
-        )
+        replies.extend([Response(b"", 204), Response({}, 404)])
     api, http = transport(a, *replies, supervisor=True)
     assert a.supervisor.cleanup(lambda: True, deadline=NOW + 1803)
-    assert len(http.calls) == 2 + 4 * plan.trial.destinations
+    assert len(http.calls) == 2 + 2 * plan.trial.destinations
     assert http.calls[1][0] == "POST"
     assert http.calls[1][1].endswith("/cancel")
     assert all(call[2]["timeout"] == 2 for call in http.calls)

@@ -12,13 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Bind the authenticated Pub/Sub actors to externally supplied approvals."""
+"""Bind the Pub/Sub actors to externally supplied approvals."""
 
 import copy
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.actor_auth import PRINCIPALS, USERINFO
 from flink_tier3.common import Failure, timestamp
 from flink_tier3.environment import Environment
 from flink_tier3.lifecycle import bind
@@ -30,8 +29,7 @@ from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 from google.oauth2.credentials import Credentials
 
-from ..bigquery.test_auth import identity
-from ..bigquery.test_auth import wire as wire  # noqa: PLC0414
+from ..bigquery.test_actors import wire as wire  # noqa: PLC0414
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
@@ -92,10 +90,9 @@ def construct_supervisor(env, upgrade):
     return actors.supervisor(env, upgrade, credentials=Credentials("supervisor"))
 
 
-def test_runner_and_supervisor_bind_distinct_authenticated_actors(prepared, wire):
+def test_runner_and_supervisor_bind_distinct_actors(prepared, wire):
     env, rendered = prepared
     deadline = env.schedule.started + 900
-    wire.responses = [identity()]
     with actors.runner(
         env, runner_token=TOKEN, credentials=Credentials("runner")
     ) as runner:
@@ -105,18 +102,17 @@ def test_runner_and_supervisor_bind_distinct_authenticated_actors(prepared, wire
         guard = handoff.controller.before_operation
         assert isinstance(guard, PubSubGuard) and guard.deadline == deadline
         assert handoff.settled == handoff.controller.http.settled
-        assert handoff.controller.http.principal == PRINCIPALS["runner"]
+        assert handoff.controller.http.http.credentials.token == "runner"
+        # The actor session, which returns a redirect unread.
+        assert handoff.controller.http.http.get_redirect_target(None) is None
         trial = env.approval.pubsub_trial
         assert handoff.records_per_subscription == trial["records_per_subscription"]
         assert env.refresh().pubsub is None
-        assert [call[1] for call in wire.calls] == [USERINFO]
-    assert wire.closed
+    assert wire.closed == ["AuthorizedSession"]
     other = supervising(env)
     tokens = set()
     for _ in range(2):
-        wire.closed = False
-        wire.calls.clear()
-        wire.responses = [identity("supervisor")]
+        wire.closed.clear()
         with construct_supervisor(
             other, rendered["recovery_application"]
         ) as supervisor:
@@ -124,19 +120,20 @@ def test_runner_and_supervisor_bind_distinct_authenticated_actors(prepared, wire
             observer = supervisor.cleanup.pubsub
             assert observer.env is other
             assert observer.controller.before_operation.deadline == deadline
-            assert observer.controller.http.principal == PRINCIPALS["supervisor"]
+            assert observer.controller.http.http.credentials.token == "supervisor"
             # Built here, from this run: the namespace holds no writer.
             assert supervisor.cleanup.quiesce() is True
             tokens.add(observer.token)
-            assert [call[1] for call in wire.calls] == [USERINFO]
-        assert wire.closed
+        assert wire.closed == ["AuthorizedSession"]
     # Each supervisor process binds its own token.
     assert len(tokens) == 2 and TOKEN not in tokens
     assert env.refresh().pubsub is None
+    # Construction sends nothing: the first service call is the actor's own.
+    assert not wire.calls
 
 
 @pytest.mark.parametrize("change", ["role", "owner"])
-def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, change):
+def test_supervisor_refuses_binding_drift(prepared, wire, change):
     env, rendered = prepared
     env = supervising(env)
     if change == "role":
@@ -152,31 +149,6 @@ def test_supervisor_refuses_binding_drift_before_authentication(prepared, wire, 
     assert not wire.calls
 
 
-def test_a_wrong_google_identity_prevents_runner_construction(prepared, wire):
-    env, _ = prepared
-    wire.responses = [identity("supervisor")]
-    with (
-        pytest.raises(Failure, match="identity differs"),
-        actors.runner(env, runner_token=TOKEN, credentials=Credentials("runner")),
-    ):
-        pytest.fail("Admitted the wrong Google identity")
-    assert wire.closed
-
-
-def test_authentication_crossing_the_admission_deadline_prevents_admission(
-    prepared, wire
-):
-    env, _ = prepared
-    wire.responses = [identity()]
-    wire.hook = lambda _: setattr(env.clock, "now", env.schedule.started + 900)
-    with (
-        pytest.raises(Failure, match="construction deadline"),
-        actors.runner(env, runner_token=TOKEN, credentials=Credentials("runner")),
-    ):
-        pytest.fail("Admitted after the admission deadline")
-    assert wire.closed
-
-
 def test_the_admission_deadline_never_passes_cleanup(prepared):
     env, _ = prepared
     assert admission_deadline(env) == env.schedule.started + 900
@@ -188,76 +160,43 @@ def construct_runner(env):
     return actors.runner(env, runner_token=TOKEN, credentials=Credentials("runner"))
 
 
-def test_ownership_lost_during_authentication_prevents_the_actor(prepared, wire):
+def test_a_lost_ownership_prevents_the_runner(prepared, wire):
     env, _ = prepared
-    wire.responses = [identity()]
-
-    def replace_owner(_):
-        _, generation = env.store.read(ENVIRONMENT)
-        env.store.write(ENVIRONMENT, {"nonce": "replacement"}, generation)
-
-    wire.hook = replace_owner
+    _, generation = env.store.read(ENVIRONMENT)
+    env.store.write(ENVIRONMENT, {"nonce": "replacement"}, generation)
     with pytest.raises(Failure, match="owner"), construct_runner(env):
         pytest.fail("Admitted after ownership loss")
-    assert wire.closed
+    assert wire.closed == ["AuthorizedSession"]
 
 
-def test_a_stop_during_authentication_prevents_the_runner(prepared, wire):
+def test_a_stop_prevents_the_runner(prepared, wire):
     env, _ = prepared
-    wire.responses = [identity()]
-    wire.hook = lambda _: env.records.request_stop()
+    env.records.request_stop()
     with (
         pytest.raises(Failure, match="admission has been stopped"),
         construct_runner(env),
     ):
         pytest.fail("Admitted after a stop")
-    assert wire.closed
+    assert wire.closed == ["AuthorizedSession"]
 
 
-def test_a_passed_admission_deadline_refuses_before_any_credential_call(prepared, wire):
+def test_a_passed_admission_deadline_refuses_the_runner(prepared, wire):
     env, _ = prepared
-    wire.responses = [identity()]
     env.clock.now = admission_deadline(env)
-    with pytest.raises(Failure), construct_runner(env):
+    with (
+        pytest.raises(Failure, match="admission deadline expired"),
+        construct_runner(env),
+    ):
         pytest.fail("Admitted an expired construction")
-    assert not wire.calls
-    assert wire.closed
+    assert wire.closed == ["AuthorizedSession"]
 
 
 def test_a_context_exception_closes_the_session_without_cleanup(prepared, wire):
     env, _ = prepared
-    wire.responses = [identity()]
     with (
         pytest.raises(RuntimeError, match="caller failure"),
         construct_runner(env),
     ):
         raise RuntimeError("caller failure")
-    assert wire.closed and len(wire.calls) == 1
+    assert wire.closed == ["AuthorizedSession"] and not wire.calls
     assert env.refresh().pubsub is None
-
-
-def test_a_supervisor_cannot_be_constructed_inside_the_cleanup_window(prepared, wire):
-    """Cleanup runs in a context opened earlier; a restart cannot reopen one."""
-    env, rendered = prepared
-    env = supervising(env)
-    env.clock.now = env.schedule.cleanup_at
-    # Its authentication deadline is the cleanup start, so no time remains.
-    with (
-        pytest.raises(Failure, match="positive finite timeout"),
-        construct_supervisor(env, rendered["recovery_application"]),
-    ):
-        pytest.fail("Constructed a supervisor after admission closed")
-    assert not wire.calls
-
-
-def test_supervisor_authentication_crossing_cleanup_prevents_the_actor(prepared, wire):
-    env, rendered = prepared
-    env = supervising(env)
-    wire.responses = [identity("supervisor")]
-    wire.hook = lambda _: setattr(env.clock, "now", env.schedule.cleanup_at)
-    with (
-        pytest.raises(Failure, match="construction deadline"),
-        construct_supervisor(env, rendered["recovery_application"]),
-    ):
-        pytest.fail("Constructed a supervisor during cleanup")
-    assert wire.closed

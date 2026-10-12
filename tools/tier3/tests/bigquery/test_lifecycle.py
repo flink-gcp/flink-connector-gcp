@@ -140,11 +140,8 @@ class Resources:
         self.calls.append(("delete-temporary", name))
         self.temporary.remove(name)
 
-    def delete_table(self, destination, receipt):
+    def delete_table(self, destination):
         self.calls.append(("delete", destination))
-        current = self.tables.get(destination)
-        if current and current["creationTime"] != receipt["creationTime"]:
-            raise Failure("Replacement table")
         self.tables.pop(destination, None)
         if self.after_delete:
             callback, self.after_delete = self.after_delete, None
@@ -258,16 +255,6 @@ def test_only_runner_can_create_or_collect(setup, actor):
     assert api.calls == []
 
 
-def test_unrecorded_table_cannot_be_adopted_even_with_matching_labels(setup):
-    controller, env, api, _ = setup
-    api.tables[0] = table(api.plan)
-    with pytest.raises(Failure, match="predates"):
-        controller.provision()
-    assert env.refresh().bigquery["tables"] == {}
-    assert controller.cleanup(lambda: True)
-    assert 0 in api.tables
-
-
 def test_create_intent_precedes_api_and_survives_lost_response(setup):
     controller, env, api, _ = setup
 
@@ -289,13 +276,12 @@ def test_create_intent_precedes_api_and_survives_lost_response(setup):
     )
 
 
-def test_recorded_missing_table_is_never_recreated(setup):
+def test_a_recorded_table_is_never_created_again(setup):
     controller, _, api, _ = setup
     controller.provision()
     del api.tables[0]
     api.calls.clear()
-    with pytest.raises(Failure, match="missing or replaced"):
-        restart(setup).provision()
+    restart(setup).provision()
     assert not any(call[0] == "create" for call in api.calls)
 
 
@@ -480,6 +466,28 @@ def test_unknown_or_pending_submission_blocks_table_deletion(setup, state):
     assert len(api.tables) == 10
 
 
+def test_a_cancel_answer_without_its_job_keeps_cleanup_pending(setup):
+    controller = running(setup)
+    _, env, api, _ = setup
+    controller.reserve_query("final")
+    controller.submit_query("final")
+    api.cancel_query = lambda slot: {}
+    env.actor = "supervisor"
+    assert not restart(setup).cleanup(lambda: True)
+    assert not env.refresh().bigquery["cleaned"]
+    assert len(api.tables) == 10
+
+
+def test_a_table_still_present_after_its_delete_keeps_cleanup_pending(setup):
+    controller, env, api, _ = setup
+    controller.provision()
+    api.delete_table = lambda destination: api.calls.append(("delete", destination))
+    assert not controller.cleanup(lambda: True)
+    assert not env.refresh().bigquery["cleaned"]
+    assert not env.refresh().bigquery["tables"]["0"]["deleted"]
+    assert len(api.tables) == 10
+
+
 def test_completed_and_only_reserved_slots_allow_component_cleanup(setup):
     controller = running(setup)
     _, env, api, _ = setup
@@ -498,7 +506,7 @@ def test_completed_and_only_reserved_slots_allow_component_cleanup(setup):
     assert not record.idle and not record.state_clean and not record.success
 
 
-def test_cleanup_recovers_lost_create_receipt_only_from_persisted_intent(setup):
+def test_cleanup_deletes_a_table_whose_create_response_was_lost(setup):
     controller, env, api, _ = setup
     api.after_create = lambda _: lost()
     with pytest.raises(TransportError):
@@ -507,18 +515,12 @@ def test_cleanup_recovers_lost_create_receipt_only_from_persisted_intent(setup):
     assert restart(setup).cleanup(lambda: True)
     assert not api.tables
     saved = env.refresh().bigquery["tables"]["0"]
-    assert saved["receipt"] is not None and saved["deleted"]
+    assert saved["receipt"] is None and saved["deleted"]
 
 
-def test_cleanup_refuses_replacement_and_resumes_lost_delete(setup):
+def test_cleanup_resumes_a_lost_delete(setup):
     controller, env, api, _ = setup
     controller.provision()
-    original = api.tables[0]["creationTime"]
-    api.tables[0]["creationTime"] = str(NOW * 1000 + 1)
-    with pytest.raises(Failure, match="Replacement table"):
-        controller.cleanup(lambda: True)
-    assert len(api.tables) == 10
-    api.tables[0]["creationTime"] = original
     api.after_delete = lost
     with pytest.raises(TransportError):
         controller.cleanup(lambda: True)
@@ -556,26 +558,22 @@ def test_real_adapter_collects_and_persists_paginated_aggregate(setup):
     assert len(http.calls) == 3
 
 
-def test_real_adapter_cleanup_uses_receipt_and_confirms_absence(setup):
+def test_real_adapter_cleanup_deletes_and_confirms_absence(setup):
     controller, env, api, app = setup
     api.after_create = lambda _: lost()
     with pytest.raises(TransportError):
         controller.provision()
     # Every intent was persisted before the first create, so cleanup also
-    # confirms the never-created tables absent.
+    # deletes and confirms absent the never-created tables.
     others = api.plan.trial.destinations - 1
     real_api, http = client(
         api.plan,
-        table(api.plan),
-        table(api.plan),
         Response({}, 204),
         Response({}, 404),
         *[Response({}, 404) for _ in range(2 * others)],
     )
     assert BigQueryLifecycle(env, real_api, app).cleanup(lambda: True)
-    assert [call[0] for call in http.calls] == ["GET", "GET", "DELETE", "GET"] + [
-        "GET"
-    ] * (2 * others)
+    assert [call[0] for call in http.calls] == ["DELETE", "GET"] * (others + 1)
 
 
 @pytest.mark.parametrize("flag", ["stop_requested", "evidence_failed"])
@@ -600,26 +598,6 @@ def test_control_size_failure_does_not_consume_slot(setup, monkeypatch):
     with pytest.raises(Failure, match="control record exceeds"):
         controller.reserve_query("final")
     assert setup[1].refresh().bigquery == before
-
-
-def test_collection_during_submission_check_cannot_regress_stage(setup):
-    controller = running(setup)
-    _, env, api, _ = setup
-    controller.reserve_query("final")
-    controller.submit_query("final")
-    original = api.table
-
-    def concurrent_collection(destination):
-        api.table = original
-        controller.collect_query("final")
-        return original(destination)
-
-    api.table = concurrent_collection
-    api.calls.clear()
-    with pytest.raises(Failure, match="cannot be resubmitted"):
-        controller.submit_query("final")
-    assert env.refresh().bigquery["queries"]["final"]["stage"] == "collected"
-    assert not any(call[0] == "submit" for call in api.calls)
 
 
 @pytest.mark.parametrize("change", ["namespace", "name", "arguments"])

@@ -99,7 +99,7 @@ def output_line(message):
 class Messages:
     """Internal helper; construction does not authenticate or admit a run.
 
-    The caller authenticates ``actor``, freezes the logical input domain, and
+    The caller names ``actor``, freezes the logical input domain, and
     checks prepared resources, exclusive actor authority and admission before
     each call; ``before_operation(phase, method, name)`` runs before every
     operation.

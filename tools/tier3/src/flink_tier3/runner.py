@@ -169,9 +169,7 @@ class Runner:
             self.admission_open()
         if self.env.approval.scenario == "bigquery-recovery":
             if self.bigquery is None:
-                raise rt.Failure(
-                    "BigQuery execution admission requires its authenticated handoff"
-                )
+                raise rt.Failure("BigQuery execution admission requires its handoff")
             require_handoff(self.env, self.bigquery)
             if rt.digest(application) != self.env.approval.application_sha256:
                 raise rt.Failure("Application differs from the approved manifest")

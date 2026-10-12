@@ -67,8 +67,8 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/bigquery/handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
 | `flink_tier3/bigquery/exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
 | `flink_tier3/lifecycle.py` | The Actions frontend: dispatch, which binds a rendered delivery's approval, Job deadline and ConfigMap size limit, then recovery, plans and finalization |
-| `flink_tier3/bigquery/resources.py` | Internal BigQuery table ownership, query identity/budget and paginated result operations |
-| `flink_tier3/bigquery/actors.py`, `bigquery/auth.py` | The authenticated BigQuery runner and supervisor the production entrypoints run, and their OAuth session |
+| `flink_tier3/bigquery/resources.py` | Internal BigQuery table creation and deletion, query slots and budget, and paginated result operations |
+| `flink_tier3/bigquery/actors.py` | The BigQuery runner and supervisor the production entrypoints run, over the shared authorized session |
 | `flink_tier3/bigquery/quiesce.py` | The supervisor's quiescence barrier: re-lists writer-capable objects in the application namespace and refuses while any of this run's remains |
 | `flink_tier3/bigquery/observe.py`, `bigquery/verdict.py` | Sampling the deployed sink through the job's REST service, and whether a run is a usable measurement |
 | `flink_tier3/bigquery/analyze.py` | Offline recomputation of a deployed BigQuery run's verdict from its exported evidence |
@@ -77,7 +77,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/pubsub/lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
 | `flink_tier3/pubsub/messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
 | `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls, each admitted by its begin marker, and releases attached to common settlement/supervisor cleanup |
-| `flink_tier3/pubsub/actors.py`, `pubsub/auth.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The authenticated Pub/Sub runner and supervisor, the guard that holds each Pub/Sub request to its deadline, and the namespace-wide cleanup barrier |
+| `flink_tier3/pubsub/actors.py`, `pubsub/session.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The Pub/Sub runner and supervisor, their session's record of unsettled writes, the guard that holds each Pub/Sub request to its deadline, and the namespace-wide cleanup barrier |
 | `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program |
 
 The policy file is part of the reviewed revision, with no runtime override path.
@@ -334,7 +334,7 @@ An unsuccessful run can still have an idle result: check both `success` and `idl
 After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
 Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
 `just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` writes `report.json` and `report.md` into an `analysis` directory beside the run, without contacting any service.
-It reports a deployed BigQuery run's verdict, recomputed from its exported `recovery-complete` record rather than read from its receipt, with the reasons behind it; a verdict the record's own stored inputs do not support, an evidence set without the run's account of itself and a receipt disagreeing with the evidence beside it are excluded under the same statuses, while a run that simply did not complete is inconclusive rather than excluded.
+It reports a deployed BigQuery or Pub/Sub run's verdict, recomputed from its exported evidence rather than read from its receipt, with the reasons behind it and the verdict the run stored beside it; a stored verdict other than the recomputed one is named as a problem, an evidence set without what the verdict is decided from has no verdict, and a run that simply did not complete is inconclusive.
 The analyzer's rules are part of the commit the approval's `sha` names, so the approval still pins the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set.
 Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs such as the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) can show.
 

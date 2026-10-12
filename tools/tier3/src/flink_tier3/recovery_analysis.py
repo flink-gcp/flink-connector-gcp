@@ -19,15 +19,13 @@ verdict; these are the steps that read the same exported shapes and apply the
 same rules to them, kept once so the two sections cannot drift.
 """
 
-from .common import INCONCLUSIVE, INCONSISTENT, TAMPERED, UNEXPORTED, USABLE
-
 
 def measurements(run, measurement_event, complete_event):
     """Every sample the run emitted, and how many of its records are unreadable.
 
     A payload that is not an object, or a sample whose stage is not a string,
     is lost to the fold; it is counted here, because the rebuilt coverage would
-    otherwise make a truncated download look like a record overstating itself.
+    otherwise lower the verdict for what is only a truncated download.
     """
     readings = run.events_of(measurement_event)
     malformed = sum(
@@ -51,85 +49,58 @@ def rebuild(readings, summarize):
     return coverage
 
 
-def accounted(claimed, rebuilt, complete):
-    """What the record's coverage claims beyond, or short of, its readings.
+def missing_samples(claimed, rebuilt):
+    """How many samples the record counted that the export does not hold.
 
-    Claiming an attempt or a family the readings do not support is the
-    overstatement; a completed record accounting for fewer readings than the
-    run emitted only disagrees with them. `True` is not a sample count.
+    Each window's attempt count in the record is what the run had read by
+    then; fewer readings in the export are a partial download, which would
+    lower the rebuilt coverage. A count the record does not carry is not
+    compared.
     """
     claimed = claimed if isinstance(claimed, dict) else {}
+    missing = 0
     for window, entry in claimed.items():
-        against = rebuilt.get(window) if isinstance(rebuilt.get(window), dict) else {}
-        entry = entry if isinstance(entry, dict) else {}
-        attempts, observed = entry.get("attempts"), entry.get("observed")
-        if (
-            type(attempts) is not int
-            or attempts > against.get("attempts", 0)
-            or not isinstance(observed, list)
-            # Element types first: `set` of an unhashable element raises.
-            or not all(isinstance(name, str) for name in observed)
-            or not set(observed) <= set(against.get("observed", ()))
-        ):
-            return ["coverage-unsupported-by-its-readings"]
-    if complete and claimed != rebuilt:
-        return ["readings-the-record-does-not-account-for"]
-    return []
+        attempts = entry.get("attempts") if isinstance(entry, dict) else None
+        if type(attempts) is int:
+            against = rebuilt.get(window, {}).get("attempts", 0)
+            missing += max(0, attempts - against)
+    return missing
 
 
-def verdict_problems(record, decided, complete, disagrees):
-    """The stored verdict against the one the evidence supports.
+def unreadable(run, record, problems, samples):
+    """A run whose evidence decides no verdict, and the verdict it stored."""
+    return {
+        "run_id": run.run_id,
+        "verdict": None,
+        "stored": record.get("verdict") if isinstance(record, dict) else None,
+        "reasons": [],
+        "problems": sorted(problems),
+        "samples": samples,
+    }
 
-    Anything but the conservative outcome, or its absence, is the forgery,
-    whatever its spelling; a stored `inconclusive`, or none, under-reports.
+
+def verdict_problems(record, decided, complete):
+    """Whether the verdict the run stored is the one its evidence recomputes to.
+
+    A run that stored none and did not complete has nothing to compare; a
+    completed record without one differs.
     """
     stored, reasons = record.get("verdict"), record.get("reasons")
     if (stored is not None or complete) and (
         stored != decided["verdict"]
         or (reasons if isinstance(reasons, list) else None) != decided["reasons"]
     ):
-        return [
-            disagrees
-            if stored in (None, INCONCLUSIVE)
-            else "verdict-unsupported-by-its-inputs"
-        ]
+        return ["verdict-differs-from-the-record"]
     return []
 
 
-def receipt_problems(result, record, complete, scenario, decided):
-    """The receipt's claims against the record and the recomputed verdict.
-
-    Success is checked in one direction: `false` beside a usable verdict is the
-    runner's own further conditions, `true` beside anything else the forgery.
-    """
-    problems = []
-    if complete and result.get("recovery") != record:
-        problems.append("receipt-record-mismatch")
-    if result.get("scenario") != scenario:
-        problems.append("receipt-scenario-mismatch")
-    if result.get("success") is True and decided["verdict"] != USABLE:
-        problems.append("receipt-success-mismatch")
-    return problems
-
-
-def status(problems, overstatements, missing, verdict):
-    """An overstatement outranks a missing object, which outranks a disagreement.
-
-    A truncated export and a fabricated record look alike once the evidence is
-    gone, and only one of the two is safe to report as benign.
-    """
-    if set(problems) & set(overstatements):
-        return TAMPERED
-    if missing:
-        return UNEXPORTED
-    if problems:
-        return INCONSISTENT
-    return verdict
-
-
 def counts(assessments):
-    """How many runs carry each status, for the analyzer's summary line."""
+    """How many runs carry each verdict, for the analyzer's summary line.
+
+    A run whose evidence decides no verdict is counted as `unreadable`.
+    """
     table = {}
     for item in assessments:
-        table[item["status"]] = table.get(item["status"], 0) + 1
+        name = item["verdict"] or "unreadable"
+        table[name] = table.get(name, 0) + 1
     return ", ".join(f"{name} {number}" for name, number in sorted(table.items()))
