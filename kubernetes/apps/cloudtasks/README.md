@@ -1,15 +1,19 @@
-# Cloud Tasks measurement application
+# Cloud Tasks Tier-3 applications
 
-This internal application supplies the DataStream workload and per-attempt observations for [issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246).
-It runs on Java 17 and uses the reactor's Flink version and Cloud Tasks connector.
-It is built only by the `tier3-cloudtasks` Maven profile and is never deployed to Maven Central.
+This module holds two internal applications.
+The measurement application supplies the DataStream workload and per-attempt observations for [issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246); every section from [Compared paths](#compared-paths) to [Resource boundary and remaining acceptance](#resource-boundary-and-remaining-acceptance) describes it.
+The [recovery application](#recovery-application) is the workload of the cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362).
+Both run on Java 17 and use the reactor's Flink version and Cloud Tasks connector.
+The module is built only by the `tier3-cloudtasks` Maven profile and is never deployed to Maven Central.
 
 ## Build
 
 Run `mise x -- just tier3-cloudtasks-verify` from the repository root.
-The build creates `target/cloudtasks-measurement.jar`; the weekly floor and LTS builds verify it on both supported Flink lines.
+The build creates `target/cloudtasks-measurement.jar`, which holds both applications, and copies the runtime dependency JARs to `target/image-lib/`; the weekly floor and LTS builds verify it on both supported Flink lines.
 The single-host rig of [ADR-0162](../../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) runs its lean probe from this module's test sources.
-No container image is published any more: only the cluster measurement session ran one, and [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723) removed that session.
+The measurement images are no longer published: only the cluster measurement session ran one, and [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723) removed that session.
+The recovery application's image is built from this module's [Dockerfile](Dockerfile) on the Flink 2.2.1 base.
+The CI lane builds it without publishing, and the [image publication](../../images/README.md) publishes it as `cloudtasks-recovery`.
 
 ## Compared paths
 
@@ -183,3 +187,63 @@ The application does not terminate Pods, delete queues or override the lifecycle
 A cluster execution would still need the reviewed image, a Cloud Tasks delivery and admission, which the cluster rig no longer has, fixed numeric resource and cost approval, verified queue settings, and cleanup evidence.
 The full assessment additionally needs three repetitions after warm-up, a sensitivity control, checkpoint/heap/copy/pending/backlog/recovery observations, and the ADR-0104 variability and support decisions.
 Local tests validate observation and runtime wiring; they establish no real-service performance or release verdict.
+
+## Recovery application
+
+`CloudTasksRecoveryJob` writes a finite, checkpointed input through the production `CloudTasksSink` in `EXACTLY_ONCE` (staged) mode to one paused queue in `flink-gcp/us-central1`.
+The JAR's manifest names it, and the image installs the JAR as `/opt/flink/usrlib/cloudtasks-recovery.jar`.
+The application creates no queue and changes, resumes or deletes none: the lifecycle runner creates the run's queue paused before the job starts and deletes it at cleanup.
+
+### Recovery arguments
+
+Arguments use `--name value` pairs; missing values, duplicate options and unknown options are rejected.
+
+| Argument | Accepted value |
+| --- | --- |
+| `--run-id` | The Tier-3 run label: 1–40 lowercase letters, digits and inner hyphens |
+| `--queue` | The queue ID: `ct1362-` followed by a run label |
+| `--records` | Total input records, from 2, so both sink subtasks receive input, to 360,000, one hour at the highest rate |
+| `--records-per-second` | Source ceiling from 1 to 100 |
+| `--phase` | `initial` (default) or `upgrade` |
+| `--require-restored` | `false` (default) or `true`; `--phase upgrade` requires `true` |
+
+### Graph and sink
+
+One source subtask generates the sequences 0 to `records - 1` at the ceiling with Flink Datagen.
+An identity operator, also one subtask, checks that each sequence is the next one and keeps the trial identity, a lineage UUID and its position in operator state.
+A restored state must carry the same run, queue, record count and rate, so state from another trial or configuration fails the job; `--require-restored true` refuses a fresh start.
+Sequence `s` goes to sink subtask `s mod 2`, and the sink runs at parallelism 2 with maximum parallelism 128.
+The source, identity and sink UIDs are `ct1362-source-v1`, `ct1362-input-v1` and `ct1362-sink-v1`.
+Checkpoints run every 30 seconds, one at a time.
+
+The sink is built with the public builder: a fixed `queue(...)`, `deliveryGuarantee(EXACTLY_ONCE)`, and the default staged and writer options.
+Under those defaults the committer reads the queue's `tombstoneTtl` back before it creates a task and refuses a queue that keeps names for less than an hour, so the workload identity needs `cloudtasks.queues.get` beside `cloudtasks.tasks.create`.
+Each task is an HTTP POST to `https://ct1362.invalid/task` whose body repeats its task key; RFC 6761 reserves `.invalid`, and a paused queue dispatches nothing.
+The committers create each checkpoint's tasks in one burst rather than at the source rate.
+The ceiling is 100 records per second because [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) measured staged creation keeping up at that rate on four subtasks with 10-second checkpoints. A 30-second checkpoint of it is 3,000 creates, which two committers on the default single channel, measured at about 210 creates per second per subtask in [#937](https://github.com/flink-gcp/flink-connector-gcp/issues/937), send in seconds and below the 500 per second at which Google's 500/50/5 guidance starts a new queue.
+
+### Task names
+
+The task key of sequence `s` is `<run-id>/<s>`, and the sink names the task with the key's SHA-256 digest in lowercase hex: `projects/flink-gcp/locations/us-central1/queues/<queue>/tasks/<digest>`.
+A listed task name therefore maps back to one sequence through the digests of the run's keys, and a name outside that table did not come from this input.
+A record replayed after a recovery addresses the same name, and the connector counts the service's `ALREADY_EXISTS` for it as success.
+
+### Progress lines
+
+The identity operator writes three kinds of line to the Flink log:
+
+```text
+event=cloudtasks-progress run_id=<run> phase=<phase> lineage=<uuid> restored=<true|false> processed=<n> sequence=<n - 1>
+event=cloudtasks-snapshot run_id=<run> phase=<phase> lineage=<uuid> checkpoint_id=<id> processed=<n>
+event=cloudtasks-checkpoint-complete run_id=<run> phase=<phase> lineage=<uuid> checkpoint_id=<id>
+```
+
+A progress line is logged for the first record of each incarnation, whenever the processed count reaches a multiple of `30 × records-per-second`, and for the last record.
+It is the shape the shared recovery exercise in [`exercise.py`](../../../tools/tier3/src/flink_tier3/exercise.py) parses, and `RecoveryInputTest` holds it against that pattern.
+The lineage stays the same across a restore, and `restored` reports whether this incarnation started from state.
+
+### Local recovery tests
+
+`RecoveryJobITCase` runs the deployed graph and the production sink against `FakeCloudTasks`, an in-process `CreateTask` server that refuses a repeated name with `ALREADY_EXISTS`.
+A run, and a run stopped with a savepoint and resumed from it in the `upgrade` phase, each end with exactly the expected task names.
+The fake has no queue to read, and the connector skips the retention readback for an emulator endpoint; what the real service does is the trial's question.
