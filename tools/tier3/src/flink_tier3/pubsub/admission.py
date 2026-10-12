@@ -35,7 +35,7 @@ def require_admission(runner):
         or not isinstance(handoff.controller.before_operation, PubSubGuard)
         or handoff.settled is None
     ):
-        raise Failure("Pub/Sub admission requires its authenticated, guarded handoff")
+        raise Failure("Pub/Sub admission requires its guarded handoff")
 
 
 def run_probe(runner, probe, deadline):

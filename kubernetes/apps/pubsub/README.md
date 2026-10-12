@@ -159,7 +159,7 @@ The emulator endpoint is a package-private test seam, absent from the deployed C
 [`flink_tier3.pubsub.resources`](../../../tools/tier3/src/flink_tier3/pubsub/resources.py) supplies internal `ResourcePlan` and `Resources` helpers for the internal durable lifecycle controller.
 These helpers are not a CLI scenario and do not admit a workload.
 A plan requires a fresh run ID and a caller-generated ownership nonce of 32 lowercase hexadecimal digits.
-The caller supplies the shared authorized HTTP session, GCS `Storage` adapter and a mandatory `before_operation(phase, method, name)` guard; construction performs no authentication or I/O.
+The caller supplies the shared authorized HTTP session, GCS `Storage` adapter and a mandatory `before_operation(phase, method, name)` guard; construction performs no I/O.
 Use the shared evidence bucket for the control record, as with the other lifecycle records.
 
 `provision()` refuses an existing control record or any of the six existing service names, including resources with matching labels.
@@ -199,7 +199,7 @@ No listing, prefix deletion, same-name adoption or Pub/Sub request retry is perf
 Pub/Sub resource names can be reused after deletion, and the [subscription](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/delete) and [topic](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/delete) delete APIs accept no generation precondition.
 Names and ownership labels therefore do not make deletion atomic with replacement.
 The caller's shared environment lock and exclusive control of run resources must cover provisioning through cleanup, including each read/delete gap; unexpected replacement is an incident to reconcile.
-The guard runs before each Pub/Sub request or logical storage adapter call; the production guard holds each Pub/Sub request to its deadline and the current approval, and the caller keeps exclusive ownership.
+The guard runs before each Pub/Sub request or logical storage adapter call; the production guard holds each Pub/Sub request to its deadline, and the caller keeps exclusive ownership.
 For a control-record `GET`, the shared adapter reads metadata and then generation-matched data, restarting after a jittered wait on a generation race, in at most twenty attempts: up to forty GCS data requests for that single callback.
 A control-record `PUT` callback denotes the logical create upload, whose GCS HTTP method is `POST`.
 Callback counts are not HTTP-request counts.
@@ -274,7 +274,7 @@ The durable controller below uses this entry point; the original `cleanup()` sti
 
 [`PubSubLifecycle`](../../../tools/tier3/src/flink_tier3/pubsub/lifecycle.py) connects the resource helper to the existing generation-checked active run record.
 It is an internal caller contract for `pubsub-recovery`; [dispatch](#approval-dispatch) builds and validates the approval, whose trial binds the inputs, but does not admit execution through it.
-The caller authenticates the lifecycle actor and supplies the shared ownership lock, exclusive resource control and deadline guard.
+The caller supplies the lifecycle actor's session, the shared ownership lock, exclusive resource control and deadline guard.
 The [IAM apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35504842276) succeeded; subsequent role/binding readback matched the three custom roles and two project bindings, and a local refreshed GCP plan was empty.
 These foundation observations do not establish per-resource data access or a recovery result.
 
@@ -320,16 +320,17 @@ Synthetic tests compose production record and resource adapters with fake transp
 [`pubsub_actors`](../../../tools/tier3/src/flink_tier3/pubsub/actors.py) is the only production path that binds a Pub/Sub handoff to a runner or supervisor.
 Neither checks the manifests again: dispatch rendered them through `pubsub_plan.prepare()`, which requires through `require_trial_jobs()` that each `spec.job` runs exactly what the trial derives, and the approval pins their digests, which the supervisor entrypoint checks against its mount.
 A digest pins a manifest, and only that rendering check says the manifest runs the approved trial.
-Each actor authenticates its own service account through [`PubSubSession`](../../../tools/tier3/src/flink_tier3/pubsub/auth.py) before it is returned, and a supervisor takes a fresh process token each time it is constructed.
+Each actor sends its requests through a [`PubSubSession`](../../../tools/tier3/src/flink_tier3/pubsub/session.py) over the BigQuery actors' [session](../bigquery/README.md#internal-actors), which returns a redirect unread, and its own workload's credentials, and a supervisor takes a fresh process token each time it is constructed.
+Constructing an actor sends no Pub/Sub request and does not check which principal the credentials name, although discovering the default credentials may ask the metadata server: each actor takes the credentials of the environment it runs in, the runner's workload identity federation in CI and the supervisor's Kubernetes service account, so a wrong identity needs a misconfigured environment, and IAM then refuses the first call that identity has no permission for ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
 The supervisor's cleanup barrier, [`pubsub_quiesce.barrier`](../../../tools/tier3/src/flink_tier3/pubsub/quiesce.py), is built from the run rather than supplied, and waits until no object of any writer kind remains in `tier3-pubsub`, whoever owns it: the namespace's `pubsub` service account can create Pods and Deployments, and any Pod running as it holds the workload's data grants.
 It proves only that no such object remains after graceful deletion, not that a request a terminated Pod sent has finished at the service; the actors' unsettled-call markers cover only their own requests.
 Outside a run the namespace is expected to hold no such object; dispatch does not refuse one, and one left there keeps the barrier from passing, so cleanup keeps the lock until it is removed.
 `Runner.start` and `Supervisor.supervise` refuse `pubsub-recovery` without these actors, and the supervisor entrypoint builds its own through this factory.
 
 Each actor's [`PubSubGuard`](../../../tools/tier3/src/flink_tier3/pubsub/guard.py) is its `before_operation`, and it checks only Pub/Sub service requests.
-It refuses to start one less than 20 seconds, the session's request budget, before its deadline.
+It refuses to start one less than 20 seconds, the request's timeout, before its deadline.
 It runs as the last step before the request is sent, after any control write of the call, such as its begin marker.
-The budget covers the request's authentication, its sending and the response's status and headers; reading a streamed body is bounded only by the transport's per-read timeout and the helpers' 1 MiB response cap, so a slowly arriving body can still end after the deadline.
+That timeout bounds connecting and each read rather than the whole request, a token refresh before the request takes the same timeout, and reading a streamed body is bounded only by the per-read timeout and the helpers' 1 MiB response cap, so a request can still end after the deadline.
 The deadline is the admission deadline, the earlier of 900 seconds after the window's start and `cleanup_at`, unless a caller holds another through the controller's `until()`: `publish` and `collect` hold `cleanup_at`, because later cohorts and collection belong to the exercise, a caller publishing during admission passes the admission deadline, and cleanup holds none.
 Control and storage operations are not held to it, so a stop, a cleared marker or the evidence of a request already sent can still be written; the handoff enforces stop and evidence failure where it admits new work.
 No per-method operation bound and no aggregate request ceiling exists, as the [offline trial proposal](#offline-trial-proposal) explains.
@@ -366,7 +367,7 @@ A Pod that lands between a poll's barrier check and the handoff's own second che
 A grant that is missing may still be propagating, which IAM documents as typically two minutes and potentially seven or longer, so the six tests are repeated every 15 seconds while a whole further round, one test at a time, still fits before the deadline; a local stop, or one recorded in the run control, ends the wait.
 A grant present where it must not be is refused at once: the resource policies were empty before installation, so the run's own writes cannot explain it.
 Each consumer then pulls its subscriptions once, without acknowledging, while nothing is published yet; a 403 is retried in the same way, and a received message is refused.
-A pull that gets no definite answer sets the session's unsettled-write latch, but the access probe runs outside the handoff's call markers, so it keeps no marker of its own; nothing is published yet, so it cannot lease a message.
+A pull that gets no definite answer marks the session's writes unsettled, but the access probe runs outside the handoff's call markers, so it keeps no marker of its own; nothing is published yet, so it cannot lease a message.
 The probe program silences library logging, so the log kept as evidence holds only its own JSON lines.
 The actors' observations are recorded under the run control's `pubsub.access`, one entry each for the runner and the supervisor, and reach the final receipt with the rest of the Pub/Sub state; the workload's are the probe Pod's log.
 
@@ -471,36 +472,36 @@ A `usable` verdict says nothing about ordering across the replay: the oracle is 
 
 ### Offline recomputation
 
-`flink-tier3 analyze --evidence <directory>` reads a downloaded run directory, as `gcloud storage cp --recursive` leaves `runs/<run-id>/`, and recomputes a `pubsub-recovery` run's verdict beside the Cloud Tasks and BigQuery sections; it contacts no service.
+`flink-tier3 analyze --evidence <directory>` reads a downloaded run directory, as `gcloud storage cp --recursive` leaves `runs/<run-id>/`, and recomputes a `pubsub-recovery` run's verdict beside the BigQuery section; it contacts no service.
 [`pubsub.analyze`](../../../tools/tier3/src/flink_tier3/pubsub/analyze.py) rebuilds from the evidence alone:
 
-- the output oracle, from every batch in batch order, each appended once, with its lines derived again from the saved pull response by the function the collector used, so an `observations.json` that differs from its response is refused;
+- the output oracle, from every batch in batch order, each appended once, with its lines derived again from the saved pull response by the function the collector used, so the batch's `observations.json` is not read;
 - the input identities, from the runner's publication receipts, which bind the returned IDs to request order within the interval their path names, so each output's input message ID is checked against what was published for its input and sequence;
 - the observation coverage, from the `pubsub-measurement` events;
 - `replay_by_new_attempts`, from the observations and the record's fault, through the same predicate the exercise uses.
 
 Whether the boundary held and which observations were collected before the fault are read from the `recovery-complete` record, because rebuilding them would re-run the exercise offline over the exported Pod logs and checkpoint statistics.
-They are held instead to the earlier `recovery-<stage>` records, which wrote the same outcomes as the trial reached them, to the approval, whose trial the fault must name, and to the observations: every attempt the fault names as running before it is the initial job's and restored nothing, the expected replay is the fault's own list, recovery cannot have seen more of it than the whole evidence holds, and a completion record preserving replay IDs is refused when a replay came under an ID no pre-fault attempt processed at all, the looser question an export without collection times can ask; the recovery's own claim, made before later replays arrived, is not asked against the whole export.
-The verdict is recomputed with the rebuilt values, and the run is classified with the BigQuery section's rules, from steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
+The verdict is recomputed with the rebuilt values, and the report places it beside the verdict the run stored, through steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
 
-| Status | Problems that lead to it |
+| Problem | Meaning |
 | --- | --- |
-| `usable` or `inconclusive` | None; the status is the recomputed verdict |
-| `inconsistent` | `unpublished-input-ids`, `readings-the-record-does-not-account-for`, `output-the-record-does-not-account-for`, `oracle-disagrees-with-its-evidence`, `replay-disagrees-with-its-evidence`, `verdict-disagrees-with-its-evidence`, `receipt-record-mismatch`, `receipt-scenario-mismatch`, `repeated-recovery-complete` |
-| `tampered` | `coverage-unsupported-by-its-readings`, `oracle-overstates-its-evidence`, `replay-understated` (a rescale, whose verdict reads the count), `replay-overstated`, `outcomes-differ-from-earlier-records`, `fault-unreadable`, `fault-names-a-later-attempt`, `fault-kind-differs-from-the-approval`, `observed-unreadable`, `observations-differ-from-pull-response`, `replay-ids-overstated`, `verdict-unsupported-by-its-inputs`, `receipt-success-mismatch` |
-| `unexported` | `approval-without-pubsub-trial`, `missing-result.json`, `malformed-evidence`, `malformed-message-evidence`, `missing-recovery-complete`, `missing-output-batches`, `missing-input-receipts` |
+| `verdict-differs-from-the-record` | The stored verdict or its reasons are not the recomputed ones |
+| `unpublished-input-ids` | An output names its input under an ID no publication receipt of that input holds; the verdict is still recomputed |
+| `approval-without-pubsub-trial`, `missing-result.json`, `malformed-evidence`, `malformed-message-evidence`, `missing-recovery-complete` | The evidence the verdict is decided from cannot be read; the run has no verdict |
+| `missing-samples`, `missing-output-batches`, `missing-output-lines`, `missing-input-receipts` | A partial download; the run has no verdict |
 
-A `tampered` problem outranks an `unexported` one, which outranks an `inconsistent` one, as for BigQuery.
-A partial download, found by a gap in a collector's batch counter, by fewer exported lines than the record counted, or by an output of a completed run whose input has no publication receipt, stops every comparison that needs the missing objects, so the record is not charged with what the export lost; the comparisons that do not need them still run first, and the verdict is still asked over the record's own oracle and outcomes, which can only flatter it, so a stored `usable` or a successful receipt that even they refuse is an overstatement.
+A partial download is found by fewer samples in a window than the record counted there, by a gap in a collector's batch counter, by fewer exported lines than the completed record counted, or by an output of a completed run whose input has no publication receipt.
+An oracle rebuilt from it would lower the verdict for what the export lost, so the run gets none; fetch the evidence again.
+The analysis does not classify a disagreement as an edited record or as an inconsistent export, as for BigQuery ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
 An unreadable `supervisor/` or `result.json` document stops the analyzer for the whole directory, as for the other sections.
 The section reports the oracle's duplicate counters, and the runner's receipts beyond one per input as extra publications, apart from the verdict, and states that a usable verdict establishes neither ordering across the replay nor exactly-once output.
-Tests export the evidence a simulated run writes through the real supervisor, collector and message helpers and recompute each trial, a lost boundary, an interrupted run and a redelivery after a rescale from it; edited copies name each problem alone, and outcomes edited in every record are still caught.
+Tests export the evidence a simulated run writes through the real supervisor, collector and message helpers and recompute each trial, a lost boundary, an interrupted run and a redelivery after a rescale from it; edited copies show which edits the recomputation reads and which it does not.
 
 ## Input publication and output collection
 
 [`Messages`](../../../tools/tier3/src/flink_tier3/pubsub/messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) and the runner's [cohort requests](#cohort-requests) publish through them, and the supervisor's [output collector](#output-collector) pulls through them.
-Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the authenticated actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
-The role parameter checks routing only; the caller must authenticate the runner or supervisor and bind that identity, the plan and input domain to current approval.
+Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
+The role parameter checks routing only; the caller must bind the plan and input domain to current approval.
 The guard runs before every operation; the caller verifies prepared resources and effective access, the active run, exclusive actor authority and stop conditions before each call.
 A storage `PUT` callback denotes a create-only logical upload (GCS HTTP `POST`).
 The guard receives phase `publish` for input intent, publication and response storage, `collect` for output intent, pull and response/observation storage, and `acknowledge` for the ACK request and receipt.
@@ -578,7 +579,7 @@ Competing initializations and shared stop are rechecked after a generation confl
 `prepare()` records one runner invocation before creating resources and clears it once the stage is `prepared`.
 After preparation and transition to `READY`, the supervisor constructs its own instance with a distinct fresh token and calls `join()` before collection; joining during `RUNNING` is also permitted while admission is open.
 The submitting process may repeat its binding call idempotently while that admission window remains open, but another process must not reconstruct or transfer its recorded token.
-Tokens identify process ownership; authenticated identities and exclusive resource control remain the caller's responsibility.
+Tokens identify process ownership; exclusive resource control remains the caller's responsibility.
 Use the wrapper from the first initialization call onward: direct resource initialization bypasses atomic actor binding, and direct preparation or message calls bypass its invocation records.
 
 The wrapper's `publish()` and `collect()` use the existing message helpers, with the records-per-subscription domain from the approved trial.
@@ -594,8 +595,8 @@ One actor cannot start another call while its marker is present; runner and supe
 A successful call clears only its own marker, making up to three attempts to persist the conditional completion acknowledgement without repeating the service operation.
 If the acknowledgement committed but its response was lost, the retry cannot clear a newer invocation's marker.
 A failed call requests shared stop, while a failed control write may prevent that stop from reaching the other actor.
-It keeps its marker unless the handoff was given a settled-write check that answers true: the production actors pass their session's, which is true while every Pub/Sub request other than a GET that the actor's session ever sent received, within its budget, a status below 500.
-The latch is the session's, not the call's, so one unsettled write keeps every later marker too.
+It keeps its marker unless the handoff was given a settled-write check that answers true: the production actors pass their session's, which is true while every Pub/Sub request other than a GET or a permission test that the actor's session ever sent received a status below 500 rather than a transport failure.
+The record is the session's, not the call's, so one unsettled write keeps every later marker too.
 Storage uploads go through another client and are not tracked; a lost upload response can at most leave its object to land after settlement, never a service resource.
 Such a call then clears its own marker, so a refusal before any request, or drift found by a read, leaves the run cleanable through ordinary release; a clearing failure keeps the marker.
 A begin write can also land with its response lost; the call then fails before sending anything, so it reads the record and clears that marker too, rather than leaving the lock to an operator's investigation the call does not need.
@@ -725,7 +726,7 @@ Its `pubsub_trial` is the reviewed trial file's, in the [offline proposal schema
 The approval pins the run/nonce, the rig commit, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
 It requires an integral one-hour window with fifteen minutes reserved for cleanup.
 Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
-These checks do not authenticate a caller, verify live provenance or establish a recovery verdict.
+These checks do not verify live provenance or establish a recovery verdict.
 
 Admission's temporary quotas admit four equal Flink shapes in `tier3-pubsub` and three control shapes in `tier3-system`, and no PVCs.
 The fourth application slot covers a replacement while its predecessor terminates; the third control slot covers an Operator replacement.

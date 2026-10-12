@@ -24,6 +24,7 @@ from ..common import ApiError, Failure, digest, json_bytes
 from ..model import Phase
 from ..policy import BIGQUERY_STATE, STATE_OBJECTS
 from .oracle import integer
+from .resources import job_state
 
 MAX_CONTROL_BYTES = 256 * 1024
 # How many leftover staged object names the receipt keeps beside their count.
@@ -45,7 +46,7 @@ def billed_bytes(result):
 class BigQueryLifecycle:
     """Resource controller for an admitted BigQuery lifecycle actor.
 
-    The caller owns budget approval and authenticated actor identity. Cleanup
+    The caller owns budget approval and the actor's role. Cleanup
     additionally requires a quiescence callback; in production it is the
     handoff's barrier, which requires runner release and the writer barrier the
     supervisor factory supplies. This controller's persisted stop flag alone
@@ -172,9 +173,6 @@ class BigQueryLifecycle:
             for destination in range(self.plan.trial.destinations)
             if str(destination) not in tables
         ]
-        for key in missing:
-            if self.api.table(int(key)) is not None:
-                raise Failure("BigQuery table predates its persisted creation intent")
         if missing:
 
             def intend(state):
@@ -186,26 +184,22 @@ class BigQueryLifecycle:
 
         def remember(state):
             for key, receipt in receipts.items():
-                previous = state["tables"][key]["receipt"]
-                if previous not in (None, receipt):
-                    raise Failure("BigQuery table receipt cannot be replaced")
                 state["tables"][key]["receipt"] = receipt
 
         try:
             for destination in range(self.plan.trial.destinations):
                 self._admission()
                 key = str(destination)
-                saved = self._read()["tables"][key]
-                if saved["receipt"] is not None:
-                    self._table(destination, saved["receipt"])
+                if self._read()["tables"][key]["receipt"] is not None:
                     continue
                 observed = self.api.ensure_table(destination)
-                receipts[key] = self._receipt(destination, observed)
+                receipts[key] = {"creationTime": observed.get("creationTime")}
         except BaseException:
             # A stop may arrive after the service accepts a create. Keep the
             # receipts for cleanup even though no new admission is permitted,
             # but never let that write replace the failure being raised: a
-            # receipt it loses is recovered from its intent during cleanup.
+            # table whose receipt it loses is deleted from its intent during
+            # cleanup.
             if receipts:
                 try:
                     self._change(remember)
@@ -214,18 +208,6 @@ class BigQueryLifecycle:
             raise
         if receipts:
             self._change(remember)
-
-    def _receipt(self, destination, table):
-        return {
-            **self.plan.table_body(destination),
-            "type": "TABLE",
-            "creationTime": table["creationTime"],
-        }
-
-    def _table(self, destination, receipt):
-        current = self.api.table(destination)
-        if current is None or self._receipt(destination, current) != receipt:
-            raise Failure("Recorded BigQuery table is missing or replaced")
 
     def reserve_query(self, name):
         """Allocate one durable slot per observation name; retries reuse it."""
@@ -262,7 +244,6 @@ class BigQueryLifecycle:
             table = state["tables"].get(str(destination))
             if table is None or table["receipt"] is None or table["deleted"]:
                 raise Failure("BigQuery query requires every table receipt")
-            self._table(destination, table["receipt"])
 
         def submitting(value):
             item = value["queries"][name]
@@ -437,7 +418,7 @@ class BigQueryLifecycle:
             job = self.api.cancel_query(saved["slot"])
             # An absent job after an uncertain submit does not prove that a
             # late service operation cannot still appear.
-            if job is None or job["status"]["state"] != "DONE":
+            if job_state(job) != "DONE":
                 pending = True
         if pending:
             return False
@@ -456,19 +437,9 @@ class BigQueryLifecycle:
         for key, saved in state["tables"].items():
             self.env.assert_owner()
             destination = int(key)
-            current = self.api.table(destination)
-            if current is not None:
-                receipt = saved["receipt"]
-                if receipt is None:
-                    # Only this persisted create intent authorizes recovery of
-                    # a lost response, after the quiescence barrier.
-                    receipt = self._receipt(destination, current)
-                    self._change(
-                        lambda value, key=key, receipt=receipt: value["tables"][
-                            key
-                        ].update(receipt=receipt)
-                    )
-                self.api.delete_table(destination, receipt)
+            # Only a persisted create intent authorizes deletion, which also
+            # covers a create whose response was lost.
+            self.api.delete_table(destination)
             if self.api.table(destination) is not None:
                 if deleted:
                     self._change(mark)

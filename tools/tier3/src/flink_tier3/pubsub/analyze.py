@@ -14,16 +14,14 @@
 # limitations under the License.
 """Recompute a deployed Pub/Sub recovery run's verdict from its exported evidence.
 
-The supervisor decided the verdict and the receipt carries it; this rebuilds
-what the evidence can show on its own and asks whether the record agrees, the
-way the BigQuery section does. The output oracle is rebuilt from every
-collected batch, the input identities from the runner's publication receipts,
-the observation coverage from the measurement events, and the replay cohort's
-output from the attempts the fault started from the observations themselves.
-Whether the boundary held and which observations were collected before the
-fault are read from the record, held to the earlier transitions that wrote
-the same outcomes and to what the observations say about the attempts it
-names; rebuilding them outright would re-run the exercise offline.
+The supervisor decided the verdict and the receipt carries it; this decides it
+again from what the evidence can show on its own, the way the BigQuery
+section does. The output oracle is rebuilt from every saved pull response, the
+input identities from the runner's publication receipts, the observation
+coverage from the measurement events, and the replay cohort's output from the
+attempts the fault started from the observations themselves. Whether the
+boundary held and which observations were collected before the fault are read
+from the record; rebuilding them outright would re-run the exercise offline.
 
 It imports nothing from ``analyze``, which calls it.
 """
@@ -31,13 +29,12 @@ It imports nothing from ``analyze``, which calls it.
 import json
 import re
 
-from ..common import INCONCLUSIVE, UNEXPORTED, USABLE, Failure
+from ..common import Failure
 from ..recovery_analysis import (
-    accounted,
     measurements,
+    missing_samples,
     rebuild,
-    receipt_problems,
-    status,
+    unreadable,
     verdict_problems,
 )
 from .messages import COHORTS, cohort_ranges, output_line
@@ -47,8 +44,6 @@ from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
-    RESCALES,
-    oracle_reasons,
     started_by_fault,
     summarize,
     verdict,
@@ -56,28 +51,10 @@ from .verdict import (
 
 SCENARIO = "pubsub-recovery"
 REPLAY = COHORTS[1]
-# The domain `cohort_ranges` accepts, so a forged approval excludes one run
-# rather than aborting the directory's analysis.
+# The domain `cohort_ranges` accepts, so an unreadable approval leaves one run
+# without a verdict rather than aborting the directory's analysis.
 MIN_RECORDS, MAX_RECORDS = 3, 10000
 BATCH = re.compile(r"(out-[0-9a-f]{8})-([0-9]{6})")
-# The problems that are a record claiming more than its evidence shows. Every
-# other problem is a disagreement that asserts nothing in the record's favour,
-# so it is inconsistent rather than forged; under-reporting is not tampering.
-OVERSTATEMENTS = (
-    "coverage-unsupported-by-its-readings",
-    "oracle-overstates-its-evidence",
-    "replay-understated",
-    "replay-overstated",
-    "outcomes-differ-from-earlier-records",
-    "fault-unreadable",
-    "fault-names-a-later-attempt",
-    "fault-kind-differs-from-the-approval",
-    "observed-unreadable",
-    "observations-differ-from-pull-response",
-    "replay-ids-overstated",
-    "verdict-unsupported-by-its-inputs",
-    "receipt-success-mismatch",
-)
 
 
 def _read(path):
@@ -102,7 +79,7 @@ def _identity(approval):
         or not isinstance(nonce, str)
     ):
         return None
-    return records, nonce, trial.get("trial")
+    return records, nonce
 
 
 def _published(directory, records):
@@ -157,303 +134,145 @@ def _derived(received):
 
 
 def _collected(directory):
-    """Every collected line in batch order, and what fails, is lost or differs.
+    """Every collected line in batch order, what fails, and what is lost.
 
     Batch IDs carry the collector's prefix and a zero-padded counter from 1,
     so their sort is the order the supervisor collected them in and a gap in a
-    counter is a batch the download lost. The lines are derived again from
-    each saved pull response, as the collector derived them, so an edited
-    `observations.json` cannot change what the oracle reads.
+    counter is a batch the download lost. A batch is the collector's once its
+    `observations.json` was saved; its lines are derived again from the saved
+    pull response, as the collector derived them, so that file's content is
+    not read.
     """
-    lines, malformed, counters, differing = [], 0, {}, 0
+    lines, malformed, counters = [], 0, {}
     for path in sorted((directory / "output").glob("*/observations.json")):
         match = BATCH.fullmatch(path.parent.name)
-        value = _read(path)
-        tsv = value.get("tsv") if isinstance(value, dict) else None
         response = _read(path.parent / "response.json")
         received = (
             response.get("receivedMessages", []) if isinstance(response, dict) else None
         )
         derived = _derived(received) if isinstance(received, list) else None
-        if (
-            match is None
-            or not isinstance(tsv, str)
-            or value.get("count") != len(tsv.splitlines())
-            or derived is None
-        ):
+        if match is None or derived is None:
             malformed += 1
             continue
-        if derived != tsv.splitlines():
-            differing += 1
         counters.setdefault(match.group(1), []).append(int(match.group(2)))
         lines.extend(derived)
     lost = sum(max(numbers) - len(numbers) for numbers in counters.values())
-    return lines, malformed, lost, differing
+    return lines, malformed, lost
 
 
-def _attempts(lines, run_id, records):
-    """The parsed observations, and each attempt's phase and restoration states."""
-    observations = [item for line in lines if (item := parse(line, run_id, records))]
-    states = {}
-    for item in observations:
-        states.setdefault(item["attempt"], set()).add((item["phase"], item["restored"]))
-    return observations, states
+def _observations(lines, run_id, records):
+    """The parsed observations of this run."""
+    return [item for line in lines if (item := parse(line, run_id, records))]
 
 
-def _fault_problems(fault, states, approved):
-    """What the record's fault claims that its evidence or its approval denies."""
-    if not isinstance(fault, dict):
-        return []
+def _replayed(outcomes, observations, records):
+    """The outcomes with the replay cohort's output from new attempts rebuilt.
+
+    A rescale's verdict reads this count, so it is taken from the observations
+    rather than the record. A fault the record does not describe leaves the
+    outcomes as they are, and the verdict then refuses them itself.
+    """
+    fault, after = outcomes.get("fault"), outcomes.get("after")
+    if not isinstance(fault, dict) or not isinstance(after, dict):
+        return outcomes
     before = fault.get("before")
-    expected = fault.get("expected_replay")
-    if (
-        not isinstance(before, list)
-        or not all(isinstance(a, str) for a in before)
-        or not isinstance(expected, list)
-        or not all(
-            isinstance(identity, list)
-            and len(identity) == 2
-            and all(type(part) is int for part in identity)
-            for identity in expected
-        )
-    ):
-        return ["fault-unreadable"]
-    problems = []
-    if fault.get("kind") != approved:
-        problems.append("fault-kind-differs-from-the-approval")
-    # Every attempt before the fault is the initial job's and restored nothing;
-    # a restored or upgraded one named here hides a replay from the rebuild.
-    if any(
-        state != ("initial", False)
-        for attempt in before
-        for state in states.get(attempt, ())
-    ):
-        problems.append("fault-names-a-later-attempt")
-    return problems
-
-
-def _replay_problems(outcomes, observations, records):
-    """The record's replay counts against what the observations hold."""
-    fault, recovery, after = (outcomes.get(k) for k in ("fault", "recovery", "after"))
-    if not all(isinstance(value, dict) for value in (fault, recovery, after)):
-        return [], outcomes
+    if not isinstance(before, list) or not all(isinstance(a, str) for a in before):
+        return outcomes
     cohort = cohort_ranges(records)[REPLAY]
-    expected = {tuple(identity) for identity in fault["expected_replay"]}
     seen = {
         (item["input_index"], item["sequence"])
         for item in observations
         if cohort["start"] <= item["sequence"] < cohort["start"] + cohort["count"]
         and started_by_fault(
-            item["attempt"],
-            item["restored"],
-            item["phase"],
-            fault["before"],
-            fault.get("kind"),
+            item["attempt"], item["restored"], item["phase"], before, fault.get("kind")
         )
     }
-    problems = []
-    # Recovery counted the expected replay at its first chance, so it can have
-    # seen no more of it than the run's whole evidence holds.
-    replayed = recovery.get("replayed")
-    if recovery.get("expected_replay") != len(expected) or (
-        type(replayed) is int and replayed > len(seen & expected)
-    ):
-        problems.append("replay-overstated")
-    # The completion record asked whether each replay came under an ID the
-    # input was processed under before the fault, collected by then; the
-    # export keeps no collection time, so this asks the looser question, any
-    # ID a pre-fault attempt processed at all. Only the completion's claim is
-    # asked: the whole export is the evidence it was made over, while the
-    # recovery's was made before later replays arrived.
-    original = {}
-    for item in observations:
-        if item["attempt"] in fault["before"]:
-            identity = (item["input_index"], item["sequence"])
-            original.setdefault(identity, set()).add(item["input_message_id"])
-    preserved = all(
-        item["input_message_id"]
-        in original.get((item["input_index"], item["sequence"]), ())
-        for item in observations
-        if (item["input_index"], item["sequence"]) in expected
-        and started_by_fault(
-            item["attempt"],
-            item["restored"],
-            item["phase"],
-            fault["before"],
-            fault.get("kind"),
-        )
-    )
-    # Matched by identity: `1 == True` in Python.
-    if not preserved and after.get("replay_ids_preserved") is True:
-        problems.append("replay-ids-overstated")
-    claimed = after.get("replay_by_new_attempts")
-    if claimed != len(seen):
-        # A rescale's verdict reads this count, so claiming fewer is the
-        # overstatement; a replacement's does not, so any difference only
-        # disagrees.
-        problems.append(
-            "replay-understated"
-            if fault.get("kind") in RESCALES
-            and type(claimed) is int
-            and claimed < len(seen)
-            else "replay-disagrees-with-its-evidence"
-        )
-    return problems, {
-        **outcomes,
-        "after": {**after, "replay_by_new_attempts": len(seen)},
-    }
+    return {**outcomes, "after": {**after, "replay_by_new_attempts": len(seen)}}
 
 
-def _earlier_outcomes(run, outcomes):
-    """Whether every earlier transition wrote the outcomes the record now holds.
-
-    Each `recovery-<stage>` record carries the outcomes gathered so far, so an
-    outcome edited only in the final record differs from the one the
-    transition after it recorded.
-    """
-    for entry in run.events:
-        if (
-            not entry["event"].startswith("recovery-")
-            or entry["event"] == COMPLETE_EVENT
-        ):
-            continue
-        payload = entry["payload"]
-        earlier = payload.get("outcomes") if isinstance(payload, dict) else None
-        if isinstance(earlier, dict) and any(
-            outcomes.get(name) != value for name, value in earlier.items()
-        ):
-            return ["outcomes-differ-from-earlier-records"]
-    return []
-
-
-def _observed_problems(record, lines, complete):
-    """The record's count of collected lines against the lines exported.
-
-    Returns the problems and whether the export is short of the record.
-    """
-    if not complete:
-        return [], False
-    observed = record.get("observed")
+def _missing(record, lines, complete):
+    """How many collected lines the export is short of the record's own count."""
+    observed = record.get("observed") if complete else None
     counted = (
         [observed.get("observations"), observed.get("foreign")]
         if isinstance(observed, dict)
         else None
     )
     if counted is None or not all(type(value) is int for value in counted):
-        return ["observed-unreadable"], False
-    claimed = sum(counted)
-    if len(lines) < claimed:
-        return [f"missing-output-batches:{claimed - len(lines)}"], True
-    if len(lines) > claimed:
-        return [f"output-the-record-does-not-account-for:{len(lines) - claimed}"], False
-    return [], False
+        return 0
+    return max(0, sum(counted) - len(lines))
 
 
-def _oracle_problems(claimed, rebuilt):
-    """How the record's oracle compares with the one its batches rebuild."""
-    if claimed == rebuilt:
-        return []
-    if oracle_reasons(rebuilt) and not oracle_reasons(claimed):
-        return ["oracle-overstates-its-evidence"]
-    return ["oracle-disagrees-with-its-evidence"]
-
-
-def _excluded(run, problems, samples, assessed=UNEXPORTED):
+def _unreadable(run, record, problems, samples):
     return {
-        "run_id": run.run_id,
-        "status": assessed,
-        "verdict": None,
-        "reasons": [],
-        "problems": sorted(problems),
-        "samples": samples,
+        **unreadable(run, record, problems, samples),
         "oracle": None,
         "extra_publications": None,
     }
 
 
 def assess(run):
-    """One Pub/Sub run's status, its recomputed verdict and its problems.
+    """One Pub/Sub run's recomputed verdict, its stored one and its problems.
 
-    `unexported` is an evidence set missing what its own record names,
-    `tampered` a record claiming more than its evidence shows, and
-    `inconsistent` evidence that disagrees with itself; none of them is a
-    verdict. A run that never completed exported its account of itself, which
-    says so, and is `inconclusive`.
+    A run whose evidence lacks what the verdict is decided from has no
+    verdict: a partial download would otherwise lower it for what is only
+    missing from the export. A run that never completed exported its account
+    of itself, which says so, and is `inconclusive`.
     """
     approval = run.approval if isinstance(run.approval, dict) else {}
     identity = _identity(approval)
     readings, malformed = measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
+    samples = len(readings)
     result = run.result if isinstance(run.result, dict) else None
     if identity is None:
-        return _excluded(run, ["approval-without-pubsub-trial"], len(readings))
+        return _unreadable(run, None, ["approval-without-pubsub-trial"], samples)
     if result is None:
-        return _excluded(run, ["missing-result.json"], len(readings))
-    if malformed:
-        return _excluded(run, [f"malformed-evidence:{malformed}"], len(readings))
-    records, nonce, approved = identity
+        return _unreadable(run, None, ["missing-result.json"], samples)
     completions = run.events_of(COMPLETE_EVENT)
     complete = bool(completions)
     record = completions[-1]["payload"] if complete else result.get("recovery")
+    if malformed:
+        return _unreadable(run, record, [f"malformed-evidence:{malformed}"], samples)
     if not isinstance(record, dict):
-        return _excluded(run, ["missing-" + COMPLETE_EVENT], len(readings))
+        return _unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
+    if not complete and record.get("stage") == COMPLETE_STAGE:
+        return _unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
+    records, nonce = identity
     directory = run.directory / "pubsub" / "messages" / nonce
     published, bad_inputs = _published(directory, records)
-    lines, bad_batches, lost, differing = _collected(directory)
+    lines, bad_batches, lost = _collected(directory)
     if bad_inputs or bad_batches:
-        return _excluded(
+        return _unreadable(
             run,
+            record,
             [f"malformed-message-evidence:{bad_inputs + bad_batches}"],
-            len(readings),
+            samples,
         )
     problems = []
-    if differing:
-        problems.append("observations-differ-from-pull-response")
-    missing = not complete and record.get("stage") == COMPLETE_STAGE
-    if missing:
-        problems.append("missing-" + COMPLETE_EVENT)
-    if len(completions) > 1:
-        problems.append(f"repeated-{COMPLETE_EVENT}:{len(completions)}")
-    outcomes = record.get("outcomes")
-    outcomes = outcomes if isinstance(outcomes, dict) else {}
-    observations, states = _attempts(lines, run.run_id, records)
-    # What does not depend on every batch being present is asked first, so a
-    # record that overstates itself is not excused by a partial download.
     coverage = rebuild(readings, summarize)
-    problems.extend(accounted(record.get("coverage"), coverage, complete))
-    problems.extend(_earlier_outcomes(run, outcomes))
-    problems.extend(_fault_problems(outcomes.get("fault"), states, approved))
-    counted, short = _observed_problems(record, lines, complete)
-    problems.extend(counted)
+    if missing := missing_samples(record.get("coverage"), coverage):
+        problems.append(f"missing-samples:{missing}")
     if lost:
-        short = True
         problems.append(f"missing-output-batches:{lost}")
+    # A batch lost from the end leaves no gap in a counter; the record's own
+    # count of what it collected shows it.
+    if missing := _missing(record, lines, complete):
+        problems.append(f"missing-output-lines:{missing}")
+    observations = _observations(lines, run.run_id, records)
     unreceipted = {
         (item["input_index"], item["sequence"])
         for item in observations
         if (item["input_index"], item["sequence"]) not in published
     }
     if complete and unreceipted:
-        short = True
         problems.append(f"missing-input-receipts:{len(unreceipted)}")
-    if short:
-        # A partial download: an oracle rebuilt from it would charge the
-        # record with what the export lost, so it is not rebuilt. The verdict
-        # is still asked over the record's own oracle and outcomes, which can
-        # only flatter it: a stored `usable` that even they refuse, or a
-        # successful receipt beside it, overstates the record regardless of
-        # what the download lost.
-        flattered = verdict({**record, "outcomes": outcomes, "coverage": coverage})
-        if flattered["verdict"] != USABLE:
-            if record.get("verdict") not in (None, INCONCLUSIVE):
-                problems.append("verdict-unsupported-by-its-inputs")
-            if result.get("success") is True:
-                problems.append("receipt-success-mismatch")
-        return _excluded(
-            run,
-            problems,
-            len(readings),
-            status(problems, OVERSTATEMENTS, True, None),
-        )
+    if problems:
+        return _unreadable(run, record, problems, samples)
+    # The publication receipts bind each returned ID to its input, so an
+    # output naming an input under an ID no receipt holds was not published by
+    # this run.
+    # An unfinished run can hold an output whose publication response was
+    # lost, which is an unknown outcome rather than an unpublished input.
     unpublished = sum(
         1
         for item in observations
@@ -463,29 +282,25 @@ def assess(run):
     )
     if unpublished:
         problems.append(f"unpublished-input-ids:{unpublished}")
+    outcomes = record.get("outcomes")
+    outcomes = outcomes if isinstance(outcomes, dict) else {}
     oracle = reconcile(lines, run.run_id, records)
-    if "fault-unreadable" not in problems:
-        replay, outcomes = _replay_problems(outcomes, observations, records)
-        problems.extend(replay)
-    if complete or record.get("stage") == COMPLETE_STAGE:
-        problems.extend(_oracle_problems(record.get("oracle"), oracle))
     decided = verdict(
-        {**record, "outcomes": outcomes, "coverage": coverage, "oracle": oracle}
+        {
+            **record,
+            "outcomes": _replayed(outcomes, observations, records),
+            "coverage": coverage,
+            "oracle": oracle,
+        }
     )
-    problems.extend(
-        verdict_problems(
-            record, decided, complete, "verdict-disagrees-with-its-evidence"
-        )
-    )
-    problems.extend(receipt_problems(result, record, complete, SCENARIO, decided))
-    assessed = status(problems, OVERSTATEMENTS, missing, decided["verdict"])
+    problems.extend(verdict_problems(record, decided, complete))
     return {
         "run_id": run.run_id,
-        "status": assessed,
-        "verdict": None if assessed == UNEXPORTED else decided["verdict"],
+        "verdict": decided["verdict"],
+        "stored": record.get("verdict"),
         "reasons": decided["reasons"],
         "problems": sorted(problems),
-        "samples": len(readings),
+        "samples": samples,
         "oracle": oracle,
         "extra_publications": sum(len(ids) - 1 for ids in published.values()),
     }
@@ -514,12 +329,11 @@ def render(assessments):
             "A verdict recomputed from the exported evidence: the output oracle, "
             "the input identities, the coverage and the replay cohort's output "
             "from new attempts are rebuilt; whether the boundary held and which "
-            "observations preceded the fault are read from the record, held to "
-            "its earlier transitions."
+            "observations preceded the fault are read from the record."
         ),
         "",
         (
-            "| run | status | verdict | samples | logical inputs | duplicates | "
+            "| run | verdict | stored | samples | logical inputs | duplicates | "
             "extra publications | reasons | problems |"
         ),
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -528,11 +342,11 @@ def render(assessments):
         oracle = item["oracle"] if isinstance(item["oracle"], dict) else {}
         extra = item["extra_publications"]
         lines.append(
-            "| {run} | {status} | {verdict} | {samples} | {inputs} | {duplicates} | "
+            "| {run} | {verdict} | {stored} | {samples} | {inputs} | {duplicates} | "
             "{extra} | {reasons} | {problems} |".format(
                 run=item["run_id"],
-                status=item["status"],
                 verdict=item["verdict"] or "-",
+                stored=item["stored"] or "-",
                 samples=item["samples"],
                 inputs=oracle.get("logical_inputs", "-"),
                 duplicates=_counters(oracle),

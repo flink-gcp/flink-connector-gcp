@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Hold each Pub/Sub service request to its deadline and approval."""
+"""Hold each Pub/Sub service request to its deadline."""
 
 from contextlib import contextmanager
 
@@ -33,10 +33,12 @@ def admission_deadline(env):
 class PubSubGuard:
     """The production ``before_operation`` for one Pub/Sub actor.
 
-    A Pub/Sub request is refused when it would start within the session's
-    request budget of the current deadline. That budget ends at the
-    response's headers; a streamed body is bounded only by the transport's
-    per-read timeout and the helpers' 1 MiB response cap, not by the deadline. The deadline is the admission
+    A Pub/Sub request is refused when it would start within its HTTP timeout
+    of the current deadline. That timeout bounds connecting and each read
+    rather than the whole request, and a token refresh before it takes the
+    same timeout, so a request can still end after the deadline; a streamed
+    body is bounded only by the per-read timeout and the helpers' 1 MiB
+    response cap. The deadline is the admission
     deadline unless a caller holds another with ``until``; message traffic
     belongs to the exercise and holds ``cleanup_at``, and cleanup holds none,
     because it must stay usable after both. Control and storage operations

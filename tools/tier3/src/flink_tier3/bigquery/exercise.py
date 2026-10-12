@@ -48,7 +48,7 @@ def require_handoff(env, handoff):
 class BigQueryExercise(RecoveryExercise):
     """Recover the finite input, then obtain a bounded query-visible result.
 
-    The caller supplies authenticated actors and the cleanup quiescence barrier.
+    The caller supplies the actors and the cleanup quiescence barrier.
     It decides the deployed measurement verdict from the recovery evidence it
     records and the observation coverage it accumulated, and writes it with the
     transition that completes the run.

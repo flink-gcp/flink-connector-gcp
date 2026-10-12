@@ -14,12 +14,11 @@
 # limitations under the License.
 """Recompute a deployed BigQuery run's verdict from its exported evidence.
 
-The Pod decided the verdict and the receipt carries it, which is exactly why
-this recomputes rather than reads it: a reader holding only the downloaded
-evidence directory can then tell a run that earned its verdict from one whose
-receipt says so. The vocabulary is the analysis vocabulary that already
-exists — `usable`, `inconclusive`, and the excluded statuses for evidence that
-cannot be read at all — rather than a second one invented for this scenario.
+The Pod decided the verdict and the receipt carries it; this decides it again
+from the exported readings, so a reader holding only the downloaded evidence
+directory can check the stored verdict against them. The vocabulary is the
+analysis vocabulary that already exists, `usable` and `inconclusive`, and a
+run whose evidence cannot be read has no verdict.
 
 It takes a run the way ``analyze`` already reads one, and imports nothing from
 it, because ``analyze`` is what calls this. Every event name and stage it looks
@@ -28,15 +27,13 @@ from, so a rename cannot reach only one side and leave this reporting missing
 evidence.
 """
 
-from ..common import UNEXPORTED
 from ..recovery_analysis import (
-    accounted,
     measurements,
+    missing_samples,
     rebuild,
-    receipt_problems,
+    unreadable,
     verdict_problems,
 )
-from ..recovery_analysis import status as assess_status
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
@@ -47,115 +44,53 @@ from .verdict import (
 )
 
 SCENARIO = "bigquery-recovery"
-# The problems that are a record claiming what its evidence denies. Every other
-# problem is a disagreement: the record and its evidence do not match, but the
-# record asserts nothing in its own favour, so it is inconsistent rather than
-# forged. Under-reporting is not tampering.
-OVERSTATEMENTS = (
-    "coverage-unsupported-by-its-readings",
-    "verdict-unsupported-by-its-inputs",
-    # The receipt is a claim too, and its `success` is the one the run is read
-    # for. A usable verdict is not the whole of what the runner requires, but
-    # it is required, so `true` beside readings that support no such verdict is
-    # always an edit. The converse is the runner's own business, which is why
-    # the check below is one-directional.
-    "receipt-success-mismatch",
-)
-
-
-def _measurements(run):
-    return measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
-
-
-def _excluded(run, problems):
-    readings, _ = _measurements(run)
-    return {
-        "run_id": run.run_id,
-        "status": UNEXPORTED,
-        "verdict": None,
-        "reasons": [],
-        "problems": problems,
-        "samples": len(readings),
-    }
 
 
 def assess(run):
-    """One BigQuery run's status, its recomputed verdict and its problems.
+    """One BigQuery run's recomputed verdict, its stored one and its problems.
 
-    `unexported` is an evidence set that does not hold the run's own account
-    of itself; `tampered` is a verdict its inputs do not support; and
-    `inconsistent` is an evidence set that disagrees with itself. None of the
-    three is a measurement, and each is excluded for the same reason the Cloud
-    Tasks analysis excludes them: what a run measured cannot be asked of
-    evidence that cannot be trusted to be that run's.
-
-    A run that never completed is none of those three. It exported its account
-    of itself and that account says it did not finish, which is the ordinary
-    `inconclusive` outcome — the archetypal case being a run that proved both
+    A run whose evidence lacks what the verdict is decided from, or holds a
+    record nothing can read, has no verdict; re-export it and read it again. A
+    run that never completed exported its account of itself, which says so,
+    and is `inconclusive` — the archetypal case being a run that proved both
     recoveries and then exhausted its approved query slots.
     """
-    readings, malformed = _measurements(run)
+    readings, malformed = measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
     result = run.result if isinstance(run.result, dict) else None
     if result is None:
-        return _excluded(run, ["missing-result.json"])
-    # An unreadable record is an incomplete evidence set, not a dishonest one.
-    # The rebuilt coverage is missing whatever that record held, so neither
-    # accusation below can be made from it: a partial `gcloud storage cp` would
-    # otherwise be reported as a forgery. Re-export and read it again.
-    if malformed:
-        return _excluded(run, [f"malformed-evidence:{malformed}"])
+        return unreadable(run, None, ["missing-result.json"], len(readings))
     completions = run.events_of(COMPLETE_EVENT)
     complete = bool(completions)
     record = completions[-1]["payload"] if complete else result.get("recovery")
+    # A reading the fold cannot place would lower the rebuilt coverage, and
+    # the verdict with it, for what is only a truncated download.
+    if malformed:
+        return unreadable(
+            run, record, [f"malformed-evidence:{malformed}"], len(readings)
+        )
     if not isinstance(record, dict):
-        return _excluded(run, ["missing-" + COMPLETE_EVENT])
+        return unreadable(run, None, ["missing-" + COMPLETE_EVENT], len(readings))
+    # A record that says it completed, with no completion evidence beside it,
+    # is an export missing a file.
+    if not complete and record.get("stage") == COMPLETE_STAGE:
+        return unreadable(run, record, ["missing-" + COMPLETE_EVENT], len(readings))
     # Decide over the coverage the readings support, never the coverage the
-    # record claims: recomputing from a field the same hand could edit would
-    # only restate the record to itself.
-    rebuilt = rebuild(readings, summarize)
-    # The trial the receipt names decides which families are required.
+    # record claims: recomputing from the record's own field would only restate
+    # it.
+    coverage = rebuild(readings, summarize)
+    if missing := missing_samples(record.get("coverage"), coverage):
+        return unreadable(run, record, [f"missing-samples:{missing}"], len(readings))
     trial = result.get("bigquery_trial")
     decided = verdict(
-        {**record, "coverage": rebuilt},
+        {**record, "coverage": coverage},
         trial.get("mode") if isinstance(trial, dict) else None,
     )
-    problems = []
-    if len(completions) > 1:
-        problems.append(f"repeated-{COMPLETE_EVENT}:{len(completions)}")
-    # A record that says it completed, with no completion evidence beside it,
-    # is an export missing a file: an absent object is named only by the record
-    # it should have accompanied. This is a problem and not a short circuit,
-    # because the same shape is what a wholly fabricated receipt looks like —
-    # and the checks below are the only thing that tells the two apart.
-    missing = not complete and record.get("stage") == COMPLETE_STAGE
-    if missing:
-        problems.append("missing-" + COMPLETE_EVENT)
-    unsupported = accounted(record.get("coverage"), rebuilt, complete)
-    problems.extend(unsupported)
-    # The verdict the Pod wrote, against the decision the evidence supports.
-    # This is the check the receipt cannot do itself. An incomplete record
-    # carries no verdict to compare, and cannot recompute to `usable`, because
-    # its stage is not the completed one.
-    # The verdict the Pod wrote, against the decision the evidence supports.
-    # This is the check the receipt cannot do itself. An incomplete record
-    # carries no verdict to compare, and cannot recompute to `usable`, because
-    # its stage is not the completed one.
-    problems.extend(
-        verdict_problems(
-            record, decided, complete, "verdict-disagrees-with-its-readings"
-        )
-    )
-    problems.extend(receipt_problems(result, record, complete, SCENARIO, decided))
-    status = assess_status(problems, OVERSTATEMENTS, missing, decided["verdict"])
     return {
         "run_id": run.run_id,
-        "status": status,
-        # An unexported run has no evidence to decide from, so it publishes no
-        # verdict. A tampered or inconsistent one does: what its readings
-        # actually support is what makes the exclusion legible.
-        "verdict": None if status == UNEXPORTED else decided["verdict"],
+        "verdict": decided["verdict"],
+        "stored": record.get("verdict"),
         "reasons": decided["reasons"],
-        "problems": sorted(problems),
+        "problems": verdict_problems(record, decided, complete),
         "samples": len(readings),
     }
 
@@ -173,17 +108,17 @@ def render(assessments):
         "",
         "## Deployed BigQuery runs",
         "",
-        "A verdict recomputed from the exported evidence, not read from the receipt.",
+        "A verdict recomputed from the exported evidence, beside the one the run stored.",
         "",
-        "| run | status | verdict | samples | reasons | problems |",
+        "| run | verdict | stored | samples | reasons | problems |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         lines.append(
-            "| {run} | {status} | {verdict} | {samples} | {reasons} | {problems} |".format(
+            "| {run} | {verdict} | {stored} | {samples} | {reasons} | {problems} |".format(
                 run=item["run_id"],
-                status=item["status"],
                 verdict=item["verdict"] or "-",
+                stored=item["stored"] or "-",
                 samples=item["samples"],
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",

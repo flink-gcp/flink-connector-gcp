@@ -256,13 +256,13 @@ class Supervisor:
             or self.pubsub.settled is None
         ):
             raise Failure(
-                "Pub/Sub recovery supervision requires its authenticated handoff "
+                "Pub/Sub recovery supervision requires its handoff "
                 "and its approved recovery manifest"
             )
         if self.env.approval.scenario == "bigquery-recovery":
             if self.exercise is None or self.bigquery is None:
                 raise Failure(
-                    "BigQuery recovery supervision requires its authenticated exercise and handoff"
+                    "BigQuery recovery supervision requires its exercise and handoff"
                 )
             require_handoff(self.env, self.bigquery)
         self.env.refresh()

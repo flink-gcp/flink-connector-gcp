@@ -41,7 +41,7 @@ def require_pubsub_clean(record):
 class PubSubLifecycle:
     """Internal controller; not a runnable approval or a numeric budget policy.
 
-    The caller supplies authenticated runner/supervisor identity, exclusive
+    The caller supplies the runner/supervisor role, exclusive
     resource control and a mandatory deadline guard, which sees every
     resource request. Only this rig's own code writes the record, its two
     actors and the lifecycle's recovery, so it is read as written rather than

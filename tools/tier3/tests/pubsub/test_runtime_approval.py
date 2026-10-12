@@ -176,9 +176,9 @@ def test_application_replacement_and_control_quotas(prepared):
 
 def test_entrypoints_refuse_without_their_handoff(prepared):
     environment, application = prepared
-    with pytest.raises(Failure, match="authenticated, guarded handoff"):
+    with pytest.raises(Failure, match="guarded handoff"):
         Runner(environment).start(None, None, application)
-    with pytest.raises(Failure, match="requires its authenticated handoff"):
+    with pytest.raises(Failure, match="requires its handoff"):
         Supervisor(environment).supervise("unused-pod")
 
 

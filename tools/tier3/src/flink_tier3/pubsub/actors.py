@@ -12,20 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Construct the authenticated Pub/Sub actors the production entrypoints run."""
+"""Construct the Pub/Sub actors the production entrypoints run."""
 
 import uuid
 from contextlib import contextmanager
 
-from ..actor_auth import authenticate
 from ..common import Failure
+from ..google import actor_session
 from ..runner import Runner
 from ..supervisor import Supervisor
-from .auth import PubSubSession
-from .guard import PubSubGuard, admission_deadline
+from .guard import PubSubGuard
 from .handoff import PubSubHandoff
 from .lifecycle import PubSubLifecycle
 from .quiesce import barrier
+from .session import PubSubSession
 
 
 def _handoff(env, token, http, role):
@@ -43,11 +43,9 @@ def runner(env, *, runner_token, credentials=None):
     Keep this context open through start and settlement. The caller retains the
     original process token and owns dispatch authorization and the quiescence barrier.
     """
-    with PubSubSession("runner", credentials) as http:
+    with PubSubSession(actor_session(credentials)) as http:
         handoff = _handoff(env, runner_token, http, "runner")
         actor = Runner(env, pubsub=handoff)
-        actor.admission_open()
-        authenticate(env, http, admission_deadline(env))
         actor.admission_open()
         yield actor
 
@@ -61,8 +59,6 @@ def supervisor(env, upgrade, *, credentials=None):
     takes a fresh token, which joining binds.
     """
     quiesce = barrier(env)
-    with PubSubSession("supervisor", credentials) as http:
+    with PubSubSession(actor_session(credentials)) as http:
         handoff = _handoff(env, uuid.uuid4().hex, http, "supervisor")
-        actor = Supervisor(env, upgrade, pubsub=handoff, quiesce=quiesce)
-        authenticate(env, http, env.schedule.cleanup_at)
-        yield actor
+        yield Supervisor(env, upgrade, pubsub=handoff, quiesce=quiesce)

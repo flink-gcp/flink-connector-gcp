@@ -394,7 +394,7 @@ def test_an_unguarded_or_unsettled_handoff_is_refused_before_any_write(
     else:
         a.sender.settled = None
     before = a.environment.refresh().to_dict()
-    with pytest.raises(Failure, match="authenticated, guarded handoff"):
+    with pytest.raises(Failure, match="guarded handoff"):
         a.runner.start(*a.args)
     assert a.environment.refresh().to_dict() == before
     assert not a.events
@@ -814,7 +814,7 @@ def test_slow_tests_end_the_wait_before_a_round_could_overrun_the_deadline(admit
 def test_a_supervisor_with_an_unguarded_handoff_refuses_to_supervise(admitting):
     a = admitting
     a.receiver.controller.before_operation = lambda *args: None
-    with pytest.raises(Failure, match="requires its authenticated handoff"):
+    with pytest.raises(Failure, match="requires its handoff"):
         a.supervisor.supervise("unused-pod")
 
 
@@ -824,7 +824,7 @@ def test_a_supervisor_without_its_recovery_manifest_refuses_to_supervise(admitti
         a.observer, None, pubsub=a.receiver, quiesce=barrier(a.observer)
     )
     assert unarmed.exercise is None
-    with pytest.raises(Failure, match="requires its authenticated handoff"):
+    with pytest.raises(Failure, match="requires its handoff"):
         unarmed.supervise("unused-pod")
 
 

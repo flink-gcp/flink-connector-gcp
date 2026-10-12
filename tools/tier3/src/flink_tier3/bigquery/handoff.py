@@ -22,6 +22,7 @@ import uuid
 
 from ..common import Failure, digest, json_bytes
 from ..policy import BIGQUERY_OBSERVATIONS
+from .resources import job_state
 
 
 def require_bigquery_clean(record):
@@ -289,7 +290,7 @@ class BigQueryHandoff:
             )
             if job is None:
                 raise Failure("Submitted BigQuery query is not readable")
-            if job["status"]["state"] != "DONE":
+            if job_state(job) != "DONE":
                 return None
             if self.env.clock() >= request["deadline"]:
                 raise Failure("BigQuery observation deadline expired")

@@ -97,11 +97,10 @@ def test_the_supervisor_s_source_pin_covers_the_pub_sub_actors():
     delivered = delivered_sources()
     for name in (
         "pubsub/actors.py",
-        "pubsub/auth.py",
+        "pubsub/session.py",
         "pubsub/guard.py",
         "pubsub/quiesce.py",
         "pubsub/access.py",
-        "actor_auth.py",
         "quiesce.py",
     ):
         assert name in delivered, name

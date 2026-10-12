@@ -374,15 +374,15 @@ def service_cleaned(prepared, stored):
     return environment, runner, api, supervisor
 
 
-def test_an_actor_without_its_authenticated_handoff_refuses_before_mutation(
+def test_an_actor_without_its_handoff_refuses_before_mutation(
     prepared,
 ):
     """Enabled, but only through the actor factories: a bare actor still refuses."""
     environment, application, *_ = prepared
     before = copy.deepcopy(environment.store.data)
-    with pytest.raises(Failure, match="requires its authenticated handoff"):
+    with pytest.raises(Failure, match="requires its handoff"):
         Runner(environment).start({}, {}, application)
-    with pytest.raises(Failure, match="requires its authenticated exercise"):
+    with pytest.raises(Failure, match="requires its exercise"):
         Supervisor(environment).supervise("unused")
     assert environment.kube.calls == []
     assert environment.store.data == before

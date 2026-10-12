@@ -60,14 +60,6 @@ def job_finished(job):
 # the analyzer itself is not part of what the supervisor mounts.
 USABLE = "usable"
 INCONCLUSIVE = "inconclusive"
-# Evidence problems rather than measurements: excluded everywhere. One of these
-# is not a result that came out badly, it is a result nobody may read. They are
-# named rather than positional because a caller that reaches into the tuple
-# re-labels every record when the order changes, with nothing to fail.
-UNEXPORTED = "unexported"
-TAMPERED = "tampered"
-INCONSISTENT = "inconsistent"
-EXCLUDED = (UNEXPORTED, TAMPERED, INCONSISTENT)
 
 
 class ApiError(Failure):
