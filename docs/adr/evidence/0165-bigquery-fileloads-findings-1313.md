@@ -54,6 +54,13 @@ Billing is BigQuery's 10 MiB minimum per table read, far below the 4 GiB reserva
 The upgrade restored its savepoint and the failover the latest completed checkpoint, each proved in under two minutes from the stage's start.
 The first job failed its first checkpoint trigger because its source task was not yet running, then completed 8 before the upgrade; after the failover the upgraded job's JobManager reported 9 completed, 1 restored and none failed.
 
+Re-read on 2026-10-13 under [#1781](https://github.com/flink-gcp/flink-connector-gcp/issues/1781) from the exported evidence, with the timing [ADR-0165](../0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#recovery-timing-from-flinks-timestamps) defines: from each stage's start to Flink's restore and to the acknowledgement of the checkpoint that proved the restored job, which bound when it was processing again.
+The second figure also carries the 120-second checkpoint interval and the supervisor's 15-second poll.
+
+| Attempt | Upgrade restored after | Upgrade checkpoint acknowledged after | Failover restored after | Failover checkpoint acknowledged after |
+| --- | ---: | ---: | ---: | ---: |
+| `bq1313-fl-10-a1` | 59.5 s | 100.6 s (chk-10) | 37.9 s | 56.2 s (chk-11) |
+
 No load job was running server-side at either recovery; the times below are BigQuery's job times unless they name the committer.
 The last load of the commit before the upgrade ended at 01:28:47.9, and the savepoint's own commit's loads ran from 01:29:07.3 to 01:29:09.5 inside the stopping job.
 chk-10's last acknowledgement arrived at 01:30:42.9 and the JobManager logged it completed at 01:30:46.1; its commit's 10 loads were submitted at 01:30:47 and had all ended server-side by 01:30:52.0, about 1.7 s before the JobManager was deleted. The committer had logged 9 of them complete, the last at 01:30:51.1, when its task was cancelled at 01:30:54.5, so the failover landed inside that commit. chk-11 was triggered only after the restore, at 01:31:47.

@@ -50,6 +50,13 @@ The job history agrees: the run's 190 load jobs are 19 commits of one job per de
 
 The upgrade restored its savepoint and the failover the latest completed checkpoint.
 
+Re-read on 2026-10-13 under [#1781](https://github.com/flink-gcp/flink-connector-gcp/issues/1781), from the exported evidence, with the timing the [#1313 findings](0165-bigquery-fileloads-findings-1313.md#recovery) describe.
+The failover's start is its stage record, written after the in-flight wait and just before the JobManager's deletion.
+
+| Attempt | Upgrade restored after | Upgrade checkpoint acknowledged after | Failover restored after | Failover checkpoint acknowledged after |
+| --- | ---: | ---: | ---: | ---: |
+| `bq1685-fl-10-a1` | 60.5 s | 111.1 s (chk-10) | 37.9 s | 73.7 s (chk-12) |
+
 ### The failover while the loads ran
 
 The times below are BigQuery's job times, read with `bq show -j` after the run, unless they name the supervisor or a log; log times are Flink's own.
