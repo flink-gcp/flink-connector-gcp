@@ -58,7 +58,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
-| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub and Cloud Tasks exercises share: recorded operation intents, the owned savepoint upgrade and Pod deletion, and scheduling evidence |
+| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub and Cloud Tasks exercises share: recorded operation intents, the owned savepoint upgrade (a rescale when the trial approves one) and JobManager or TaskManager deletion, and scheduling evidence |
 | `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery, Pub/Sub and Cloud Tasks runs |
 | `flink_tier3/cloudtasks/` | The recovery trial of #1362 (trial, plan, queue, lifecycle, actors, exercise, oracle, verdict and analysis), and the single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |

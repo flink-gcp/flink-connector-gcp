@@ -157,7 +157,9 @@ class BigQueryExercise(RecoveryExercise):
         super().begin_upgrade(app, cp, progress, pods)
 
     def begin_failover(self, app, proof, pods):
-        if not self.active_input("upgrade"):
+        # The FILE_LOADS wait and its record precede the deletion, so they
+        # wait for a Pod to delete as the failover itself does.
+        if not self.active_input("upgrade") or self.failover_target(pods) is None:
             return
         if self.trial.mode != "FILE_LOADS":
             super().begin_failover(app, proof, pods)

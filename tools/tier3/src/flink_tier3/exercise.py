@@ -11,7 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""One approved savepoint upgrade and one UID-scoped JobManager disruption."""
+"""One approved savepoint upgrade and one UID-scoped Pod disruption.
+
+The upgrade may rescale the job, and the disruption deletes the JobManager or
+one TaskManager, as the approved trial names them.
+"""
 
 from __future__ import annotations
 
@@ -21,12 +25,24 @@ import re
 from .common import ApiError, Failure, TransportError, contains, timestamp, utc
 from .metrics import FlinkRest
 
+# The Pod the second recovery deletes, by the name the approved trial gives it,
+# and the role its deletion messages name.
+FAILOVERS = {"jobmanager": "JM", "taskmanager": "TM"}
+# The directions a rescale moves the checkpointed subtasks in.
+RESCALE_DIRECTIONS = ("out", "in")
+# The manifest fields an approved rescale's upgrade may change beside the
+# arguments; an upgrade that is not a rescale leaves them as they are.
+RESCALE_SIZES = (("job", "parallelism"), ("taskManager", "replicas"))
+
 
 class RecoveryExercise:
     """The supervisor advances this exercise once; recovery only cleans it up.
 
     A service exercise names its namespace, state bucket and timing, and one
     that reads application progress also its event, Pod count and records.
+    Its approved trial decides, when the exercise is built, which Pod the
+    second recovery deletes and whether the upgrade is a rescale, and in which
+    direction; nothing at run time chooses either.
     """
 
     namespace: str
@@ -36,10 +52,15 @@ class RecoveryExercise:
     expected_pods: int
     records: int
 
-    def __init__(self, env, upgrade):
+    def __init__(self, env, upgrade, *, failover="jobmanager", rescale=None):
         if upgrade is None:
             raise Failure("Recovery requires the approved upgrade manifest")
+        if failover not in FAILOVERS or (
+            rescale is not None and rescale not in RESCALE_DIRECTIONS
+        ):
+            raise Failure("Recovery requires an approved fault kind")
         self.env, self.upgrade = env, upgrade
+        self.failover, self.rescale = failover, rescale
         self.stage = "baseline"
         self.deadline = min(
             env.schedule.started + self.timing["startup_seconds"],
@@ -230,15 +251,19 @@ class RecoveryExercise:
         ):
             raise Failure("Unplanned workload replacement; trial is inconclusive")
 
-    def jobmanager(self, pods):
-        candidates = [
+    def running(self, pods, component):
+        """This namespace's running Pods of one Flink component, none terminating."""
+        return [
             p
             for p in pods
             if p["metadata"]["namespace"] == self.namespace
-            and p["metadata"].get("labels", {}).get("component") == "jobmanager"
+            and p["metadata"].get("labels", {}).get("component") == component
             and not p["metadata"].get("deletionTimestamp")
             and p.get("status", {}).get("phase") == "Running"
         ]
+
+    def jobmanager(self, pods):
+        candidates = self.running(pods, "jobmanager")
         if len(candidates) != 1:
             return None
         # audit() has already checked the complete ownerReference graph.
@@ -286,13 +311,21 @@ class RecoveryExercise:
         ]
         cp = self.completed(rest, min(s["at"] for s in resumed)) if resumed else None
         jm = self.jobmanager(pods)
-        if (
-            not resumed
-            or not cp
-            or jm is None
-            or jm["metadata"]["uid"] == self.before["jm_uid"]
-        ):
+        if not resumed or not cp or jm is None:
             return None
+        replaced = self.stage == "failover" and self.failover == "taskmanager"
+        if replaced:
+            # Only the TaskManager was approved to go; the JobManager keeps the
+            # job, and only the region on the lost TaskManager may restart.
+            if jm["metadata"]["uid"] != self.before["jm_uid"]:
+                raise Failure(
+                    "JobManager was replaced during the TaskManager replacement"
+                )
+            if any(p["metadata"]["uid"] == self.before["tm_uid"] for p in pods):
+                return None
+        elif jm["metadata"]["uid"] == self.before["jm_uid"]:
+            return None
+        proof = {}
         if self.stage == "upgrade":
             status = app.get("status", {})
             savepoint = (
@@ -315,6 +348,8 @@ class RecoveryExercise:
                 or not path.startswith(self.prefix("savepoints"))
             ):
                 raise Failure("Upgrade did not restore its newly completed savepoint")
+            if self.rescale is not None:
+                proof["rescale"] = self.rescaled(cp)
         else:
             if (
                 app["status"]["jobStatus"]["jobId"] != self.before["job_id"]
@@ -324,18 +359,49 @@ class RecoveryExercise:
                     self.prefix("checkpoints")
                 )
             ):
-                raise Failure("JobManager did not recover the checkpointed job")
+                raise Failure(
+                    "TaskManager replacement did not recover the checkpointed job"
+                    if replaced
+                    else "JobManager did not recover the checkpointed job"
+                )
+            if replaced:
+                proof["replaced"] = {
+                    "uid": self.before["tm_uid"],
+                    "name": self.before["tm"],
+                }
         return {
             "restored": restored,
             "checkpoint": cp,
             "progress": max(resumed, key=lambda s: s["processed"]),
             "jm_uid": jm["metadata"]["uid"],
+            **proof,
+        }
+
+    def rescaled(self, cp):
+        """The subtasks a rescale moved, once its checkpoint moved them as approved.
+
+        The application may set its operators' parallelism from its arguments
+        rather than from the manifest, so the new parallelism is read from what
+        the job checkpointed: a checkpoint the restored job completed against
+        the last one before the upgrade.
+        """
+        before = self.before["checkpoint"].get("num_subtasks")
+        after = cp.get("num_subtasks")
+        if type(before) is not int or type(after) is not int:
+            raise Failure("Rescale checkpoints do not report their subtasks")
+        if not (after > before if self.rescale == "out" else after < before):
+            raise Failure("Rescale did not move the checkpointed subtasks as approved")
+        return {
+            "direction": self.rescale,
+            "subtasks_before": before,
+            "subtasks_after": after,
         }
 
     def begin_upgrade(self, app, cp, progress, pods):
         jm = self.jobmanager(pods)
         if jm is None:
             return
+        operations = self.upgrade_operations(app)
         self.before = {
             "processed": max(s["processed"] for s in progress),
             "checkpoint": cp,
@@ -350,16 +416,44 @@ class RecoveryExercise:
         self.generation = app["metadata"]["generation"] + 1
         self.persist("upgrade", before=self.before, generation=self.generation)
         self.check_open()
-        self.patch_upgrade(
-            app,
-            [
+        self.patch_upgrade(app, operations)
+
+    def upgrade_operations(self, app):
+        """The patch to the approved upgrade: its arguments, and a rescale's sizes."""
+        operations = [
+            {
+                "op": "replace",
+                "path": "/spec/job/args",
+                "value": self.upgrade["spec"]["job"]["args"],
+            }
+        ]
+        for parent, field in RESCALE_SIZES:
+            want = self.upgrade["spec"].get(parent, {}).get(field)
+            have = app["spec"].get(parent, {}).get(field)
+            if want == have:
+                continue
+            if self.rescale is None:
+                raise Failure(
+                    "Upgrade changes the parallelism of a trial without a rescale"
+                )
+            if not isinstance(app["spec"].get(parent), dict):
+                raise Failure("Rescale sets a size in a section the application lacks")
+            # bool is an int subclass, and True == 1. A size the initial
+            # manifest leaves to Flink's default is added; none is removed.
+            if (
+                type(want) is not int
+                or want < 1
+                or (have is not None and type(have) is not int)
+            ):
+                raise Failure("Rescale sets a size that is not a positive count")
+            operations.append(
                 {
-                    "op": "replace",
-                    "path": "/spec/job/args",
-                    "value": self.upgrade["spec"]["job"]["args"],
+                    "op": "replace" if have is not None else "add",
+                    "path": f"/spec/{parent}/{field}",
+                    "value": want,
                 }
-            ],
-        )
+            )
+        return operations
 
     def patch_upgrade(self, app, operations):
         """Apply the approved upgrade once; a lost response must show it applied."""
@@ -389,7 +483,9 @@ class RecoveryExercise:
                 ) from error
 
     def begin_failover(self, app, proof, pods):
-        jm = self.jobmanager(pods)
+        jm, target = self.jobmanager(pods), self.failover_target(pods)
+        if jm is None or target is None:
+            return
         self.outcomes["upgrade"] = proof
         self.before = {
             "processed": max(s["processed"] for s in self.fresh_progress("upgrade")),
@@ -397,6 +493,10 @@ class RecoveryExercise:
             "jm_uid": jm["metadata"]["uid"],
             "job_id": app["status"]["jobStatus"]["jobId"],
         }
+        if self.failover == "taskmanager":
+            self.before.update(
+                tm_uid=target["metadata"]["uid"], tm=target["metadata"]["name"]
+            )
         self.boundary = self.env.clock()
         self.deadline = min(
             self.boundary + self.timing["recovery_seconds"],
@@ -404,7 +504,33 @@ class RecoveryExercise:
         )
         self.persist("failover", before=self.before)
         self.check_open()
-        self.delete_pod(jm, "JM")
+        self.delete_pod(target, FAILOVERS[self.failover])
+
+    def failover_target(self, pods):
+        """The Pod the failover deletes, or None while it cannot be named yet.
+
+        A subclass that does work before the deletion asks this first, since
+        the failover does not start without it.
+        """
+        if self.failover == "jobmanager":
+            return self.jobmanager(pods)
+        return self.taskmanager(pods)
+
+    def taskmanager(self, pods):
+        """The running TaskManager the latest upgraded progress came from.
+
+        Its loss stops the task that reports the input, so the job must restore
+        at least that task's region; another TaskManager may hold no task, and
+        losing it would restore nothing.
+        """
+        progress = self.fresh_progress("upgrade")
+        if not progress:
+            return None
+        latest = max(progress, key=lambda s: s["at"])
+        for pod in self.running(pods, "taskmanager"):
+            if pod["metadata"]["uid"] == latest["pod_uid"]:
+                return pod
+        return None
 
     def delete_pod(self, pod, role):
         """Delete one planned Pod once; a lost response must show it going."""
