@@ -15,8 +15,14 @@
 """Whether a deployed BigQuery run is a usable measurement, and why not."""
 
 from ..common import INCONCLUSIVE, USABLE
-from ..metrics import coverage_reasons, fold_coverage, metric_name
-from .observe import COMMITTER_METRICS, MEMORY_METRICS, SINK_FAMILIES
+from ..metrics import (
+    checkpoint_read,
+    coverage_reasons,
+    fold_coverage,
+    memory_read,
+    returned,
+)
+from .observe import COMMITTER_METRICS, SINK_FAMILIES
 
 # What the run has to have observed to carry the measurement claim: the sink
 # families #1312 asks for, and the TaskManager memory beside them. The verdict
@@ -45,66 +51,18 @@ COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "bigquery-measurement"
 
 
-def _returned(reading, key, wanted, name=metric_name):
-    """Which of the wanted metric names one endpoint's answer actually carried.
-
-    Credit the response rather than the request. Discovery lists a metric id
-    once and never drops it, so asking for a gauge whose operator no longer
-    publishes it still succeeds, with that gauge simply absent from the
-    answer — and a family counted from the listing would be reported as
-    observed when only its name was ever obtained.
-
-    A vertex metric's id carries its operator name and is stripped back to the
-    metric; a TaskManager's is the documented name itself, so it is compared
-    whole.
-    """
-    value = reading.get(key)
-    if not isinstance(value, list):
-        return frozenset()
-    return frozenset(
-        name(item["id"])
-        for item in value
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    ) & frozenset(wanted)
-
-
-def _durations(reading):
-    """Whether both sink vertices returned a subtask's checkpoint durations."""
-    checkpoints = reading.get("checkpoints")
-    roles = checkpoints.get("vertices") if isinstance(checkpoints, dict) else None
-    if not isinstance(roles, dict):
-        return False
-    for role in ("sink", "committer"):
-        subtasks = roles.get(role)
-        if not isinstance(subtasks, list) or not any(
-            isinstance(item, dict)
-            and isinstance(item.get("checkpoint"), dict)
-            and type(item.get("end_to_end_duration")) is int
-            and all(
-                type(item["checkpoint"].get(key)) is int for key in ("sync", "async")
-            )
-            for item in subtasks
-        ):
-            return False
-    return True
-
-
 def _read(reading):
     """Which families one poll actually returned a value for."""
-    names = _returned(
+    names = returned(
         reading, "sink", (name for ids in SINK_FAMILIES.values() for name in ids)
     )
     observed = {family for family, ids in SINK_FAMILIES.items() if names & ids}
-    if _returned(reading, "committer", COMMITTER_METRICS):
+    if returned(reading, "committer", COMMITTER_METRICS):
         observed.add(COMMITTER)
-    if _durations(reading):
+    # Both sink vertices must return a subtask's checkpoint durations.
+    if checkpoint_read(reading, ("sink", "committer")):
         observed.add(CHECKPOINT)
-    managers = reading.get("taskmanagers")
-    if isinstance(managers, list) and any(
-        _returned(manager, "metrics", MEMORY_METRICS, name=str)
-        for manager in managers
-        if isinstance(manager, dict)
-    ):
+    if memory_read(reading):
         observed.add(MEMORY)
     return observed
 

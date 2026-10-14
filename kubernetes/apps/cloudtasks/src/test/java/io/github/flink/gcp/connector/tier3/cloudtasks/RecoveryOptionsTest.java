@@ -55,6 +55,7 @@ class RecoveryOptionsTest {
         assertThat(options.recordsPerSecond).isEqualTo(100);
         assertThat(options.phase).isEqualTo("initial");
         assertThat(options.requireRestored).isFalse();
+        assertThat(options.sinkParallelism).isEqualTo(2);
         var upgrade =
                 RecoveryOptions.parse(
                         arguments("--phase", "upgrade", "--require-restored", "true"));
@@ -75,6 +76,9 @@ class RecoveryOptionsTest {
         "phase,other",
         "phase,upgrade",
         "require-restored,yes",
+        "sink-parallelism,0",
+        "sink-parallelism,3",
+        "sink-parallelism,two",
         "run-id,invalid_id",
         "run-id,/path",
         "run-id,trailing-",
@@ -114,6 +118,8 @@ class RecoveryOptionsTest {
                                                 "ct1362-" + "a".repeat(40)))
                                 .runId)
                 .hasSize(40);
+        assertThat(RecoveryOptions.parse(arguments("--sink-parallelism", "1")).sinkParallelism)
+                .isEqualTo(1);
     }
 
     @ParameterizedTest
@@ -158,12 +164,15 @@ class RecoveryOptionsTest {
     }
 
     @Test
-    void identityExcludesThePhaseButCoversTheInputAndQueue() {
+    void identityExcludesThePhaseAndParallelismButCoversTheInputAndQueue() {
         var initial = RecoveryOptions.parse(arguments());
         var upgrade =
                 RecoveryOptions.parse(
                         arguments("--phase", "upgrade", "--require-restored", "true"));
         assertThat(upgrade.identity()).isEqualTo(initial.identity());
+        // A rescale keeps the trial: its state must restore into the other parallelism.
+        assertThat(RecoveryOptions.parse(arguments("--sink-parallelism", "1")).identity())
+                .isEqualTo(initial.identity());
         for (String[] change :
                 new String[][] {
                     {"--run-id", "other"},

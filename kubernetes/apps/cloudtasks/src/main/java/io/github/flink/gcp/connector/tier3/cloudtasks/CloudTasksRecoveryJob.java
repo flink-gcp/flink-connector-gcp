@@ -64,7 +64,7 @@ public final class CloudTasksRecoveryJob {
                 .sinkTo(sink)
                 .name("Cloud Tasks EXACTLY_ONCE")
                 .uid("ct1362-sink-v1")
-                .setParallelism(2)
+                .setParallelism(options.sinkParallelism)
                 .setMaxParallelism(128);
     }
 

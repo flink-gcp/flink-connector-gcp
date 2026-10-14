@@ -2475,12 +2475,16 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     """Its inputs are a second copy of these values; drift would strand one."""
     import yaml
     from flink_tier3.bigquery import plan as bigquery_plan
+    from flink_tier3.cloudtasks import trial as cloudtasks_trial
 
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
     assert inputs["scenario"]["options"] == list(cli.SCENARIOS)
     assert inputs["trial"]["options"] == ["none", *bigquery_plan.TRIALS]
     assert inputs["trial"]["default"] == "none"
+    # "none" is not a kind, so a Cloud Tasks dispatch that names none is refused.
+    assert inputs["cloudtasks_trial"]["options"] == ["none", *cloudtasks_trial.KINDS]
+    assert inputs["cloudtasks_trial"]["default"] == "none"
     # Dispatching is the approval: no phrase, expiry or second copy of the
     # commit is typed.
     assert set(inputs) == {
@@ -2490,6 +2494,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "rig_sha",
         "trial",
         "pubsub_trial",
+        "cloudtasks_trial",
     }
     assert (
         f"under {cli.PUBSUB_TRIALS}, without .toml"
@@ -3338,7 +3343,12 @@ WORKFLOW_INPUTS = {
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
-    "cloudtasks-recovery": ["--application-digest", "sha256:" + "d" * 64],
+    "cloudtasks-recovery": [
+        "--cloudtasks-trial",
+        "rescale-in",
+        "--application-digest",
+        "sha256:" + "d" * 64,
+    ],
 }
 
 
@@ -3384,7 +3394,10 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
             ("--pubsub-trial", "PUBSUB_TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
         ],
-        "cloudtasks-recovery": [("--application-digest", "APPLICATION_DIGEST")],
+        "cloudtasks-recovery": [
+            ("--cloudtasks-trial", "CLOUDTASKS_TRIAL"),
+            ("--application-digest", "APPLICATION_DIGEST"),
+        ],
     }
     for scenario, arguments in branches.items():
         passed = re.findall(r'(--[a-z-]+) "\$([A-Z_]+)"', arguments)

@@ -14,7 +14,9 @@
 """One approved savepoint upgrade and one UID-scoped Pod disruption.
 
 The upgrade may rescale the job, and the disruption deletes the JobManager or
-one TaskManager, as the approved trial names them.
+one TaskManager, as the approved trial names them. A scenario whose timing
+names a ``post_upgrade_seconds`` window holds the proved upgrade that long
+before the disruption, so it can measure the job after each recovery.
 """
 
 from __future__ import annotations
@@ -43,6 +45,11 @@ class RecoveryExercise:
     Its approved trial decides, when the exercise is built, which Pod the
     second recovery deletes and whether the upgrade is a rescale, and in which
     direction; nothing at run time chooses either.
+
+    With a ``post_upgrade_seconds`` window the stages are ``baseline``,
+    ``upgrade``, ``upgraded``, ``failover`` and ``finishing``; without one
+    there is no ``upgraded`` stage, and the failover begins as soon as the
+    upgrade is proved.
     """
 
     namespace: str
@@ -77,6 +84,10 @@ class RecoveryExercise:
         self.generation = None
         self.rest, self.measured_at = None, None
         self.coverage = {}
+        self.upgraded_at, self.upgraded_until = None, None
+        # The completed checkpoint a held upgrade's failover must not restore
+        # behind: the latest one triggered since the window opened.
+        self.failover_floor = None
 
     @property
     def recovering(self):
@@ -482,14 +493,36 @@ class RecoveryExercise:
                     "Upgrade response lost without a verified applied outcome"
                 ) from error
 
+    def hold_upgrade(self, proof, pods):
+        """Keep the proved upgrade running for its window before the failover.
+
+        The job is in a steady state again, so the Pods running now are the
+        stable set and a REST error is no longer a recovery's. The failover
+        then has a recovery's time to begin once the window ends.
+        """
+        self.outcomes["upgrade"] = proof
+        self.upgraded_at = self.env.clock()
+        self.upgraded_until = self.upgraded_at + self.timing["post_upgrade_seconds"]
+        self.deadline = min(
+            self.upgraded_until + self.timing["recovery_seconds"],
+            self.env.schedule.cleanup_at,
+        )
+        self.persist("upgraded", until=utc(self.upgraded_until))
+        self.rebaseline(pods)
+
     def begin_failover(self, app, proof, pods):
+        """Delete the approved Pod after the upgrade's proof.
+
+        The failover must not restore behind the proof's checkpoint, or, after
+        a held upgrade, behind ``failover_floor``.
+        """
         jm, target = self.jobmanager(pods), self.failover_target(pods)
         if jm is None or target is None:
             return
         self.outcomes["upgrade"] = proof
         self.before = {
             "processed": max(s["processed"] for s in self.fresh_progress("upgrade")),
-            "checkpoint": proof["checkpoint"],
+            "checkpoint": self.failover_floor or proof["checkpoint"],
             "jm_uid": jm["metadata"]["uid"],
             "job_id": app["status"]["jobStatus"]["jobId"],
         }
@@ -589,12 +622,23 @@ class RecoveryExercise:
                 raise Failure("Application differs from the approved upgrade")
             proof = self.recovery_proof(app, rest, pods)
             if proof and self.stage == "upgrade":
-                self.begin_failover(app, proof, pods)
+                if self.timing.get("post_upgrade_seconds"):
+                    self.hold_upgrade(proof, pods)
+                else:
+                    self.begin_failover(app, proof, pods)
             elif proof:
                 self.outcomes["failover"] = proof
                 self.deadline = self.env.schedule.cleanup_at
                 self.persist("finishing")
                 self.rebaseline(pods)
+        elif (
+            self.stage == "upgraded"
+            and status == "RUNNING"
+            and self.env.clock() >= self.upgraded_until
+        ):
+            self.failover_floor = self.completed(rest, self.upgraded_at)
+            if self.failover_floor:
+                self.begin_failover(app, self.outcomes["upgrade"], pods)
         if status == "FINISHED":
             # Operator 1.15.0 marks the old job FINISHED after stop-with-savepoint
             # and assigns the upgraded job's ID before that state clears, so

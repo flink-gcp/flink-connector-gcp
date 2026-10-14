@@ -22,8 +22,10 @@ import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.configuration.StateRecoveryOptions;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.graph.StreamingJobGraphGenerator;
 import org.apache.flink.test.junit5.MiniClusterExtension;
 
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedCreateTaskSink;
@@ -34,6 +36,9 @@ import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nullable;
 
@@ -84,11 +89,59 @@ class RecoveryJobITCase {
         }
     }
 
-    @Test
-    void savepointUpgradeResumesTheInputAndEndsWithEveryName() throws Exception {
+    /**
+     * The rig's observer reads the job as two vertices, the source chained to the identity operator
+     * and the sink with its committer chained to its writer, each at its own parallelism.
+     */
+    @ParameterizedTest(name = "sink parallelism {0}")
+    @ValueSource(ints = {1, 2})
+    void theJobIsTheSourceChainAndTheSinkChain(int parallelism) {
+        var options =
+                RecoveryOptions.parse(
+                        RecoveryOptionsTest.arguments(
+                                "--sink-parallelism", String.valueOf(parallelism)));
+        var env = StreamExecutionEnvironment.getExecutionEnvironment();
+        CloudTasksRecoveryJob.configure(
+                env,
+                options,
+                CloudTasksRecoveryJob.sink(options, "127.0.0.1:1"),
+                Duration.ofSeconds(30));
+        var vertices =
+                StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph()).getVertices();
+        assertThat(vertices).hasSize(2);
+        assertThat(vertices)
+                .filteredOn(vertex -> vertex.getName().startsWith("Source"))
+                .singleElement()
+                .extracting(JobVertex::getParallelism)
+                .isEqualTo(1);
+        assertThat(vertices)
+                .filteredOn(vertex -> !vertex.getName().startsWith("Source"))
+                .singleElement()
+                .satisfies(
+                        sink -> {
+                            assertThat(sink.getName()).contains("Writer", "Committer");
+                            assertThat(sink.getParallelism()).isEqualTo(parallelism);
+                        });
+    }
+
+    /**
+     * The trial's upgrades: one keeping the sink's two subtasks, and the two rescales, which
+     * restore the committer state of two subtasks into one and of one into two.
+     */
+    @ParameterizedTest(name = "sink parallelism {0} to {1}")
+    @CsvSource({"2,2", "2,1", "1,2"})
+    void savepointUpgradeResumesTheInputAndEndsWithEveryName(String before, String after)
+            throws Exception {
         try (var server = server()) {
-            String[] slow = {"--records", "300", "--records-per-second", "20"};
-            var initial = RecoveryOptions.parse(RecoveryOptionsTest.arguments(slow));
+            var initial =
+                    RecoveryOptions.parse(
+                            RecoveryOptionsTest.arguments(
+                                    "--records",
+                                    "300",
+                                    "--records-per-second",
+                                    "20",
+                                    "--sink-parallelism",
+                                    before));
             var first = start(initial, server, null);
             String savepoint;
             try {
@@ -117,7 +170,9 @@ class RecoveryJobITCase {
                                     "--phase",
                                     "upgrade",
                                     "--require-restored",
-                                    "true"));
+                                    "true",
+                                    "--sink-parallelism",
+                                    after));
             var second = start(upgrade, server, savepoint);
             try {
                 second.getJobExecutionResult().get(60, TimeUnit.SECONDS);

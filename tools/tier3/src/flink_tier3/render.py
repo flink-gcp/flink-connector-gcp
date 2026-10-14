@@ -21,6 +21,7 @@ from pathlib import Path
 from .bigquery.plan import TRIALS, prepare
 from .bigquery.plan import trial as bigquery_trial
 from .cloudtasks import plan as cloudtasks_plan
+from .cloudtasks import trial as cloudtasks_trial
 from .common import Failure
 from .model import SCENARIOS
 from .pubsub import plan as pubsub_plan
@@ -44,20 +45,31 @@ def main(argv=None):
     )
     parser.add_argument("--trial-file", type=Path, help="unapproved Pub/Sub trial JSON")
     parser.add_argument("--trial", choices=tuple(TRIALS), help="BigQuery trial")
+    parser.add_argument(
+        "--cloudtasks-trial", choices=cloudtasks_trial.KINDS, help="Cloud Tasks trial"
+    )
     parser.add_argument("--started-at", help="trial proposal's absolute start time")
     parser.add_argument(
         "--revision", help="trial proposal's intended full source revision"
     )
     parser.add_argument("--expression", default="delivery.resources")
     args = parser.parse_args(argv)
+    if args.cloudtasks_trial and args.scenario != "cloudtasks-recovery":
+        parser.error("--cloudtasks-trial applies only to cloudtasks-recovery")
     if args.scenario == "cloudtasks-recovery":
-        # One fixed trial, so it takes no trial input.
         if args.trial or args.trial_file:
-            parser.error("cloudtasks-recovery takes no trial input")
-        if not all((args.started_at, args.revision, args.application_image)):
+            parser.error("cloudtasks-recovery takes its trial as --cloudtasks-trial")
+        if not all(
+            (
+                args.cloudtasks_trial,
+                args.started_at,
+                args.revision,
+                args.application_image,
+            )
+        ):
             parser.error(
-                "cloudtasks-recovery requires --started-at, --revision and "
-                "--application-image"
+                "cloudtasks-recovery requires --cloudtasks-trial, --started-at, "
+                "--revision and --application-image"
             )
         if args.expression != "delivery.resources":
             parser.error("Trial proposals cannot select a raw expression")
@@ -70,7 +82,7 @@ def main(argv=None):
                 active_seconds=args.active_seconds,
                 revision=args.revision,
                 application_image=args.application_image,
-                trial=cloudtasks_plan.TRIAL,
+                trial=cloudtasks_plan.trial(args.cloudtasks_trial),
             )
         except (ValueError, Failure) as error:
             parser.error(str(error))

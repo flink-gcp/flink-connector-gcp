@@ -17,7 +17,6 @@
 import pytest
 from flink_tier3.bigquery.observe import (
     CONNECTOR_METRICS,
-    MEMORY_METRICS,
     NETWORK_METRICS,
     SINK_FAMILIES,
     SINK_METRICS,
@@ -37,6 +36,7 @@ from flink_tier3.bigquery.verdict import (
     verdict,
 )
 from flink_tier3.common import INCONCLUSIVE, USABLE
+from flink_tier3.metrics import MEMORY_METRICS
 
 # One returned metric id per family, and one TaskManager that published a
 # memory value. These are the readings, not the discovery listing: the verdict

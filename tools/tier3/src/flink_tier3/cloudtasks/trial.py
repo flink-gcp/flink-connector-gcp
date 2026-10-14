@@ -24,6 +24,11 @@ MAX_RECORDS = 360000
 MAX_RECORDS_PER_SECOND = 100
 MAX_INPUT_SECONDS = 1800
 QUEUE_PREFIX = "ct1362-"
+# Every trial runs a savepoint upgrade and then a Pod deletion; each kind but
+# the first replaces one of the two with the fault it names, as the shared
+# exercise runs it: a TaskManager deleted in place of the JobManager, or an
+# upgrade that rescales the sink from one subtask to two or from two to one.
+KINDS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
 
 
 def parent():
@@ -37,11 +42,15 @@ class Trial:
     The application names each task with the SHA-256 hex digest of the key
     ``<run-id>/<sequence>``, so a listed name maps back to exactly one sequence
     of this run; ``queue`` is ``ct1362-<run-id>``, as the CUE delivery renders it.
+
+    ``kind`` defaults to the trial the first run was, whose approval names
+    none, so its archived evidence still reads as the trial it ran.
     """
 
     run_id: str
     records: int
     records_per_second: int
+    kind: str = KINDS[0]
 
     def __post_init__(self):
         if not isinstance(self.run_id, str) or not RUN_ID.fullmatch(self.run_id):
@@ -57,6 +66,31 @@ class Trial:
             raise ValueError(
                 "Cloud Tasks records must be 2 to 360,000 and 30 minutes of input"
             )
+        if self.kind not in KINDS:
+            raise ValueError("Unknown Cloud Tasks trial kind")
+
+    @property
+    def failover(self):
+        """The Pod the second recovery deletes, as the shared exercise names it."""
+        return "taskmanager" if self.kind == "tm-replacement" else "jobmanager"
+
+    @property
+    def rescale(self):
+        """The direction the upgrade rescales the sink in, or None."""
+        if not self.kind.startswith("rescale-"):
+            return None
+        return self.kind.removeprefix("rescale-")
+
+    def sink_parallelism(self, phase):
+        """The sink's subtasks in one phase, and the TaskManagers running them."""
+        if phase not in ("initial", "upgrade"):
+            raise ValueError("Unknown Cloud Tasks phase")
+        if (self.kind, phase) in (
+            ("rescale-out", "initial"),
+            ("rescale-in", "upgrade"),
+        ):
+            return 1
+        return 2
 
     @property
     def queue(self):
@@ -81,6 +115,8 @@ class Trial:
             str(self.records_per_second),
             "--require-restored",
             str(phase == "upgrade").lower(),
+            "--sink-parallelism",
+            str(self.sink_parallelism(phase)),
         ]
 
     def task_id(self, sequence):

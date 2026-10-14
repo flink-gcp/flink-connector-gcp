@@ -53,6 +53,17 @@ on:
         required: false
         type: string
         default: ''
+      cloudtasks_trial:
+        description: 'Cloud Tasks only: the trial kind, which names the Pod deleted after the savepoint upgrade or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'jm-replacement'
+          - 'tm-replacement'
+          - 'rescale-out'
+          - 'rescale-in'
 
 permissions: {}
 concurrency:
@@ -114,6 +125,7 @@ jobs:
           APPLICATION_DIGEST: ${{ inputs.application_digest }}
           TRIAL: ${{ inputs.trial }}
           PUBSUB_TRIAL: ${{ inputs.pubsub_trial }}
+          CLOUDTASKS_TRIAL: ${{ inputs.cloudtasks_trial }}
           RIG_SHA: ${{ inputs.rig_sha }}
         run: |
           start=(start --run-id "$RUN_ID" --scenario "$SCENARIO")
@@ -125,7 +137,7 @@ jobs:
           elif [ "$SCENARIO" = pubsub-recovery ]; then
             start+=(--pubsub-trial "$PUBSUB_TRIAL" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = cloudtasks-recovery ]; then
-            start+=(--application-digest "$APPLICATION_DIGEST")
+            start+=(--cloudtasks-trial "$CLOUDTASKS_TRIAL" --application-digest "$APPLICATION_DIGEST")
           fi
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle \
             --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" "${start[@]}"

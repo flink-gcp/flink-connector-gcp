@@ -16,7 +16,13 @@
 import pytest
 from flink_tier3.cloudtasks.oracle import assess, page
 from flink_tier3.cloudtasks.trial import Trial
-from flink_tier3.cloudtasks.verdict import COMPLETE_STAGE, verdict
+from flink_tier3.cloudtasks.verdict import (
+    COMPLETE_STAGE,
+    OBSERVED,
+    SAMPLED_STAGES,
+    summarize,
+    verdict,
+)
 
 TRIAL = Trial("ct-oracle", 5, 1)
 PREFIX = TRIAL.queue_path + "/tasks/"
@@ -87,8 +93,14 @@ def test_a_dispatched_task_fails_the_paused_queue():
     assert report["verdict"] == "fail"
 
 
-def record(**outcomes):
-    return {"stage": COMPLETE_STAGE, "outcomes": outcomes}
+# Every family read once in every sampled window.
+COVERED = {
+    stage: {"attempts": 1, "observed": sorted(OBSERVED)} for stage in SAMPLED_STAGES
+}
+
+
+def record(coverage=COVERED, **outcomes):
+    return {"stage": COMPLETE_STAGE, "outcomes": outcomes, "coverage": coverage}
 
 
 PASSED = {"queue_state": "PAUSED", "report": {"verdict": "pass"}}
@@ -112,6 +124,111 @@ def test_usable_needs_both_recoveries_a_paused_queue_and_the_oracle():
             listing={**PASSED, "report": {"verdict": "fail"}},
         )
     )["reasons"] == ["oracle-not-passed"]
+
+
+def test_usable_needs_every_family_in_the_baseline_and_after_each_recovery():
+    assert OBSERVED == ("connector", "network", "task", "memory", "checkpoint")
+    assert SAMPLED_STAGES == ("baseline", "upgraded", "finishing")
+    coverage = {**COVERED, "upgraded": {"attempts": 3, "observed": ["task"]}}
+    del coverage["finishing"]
+    reasons = verdict(record(coverage, upgrade={}, failover={}, listing=PASSED))[
+        "reasons"
+    ]
+    assert reasons == [
+        "unobserved-connector-in-upgraded",
+        "unobserved-network-in-upgraded",
+        "unobserved-memory-in-upgraded",
+        "unobserved-checkpoint-in-upgraded",
+        "unsampled-finishing",
+        *(f"unobserved-{family}-in-finishing" for family in OBSERVED),
+    ]
+    # A recovery's own samples count toward no window.
+    coverage = {**COVERED, "upgrade": {"attempts": 1, "observed": []}}
+    assert verdict(record(coverage, upgrade={}, failover={}, listing=PASSED)) == {
+        "verdict": "usable",
+        "reasons": [],
+    }
+
+
+def reading(**changes):
+    """One poll that returned every family, as the REST service answers it."""
+    value = {
+        "sink": [
+            {"id": "numRecordsIn", "min": 1},
+            {"id": "inPoolUsage", "min": 0},
+            {"id": "Cloud_Tasks__Committer.tasksDeduplicated", "min": 0},
+        ],
+        "source": [{"id": "numRecordsOut"}],
+        "taskmanagers": [
+            {"id": "tm", "metrics": [{"id": "Status.JVM.Memory.Heap.Used"}]}
+        ],
+        "checkpoints": {
+            "id": 3,
+            "vertices": {
+                "sink": [
+                    {
+                        "index": 0,
+                        "end_to_end_duration": 40,
+                        "checkpoint": {"sync": 1, "async": 2},
+                    }
+                ]
+            },
+        },
+    }
+    value.update(window="baseline", **changes)
+    return value
+
+
+@pytest.mark.parametrize(
+    "changes,unobserved",
+    [
+        ({}, set()),
+        # Asked for by its discovered id and not returned: not read.
+        ({"sink": [{"id": "numRecordsIn"}, {"id": "inPoolUsage"}]}, {"connector"}),
+        ({"sink": {"unavailable": "503"}}, {"task", "network", "connector"}),
+        ({"taskmanagers": [{"id": "tm", "metrics": []}]}, {"memory"}),
+        ({"taskmanagers": {"unavailable": "503"}}, {"memory"}),
+        ({"checkpoints": {"unavailable": "no completed checkpoint"}}, {"checkpoint"}),
+        # Each of a subtask's durations is required on its own.
+        *(
+            (
+                {
+                    "checkpoints": {
+                        "id": 3,
+                        "vertices": {
+                            "sink": [
+                                {
+                                    "end_to_end_duration": 40,
+                                    "checkpoint": {"sync": 1, "async": 2},
+                                    **subtask,
+                                }
+                            ]
+                        },
+                    }
+                },
+                {"checkpoint"},
+            )
+            for subtask in (
+                {"end_to_end_duration": "40"},
+                {"end_to_end_duration": None},
+                {"checkpoint": {"sync": 1}},
+                {"checkpoint": {"async": 2}},
+                {"checkpoint": {"sync": 1, "async": "2"}},
+                {"checkpoint": None},
+            )
+        ),
+        ({"checkpoints": {"id": 3, "vertices": {"committer": []}}}, {"checkpoint"}),
+        ({"vertices": {"unavailable": "expected one source and one sink"}}, set()),
+    ],
+)
+def test_a_family_counts_only_where_a_reading_returned_it(changes, unobserved):
+    value = reading(**changes)
+    if "vertices" in changes:
+        value = {"window": "baseline", **changes}
+        unobserved = set(OBSERVED)
+    folded = summarize({}, "baseline", value)
+    assert set(OBSERVED) - set(folded["baseline"]["observed"]) == unobserved
+    assert folded["baseline"]["attempts"] == 1
 
 
 @pytest.mark.parametrize("value", [None, [], {"stage": "listing"}, {"outcomes": 3}])

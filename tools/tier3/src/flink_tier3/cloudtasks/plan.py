@@ -33,13 +33,13 @@ from ..policy import (
 )
 from ..workflow import render
 from .queue import PAGE_SIZE
-from .trial import Trial
+from .trial import KINDS, Trial
 
 WINDOW_SECONDS = WINDOWS["cloudtasks-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# The one dispatchable trial: 30 minutes of input at the rate the
-# application's staged creation was measured keeping up with (#1246).
-TRIAL = {"records": 180000, "records_per_second": 100}
+# Every dispatchable trial's input: 30 minutes at the rate the application's
+# staged creation was measured keeping up with (#1246).
+INPUT = {"records": 180000, "records_per_second": 100}
 # The application's checkpoint interval, which bounds what one recovery replays.
 CHECKPOINT_SECONDS = 30
 REVIEWED_AT = "2026-10-12T00:00:00Z"
@@ -48,11 +48,21 @@ OPERATION_USD_PER_MILLION = Decimal("0.40")
 RESERVE_USD = Decimal("1.00")
 
 
+def trial(kind):
+    """The approved trial of one kind: its fault and the fixed input."""
+    if kind not in KINDS:
+        raise ValueError("Unknown Cloud Tasks trial: " + str(kind))
+    return {"kind": kind, **INPUT}
+
+
 def validate_trial(value):
     # Serialized, so `180000.0` or `True` cannot pass as a count.
-    if json_bytes(value) != json_bytes(TRIAL):
+    kind = value.get("kind") if isinstance(value, dict) else None
+    if kind not in KINDS or json_bytes(value) != json_bytes(trial(kind)):
         raise ValueError(
-            "Cloud Tasks trial must be 180,000 records at 100 records per second"
+            "Cloud Tasks trial must be one of "
+            + ", ".join(KINDS)
+            + " with 180,000 records at 100 records per second"
         )
 
 
@@ -61,7 +71,9 @@ def estimate():
 
     Compute for the window, every task creation and listing call priced as a
     billable operation without the monthly free tier, and a reserve for state,
-    evidence and telemetry, as the BigQuery estimate reserves.
+    evidence and telemetry, as the BigQuery estimate reserves. It is the same
+    for every trial: a rescale trial runs one TaskManager for part of the
+    window, which the estimate does not discount.
     """
     shapes = [
         POD_RESOURCES["operator"],
@@ -79,8 +91,8 @@ def operations():
     Replays after a recovery re-create tasks the service refuses as existing,
     which are counted too, at most one checkpoint's records per recovery.
     """
-    records = TRIAL["records"]
-    replays = 2 * TRIAL["records_per_second"] * CHECKPOINT_SECONDS
+    records = INPUT["records"]
+    replays = 2 * INPUT["records_per_second"] * CHECKPOINT_SECONDS
     listings = 2 * -(-records // PAGE_SIZE)
     return records + replays + listings + 10
 
@@ -100,6 +112,22 @@ def _verify_resources(pod, role):
             quantity(actual[key]) != quantity(value) for key, value in expected.items()
         ):
             raise Failure("Rendered Pod differs from the proposed resource budget")
+
+
+def _verify_sizes(spec, parallelism):
+    """One JobManager, and one single-slot TaskManager per sink subtask."""
+    job = spec.get("job", {})
+    # bool is an int subclass, and True == 1.
+    if type(job.get("parallelism")) is not int or job["parallelism"] != parallelism:
+        raise Failure("Rendered application differs from the proposed parallelism")
+    for manager, replicas in (("jobManager", 1), ("taskManager", parallelism)):
+        shape = spec.get(manager, {})
+        if shape.get("replicas") != replicas or shape.get("resource") != {
+            "cpu": 1,
+            "memory": "2Gi",
+        }:
+            raise Failure("Rendered application differs from the proposed Pod budget")
+        _verify_resources(shape.get("podTemplate", {}).get("spec", {}), "smoke")
 
 
 def prepare(
@@ -144,6 +172,7 @@ def prepare(
         application_image=application_image,
         cloudtasks_records=identity.records,
         cloudtasks_records_per_second=identity.records_per_second,
+        cloudtasks_trial=identity.kind,
     )
     metadata, spec = initial["metadata"], initial["spec"]
     if (
@@ -160,21 +189,20 @@ def prepare(
         for key in ("containers", "initContainers", "ephemeralContainers")
     ):
         raise Failure("Shared Pod template adds an unpriced container")
-    for manager, replicas in (("jobManager", 1), ("taskManager", 2)):
-        shape = spec.get(manager, {})
-        if shape.get("replicas") != replicas or shape.get("resource") != {
-            "cpu": 1,
-            "memory": "2Gi",
-        }:
-            raise Failure("Rendered application differs from the proposed Pod budget")
-        _verify_resources(shape.get("podTemplate", {}).get("spec", {}), "smoke")
+    for phase, manifest in (("initial", initial), ("upgrade", upgrade)):
+        _verify_sizes(manifest["spec"], identity.sink_parallelism(phase))
     _verify_resources(delivery["supervisor"]["spec"]["template"]["spec"], "supervisor")
     if spec["job"]["args"] != identity.arguments("initial"):
         raise Failure("Rendered application differs from the proposed input")
     expected_upgrade = copy.deepcopy(initial)
     expected_upgrade["spec"]["job"]["args"] = identity.arguments("upgrade")
+    # A rescale's upgrade also moves the job and its TaskManagers to the other
+    # size, which the shared exercise patches beside the arguments.
+    parallelism = identity.sink_parallelism("upgrade")
+    expected_upgrade["spec"]["job"]["parallelism"] = parallelism
+    expected_upgrade["spec"]["taskManager"]["replicas"] = parallelism
     if upgrade != expected_upgrade:
-        raise Failure("Rendered upgrade changes more than phase and restoration")
+        raise Failure("Rendered upgrade changes more than phase, restoration and size")
     data = delivery["config"]["data"]
     if (
         json.loads(data["application.json"]) != initial
