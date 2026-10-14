@@ -147,7 +147,7 @@ The `eo-10` and `fl-10` cells also name a fault that takes the place of one of t
 | `<cell>-rescale-in` | Savepoint rescale in | JobManager | 2, 1 |
 
 A rescale stays inside the namespace's three-Pod quota, the one the estimate charges for every trial, so the estimate is the same; the three `eo-10` ones are preregistered as [Production dispatch](#production-dispatch) lists.
-That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation; the recovery's 300-second deadline includes that wait.
+That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation inside the recovery's 300-second deadline; in the deployed trial the refused request came while the job was restarting and delayed nothing measurable, as the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#taskmanager-replacement) record.
 Every trial now renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the mode's 30-minute-equivalent input above.
@@ -570,7 +570,7 @@ The receipt carries all of this as the `file_loads` part of its `bigquery` recor
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigquery-recovery` with two inputs beyond the common ones.
 The campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](../../../docs/adr/evidence/0165-bigquery-trial-preregistration-1312.md), and its results, every attempt included, are in the [BigQuery trial findings](../../../docs/adr/evidence/0165-bigquery-trial-findings-1312.md).
 The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial preregistration](../../../docs/adr/evidence/0165-bigquery-fileloads-preregistration-1313.md) and the [BigQuery FILE_LOADS trial findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md); the [in-flight failover findings](../../../docs/adr/evidence/0165-bigquery-fileloads-inflight-findings-1685.md) record the trial of [#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685).
-The `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779) are preregistered in the [fault trial preregistration](../../../docs/adr/evidence/0165-bigquery-fault-trials-preregistration-1779.md).
+The `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779) are preregistered in the [fault trial preregistration](../../../docs/adr/evidence/0165-bigquery-fault-trials-preregistration-1779.md), and their results are in the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md).
 
 | Input | Contract |
 | --- | --- |
