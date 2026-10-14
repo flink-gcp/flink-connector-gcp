@@ -58,7 +58,7 @@ public final class BigQueryRecoveryJob {
                 .sinkTo(sink)
                 .name("BigQuery " + options.mode)
                 .uid("bq1312-sink-v1")
-                .setParallelism(2)
+                .setParallelism(options.parallelism)
                 .setMaxParallelism(128);
     }
 

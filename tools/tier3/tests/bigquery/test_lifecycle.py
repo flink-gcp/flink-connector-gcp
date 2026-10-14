@@ -175,6 +175,8 @@ def setup():
                     "23",
                     "--bytes-per-second",
                     "1048576",
+                    "--parallelism",
+                    "2",
                     "--require-restored",
                     "false",
                 ]
@@ -715,7 +717,7 @@ LOAD = {
 
 def test_a_file_loads_application_renders_its_sink_inputs():
     args = Trial("lifecycle-1312", "FILE_LOADS", 10, 23).arguments("initial")
-    assert args[13:] == [
+    assert args[15:] == [
         "false",
         "--staging-format",
         "AVRO",

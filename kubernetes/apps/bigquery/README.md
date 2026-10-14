@@ -25,7 +25,7 @@ Unit tests cover argument bounds, destination identities, serialized row sizes, 
 Observation tests check original futures and exceptions, exact rows and offsets, failed opens/closes, reopening identities and log-output failures.
 Sink tests serialize both observed sinks, construct their job graphs, create production writers, and round-trip a buffered writer state through restore and snapshot; the committer receives no appender observer.
 Local MiniCluster tests restore the source and input identity operator from a checkpoint and a savepoint using a discard sink.
-Separate local graph tests verify both writers reach every destination for every mode and destination count.
+Separate local graph tests verify that every writer reaches every destination for every mode and destination count at parallelism two, and that the one writer does at parallelism one in the EO and FILE_LOADS modes.
 Emulator tests create the application's production default-stream writer for both destination counts, write each destination sequentially, check the open/append/close observations, then query every table.
 The application graph is tested separately: concurrent appends caused SQLite lock errors and RPC retries inside the pinned emulator in CI.
 The pinned emulator assigns buffered offsets across streams and can hang on multi-stream flush, so it cannot exercise the production EO writer for this workload.
@@ -46,8 +46,9 @@ It writes run-unique tables into `BQ_IT_DATASET` and stages under `BQ_IT_GCS_BUC
 | `--run-id` | Required Tier-3 run label, at most 40 characters; reuse only when restoring the same trial |
 | `--mode` | Required `ALO` (default stream), `EO` (buffered stream) or `FILE_LOADS` (staged files and load jobs) |
 | `--destinations` | Required `10` or `50` |
-| `--records` | Finite count covering every destination on both writers (at least twice the destination count) and at most 2 GiB of serialized input; defaults to 30 minutes at 1 MiB/s |
+| `--records` | Finite count covering every destination on each of two writers (at least twice the destination count) and at most 2 GiB of serialized input; defaults to 30 minutes at 1 MiB/s |
 | `--bytes-per-second` | Datagen offered rate in serialized row bytes, from 1 through 1,048,576; defaults to 1,048,576 |
+| `--parallelism` | The writers' parallelism, `1` or `2`; defaults to `2`. It is not part of the checkpointed input identity, so a savepoint upgrade can rescale |
 | `--phase` | `initial` by default, or `upgrade` |
 | `--require-restored` | `false` by default; `upgrade` requires `true` |
 | `--staging-format` | FILE_LOADS only: `AVRO` by default, or `PARQUET` |
@@ -68,8 +69,8 @@ Source pacing and serialization overhead must be observed on the execution host 
 
 The source emits sequence numbers from zero through `records - 1` at parallelism one.
 A checkpointed identity operator checks each next sequence before forwarding it.
-The sink runs at parallelism two with maximum parallelism 128; deterministic partitioning by `(sequence / destinations) % 2` sends a complete destination cycle to each writer in turn.
-Both writers reach every destination, while each row retains `sequence % destinations` as its table identity.
+The sink runs at the phase's `--parallelism` with maximum parallelism 128, keeping its UID, so a savepoint upgrade can restore it at another parallelism; deterministic partitioning by `(sequence / destinations) % parallelism` sends a complete destination cycle to each writer in turn.
+Every writer reaches every destination, while each row retains `sequence % destinations` as its table identity.
 The job enables checkpoints every 30 seconds in the Storage Write modes and every 120 seconds in FILE_LOADS mode, with at most one concurrent checkpoint.
 FILE_LOADS refuses an interval below its `minCheckpointInterval`, two minutes by default, because each checkpoint issues a load job per destination table against a daily per-table modification quota.
 Writer and buffered-stream options retain their production defaults; this workload does not search capacity or tune those defaults.
@@ -91,9 +92,9 @@ The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap
 ## Deployment definition
 
 [`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator 1.15.0 schema and Flink 2.2.1 application image.
-A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`) and `run.destinations` (`10` or `50`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
+A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
 A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`), whose defaults and ranges are the connector's, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders all five as arguments, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
-The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults.
+The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, and its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it.
 Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
 The offered rate is fixed at 1 MiB/s.
 The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
@@ -103,9 +104,9 @@ The package sets the namespace and the existing `bigquery` ServiceAccount; the r
 [`tests/fixtures/bigquery.cue`](../../tests/fixtures/bigquery.cue) shows the package composition used by the disposable render tests.
 No concrete run, image digest or execution window is selected by this package.
 
-The definition requests one JobManager and two TaskManagers, each with 1 CPU, 2 GiB memory and 1 GiB ephemeral storage; container requests equal limits.
-The application total is 3 CPUs, 6 GiB memory and 3 GiB ephemeral storage, excluding the Operator and supervisor.
-Each TaskManager has one slot, job parallelism is two and autoscaling is disabled; the Java graph retains its source parallelism of one and sink parallelism of two.
+The definition requests one JobManager and one TaskManager per writer, each with 1 CPU, 2 GiB memory and 1 GiB ephemeral storage; container requests equal limits.
+At two writers the application total is 3 CPUs, 6 GiB memory and 3 GiB ephemeral storage, excluding the Operator and supervisor.
+Each TaskManager has one slot, job parallelism is the writers' and autoscaling is disabled; the Java graph retains its source parallelism of one and takes the sink's from `--parallelism`.
 These resource choices follow the smoke Pod shape and still need approval in the complete trial budget; they do not establish sufficient heap or a runtime Pod ceiling.
 No PVC or application volume is requested.
 
@@ -115,12 +116,13 @@ The fixed-delay restart strategy permits three attempts with a ten-second delay;
 
 For the upgrade, render the same inputs with `run.phase: "upgrade"` and update the same deployment.
 Both phases use `upgradeMode: savepoint` and `allowNonRestoredState: false`; only the phase argument and `--require-restored` change, with the latter becoming `true` on upgrade.
+A rescale trial's upgrade also changes `--parallelism`, the job parallelism and the TaskManager count together.
 The definition also sets `kubernetes.operator.job.upgrade.last-state-fallback.enabled=false` so an unavailable savepoint cannot be replaced by last-state recovery, and `kubernetes.operator.snapshot.resource.enabled=false` to use Operator 1.15.0's status-based savepoint reporting instead of separate FlinkStateSnapshot resources.
 These settings follow the generic recovery exercise that [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran; an Operator upgrade must revisit this version-specific reporting choice.
 The running application's checkpointed identity also rejects changed input parameters on restore.
 The package describes that transition; it does not wait for baseline observations, prove a completed savepoint, apply the upgrade or delete the JobManager.
 
-`just tier3-check` renders both phases for all six mode/destination combinations against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and the phase-only argument change.
+`just tier3-check` renders both phases for all six mode/destination combinations and each fault's sizes against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and that the phases differ only in phase, restoration and a rescale's sizes.
 Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
 The [production dispatch](#production-dispatch) path must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
 
@@ -133,6 +135,19 @@ It may download pinned public CUE schema dependencies when the local cache is co
 
 Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, one delivery method at one destination count.
 `fl-10` is the one FILE_LOADS trial, at 10 destinations with the five sink inputs at the connector's defaults: it asks whether finalization survives the two recoveries, not how it scales.
+These run a savepoint upgrade and a JobManager failover, with the writers at parallelism two in both phases.
+
+The `eo-10` and `fl-10` cells also name a fault that takes the place of one of those recoveries ([#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779)), as the [shared recovery exercise](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#shared-recovery-exercise-fault-kinds) runs it:
+
+| Trial | Upgrade | Failover | Writers and TaskManagers, initial then upgrade |
+| --- | --- | --- | --- |
+| `<cell>-tm-replacement` | Savepoint upgrade | The TaskManager that reported the latest input | 2, 2 |
+| `<cell>-rescale-out` | Savepoint rescale out | JobManager | 1, 2 |
+| `<cell>-rescale-in` | Savepoint rescale in | JobManager | 2, 1 |
+
+A rescale stays inside the namespace's three-Pod quota, the one the estimate charges for every trial, so the estimate is the same; the trial's own preregistration chooses which of these run.
+That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation; the recovery's 300-second deadline includes that wait.
+Every trial now renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the mode's 30-minute-equivalent input above.
 Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
@@ -557,7 +572,7 @@ The FILE_LOADS trial `fl-10` has its own records, the [BigQuery FILE_LOADS trial
 
 | Input | Contract |
 | --- | --- |
-| `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`; the default `none` is refused |
+| `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, or one of the `eo-10` and `fl-10` fault trials above; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 
 The owner approves the run's estimate before dispatching it; dispatching is the approval.
@@ -589,14 +604,15 @@ If workload admission subsequently fails, the supervisor requests stop and waits
 Only then does it inventory and remove the workload and run BigQuery cleanup; a missing release retains the control record and resources for incident recovery.
 A failed or ambiguous provisioning call prevents workload admission and retains the existing unresolved-call cleanup guard.
 
-The BigQuery exercise shares the smoke exercise's UID-scoped mutations and checkpoint/savepoint proof checks, using the BigQuery namespace, state bucket, input sizes and three-Pod topology.
-Within 1200 seconds of the approved start, it requires input progress, a completed checkpoint and all three running Pods before starting 180 seconds of warmup followed by a 600-second baseline window.
+The BigQuery exercise shares the smoke exercise's UID-scoped mutations and checkpoint/savepoint proof checks, using the BigQuery namespace, state bucket, input sizes, and the JobManager and the initial phase's TaskManagers as its topology.
+Within 1200 seconds of the approved start, it requires input progress, a completed checkpoint and all of those Pods running before starting 180 seconds of warmup followed by a 600-second baseline window.
 It then requires a checkpoint triggered after that window and fresh, unfinished input before applying the approved upgrade.
 Each recovery has its own 300-second deadline, capped by the absolute cleanup start.
 The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint before a single JobManager deletion.
 The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
+A fault trial changes one of the two as the table in [Offline execution proposal](#offline-execution-proposal) names: a rescale's restored job must also checkpoint more or fewer subtasks than before it, and a TaskManager replacement deletes the TaskManager that reported the latest input, keeps the JobManager and waits for the deleted Pod to go.
 
-In FILE_LOADS mode the JobManager is deleted only once a listing shows one of the run's load jobs `RUNNING`, so that the failover is issued while a commit's load runs server-side ([#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685)).
+In FILE_LOADS mode the JobManager, or a fault trial's TaskManager, is deleted only once a listing shows one of the run's load jobs `RUNNING`, so that the failover is issued while a commit's load runs server-side ([#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685)).
 A commit takes 5 to 11 seconds of each 120-second checkpoint interval at the trial's sizes and a load 1 to 6 seconds, so a deletion left to the 15-second poll rarely lands inside one.
 Once the upgrade is proved, the supervisor starts a listing of the run's [connector-issued jobs](#connector-issued-jobs) once a second (`in_flight_poll_seconds`), or as soon as the previous one returns when it took longer, and deletes the JobManager as soon as a load is `RUNNING`; a `PENDING` load, or a copy or query, does not count.
 The wait blocks the supervisor loop for at most `in_flight_seconds`, 130 seconds or one checkpoint interval and a margin, which replaces the upgrade's recovery deadline.

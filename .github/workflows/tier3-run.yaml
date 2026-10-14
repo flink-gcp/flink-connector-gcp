@@ -31,7 +31,7 @@ on:
         type: string
         default: ''
       trial:
-        description: 'BigQuery only: delivery method and destination count'
+        description: 'BigQuery only: delivery method and destination count, and the fault that replaces one recovery, if any'
         required: false
         type: choice
         default: 'none'
@@ -42,6 +42,12 @@ on:
           - 'alo-50'
           - 'eo-50'
           - 'fl-10'
+          - 'eo-10-tm-replacement'
+          - 'eo-10-rescale-out'
+          - 'eo-10-rescale-in'
+          - 'fl-10-tm-replacement'
+          - 'fl-10-rescale-out'
+          - 'fl-10-rescale-in'
       pubsub_trial:
         description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false

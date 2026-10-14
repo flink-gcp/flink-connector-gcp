@@ -143,12 +143,14 @@ class World:
             "Service", self.approval.run_id + "-rest", BIGQUERY, "app-uid"
         )
         self.kube.put(self.service)
-        for name, component in (
-            ("jm-initial", "jobmanager"),
-            ("tm-1", "taskmanager"),
-            ("tm-2", "taskmanager"),
-        ):
-            self.pod(name, component)
+        self.pod("jm-initial", "jobmanager")
+        # The initial phase's TaskManagers; the first runs the task that
+        # reports the input, until a TaskManager replacement deletes it.
+        self.taskmanagers = 0
+        for _ in range(self.plan.trial.parallelism("initial")):
+            self.add_taskmanager()
+        self.reporting = "tm-1"
+        self.failover_kind = None
         self.original_patch, self.original_delete = self.kube.patch, self.kube.delete
         self.original_request = self.kube.request
         monkeypatch.setattr(self.kube, "patch", self.patch)
@@ -168,6 +170,32 @@ class World:
 
     def app(self):
         return self.kube.get("FlinkDeployment", BIGQUERY, self.approval.run_id)
+
+    def add_taskmanager(self):
+        self.taskmanagers += 1
+        name = f"tm-{self.taskmanagers}"
+        self.pod(name, "taskmanager")
+        return name
+
+    def subtasks(self, app):
+        """The subtasks Flink 2.2.1 checkpoints for the application's graph.
+
+        The writers' parallelism is the `--parallelism` argument, not the
+        manifest's. The source and input identity are one vertex of one
+        subtask; the EO committer is chained to its writer, while the
+        FILE_LOADS committer is a vertex of its own at the writers'
+        parallelism.
+        """
+        args = app["spec"]["job"]["args"]
+        writers = int(args[args.index("--parallelism") + 1])
+        return 1 + writers * (2 if self.plan.trial.mode == "FILE_LOADS" else 1)
+
+    def running_taskmanagers(self):
+        return sorted(
+            name
+            for (kind, namespace, name) in self.kube.data
+            if kind == "Pod" and namespace == BIGQUERY and name.startswith("tm-")
+        )
 
     def pod(self, name, component):
         pod = obj("Pod", name, BIGQUERY, "app-uid")
@@ -202,8 +230,12 @@ class World:
         )
         if self.fault == "upgrade-conflict":
             raise rt.ApiError(409, "PATCH", "app")
-        current["spec"]["job"]["args"] = changes[0]["value"]
+        # The arguments, and a rescale's parallelism and TaskManager count.
+        for change in changes:
+            _, _, parent, field = change["path"].split("/")
+            current["spec"][parent][field] = change["value"]
         current["metadata"].update(generation=2, resourceVersion="2")
+        self.patched = copy.deepcopy(current["spec"])
         current["status"]["jobStatus"]["state"] = "FINISHED"
         current["status"]["reconciliationStatus"] = {"state": "UPGRADING"}
         self.kube.put(current)
@@ -212,13 +244,13 @@ class World:
         return current
 
     def delete(self, value, force=False):
-        if (
-            value["kind"] == "Pod"
-            and value["metadata"].get("labels", {}).get("component") == "jobmanager"
-        ):
+        component = value["metadata"].get("labels", {}).get("component")
+        if value["kind"] == "Pod" and component in ("jobmanager", "taskmanager"):
             self.calls.append(("failover", self.clock()))
             self.phase, self.changed = "failover", self.clock()
             self.failover_at = self.clock()
+            self.failover_kind = component
+            self.deleted = value["metadata"]["name"]
         return self.original_delete(value, force)
 
     def request(self, method, path, *args, **kwargs):
@@ -329,11 +361,24 @@ class World:
             return
         now, elapsed = self.clock(), self.clock() - self.changed
         if self.phase != "initial" and elapsed >= 30:
-            old_name = "jm-initial" if self.phase == "upgrade" else "jm-upgrade"
-            self.kube.data.pop(("Pod", BIGQUERY, old_name), None)
-            name = "jm-" + self.phase
-            if not self.kube.get("Pod", BIGQUERY, name):
-                self.pod(name, "jobmanager")
+            if self.phase == "upgrade" or self.failover_kind == "jobmanager":
+                old_name = "jm-initial" if self.phase == "upgrade" else "jm-upgrade"
+                self.kube.data.pop(("Pod", BIGQUERY, old_name), None)
+                name = "jm-" + self.phase
+                if not self.kube.get("Pod", BIGQUERY, name):
+                    self.pod(name, "jobmanager")
+            else:
+                # Flink requests a replacement for the lost TaskManager, and
+                # the restored task reports from it.
+                self.kube.data.pop(("Pod", BIGQUERY, self.deleted), None)
+                if self.reporting == self.deleted:
+                    self.reporting = self.add_taskmanager()
+            # The upgraded deployment runs as many TaskManagers as it asks for.
+            replicas = app["spec"]["taskManager"]["replicas"]
+            while len(self.running_taskmanagers()) < replicas:
+                self.add_taskmanager()
+            for name in self.running_taskmanagers()[replicas:]:
+                self.kube.data.pop(("Pod", BIGQUERY, name), None)
             app["status"].update(
                 observedGeneration=2, reconciliationStatus={"state": "DEPLOYED"}
             )
@@ -385,7 +430,7 @@ class World:
                 f"phase={phase} lineage={lineage} restored={str(self.phase != 'initial').lower()} "
                 f"processed={processed} sequence={processed - 1}\n"
             )
-            self.history.setdefault("tm-1-uid", []).append((now, line))
+            self.history.setdefault(self.reporting + "-uid", []).append((now, line))
         if elapsed >= 45:
             self.cp = {
                 "id": 1 if self.phase == "initial" else 43,
@@ -393,6 +438,7 @@ class World:
                 "is_savepoint": False,
                 "trigger_timestamp": (now - 1) * 1000,
                 "latest_ack_timestamp": int(now * 1000),
+                "num_subtasks": self.subtasks(app),
                 "external_path": f"gs://{BIGQUERY_STATE}/runs/{self.approval.run_id}/checkpoints/cp",
             }
         if self.fault == "restart" and now - self.start > 300:
@@ -741,6 +787,81 @@ def select_trial(request, trial):
     for key in ("mode", "destinations"):
         if key in request.fixturenames:
             trial[key] = request.getfixturevalue(key)
+    if "trial_fault" in request.fixturenames:
+        trial["fault"] = request.getfixturevalue("trial_fault")
+
+
+@pytest.mark.parametrize(
+    "mode,trial_fault,subtasks,replaced",
+    [
+        ("EO", "tm-replacement", None, "tm-1"),
+        ("EO", "rescale-out", (2, 3), None),
+        ("EO", "rescale-in", (3, 2), None),
+        ("FILE_LOADS", "tm-replacement", None, "tm-1"),
+        ("FILE_LOADS", "rescale-out", (3, 5), None),
+        ("FILE_LOADS", "rescale-in", (5, 3), None),
+    ],
+)
+def test_each_fault_replaces_one_recovery_and_proves_it(
+    prepared, monkeypatch, tmp_path, mode, trial_fault, subtasks, replaced
+):
+    """The trial's fault reaches the exercise, which proves it in its place."""
+    world = World(prepared, monkeypatch)
+    assert world.plan.trial.fault == trial_fault
+    upgrade = world.plan.trial.parallelism("upgrade")
+    record = world.run()
+    assert record.success, record.reason
+    assert record.recovery["verdict"] == rt.USABLE
+    outcomes = record.recovery["outcomes"]
+    if subtasks is None:
+        assert "rescale" not in outcomes["upgrade"]
+    else:
+        assert outcomes["upgrade"]["rescale"] == {
+            "direction": trial_fault.removeprefix("rescale-"),
+            "subtasks_before": subtasks[0],
+            "subtasks_after": subtasks[1],
+        }
+    if replaced is None:
+        assert "replaced" not in outcomes["failover"]
+        assert world.failover_kind == "jobmanager"
+    else:
+        # The TaskManager that reported the input went, and the JobManager
+        # that held the job stayed.
+        assert outcomes["failover"]["replaced"]["name"] == replaced
+        assert world.failover_kind == "taskmanager"
+        assert outcomes["failover"]["jm_uid"] == outcomes["upgrade"]["jm_uid"]
+    assert [name for name, _ in world.calls] == ["upgrade", "failover"]
+    # The upgrade asked for the upgrade phase's sizes, and only a rescale's differ.
+    assert world.patched["job"]["parallelism"] == upgrade
+    assert world.patched["taskManager"]["replicas"] == upgrade
+    # The offline analysis names the fault from the proof the run exported.
+    report = analyze.analyze(world.export(tmp_path, record))
+    recoveries = report["bigquery"][0]["recoveries"]
+    assert {name: timing["fault"] for name, timing in recoveries.items()} == {
+        "upgrade": trial_fault if subtasks else "savepoint-upgrade",
+        "failover": trial_fault if replaced else "jm-replacement",
+    }
+
+
+@pytest.mark.parametrize("mode,trial_fault", [("FILE_LOADS", "tm-replacement")])
+def test_a_file_loads_failover_without_a_pod_to_delete_waits_for_no_load(
+    prepared, monkeypatch, mode, trial_fault
+):
+    """The in-flight wait and its record precede the deletion, so they wait for
+    a Pod to delete as the failover itself does."""
+    world = World(prepared, monkeypatch)
+    exercise = world.supervisor.exercise
+    assert exercise.trial.mode == "FILE_LOADS"
+    assert exercise.failover == "taskmanager"
+    waited = []
+    monkeypatch.setattr(exercise, "active_input", lambda phase: True)
+    monkeypatch.setattr(exercise, "_await_running_load", lambda: waited.append(1))
+    # No TaskManager reported the upgraded input yet, so none can be named.
+    assert exercise.failover_target([]) is None
+    exercise.begin_failover(world.app(), {}, [])
+    assert waited == []
+    assert "failover_in_flight" not in exercise.outcomes
+    assert exercise.stage == "baseline"
 
 
 @pytest.mark.parametrize(

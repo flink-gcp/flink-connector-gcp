@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -52,8 +53,18 @@ class RecoveryRoutingITCase {
     private static final Map<Integer, Set<Long>> VALUES = new ConcurrentHashMap<>();
 
     @ParameterizedTest
-    @CsvSource({"ALO,10", "ALO,50", "EO,10", "EO,50", "FILE_LOADS,10", "FILE_LOADS,50"})
-    void eachWriterReceivesEveryDestination(String mode, int destinations) throws Exception {
+    @CsvSource({
+        "ALO,10,2",
+        "ALO,50,2",
+        "EO,10,2",
+        "EO,50,2",
+        "FILE_LOADS,10,2",
+        "FILE_LOADS,50,2",
+        "EO,10,1",
+        "FILE_LOADS,10,1"
+    })
+    void eachWriterReceivesEveryDestination(String mode, int destinations, int parallelism)
+            throws Exception {
         VALUES.clear();
         var options =
                 RecoveryOptions.parse(
@@ -63,7 +74,9 @@ class RecoveryRoutingITCase {
                                 "--destinations",
                                 Integer.toString(destinations),
                                 "--records",
-                                Integer.toString(2 * destinations)));
+                                Integer.toString(2 * destinations),
+                                "--parallelism",
+                                Integer.toString(parallelism)));
         Configuration config = new Configuration();
         config.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
         var env = StreamExecutionEnvironment.getExecutionEnvironment(config);
@@ -76,13 +89,17 @@ class RecoveryRoutingITCase {
                 job.cancel().get(10, TimeUnit.SECONDS);
             }
         }
-        assertThat(VALUES.keySet()).containsExactlyInAnyOrder(0, 1);
-        for (int writer = 0; writer < 2; writer++) {
+        // The writers are as many as the phase's parallelism, and each receives every
+        // destination: the second block of the input goes to the first writer when it is alone.
+        assertThat(VALUES.keySet())
+                .containsExactlyInAnyOrderElementsOf(
+                        IntStream.range(0, parallelism).boxed().toList());
+        for (int writer = 0; writer < parallelism; writer++) {
+            int index = writer;
             assertThat(VALUES.get(writer))
                     .containsExactlyInAnyOrderElementsOf(
-                            LongStream.range(
-                                            (long) writer * destinations,
-                                            (long) (writer + 1) * destinations)
+                            LongStream.range(0, 2L * destinations)
+                                    .filter(value -> value / destinations % parallelism == index)
                                     .boxed()
                                     .toList());
             assertThat(VALUES.get(writer).stream().map(options::destination).distinct().count())

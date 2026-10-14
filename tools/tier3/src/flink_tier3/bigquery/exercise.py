@@ -30,7 +30,7 @@ from ..policy import (
     QUERY_EVIDENCE_BYTES,
 )
 from .observe import observation, vertices
-from .oracle import EXACTLY_ONCE, assess
+from .oracle import EXACTLY_ONCE, FAULTS, assess
 from .verdict import COMPLETE_STAGE, MEASUREMENT_EVENT, summarize, verdict
 
 
@@ -83,7 +83,6 @@ class BigQueryExercise(RecoveryExercise):
     state_bucket = BIGQUERY_STATE
     timing = BIGQUERY_OBSERVATIONS
     progress_event = "bigquery-progress"
-    expected_pods = 3
 
     def __init__(self, env, upgrade, connector_jobs):
         if env.approval.scenario != "bigquery-recovery":
@@ -94,7 +93,10 @@ class BigQueryExercise(RecoveryExercise):
         self.connector_jobs = connector_jobs
         self.rest, self.vertices, self.measured_at = None, None, None
         self.records = self.trial.records
-        super().__init__(env, upgrade)
+        # The JobManager and the initial phase's TaskManagers.
+        self.expected_pods = 1 + self.trial.parallelism("initial")
+        fault = FAULTS.get(self.trial.fault, {})
+        super().__init__(env, upgrade, **fault)
         self.deadline = min(
             env.schedule.started + self.timing["input_seconds"],
             env.schedule.cleanup_at,

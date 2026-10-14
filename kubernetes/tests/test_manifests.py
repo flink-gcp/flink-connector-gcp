@@ -1002,6 +1002,7 @@ def bigquery_leaf(module, **changes):
         "phase": "initial",
         "mode": "EO",
         "destinations": 10,
+        "parallelism": 2,
         **changes,
     }
     path = leaf(module, "runs/bigquery", {"run": inputs})
@@ -1076,6 +1077,8 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
                 str(records),
                 "--bytes-per-second",
                 "1048576",
+                "--parallelism",
+                "2",
                 "--require-restored",
                 str(phase == "upgrade").lower(),
                 *BIGQUERY_MODE_ARGS[mode],
@@ -1238,7 +1241,7 @@ def test_bigquery_file_loads_partial_knobs_keep_the_other_defaults(module):
     result = cue(module, "cmd", "render", path)
     assert result.returncode == 0, result.stderr
     [app] = list(yaml.safe_load_all(result.stdout))
-    assert app["spec"]["job"]["args"][14:] == [
+    assert app["spec"]["job"]["args"][16:] == [
         "--staging-format",
         "PARQUET",
         *FILE_LOADS_DEFAULT_ARGS[2:],
@@ -1260,7 +1263,7 @@ def test_bigquery_file_loads_arguments_render_in_order(module):
     result = cue(module, "cmd", "render", path)
     assert result.returncode == 0, result.stderr
     [app] = list(yaml.safe_load_all(result.stdout))
-    assert app["spec"]["job"]["args"][14:] == [
+    assert app["spec"]["job"]["args"][16:] == [
         "--staging-format",
         "PARQUET",
         "--max-concurrent-checkpoint-finalizations",
@@ -1335,7 +1338,7 @@ def test_bigquery_delivery_cannot_change_fixed_topology(module, override):
     [
         {"flinkVersion": "v1_20"},
         {"serviceAccount": "smoke"},
-        {"job": {"parallelism": 1}},
+        {"job": {"parallelism": 3}},
         {
             "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@"
             + SYNTHETIC_DIGEST
@@ -1926,6 +1929,75 @@ def test_pubsub_companion_and_application_use_the_selected_run_namespace(
         assert not result.stdout.strip()
 
 
+def bigquery_proposal(module, *tags):
+    return cue(
+        module,
+        "export",
+        "./lifecycle",
+        "--out",
+        "json",
+        "-e",
+        "[application, upgradeApplication]",
+        "-t",
+        "scenario=bigquery-recovery",
+        "-t",
+        "run_id=proposal-1779",
+        "-t",
+        "nonce=" + "a" * 32,
+        "-t",
+        "expires_at=2026-09-21T01:30:00Z",
+        "-t",
+        "active_seconds=5220",
+        "-t",
+        "application_image=us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
+        + SYNTHETIC_DIGEST,
+        *tags,
+    )
+
+
+@pytest.mark.parametrize(
+    "fault,initial,upgrade",
+    [
+        (None, 2, 2),
+        ("none", 2, 2),
+        ("tm-replacement", 2, 2),
+        ("rescale-out", 1, 2),
+        ("rescale-in", 2, 1),
+    ],
+)
+@pytest.mark.parametrize("mode", ["EO", "FILE_LOADS"])
+def test_bigquery_fault_renders_each_phase_size(module, fault, initial, upgrade, mode):
+    """A rescale moves the writers and TaskManagers between one and two."""
+    tags = ["-t", "bigquery_mode=" + mode]
+    if fault is not None:
+        tags += ["-t", "bigquery_fault=" + fault]
+    result = bigquery_proposal(module, *tags)
+    assert result.returncode == 0, result.stderr
+    first, second = json.loads(result.stdout)
+    for app, size in ((first, initial), (second, upgrade)):
+        assert app["spec"]["job"]["parallelism"] == size
+        assert app["spec"]["taskManager"]["replicas"] == size
+        assert app["spec"]["jobManager"]["replicas"] == 1
+        args = app["spec"]["job"]["args"]
+        assert args[args.index("--parallelism") + 1] == str(size)
+    # Nothing else differs between the phases but the phase and restoration.
+    expected = json.loads(json.dumps(first))
+    expected["spec"]["job"].update(parallelism=upgrade)
+    expected["spec"]["taskManager"]["replicas"] = upgrade
+    args = expected["spec"]["job"]["args"]
+    args[3] = "upgrade"
+    args[args.index("--parallelism") + 1] = str(upgrade)
+    args[args.index("--require-restored") + 1] = "true"
+    assert second == expected
+
+
+@pytest.mark.parametrize("fault", ["jm-replacement", "rescale", ""])
+def test_bigquery_rejects_an_unknown_fault(module, fault):
+    result = bigquery_proposal(module, "-t", "bigquery_fault=" + fault)
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+
+
 @pytest.mark.parametrize(
     "mode,records", [("ALO", 28800), ("EO", 1843200), ("FILE_LOADS", 1843200)]
 )
@@ -1963,7 +2035,7 @@ def test_bigquery_proposal_delivery_binds_both_phases(
     initial, upgrade, delivery = json.loads(result.stdout)
     expected = json.loads(json.dumps(initial))
     expected["spec"]["job"]["args"][3] = "upgrade"
-    expected["spec"]["job"]["args"][13] = "true"
+    expected["spec"]["job"]["args"][15] = "true"
     assert upgrade == expected
     assert initial["metadata"]["namespace"] == "tier3-bigquery"
     assert initial["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32
@@ -1980,6 +2052,8 @@ def test_bigquery_proposal_delivery_binds_both_phases(
         str(records),
         "--bytes-per-second",
         "1048576",
+        "--parallelism",
+        "2",
         "--require-restored",
         "false",
         *BIGQUERY_MODE_ARGS[mode],
@@ -2017,13 +2091,11 @@ def test_bigquery_proposal_delivery_binds_both_phases(
     } in projection
 
 
-@pytest.mark.parametrize(
-    "mode,destinations",
-    [("ALO", 10), ("ALO", 50), ("EO", 10), ("EO", 50), ("FILE_LOADS", 10)],
-)
-def test_bigquery_prepare_accepts_real_cue_delivery(
-    module, monkeypatch, mode, destinations
-):
+@pytest.mark.parametrize("name", list(bigquery_plan.TRIALS))
+def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
+    """Every dispatchable trial, so the CUE and the plan cannot disagree on sizes."""
+    trial = bigquery_plan.trial(name)
+    mode, destinations = trial["mode"], trial["destinations"]
     root = module.parent
     module.rename(root / "kubernetes")
     monkeypatch.setattr(repository, "ROOT", root)
@@ -2037,12 +2109,10 @@ def test_bigquery_prepare_accepts_real_cue_delivery(
         revision="b" * 40,
         application_image="us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigquery-recovery@"
         + SYNTHETIC_DIGEST,
-        trial={
-            "mode": mode,
-            "destinations": destinations,
-        },
+        trial=trial,
     )
     proposal = bundle["proposal"]
+    assert proposal["resources"]["trial"]["fault"] == trial.get("fault")
     assert proposal["approved"] is False
     assert proposal["resources"]["trial"]["mode"] == mode
     assert proposal["resources"]["trial"]["destinations"] == destinations

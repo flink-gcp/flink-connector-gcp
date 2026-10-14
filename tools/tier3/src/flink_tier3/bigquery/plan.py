@@ -32,7 +32,7 @@ from ..policy import (
     WINDOWS,
 )
 from ..workflow import render
-from .oracle import ROW_BYTES, Trial
+from .oracle import FAULTS, ROW_BYTES, Trial
 from .resources import ResourcePlan
 
 WINDOW_SECONDS = WINDOWS["bigquery-recovery"]
@@ -44,16 +44,27 @@ REVIEWED_AT = "2026-09-20T00:00:00Z"
 QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
 # The dispatchable trials; the query budget above is every trial's. FILE_LOADS
-# has one, at ten destinations with the connector's default sink inputs: it
-# asks whether finalization is correct across recovery, not how it scales.
+# has one cell, at ten destinations with the connector's default sink inputs: it
+# asks whether finalization is correct across recovery, not how it scales. The
+# exactly-once cells at ten destinations also run each fault the shared exercise
+# offers in place of one recovery (#1779), named `<cell>-<fault>`; the owner
+# chooses which of them run.
+FAULT_CELLS = ("eo-10", "fl-10")
 TRIALS = {
     **{
-        f"{mode.lower()}-{destinations}": (mode, destinations)
+        f"{mode.lower()}-{destinations}": (mode, destinations, None)
         for destinations in (10, 50)
         for mode in ("ALO", "EO")
     },
-    "fl-10": ("FILE_LOADS", 10),
+    "fl-10": ("FILE_LOADS", 10, None),
 }
+TRIALS.update(
+    {
+        f"{cell}-{fault}": (*TRIALS[cell][:2], fault)
+        for cell in FAULT_CELLS
+        for fault in FAULTS
+    }
+)
 # A trial's offered input: 30 minutes at 1 MiB/s of its mode's row size.
 RECORDS = {mode: 1800 * 1024**2 // size for mode, size in ROW_BYTES.items()}
 
@@ -62,15 +73,19 @@ def trial(name):
     """The approved trial a dispatch names, such as `alo-10`."""
     if name not in TRIALS:
         raise Failure("BigQuery trial must be one of " + ", ".join(TRIALS))
-    mode, destinations = TRIALS[name]
-    return {"mode": mode, "destinations": destinations}
+    mode, destinations, fault = TRIALS[name]
+    # A trial without a fault keeps the shape every earlier approval carried.
+    if fault is None:
+        return {"mode": mode, "destinations": destinations}
+    return {"mode": mode, "destinations": destinations, "fault": fault}
 
 
 def validate_trial(value):
     # Serialized, so `10.0` or `True` cannot pass as a destination count.
     if json_bytes(value) not in {json_bytes(trial(name)) for name in TRIALS}:
         raise ValueError(
-            "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10"
+            "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10, "
+            "and a fault only for " + " or ".join(FAULT_CELLS)
         )
 
 
@@ -104,6 +119,7 @@ def resource_plan(run_id, nonce, expires_at, trial):
             trial["mode"],
             trial["destinations"],
             RECORDS[trial["mode"]],
+            trial.get("fault"),
         ),
         nonce,
         int(timestamp(expires_at) * 1000),
@@ -167,6 +183,7 @@ def prepare(
         "application_image": application_image,
         "bigquery_mode": identity.mode,
         "bigquery_destinations": identity.destinations,
+        "bigquery_fault": identity.fault or "none",
     }
     initial, upgrade, delivery = render(
         run_id,
@@ -192,7 +209,10 @@ def prepare(
         for key in ("containers", "initContainers", "ephemeralContainers")
     ):
         raise Failure("Shared Pod template adds an unpriced container")
-    for manager, replicas in (("jobManager", 1), ("taskManager", 2)):
+    for manager, replicas in (
+        ("jobManager", 1),
+        ("taskManager", identity.parallelism("initial")),
+    ):
         shape = spec.get(manager, {})
         if shape.get("replicas") != replicas or shape.get("resource") != {
             "cpu": 1,
@@ -201,12 +221,21 @@ def prepare(
             raise Failure("Rendered application differs from the proposed Pod budget")
         _verify_resources(shape.get("podTemplate", {}).get("spec", {}), "smoke")
     _verify_resources(delivery["supervisor"]["spec"]["template"]["spec"], "supervisor")
-    if initial["spec"]["job"]["args"] != identity.arguments("initial"):
+    if initial["spec"]["job"]["args"] != identity.arguments("initial") or initial[
+        "spec"
+    ]["job"].get("parallelism") != identity.parallelism("initial"):
         raise Failure("Rendered application differs from the proposed input")
+    # Only a rescale's upgrade changes the sizes, and then only to the trial's.
     expected_upgrade = copy.deepcopy(initial)
     expected_upgrade["spec"]["job"]["args"] = identity.arguments("upgrade")
+    expected_upgrade["spec"]["job"]["parallelism"] = identity.parallelism("upgrade")
+    expected_upgrade["spec"]["taskManager"]["replicas"] = identity.parallelism(
+        "upgrade"
+    )
     if upgrade != expected_upgrade:
-        raise Failure("Rendered upgrade changes more than phase and restoration")
+        raise Failure(
+            "Rendered upgrade changes more than phase, restoration and the trial's sizes"
+        )
     data = delivery["config"]["data"]
     if (
         json.loads(data["application.json"]) != initial

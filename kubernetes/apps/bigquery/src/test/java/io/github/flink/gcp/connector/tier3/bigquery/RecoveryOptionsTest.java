@@ -66,6 +66,9 @@ class RecoveryOptionsTest {
         "records,9223372036854775807",
         "bytes-per-second,0",
         "bytes-per-second,1048577",
+        "parallelism,0",
+        "parallelism,3",
+        "parallelism,two",
         "mode,OTHER",
         "staging-format,AVRO",
         "max-concurrent-checkpoint-finalizations,1",
@@ -247,6 +250,23 @@ class RecoveryOptionsTest {
         assertThat(upgrade.identity()).isEqualTo(initial.identity());
         assertThat(RecoveryOptions.parse(arguments("--records", "100")).identity())
                 .isNotEqualTo(initial.identity());
+    }
+
+    @Test
+    void aRescalingUpgradePreservesTheInputIdentity() {
+        var initial = RecoveryOptions.parse(arguments());
+        assertThat(initial.parallelism).isEqualTo(2);
+        var upgrade =
+                RecoveryOptions.parse(
+                        arguments(
+                                "--phase",
+                                "upgrade",
+                                "--require-restored",
+                                "true",
+                                "--parallelism",
+                                "1"));
+        assertThat(upgrade.parallelism).isEqualTo(1);
+        assertThat(upgrade.identity()).isEqualTo(initial.identity());
     }
 
     @Test
