@@ -58,7 +58,7 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
-| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub and Cloud Tasks exercises share: recorded operation intents, the owned savepoint upgrade (a rescale when the trial approves one) and JobManager or TaskManager deletion, and scheduling evidence |
+| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub and Cloud Tasks exercises share: recorded operation intents, the owned savepoint upgrade (a rescale when the trial approves one), an optional window after it, and JobManager or TaskManager deletion, and scheduling evidence |
 | `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery, Pub/Sub and Cloud Tasks runs |
 | `flink_tier3/cloudtasks/` | The recovery trial of #1362 (trial, plan, queue, lifecycle, actors, exercise, oracle, verdict and analysis), and the single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
@@ -107,7 +107,8 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
 
 The cluster rig's Cloud Tasks measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM.
 The [`cloudtasks-recovery`](cloudtasks.cue) delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) renders its initial and upgrade phases in `tier3-cloudtasks` from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given, refuses more than 30 minutes of input, and names the run's queue `ct1362-<run-id>`.
-Dispatch renders it at the one trial's input, and the [recovery trial runbook](../apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
+Its `cloudtasks_trial` tag, `jm-replacement` unless given, sizes each phase's sink and TaskManagers: one subtask in the initial phase of `rescale-out` and the upgrade phase of `rescale-in`, two otherwise.
+Dispatch renders it at the dispatched kind and the input every kind shares, and the [recovery trial runbook](../apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
 Every run's inventory lists `tier3-cloudtasks`.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.

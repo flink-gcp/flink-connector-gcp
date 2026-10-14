@@ -130,7 +130,7 @@ def recovery_record(run, complete_event):
     return run.result.get("recovery") if isinstance(run.result, dict) else None
 
 
-def _milliseconds(value):
+def milliseconds(value):
     """A Flink REST timestamp, or None when the export does not hold one."""
     if type(value) is int and 0 < value < LATEST_MILLISECONDS:
         return value
@@ -154,8 +154,8 @@ def _timing(began, proof):
     checkpoint = proof.get("checkpoint")
     if not isinstance(restored, dict) or not isinstance(checkpoint, dict):
         return None
-    restored_at = _milliseconds(restored.get("restore_timestamp"))
-    acknowledged = _milliseconds(checkpoint.get("latest_ack_timestamp"))
+    restored_at = milliseconds(restored.get("restore_timestamp"))
+    acknowledged = milliseconds(checkpoint.get("latest_ack_timestamp"))
     if (
         restored_at is None
         or acknowledged is None

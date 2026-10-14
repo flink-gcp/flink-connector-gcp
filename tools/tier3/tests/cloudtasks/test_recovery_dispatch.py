@@ -40,6 +40,7 @@ def args(tmp_path, **overrides):
     value = {
         "scenario": "cloudtasks-recovery",
         "application_digest": DIGEST,
+        "cloudtasks_trial": "jm-replacement",
         "run_id": "ct-1769-0001",
         "kubeconfig": tmp_path / "kubeconfig",
         "directory": tmp_path,
@@ -118,16 +119,20 @@ def cluster(env, renderer, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("kind", plan.KINDS)
 def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
-    cluster, renderer, tmp_path
+    cluster, renderer, tmp_path, kind
 ):
-    cli.start(args(tmp_path), cluster.store)
+    cli.start(args(tmp_path, cloudtasks_trial=kind), cluster.store)
     seen = cluster.seen
     approval = seen["env"].approval
     validate_approval(approval.to_dict())
     assert approval.version == APPROVAL_VERSION
     assert approval.scenario == "cloudtasks-recovery"
-    assert approval.cloudtasks_trial == plan.TRIAL
+    assert approval.cloudtasks_trial == plan.trial(kind)
+    assert approval.cloudtasks_plan.kind == kind
+    [(_, _, _, _, options)] = renderer
+    assert options["cloudtasks_trial"] == kind
     assert approval.started_at == cli.rt.utc(NOW)
     assert approval.expires_at == cli.rt.utc(NOW + WINDOW)
     assert approval.images["application"] == (
@@ -142,7 +147,6 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
     (_, config, supervisor, started), settled = runner.calls
     assert settled == ("settle", False)
     assert started is application
-    assert len(renderer) == 1
     assert json.loads(config["data"]["approval.json"]) == approval.to_dict()
     assert supervisor["spec"]["activeDeadlineSeconds"] == (
         approval.schedule.active_seconds(NOW)
@@ -159,6 +163,21 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
         digest(documents["upgrade-application.json"])
         == approval.upgrade_application_sha256
     )
+
+
+# "none" is what the workflow sends when its input is left alone.
+@pytest.mark.parametrize("value", ["none", None, "", "upgrade-failover", "RESCALE-IN"])
+def test_a_dispatch_without_a_trial_kind_is_refused_before_anything(
+    env, tmp_path, monkeypatch, value
+):
+    _, store, *_ = env
+    monkeypatch.setattr(
+        cli, "external", lambda *_: (_ for _ in ()).throw(AssertionError("cluster"))
+    )
+    before = copy.deepcopy(store.data)
+    with pytest.raises(Failure, match="--cloudtasks-trial kind"):
+        cli.start(args(tmp_path, cloudtasks_trial=value), store)
+    assert store.data == before
 
 
 @pytest.mark.parametrize("value", [None, "latest", "sha256:" + "d" * 63])
@@ -178,10 +197,12 @@ def test_a_dispatch_without_a_digest_is_refused_before_anything(
 def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
     environment, _, _, proposal = prepared
     reference = environment.approval.to_dict()
+    trial = plan.trial("tm-replacement")
     approval = cli.cloudtasks_approval(
         run_id=reference["run_id"],
         nonce=reference["nonce"],
         sha=reference["sha"],
+        trial=trial,
         proposal=dict(
             proposal,
             application_sha256=reference["application_sha256"],
@@ -196,6 +217,6 @@ def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
     )
     validate_approval(approval)
     assert approval["scenario"] == "cloudtasks-recovery"
-    # A copy, so a later edit cannot reach the policy's trial.
-    assert approval["cloudtasks_trial"] == plan.TRIAL
-    assert approval["cloudtasks_trial"] is not plan.TRIAL
+    # A copy, so a later edit cannot reach the dispatched trial.
+    assert approval["cloudtasks_trial"] == trial
+    assert approval["cloudtasks_trial"] is not trial

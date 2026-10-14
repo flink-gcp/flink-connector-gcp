@@ -18,6 +18,7 @@ import copy
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1376,8 +1377,10 @@ def cloudtasks_leaf(module, **changes):
         "namespace": "tier3-cloudtasks",
         "image": f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
         "phase": "initial",
+        "sinkParallelism": 2,
         **changes,
     }
+    inputs = {key: value for key, value in inputs.items() if value is not None}
     path = leaf(module, "runs/cloudtasks", {"run": inputs})
     shutil.copyfile(
         KUBERNETES / "tests/fixtures/cloudtasks.cue", module / path / "delivery.cue"
@@ -1385,7 +1388,7 @@ def cloudtasks_leaf(module, **changes):
     return path
 
 
-def cloudtasks_args(run_id, phase, records=180000, rate=100):
+def cloudtasks_args(run_id, phase, records=180000, rate=100, parallelism=2):
     return [
         "--run-id",
         run_id,
@@ -1399,6 +1402,8 @@ def cloudtasks_args(run_id, phase, records=180000, rate=100):
         str(rate),
         "--require-restored",
         str(phase == "upgrade").lower(),
+        "--sink-parallelism",
+        str(parallelism),
     ]
 
 
@@ -1425,7 +1430,9 @@ def cloudtasks_configuration(run_id):
     }
 
 
-def assert_cloudtasks_application(app, run_id, expires_at, phase, records, rate):
+def assert_cloudtasks_application(
+    app, run_id, expires_at, phase, records, rate, parallelism=2
+):
     """The whole delivered contract of one phase but its approval annotations."""
     assert app["metadata"]["name"] == run_id
     assert app["metadata"]["namespace"] == "tier3-cloudtasks"
@@ -1439,14 +1446,14 @@ def assert_cloudtasks_application(app, run_id, expires_at, phase, records, rate)
     assert spec["job"] == {
         "jarURI": "local:///opt/flink/usrlib/cloudtasks-recovery.jar",
         "entryClass": "io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksRecoveryJob",
-        "parallelism": 2,
+        "parallelism": parallelism,
         "state": "running",
         "upgradeMode": "savepoint",
         "allowNonRestoredState": False,
-        "args": cloudtasks_args(run_id, phase, records, rate),
+        "args": cloudtasks_args(run_id, phase, records, rate, parallelism),
     }
     assert spec["flinkConfiguration"] == cloudtasks_configuration(run_id)
-    for manager, replicas in (("jobManager", 1), ("taskManager", 2)):
+    for manager, replicas in (("jobManager", 1), ("taskManager", parallelism)):
         assert spec[manager]["replicas"] == replicas
         assert spec[manager]["resource"] == {"cpu": 1, "memory": "2Gi"}
         assert "volumes" not in spec[manager]["podTemplate"]["spec"]
@@ -1474,6 +1481,25 @@ def test_cloudtasks_initial_and_upgrade_preserve_the_trial(module):
     for app in applications:
         app["spec"]["job"].pop("args")
     assert applications[0] == applications[1]
+
+
+@pytest.mark.parametrize("parallelism", [1, 2])
+def test_cloudtasks_sink_parallelism_sizes_the_job_and_its_taskmanagers(
+    module, parallelism
+):
+    path = cloudtasks_leaf(module, sinkParallelism=parallelism)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    assert_cloudtasks_application(
+        app,
+        "ct-contract",
+        "2026-10-13T08:00:00Z",
+        "initial",
+        180000,
+        100,
+        parallelism,
+    )
 
 
 @pytest.mark.parametrize(
@@ -1504,6 +1530,13 @@ def test_cloudtasks_input_boundaries_render(module, records, rate):
         {"records": 180000, "recordsPerSecond": 50},
         {"recordsPerSecond": 0},
         {"recordsPerSecond": 101},
+        # One sink subtask on each of at most two single-slot TaskManagers, and
+        # no default: the Flink package's own parallelism default would
+        # contradict one.
+        {"sinkParallelism": None},
+        {"sinkParallelism": 0},
+        {"sinkParallelism": 3},
+        {"sinkParallelism": "2"},
         # The smoke policy admits this image, account and topology; only the package's
         # namespace refuses it.
         {"namespace": "tier3-smoke"},
@@ -1537,6 +1570,7 @@ def test_cloudtasks_rejects_invalid_trial_inputs(module, changes):
             }
         },
         {"taskManager": {"replicas": 1}},
+        {"job": {"parallelism": 1}},
         {"flinkConfiguration": {"taskmanager.numberOfTaskSlots": "2"}},
         {"flinkConfiguration": {"job.autoscaler.enabled": "true"}},
         {
@@ -1589,7 +1623,7 @@ def test_cloudtasks_delivery_cannot_change_fixed_topology(module, override):
     [
         {"flinkVersion": "v1_20"},
         {"serviceAccount": "bigquery"},
-        {"job": {"parallelism": 1}},
+        {"job": {"parallelism": 3}},
         {
             "image": "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@"
             + SYNTHETIC_DIGEST
@@ -1620,17 +1654,24 @@ def test_cloudtasks_namespace_policy_without_application_package(module, overrid
 
 
 @pytest.mark.parametrize(
-    "inputs,records,rate",
+    "inputs,records,rate,parallelism",
     [
-        ({}, 180000, 100),
+        ({}, 180000, 100, (2, 2)),
         (
             {"cloudtasks_records": "90000", "cloudtasks_records_per_second": "50"},
             90000,
             50,
+            (2, 2),
         ),
+        ({"cloudtasks_trial": "jm-replacement"}, 180000, 100, (2, 2)),
+        ({"cloudtasks_trial": "tm-replacement"}, 180000, 100, (2, 2)),
+        ({"cloudtasks_trial": "rescale-out"}, 180000, 100, (1, 2)),
+        ({"cloudtasks_trial": "rescale-in"}, 180000, 100, (2, 1)),
     ],
 )
-def test_cloudtasks_proposal_delivery_binds_both_phases(module, inputs, records, rate):
+def test_cloudtasks_proposal_delivery_binds_both_phases(
+    module, inputs, records, rate, parallelism
+):
     result = lifecycle_export(
         module,
         "[application, upgradeApplication, delivery.resources]",
@@ -1642,9 +1683,11 @@ def test_cloudtasks_proposal_delivery_binds_both_phases(module, inputs, records,
     )
     assert result.returncode == 0, result.stderr
     initial, upgrade, delivery = json.loads(result.stdout)
-    for app, phase in ((initial, "initial"), (upgrade, "upgrade")):
+    for app, phase, size in zip(
+        (initial, upgrade), ("initial", "upgrade"), parallelism, strict=True
+    ):
         assert_cloudtasks_application(
-            app, "proposal-1362", "2026-09-20T00:00:00Z", phase, records, rate
+            app, "proposal-1362", "2026-09-20T00:00:00Z", phase, records, rate, size
         )
         annotations = app["metadata"]["annotations"]
         assert annotations["flink-gcp.io/approval"] == "a" * 32
@@ -1668,6 +1711,25 @@ def test_cloudtasks_proposal_delivery_binds_both_phases(module, inputs, records,
         "upgrade-application.json",
         "proposal.json",
     } | {"flink_tier3/" + name for name in delivered_sources()}
+
+
+@pytest.mark.parametrize("trial", ["upgrade-failover", "rescale", "RESCALE-IN"])
+def test_cloudtasks_proposal_refuses_an_unknown_trial(module, trial):
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication, delivery.resources]",
+        "cloudtasks-recovery",
+        run_id="proposal-1362",
+        active_seconds="5220",
+        application_image=f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
+        cloudtasks_trial=trial,
+    )
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+    # The size table refuses it. The tag's own disjunction does not: compared
+    # rather than indexed, `rescale` rendered two subtasks in both phases.
+    # A label that is not an identifier is quoted.
+    assert re.search(rf'undefined field: "?{re.escape(trial)}"?:', result.stderr)
 
 
 PUBSUB_IMAGE = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery"

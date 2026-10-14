@@ -44,10 +44,20 @@ final class RecoveryOptions implements Serializable {
     private static final long MAX_RECORDS_PER_SECOND = 100;
     // One hour of input at that rate.
     private static final long MAX_RECORDS = 3600 * MAX_RECORDS_PER_SECOND;
+    // The rig runs one sink subtask on each of at most two single-slot TaskManagers, and a rescale
+    // trial moves between one and two.
+    private static final int MAX_SINK_PARALLELISM = 2;
 
     private static final String LABEL = "[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?";
     private static final Set<String> ARGUMENTS =
-            Set.of("run-id", "queue", "records", "records-per-second", "phase", "require-restored");
+            Set.of(
+                    "run-id",
+                    "queue",
+                    "records",
+                    "records-per-second",
+                    "phase",
+                    "require-restored",
+                    "sink-parallelism");
 
     final String runId;
     // The queue ID in PROJECT/LOCATION; the rig creates it paused and owns its name.
@@ -56,6 +66,8 @@ final class RecoveryOptions implements Serializable {
     final long recordsPerSecond;
     final String phase;
     final boolean requireRestored;
+    // The writer's and committer's subtasks; a savepoint upgrade may change it, which rescales.
+    final int sinkParallelism;
 
     private RecoveryOptions(Map<String, String> args) {
         runId = required(args, "run-id");
@@ -89,6 +101,13 @@ final class RecoveryOptions implements Serializable {
         if (phase.equals("upgrade") && !requireRestored) {
             throw new IllegalArgumentException("--phase upgrade requires --require-restored true");
         }
+        long parallelism =
+                args.containsKey("sink-parallelism") ? number(args, "sink-parallelism") : 2;
+        if (parallelism < 1 || parallelism > MAX_SINK_PARALLELISM) {
+            throw new IllegalArgumentException(
+                    "--sink-parallelism must be between 1 and " + MAX_SINK_PARALLELISM);
+        }
+        sinkParallelism = (int) parallelism;
     }
 
     static RecoveryOptions parse(String... args) {
@@ -130,7 +149,7 @@ final class RecoveryOptions implements Serializable {
     }
 
     String identity() {
-        // Phase changes during upgrade; the input and sink contract must not change.
+        // Phase and sink parallelism change in an upgrade; the input and sink contract must not.
         return "v1/" + runId + "/" + queue + "/" + records + "/" + recordsPerSecond;
     }
 

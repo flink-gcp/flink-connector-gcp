@@ -35,19 +35,41 @@ from .test_lifecycle import rt
 LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
 
 
+# The default trial's timing: the failover begins once the upgrade is proved.
+IMMEDIATE = {
+    key: value
+    for key, value in CLOUDTASKS_OBSERVATIONS.items()
+    if key != "post_upgrade_seconds"
+}
+HOLD = 300
+HELD = {**IMMEDIATE, "post_upgrade_seconds": HOLD}
+
+
 class Exercise(RecoveryExercise):
     namespace = CLOUDTASKS
     state_bucket = CLOUDTASKS_STATE
-    timing = CLOUDTASKS_OBSERVATIONS
+    timing = IMMEDIATE
     progress_event = "cloudtasks-progress"
     expected_pods = 3
     records = 1000
 
 
+class HeldExercise(Exercise):
+    timing = HELD
+
+
 class World:
     """One application, its Pods and its checkpoint history, poll by poll."""
 
-    def __init__(self, prepared, monkeypatch, *, failover="jobmanager", rescale=None):
+    def __init__(
+        self,
+        prepared,
+        monkeypatch,
+        *,
+        failover="jobmanager",
+        rescale=None,
+        exercise=Exercise,
+    ):
         self.env, application, upgrade, _ = prepared
         self.env.actor = "supervisor"
         self.env.records.set_phase(rt.Phase.READY)
@@ -73,7 +95,7 @@ class World:
         monkeypatch.setattr(self.env.kube, "delete", self.delete)
         self.restored, self.completed = {}, {}
         self.processed = 0
-        self.exercise = Exercise(
+        self.exercise = exercise(
             self.env, self.upgrade, failover=failover, rescale=rescale
         )
 
@@ -446,3 +468,119 @@ def test_the_fault_kind_must_be_one_the_exercise_runs(prepared, kind):
     environment, _, upgrade, _ = prepared
     with pytest.raises(Failure, match="approved fault kind"):
         Exercise(environment, upgrade, **kind)
+
+
+@pytest.fixture
+def held(prepared, monkeypatch, request):
+    return World(
+        prepared,
+        monkeypatch,
+        exercise=HeldExercise,
+        **getattr(request, "param", {}),
+    )
+
+
+def hold(world):
+    """The baseline and the upgrade, proved and held for its window."""
+    world.baseline()
+    world.upgraded()
+    assert world.exercise.stage == "upgraded"
+    assert world.deleted == []
+
+
+def test_a_held_upgrade_measures_a_window_before_the_failover(held):
+    hold(held)
+    proved_at = held.env.clock()
+    record = held.env.refresh().recovery
+    assert record["stage"] == "upgraded"
+    assert record["until"] == rt.utc(proved_at + HOLD)
+    assert set(record["outcomes"]["upgrade"]) == {
+        "restored",
+        "checkpoint",
+        "progress",
+        "jm_uid",
+    }
+    # The upgraded job is a steady state: its Pods are the stable set.
+    assert held.exercise.stable_pods == {"jm-2-uid", "tm-1-uid", "tm-2-uid"}
+    assert not held.exercise.recovering
+    held.advance(HOLD - 1)
+    held.progress("tm-1", "upgrade")
+    held.checkpoint(4)
+    held.observe()
+    assert held.exercise.stage == "upgraded"
+    assert held.deleted == []
+    held.advance(1)
+    held.progress("tm-1", "upgrade")
+    held.checkpoint(5)
+    held.observe()
+    assert held.exercise.stage == "failover"
+    assert held.deleted == ["jm-2"]
+    before = held.env.refresh().recovery["before"]
+    # The failover must not restore behind the window's latest checkpoint.
+    assert before["checkpoint"]["id"] == 5
+    assert before["processed"] == held.processed
+    del held.pods["jm-2"]
+    held.pod("jm-3", "jobmanager")
+    held.failed_over(restored=5)
+    assert held.exercise.stage == "finishing"
+    # The upgrade's proof is the one taken when it was proved.
+    assert held.exercise.outcomes["upgrade"]["checkpoint"]["id"] == 3
+
+
+def test_a_failover_behind_the_held_windows_checkpoint_fails(held):
+    hold(held)
+    held.advance(HOLD)
+    held.progress("tm-1", "upgrade")
+    held.checkpoint(5)
+    held.observe()
+    assert held.exercise.stage == "failover"
+    del held.pods["jm-2"]
+    held.pod("jm-3", "jobmanager")
+    with pytest.raises(Failure, match="did not recover the checkpointed job"):
+        held.failed_over(restored=3)
+
+
+def test_a_held_window_waits_for_a_checkpoint_taken_inside_it(held):
+    hold(held)
+    held.advance(HOLD)
+    held.progress("tm-1", "upgrade")
+    # The latest completed checkpoint is still the one the proof read.
+    held.observe()
+    assert held.exercise.stage == "upgraded"
+    held.advance(CLOUDTASKS_OBSERVATIONS["recovery_seconds"])
+    with pytest.raises(Failure, match="deadline expired: upgraded"):
+        held.observe()
+    assert held.deleted == []
+
+
+def test_a_pod_replaced_inside_the_held_window_is_unplanned(held):
+    hold(held)
+    pods = [copy.deepcopy(pod) for pod in held.pods.values()]
+    held.exercise.scheduling(pods)
+    del held.pods["tm-2"]
+    held.pod("tm-3", "taskmanager")
+    with pytest.raises(Failure, match="Unplanned workload replacement"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+def test_a_rest_error_inside_the_held_window_is_not_a_recoverys(held):
+    hold(held)
+    assert not held.exercise.tolerate_rest(ApiError(503, "GET", "checkpoints"))
+
+
+def test_a_job_that_finishes_inside_the_held_window_fails(held):
+    hold(held)
+    held.app["status"]["jobStatus"]["state"] = "FINISHED"
+    with pytest.raises(Failure, match="without both recovery proofs"):
+        held.observe()
+
+
+@pytest.mark.parametrize("held", [{"failover": "taskmanager"}], indirect=True)
+def test_a_held_upgrade_deletes_the_taskmanager_reporting_after_the_window(held):
+    hold(held)
+    held.advance(HOLD)
+    held.progress("tm-2", "upgrade")
+    held.checkpoint(5)
+    held.observe()
+    assert held.deleted == ["tm-2"]
+    assert held.env.refresh().recovery["before"]["tm"] == "tm-2"

@@ -29,6 +29,9 @@ import (
 		// At most 30 minutes of input, as the BigQuery trial in the same 90-minute window has. The
 		// bounds apply to the default too, which a lower rate makes too long.
 		records: (*180000 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
+		// The sink's subtasks, one per single-slot TaskManager; a rescale trial's phases differ.
+		// No default: the Flink package's own parallelism default would contradict one.
+		sinkParallelism: 1 | 2
 	}
 	// The queue the lifecycle creates paused for this run, named from the run.
 	let queue = "ct1362-\(run.id)"
@@ -66,7 +69,7 @@ import (
 				"restart-strategy.fixed-delay.delay":                          "10 s"
 			}
 			jobManager: replicas:  1
-			taskManager: replicas: 2
+			taskManager: replicas: run.sinkParallelism
 			for manager in ["jobManager", "taskManager"] {
 				"\(manager)": {
 					resource: {cpu: 1, memory: "2Gi"}
@@ -79,11 +82,12 @@ import (
 			job: {
 				jarURI:      "local:///opt/flink/usrlib/cloudtasks-recovery.jar"
 				entryClass:  "io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksRecoveryJob"
-				parallelism: 2
+				parallelism: run.sinkParallelism
 				upgradeMode: "savepoint"
 				args: ["--run-id", run.id, "--queue", queue, "--phase", run.phase,
 					"--records", "\(run.records)", "--records-per-second", "\(run.recordsPerSecond)",
-					"--require-restored", "\(run.phase == "upgrade")"]
+					"--require-restored", "\(run.phase == "upgrade")",
+					"--sink-parallelism", "\(run.sinkParallelism)"]
 			}
 		}
 	}

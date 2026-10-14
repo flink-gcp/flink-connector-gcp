@@ -24,6 +24,7 @@ from .bigquery.exercise import BigQueryExercise, require_handoff
 from .cleanup import Cleanup
 from .cloudtasks.exercise import CloudTasksExercise
 from .common import ApiError, Failure, transient, utc
+from .metrics import CHECKPOINTS_EVENT
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
 from .pubsub.exercise import PubSubExercise
@@ -362,7 +363,7 @@ class Supervisor:
                             "recovery-rest-unavailable", {"cause": str(error)}
                         )
                     self.env.emit(
-                        "checkpoints",
+                        CHECKPOINTS_EVENT,
                         {"job_id": job_id, **rest} if self.exercise else rest,
                     )
                     if rest.get("counts", {}).get("completed", 0) > 0:

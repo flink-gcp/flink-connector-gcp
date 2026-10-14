@@ -24,6 +24,20 @@ import (
 // defaults and bounds.
 cloudtasksRecords:          int @tag(cloudtasks_records,type=int)
 cloudtasksRecordsPerSecond: int @tag(cloudtasks_records_per_second,type=int)
+// Every trial runs a savepoint upgrade and then deletes a Pod. The kind names the fault that makes
+// it a trial of its own: the JobManager deleted, a TaskManager deleted in its place, or an upgrade
+// that rescales the sink from one subtask to two or from two to one.
+cloudtasksTrial: *"jm-replacement" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(cloudtasks_trial)
+
+// Each trial's sink subtasks by phase. Indexed rather than compared: compared
+// against a trial outside the four, the render produced two subtasks in both
+// phases instead of failing.
+_sinkParallelism: {
+	"jm-replacement": {initial: 2, upgrade: 2}
+	"tm-replacement": {initial: 2, upgrade: 2}
+	"rescale-out": {initial: 1, upgrade: 2}
+	"rescale-in": {initial: 2, upgrade: 1}
+}
 
 // Both Cloud Tasks phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it
@@ -34,7 +48,8 @@ if scenario == "cloudtasks-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-cloudtasks", image: applicationImage}
 			delivery: resources: app: (cloudtasks.#Application & {
 				run: {id: runID, image: applicationImage, phase: trialPhase
-					records: cloudtasksRecords, recordsPerSecond: cloudtasksRecordsPerSecond
+					records:         cloudtasksRecords, recordsPerSecond: cloudtasksRecordsPerSecond
+					sinkParallelism: _sinkParallelism[cloudtasksTrial][trialPhase]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

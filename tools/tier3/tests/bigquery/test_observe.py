@@ -22,7 +22,6 @@ from flink_tier3.bigquery.exercise import BigQueryExercise
 from flink_tier3.bigquery.observe import (
     COMMITTER_METRICS,
     CONNECTOR_METRICS,
-    MEMORY_METRICS,
     NETWORK_METRICS,
     observation,
     vertices,
@@ -30,7 +29,7 @@ from flink_tier3.bigquery.observe import (
 from flink_tier3.bigquery.oracle import Trial
 from flink_tier3.common import ApiError, Failure, ReadCeilingExceeded, TransportError
 from flink_tier3.exercise import RecoveryExercise
-from flink_tier3.metrics import FlinkRest, sample, unavailable
+from flink_tier3.metrics import MEMORY_METRICS, FlinkRest, sample, unavailable
 from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS
 
 JOB = "a" * 32

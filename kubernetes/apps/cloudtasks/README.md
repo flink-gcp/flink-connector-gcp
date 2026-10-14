@@ -206,13 +206,16 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 | `--records-per-second` | Source ceiling from 1 to 100 |
 | `--phase` | `initial` (default) or `upgrade` |
 | `--require-restored` | `false` (default) or `true`; `--phase upgrade` requires `true` |
+| `--sink-parallelism` | `2` (default) or `1`: the sink's writer and committer subtasks; an upgrade may change it, which rescales the sink |
 
 ### Graph and sink
 
 One source subtask generates the sequences 0 to `records - 1` at the ceiling with Flink Datagen.
 An identity operator, also one subtask, checks that each sequence is the next one and keeps the trial identity, a lineage UUID and its position in operator state.
 A restored state must carry the same run, queue, record count and rate, so state from another trial or configuration fails the job; `--require-restored true` refuses a fresh start.
-Sequence `s` goes to sink subtask `s mod 2`, and the sink runs at parallelism 2 with maximum parallelism 128.
+The sink's parallelism is not part of that identity, so a savepoint taken at one parallelism restores at the other.
+Sequence `s` goes to sink subtask `s mod p` at sink parallelism `p`, and the sink keeps maximum parallelism 128 at either.
+The job is two vertices, the source chained to the identity operator and the sink's writer chained to its committer, which is what the rig's measurements read; `RecoveryJobITCase` holds that shape.
 The source, identity and sink UIDs are `ct1362-source-v1`, `ct1362-input-v1` and `ct1362-sink-v1`.
 Checkpoints run every 30 seconds, one at a time.
 
@@ -220,6 +223,7 @@ The sink is built with the public builder: a fixed `queue(...)`, `deliveryGuaran
 Under those defaults the committer reads the queue's `tombstoneTtl` back before it creates a task and refuses a queue that keeps names for less than an hour, so the workload identity needs `cloudtasks.queues.get` beside `cloudtasks.tasks.create`.
 Each task is an HTTP POST to `https://ct1362.invalid/task` whose body repeats its task key; RFC 6761 reserves `.invalid`, and a paused queue dispatches nothing.
 The committers create each checkpoint's tasks in one burst rather than at the source rate.
+At one subtask, a 30-second checkpoint's 3,000 creates would take its committer about 14 seconds at the per-subtask rate below, inside the interval.
 The ceiling is 100 records per second because [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) measured staged creation keeping up at that rate on four subtasks with 10-second checkpoints. A 30-second checkpoint of it is 3,000 creates, which two committers on the default single channel, measured at about 210 creates per second per subtask in [#937](https://github.com/flink-gcp/flink-connector-gcp/issues/937), send in seconds and below the 500 per second at which Google's 500/50/5 guidance starts a new queue.
 
 ### Task names
@@ -245,20 +249,31 @@ The lineage stays the same across a restore, and `restored` reports whether this
 ### Local recovery tests
 
 `RecoveryJobITCase` runs the deployed graph and the production sink against `FakeCloudTasks`, an in-process `CreateTask` server that refuses a repeated name with `ALREADY_EXISTS`.
-A run, and a run stopped with a savepoint and resumed from it in the `upgrade` phase, each end with exactly the expected task names.
+A run, and a run stopped with a savepoint and resumed from it in the `upgrade` phase at the same sink parallelism, from two subtasks to one and from one to two, each end with exactly the expected task names.
 The fake has no queue to read, and the connector skips the retention readback for an emulator endpoint; what the real service does is the trial's question.
 
 ## Recovery trial
 
-The `cloudtasks-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-cloudtasks` and judges whether every input record became exactly one task.
-It is the trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-trial) records its design.
+The `cloudtasks-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-cloudtasks`, measures it before and after each recovery, and judges whether every input record became exactly one task.
+It is the trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-trial) records its design; [#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777) added the fault kinds and the measurements, as its [section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-fault-kinds-and-measurement-windows) records.
 Its grants and its CUE delivery are described in the [OpenTofu runbook](../../../opentofu/README.md#cloud-tasks-cluster-resources) and the [lifecycle runbook](../../lifecycle/README.md).
 The one [preregistered](https://github.com/flink-gcp/flink-connector-gcp/issues/1362#issuecomment-6127161854) trial reached `usable` on its first attempt, `ct-1362-a1`, on 2026-10-12, as its [findings](../../../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record.
 
 ### Trial and estimate
 
-There is one trial: 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window.
-Render its offline proposal, which carries the estimate the owner approves, from the repository root; the run takes no trial input:
+Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and runs a savepoint upgrade and then deletes a Pod.
+Its kind names the fault that makes it a trial of its own:
+
+| Kind | Upgrade | Pod deleted | Sink subtasks, initial then upgrade |
+| --- | --- | --- | --- |
+| `jm-replacement` | Keeps its sizes | The JobManager | 2, 2 |
+| `tm-replacement` | Keeps its sizes | The TaskManager that reported the latest input | 2, 2 |
+| `rescale-out` | Rescales the sink | The JobManager | 1, 2 |
+| `rescale-in` | Rescales the sink | The JobManager | 2, 1 |
+
+Each sink subtask runs on a single-slot TaskManager of its own, so a phase with one subtask runs one TaskManager.
+`jm-replacement` is the trial `ct-1362-a1` ran.
+Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
@@ -267,21 +282,23 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
   --started-at 2026-10-13T00:00:00Z --expires-at 2026-10-13T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
   --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  > /tmp/cloudtasks-proposal.json
+  --cloudtasks-trial rescale-in > /tmp/cloudtasks-proposal.json
 ```
 
 A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
 
-The estimate prices the operator, the supervisor and the three application Pods for the window at the reviewed Autopilot rates, every task operation the trial plans at USD 0.40 per million without the monthly free tier, and a USD 1.00 reserve for state, evidence and telemetry.
+The estimate is the same for every kind.
+It prices the operator, the supervisor and the three application Pods for the window, which a rescale trial's phase with one TaskManager does not use in full, at the reviewed Autopilot rates, every task operation the trial plans at USD 0.40 per million without the monthly free tier, and a USD 1.00 reserve for state, evidence and telemetry.
 The operations are the 180,000 creates, one checkpoint's records re-created for each of the two recoveries, two whole listings in pages of 1,000, and ten queue calls.
 
 ### Dispatch
 
-The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `cloudtasks-recovery` with one input beyond the common ones, `application_digest`: the published `cloudtasks-recovery` GAR digest, verified live at dispatch and never pinned.
+The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `cloudtasks-recovery` with two inputs beyond the common ones: `cloudtasks_trial`, the kind, which the dispatch refuses when it is left at `none`; and `application_digest`, the published `cloudtasks-recovery` GAR digest, verified live at dispatch and never pinned.
 The owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios.
 The workflow job runs for up to 120 minutes, because the 90-minute window's serial budget is 114 minutes.
 
-Dispatch checks the digest, the run ID and an existing run's evidence first, then snapshots the foundation, renders and verifies the proposal, takes live image receipts and binds the approval into the delivery before it takes the environment lock.
+Dispatch checks the trial kind, the digest, the run ID and an existing run's evidence first, then snapshots the foundation, renders and verifies the proposal, takes live image receipts and binds the approval into the delivery before it takes the environment lock.
+A `rig_sha` older than the trial kinds takes no `--cloudtasks-trial` and fails at its argument parsing, before the lock.
 The run's queue is `ct1362-<run-id>` in `flink-gcp/us-central1`.
 Choose a run ID that has not been used: a deleted queue's name can stay unavailable for a tombstone window of up to three days, and a used ID already has evidence, which dispatch refuses.
 
@@ -302,8 +319,22 @@ It waits for the runner's release and for the namespace to hold no Pod, deletes 
 
 ### Exercise and oracle
 
-The supervisor runs the shared recovery exercise on the application's `cloudtasks-progress` lines: one savepoint upgrade while the initial input still flows, then one JobManager deletion while the upgraded input flows, each proved by a restored savepoint or checkpoint, advanced input and a new completed checkpoint.
+The supervisor runs the shared recovery exercise on the application's `cloudtasks-progress` lines, with the faults the trial's kind names: one savepoint upgrade, a rescale for `rescale-out` and `rescale-in`, while the initial input still flows, then one Pod deletion while the upgraded input flows.
+Each recovery is proved by a restored savepoint or checkpoint, advanced input and a new completed checkpoint; a rescale also by its checkpoints' subtask count moving as approved, and a TaskManager replacement also by the deleted Pod being gone under the same JobManager.
 The input lineage must stay the one the first progress line reported.
+
+The exercise holds three measurement windows and reads the job's REST service once a minute throughout:
+
+| Window | Opens | Closes |
+| --- | --- | --- |
+| `baseline` | One minute after the first poll that sees the initial input flowing on the whole set of Pods, a warm-up the window does not count | When the upgrade begins, at the first checkpoint triggered five minutes or more after the window opened |
+| `upgraded` | The upgrade's proof | When the deletion begins, five minutes or more later; the failover must not restore behind the latest checkpoint triggered since the window opened |
+| `finishing` | The failover's proof | Five minutes later; input that finishes sooner fails the run |
+
+A reading is a `cloudtasks-measurement` evidence event carrying the stage it was taken in and its window, or none: a reading during startup, a recovery or the rest of the input counts toward no window.
+Its families are the ones the BigQuery trials read: the sink vertex's task, network and connector metrics, each TaskManager's memory metrics, and each sink subtask's share of the latest completed checkpoint.
+The connector family is the staged writer's and committer's metrics, among them `tasksDeduplicated`, which counts the creates the service refused as existing since the task last started, so a reading after a recovery counts what its replay found existing, and the expired-envelope counters.
+The committer's `currentCommit` replay-budget gauges hold a value only during a commit, and the commit that replays a restored checkpoint runs once, while its task initializes, so a reading catches it only by chance and more often catches an ordinary checkpoint's commit; what a recovery spends of the budget is bounded instead from Flink's timestamps, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-fault-kinds-and-measurement-windows) records.
 
 When the upgraded application reaches `FINISHED` with the whole input processed, the supervisor reads the queue back and lists its tasks in the basic view, page by page.
 It exports every page as a `cloudtasks-task-page` evidence event, holding the listed task ids, any name outside the run's queue and the ids of any task with a dispatch attempt.
@@ -314,8 +345,13 @@ A non-transient error from such a call before then, any failure of the run's own
 
 ### Verdict and analysis
 
-The run is `usable` when both recoveries are proved, the queue read back `PAUSED` before the listing, and the oracle passed; anything short of that is `inconclusive`.
+The run is `usable` when both recoveries are proved, the queue read back `PAUSED` before the listing, the oracle passed, and each of the three windows read every family; anything short of that is `inconclusive`.
+A family counts as read only where a reading returned one of its metrics, not where a request named it.
 The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
 
-`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory: it rebuilds the oracle report from the pages of the attempt the record names, reports a page missing from the export as a problem that leaves the run without a verdict, and reports a stored report or verdict that the pages do not reproduce.
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory: it rebuilds the oracle report from the pages of the attempt the record names and the coverage from the exported readings, reports a page or reading missing from the export as a problem that leaves the run without a verdict, and reports a stored report or verdict that the evidence does not reproduce.
+`ct-1362-a1` read no family, so its evidence recomputes to `inconclusive` under these rules; archived evidence is read with the revision that produced it.
+It also reports each recovery's timing, from the supervisor's record of its stage to Flink's restore and to the proving checkpoint's acknowledgement, as the BigQuery section does, and when the committer's replay of the restored snapshot began, after Flink's restore and before the restored job's first checkpoint, both read from the exported `checkpoints` polls.
+It measures that window from the snapshot's last acknowledgement, which precedes its completion by however long Flink takes to finalize it, so the figures can only overstate what the recovery spent.
+That is what the recovery spent of each restored envelope's replay budget; a recovery whose snapshot or next checkpoint no exported poll saw is reported unreadable.
 A usable verdict makes no claim about a handler, since a paused queue dispatches nothing.

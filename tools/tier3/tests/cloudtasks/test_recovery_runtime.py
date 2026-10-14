@@ -21,7 +21,13 @@ from flink_tier3.cloudtasks import actors, plan
 from flink_tier3.cloudtasks.exercise import LISTING_STAGE, CloudTasksExercise
 from flink_tier3.cloudtasks.lifecycle import require_cloudtasks_clean
 from flink_tier3.cloudtasks.queue import Unsent
-from flink_tier3.cloudtasks.verdict import COMPLETE_EVENT, PAGE_EVENT
+from flink_tier3.cloudtasks.verdict import (
+    COMPLETE_EVENT,
+    MEASUREMENT_EVENT,
+    OBSERVED,
+    PAGE_EVENT,
+    SAMPLED_STAGES,
+)
 from flink_tier3.common import Failure, TransportError, digest
 from flink_tier3.environment import Environment
 from flink_tier3.model import APPROVAL_VERSION, Approval, validate_approval
@@ -66,7 +72,7 @@ def prepared(env, inputs, renderer):
         started_at=proposal["started_at"],
         expires_at=proposal["expires_at"],
         cleanup_at=proposal["cleanup_at"],
-        cloudtasks_trial=copy.deepcopy(plan.TRIAL),
+        cloudtasks_trial=plan.trial("jm-replacement"),
         application_sha256=digest(application),
         upgrade_application_sha256=digest(upgrade),
     )
@@ -461,6 +467,13 @@ def listing(trial, sequences, per_page=2):
     return [names[i : i + per_page] for i in range(0, len(names), per_page)] or [[]]
 
 
+def full_coverage():
+    """Every family read once in every sampled window."""
+    return {
+        stage: {"attempts": 1, "observed": sorted(OBSERVED)} for stage in SAMPLED_STAGES
+    }
+
+
 @pytest.fixture
 def exercise(prepared, monkeypatch):
     environment, _, upgrade, _ = prepared
@@ -476,6 +489,7 @@ def exercise(prepared, monkeypatch):
     environment.records.set_phase(rt.Phase.RUNNING)
     value = CloudTasksExercise(environment, upgrade, controller)
     value.outcomes.update(upgrade={}, failover={})
+    value.coverage = full_coverage()
     value.persist("baseline")
     # The finished application's transition, which waits for the listing.
     value.persist("complete")
@@ -699,6 +713,20 @@ def test_a_listing_error_that_says_something_ends_the_listing(exercise):
         value.verify_tasks()
 
 
+def test_a_window_that_read_no_family_is_not_usable(exercise):
+    value, controller, small = exercise
+    value.coverage = {**full_coverage(), "upgraded": {"attempts": 2, "observed": []}}
+    controller.pages = [listing(small, range(4))]
+    value.verify_tasks()
+    record = value.env.refresh().recovery
+    assert record["verdict"] == "inconclusive"
+    assert record["reasons"] == [
+        f"unobserved-{family}-in-upgraded" for family in OBSERVED
+    ]
+    # The record carries the coverage the verdict was decided over.
+    assert record["coverage"] == value.coverage
+
+
 def test_a_queue_no_longer_paused_is_not_usable(exercise):
     value, controller, small = exercise
     controller.readbacks = [{"state": "RUNNING"}]
@@ -749,7 +777,31 @@ def test_the_input_lineage_is_recorded_once_and_must_not_change(prepared):
         progress(value, lineage.replace("1", "2"), 3)
 
 
-def test_faults_wait_for_input_still_flowing(prepared, monkeypatch):
+LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
+
+
+def pods(*names):
+    return [
+        {
+            "metadata": {
+                "namespace": CLOUDTASKS,
+                "name": name,
+                "uid": name + "-uid",
+                "labels": {
+                    "component": "jobmanager"
+                    if name.startswith("jm")
+                    else "taskmanager"
+                },
+            },
+            "status": {"phase": "Running"},
+        }
+        for name in names
+    ]
+
+
+def test_the_upgrade_waits_for_flowing_input_and_a_whole_baseline(
+    prepared, monkeypatch
+):
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
     controller = Controller(environment, environment.approval.cloudtasks_plan)
@@ -758,18 +810,350 @@ def test_faults_wait_for_input_still_flowing(prepared, monkeypatch):
     monkeypatch.setattr(
         CloudTasksExercise.__mro__[1],
         "begin_upgrade",
-        lambda self, *args: begun.append("upgrade"),
+        lambda self, *args: begun.append(environment.clock()),
     )
-    value.begin_upgrade(None, None, [], [])
+    running = pods("jm-1", "tm-1", "tm-2")
+
+    def checkpoint():
+        return {"trigger_timestamp": environment.clock() * 1000}
+
+    value.begin_upgrade(None, checkpoint(), [], running)
     assert begun == []
     environment.clock.now += 5
     progress(value, "123e4567-e89b-12d3-a456-426614174000", 10)
-    value.begin_upgrade(None, None, [], [])
-    assert begun == ["upgrade"]
+    # Input flows, but the Pods are not yet the stable set.
+    value.begin_upgrade(None, checkpoint(), [], running)
+    assert begun == [] and value.baseline_until is None
+    value.stable_pods = {pod["metadata"]["uid"] for pod in running}
+    value.begin_upgrade(None, checkpoint(), [], running)
+    opened = environment.clock()
+    window = (
+        CLOUDTASKS_OBSERVATIONS["warmup_seconds"]
+        + CLOUDTASKS_OBSERVATIONS["baseline_seconds"]
+    )
+    assert value.baseline_until == opened + window
+    assert value.deadline == opened + window + 120
+    [event] = events(environment, "cloudtasks-baseline-window")
+    assert event == {"started_at": rt.utc(opened), "until": rt.utc(opened + window)}
+    assert begun == []
+    # Input that kept flowing to the window's end, with a checkpoint triggered
+    # before it closed: still the baseline.
+    environment.clock.now = opened + window
+    stale = {"trigger_timestamp": (opened + window - 1) * 1000}
+    progress(value, "123e4567-e89b-12d3-a456-426614174000", 20)
+    value.begin_upgrade(None, stale, [], running)
+    assert begun == []
+    value.begin_upgrade(None, checkpoint(), [], running)
+    assert begun == [opened + window]
     # Input that stopped advancing a minute ago is no longer flowing.
     environment.clock.now += 61
-    value.begin_upgrade(None, None, [], [])
-    assert begun == ["upgrade"]
+    value.begin_upgrade(None, checkpoint(), [], running)
+    assert begun == [opened + window]
+
+
+@pytest.mark.parametrize(
+    "kind,failover,rescale,pods",
+    [
+        ("jm-replacement", "jobmanager", None, 3),
+        ("tm-replacement", "taskmanager", None, 3),
+        ("rescale-out", "jobmanager", "out", 2),
+        ("rescale-in", "jobmanager", "in", 3),
+    ],
+)
+def test_the_approved_trial_names_the_exercises_faults(
+    prepared, monkeypatch, kind, failover, rescale, pods
+):
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    trial = plan.Trial(environment.approval.run_id, 180000, 100, kind)
+    monkeypatch.setattr(
+        type(environment.approval), "cloudtasks_plan", property(lambda self: trial)
+    )
+    value = CloudTasksExercise(environment, upgrade, Controller(environment, trial))
+    assert (value.failover, value.rescale) == (failover, rescale)
+    # The JobManager and one TaskManager per initial sink subtask.
+    assert value.expected_pods == pods
+
+
+class Rest:
+    """The job's REST service as the observer reads it.
+
+    A listing names a vertex's metric ids; a `?get=` read answers only the ids
+    it asks for that the vertex publishes, aggregated, as Flink's
+    subtask-metrics and TaskManager-metrics endpoints do.
+    """
+
+    def __init__(self, answers, job_id="1" * 32):
+        self.answers = answers
+        self.job_id = job_id
+        self.paths = []
+
+    def _read(self, path):
+        self.paths.append(path)
+        base, _, query = path.partition("?")
+        answer = self.answers[base or "/"]
+        if not query.startswith("get="):
+            return answer
+        asked = query.removeprefix("get=").split("&")[0].split(",")
+        return [
+            {"id": item["id"], "min": 1, "max": 1, "sum": 1}
+            for item in answer
+            if item["id"] in asked
+        ]
+
+    def job(self, path):
+        return self._read(path)
+
+    def root(self, path):
+        return self._read(path)
+
+
+SINK, SOURCE = "sink-vertex", "source-vertex"
+
+
+def answers():
+    return {
+        "/": {
+            "vertices": [
+                {"id": SOURCE, "name": "Source: Cloud Tasks input -> identity"},
+                {"id": SINK, "name": "Cloud Tasks: Writer -> Cloud Tasks: Committer"},
+            ]
+        },
+        f"/vertices/{SINK}/subtasks/metrics": [
+            {"id": "numRecordsIn"},
+            {"id": "inPoolUsage"},
+            {"id": "Cloud_Tasks__Committer.tasksDeduplicated"},
+        ],
+        f"/vertices/{SOURCE}/subtasks/metrics": [
+            {"id": "numRecordsOut"},
+            {"id": "outPoolUsage"},
+        ],
+        "/taskmanagers": {"taskmanagers": [{"id": "tm-1"}]},
+        "/taskmanagers/tm-1/metrics": [{"id": "Status.JVM.Memory.Heap.Used"}],
+        "/checkpoints": {"latest": {"completed": {"id": 7}}},
+        f"/checkpoints/details/7/subtasks/{SINK}": {
+            "subtasks": [
+                {
+                    "index": 0,
+                    "end_to_end_duration": 120,
+                    "checkpoint": {"sync": 1, "async": 2},
+                }
+            ]
+        },
+    }
+
+
+@pytest.fixture
+def measured(prepared, monkeypatch):
+    """A running Cloud Tasks exercise whose REST service is `Rest`."""
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    environment.records.set_phase(rt.Phase.READY)
+    environment.records.set_phase(rt.Phase.RUNNING)
+    controller = Controller(environment, environment.approval.cloudtasks_plan)
+    value = CloudTasksExercise(environment, upgrade, controller)
+    services = []
+
+    def service(env, svc, job_id):
+        assert env is environment
+        services.append(job_id)
+        return Rest(answers(), job_id)
+
+    monkeypatch.setattr("flink_tier3.exercise.FlinkRest", service)
+    value.persist("baseline")
+    return value, services
+
+
+def sample(value, seconds=CLOUDTASKS_OBSERVATIONS["measure_seconds"]):
+    """The next measurement interval's poll, with the job's REST attached."""
+    value.env.clock.now += seconds
+    value.attach_rest({"metadata": {"name": "rest"}}, value.rest_job)
+    value.measure()
+    return events(value.env, MEASUREMENT_EVENT)[-1]
+
+
+def test_the_supervisor_loop_samples_through_the_service_it_attaches(measured):
+    value, services = measured
+    value.rest_job = "1" * 32
+    running = {
+        "metadata": {"generation": 1},
+        "spec": {},
+        "status": {"jobStatus": {"state": "RUNNING", "jobId": "1" * 32}},
+    }
+    value.attach_rest({"metadata": {"name": "rest"}}, "1" * 32)
+    value.observe(running, {}, [])
+    [reading] = events(value.env, MEASUREMENT_EVENT)
+    assert reading["stage"] == "baseline"
+    # Startup, before the baseline window opens: read, but no window's.
+    assert reading["window"] is None
+    assert set(reading) == {
+        "stage",
+        "window",
+        "sink",
+        "source",
+        "taskmanagers",
+        "checkpoints",
+    }
+    assert value.coverage == {}
+    # A second poll inside the interval reads nothing.
+    value.observe(running, {}, [])
+    assert len(events(value.env, MEASUREMENT_EVENT)) == 1
+    # The same job keeps its reader and its discovered ids.
+    value.attach_rest({"metadata": {"name": "rest"}}, "1" * 32)
+    assert services == ["1" * 32] and value.vertices is not None
+    # A new job, as after the upgrade, gets a reader and discovery of its own.
+    value.attach_rest({"metadata": {"name": "rest"}}, "2" * 32)
+    assert services == ["1" * 32, "2" * 32] and value.vertices is None
+
+
+def test_each_family_is_read_from_the_endpoint_that_owns_it(measured):
+    value, _ = measured
+    value.rest_job = "1" * 32
+    reading = sample(value)
+    assert value.vertices == {
+        "source": SOURCE,
+        "sink": SINK,
+        "sink_metrics": [
+            "numRecordsIn",
+            "inPoolUsage",
+            "Cloud_Tasks__Committer.tasksDeduplicated",
+        ],
+    }
+    assert [item["id"] for item in reading["sink"]] == value.vertices["sink_metrics"]
+    # The source answers its own metrics, which the sink does not publish.
+    assert [item["id"] for item in reading["source"]] == [
+        "numRecordsOut",
+        "outPoolUsage",
+    ]
+    assert reading["taskmanagers"][0]["metrics"][0]["id"] == (
+        "Status.JVM.Memory.Heap.Used"
+    )
+    assert reading["checkpoints"]["vertices"]["sink"][0]["end_to_end_duration"] == 120
+
+
+def test_only_a_sample_inside_a_window_counts_toward_it(measured):
+    value, _ = measured
+    value.rest_job = "1" * 32
+    timing = CLOUDTASKS_OBSERVATIONS
+    # The baseline opens after its warm-up.
+    value.baseline_until = (
+        value.env.clock() + timing["warmup_seconds"] + timing["baseline_seconds"]
+    )
+    assert sample(value, 0)["window"] is None
+    assert sample(value, timing["warmup_seconds"])["window"] == "baseline"
+    value.persist("upgrade")
+    assert sample(value)["window"] is None
+    value.persist("upgraded")
+    assert sample(value)["window"] == "upgraded"
+    value.persist("failover")
+    assert sample(value)["window"] is None
+    value.persist("finishing")
+    assert sample(value)["window"] == "finishing"
+    # The rest of the input, after the window, counts toward none.
+    value.env.clock.now = value.post_until - timing["measure_seconds"]
+    assert sample(value)["window"] is None
+    full = sorted(OBSERVED)
+    assert value.coverage == {
+        "baseline": {"attempts": 1, "observed": full},
+        "upgraded": {"attempts": 1, "observed": full},
+        "finishing": {"attempts": 1, "observed": full},
+    }
+
+
+@pytest.mark.parametrize(
+    "change,unavailable",
+    [
+        ({"/": {"vertices": []}}, "expected one source and one sink, found 0"),
+        (
+            {
+                "/": {
+                    "vertices": [
+                        {"id": "a", "name": "Source: one"},
+                        {"id": "b", "name": "Source: two"},
+                        {"id": SINK, "name": "sink"},
+                    ]
+                }
+            },
+            "expected one source and one sink, found 3",
+        ),
+    ],
+)
+def test_a_job_of_another_shape_is_a_named_absence(change, unavailable):
+    from flink_tier3.cloudtasks.observe import observation, vertices
+
+    state = vertices(Rest({**answers(), **change}))
+    assert state == {"unavailable": unavailable}
+    assert observation(None, state) == {"vertices": state}
+
+
+def test_discovery_keeps_what_it_found_when_a_later_read_fails():
+    from flink_tier3.cloudtasks.observe import vertices
+    from flink_tier3.common import ApiError
+
+    class Failing(Rest):
+        def __init__(self, answers, failing):
+            super().__init__(answers)
+            self.failing = failing
+
+        def _read(self, path):
+            if path.split("?")[0] in self.failing:
+                raise ApiError(503, "GET", path)
+            return super()._read(path)
+
+    known = vertices(Rest(answers()))
+    assert vertices(Failing(answers(), {""}), known) == known
+    assert (
+        vertices(Failing(answers(), {f"/vertices/{SINK}/subtasks/metrics"}), known)
+        == known
+    )
+    # Without anything found before, the failure is the named absence.
+    assert "unavailable" in vertices(
+        Failing(answers(), {f"/vertices/{SINK}/subtasks/metrics"})
+    )
+    # A later listing that lost an id keeps it: ids are unioned, never dropped.
+    later = answers()
+    later[f"/vertices/{SINK}/subtasks/metrics"] = [{"id": "busyTimeMsPerSecond"}]
+    assert vertices(Rest(later), known)["sink_metrics"] == [
+        *known["sink_metrics"],
+        "busyTimeMsPerSecond",
+    ]
+
+
+def finishing(prepared):
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    environment.records.set_phase(rt.Phase.READY)
+    environment.records.set_phase(rt.Phase.RUNNING)
+    trial = environment.approval.cloudtasks_plan
+    value = CloudTasksExercise(environment, upgrade, Controller(environment, trial))
+    value.persist("baseline")
+    value.persist("finishing")
+    assert value.post_until == (
+        environment.clock() + CLOUDTASKS_OBSERVATIONS["post_recovery_seconds"]
+    )
+    value.boundary = environment.clock() - 1
+    return value, trial
+
+
+FINISHED = {"status": {"jobStatus": {"state": "FINISHED"}}, "metadata": {}}
+
+
+@pytest.mark.parametrize("before", [1, None])
+def test_input_that_finished_inside_the_post_recovery_window_fails(prepared, before):
+    value, trial = finishing(prepared)
+    if before is not None:
+        value.env.clock.now = value.post_until - before
+        progress(value, LINEAGE, trial.records, "upgrade")
+    with pytest.raises(Failure, match="before the post-recovery window"):
+        value.observe(FINISHED, {}, [])
+
+
+def test_input_that_finished_after_the_window_completes_the_run(prepared):
+    value, trial = finishing(prepared)
+    value.env.clock.now = value.post_until
+    progress(value, LINEAGE, trial.records, "upgrade")
+    assert value.observe(FINISHED, {}, []) is True
+    assert value.stage == LISTING_STAGE
 
 
 def test_the_actors_bind_the_queue_to_the_cleanup_end_and_their_role(prepared):

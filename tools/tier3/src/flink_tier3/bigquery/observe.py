@@ -14,39 +14,18 @@
 # limitations under the License.
 """Sample what the deployed BigQuery sink does, through the job's REST service."""
 
-from ..metrics import JVM_METRICS, metric_name, sample, subtask_metrics, unavailable
+from ..metrics import (
+    NETWORK_METRICS,
+    SOURCE_METRICS,
+    TASK_METRICS,
+    checkpoint_statistics,
+    discover,
+    sample,
+    subtask_metrics,
+    taskmanagers,
+    unavailable,
+)
 
-# Flink's documented TaskManager memory metrics. Heap alone is the wrong
-# instrument for this sink: the Storage Write path appends through native
-# buffers, so what the process holds is not what the heap shows.
-MEMORY_METRICS = (
-    *JVM_METRICS,
-    "Status.JVM.Memory.NonHeap.Used",
-    "Status.JVM.Memory.NonHeap.Max",
-    "Status.JVM.Memory.Direct.MemoryUsed",
-    "Status.JVM.Memory.Direct.TotalCapacity",
-    "Status.JVM.Memory.Mapped.MemoryUsed",
-    "Status.Flink.Memory.Managed.Used",
-    "Status.Flink.Memory.Managed.Total",
-)
-# Task-level network metrics. Nothing in this repository collected these, so
-# a run could report throughput without saying whether the network was the
-# thing limiting it.
-NETWORK_METRICS = (
-    "inPoolUsage",
-    "outPoolUsage",
-    "numBytesInPerSecond",
-    "numBytesOutPerSecond",
-)
-# What the sink vertex reports about its own progress and stalls.
-TASK_METRICS = (
-    "numRecordsIn",
-    "numRecordsInPerSecond",
-    "numRecordsSend",
-    "backPressuredTimeMsPerSecond",
-    "busyTimeMsPerSecond",
-    "idleTimeMsPerSecond",
-)
 # The connector's own gauges and counters (BigQueryMetricNames.java). These
 # are the active-writer observation: how many destinations are open, how many
 # appends are in flight, and how often a destination was evicted and re-made.
@@ -74,19 +53,6 @@ COMMITTER_METRICS = (
     "currentCommitDurationMillis",
     "lastCommitDurationMillis",
 )
-# Each subtask's share of the latest completed checkpoint, from Flink's
-# checkpoint statistics (`SubtaskCheckpointStatistics`). A writer finalizes its
-# staged files before it forwards the barrier, which the connector has no
-# metric for (ADR-0146) and Flink times in neither the sync nor the async part:
-# it shows in the writer's end-to-end duration and the committer's start delay.
-CHECKPOINT_FIELDS = (
-    "index",
-    "status",
-    "end_to_end_duration",
-    "start_delay",
-    "checkpoint",
-    "alignment",
-)
 # The sink's metrics, partitioned into the families the run has to observe.
 # One declaration serves both readers: discovery keeps an id when it belongs
 # to some family, and the verdict asks which family a returned id belongs to.
@@ -96,21 +62,6 @@ SINK_FAMILIES = {
     "connector": frozenset(CONNECTOR_METRICS),
 }
 SINK_METRICS = frozenset(name for names in SINK_FAMILIES.values() for name in names)
-SOURCE_METRICS = ("numRecordsOut", "numRecordsOutPerSecond", *NETWORK_METRICS)
-
-
-def _discover(listing, wanted, previous):
-    """Metric ids of `wanted` names in one listing, after those already found."""
-    ids = list(previous)
-    for item in listing:
-        if (
-            isinstance(item, dict)
-            and isinstance(item.get("id"), str)
-            and metric_name(item["id"]) in wanted
-            and item["id"] not in ids
-        ):
-            ids.append(item["id"])
-    return ids
 
 
 def _sinks(listed, source, mode):
@@ -166,7 +117,7 @@ def vertices(rest, known=None, mode=None):
     state = {
         "source": source,
         "sink": sink,
-        "sink_metrics": _discover(
+        "sink_metrics": discover(
             listing, SINK_METRICS, previous.get("sink_metrics", [])
         ),
     }
@@ -179,54 +130,22 @@ def vertices(rest, known=None, mode=None):
         state["committer_metrics"] = (
             ids
             if unavailable(listing)
-            else _discover(listing, frozenset(COMMITTER_METRICS), ids)
+            else discover(listing, frozenset(COMMITTER_METRICS), ids)
         )
     return state
 
 
-def taskmanagers(rest):
-    listing = sample(lambda: rest.root("/taskmanagers"))
-    if unavailable(listing):
-        return listing
-    query = "?get=" + ",".join(MEMORY_METRICS)
-    result = []
-    for manager in listing.get("taskmanagers") or []:
-        path = f"/taskmanagers/{manager.get('id')}/metrics{query}"
-        result.append(
-            {
-                "id": manager.get("id"),
-                "metrics": sample(lambda path=path: rest.root(path)),
-            }
-        )
-    return result
-
-
 def checkpoint_durations(rest, state):
-    """Each sink subtask's share of the latest completed checkpoint."""
-    summary = sample(lambda: rest.job("/checkpoints"))
-    if unavailable(summary):
-        return summary
-    latest = (summary.get("latest") or {}).get("completed") or {}
-    checkpoint = latest.get("id")
-    if type(checkpoint) is not int:
-        return {"unavailable": "no completed checkpoint"}
-    result = {"id": checkpoint, "vertices": {}}
-    for role in ("sink", "committer"):
-        detail = sample(
-            lambda vertex=state[role]: rest.job(
-                f"/checkpoints/details/{checkpoint}/subtasks/{vertex}"
-            )
-        )
-        result["vertices"][role] = (
-            detail
-            if unavailable(detail)
-            else [
-                {field: item[field] for field in CHECKPOINT_FIELDS if field in item}
-                for item in detail.get("subtasks") or []
-                if isinstance(item, dict)
-            ]
-        )
-    return result
+    """Each sink subtask's share of the latest completed checkpoint.
+
+    A writer finalizes its staged files before it forwards the barrier, which
+    the connector has no metric for (ADR-0146) and Flink times in neither the
+    sync nor the async part: it shows in the writer's end-to-end duration and
+    the committer's start delay.
+    """
+    return checkpoint_statistics(
+        rest, {role: state[role] for role in ("sink", "committer")}
+    )
 
 
 def observation(rest, state):

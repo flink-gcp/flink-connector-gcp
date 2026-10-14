@@ -39,6 +39,7 @@ from .bigquery import actors as bigquery_actors
 from .bigquery import plan as bigquery_plan
 from .cloudtasks import actors as cloudtasks_actors
 from .cloudtasks import plan as cloudtasks_plan
+from .cloudtasks import trial as cloudtasks_trial
 from .model import APPROVAL_VERSION, SCENARIOS
 from .policy import BIGQUERY, CLOUDTASKS, DIGEST, PUBSUB
 from .pubsub import actors as pubsub_actors
@@ -377,6 +378,7 @@ def cloudtasks_approval(
     run_id,
     nonce,
     sha,
+    trial,
     proposal,
     namespaces,
     operator_uid,
@@ -399,7 +401,7 @@ def cloudtasks_approval(
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "cloudtasks_trial": copy.deepcopy(cloudtasks_plan.TRIAL),
+        "cloudtasks_trial": copy.deepcopy(trial),
         "namespaces": namespaces,
         "operator_uid": operator_uid,
         "baseline_uids": baseline,
@@ -412,12 +414,19 @@ def cloudtasks_approval(
 
 
 def start_cloudtasks(args, store):
-    """Dispatch the Cloud Tasks recovery trial.
+    """Dispatch one Cloud Tasks recovery trial.
 
     Everything that can refuse without the lock does so first, including the
     rendering and ConfigMap size. The run's queue is created by the runner
     once the supervisor and the Operator are ready, after the lock.
     """
+    try:
+        trial = cloudtasks_plan.trial(args.cloudtasks_trial)
+    except ValueError as error:
+        raise rt.Failure(
+            "Cloud Tasks trials need a --cloudtasks-trial kind: "
+            + ", ".join(cloudtasks_trial.KINDS)
+        ) from error
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure("Cloud Tasks trials need a sha256 --application-digest")
     application_image = rt.GAR + "cloudtasks-recovery@" + args.application_digest
@@ -438,7 +447,7 @@ def start_cloudtasks(args, store):
         active_seconds=cloudtasks_plan.ACTIVE_SECONDS,
         revision=sha,
         application_image=application_image,
-        trial=cloudtasks_plan.TRIAL,
+        trial=trial,
     )
     proposal = rendered["proposal"]
     images = {
@@ -453,6 +462,7 @@ def start_cloudtasks(args, store):
         run_id=args.run_id,
         nonce=nonce,
         sha=sha,
+        trial=trial,
         proposal=proposal,
         namespaces=namespaces,
         operator_uid=operator_uid,
@@ -873,6 +883,10 @@ def main(argv=None):
     run.add_argument(
         "--pubsub-trial",
         help=f"Pub/Sub trial: a file under {PUBSUB_TRIALS}/, without .toml",
+    )
+    run.add_argument(
+        "--cloudtasks-trial",
+        help="Cloud Tasks trial: " + ", ".join(cloudtasks_trial.KINDS),
     )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)

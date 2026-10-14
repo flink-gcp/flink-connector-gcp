@@ -87,6 +87,16 @@ CLOUDTASKS_OBSERVATIONS = {
     "recovery_seconds": 300,
     # From the finished application to a task listing that passes the oracle.
     "visibility_seconds": 600,
+    # The measurement windows: a baseline after a warm-up, one after the
+    # upgrade and one after the failover, read once a minute. With
+    # ct-1362-a1's recoveries, each proved about a minute and a half after it
+    # began, the last window ends about twenty minutes into the thirty minutes
+    # of input.
+    "warmup_seconds": 60,
+    "baseline_seconds": 300,
+    "post_upgrade_seconds": 300,
+    "post_recovery_seconds": 300,
+    "measure_seconds": 60,
 }
 
 PUBSUB_ADMISSION = {
