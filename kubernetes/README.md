@@ -223,6 +223,7 @@ Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flin
 The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
 Its tests cover input restoration, emulator sink wiring and appender observations.
 The [trial publication](images/README.md#bigquery-trial-publication) carried the appender observations into the Storage Write trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427); the [FILE_LOADS trial publication](images/README.md#bigquery-file_loads-trial-publication) carried the FILE_LOADS mode into the `fl-10` trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), whose [findings](../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) record its result.
+The [fault trial publication](images/README.md#bigquery-fault-trial-publication) carries the `--parallelism` argument into the `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779).
 
 ## Pub/Sub recovery application
 
