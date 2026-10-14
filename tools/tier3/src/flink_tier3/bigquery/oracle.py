@@ -44,6 +44,14 @@ FILE_LOADS_ARGS = (
     "--max-open-destinations",
     "16",
 )
+# The faults a trial may run in place of one of the two recoveries, as the
+# shared exercise's failover and rescale arguments. A trial without one runs
+# the savepoint upgrade and the JobManager failover.
+FAULTS = {
+    "tm-replacement": {"failover": "taskmanager", "rescale": None},
+    "rescale-out": {"failover": "jobmanager", "rescale": "out"},
+    "rescale-in": {"failover": "jobmanager", "rescale": "in"},
+}
 FIELDS = {
     "run_id",
     "mode",
@@ -64,6 +72,7 @@ class Trial:
     mode: str
     destinations: int
     records: int
+    fault: str | None = None
 
     def __post_init__(self):
         if not isinstance(self.run_id, str) or not re.fullmatch(
@@ -77,7 +86,27 @@ class Trial:
         if type(self.records) is not int or not (
             2 * self.destinations <= self.records <= 2 * 1024**3 // ROW_BYTES[self.mode]
         ):
-            raise ValueError("records must cover both writers and fit 2 GiB")
+            raise ValueError("records must cover two writers and fit 2 GiB")
+        if self.fault is not None and (
+            not isinstance(self.fault, str) or self.fault not in FAULTS
+        ):
+            raise ValueError("fault must be one of " + ", ".join(FAULTS))
+
+    @property
+    def rescale(self):
+        """The direction the upgrade rescales in, or None."""
+        return FAULTS[self.fault]["rescale"] if self.fault else None
+
+    def parallelism(self, phase):
+        """The writers' parallelism, and TaskManager count, of `initial` or `upgrade`.
+
+        Two, except one before a rescale out and after a rescale in, so a rescale
+        stays inside the namespace's three-Pod quota; `lifecycle/bigquery.cue`
+        renders the same, and the proposal checks the render against this.
+        """
+        return (
+            1 if (phase, self.rescale) in (("initial", "out"), ("upgrade", "in")) else 2
+        )
 
     def table(self, destination):
         return f"{PROJECT}.{DATASET}.bq_{self.run_id.replace('-', '_')}_d{destination}"
@@ -100,6 +129,8 @@ class Trial:
             str(self.records),
             "--bytes-per-second",
             "1048576",
+            "--parallelism",
+            str(self.parallelism(phase)),
             "--require-restored",
             "true" if phase == "upgrade" else "false",
             *(FILE_LOADS_ARGS if self.mode == "FILE_LOADS" else ()),

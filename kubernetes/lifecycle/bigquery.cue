@@ -23,6 +23,17 @@ import (
 // The trial's inputs, which dispatch and the offline renderer supply.
 bigqueryMode:         *"EO" | "ALO" | "FILE_LOADS" @tag(bigquery_mode)
 bigqueryDestinations: *10 | 50                     @tag(bigquery_destinations,type=int)
+// The fault a trial runs in place of one of the two recoveries every trial has run, or none.
+bigqueryFault: *"none" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(bigquery_fault)
+
+// The writers' parallelism of each phase: a rescale moves it between one and two, inside the
+// namespace's three-Pod quota, and every other trial keeps two.
+_bigqueryParallelism: {
+	"none": {initial: 2, upgrade: 2}
+	"tm-replacement": {initial: 2, upgrade: 2}
+	"rescale-out": {initial: 1, upgrade: 2}
+	"rescale-in": {initial: 2, upgrade: 1}
+}[bigqueryFault]
 
 // Both BigQuery phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it
@@ -33,7 +44,7 @@ if scenario == "bigquery-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-bigquery", image: applicationImage}
 			delivery: resources: app: (bigquery.#Application & {
 				run: {id: runID, image: applicationImage, phase: trialPhase
-					mode: bigqueryMode, destinations: bigqueryDestinations
+					mode: bigqueryMode, destinations: bigqueryDestinations, parallelism: _bigqueryParallelism[trialPhase]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

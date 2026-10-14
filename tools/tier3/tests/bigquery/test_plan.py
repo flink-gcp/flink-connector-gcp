@@ -53,6 +53,14 @@ def renderer(monkeypatch):
     def render(run_id, nonce, expiry, seconds, **options):
         calls.append((run_id, nonce, expiry, seconds, options))
         mode = options["bigquery_mode"]
+        # What `lifecycle/bigquery.cue` renders for each fault, written out
+        # rather than read from the plan the proposal checks against.
+        sizes = {
+            "none": (2, 2),
+            "tm-replacement": (2, 2),
+            "rescale-out": (1, 2),
+            "rescale-in": (2, 1),
+        }[options["bigquery_fault"]]
         initial = {
             "metadata": {
                 "name": run_id,
@@ -65,8 +73,12 @@ def renderer(monkeypatch):
             "spec": {
                 "image": options["application_image"],
                 "jobManager": {"replicas": 1, "resource": {"cpu": 1, "memory": "2Gi"}},
-                "taskManager": {"replicas": 2, "resource": {"cpu": 1, "memory": "2Gi"}},
+                "taskManager": {
+                    "replicas": sizes[0],
+                    "resource": {"cpu": 1, "memory": "2Gi"},
+                },
                 "job": {
+                    "parallelism": sizes[0],
                     "args": [
                         "--run-id",
                         run_id,
@@ -80,6 +92,8 @@ def renderer(monkeypatch):
                         "28800" if mode == "ALO" else "1843200",
                         "--bytes-per-second",
                         "1048576",
+                        "--parallelism",
+                        str(sizes[0]),
                         "--require-restored",
                         "false",
                         # `pkg/bigquery.#Application` renders the five sink
@@ -100,7 +114,7 @@ def renderer(monkeypatch):
                             if mode == "FILE_LOADS"
                             else []
                         ),
-                    ]
+                    ],
                 },
             },
         }
@@ -121,6 +135,9 @@ def renderer(monkeypatch):
         args = upgrade["spec"]["job"]["args"]
         args[3] = "upgrade"
         args[args.index("--require-restored") + 1] = "true"
+        args[args.index("--parallelism") + 1] = str(sizes[1])
+        upgrade["spec"]["job"]["parallelism"] = sizes[1]
+        upgrade["spec"]["taskManager"]["replicas"] = sizes[1]
         delivery = {
             "config": {
                 "data": {
@@ -185,6 +202,7 @@ def test_complete_identity_and_budget_bindings(
         "mode": mode,
         "destinations": destinations,
         "records": records,
+        "fault": None,
     }
     adapter_plan = ResourcePlan(**{**resource, "trial": Trial(**resource["trial"])})
     assert adapter_plan.job_body(11)["configuration"]["query"][
@@ -281,6 +299,8 @@ def test_the_estimate_charges_the_whole_query_budget():
 
 
 def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
+    """And each fault in place of one recovery, for the two cells that run them."""
+    faults = ("tm-replacement", "rescale-out", "rescale-in")
     assert {name: plan.trial(name) for name in plan.TRIALS} == {
         **{
             f"{mode.lower()}-{count}": {"mode": mode, "destinations": count}
@@ -288,8 +308,16 @@ def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
             for count in (10, 50)
         },
         "fl-10": {"mode": "FILE_LOADS", "destinations": 10},
+        **{
+            f"eo-10-{fault}": {"mode": "EO", "destinations": 10, "fault": fault}
+            for fault in faults
+        },
+        **{
+            f"fl-10-{fault}": {"mode": "FILE_LOADS", "destinations": 10, "fault": fault}
+            for fault in faults
+        },
     }
-    with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50, fl-10"):
+    with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50, fl-10, "):
         plan.trial("none")
 
 
@@ -524,4 +552,59 @@ def test_shared_template_containers_are_rejected(inputs, renderer, monkeypatch, 
 
     monkeypatch.setattr(plan, "render", altered)
     with pytest.raises(Failure, match="Shared Pod template adds an unpriced container"):
+        plan.prepare(**inputs)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # A fault only for the cells that offer one, and only a known one.
+        {"mode": "ALO", "destinations": 10, "fault": "tm-replacement"},
+        {"mode": "EO", "destinations": 50, "fault": "rescale-in"},
+        {"mode": "EO", "destinations": 10, "fault": "jm-replacement"},
+        {"mode": "EO", "destinations": 10, "fault": None},
+    ],
+)
+def test_a_fault_is_refused_outside_the_cells_that_offer_it(value):
+    with pytest.raises(ValueError, match="a fault only for eo-10 or fl-10"):
+        plan.validate_trial(value)
+
+
+@pytest.mark.parametrize(
+    "name", ["eo-10-tm-replacement", "eo-10-rescale-out", "fl-10-rescale-in"]
+)
+def test_a_fault_trial_proposes_its_fault_at_the_same_estimate(inputs, renderer, name):
+    """The rendered sizes are held against the real CUE in the manifest tests."""
+    inputs["trial"] = plan.trial(name)
+    bundle = plan.prepare(**inputs)
+    assert renderer[0][4]["bigquery_fault"] == inputs["trial"]["fault"]
+    assert bundle["proposal"]["resources"]["trial"]["fault"] == inputs["trial"]["fault"]
+    # The Pods the quota and the estimate charge are the same for every trial.
+    assert bundle["proposal"]["cost"]["usd"] == "2.34915625"
+
+
+@pytest.mark.parametrize(
+    "phase,field,match",
+    [
+        ("initial", "job", "proposed input"),
+        ("initial", "taskManager", "proposed Pod budget"),
+        ("upgrade", "job", "more than phase"),
+        ("upgrade", "taskManager", "more than phase"),
+    ],
+)
+def test_a_rendered_size_other_than_the_trials_is_refused(
+    inputs, renderer, monkeypatch, phase, field, match
+):
+    inputs["trial"] = plan.trial("eo-10-rescale-out")
+    render = plan.render
+
+    def altered(*args, **kwargs):
+        initial, upgrade, delivery = render(*args, **kwargs)
+        app = initial if phase == "initial" else upgrade
+        key = "parallelism" if field == "job" else "replicas"
+        app["spec"][field][key] = 2 if phase == "initial" else 1
+        return initial, upgrade, delivery
+
+    monkeypatch.setattr(plan, "render", altered)
+    with pytest.raises(Failure, match=match):
         plan.prepare(**inputs)

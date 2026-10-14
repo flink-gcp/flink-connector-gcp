@@ -87,7 +87,7 @@ delivery: resources: [string]: {
 				flinkVersion:   "v2_2"
 				serviceAccount: "bigquery"
 				image:          =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/bigquery-recovery@sha256:[0-9a-f]{64}$"
-				job: parallelism: 2
+				job: parallelism: 1 | 2
 			}
 			if run.namespace == "tier3-cloudtasks" {
 				flinkVersion:   "v2_2"

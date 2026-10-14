@@ -18,7 +18,7 @@ import bigquery "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/bigquer
 
 let inputs = run
 let application = bigquery.#Application & {
-	run: {id: inputs.id, image: inputs.image, phase: inputs.phase, mode: inputs.mode, destinations: inputs.destinations}
+	run: {id: inputs.id, image: inputs.image, phase: inputs.phase, mode: inputs.mode, destinations: inputs.destinations, parallelism: inputs.parallelism}
 	if inputs.records != _|_ {run: records: inputs.records}
 	if inputs.fileLoads != _|_ {run: fileLoads: inputs.fileLoads}
 }

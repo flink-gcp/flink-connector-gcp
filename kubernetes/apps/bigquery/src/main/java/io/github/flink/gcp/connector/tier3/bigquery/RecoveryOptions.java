@@ -103,6 +103,7 @@ final class RecoveryOptions implements Serializable {
                                     "destinations",
                                     "records",
                                     "bytes-per-second",
+                                    "parallelism",
                                     "phase",
                                     "require-restored"),
                             FILE_LOADS_ARGUMENTS.stream())
@@ -113,6 +114,8 @@ final class RecoveryOptions implements Serializable {
     final int destinations;
     final long records;
     final long bytesPerSecond;
+    // The writers' parallelism, which a rescaling upgrade changes; it is not part of the identity.
+    final int parallelism;
     final String phase;
     final boolean requireRestored;
     final Duration checkpointInterval;
@@ -136,11 +139,15 @@ final class RecoveryOptions implements Serializable {
         records = args.getLong("records", 1800 * MAX_BYTES_PER_SECOND / mode.rowBytes);
         if (records < 2L * destinations || records > MAX_BYTES / mode.rowBytes) {
             throw new IllegalArgumentException(
-                    "--records must cover all destinations on both writers and fit 2 GiB");
+                    "--records must cover all destinations on each of two writers and fit 2 GiB");
         }
         bytesPerSecond = args.getLong("bytes-per-second", MAX_BYTES_PER_SECOND);
         if (bytesPerSecond < 1 || bytesPerSecond > MAX_BYTES_PER_SECOND) {
             throw new IllegalArgumentException("--bytes-per-second must be between 1 and 1048576");
+        }
+        parallelism = args.getInt("parallelism", 2);
+        if (parallelism != 1 && parallelism != 2) {
+            throw new IllegalArgumentException("--parallelism must be 1 or 2");
         }
         phase = args.get("phase", "initial");
         if (!Set.of("initial", "upgrade").contains(phase)) {
@@ -242,7 +249,7 @@ final class RecoveryOptions implements Serializable {
     }
 
     String identity() {
-        // Phase changes during upgrade; the input and sink contract must not change.
+        // Phase and parallelism change during an upgrade; the input and sink contract must not.
         String identity =
                 "v1/"
                         + runId

@@ -46,6 +46,11 @@ import (
 			records:   *1843200 | (int & <=2097152)
 			fileLoads: #FileLoads
 		}
+
+		// The writers' parallelism and the TaskManager count of this phase; a rescale trial renders
+		// a different one in each phase. Every delivery names it: a default of two here would
+		// conflict with the Flink package's default job parallelism of one.
+		parallelism: 1 | 2
 	}
 	let storage = "gs://flink-gcp-tier3-bigquery/runs/\(run.id)"
 
@@ -112,7 +117,7 @@ import (
 				}]
 			}
 			taskManager: {
-				replicas: 2
+				replicas: run.parallelism
 				resource: {cpu: 1, memory: "2Gi"}
 				podTemplate: spec: containers: [{
 					name: "flink-main-container"
@@ -125,11 +130,12 @@ import (
 			job: {
 				jarURI:      "local:///opt/flink/usrlib/bigquery-recovery.jar"
 				entryClass:  "io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob"
-				parallelism: 2
+				parallelism: run.parallelism
 				upgradeMode: "savepoint"
 				args: list.Concat([["--run-id", run.id, "--phase", run.phase,
 					"--mode", run.mode, "--destinations", "\(run.destinations)",
 					"--records", "\(run.records)", "--bytes-per-second", "1048576",
+					"--parallelism", "\(run.parallelism)",
 					"--require-restored", "\(run.phase == "upgrade")"], fileLoadsArgs])
 			}
 		}

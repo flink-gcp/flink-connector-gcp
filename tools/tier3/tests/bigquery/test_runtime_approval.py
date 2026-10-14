@@ -54,10 +54,9 @@ def prepared(env, inputs, renderer):
     clock.now = rt.timestamp(inputs["started_at"])
     application = bundle["application"]
     application.update(apiVersion="flink.apache.org/v1beta1", kind="FlinkDeployment")
-    upgrade = copy.deepcopy(application)
-    upgrade["spec"]["job"]["args"] = bundle["upgrade_application"]["spec"]["job"][
-        "args"
-    ]
+    # The rendered upgrade: its arguments, and a rescale trial's sizes.
+    upgrade = copy.deepcopy(bundle["upgrade_application"])
+    upgrade.update(apiVersion="flink.apache.org/v1beta1", kind="FlinkDeployment")
     saved = approval["namespaces"].pop(rt.SMOKE)
     quota = kube.get("ResourceQuota", rt.SMOKE, "tier3-idle")
     quota["metadata"].update(namespace=BIGQUERY, uid=BIGQUERY + "-quota")
