@@ -31,6 +31,9 @@ from ..recovery_analysis import (
     measurements,
     missing_samples,
     rebuild,
+    recovery_record,
+    recovery_timings,
+    render_timings,
     unreadable,
     verdict_problems,
 )
@@ -47,6 +50,17 @@ SCENARIO = "bigquery-recovery"
 
 
 def assess(run):
+    """One BigQuery run's verdict, beside the timing of its recoveries.
+
+    The timing is read from whatever recovery record the run exported, so a
+    run whose verdict cannot be recomputed still reports the recoveries it
+    proved.
+    """
+    record = recovery_record(run, COMPLETE_EVENT)
+    return {**_verdict(run), "recoveries": recovery_timings(run, record)}
+
+
+def _verdict(run):
     """One BigQuery run's recomputed verdict, its stored one and its problems.
 
     A run whose evidence lacks what the verdict is decided from, or holds a
@@ -59,9 +73,8 @@ def assess(run):
     result = run.result if isinstance(run.result, dict) else None
     if result is None:
         return unreadable(run, None, ["missing-result.json"], len(readings))
-    completions = run.events_of(COMPLETE_EVENT)
-    complete = bool(completions)
-    record = completions[-1]["payload"] if complete else result.get("recovery")
+    complete = bool(run.events_of(COMPLETE_EVENT))
+    record = recovery_record(run, COMPLETE_EVENT)
     # A reading the fold cannot place would lower the rebuilt coverage, and
     # the verdict with it, for what is only a truncated download.
     if malformed:
@@ -134,4 +147,5 @@ def render(assessments):
         f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which is "
         "inconclusive rather than an evidence problem."
     )
+    lines.extend(render_timings(assessments))
     return "\n".join(lines) + "\n"

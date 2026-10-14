@@ -60,6 +60,18 @@ Billing is BigQuery's 10 MiB minimum per table read, once per table, far below t
 Each upgrade restored from its savepoint and each failover from the latest completed checkpoint, and each proof took under two minutes from the stage's start.
 Each trial's first job failed its first three or four checkpoint triggers because its source task was not yet running (`Checkpoint triggering task … is not being executed`), then completed 28 checkpoints before the upgrade; the upgraded job failed one trigger the same way before its first checkpoint, and after the failover its JobManager reported 32 or 33 completed and none failed.
 
+Re-read on 2026-10-13 under [#1781](https://github.com/flink-gcp/flink-connector-gcp/issues/1781) from the exported evidence, with the timing [ADR-0165](../0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#recovery-timing-from-flinks-timestamps) defines: from each stage's start to Flink's restore and to the acknowledgement of the checkpoint that proved the restored job, which bound when it was processing again.
+The second figure also carries the 30-second checkpoint interval and the supervisor's 15-second poll.
+
+| Attempt | Upgrade restored after | Upgrade checkpoint acknowledged after | Failover restored after | Failover checkpoint acknowledged after |
+| --- | ---: | ---: | ---: | ---: |
+| `bq1312-alo-10-a7` | 50.7 s | 104.5 s (chk-30) | 39.0 s | 102.8 s (chk-33) |
+| `bq1312-eo-10-a1` | 54.3 s | 88.7 s (chk-30) | 50.1 s | 94.3 s (chk-32) |
+| `bq1312-alo-50-a4` | 42.0 s | 75.3 s (chk-30) | 34.5 s | 101.4 s (chk-33) |
+| `bq1312-eo-50-a2` | 47.6 s | 105.5 s (chk-30) | 26.6 s | 42.4 s (chk-31) |
+
+Every upgrade restored its savepoint 42 to 54 seconds after it began, and every failover restored its checkpoint 27 to 50 seconds after its start.
+
 ## Observations
 
 These are the largest values any TaskManager reported in each measurement window.

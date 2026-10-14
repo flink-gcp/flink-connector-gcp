@@ -641,6 +641,9 @@ A stored verdict, or stored reasons, other than the recomputed ones is reported 
 An evidence set missing the run's account of itself has no verdict, and neither has one holding a sample record the fold cannot read or place, one holding fewer samples in a window than the record counted there (`missing-samples`), or one whose record says the run completed with no completion evidence beside it: the lost record would lower the rebuilt coverage for what is only a truncated download, so fetch the evidence again.
 A run that did not complete exported its account of itself, which says so, and is `inconclusive`.
 
+The report also times each recovery the run proved, from its stage's start to Flink's restore and to the acknowledgement of the checkpoint that proved it, for findings rather than for the verdict; [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#recovery-timing-from-flinks-timestamps) records what each figure bounds.
+A recovery whose proof or start the export does not hold readably is reported as unreadable.
+
 The analysis does not classify a disagreement as an edited record or as an inconsistent export ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
 The readings are files the same owner writes, so such a classification would raise the cost of a forged record without excluding one, and the owner who runs a trial is also the one who reads it.
 The recomputation uses the rule set as it stands, so evidence re-analyzed after the required families or the sampled windows change can disagree with its own stored verdict for that reason alone; archived evidence is read with the revision that produced it.

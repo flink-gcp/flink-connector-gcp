@@ -356,7 +356,8 @@ class World:
             self.restore = {
                 "id": 43,
                 "is_savepoint": self.phase == "upgrade",
-                "restore_timestamp": (self.changed + 30) * 1000,
+                # Flink reports epoch milliseconds as a JSON integer.
+                "restore_timestamp": int((self.changed + 30) * 1000),
                 "external_path": path
                 + ("savepoints/sp" if self.phase == "upgrade" else "checkpoints/cp"),
             }
@@ -391,7 +392,7 @@ class World:
                 "status": "COMPLETED",
                 "is_savepoint": False,
                 "trigger_timestamp": (now - 1) * 1000,
-                "latest_ack_timestamp": now * 1000,
+                "latest_ack_timestamp": int(now * 1000),
                 "external_path": f"gs://{BIGQUERY_STATE}/runs/{self.approval.run_id}/checkpoints/cp",
             }
         if self.fault == "restart" and now - self.start > 300:
@@ -676,10 +677,40 @@ def test_the_exported_evidence_recomputes_to_the_verdict_the_run_wrote(
     assert item["reasons"] == []
     assert item["problems"] == []
     assert item["samples"] == len(world.measurements())
+    # Each recovery's timing is measured from the start its own stage record
+    # holds, which precedes the fault the World saw, to the restore and the
+    # proving checkpoint the record's proof holds.
+    events = world.evidence().values()
+    faults = {"upgrade": world.upgrade_at, "failover": world.failover_at}
+    defaults = {"upgrade": "savepoint-upgrade", "failover": "jm-replacement"}
+    for name, fault in defaults.items():
+        [began] = [
+            v["payload"]["at"]
+            for v in events
+            if isinstance(v, dict) and v.get("event") == "recovery-" + name
+        ]
+        assert rt.timestamp(began) <= faults[name]
+        proof = record.recovery["outcomes"][name]
+        start = round(rt.timestamp(began) * 1000)
+        assert item["recoveries"][name] == {
+            "fault": fault,
+            "began_at": began,
+            "restored_from": "savepoint" if name == "upgrade" else "checkpoint",
+            "restored_id": proof["restored"]["id"],
+            "restored_ms": proof["restored"]["restore_timestamp"] - start,
+            "checkpoint_id": proof["checkpoint"]["id"],
+            "checkpoint_ms": proof["checkpoint"]["latest_ack_timestamp"] - start,
+        }
+        # The World restores 30 seconds after the fault.
+        assert item["recoveries"][name]["restored_ms"] >= 30_000
     rendered = analyze.render_markdown(report)
     assert rendered.startswith("# Tier-3 evidence analysis")
     assert "0162-cloudtasks-assessment-1246.md" not in rendered
     assert f"| {world.approval.run_id} | usable | usable |" in rendered
+    assert (
+        "| run | recovery | fault | began | restored from | restored after " in rendered
+    )
+    assert f"| {world.approval.run_id} | upgrade | savepoint-upgrade | " in rendered
     out = analyze.write_reports(report, tmp_path / "analysis")
     assert "Deployed BigQuery runs" in (out / "report.md").read_text()
     assert (

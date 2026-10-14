@@ -142,6 +142,9 @@ def test_a_complete_run_is_usable_and_its_verdict_is_recomputed(tmp_path):
         "reasons": [],
         "problems": [],
         "samples": SAMPLES,
+        # The fixture's proofs hold no timestamps and it exports no stage
+        # records, so both proved recoveries are untimed.
+        "recoveries": {"upgrade": None, "failover": None},
     }
     assert "Deployed BigQuery runs" in analyze.render_markdown(report)
 
@@ -414,3 +417,33 @@ def test_a_directory_without_a_bigquery_run_reports_no_section(tmp_path):
     rendered = analyze.render_markdown(report)
     assert "Deployed BigQuery runs" not in rendered
     assert "bigquery runs" not in analyze.summary_line(report, tmp_path)
+
+
+def test_a_run_that_did_not_complete_still_times_what_it_proved(tmp_path):
+    """Without a completion record, the receipt's record is the one timed."""
+    proof = {
+        "restored": {
+            "id": 3,
+            "is_savepoint": True,
+            "restore_timestamp": 1_000_000_050_000,
+        },
+        "checkpoint": {"id": 4, "latest_ack_timestamp": 1_000_000_090_000},
+    }
+    value = record(
+        stage="failover", outcomes={"upgrade": proof}, coverage={}, verdict=None
+    )
+    start = ("recovery-upgrade", {"stage": "upgrade", "at": "2001-09-09T01:46:40Z"})
+    write_run(tmp_path, None, receipt_for(value), events=[start])
+    _, item = assessed(tmp_path)
+    assert item["verdict"] == INCONCLUSIVE
+    assert item["recoveries"] == {
+        "upgrade": {
+            "fault": "savepoint-upgrade",
+            "began_at": "2001-09-09T01:46:40Z",
+            "restored_from": "savepoint",
+            "restored_id": 3,
+            "restored_ms": 50_000,
+            "checkpoint_id": 4,
+            "checkpoint_ms": 90_000,
+        }
+    }
