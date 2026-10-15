@@ -16,6 +16,7 @@
 
 import copy
 import json
+import re
 from decimal import Decimal
 
 import pytest
@@ -25,6 +26,8 @@ from flink_tier3.bigquery.oracle import Trial
 from flink_tier3.bigquery.resources import ResourcePlan
 from flink_tier3.common import Failure, digest
 from flink_tier3.model import validate_approval
+from flink_tier3.policy import BIGQUERY_OBSERVATIONS, POLL
+from flink_tier3.repository import ROOT
 
 
 @pytest.fixture
@@ -608,3 +611,62 @@ def test_a_rendered_size_other_than_the_trials_is_refused(
     monkeypatch.setattr(plan, "render", altered)
     with pytest.raises(Failure, match=match):
         plan.prepare(**inputs)
+
+
+# The longest end-to-end checkpoint duration measured for each mode, in whole
+# seconds rounded up: 5.4 s for alo-50 and 15.6 s for eo-50 in the #1312
+# findings, and 3.3 s for a FILE_LOADS writer in the #1313 findings.
+MEASURED_CHECKPOINT = {"ALO": 6, "EO": 16, "FILE_LOADS": 4}
+
+
+def checkpoint_intervals():
+    """Each mode's checkpoint interval, as the CUE package configures it."""
+    source = (ROOT / "kubernetes/pkg/bigquery/application.cue").read_text()
+    [table] = re.findall(r"let interval = \{([^}]*)\}\[run\.mode\]", source)
+    return {
+        mode: int(seconds) for mode, seconds in re.findall(r'(\w+): "(\d+) s"', table)
+    }
+
+
+def test_the_intervals_are_the_packages():
+    assert checkpoint_intervals() == {"ALO": 30, "EO": 30, "FILE_LOADS": 120}
+
+
+@pytest.mark.parametrize("mode", ["ALO", "EO", "FILE_LOADS"])
+def test_the_input_outlasts_every_window_and_both_recoveries(mode):
+    """An estimate of the input left after the last window, per mode.
+
+    The input pauses while the job recovers, so a recovery's length moves the
+    windows and the input's end alike. What separates them is estimated as the
+    sum of every fixed delay, each wait for a completed checkpoint taken as a whole interval,
+    the longest end-to-end duration measured for the mode and a poll: a
+    completed checkpoint before the baseline opens, the warm-up and the
+    baseline, a checkpoint triggered after it, the upgrade's proving
+    checkpoint, the window after the upgrade and the poll that ends it,
+    FILE_LOADS's wait for a running load, the failover's proving checkpoint and
+    the window after it. The input the failover replays from its checkpoint
+    only adds to the margin. The estimate is not a bound: it leaves out the
+    supervisor's own work in each poll, its Kubernetes and REST reads, and a
+    checkpoint that ran toward its 120-second timeout would take most of the
+    FILE_LOADS margin and two such checkpoints more than all of it.
+    """
+    timing = BIGQUERY_OBSERVATIONS
+    checkpoint = checkpoint_intervals()[mode] + MEASURED_CHECKPOINT[mode] + POLL
+    worst = (
+        checkpoint
+        + timing["warmup_seconds"]
+        + timing["baseline_seconds"]
+        + checkpoint
+        + checkpoint
+        + timing["post_upgrade_seconds"]
+        + POLL
+        + (timing["in_flight_seconds"] if mode == "FILE_LOADS" else 0)
+        + checkpoint
+        + timing["post_recovery_seconds"]
+    )
+    # Thirty minutes of input at 1 MiB/s, whatever the row size.
+    input_seconds = plan.RECORDS[mode] * plan.ROW_BYTES[mode] / 1024**2
+    assert input_seconds - worst == {"ALO": 621, "EO": 581, "FILE_LOADS": 139}[mode]
+    # The deadline for the checkpoint after the baseline is two intervals and a
+    # poll each.
+    assert timing["upgrade_wait_seconds"] >= 2 * (checkpoint_intervals()[mode] + POLL)

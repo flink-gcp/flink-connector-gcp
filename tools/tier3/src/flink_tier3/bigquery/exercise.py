@@ -83,6 +83,8 @@ class BigQueryExercise(RecoveryExercise):
     state_bucket = BIGQUERY_STATE
     timing = BIGQUERY_OBSERVATIONS
     progress_event = "bigquery-progress"
+    measurement_event = MEASUREMENT_EVENT
+    baseline_event = "bigquery-baseline-window"
 
     def __init__(self, env, upgrade, connector_jobs):
         if env.approval.scenario != "bigquery-recovery":
@@ -91,7 +93,6 @@ class BigQueryExercise(RecoveryExercise):
         # The supervisor's listing of the run's connector jobs that are not
         # DONE; a FILE_LOADS failover waits for one to be RUNNING.
         self.connector_jobs = connector_jobs
-        self.rest, self.vertices, self.measured_at = None, None, None
         self.records = self.trial.records
         # The JobManager and the initial phase's TaskManagers.
         self.expected_pods = 1 + self.trial.parallelism("initial")
@@ -101,8 +102,6 @@ class BigQueryExercise(RecoveryExercise):
             env.schedule.started + self.timing["input_seconds"],
             env.schedule.cleanup_at,
         )
-        self.baseline_until = None
-        self.post_until = None
 
     def progress(self, pod, text):
         super().progress(pod, text)
@@ -130,33 +129,6 @@ class BigQueryExercise(RecoveryExercise):
         return (
             latest["processed"] < self.records and self.env.clock() - latest["at"] <= 60
         )
-
-    def begin_upgrade(self, app, cp, progress, pods):
-        if (
-            not self.active_input("initial")
-            or self.jobmanager(pods) is None
-            or self.stable_pods is None
-        ):
-            return
-        if self.baseline_until is None:
-            self.baseline_until = (
-                self.env.clock()
-                + self.timing["warmup_seconds"]
-                + self.timing["baseline_seconds"]
-            )
-            self.deadline = min(self.baseline_until + 60, self.env.schedule.cleanup_at)
-            self.env.records.evidence(
-                "bigquery-baseline-window",
-                {
-                    "started_at": utc(self.env.clock()),
-                    "until": utc(self.baseline_until),
-                },
-            )
-        if self.env.clock() < self.baseline_until:
-            return
-        if cp["trigger_timestamp"] / 1000 < self.baseline_until:
-            return
-        super().begin_upgrade(app, cp, progress, pods)
 
     def begin_failover(self, app, proof, pods):
         # The FILE_LOADS wait and its record precede the deletion, so they
@@ -206,7 +178,7 @@ class BigQueryExercise(RecoveryExercise):
     def _await_running_load(self):
         """List the run's jobs without a gap until a load is RUNNING.
 
-        The wait replaces the upgrade's recovery deadline and blocks the
+        The wait replaces the deadline of the window after the upgrade and blocks the
         supervisor loop, which is why it is one checkpoint interval and a
         margin: a stop is still checked once a poll, and a transient listing
         error counts as a listing that saw nothing.
@@ -236,43 +208,17 @@ class BigQueryExercise(RecoveryExercise):
             self.env.sleep(max(0, min(started + poll, self.deadline) - now))
 
     def persist(self, stage, **details):
-        if stage == "finishing":
-            self.post_until = self.env.clock() + self.timing["post_recovery_seconds"]
         if stage == "complete":
             stage = "visibility"
         super().persist(stage, **details)
 
-    def attach_rest(self, service, job_id):
-        if self.track_rest(service, job_id):
-            self.vertices = None
+    def discover(self, rest, known):
+        return vertices(rest, known, self.trial.mode)
 
-    def measure(self):
-        """Sample the sink once, inside the window the exercise is already in.
+    def read(self, rest, state):
+        return observation(rest, state)
 
-        Discovery is repeated only when it has not succeeded: a connector
-        metric's id carries its operator name, so it cannot be predicted, and
-        re-discovering every poll would spend reads on an answer that does not
-        change while the job runs.
-        """
-        if not self.measurement_due():
-            return
-        self.vertices = vertices(self.rest, self.vertices, self.trial.mode)
-        reading = observation(self.rest, self.vertices)
-        self.coverage = summarize(self.coverage, self.stage, reading)
-        self.env.emit(MEASUREMENT_EVENT, {"stage": self.stage, **reading})
-
-    def observe(self, app, rest, pods):
-        self.measure()
-        state = app.get("status", {}).get("jobStatus", {}).get("state")
-        if self.stage == "finishing" and state == "FINISHED":
-            completed = [
-                sample["at"]
-                for sample in self.fresh_progress("upgrade")
-                if sample["processed"] == self.records
-            ]
-            if not completed or min(completed) < self.post_until:
-                raise Failure("BigQuery input finished before the post-recovery window")
-        return super().observe(app, rest, pods)
+    summarize = staticmethod(summarize)
 
     def require_settled_loads(self, supervisor):
         """Refuse to read while a job the committer issued is still running.

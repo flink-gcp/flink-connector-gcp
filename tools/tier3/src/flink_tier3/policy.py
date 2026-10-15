@@ -47,9 +47,21 @@ PUBSUB = _policy["environment"]["pubsub"]
 PUBSUB_STATE = _policy["environment"]["pubsub_state"]
 
 BIGQUERY_OBSERVATIONS = {
-    "warmup_seconds": 180,
-    "baseline_seconds": 600,
-    "post_recovery_seconds": 600,
+    # The measurement windows: a baseline after a warm-up, one after the
+    # upgrade and one after the failover. Thirty minutes of input hold three
+    # five-minute windows: with ten-minute baseline and post-recovery windows
+    # and none after the upgrade, bq1313-fl-10-a1's input outlasted the last
+    # by 232 s and bq1685-fl-10-a1's by 106 s. The warm-up is a minute, as for
+    # Cloud Tasks; the three minutes it was had no recorded reason, and the two
+    # it gives back are FILE_LOADS's margin.
+    "warmup_seconds": 60,
+    "baseline_seconds": 300,
+    "post_upgrade_seconds": 300,
+    "post_recovery_seconds": 300,
+    # After the baseline, the upgrade waits for a checkpoint triggered after
+    # it: two FILE_LOADS checkpoint intervals and a poll each, the longest
+    # interval any BigQuery mode runs at.
+    "upgrade_wait_seconds": 270,
     "startup_seconds": 600,
     # From admission to input flowing, which only the exercise waits for. A
     # cold Autopilot cluster provisions a node each for the supervisor, the
@@ -59,13 +71,12 @@ BIGQUERY_OBSERVATIONS = {
     "recovery_seconds": 300,
     "visibility_seconds": 600,
     # FILE_LOADS deletes the JobManager only once a listing shows a load job
-    # of the run RUNNING. A commit starts within any 120-second checkpoint
-    # interval and runs its loads within seconds of starting, so the wait is
-    # one interval and a margin, listed without a gap. Input keeps flowing while
-    # it waits, and must still last the post-recovery window after the
-    # failover: bq1313-fl-10-a1's input completed 232 s after that window
-    # ended, and would have completed about 172 s after it had its upgrade
-    # waited a whole interval for the first checkpoint after the baseline.
+    # of the run RUNNING, after the window that follows the upgrade. A commit
+    # starts within any 120-second checkpoint interval and runs its loads
+    # within seconds of starting, so the wait is one interval and a margin,
+    # listed without a gap. Input keeps flowing while it waits, and must still
+    # last the post-recovery window after the failover; the plan's tests hold
+    # that budget for every mode.
     "in_flight_seconds": 130,
     "in_flight_poll_seconds": 1,
     # One measurement per this many seconds, not per poll. Six REST reads at
@@ -96,6 +107,8 @@ CLOUDTASKS_OBSERVATIONS = {
     "baseline_seconds": 300,
     "post_upgrade_seconds": 300,
     "post_recovery_seconds": 300,
+    # A checkpoint interval and a poll to see it complete, twice over.
+    "upgrade_wait_seconds": 120,
     "measure_seconds": 60,
 }
 

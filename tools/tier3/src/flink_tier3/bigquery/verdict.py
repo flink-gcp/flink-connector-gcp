@@ -16,11 +16,13 @@
 
 from ..common import INCONCLUSIVE, USABLE
 from ..metrics import (
+    WINDOWS,
     checkpoint_read,
     coverage_reasons,
     fold_coverage,
     memory_read,
     returned,
+    window_of,
 )
 from .observe import COMMITTER_METRICS, SINK_FAMILIES
 
@@ -37,11 +39,14 @@ OBSERVED = (*sorted(SINK_FAMILIES), MEMORY)
 COMMITTER = "committer"
 CHECKPOINT = "checkpoint"
 FILE_LOADS_OBSERVED = (COMMITTER, CHECKPOINT)
-# The steady window and the post-recovery window. Each must have read every
-# family on its own: a post-recovery figure with no baseline to compare it
-# against is not the comparison the measurement exists to make, and a baseline
-# whose reading actually came from mid-failover is not a steady state.
-SAMPLED_STAGES = ("baseline", "finishing")
+# The steady window and the windows after each recovery. Each must have read
+# every family on its own: a figure after a recovery with no baseline to
+# compare it against is not the comparison the measurement exists to make,
+# and the two recoveries are different faults. A sample names the window it
+# was taken in, which the shared exercise decides from its stage and the
+# window's span, so a reading from mid-failover or from startup counts toward
+# none.
+SAMPLED_STAGES = WINDOWS
 # The evidence event carrying the completed record, and the event each sample
 # emits. Both sides spell them from here: the exercise writes them and the
 # offline analyzer reads them, and a rename reaching only one side would make
@@ -68,20 +73,22 @@ def _read(reading):
 
 
 def summarize(previous, stage, reading):
-    """Fold one sample into its stage's coverage, keeping what it ever read.
+    """Fold one sample into its window's coverage, keeping what it ever read.
 
-    Coverage is monotonic within a stage and never crosses one: a family read
+    Coverage is monotonic within a window and never crosses one: a family read
     during the baseline is read, even if a later baseline sample lost it to a
-    restart, but it says nothing about the post-recovery window.
+    restart, but it says nothing about the windows after the recoveries. The
+    sample names its window, and `stage` counts only for a sample exported
+    before samples named their window.
     """
-    return fold_coverage(previous, stage, _read(reading))
+    return fold_coverage(previous, window_of(reading, stage), _read(reading))
 
 
 def verdict(recovery, mode=None):
     """The run's verdict and the reasons behind it, from its recovery record.
 
     `usable` says the instrument worked: both recoveries proved, the oracle
-    passed, and every observation family read in both sampled windows.
+    passed, and every observation family read in each sampled window.
     Anything short of that is `inconclusive` — a run that happened and cannot
     carry the claim — which is the same distinction the Cloud Tasks analyzer
     draws. The exercise decides it with the transition that completes the run;

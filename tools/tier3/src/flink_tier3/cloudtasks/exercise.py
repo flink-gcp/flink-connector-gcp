@@ -59,6 +59,8 @@ class CloudTasksExercise(RecoveryExercise):
     state_bucket = CLOUDTASKS_STATE
     timing = CLOUDTASKS_OBSERVATIONS
     progress_event = "cloudtasks-progress"
+    measurement_event = MEASUREMENT_EVENT
+    baseline_event = "cloudtasks-baseline-window"
 
     def __init__(self, env, upgrade, queue):
         if env.approval.scenario != "cloudtasks-recovery":
@@ -70,7 +72,6 @@ class CloudTasksExercise(RecoveryExercise):
         # The JobManager and one single-slot TaskManager per sink subtask.
         self.expected_pods = 1 + self.trial.sink_parallelism("initial")
         self.queue = queue
-        self.vertices = None
         super().__init__(
             env, upgrade, failover=self.trial.failover, rescale=self.trial.rescale
         )
@@ -78,8 +79,6 @@ class CloudTasksExercise(RecoveryExercise):
             env.schedule.started + self.timing["input_seconds"],
             env.schedule.cleanup_at,
         )
-        self.baseline_until = None
-        self.post_until = None
 
     def progress(self, pod, text):
         super().progress(pod, text)
@@ -107,109 +106,23 @@ class CloudTasksExercise(RecoveryExercise):
             latest["processed"] < self.records and self.env.clock() - latest["at"] <= 60
         )
 
-    def begin_upgrade(self, app, cp, progress, pods):
-        """Upgrade once the baseline window, opened when input flows, has passed.
-
-        The window opens on the first poll that sees the initial input flowing
-        on the whole set of Pods, and the upgrade waits for a checkpoint
-        triggered after it closes, so the baseline is a steady state.
-        """
-        if (
-            not self.active_input("initial")
-            or self.jobmanager(pods) is None
-            or self.stable_pods is None
-        ):
-            return
-        if self.baseline_until is None:
-            self.baseline_until = (
-                self.env.clock()
-                + self.timing["warmup_seconds"]
-                + self.timing["baseline_seconds"]
-            )
-            # A checkpoint interval and a poll to see it complete, twice over.
-            self.deadline = min(self.baseline_until + 120, self.env.schedule.cleanup_at)
-            self.env.records.evidence(
-                "cloudtasks-baseline-window",
-                {
-                    "started_at": utc(self.env.clock()),
-                    "until": utc(self.baseline_until),
-                },
-            )
-        if (
-            self.env.clock() < self.baseline_until
-            or cp["trigger_timestamp"] / 1000 < self.baseline_until
-        ):
-            return
-        super().begin_upgrade(app, cp, progress, pods)
-
     def begin_failover(self, app, proof, pods):
         if self.active_input("upgrade"):
             super().begin_failover(app, proof, pods)
 
     def persist(self, stage, **details):
-        if stage == "finishing":
-            self.post_until = self.env.clock() + self.timing["post_recovery_seconds"]
         # A finished application is complete only once its listing passes.
         if stage == COMPLETE_STAGE:
             stage = LISTING_STAGE
         super().persist(stage, **details)
 
-    def attach_rest(self, service, job_id):
-        if self.track_rest(service, job_id):
-            self.vertices = None
+    def discover(self, rest, known):
+        return vertices(rest, known)
 
-    def window(self):
-        """The measurement window the exercise is in now, or None outside one.
+    def read(self, rest, state):
+        return observation(rest, state)
 
-        The baseline starts after its warm-up and lasts until the upgrade
-        begins; the window after the upgrade is its held stage; the one after
-        the failover ends `post_recovery_seconds` after its proof. A sample
-        taken during startup, a recovery or the rest of the input counts
-        toward none of them.
-        """
-        now = self.env.clock()
-        if self.stage == "baseline" and self.baseline_until is not None:
-            if now >= self.baseline_until - self.timing["baseline_seconds"]:
-                return "baseline"
-        elif self.stage == "upgraded":
-            return "upgraded"
-        elif self.stage == "finishing" and now < self.post_until:
-            return "finishing"
-        return None
-
-    def measure(self):
-        """Sample the job once a measurement interval, labelled with its window.
-
-        Every sample is exported with the stage it was taken in; only one
-        inside a window counts toward that window's coverage. Discovery runs
-        at every sample and keeps the metric ids found before, as the BigQuery
-        exercise's does.
-        """
-        if not self.measurement_due():
-            return
-        self.vertices = vertices(self.rest, self.vertices)
-        reading = {
-            "stage": self.stage,
-            "window": self.window(),
-            **observation(self.rest, self.vertices),
-        }
-        self.coverage = summarize(self.coverage, self.stage, reading)
-        self.env.emit(MEASUREMENT_EVENT, reading)
-
-    def observe(self, app, rest, pods):
-        self.measure()
-        state = app.get("status", {}).get("jobStatus", {}).get("state")
-        if self.stage == "finishing" and state == "FINISHED":
-            completed = [
-                sample["at"]
-                for sample in self.fresh_progress("upgrade")
-                if sample["processed"] == self.records
-            ]
-            if not completed or min(completed) < self.post_until:
-                raise Failure(
-                    "Cloud Tasks input finished before the post-recovery window"
-                )
-        return super().observe(app, rest, pods)
+    summarize = staticmethod(summarize)
 
     def verify_tasks(self):
         """List the paused queue until the oracle passes or the window closes.

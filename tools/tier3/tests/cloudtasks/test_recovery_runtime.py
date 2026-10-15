@@ -807,25 +807,41 @@ def test_the_upgrade_waits_for_flowing_input_and_a_whole_baseline(
     controller = Controller(environment, environment.approval.cloudtasks_plan)
     value = CloudTasksExercise(environment, upgrade, controller)
     begun = []
-    monkeypatch.setattr(
-        CloudTasksExercise.__mro__[1],
-        "begin_upgrade",
-        lambda self, *args: begun.append(environment.clock()),
-    )
+
+    class Begun(Exception):
+        pass
+
+    def operations(app):
+        # The first step past every gate: the upgrade has begun.
+        begun.append(environment.clock())
+        raise Begun
+
+    monkeypatch.setattr(value, "upgrade_operations", operations)
     running = pods("jm-1", "tm-1", "tm-2")
 
     def checkpoint():
         return {"trigger_timestamp": environment.clock() * 1000}
 
-    value.begin_upgrade(None, checkpoint(), [], running)
+    def begin_upgrade(cp):
+        try:
+            value.begin_upgrade(None, cp, [], running)
+        except Begun:
+            pass
+
+    begin_upgrade(checkpoint())
     assert begun == []
     environment.clock.now += 5
     progress(value, "123e4567-e89b-12d3-a456-426614174000", 10)
+    # Input flows on stable Pods, but no single JobManager runs: no baseline.
+    value.stable_pods = {pod["metadata"]["uid"] for pod in running}
+    value.begin_upgrade(None, checkpoint(), [], running[1:])
+    assert value.baseline_until is None
+    value.stable_pods = None
     # Input flows, but the Pods are not yet the stable set.
-    value.begin_upgrade(None, checkpoint(), [], running)
+    begin_upgrade(checkpoint())
     assert begun == [] and value.baseline_until is None
     value.stable_pods = {pod["metadata"]["uid"] for pod in running}
-    value.begin_upgrade(None, checkpoint(), [], running)
+    begin_upgrade(checkpoint())
     opened = environment.clock()
     window = (
         CLOUDTASKS_OBSERVATIONS["warmup_seconds"]
@@ -841,13 +857,13 @@ def test_the_upgrade_waits_for_flowing_input_and_a_whole_baseline(
     environment.clock.now = opened + window
     stale = {"trigger_timestamp": (opened + window - 1) * 1000}
     progress(value, "123e4567-e89b-12d3-a456-426614174000", 20)
-    value.begin_upgrade(None, stale, [], running)
+    begin_upgrade(stale)
     assert begun == []
-    value.begin_upgrade(None, checkpoint(), [], running)
+    begin_upgrade(checkpoint())
     assert begun == [opened + window]
     # Input that stopped advancing a minute ago is no longer flowing.
     environment.clock.now += 61
-    value.begin_upgrade(None, checkpoint(), [], running)
+    begin_upgrade(checkpoint())
     assert begun == [opened + window]
 
 

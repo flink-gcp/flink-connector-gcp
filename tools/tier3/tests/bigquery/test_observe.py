@@ -152,18 +152,25 @@ def test_the_connector_gauges_named_here_are_the_writer_observation():
 
 
 class Exercising:
-    """The two fields `BigQueryExercise` keeps, without the rest of a run."""
+    """The fields `BigQueryExercise` measures with, without the rest of a run."""
 
     def __init__(self, cluster):
         self.env = Environment(cluster)
         self.env.emit = lambda event, payload: self.emitted.append((event, payload))
         self.emitted, self.rest, self.vertices = [], None, None
         self.measured_at, self.stage, self.coverage = None, "baseline", {}
+        self.baseline_until, self.post_until = None, None
         self.trial = Trial("observe-1312", "EO", 10, 20)
 
     timing = BIGQUERY_OBSERVATIONS
-    attach_rest = BigQueryExercise.attach_rest
-    measure = BigQueryExercise.measure
+    measurement_event = BigQueryExercise.measurement_event
+    attach_rest = RecoveryExercise.attach_rest
+    measure = RecoveryExercise.measure
+    window = RecoveryExercise.window
+    discover = BigQueryExercise.discover
+    read = BigQueryExercise.read
+    summarize = BigQueryExercise.__dict__["summarize"]
+    active_input = RecoveryExercise.active_input
     track_rest = RecoveryExercise.track_rest
     measurement_due = RecoveryExercise.measurement_due
 
