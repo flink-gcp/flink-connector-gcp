@@ -3094,7 +3094,12 @@ JobManager while all ten load jobs of a commit were running: the jobs finished a
 tasks' cancellation had begun, and the restored committer re-attached to them and completed the
 commit without submitting them again, with the same query result. Its
 [findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-fileloads-inflight-findings-1685.md)
-give the timeline. Those figures were taken at one fixed input rate, one run per configuration;
+give the timeline. On 2026-10-14 `STORAGE_API_EXACTLY_ONCE` at 10 destinations passed three more
+trials, one each: a TaskManager deleted under load, a savepoint upgrade that rescaled the sink
+from one writer to two, and one from two writers to one. Each wrote every sequence exactly once
+in its own table; the
+[findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md)
+give each recovery's timing. Those figures were taken at one fixed input rate, one run per configuration;
 they describe these runs, not a throughput limit or a sizing target.
 
 ## Scope and provenance
