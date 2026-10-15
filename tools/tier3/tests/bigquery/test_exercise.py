@@ -413,7 +413,7 @@ class World:
         if self.phase != "initial" and elapsed < 30:
             self.kube.put(app)
             return
-        end = 1250 if self.fault == "early-finish" else 1800
+        end = 1100 if self.fault == "early-finish" else 1800
         processed = min(
             self.plan.trial.records,
             int((now - self.start) / end * self.plan.trial.records),
@@ -591,7 +591,25 @@ def test_bigquery_recovery_and_query_then_cleanup(
     world = World(prepared, monkeypatch)
     assert world.plan.trial.mode == mode
     assert world.plan.trial.destinations == destinations
+    exercise = world.supervisor.exercise
+    advance, opened = exercise.advance_baseline, []
+
+    def advance_baseline(cp):
+        passed = advance(cp)
+        if exercise.baseline_until is not None and not opened:
+            opened.append((exercise.baseline_until, exercise.deadline))
+        return passed
+
+    monkeypatch.setattr(exercise, "advance_baseline", advance_baseline)
     record = world.run()
+    # The upgrade waited up to two FILE_LOADS checkpoint intervals and a poll
+    # each for a checkpoint after the baseline, in every mode.
+    [(until, deadline)] = opened
+    assert (
+        deadline
+        == until + BIGQUERY_OBSERVATIONS["upgrade_wait_seconds"]
+        == (until + 270)
+    )
     assert record.success, record.reason
     assert record.recovery["stage"] == "complete"
     assert set(record.recovery["outcomes"]) == {"upgrade", "failover", "query"} | (
@@ -599,10 +617,11 @@ def test_bigquery_recovery_and_query_then_cleanup(
     )
     # The verdict the production path produced, not one typed into a fixture:
     # a run that proves both recoveries, passes the oracle and reads every
-    # family in both sampled windows is the usable measurement.
+    # family in each sampled window is the usable measurement.
     assert record.recovery["verdict"] == rt.USABLE
     assert record.recovery["reasons"] == []
-    for stage in ("baseline", "finishing"):
+    assert set(record.recovery["coverage"]) == {"baseline", "upgraded", "finishing"}
+    for stage in ("baseline", "upgraded", "finishing"):
         window = record.recovery["coverage"][stage]
         assert window["observed"] == (
             ["checkpoint", "committer", "connector", "memory", "network", "task"]
@@ -677,16 +696,53 @@ def test_bigquery_recovery_and_query_then_cleanup(
     for sample in samples:
         assert "sink" in sample["payload"] or "vertices" in sample["payload"]
     assert any(s["payload"].get("taskmanagers") for s in samples)
-    assert world.upgrade_at - world.start >= 180 + 600
-    assert world.query_calls[0][1] - world.failover_at >= 600
+    timing = BIGQUERY_OBSERVATIONS
+    assert (
+        world.upgrade_at - world.start
+        >= timing["warmup_seconds"] + timing["baseline_seconds"]
+    )
+    [upgraded] = [
+        v["payload"]
+        for v in world.evidence().values()
+        if isinstance(v, dict) and v.get("event") == "recovery-upgraded"
+    ]
+    # The deletion waited for the window after the upgrade.
+    assert (
+        world.failover_at - rt.timestamp(upgraded["at"])
+        >= (timing["post_upgrade_seconds"])
+    )
+    assert (
+        world.query_calls[0][1] - world.failover_at >= (timing["post_recovery_seconds"])
+    )
     assert record.phase == Phase.CLEANED
     assert world.resources.tables == {}
     assert record.bigquery["handoff"]["released"]
     assert world.store.read(rt.ENVIRONMENT)[0] is not None
-    # Every sample the run emitted is accounted for by the record it wrote.
-    assert sum(w["attempts"] for w in record.recovery["coverage"].values()) == len(
-        world.measurements()
+    # Every sample taken inside a window is accounted for by the record it
+    # wrote, and only those: startup and the recoveries count toward none.
+    windowed = [s for s in samples if s["payload"]["window"] is not None]
+    # The warm-up and the input after the last window are read and counted
+    # toward no window.
+    assert any(
+        s["payload"]["stage"] == "baseline" and s["payload"]["window"] is None
+        for s in samples
     )
+    assert any(
+        s["payload"]["stage"] == "finishing" and s["payload"]["window"] is None
+        for s in samples
+    )
+    [baseline_window] = [
+        v["payload"]
+        for v in world.evidence().values()
+        if isinstance(v, dict) and v.get("event") == "bigquery-baseline-window"
+    ]
+    assert rt.timestamp(baseline_window["until"]) == until
+    assert sum(w["attempts"] for w in record.recovery["coverage"].values()) == len(
+        windowed
+    )
+    assert len(windowed) < len(samples)
+    for sample in windowed:
+        assert sample["payload"]["window"] in record.recovery["coverage"]
     # Every transition carries the coverage so far, so a run that stops before
     # its verdict still records what it read.
     transitions = [
@@ -773,7 +829,8 @@ def test_a_listed_metric_the_job_stopped_publishing_is_not_observed(
     record = world.run()
     assert record.recovery["verdict"] == INCONCLUSIVE
     assert record.recovery["reasons"] == [
-        f"unobserved-network-in-{stage}" for stage in ("baseline", "finishing")
+        f"unobserved-network-in-{stage}"
+        for stage in ("baseline", "upgraded", "finishing")
     ]
     report = analyze.analyze(world.export(tmp_path, record))
     item = report["bigquery"][0]

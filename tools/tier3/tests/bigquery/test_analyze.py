@@ -80,7 +80,14 @@ def samples_of(recovery, reading=None):
     would prove the counts agree and nothing about what was observed.
     """
     return [
-        (MEASUREMENT_EVENT, {"stage": stage, **(FULL if reading is None else reading)})
+        (
+            MEASUREMENT_EVENT,
+            {
+                "stage": stage,
+                **(FULL if reading is None else reading),
+                "window": stage,
+            },
+        )
         for stage, window in (recovery or {}).get("coverage", {}).items()
         for _ in range(window["attempts"])
     ]
@@ -153,13 +160,14 @@ def test_an_incomplete_observation_is_inconclusive_with_its_reasons(tmp_path):
     reasons = [f"unobserved-{name}-in-finishing" for name in OBSERVED]
     coverage = {
         "baseline": dict(WINDOW),
+        "upgraded": dict(WINDOW),
         "finishing": {"attempts": ATTEMPTS, "observed": []},
     }
     value = record(coverage=coverage, verdict=INCONCLUSIVE, reasons=reasons)
     # The readings say the same thing the record does: the finishing window
     # asked three times and the job exposed nothing.
     events = [
-        *samples_of({"coverage": {"baseline": dict(WINDOW)}}),
+        *samples_of({"coverage": {"baseline": dict(WINDOW), "upgraded": dict(WINDOW)}}),
         *samples_of({"coverage": {"finishing": dict(WINDOW)}}, reading=BLIND),
     ]
     write_run(tmp_path, value, receipt_for(value), events=events)
@@ -400,7 +408,7 @@ def test_the_rendered_section_names_each_column_of_each_run(tmp_path):
     assert "| run | verdict | stored | samples | reasons | problems |" in section
     assert f"| bq-0001 | usable | usable | {SAMPLES} | - | - |" in section
     assert f"| bq-0002 | - | - | {SAMPLES} | - | missing-result.json |" in section
-    assert "`baseline` and `finishing` windows" in section
+    assert "`baseline`, `upgraded` and `finishing` windows" in section
     assert f"not `{COMPLETE_STAGE}`" in section
 
 
@@ -447,3 +455,30 @@ def test_a_run_that_did_not_complete_still_times_what_it_proved(tmp_path):
             "checkpoint_ms": 90_000,
         }
     }
+
+
+def test_evidence_from_before_readings_named_their_window_is_inconclusive(tmp_path):
+    """A run of the two-window rules recomputes, without a problem of its own.
+
+    Its readings carry no window and count toward their stage, as they did
+    when it ran, so the coverage its record holds is rebuilt in full; only the
+    window after the upgrade, which it never had, is missing.
+    """
+    old = {"baseline": dict(WINDOW), "finishing": dict(WINDOW)}
+    value = record(coverage=old)
+    events = [
+        (MEASUREMENT_EVENT, {"stage": stage, **FULL})
+        for stage in old
+        for _ in range(ATTEMPTS)
+    ]
+    write_run(tmp_path, value, receipt_for(value), events=events)
+    _, item = assessed(tmp_path)
+    assert item["verdict"] == INCONCLUSIVE
+    assert item["stored"] == USABLE
+    assert item["reasons"] == [
+        "unsampled-upgraded",
+        *(f"unobserved-{name}-in-upgraded" for name in OBSERVED),
+    ]
+    # The rules changed under it; the export is whole.
+    assert item["problems"] == ["verdict-differs-from-the-record"]
+    assert item["samples"] == 2 * ATTEMPTS

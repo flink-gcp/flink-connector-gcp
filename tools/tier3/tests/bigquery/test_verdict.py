@@ -14,6 +14,7 @@
 # limitations under the License.
 """What the deployed verdict says, and what it refuses to say."""
 
+import flink_tier3.bigquery.verdict as verdict_module
 import pytest
 from flink_tier3.bigquery.observe import (
     CONNECTOR_METRICS,
@@ -32,11 +33,20 @@ from flink_tier3.bigquery.verdict import (
     MEMORY,
     OBSERVED,
     SAMPLED_STAGES,
-    summarize,
     verdict,
 )
 from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.metrics import MEMORY_METRICS
+
+
+def summarize(previous, window, reading):
+    """The verdict's fold of one reading taken inside `window`.
+
+    The exercise labels each reading with its window; these tests name the
+    window and leave the stage to the label.
+    """
+    return verdict_module.summarize(previous, "stage", {**reading, "window": window})
+
 
 # One returned metric id per family, and one TaskManager that published a
 # memory value. These are the readings, not the discovery listing: the verdict
@@ -225,11 +235,25 @@ def test_coverage_is_monotonic_within_a_stage_and_does_not_cross_one():
     # The fold does not edit what it was given: a record already persisted
     # cannot be changed by a later sample.
     assert first["baseline"] == {"attempts": 1, "observed": sorted(OBSERVED)}
-    disrupted = summarize(lost, "failover", FULL)
+    disrupted = summarize(lost, None, FULL)
+    assert set(disrupted) == {"baseline"}
     assert verdict(complete(coverage=disrupted))["reasons"] == [
-        "unsampled-finishing",
-        *unobserved("finishing"),
+        reason
+        for stage in SAMPLED_STAGES[1:]
+        for reason in ("unsampled-" + stage, *unobserved(stage))
     ]
+
+
+@pytest.mark.parametrize("window", [None, 3, ["baseline"]])
+def test_a_reading_outside_every_window_counts_toward_none(window):
+    """Startup, a recovery and the rest of the input are not a window."""
+    reading = {**FULL, "window": window}
+    assert verdict_module.summarize({}, "baseline", reading) == {}
+
+
+def test_the_window_label_decides_not_the_stage_it_was_taken_in():
+    reading = {**FULL, "window": "upgraded"}
+    assert set(verdict_module.summarize({}, "baseline", reading)) == {"upgraded"}
 
 
 @pytest.mark.parametrize(
@@ -255,7 +279,7 @@ def test_a_reading_that_returned_nothing_wanted_is_not_coverage(reading):
 def test_the_family_inventory_is_the_one_the_collector_reads():
     assert set(SINK_FAMILIES) == {"task", "network", "connector"}
     assert OBSERVED == ("connector", "network", "task", MEMORY)
-    assert SAMPLED_STAGES == ("baseline", "finishing")
+    assert SAMPLED_STAGES == ("baseline", "upgraded", "finishing")
     # The discovery filter and the classifier are one declaration, so a metric
     # moved between families cannot be kept by one and lost by the other.
     assert SINK_FAMILIES["task"] == frozenset(TASK_METRICS)

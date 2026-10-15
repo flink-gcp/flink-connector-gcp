@@ -327,8 +327,9 @@ def render(assessments):
             ),
             (
                 "Each family is required in the "
-                + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES)
-                + " windows, and counts as observed only where a reading returned it."
+                + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
+                + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
+                + "only where a reading returned it."
             ),
             (
                 f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which "

@@ -15,11 +15,13 @@
 
 from ..common import INCONCLUSIVE, USABLE
 from ..metrics import (
+    WINDOWS,
     checkpoint_read,
     coverage_reasons,
     fold_coverage,
     memory_read,
     returned,
+    window_of,
 )
 from .observe import SINK_FAMILIES
 
@@ -41,7 +43,7 @@ OBSERVED = (*sorted(SINK_FAMILIES), MEMORY, CHECKPOINT)
 # the baseline, and the two recoveries are different faults. A sample names
 # the window it was taken in, which the exercise decides from its stage and
 # the window's span.
-SAMPLED_STAGES = ("baseline", "upgraded", "finishing")
+SAMPLED_STAGES = WINDOWS
 
 
 def _read(reading):
@@ -61,13 +63,11 @@ def summarize(previous, stage, reading):
     """Fold one sample into its window's coverage, keeping what it ever read.
 
     The sample names its window, or none when it was taken outside every
-    window; `stage` is only where the shared rebuild found it, and a stage
-    and a window can share a name without being the same span.
+    window, and a stage and a window can share a name without being the same
+    span; `stage` counts only for a sample exported before samples named
+    their window.
     """
-    window = reading.get("window")
-    return fold_coverage(
-        previous, window if isinstance(window, str) else None, _read(reading)
-    )
+    return fold_coverage(previous, window_of(reading, stage), _read(reading))
 
 
 def verdict(recovery):

@@ -140,7 +140,8 @@ def render(assessments):
     lines.append("")
     lines.append(
         "Each family is required in the "
-        + " and ".join(f"`{stage}`" for stage in SAMPLED_STAGES)
+        + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
+        + f" and `{SAMPLED_STAGES[-1]}`"
         + " windows, and counts as observed only where a reading returned it."
     )
     lines.append(

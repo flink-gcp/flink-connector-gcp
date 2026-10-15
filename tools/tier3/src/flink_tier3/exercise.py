@@ -14,9 +14,10 @@
 """One approved savepoint upgrade and one UID-scoped Pod disruption.
 
 The upgrade may rescale the job, and the disruption deletes the JobManager or
-one TaskManager, as the approved trial names them. A scenario whose timing
-names a ``post_upgrade_seconds`` window holds the proved upgrade that long
-before the disruption, so it can measure the job after each recovery.
+one TaskManager, as the approved trial names them. A scenario that samples
+the job also holds three measurement windows, which its timing sizes: a
+baseline before the upgrade, a window after the upgrade before the
+disruption, and one after the disruption.
 """
 
 from __future__ import annotations
@@ -32,6 +33,15 @@ from .metrics import FlinkRest
 FAILOVERS = {"jobmanager": "JM", "taskmanager": "TM"}
 # The directions a rescale moves the checkpointed subtasks in.
 RESCALE_DIRECTIONS = ("out", "in")
+# The timing a scenario that samples the job sizes its windows with.
+WINDOW_TIMING = {
+    "warmup_seconds",
+    "baseline_seconds",
+    "upgrade_wait_seconds",
+    "post_upgrade_seconds",
+    "post_recovery_seconds",
+    "measure_seconds",
+}
 # The manifest fields an approved rescale's upgrade may change beside the
 # arguments; an upgrade that is not a rescale leaves them as they are.
 RESCALE_SIZES = (("job", "parallelism"), ("taskManager", "replicas"))
@@ -50,6 +60,18 @@ class RecoveryExercise:
     ``upgrade``, ``upgraded``, ``failover`` and ``finishing``; without one
     there is no ``upgraded`` stage, and the failover begins as soon as the
     upgrade is proved.
+
+    A scenario that samples the job names the event each sample emits in
+    ``measurement_event`` and the one its baseline window's span emits in
+    ``baseline_event``, supplies its observer through ``discover`` and
+    ``read``, its coverage fold as ``summarize`` and its input check as
+    ``active_input``, and its timing names every key in ``WINDOW_TIMING``,
+    which sizes the windows: the upgrade waits for ``warmup_seconds`` and
+    ``baseline_seconds`` of steady input, and for a checkpoint triggered
+    after them within ``upgrade_wait_seconds``; and the input must outlast
+    ``post_recovery_seconds`` after the failover's proof. A reading counts
+    toward the window it was taken in, and one taken during startup, a
+    recovery or the rest of the input toward none.
     """
 
     namespace: str
@@ -58,8 +80,16 @@ class RecoveryExercise:
     progress_event: str
     expected_pods: int
     records: int
+    # A scenario that samples the job names these; one that does not keeps
+    # its own measurement or none.
+    measurement_event = None
+    baseline_event = None
 
     def __init__(self, env, upgrade, *, failover="jobmanager", rescale=None):
+        if self.measurement_event and (
+            not self.baseline_event or not WINDOW_TIMING <= set(self.timing)
+        ):
+            raise Failure("A sampling exercise requires its windows' events and timing")
         if upgrade is None:
             raise Failure("Recovery requires the approved upgrade manifest")
         if failover not in FAILOVERS or (
@@ -88,6 +118,8 @@ class RecoveryExercise:
         # The completed checkpoint a held upgrade's failover must not restore
         # behind: the latest one triggered since the window opened.
         self.failover_floor = None
+        self.vertices = None
+        self.baseline_until, self.post_until = None, None
 
     @property
     def recovering(self):
@@ -152,6 +184,8 @@ class RecoveryExercise:
         return {name: dict(window) for name, window in self.coverage.items()}
 
     def persist(self, stage, **details):
+        if stage == "finishing" and self.measurement_event:
+            self.post_until = self.env.clock() + self.timing["post_recovery_seconds"]
         # For a run that stops before its verdict, the record is the only
         # account of what it read.
         details.setdefault("coverage", self._coverage())
@@ -410,7 +444,7 @@ class RecoveryExercise:
 
     def begin_upgrade(self, app, cp, progress, pods):
         jm = self.jobmanager(pods)
-        if jm is None:
+        if jm is None or not self.advance_baseline(cp):
             return
         operations = self.upgrade_operations(app)
         self.before = {
@@ -492,6 +526,97 @@ class RecoveryExercise:
                 raise Failure(
                     "Upgrade response lost without a verified applied outcome"
                 ) from error
+
+    def active_input(self, phase):
+        """Whether the phase's input is still flowing; a scenario reads its own."""
+        return True
+
+    def advance_baseline(self, cp):
+        """Open the baseline window when it can, and say whether it has passed.
+
+        The window opens, with its deadline and its evidence, on the first
+        poll that sees the initial input flowing on the whole set of Pods, and
+        the upgrade waits for a checkpoint triggered after it closes, so the
+        baseline is a steady state. A scenario that samples nothing has no
+        baseline.
+        """
+        if not self.measurement_event:
+            return True
+        if not self.active_input("initial") or self.stable_pods is None:
+            return False
+        if self.baseline_until is None:
+            self.baseline_until = (
+                self.env.clock()
+                + self.timing["warmup_seconds"]
+                + self.timing["baseline_seconds"]
+            )
+            self.deadline = min(
+                self.baseline_until + self.timing["upgrade_wait_seconds"],
+                self.env.schedule.cleanup_at,
+            )
+            self.env.records.evidence(
+                self.baseline_event,
+                {
+                    "started_at": utc(self.env.clock()),
+                    "until": utc(self.baseline_until),
+                },
+            )
+        return (
+            self.env.clock() >= self.baseline_until
+            and cp["trigger_timestamp"] / 1000 >= self.baseline_until
+        )
+
+    def window(self):
+        """The measurement window the exercise is in now, or None outside one.
+
+        The baseline starts after its warm-up and lasts until the upgrade
+        begins; the window after the upgrade is its held stage; the one after
+        the failover ends ``post_recovery_seconds`` after its proof.
+        """
+        now = self.env.clock()
+        if self.stage == "baseline" and self.baseline_until is not None:
+            if now >= self.baseline_until - self.timing["baseline_seconds"]:
+                return "baseline"
+        elif self.stage == "upgraded":
+            return "upgraded"
+        elif (
+            self.stage == "finishing"
+            and self.post_until is not None
+            and now < self.post_until
+        ):
+            return "finishing"
+        return None
+
+    def discover(self, rest, known):
+        """The scenario's vertex discovery, keeping what ``known`` found."""
+        raise NotImplementedError
+
+    def read(self, rest, state):
+        """One sample of the scenario's families, each reading or its absence."""
+        raise NotImplementedError
+
+    def summarize(self, coverage, stage, reading):
+        """The scenario's coverage with one more labelled reading in it."""
+        raise NotImplementedError
+
+    def measure(self):
+        """Sample the job once a measurement interval, labelled with its window.
+
+        Every sample is exported with the stage it was taken in; only one
+        inside a window counts toward that window's coverage. Discovery runs
+        at every sample and keeps the metric ids found before: a connector
+        metric's id carries its operator name, so it cannot be predicted.
+        """
+        if not self.measurement_due():
+            return
+        self.vertices = self.discover(self.rest, self.vertices)
+        reading = {
+            "stage": self.stage,
+            "window": self.window(),
+            **self.read(self.rest, self.vertices),
+        }
+        self.coverage = self.summarize(self.coverage, self.stage, reading)
+        self.env.emit(self.measurement_event, reading)
 
     def hold_upgrade(self, proof, pods):
         """Keep the proved upgrade running for its window before the failover.
@@ -587,10 +712,28 @@ class RecoveryExercise:
         """Hand over the Service the loop verified, for exercises that read more.
 
         The loop resolves it and proves its workload ownership once per poll;
-        an exercise that resolved its own could disagree with that proof.
+        an exercise that resolved its own could disagree with that proof. A
+        new job, as after the upgrade, starts its discovery again.
         """
+        if self.measurement_event and self.track_rest(service, job_id):
+            self.vertices = None
 
     def observe(self, app, rest, pods):
+        if self.measurement_event:
+            self.measure()
+        state = app.get("status", {}).get("jobStatus", {}).get("state")
+        if (
+            self.stage == "finishing"
+            and state == "FINISHED"
+            and self.post_until is not None
+        ):
+            completed = [
+                sample["at"]
+                for sample in self.fresh_progress("upgrade")
+                if sample["processed"] == self.records
+            ]
+            if not completed or min(completed) < self.post_until:
+                raise Failure("Input finished before the post-recovery window")
         self.check_open()
         if not self.initialized:
             self.persist("baseline")

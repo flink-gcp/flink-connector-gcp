@@ -246,6 +246,27 @@ def fold_coverage(previous, window, observed):
     return coverage
 
 
+# The measurement windows of a scenario that samples the job, as the shared
+# recovery exercise opens them: a baseline, one after the upgrade and one
+# after the failover.
+WINDOWS = ("baseline", "upgraded", "finishing")
+
+
+def window_of(reading, stage):
+    """The measurement window a reading counts toward, or None.
+
+    A reading names its window, or none when it was taken outside every
+    window, during startup, a recovery or the rest of the input. A reading
+    exported before readings named their window counts toward the stage it
+    was taken in, as it did then, so archived evidence still rebuilds the
+    coverage its record holds.
+    """
+    if "window" not in reading:
+        return stage
+    window = reading["window"]
+    return window if isinstance(window, str) else None
+
+
 def coverage_reasons(coverage, windows, families):
     """Why recorded coverage falls short of every family in every window.
 

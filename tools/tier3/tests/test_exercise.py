@@ -35,11 +35,17 @@ from .test_lifecycle import rt
 LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
 
 
-# The default trial's timing: the failover begins once the upgrade is proved.
+# A scenario that samples nothing: no windows, and the failover begins once
+# the upgrade is proved.
+WINDOWS = (
+    "warmup_seconds",
+    "baseline_seconds",
+    "post_upgrade_seconds",
+    "post_recovery_seconds",
+    "upgrade_wait_seconds",
+)
 IMMEDIATE = {
-    key: value
-    for key, value in CLOUDTASKS_OBSERVATIONS.items()
-    if key != "post_upgrade_seconds"
+    key: value for key, value in CLOUDTASKS_OBSERVATIONS.items() if key not in WINDOWS
 }
 HOLD = 300
 HELD = {**IMMEDIATE, "post_upgrade_seconds": HOLD}
@@ -584,3 +590,38 @@ def test_a_held_upgrade_deletes_the_taskmanager_reporting_after_the_window(held)
     held.observe()
     assert held.deleted == ["tm-2"]
     assert held.env.refresh().recovery["before"]["tm"] == "tm-2"
+
+
+def test_a_scenario_without_windows_completes_when_its_input_does(world):
+    """No post-recovery window to outlast: the finished input completes it."""
+    world.baseline()
+    world.upgraded()
+    del world.pods["jm-2"]
+    world.pod("jm-3", "jobmanager")
+    world.failed_over()
+    assert world.exercise.stage == "finishing"
+    assert world.exercise.post_until is None
+    world.processed = Exercise.records - 100
+    world.advance(5)
+    world.progress("tm-2", "upgrade")
+    world.app["status"]["jobStatus"]["state"] = "FINISHED"
+    assert world.observe() is True
+    assert world.exercise.stage == "complete"
+
+
+def test_a_sampling_scenario_must_name_its_windows(prepared):
+    environment, _, upgrade, _ = prepared
+
+    class Sampling(Exercise):
+        measurement_event = "sampling-measurement"
+        baseline_event = "sampling-baseline-window"
+
+    with pytest.raises(Failure, match="windows' events and timing"):
+        Sampling(environment, upgrade)
+
+    class Unnamed(Sampling):
+        timing = CLOUDTASKS_OBSERVATIONS
+        baseline_event = None
+
+    with pytest.raises(Failure, match="windows' events and timing"):
+        Unnamed(environment, upgrade)
