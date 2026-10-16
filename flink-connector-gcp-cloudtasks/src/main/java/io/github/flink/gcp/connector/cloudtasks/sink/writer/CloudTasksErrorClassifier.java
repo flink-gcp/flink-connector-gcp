@@ -31,12 +31,20 @@ import java.util.Set;
 @Internal
 public final class CloudTasksErrorClassifier {
 
-    /** Statuses the sink retries on its main budget; a chain carrying one is never data-shaped. */
+    /**
+     * Statuses the sink retries on its main budget; a chain carrying one is never data-shaped.
+     *
+     * <p>{@code INTERNAL} is among them although no generated Cloud Tasks retry policy includes it:
+     * a named create retried after one resolves to {@code OK} or {@code ALREADY_EXISTS}, and an
+     * unnamed one may duplicate, which at-least-once accepts, whereas failing the job would restart
+     * it from its last checkpoint over a single server-side error (ADR-0048).
+     */
     private static final Set<StatusCode.Code> TRANSIENT_CODES =
             EnumSet.of(
                     StatusCode.Code.UNAVAILABLE,
                     StatusCode.Code.DEADLINE_EXCEEDED,
-                    StatusCode.Code.RESOURCE_EXHAUSTED);
+                    StatusCode.Code.RESOURCE_EXHAUSTED,
+                    StatusCode.Code.INTERNAL);
 
     private CloudTasksErrorClassifier() {}
 

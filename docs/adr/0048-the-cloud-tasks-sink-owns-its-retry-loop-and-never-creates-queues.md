@@ -22,8 +22,8 @@ limitations under the License.
   ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
   updated 2026-08-22 ([#937], see ADR-0129); retention interpretation clarified 2026-09-06
   ([#1239], see ADR-0104 and ADR-0154); scoped to the default delivery mode 2026-09-06 ([#1240],
-  see ADR-0158)
-- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239], [#1240]
+  see ADR-0158); `INTERNAL` made transient 2026-10-16 ([#1794])
+- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239], [#1240], [#1794]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -65,6 +65,23 @@ limitations under the License.
   re-dispatched unchanged from the next `write()`/`flush()`; parked creates count against
   `maxInFlightTasks` (records the service has not accepted) and are dropped on close (not
   covered by a checkpoint, so the restart replays them).
+- **`INTERNAL` is transient** ([#1794], 2026-10-16), beside `UNAVAILABLE`, `DEADLINE_EXCEEDED`
+  and `RESOURCE_EXHAUSTED`, on the same main budget and in both delivery modes.
+  The deployed Cloud Tasks trials of [#1778] met a single `INTERNAL` from `CreateTask` twice in
+  about 360,000 creates, on 2026-10-15 and 2026-10-16, and each failed the staged commit and
+  restarted the job from its last checkpoint.
+  No generated Cloud Tasks retry policy includes `INTERNAL` (`CloudTasksStubSettings` 2.99.0), and
+  [AIP-194](https://google.aip.dev/194) advises against retrying both `INTERNAL` and
+  `DEADLINE_EXCEEDED` automatically.
+  This loop already retries `DEADLINE_EXCEEDED` because a retried create cannot do worse than the
+  delivery guarantee allows: a named create resolves to `OK` or `ALREADY_EXISTS`, and an unnamed
+  one may duplicate, which at-least-once accepts.
+  The same reasoning covers `INTERNAL`.
+  Declined: retrying `INTERNAL` only in the checkpointed-creation mode, where every create is
+  named; at-least-once already prefers a duplicate to failing the job, so the eager writer gains
+  the same retry.
+  A chain carrying `INTERNAL` anywhere is therefore never routed to the failed-task handler, as
+  for every transient status (ADR-0049).
 - One RPC per record with a mailbox-based in-flight cap. When this was decided,
   `BatchCreateTasks` and `BufferTask` were both REST-only and absent from the Java client;
   `google-cloud-tasks` 2.95.0 later exposed `BatchCreateTasks` on v2beta3 and ADR-0129 measured
@@ -117,3 +134,5 @@ limitations under the License.
 [#937]: https://github.com/flink-gcp/flink-connector-gcp/issues/937
 [#1239]: https://github.com/flink-gcp/flink-connector-gcp/issues/1239
 [#1240]: https://github.com/flink-gcp/flink-connector-gcp/issues/1240
+[#1778]: https://github.com/flink-gcp/flink-connector-gcp/issues/1778
+[#1794]: https://github.com/flink-gcp/flink-connector-gcp/issues/1794

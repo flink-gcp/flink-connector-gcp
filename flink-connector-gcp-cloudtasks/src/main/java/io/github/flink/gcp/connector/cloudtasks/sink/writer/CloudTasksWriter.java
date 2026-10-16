@@ -81,10 +81,10 @@ import java.util.PriorityQueue;
  * <p>Retrying is this sink's own responsibility: {@code CloudTasksStubSettings} gives {@code
  * CreateTask} an empty retryable-code set, as it does every mutating method. A failed creation is
  * therefore parked with a due time and re-dispatched from a later {@link #write} or {@link #flush}
- * — {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED} and {@code RESOURCE_EXHAUSTED} on the main
- * budget, {@code NOT_FOUND} on a shorter one of its own, everything else terminal. Under unnamed
- * tasks a retry after {@code DEADLINE_EXCEEDED} may duplicate the task, which is what at-least-once
- * prefers to losing it; naming removes the ambiguity.
+ * — {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED} and {@code INTERNAL}
+ * on the main budget, {@code NOT_FOUND} on a shorter one of its own, everything else terminal.
+ * Under unnamed tasks a retry after {@code DEADLINE_EXCEEDED} or {@code INTERNAL} may duplicate the
+ * task, which is what at-least-once prefers to losing it; naming removes the ambiguity.
  *
  * <p>The number of outstanding creations — in flight plus parked — is capped ({@code
  * CloudTasksWriterOptions.maxInFlightTasks}, default 1000); at the cap {@link #write} yields to the
@@ -451,9 +451,9 @@ public class CloudTasksWriter<T> implements SinkWriter<T> {
         // can never produce a dead letter even if a data-shaped status sits in front of it — a
         // property of this code rather than of gax producing one status per failure, which is why
         // the two forms are equivalent today. The INVALID_ARGUMENT half deliberately reads only
-        // the chain's *first* classifiable status: an INVALID_ARGUMENT buried under an INTERNAL or
-        // an UNKNOWN describes the inner call, and dropping the task on it would discard a record
-        // over a server-side failure.
+        // the chain's *first* classifiable status: an INVALID_ARGUMENT buried under an UNKNOWN
+        // describes the inner call, and dropping the task on it would discard a record over a
+        // failure that is not the record's.
         StatusCode.Code transientCode = CloudTasksErrorClassifier.transientCode(throwable);
         if (transientCode == null && code == StatusCode.Code.INVALID_ARGUMENT) {
             // Before the asyncError check below, deliberately: the writer is about to fail either

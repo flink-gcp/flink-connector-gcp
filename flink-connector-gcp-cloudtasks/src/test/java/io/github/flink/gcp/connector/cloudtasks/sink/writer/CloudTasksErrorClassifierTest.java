@@ -31,7 +31,7 @@ class CloudTasksErrorClassifierTest {
     @ParameterizedTest
     @EnumSource(
             value = StatusCode.Code.class,
-            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED"})
+            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"})
     void findsEveryTransientStatusThroughUnclassifiableWrappers(StatusCode.Code code) {
         Throwable failure =
                 new IOException(
@@ -46,11 +46,11 @@ class CloudTasksErrorClassifierTest {
                 new IOException(
                         "outer",
                         FakeTaskCreator.apiException(
-                                StatusCode.Code.INTERNAL,
+                                StatusCode.Code.UNKNOWN,
                                 FakeTaskCreator.apiException(StatusCode.Code.INVALID_ARGUMENT)));
 
         assertThat(CloudTasksErrorClassifier.statusCode(failure))
-                .isEqualTo(StatusCode.Code.INTERNAL);
+                .isEqualTo(StatusCode.Code.UNKNOWN);
     }
 
     @Test
@@ -70,12 +70,22 @@ class CloudTasksErrorClassifierTest {
     void doesNotScanForAnInvalidArgument() {
         Throwable failure =
                 FakeTaskCreator.apiException(
-                        StatusCode.Code.INTERNAL,
+                        StatusCode.Code.UNKNOWN,
                         FakeTaskCreator.apiException(StatusCode.Code.INVALID_ARGUMENT));
 
         assertThat(CloudTasksErrorClassifier.statusCode(failure))
-                .isEqualTo(StatusCode.Code.INTERNAL);
+                .isEqualTo(StatusCode.Code.UNKNOWN);
         assertThat(CloudTasksErrorClassifier.transientCode(failure)).isNull();
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = StatusCode.Code.class,
+            mode = EnumSource.Mode.EXCLUDE,
+            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"})
+    void treatsNoOtherStatusAsTransient(StatusCode.Code code) {
+        assertThat(CloudTasksErrorClassifier.transientCode(FakeTaskCreator.apiException(code)))
+                .isNull();
     }
 
     @Test

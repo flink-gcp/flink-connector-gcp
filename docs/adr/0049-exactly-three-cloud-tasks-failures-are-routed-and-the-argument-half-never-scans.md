@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209]); revised by [#1051] and
-  [#1058] (2026-08-23); scoped to the default delivery mode by [#1240] (2026-09-06, see ADR-0158)
-- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series), [#1240]
+  [#1058] (2026-08-23); scoped to the default delivery mode by [#1240] (2026-09-06, see ADR-0158);
+  `INTERNAL` made transient by [#1794] (2026-10-16, see ADR-0048)
+- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series), [#1240], [#1794]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md` § Failed-task
   policy, § Metrics
@@ -52,7 +53,7 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
   classifiable status; `transientCode` scans the whole chain, so "an unstable service can never
   produce a dead letter" is a property of the code. The
   `INVALID_ARGUMENT` half deliberately does **not** scan: searching for it anywhere would drop a
-  task whose outermost status is `INTERNAL` or `UNKNOWN` — the mirror image of the mistake the
+  task whose outermost status is `UNKNOWN` — the mirror image of the mistake the
   transient scan prevents. **That asymmetry was found by mutation testing** — the scanning
   variant's mutant survived, and inspecting why showed the mutant was the better code.
 - The `INVALID_ARGUMENT` branch sits **before** the `asyncError` early-return, deliberately: the
@@ -90,3 +91,4 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
 [#1051]: https://github.com/flink-gcp/flink-connector-gcp/issues/1051
 [#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058
 [#1240]: https://github.com/flink-gcp/flink-connector-gcp/issues/1240
+[#1794]: https://github.com/flink-gcp/flink-connector-gcp/issues/1794
