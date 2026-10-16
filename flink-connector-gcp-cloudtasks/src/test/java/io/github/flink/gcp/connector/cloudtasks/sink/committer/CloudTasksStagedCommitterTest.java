@@ -116,6 +116,42 @@ class CloudTasksStagedCommitterTest {
     }
 
     @Test
+    void internalErrorRetriesTheIdenticalNamedTask() throws Exception {
+        // The failed call may have created the task; the named retry then resolves the ambiguity
+        // as ALREADY_EXISTS, the same way a lost DEADLINE_EXCEEDED response does.
+        creator.script =
+                call ->
+                        creator.calls.size() == 1
+                                ? ApiFutures.immediateFailedFuture(
+                                        Status.INTERNAL.asRuntimeException())
+                                : ApiFutures.immediateFailedFuture(
+                                        Status.ALREADY_EXISTS.asRuntimeException());
+        Request request = request(1, 1000, 3_281_000);
+        try (var committer = committer(defaults, 2, 3, 2)) {
+            committer.commit(List.of(request));
+        }
+        assertThat(creator.calls).hasSize(2);
+        assertThat(creator.calls.get(0).request).isEqualTo(creator.calls.get(1).request);
+        assertThat(request.alreadyCommitted).isEqualTo(1);
+        assertThat(metrics.counterValue("errorClass", "INTERNAL", "errors")).isEqualTo(1);
+        assertThat(metrics.counterValue("destination", QUEUE, "sendErrors")).isZero();
+    }
+
+    @Test
+    void internalErrorSpendsTheMainBudgetNotTheNotFoundOne() throws Exception {
+        creator.script =
+                call -> ApiFutures.immediateFailedFuture(Status.INTERNAL.asRuntimeException());
+        try (var committer = committer(defaults, 1, 2, 5)) {
+            assertThatThrownBy(() -> committer.commit(List.of(request(1, 1000, 3_281_000))))
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("status=INTERNAL")
+                    .hasMessageContaining("transientFailures=2")
+                    .hasMessageContaining("notFoundFailures=0");
+        }
+        assertThat(creator.calls).hasSize(2);
+    }
+
+    @Test
     void mixedStatusBudgetsRemainSeparateAndBounded() throws Exception {
         List<Status> statuses =
                 List.of(

@@ -186,14 +186,14 @@ class CloudTasksWriterMetricsTest {
         CloudTasksWriter<String> writer = writer(retrying(2));
         creator.enqueueFailure(
                 FakeTaskCreator.apiException(
-                        StatusCode.Code.INTERNAL,
+                        StatusCode.Code.UNKNOWN,
                         FakeTaskCreator.apiException(StatusCode.Code.UNAVAILABLE)));
 
         writer.write("first", TestContexts.NO_OP);
         writer.flush(false);
 
         assertThat(creator.requests).hasSize(2);
-        assertThat(errors("INTERNAL")).isEqualTo(1);
+        assertThat(errors("UNKNOWN")).isEqualTo(1);
         assertThat(metrics.hasMetric("errorClass", "UNAVAILABLE", "errors")).isFalse();
     }
 

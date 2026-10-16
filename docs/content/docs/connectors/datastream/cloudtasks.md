@@ -428,7 +428,7 @@ over the codes worth retrying:
 
 | Status | Treatment |
 |---|---|
-| `UNAVAILABLE`, `DEADLINE_EXCEEDED` | Retry. Under unnamed tasks a `DEADLINE_EXCEEDED` is ambiguous — the task may already exist — so the retry may duplicate. At-least-once prefers that to loss; naming removes the ambiguity |
+| `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `INTERNAL` | Retry. Under unnamed tasks a `DEADLINE_EXCEEDED` or an `INTERNAL` is ambiguous — the task may already exist — so the retry may duplicate. At-least-once prefers that to loss, and to restarting the job from its last checkpoint over a single server-side `INTERNAL`; naming removes the ambiguity |
 | `RESOURCE_EXHAUSTED` | Retry with backoff — the queue is over its limits and backing off is the only useful response |
 | `NOT_FOUND` | Retry on a **separate, short budget**. A queue idle for 30 days takes "a few minutes to re-activate" and "some method calls may return `NOT_FOUND`" meanwhile, so this is not proof of a misconfigured queue — but a mistyped queue name must not burn the full retry budget on every record before failing |
 | `ALREADY_EXISTS` | Success when the task carried a name, which is exactly when an extractor is configured. Terminal otherwise, since it should be unreachable |
@@ -595,7 +595,7 @@ unclassifiable failure is not evidence that retrying would help.
 
 | Class | What it covers | What happens |
 |---|---|---|
-| Transient | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED` | Parked and re-dispatched within the retry budget; exhausting it fails the job |
+| Transient | `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `INTERNAL` | Parked and re-dispatched within the retry budget; exhausting it fails the job |
 | Missing queue | `NOT_FOUND` | The same, on a [shorter budget of its own](#tuning); exhausting it fails the job |
 | Deduplicated | `ALREADY_EXISTS` on a named task | Success — this is what `taskIdExtractor(...)` asked for |
 | Task-level | `INVALID_ARGUMENT` (a malformed request target, an oversized body, a header the service refuses) | Handed to the failed-task handler |
@@ -643,9 +643,9 @@ that staying true. `INVALID_ARGUMENT` is the one routed status because it is the
 *"arguments that are problematic regardless of the state of the system"* — explicitly unlike
 `FAILED_PRECONDITION` and `OUT_OF_RANGE`, whose problems *"may be fixed if the system state
 changes"*, and both of which fail the job here. It is read from the chain's *first* classifiable
-status, not searched for: an `INVALID_ARGUMENT` buried under an `INTERNAL` or an `UNKNOWN` describes
-the inner call, and dropping a record over a server-side failure would be the mirror image of
-dropping one over an outage.
+status, not searched for: an `INVALID_ARGUMENT` buried under an `UNKNOWN` describes the inner call,
+and dropping a record over a failure that is not the record's would be the mirror image of dropping
+one over an outage.
 
 **Only those three failures are routed, deliberately.** An outage must not reach a dropping handler,
 or a service incident would bleed the stream one record at a time instead of backpressuring and

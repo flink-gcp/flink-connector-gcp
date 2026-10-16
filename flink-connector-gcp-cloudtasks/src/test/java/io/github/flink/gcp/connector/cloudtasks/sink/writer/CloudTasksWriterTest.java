@@ -27,6 +27,8 @@ import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -156,6 +158,24 @@ class CloudTasksWriterTest {
     }
 
     @Test
+    void retriesAnInternalErrorEvenForAnUnnamedTask() throws Exception {
+        // Under unnamed tasks the retry may duplicate a task the failed call created after all,
+        // which at-least-once accepts rather than failing the job on one server-side error.
+        CloudTasksWriter<String> writer = writer(retrying(3, Duration.ofMillis(100)));
+        creator.enqueueFailure(StatusCode.Code.INTERNAL);
+
+        writer.write("order-1", TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(creator.requests).hasSize(2);
+        assertThat(creator.requests.get(0).getTask().getName()).isEmpty();
+        assertThat(creator.requests.get(1)).isEqualTo(creator.requests.get(0));
+        // One backoff of the main budget's initial 100 ms, jittered by ±25%, not the NOT_FOUND
+        // budget's 500 ms.
+        assertThat(time.getSleptMillis()).isBetween(75L, 125L);
+    }
+
+    @Test
     void aRetryOfANamedTaskTheServiceAlreadyCreatedSucceeds() throws Exception {
         // The ambiguity naming exists to remove: a DEADLINE_EXCEEDED may mean the task was created
         // anyway, and the retry then comes back ALREADY_EXISTS — which is the task being there,
@@ -173,16 +193,19 @@ class CloudTasksWriterTest {
                 .isEqualTo(creator.requests.get(0).getTask().getName());
     }
 
-    @Test
-    void failsOnceTheTransientBudgetIsSpent() throws Exception {
+    @ParameterizedTest
+    @EnumSource(
+            value = StatusCode.Code.class,
+            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"})
+    void failsOnceTheTransientBudgetIsSpent(StatusCode.Code code) throws Exception {
         CloudTasksWriter<String> writer = writer(retrying(2, Duration.ofMillis(100)));
-        creator.enqueueFailures(2, StatusCode.Code.DEADLINE_EXCEEDED);
+        creator.enqueueFailures(2, code);
 
         writer.write("order-1", TestContexts.NO_OP);
 
         assertThatThrownBy(() -> writer.flush(false))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("DEADLINE_EXCEEDED")
+                .hasMessageContaining(code.name())
                 .hasMessageContaining("2 attempt(s)");
         assertThat(creator.requests).hasSize(2);
     }

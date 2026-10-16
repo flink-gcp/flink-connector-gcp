@@ -151,8 +151,8 @@ public final class CloudTasksWriterOptions implements Serializable {
     }
 
     /**
-     * Returns the schedule retrying {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED} and {@code
-     * RESOURCE_EXHAUSTED} creations.
+     * Returns the schedule retrying {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, {@code
+     * RESOURCE_EXHAUSTED} and {@code INTERNAL} creations.
      */
     @Internal
     public RetrySchedule toRecoverySchedule() {
@@ -288,7 +288,7 @@ public final class CloudTasksWriterOptions implements Serializable {
 
         /**
          * Sets the first backoff of the transient-failure retry ({@code UNAVAILABLE}, {@code
-         * DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED}). Defaults to 100 ms.
+         * DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED}, {@code INTERNAL}). Defaults to 100 ms.
          *
          * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder
