@@ -12,8 +12,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `flink-connector-gcp-base`; extract a helper only when its second consumer exists. Each root
   carries its own `CrossVersionSink` under `src/main/java-flink1` / `java-flink2`.
 - The design comment and implementation order on #355 settled the sub-issues #1540–#1546; read
-  them before starting one. CDC and an exactly-once mode are deferred there with reopen conditions
-  — do not start either without engaging those conditions.
+  them before starting one. CDC is deferred in ADR-0170 and an exactly-once mode on #355, each
+  with reopen conditions — do not start either without engaging those conditions.
 - Public types enter at `@PublicEvolving` (ADR-0141's youth clause).
 
 ## Native-mode sink (`docs/adr/0171`)
