@@ -25,7 +25,7 @@ import urllib3
 from kubernetes import client as kubernetes_client
 
 from .common import ApiError, Failure, ReadCeilingExceeded, TransportError, encoded
-from .policy import HTTP_TIMEOUT, MIB, NAMESPACES
+from .policy import HTTP_TIMEOUT, MIB, NAMESPACES, READ_RETRY_DELAYS
 
 COLLECTIONS = {
     "Pod": ("/api/v1", "pods"),
@@ -53,8 +53,6 @@ COLLECTIONS = {
 # bq1312-alo-10-a6 lost a run to a single 503 after both recoveries passed,
 # and ct1778-rescale-out-a6 to a single 429 during its JobManager failover.
 TRANSIENT_READ_STATUSES = (429, 500, 502, 503, 504)
-# Seconds before each retry of a read; mutations are never retried.
-READ_RETRY_DELAYS = (1, 2, 4)
 
 
 INVENTORY = tuple(k for k in COLLECTIONS if k not in ("ResourceQuota", "Event"))

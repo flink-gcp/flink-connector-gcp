@@ -32,7 +32,7 @@ from google.auth.transport.requests import Request as AuthRequest
 from google.cloud import storage
 from google.cloud.storage.exceptions import DataCorruption
 
-from .common import ApiError, Failure, json_bytes
+from .common import TRANSIENT_STATUSES, ApiError, Failure, json_bytes
 from .policy import (
     EVIDENCE,
     GENERATION_RACES,
@@ -40,6 +40,7 @@ from .policy import (
     PROJECT,
     RACE_BACKOFF_CAP,
     RACE_BACKOFF_FIRST,
+    READ_RETRY_DELAYS,
 )
 
 
@@ -93,9 +94,37 @@ def actor_session(credentials=None):
     return session
 
 
+# Failures that leave a request without an answer: a refused, reset or timed-out
+# connection, including a body read that stalled, which requests reports as a
+# ConnectionError, a body cut short, and a token refresh that failed in transport.
+NO_ANSWER = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+    google.auth.exceptions.TransportError,
+    ConnectionError,
+)
+
+
+def _no_answer(error):
+    while error is not None:
+        if isinstance(error, NO_ANSWER):
+            return True
+        error = error.__cause__
+    return False
+
+
+class StorageRequestFailed(Failure):
+    """A storage request that got no answer.
+
+    Kept apart from `TransportError`, which `transient` reads as a failure that
+    says nothing: a storage write without an answer may have landed.
+    """
+
+
 class Storage:
-    def __init__(self, client=None, sleep=time.sleep):
-        self.sleep = sleep
+    def __init__(self, client=None, sleep=time.sleep, clock=time.monotonic):
+        self.sleep, self.clock = sleep, clock
         # The SDK otherwise starts unbudgeted background bucket-metadata reads.
         os.environ["DISABLE_GCS_PYTHON_CLIENT_OTEL_BUCKET_METADATA"] = "true"
         if client is None:
@@ -118,29 +147,61 @@ class Storage:
             requests.exceptions.RequestException,
             google.auth.exceptions.GoogleAuthError,
             DataCorruption,
+            ConnectionError,
         ) as error:
-            raise Failure(
+            failed = StorageRequestFailed if _no_answer(error) else Failure
+            raise failed(
                 f"{method} storage request failed: {type(error).__name__}"
             ) from error
 
-    def read(self, name, bucket=EVIDENCE):
-        for race in range(1, GENERATION_RACES + 1):
+    def _retried(self, name, call):
+        """Run an idempotent read, retrying what a storage blip returns.
+
+        A transient status, or a request that got no answer, is retried after
+        each of the delays until the request has spent one timeout; the first
+        failure is retried however long it took. An attempt that timed out has
+        spent a timeout, so it is repeated at most once, where failing would end
+        the run.
+        """
+        started = self.clock()
+        for attempt, delay in enumerate(READ_RETRY_DELAYS):
             try:
                 with self.operation("GET", name):
-                    blob = self.client.bucket(bucket).blob(name)
-                    blob.reload(timeout=HTTP_TIMEOUT, retry=None)
+                    return call()
+            except (ApiError, StorageRequestFailed) as error:
+                if (
+                    isinstance(error, ApiError)
+                    and error.status not in TRANSIENT_STATUSES
+                ):
+                    raise
+                if attempt and self.clock() - started >= HTTP_TIMEOUT:
+                    raise
+            self.sleep(delay)
+        with self.operation("GET", name):
+            return call()
+
+    def read(self, name, bucket=EVIDENCE):
+        for race in range(1, GENERATION_RACES + 1):
+            blob = self.client.bucket(bucket).blob(name)
+            try:
+                self._retried(
+                    name, partial(blob.reload, timeout=HTTP_TIMEOUT, retry=None)
+                )
             except ApiError as error:
                 if error.status == 404:
                     return None, "0"
                 raise
             generation = blob.generation
             try:
-                with self.operation("GET", name):
-                    data = blob.download_as_bytes(
+                data = self._retried(
+                    name,
+                    partial(
+                        blob.download_as_bytes,
                         if_generation_match=generation,
                         timeout=HTTP_TIMEOUT,
                         retry=None,
-                    )
+                    ),
+                )
                 return json.loads(data), str(generation)
             except ApiError as error:
                 # Another writer can replace this generation after metadata was
@@ -183,7 +244,7 @@ class Storage:
                 raise
 
     def objects(self, prefix, bucket=EVIDENCE, maximum=20000):
-        with self.operation("GET", prefix):
+        def call():
             result = []
             for blob in self.client.list_blobs(
                 bucket,
@@ -205,9 +266,12 @@ class Storage:
                     raise Failure("Object inventory exceeds its count ceiling")
             return result
 
+        return self._retried(prefix, call)
+
     def prefixes(self, prefix, bucket=EVIDENCE, maximum=20000):
         """Immediate child prefixes of ``prefix``, without listing their objects."""
-        with self.operation("GET", prefix):
+
+        def call():
             iterator = self.client.list_blobs(
                 bucket,
                 prefix=prefix,
@@ -225,6 +289,8 @@ class Storage:
             if len(iterator.prefixes) > maximum:
                 raise Failure("Prefix inventory exceeds its count ceiling")
             return set(iterator.prefixes)
+
+        return self._retried(prefix, call)
 
 
 def _created(blob):
