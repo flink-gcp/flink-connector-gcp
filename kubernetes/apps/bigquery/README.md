@@ -614,6 +614,7 @@ The upgrade must restore its new savepoint, preserve the input lineage, advance 
 The proved upgrade then runs for a 300-second window before a single JobManager deletion, which must not restore behind the latest checkpoint triggered since that window opened.
 The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
 A fault trial changes one of the two as the table in [Offline execution proposal](#offline-execution-proposal) names: a rescale's restored job must also checkpoint more or fewer subtasks than before it, and a TaskManager replacement deletes the TaskManager that reported the latest input, keeps the JobManager and waits for the deleted Pod to go.
+A Pod interruption at any stage, a Pod replacement outside a recovery, and a job restart the exercise did not plan, read from the restores the job's checkpoint statistics count, each stop the run as inconclusive, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts) records.
 
 In FILE_LOADS mode the JobManager, or a fault trial's TaskManager, is deleted only once a listing shows one of the run's load jobs `RUNNING`, so that the failover is issued while a commit's load runs server-side ([#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685)).
 A commit takes 5 to 11 seconds of each 120-second checkpoint interval at the trial's sizes and a load 1 to 6 seconds, so a deletion left to the 15-second poll rarely lands inside one.

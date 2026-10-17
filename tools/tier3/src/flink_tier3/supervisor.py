@@ -370,6 +370,7 @@ class Supervisor:
                         self.env.records.checkpoint()
                 if self.exercise:
                     self.exercise.attach_rest(service, job_id)
+                    self.exercise.restarts(rest)
                     if self.exercise.observe(app, rest, pods):
                         if isinstance(self.exercise, BigQueryExercise):
                             self.exercise.verify_rows(self)

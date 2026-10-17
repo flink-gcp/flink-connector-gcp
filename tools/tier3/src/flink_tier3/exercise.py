@@ -25,7 +25,15 @@ from __future__ import annotations
 import copy
 import re
 
-from .common import ApiError, Failure, TransportError, contains, timestamp, utc
+from .common import (
+    ApiError,
+    Failure,
+    TransportError,
+    contains,
+    timestamp,
+    transient,
+    utc,
+)
 from .metrics import FlinkRest
 
 # The Pod the second recovery deletes, by the name the approved trial gives it,
@@ -120,10 +128,89 @@ class RecoveryExercise:
         self.failover_floor = None
         self.vertices = None
         self.baseline_until, self.post_until = None, None
+        # The latest restore a planned recovery accounted for: its time, the
+        # JobMaster's count and the stage whose recovery it was.
+        self.last_restore = None
 
     @property
     def recovering(self):
         return self.stage in ("upgrade", "failover")
+
+    def keeps_jobmaster(self):
+        """Whether the failover under way is a TaskManager replacement.
+
+        Only that recovery keeps the JobMaster, which counts its restore on
+        from the upgrade's. A Pub/Sub trial has no ``failover`` stage, and its
+        one recovery follows no restore, so its count is one whatever it
+        replaces.
+        """
+        return self.stage == "failover" and self.failover == "taskmanager"
+
+    def restarts(self, rest):
+        """Stop the run on a restore that no planned recovery accounts for.
+
+        Every restart that restores a checkpoint advances the restore the
+        job's checkpoint statistics report, and each JobMaster counts its own
+        restores. A planned recovery restores once: a new JobMaster's count is
+        then one, and a recovery that keeps the JobMaster adds one to it. A
+        restore outside a recovery, a second one inside a recovery, or a count
+        that shows a restore no poll saw is a restart the exercise did not
+        plan, and its windows' readings or its proof's restore are no longer
+        the planned fault's. Called with each poll's checkpoint statistics
+        before the exercise observes the poll, and again just before a fault
+        that replaces the JobMaster. A restart before the first completed
+        checkpoint restores nothing and is not seen here.
+        """
+        restored = (rest.get("latest") or {}).get("restored")
+        if not restored:
+            return
+        at = restored.get("restore_timestamp")
+        if type(at) is not int:
+            raise Failure("Restored checkpoint has no restore time")
+        last = self.last_restore
+        if last and at <= last["at"]:
+            return
+        count = (rest.get("counts") or {}).get("restored")
+        if type(count) is not int:
+            raise Failure("Checkpoint statistics have no restore count")
+        # None where no restore is planned: outside a recovery, or after the
+        # recovery's own.
+        expected = None
+        if self.recovering and not (last and last["stage"] == self.stage):
+            expected = 1 + (last["count"] if last and self.keeps_jobmaster() else 0)
+        if count != expected:
+            self.env.emit(
+                "unplanned-restore",
+                {
+                    "stage": self.stage,
+                    "restored": restored,
+                    "count": count,
+                    "expected": expected,
+                },
+            )
+            raise Failure("Unplanned job restart; trial is inconclusive")
+        self.last_restore = {"at": at, "count": count, "stage": self.stage}
+
+    def restarts_before_fault(self):
+        """Read the restores once more just before the JobMaster is replaced.
+
+        The new JobMaster counts its restores from nothing, so a restart
+        between the poll's read and the fault would leave no count behind;
+        this narrows that gap to the request. An exercise without a REST
+        reader, or a read the service answers with a transient error, has
+        only the poll's read: the fault goes ahead, as it did before the read
+        was added, rather than lose the run.
+        """
+        if self.rest is None:
+            return
+        try:
+            rest = self.rest.job("/checkpoints")
+        except (ApiError, TransportError) as error:
+            if not transient(error):
+                raise
+            self.env.emit("recovery-rest-unavailable", {"cause": str(error)})
+            return
+        self.restarts(rest)
 
     def admitted(self):
         """Called once, when the loop sees the application admitted."""
@@ -358,7 +445,7 @@ class RecoveryExercise:
         jm = self.jobmanager(pods)
         if not resumed or not cp or jm is None:
             return None
-        replaced = self.stage == "failover" and self.failover == "taskmanager"
+        replaced = self.keeps_jobmaster()
         if replaced:
             # Only the TaskManager was approved to go; the JobManager keeps the
             # job, and only the region on the lost TaskManager may restart.
@@ -459,6 +546,7 @@ class RecoveryExercise:
             self.env.schedule.cleanup_at,
         )
         self.generation = app["metadata"]["generation"] + 1
+        self.restarts_before_fault()
         self.persist("upgrade", before=self.before, generation=self.generation)
         self.check_open()
         self.patch_upgrade(app, operations)
@@ -660,6 +748,8 @@ class RecoveryExercise:
             self.boundary + self.timing["recovery_seconds"],
             self.env.schedule.cleanup_at,
         )
+        if self.failover == "jobmanager":
+            self.restarts_before_fault()
         self.persist("failover", before=self.before)
         self.check_open()
         self.delete_pod(target, FAILOVERS[self.failover])

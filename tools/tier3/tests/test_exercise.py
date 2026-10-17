@@ -22,7 +22,7 @@ for each poll, so each fault kind's proof and its refusals are held here.
 import copy
 
 import pytest
-from flink_tier3.common import ApiError, Failure
+from flink_tier3.common import TRANSIENT_STATUSES, ApiError, Failure, TransportError
 from flink_tier3.exercise import RecoveryExercise
 from flink_tier3.policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE
 
@@ -100,6 +100,8 @@ class World:
         monkeypatch.setattr(self.env.kube, "patch", self.patch)
         monkeypatch.setattr(self.env.kube, "delete", self.delete)
         self.restored, self.completed = {}, {}
+        # The restores the job's current JobMaster has counted.
+        self.restores = 0
         self.processed = 0
         self.exercise = exercise(
             self.env, self.upgrade, failover=failover, rescale=rescale
@@ -158,7 +160,12 @@ class World:
         }
 
     def observe(self):
-        rest = {"latest": {"completed": self.completed, "restored": self.restored}}
+        """One poll: the loop hands its checkpoint statistics on, then observes."""
+        rest = {
+            "counts": {"restored": self.restores},
+            "latest": {"completed": self.completed, "restored": self.restored},
+        }
+        self.exercise.restarts(rest)
         return self.exercise.observe(
             copy.deepcopy(self.app), rest, copy.deepcopy(list(self.pods.values()))
         )
@@ -195,9 +202,10 @@ class World:
         self.restored = {
             "id": 2,
             "is_savepoint": True,
-            "restore_timestamp": self.env.clock() * 1000,
+            "restore_timestamp": int(self.env.clock() * 1000),
             "external_path": self.exercise.prefix("savepoints") + "sp-1",
         }
+        self.restores = 1
         for pod in progress_from:
             self.advance(5)
             self.progress(pod, "upgrade")
@@ -211,9 +219,12 @@ class World:
         self.restored = {
             "id": restored,
             "is_savepoint": False,
-            "restore_timestamp": self.env.clock() * 1000,
+            "restore_timestamp": int(self.env.clock() * 1000),
             "external_path": self.exercise.prefix("checkpoints") + f"chk-{restored}",
         }
+        # A TaskManager's loss keeps the JobManager, which counts on.
+        kept = self.exercise.failover == "taskmanager"
+        self.restores = self.restores + 1 if kept else 1
         self.advance(5)
         self.progress(progress_from, "upgrade")
         self.advance(5)
@@ -353,10 +364,11 @@ def test_a_taskmanager_replacement_must_restore_a_retained_checkpoint(world, cha
     world.restored = {
         "id": 3,
         "is_savepoint": False,
-        "restore_timestamp": world.env.clock() * 1000,
+        "restore_timestamp": int(world.env.clock() * 1000),
         "external_path": world.exercise.prefix("checkpoints") + "chk-3",
         **change,
     }
+    world.restores = 2
     world.advance(5)
     world.progress("tm-2", "upgrade")
     world.advance(5)
@@ -625,3 +637,185 @@ def test_a_sampling_scenario_must_name_its_windows(prepared):
 
     with pytest.raises(Failure, match="windows' events and timing"):
         Unnamed(environment, upgrade)
+
+
+def restarted(world, count):
+    """The job restores its latest checkpoint again, on the Pods it ran on."""
+    world.advance(20)
+    world.restored = {
+        **world.restored,
+        "id": world.completed["id"],
+        "is_savepoint": False,
+        "restore_timestamp": int(world.env.clock() * 1000),
+    }
+    world.restores = count
+
+
+class Statistics:
+    """A REST reader answering only the job's checkpoint statistics.
+
+    With a `count`, the job has just restored again; without one, it has
+    not restored at all.
+    """
+
+    def __init__(self, world, count=None):
+        self.world, self.count = world, count
+        self.error = None
+
+    def job(self, path):
+        assert path == "/checkpoints"
+        if self.error:
+            raise self.error
+        if self.count is None:
+            return {"counts": {"restored": 0}, "latest": {"restored": None}}
+        restored = {
+            "id": self.world.completed["id"],
+            "is_savepoint": False,
+            "restore_timestamp": int(self.world.env.clock() * 1000),
+        }
+        return {"counts": {"restored": self.count}, "latest": {"restored": restored}}
+
+
+def test_each_planned_recovery_accounts_for_its_one_restore(world):
+    """A new JobMaster counts its restore from one; later polls see it again."""
+    world.baseline()
+    world.upgraded()
+    assert world.exercise.last_restore["stage"] == "upgrade"
+    del world.pods["jm-2"]
+    world.pod("jm-3", "jobmanager")
+    world.failed_over()
+    assert world.exercise.stage == "finishing"
+    assert world.exercise.last_restore["stage"] == "failover"
+    world.advance(30)
+    world.observe()
+    assert world.exercise.last_restore["count"] == 1
+
+
+@pytest.mark.parametrize("world", [{"failover": "taskmanager"}], indirect=True)
+@pytest.mark.parametrize("count", [1, 3])
+def test_a_taskmanager_replacement_adds_one_restore_to_the_jobmaster(world, count):
+    """The kept JobMaster counted the upgrade's restore; three is one unseen."""
+    world.baseline()
+    world.upgraded()
+    assert world.deleted == ["tm-1"]
+    restarted(world, count)
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        world.observe()
+
+
+def test_a_restore_outside_a_recovery_is_unplanned(world, monkeypatch):
+    """A restart on the same Pods, before the upgrade, leaves Kubernetes as it was."""
+    world.advance(10)
+    world.progress("tm-1", "initial")
+    world.checkpoint(1)
+    restarted(world, 1)
+    emitted = []
+    monkeypatch.setattr(
+        world.env, "emit", lambda event, payload: emitted.append((event, payload))
+    )
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        world.observe()
+    assert emitted == [
+        (
+            "unplanned-restore",
+            {
+                "stage": "baseline",
+                "restored": world.restored,
+                "count": 1,
+                "expected": None,
+            },
+        )
+    ]
+    assert world.patches == []
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_a_restore_inside_the_held_window_is_unplanned(held, count):
+    """As in `ct1778-rescale-out-a6`, or a new JobMaster counting from one."""
+    hold(held)
+    held.advance(5)
+    held.checkpoint(5)
+    restarted(held, count)
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        held.observe()
+
+
+@pytest.mark.parametrize("world", [{"failover": "taskmanager"}], indirect=True)
+def test_a_second_restore_inside_one_recovery_is_unplanned(world):
+    """The kept JobMaster's count rises by one for each, so only the stage tells."""
+    world.baseline()
+    world.upgraded()
+    # The deleted Pod still terminating: the first restore proves nothing yet.
+    world.pods["tm-1"]["metadata"]["deletionTimestamp"] = "2026-10-13T00:01:00Z"
+    world.failed_over()
+    assert world.exercise.stage == "failover"
+    assert world.exercise.last_restore["count"] == 2
+    restarted(world, 3)
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        world.observe()
+
+
+def test_a_restart_just_before_the_upgrade_is_read_again(world):
+    """A new JobMaster would count from one, so the old one is read before the patch."""
+    world.exercise.rest = Statistics(world, 1)
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        world.baseline()
+    assert world.patches == []
+    assert world.env.refresh().recovery["stage"] == "baseline"
+
+
+def test_a_restart_just_before_the_jobmanager_deletion_is_read_again(held):
+    held.exercise.rest = Statistics(held)
+    hold(held)
+    held.exercise.rest.count = 2
+    held.advance(HOLD)
+    held.progress("tm-1", "upgrade")
+    held.checkpoint(5)
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        held.observe()
+    assert held.deleted == []
+
+
+@pytest.mark.parametrize(
+    "error, deleted",
+    [
+        *(
+            (ApiError(status, "GET", "checkpoints"), ["jm-2"])
+            for status in TRANSIENT_STATUSES
+        ),
+        (TransportError("GET checkpoints: reset"), ["jm-2"]),
+        (ApiError(403, "GET", "checkpoints"), []),
+        (ApiError(404, "GET", "checkpoints"), []),
+    ],
+)
+def test_a_transient_error_on_the_read_before_the_deletion_lets_it_go_ahead(
+    held, error, deleted
+):
+    """The poll's own read stands; only a transient refusal is passed over."""
+    held.exercise.rest = Statistics(held)
+    hold(held)
+    held.exercise.rest.error = error
+    held.advance(HOLD)
+    held.progress("tm-1", "upgrade")
+    held.checkpoint(5)
+    if deleted:
+        held.observe()
+    else:
+        with pytest.raises(ApiError):
+            held.observe()
+    assert held.deleted == deleted
+
+
+@pytest.mark.parametrize("at", ["1", 1.5e12])
+def test_a_restore_without_an_integer_time_is_refused(world, at):
+    world.baseline()
+    world.restored = {"id": 1, "restore_timestamp": at}
+    with pytest.raises(Failure, match="no restore time"):
+        world.observe()
+
+
+def test_a_restore_without_its_count_is_refused(world):
+    world.baseline()
+    restarted(world, None)
+    with pytest.raises(Failure, match="no restore count"):
+        world.observe()
