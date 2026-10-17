@@ -38,13 +38,20 @@ public final class CloudTasksErrorClassifier {
      * a named create retried after one resolves to {@code OK} or {@code ALREADY_EXISTS}, and an
      * unnamed one may duplicate, which at-least-once accepts, whereas failing the job would restart
      * it from its last checkpoint over a single server-side error (ADR-0048).
+     *
+     * <p>{@code CANCELLED} is among them by the same reasoning. The sink cancelling its own create
+     * never reaches this classifier as that status: gax completes a future its caller cancelled
+     * with a {@code CancellationException}, which carries no status. While the sink runs, a {@code
+     * CANCELLED} here is therefore the call's, such as a stream the peer reset after the request
+     * was sent.
      */
     private static final Set<StatusCode.Code> TRANSIENT_CODES =
             EnumSet.of(
                     StatusCode.Code.UNAVAILABLE,
                     StatusCode.Code.DEADLINE_EXCEEDED,
                     StatusCode.Code.RESOURCE_EXHAUSTED,
-                    StatusCode.Code.INTERNAL);
+                    StatusCode.Code.INTERNAL,
+                    StatusCode.Code.CANCELLED);
 
     private CloudTasksErrorClassifier() {}
 

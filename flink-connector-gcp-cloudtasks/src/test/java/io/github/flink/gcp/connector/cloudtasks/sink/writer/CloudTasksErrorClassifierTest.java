@@ -31,7 +31,13 @@ class CloudTasksErrorClassifierTest {
     @ParameterizedTest
     @EnumSource(
             value = StatusCode.Code.class,
-            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"})
+            names = {
+                "UNAVAILABLE",
+                "DEADLINE_EXCEEDED",
+                "RESOURCE_EXHAUSTED",
+                "INTERNAL",
+                "CANCELLED"
+            })
     void findsEveryTransientStatusThroughUnclassifiableWrappers(StatusCode.Code code) {
         Throwable failure =
                 new IOException(
@@ -82,7 +88,13 @@ class CloudTasksErrorClassifierTest {
     @EnumSource(
             value = StatusCode.Code.class,
             mode = EnumSource.Mode.EXCLUDE,
-            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"})
+            names = {
+                "UNAVAILABLE",
+                "DEADLINE_EXCEEDED",
+                "RESOURCE_EXHAUSTED",
+                "INTERNAL",
+                "CANCELLED"
+            })
     void treatsNoOtherStatusAsTransient(StatusCode.Code code) {
         assertThat(CloudTasksErrorClassifier.transientCode(FakeTaskCreator.apiException(code)))
                 .isNull();

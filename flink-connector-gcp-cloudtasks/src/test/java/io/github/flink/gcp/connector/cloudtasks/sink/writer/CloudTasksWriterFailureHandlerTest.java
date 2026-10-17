@@ -30,6 +30,8 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -319,15 +321,18 @@ class CloudTasksWriterFailureHandlerTest {
         assertThat(handler.handled).isEmpty();
     }
 
-    @Test
-    void retriesAnInvalidArgumentBuriedUnderAnInternalError() throws Exception {
+    @ParameterizedTest
+    @EnumSource(
+            value = StatusCode.Code.class,
+            names = {"INTERNAL", "CANCELLED"})
+    void retriesAnInvalidArgumentBuriedUnderAnAmbiguousFailure(StatusCode.Code code)
+            throws Exception {
         CloudTasksWriter<String> writer = writer(retrying(2));
-        // INTERNAL is transient, so the transient scan finds it before the data-shaped half is
+        // Both are transient, so the transient scan finds them before the data-shaped half is
         // read: the record is retried, never routed.
         creator.enqueueFailure(
                 FakeTaskCreator.apiException(
-                        StatusCode.Code.INTERNAL,
-                        FakeTaskCreator.apiException(StatusCode.Code.INVALID_ARGUMENT)));
+                        code, FakeTaskCreator.apiException(StatusCode.Code.INVALID_ARGUMENT)));
 
         writer.write("order-1", TestContexts.NO_OP);
         writer.flush(false);

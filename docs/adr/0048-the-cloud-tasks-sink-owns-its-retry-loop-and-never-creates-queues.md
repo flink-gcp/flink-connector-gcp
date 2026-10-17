@@ -22,8 +22,10 @@ limitations under the License.
   ([#545]), 2026-08-13 ([#608], [#628]) and 2026-08-14 ([#632]); the batching bullet's premise
   updated 2026-08-22 ([#937], see ADR-0129); retention interpretation clarified 2026-09-06
   ([#1239], see ADR-0104 and ADR-0154); scoped to the default delivery mode 2026-09-06 ([#1240],
-  see ADR-0158); `INTERNAL` made transient 2026-10-16 ([#1794])
-- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239], [#1240], [#1794]
+  see ADR-0158); `INTERNAL` made transient 2026-10-16 ([#1794]); `CANCELLED` made transient
+  2026-10-17 ([#1796])
+- Issues: [#23], [#24], [#25], [#545], [#608], [#628], [#632], [#937], [#1239], [#1240], [#1794],
+  [#1796]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md`
 
@@ -82,6 +84,27 @@ limitations under the License.
   the same retry.
   A chain carrying `INTERNAL` anywhere is therefore never routed to the failed-task handler, as
   for every transient status (ADR-0049).
+- **`CANCELLED` is transient** ([#1796], 2026-10-17) on the same terms as `INTERNAL`: the main
+  budget, both delivery modes.
+  After [#1794], the [#1778] trials met a single `CANCELLED` from `CreateTask` on 2026-10-17: the
+  staged commit failed with `status=CANCELLED` and the job restarted from its last checkpoint.
+  The status was not the sink's cancelling its own create.
+  gax 2.87.0 completes a future its caller cancelled with a `CancellationException`, which carries
+  no status; the eager writer cancels no create, and the committer discards the completion of an
+  attempt it cancelled at its own deadline.
+  The one `CANCELLED` the sink can cause is at close, where the emulator arm's `shutdownNow()`
+  cancels calls still waiting for their channel, and after close nothing dispatches a retry.
+  While the sink runs, a `CANCELLED` is the call's: in grpc-java 1.83.0 a unary call reports it,
+  for example, when the peer resets the stream with `RST_STREAM` `CANCEL` (which the client
+  records as possibly processed by the server) or when the server answers with that status.
+  Either may follow a create the service performed, which is the ambiguity a named retry resolves
+  and an unnamed retry may duplicate, as for `INTERNAL`.
+  The generated Pub/Sub publisher retries `CANCELLED` on `Publish`, a call that may duplicate
+  just as an unnamed create does (`PublisherStubSettings` 1.157.0).
+  A loopback test pins both halves through the production client factory's emulator arm: a reset
+  stream is classified as a transient `CANCELLED`, and a caller's cancel carries no status.
+  A chain carrying `CANCELLED` anywhere is therefore never routed to the failed-task handler
+  either (ADR-0049).
 - One RPC per record with a mailbox-based in-flight cap. When this was decided,
   `BatchCreateTasks` and `BufferTask` were both REST-only and absent from the Java client;
   `google-cloud-tasks` 2.95.0 later exposed `BatchCreateTasks` on v2beta3 and ADR-0129 measured
@@ -136,3 +159,4 @@ limitations under the License.
 [#1240]: https://github.com/flink-gcp/flink-connector-gcp/issues/1240
 [#1778]: https://github.com/flink-gcp/flink-connector-gcp/issues/1778
 [#1794]: https://github.com/flink-gcp/flink-connector-gcp/issues/1794
+[#1796]: https://github.com/flink-gcp/flink-connector-gcp/issues/1796
