@@ -16,8 +16,10 @@ name: Release
 
 # A tag stages both version lines, publishes only after both are VALIDATED,
 # and creates the GitHub Release after both are PUBLISHED (#1185, ADR-0147).
-# workflow_dispatch rehearses both lines through validation and automatic Drop;
-# its event guard prevents publication even when the dispatch targets a tag.
+# workflow_dispatch is the dry run for both lines: mode rehearse (the default,
+# #1818) builds and inspects both bundles without uploading them, and mode
+# validate uploads both, waits for validation and drops them. Its event guard
+# prevents publication even when the dispatch targets a tag.
 # Publish requests are separate operations. Recovery after publication starts
 # uses the saved deployment IDs, not another staging run (see ADR-0147).
 on:
@@ -38,9 +40,20 @@ on:
       version:
         description: >-
           Bare version for the dry run (X.Y.Z; no v prefix or -1.20 suffix).
-          Both version lines are validated and automatically dropped.
         required: true
         type: string
+      mode:
+        description: >-
+          rehearse builds and inspects both lines' Central bundles and
+          uploads nothing. validate uploads both lines, waits for
+          validation and drops them; a dropped deployment may count toward
+          the namespace's monthly Central usage.
+        required: true
+        type: choice
+        options:
+          - rehearse
+          - validate
+        default: rehearse
 
 # One release at a time, globally: interleaved Portal uploads would be
 # impossible to tell apart on the deployments page. Note GitHub keeps at most
@@ -143,6 +156,7 @@ jobs:
       # loudly here, before anything is uploaded.
       - name: Resolve the LTS patch from the weekly matrix
         id: lts
+        if: inputs.mode != 'rehearse'
         run: |
           flink_lts=$(sed -n "s/^  FLINK_LTS: '\(.*\)'\$/\1/p" .github/workflows/weekly.yaml | head -1)
           test -n "$flink_lts" || { echo "FLINK_LTS not found in weekly.yaml" >&2; exit 1; }
@@ -153,12 +167,14 @@ jobs:
       # because setup-java has already written a throwaway settings.xml on
       # this runner; by hand, the script refuses an existing file instead.
       - name: Point Maven at the Central Portal credentials
+        if: inputs.mode != 'rehearse'
         run: scripts/write-central-settings.sh --overwrite
 
       # The capture wrapper preserves Maven's failure and records an upload ID
       # before validation, including on a failed run. Files stay outside the
       # tree so the next clean build and RAT cannot consume them.
       - name: Stage the Flink 2.x line
+        if: inputs.mode != 'rehearse'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
@@ -178,11 +194,13 @@ jobs:
       # tree (which fails on a collected .asc). The script asserts the count,
       # so the Release cannot quietly miss an artifact.
       - name: Collect the staged uber-jars
+        if: inputs.mode != 'rehearse'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: scripts/collect-release-jars.sh "$VERSION" "$RUNNER_TEMP/dist"
 
       - name: Stage the Flink 1.20 LTS line
+        if: inputs.mode != 'rehearse'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           FLINK_LTS: ${{ steps.lts.outputs.flink_lts }}
@@ -199,9 +217,20 @@ jobs:
             just stage-release "$VERSION-1.20" -Dflink.version="$FLINK_LTS" -DdeploymentName="$name"
 
       - name: Collect the 1.20 uber-jars
+        if: inputs.mode != 'rehearse'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: scripts/collect-release-jars.sh "$VERSION-1.20" "$RUNNER_TEMP/dist"
+
+      # The rehearsal reads no Central credentials, so this step holds no
+      # Central token. The size table and any defect land in the run summary.
+      - name: Rehearse both lines without uploading
+        if: inputs.mode == 'rehearse'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: just rehearse-release "$VERSION"
 
       # The helper checks BOTH states before its first Publish request. A failed
       # build, validation, ID capture or collection skips this step entirely.
@@ -229,7 +258,7 @@ jobs:
       # Missing files mean no ID was captured. A validation still in progress or
       # a failed Drop leaves a red run and its ID in the summary for recovery.
       - name: Drop dry-run deployments
-        if: always() && github.event_name == 'workflow_dispatch'
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.mode != 'rehearse'
         env:
           CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}

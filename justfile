@@ -118,7 +118,8 @@ verify-flink version *extra:
 # non-glob pathspec that misses the root pom, and a tree left at the release version
 # arms the japicmp reactor-self-reference trap the root pom documents). Extra
 # arguments go to the deploy step: `-DskipPublishing=true` builds and signs the
-# artifacts without uploading them.
+# artifacts without uploading them, and `-DskipUpload=true` also writes the bundle
+# without reading Central credentials (`just rehearse-release` uses it).
 #
 # Stage <version> on the Central Portal, e.g. `just stage-release 1.0.0`.
 [positional-arguments]
@@ -126,6 +127,14 @@ stage-release version *extra:
     mise x uv -- uv run --locked scripts/stage-release-guard.py "$@"
     {{ mvn }} versions:set -DnewVersion="$1" -DgenerateBackupPoms=false
     {{ mvn }} clean deploy -Drelease -DskipTests -Djapicmp.skip=true {{ if version =~ '-1\.20$' { '-Dflink.compat=flink1' } else { '' } }} "${@:2}"
+
+# The pre-tag rehearsal (issue #1818); scripts/rehearse-release.py says what it runs.
+#
+# Build and inspect both lines' Central bundles without uploading them (`--unsigned`
+# after the version skips signing).
+[positional-arguments]
+rehearse-release version *extra:
+    mise x uv -- uv run --locked scripts/rehearse-release.py "$@"
 
 # Capture staging IDs, inspect their state, or publish/drop them (ADR-0147).
 [positional-arguments]
