@@ -703,9 +703,9 @@ Why one module holds both the Native-mode and the Datastore-mode surfaces is rec
 ### Change data capture
 
 There is no change-stream source, and the reason is the service rather than the connector.
-The `firestore.v1` API has no change-stream read, its `Listen` call is a live snapshot listener with no replay of history (a restart loses the deletes that happened while it was down), and the Datastore API has no listener at all.
-Firestore's change streams are documented only for Enterprise edition, through the MongoDB-compatible API, and in Preview (checked 2026-09-26).
-The conditions that would reopen the question are recorded on [#355]({{< param BookRepo >}}/issues/355).
+The `firestore.v1` API has no change-stream read, its `Listen` call reports the state of what it watches rather than its history (one change can stand for several writes, and after a restart a delete made while the job was down may arrive only as a digest from which the job has to work out which documents are gone), and the Datastore API has no listener at all.
+Firestore's change streams are documented only for Enterprise edition, through the MongoDB-compatible API, and in Preview (checked 2026-10-18).
+[ADR-0170]({{< param BookRepo >}}/blob/main/docs/adr/0170-firestore-and-datastore-share-one-module-with-two-package-roots.md#no-change-stream-source) records the conditions that would reopen the question: a change-stream read on the Firestore API, or change streams reaching general availability in any edition.
 
 Until then, the supported way to stream Firestore changes into Flink is through Pub/Sub.
 An [Eventarc trigger](https://cloud.google.com/firestore/native/docs/eventarc) on `google.cloud.firestore.document.v1.written` invokes a Cloud Run function, the function publishes the event to a Pub/Sub topic, and this repository's [Pub/Sub source]({{< relref "docs/connectors/datastream/pubsub" >}}) reads it.
