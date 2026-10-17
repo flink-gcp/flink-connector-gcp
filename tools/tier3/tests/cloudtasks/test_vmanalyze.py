@@ -186,7 +186,9 @@ class Evidence:
                         PROC,
                         PROC,
                         str(sequence),
-                        "1",
+                        # One creator, one attempt per record: the creator's
+                        # ordinal, inside the attempt limit at parallelism 1.
+                        str(sequence + 1),
                         str(origin),
                         str(origin_nanos),
                         str(origin_nanos + 1_000_000),

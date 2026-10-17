@@ -77,6 +77,9 @@ class Synthetic:
         self.csv = cell["emit_attempts"] if csv is None else csv
         self.prefix = ev.cell_prefix(run_id, cell["id"])
         self.files = {}
+        # ObservedTaskCreator numbers every attempt of an incarnation, so a row
+        # without an explicit ordinal takes the incarnation's next one.
+        self.ordinals = {}
 
     def identity(self, role, incarnation):
         return {
@@ -127,7 +130,7 @@ class Synthetic:
     def row(
         self,
         sequence,
-        attempt=1,
+        attempt=None,
         status="OK",
         incarnation=INC,
         name=None,
@@ -138,6 +141,9 @@ class Synthetic:
         run_id=None,
     ):
         cell = cell or self.cell
+        if attempt is None:
+            attempt = self.ordinals.get(incarnation, 0) + 1
+        self.ordinals[incarnation] = max(self.ordinals.get(incarnation, 0), attempt)
         origin_millis = WALL + sequence * 100
         origin_nanos = NANOS + sequence * 100_000_000
         completed = origin_nanos + completed_offset
@@ -365,19 +371,80 @@ def test_sequence_range_comes_from_the_source_receipts():
     assert "sequence-out-of-range" in reconcile(synthetic).reasons
 
 
-def test_duplicate_sequence_attempt_inside_and_beyond_the_bitmap():
+def test_a_repeated_attempt_ordinal_is_a_duplicate_row():
     synthetic = complete_cell()
-    synthetic.part(INC, 3, [synthetic.row(4), synthetic.row(4)])
+    line = synthetic.row(4)
+    synthetic.part(INC, 3, [line, line])
     result = reconcile(synthetic)
     assert result.status == "invalid" and "duplicate-row" in result.reasons
+    # The ordinal is the creator's, not the record's, so a second row that
+    # repeats it is a duplicate whatever sequence it names.
     synthetic = complete_cell(rows=4)
-    synthetic.part(INC, 3, [synthetic.row(1, attempt=4), synthetic.row(1, attempt=4)])
+    synthetic.part(INC, 3, [synthetic.row(4, attempt=5), synthetic.row(5, attempt=5)])
     synthetic.creator(INC, rows=6, parts=3)
     assert "duplicate-row" in reconcile(synthetic).reasons
+    # A retry of the same record takes the creator's next ordinal.
     synthetic = complete_cell(rows=4)
-    synthetic.part(INC, 3, [synthetic.row(1, attempt=4), synthetic.row(1, attempt=5)])
+    synthetic.part(INC, 3, [synthetic.row(1, attempt=5), synthetic.row(1, attempt=6)])
     synthetic.creator(INC, rows=6, parts=3)
     assert reconcile(synthetic).status == "complete"
+    # The ordinal spans the incarnation, so a repeat in a later part counts too.
+    synthetic = complete_cell(rows=4)
+    synthetic.part(INC, 3, [synthetic.row(4, attempt=1), synthetic.row(5)])
+    synthetic.creator(INC, rows=6, parts=3)
+    assert reconcile(synthetic).reasons == ["duplicate-row"]
+
+
+@pytest.mark.parametrize(
+    "ordinal",
+    [-7, 0, CELL_A["attempt_limit"] + 1, CELL_A["attempt_limit"] + 8],
+)
+def test_an_ordinal_outside_the_attempt_limit_is_out_of_range(ordinal):
+    # Repeated, so a row that were remembered would also be a duplicate-row.
+    synthetic = complete_cell(rows=4)
+    line = synthetic.row(4, attempt=ordinal)
+    synthetic.part(INC, 3, [line, line, synthetic.row(5, attempt=5)])
+    synthetic.creator(INC, rows=7, parts=3)
+    result = reconcile(synthetic)
+    assert result.status == "invalid" and result.reasons == ["attempt-out-of-range"]
+
+
+def test_the_last_ordinal_of_the_attempt_limit_is_in_range():
+    synthetic = complete_cell(rows=4)
+    synthetic.part(
+        INC,
+        3,
+        [synthetic.row(4), synthetic.row(5, attempt=CELL_A["attempt_limit"])],
+    )
+    synthetic.creator(INC, rows=6, parts=3)
+    assert reconcile(synthetic).status == "complete"
+
+
+def test_duplicate_state_stays_bounded_over_a_creators_rows():
+    # Every row of a creator carries a new ordinal, so per-row state would grow
+    # with the cell; the ordinal bitmap is sized from the attempt limit instead.
+    cell = CELL_B
+    sequences = ev._Sequences(cell["record_limit"], cell["attempt_limit"])
+
+    def sizes():
+        return {
+            key: len(value)
+            for key, value in vars(sequences).items()
+            if hasattr(value, "__len__")
+        }
+
+    before = sizes()
+    for ordinal in range(1, cell["attempt_limit"] + 1):
+        sequence = ordinal % cell["record_limit"]
+        assert not sequences.duplicate(ordinal)
+        sequences.outcome(sequence, True)
+        sequences.remember(sequence, f"{QUEUE}/tasks/t{sequence}", 0, ordinal)
+    assert sizes() == before
+    assert sequences.duplicate(1) and sequences.duplicate(cell["attempt_limit"])
+    sequences.next_incarnation()
+    assert sizes() == before
+    assert not sequences.duplicate(1)
+    assert not sequences.duplicate(cell["attempt_limit"])
 
 
 def test_already_exists_is_explained_only_by_an_earlier_named_attempt():
@@ -390,7 +457,7 @@ def test_already_exists_is_explained_only_by_an_earlier_named_attempt():
         [
             synthetic.row(0, 1, "UNAVAILABLE", name=name),
             synthetic.row(0, 2, "ALREADY_EXISTS", name=name),
-            synthetic.row(1, 1, "OK"),
+            synthetic.row(1, 3, "OK"),
         ],
     )
     synthetic.creator(INC, rows=3, parts=1)
@@ -456,13 +523,15 @@ def test_every_explaining_status_explains_a_later_already_exists(earlier):
 )
 def test_attempt_ordinals_past_one_octet_still_order(earlier, later):
     # A creator numbers every attempt it makes, so a retry deep into a cell
-    # carries an ordinal far beyond one record's retry count.
+    # carries an ordinal far beyond one record's retry count. No protocol cell
+    # has this limit; it admits the highest ordinal a creator receipt may count.
+    cell = {**CELL_B, "attempt_limit": ev.COUNT_CEILING}
     name = f"{QUEUE}/tasks/fixed"
     for first, second, expected in (
         (earlier, later, "complete"),
         (later, earlier, "invalid"),
     ):
-        synthetic = Synthetic(CELL_B)
+        synthetic = Synthetic(cell)
         synthetic.source()
         synthetic.part(
             INC,
@@ -501,14 +570,16 @@ def test_already_exists_across_incarnations_follows_start_order():
         result = reconcile(synthetic)
         assert result.status == expected, result.reasons
         assert result.counts["incarnations"] == 2
-        # A replayed record restarts its attempt ordinals; that is no duplicate.
+        # Each creator incarnation numbers its attempts from 1; that is no duplicate.
         assert "duplicate-row" not in result.reasons
 
 
 def test_unnamed_arm_never_explains_already_exists():
     synthetic = complete_cell(rows=4)
     synthetic.part(
-        INC, 3, [synthetic.row(4, 1, "OK"), synthetic.row(4, 2, "ALREADY_EXISTS")]
+        INC,
+        3,
+        [synthetic.row(4, status="OK"), synthetic.row(4, status="ALREADY_EXISTS")],
     )
     synthetic.creator(INC, rows=6, parts=3)
     result = reconcile(synthetic)

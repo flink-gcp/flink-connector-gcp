@@ -18,7 +18,9 @@ The measurement application leaves gzip CSV parts under ``rows/`` and JSON
 receipts under ``receipts/`` below its evidence root. The reconciler streams
 them once and decides whether they form a complete observation. Nothing here
 accumulates rows: per-sequence state lives in bitmaps and a fixed array sized
-from the cell's record limit.
+from the cell's record limit, and per-attempt state in a bitmap sized from its
+attempt limit. Only a sequence outside the record limit, which already makes
+the cell invalid, keeps its state in a dict.
 """
 
 from __future__ import annotations
@@ -325,19 +327,21 @@ class Reconciliation:
 
 
 class _Sequences:
-    """Per-sequence state: a bitmap per attempt ordinal, a bitmap of OK outcomes
-    and one 64-bit slot naming the last explaining attempt; a dict past the limit.
+    """Per-sequence state: a bitmap of OK outcomes and one 64-bit slot naming
+    the last explaining attempt, a dict past the record limit; and a bitmap of
+    the attempt ordinals the current incarnation has written.
 
-    Attempt ordinals restart when a restored incarnation replays a record, so
-    the ``(sequence, attempt)`` bitmaps are cleared per incarnation while the
-    outcome bitmap and the name slots span the whole cell.
+    An attempt ordinal counts every attempt of one creator incarnation
+    (ObservedTaskCreator), so a row is a duplicate exactly when its incarnation
+    has already written its ordinal, whatever its sequence. The ordinal bitmap
+    is sized from the creator's attempt limit and cleared per incarnation, while
+    the outcome bitmap and the name slots span the whole cell.
     """
 
-    def __init__(self, limit):
+    def __init__(self, limit, attempt_limit):
         self.limit = max(0, int(limit))
         octets = (self.limit + 7) // 8
-        self.seen = [bytearray(octets) for _ in range(3)]
-        self.seen_beyond = set()
+        self.seen = bytearray((max(0, int(attempt_limit)) + 7) // 8)
         self.ok = bytearray(octets)
         self.ok_beyond = set()
         self.ok_count = 0
@@ -345,23 +349,14 @@ class _Sequences:
         self.slots_beyond = {}
 
     def next_incarnation(self):
-        for bitmap in self.seen:
-            bitmap[:] = bytes(len(bitmap))
-        self.seen_beyond = set()
+        self.seen[:] = bytes(len(self.seen))
 
-    def _inside(self, sequence, attempt):
-        return 0 <= sequence < self.limit and 1 <= attempt <= 3
-
-    def duplicate(self, sequence, attempt):
-        if self._inside(sequence, attempt):
-            bitmap, mask = self.seen[attempt - 1], 1 << (sequence & 7)
-            if bitmap[sequence >> 3] & mask:
-                return True
-            bitmap[sequence >> 3] |= mask
-            return False
-        if (sequence, attempt) in self.seen_beyond:
+    def duplicate(self, attempt):
+        index = attempt - 1
+        mask = 1 << (index & 7)
+        if self.seen[index >> 3] & mask:
             return True
-        self.seen_beyond.add((sequence, attempt))
+        self.seen[index >> 3] |= mask
         return False
 
     def outcome(self, sequence, ok):
@@ -627,7 +622,7 @@ class Reconciler:
             default=None,
         )
         rank = {incarnation: index for index, incarnation in enumerate(order)}
-        sequences = _Sequences(cell["record_limit"])
+        sequences = _Sequences(cell["record_limit"], cell["attempt_limit"])
         rows_by_incarnation = dict.fromkeys(order, 0)
         counts = {
             "rows": 0,
@@ -683,9 +678,12 @@ class Reconciler:
                     continue
                 if not low <= row.sequence <= high:
                     result.flag("invalid", "sequence-out-of-range")
-                if row.attempt < 1:
-                    result.flag("invalid", "sequence-out-of-range")
-                if sequences.duplicate(row.sequence, row.attempt):
+                # An ordinal outside the creator's limit is no attempt it made,
+                # so the row is neither remembered nor counted.
+                if not 1 <= row.attempt <= cell["attempt_limit"]:
+                    result.flag("invalid", "attempt-out-of-range")
+                    continue
+                if sequences.duplicate(row.attempt):
                     result.flag("invalid", "duplicate-row")
                     continue
                 same_process = (
