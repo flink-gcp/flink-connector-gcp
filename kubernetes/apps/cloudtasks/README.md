@@ -260,6 +260,7 @@ Its grants and its CUE delivery are described in the [OpenTofu runbook](../../..
 The one [preregistered](https://github.com/flink-gcp/flink-connector-gcp/issues/1362#issuecomment-6127161854) trial reached `usable` on its first attempt, `ct-1362-a1`, on 2026-10-12, as its [findings](../../../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record.
 The `tm-replacement`, `rescale-out` and `rescale-in` trials of [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778) are preregistered in the [fault trial preregistration](../../../docs/adr/evidence/0165-cloudtasks-fault-trials-preregistration-1778.md), and ran the image of the [Cloud Tasks fault trial publication](../../images/README.md#cloud-tasks-fault-trial-publication) and, once [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794) made `INTERNAL` transient, that of the [Cloud Tasks INTERNAL retry publication](../../images/README.md#cloud-tasks-internal-retry-publication).
 The TaskManager replacement and the rescale in each reached `usable`, and the rescale out reached no verdict in six attempts and is rerun under [#1799](https://github.com/flink-gcp/flink-connector-gcp/issues/1799), as their [findings](../../../docs/adr/evidence/0165-cloudtasks-fault-trials-findings-1778.md) record.
+The rerun is preregistered in the [rescale out rerun preregistration](../../../docs/adr/evidence/0165-cloudtasks-rescale-out-preregistration-1799.md).
 
 ### Trial and estimate
 
