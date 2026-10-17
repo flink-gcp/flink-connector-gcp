@@ -27,7 +27,7 @@ import urllib3
 import yaml
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import metrics, repository
-from flink_tier3.common import ReadCeilingExceeded
+from flink_tier3.common import ReadCeilingExceeded, TransportError
 from flink_tier3.policy import CLEANUP_SECONDS, STATE_OBJECTS
 from google.cloud import storage
 
@@ -2007,8 +2007,6 @@ def test_the_re_read_tolerance_counts_consecutive_outages(env, monkeypatch):
 @pytest.mark.parametrize("status", [429, 500, 502, 504, "transport"])
 def test_every_answerless_re_read_is_tolerated_not_only_a_503(env, monkeypatch, status):
     """A read is answerless or it is not; 503 is not the only way to say so."""
-    from flink_tier3.common import TransportError
-
     unresolved = (
         TransportError("GET pods/supervisor-pod: connection reset")
         if status == "transport"
@@ -2278,6 +2276,31 @@ def test_a_proxied_flink_rest_read_is_not_retried():
             "GET",
             "/api/v1/namespaces/tier3-bigquery/services/app-rest:8081/proxy/jobs/j/checkpoints",
         )
+    assert len(pool.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda kube: kube.get("Pod", rt.SYSTEM, "owned"),
+        lambda kube: kube.logs(
+            dict(obj("Pod", "owned", rt.SYSTEM), spec={"containers": [{"name": "m"}]})
+        ),
+    ],
+    ids=["get", "logs"],
+)
+def test_a_timed_out_read_is_not_retried(read):
+    """Its timeout is already spent; repeating it multiplies that cost."""
+    kube, pool = sdk_kube([])
+
+    def timed_out(*args, **kwargs):
+        pool.calls.append((args, kwargs))
+        raise urllib3.exceptions.ReadTimeoutError(None, "/api", "Read timed out.")
+
+    pool.request = timed_out
+    kube.sleep = lambda _delay: pytest.fail("A timed-out read was retried")
+    with pytest.raises(TransportError, match="ReadTimeoutError"):
+        read(kube)
     assert len(pool.calls) == 1
 
 
