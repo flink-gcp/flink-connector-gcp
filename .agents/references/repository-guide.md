@@ -705,8 +705,8 @@ facts); the rules a session needs:
   including it; ADR-0124's revision records why)
 - **Releases publish after both Central Portal deployments validate** (ADR-0147, issues #724, #1185):
   `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
-  version line on a `vX.Y.Z` tag push, with `workflow_dispatch` as the validate-then-drop
-  dry run (bare `X.Y.Z` input, both lines per dispatch, automatic Drop) —
+  version line on a `vX.Y.Z` tag push, with `workflow_dispatch` as the dry run (bare `X.Y.Z`
+  input, both lines per dispatch; `mode: validate` uploads, validates and drops) —
   re-versions the reactor with `versions:set` and deploys with `-Drelease`: the
   connector parent's `release` profile (GPG sign, javadoc jar) plus this project's
   `central-release` (sources jar, SQL javadoc stubs, compiler re-pin back to target 17,
@@ -730,6 +730,18 @@ facts); the rules a session needs:
   real check; for the release whose version equals the reference, the skip was also
   load-bearing — ADR-0124) and `-DskipTests`, because
   the staged commit already passed every CI lane
+- **Every tag is preceded by a bundle rehearsal** (issue #1818): dispatch `release.yaml` with the
+  bare version and the default `mode: rehearse`, on the commit to be tagged. It runs
+  `just rehearse-release` (`scripts/rehearse-release.py`), which stages both lines with
+  `-DskipUpload=true`, so it uploads nothing and costs no Central usage. It then fails the run if a
+  bundle directory lacks its `<artifactId>-<version>.pom`, carries a local-repository file
+  (#1812), sits at the other line's version, or holds an unsigned file. The run summary reports
+  each line's files and uncompressed bytes in decimal MB, as the Portal's Usage Center counts
+  them. The numbers are information, not a gate: when the total, plus anything already
+  published that calendar month, approaches the namespace's monthly limit, ask Sonatype to
+  raise it before the tag. A local rehearsal
+  (`just rehearse-release <version> --unsigned -Dmaven.repo.local=<copy>`) checks the
+  structure but counts no signatures; the script's docstring lists its other traps
 - **The project's own API stability is annotation-tiered and japicmp-checked** (ADR-0124, issue
   #728): `@Public` — the promoted entry surface, its signature closure, and its subtypes — must
   not break within a major version (a deliberate break is a major-release event); the japicmp

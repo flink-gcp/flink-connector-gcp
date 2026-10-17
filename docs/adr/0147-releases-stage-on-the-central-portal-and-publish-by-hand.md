@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0147: Releases publish after both Central Portal deployments validate
 
 - Status: Accepted
-- Date: 2026-08-30; revised by [#1185] (2026-09-06)
-- Issues: [#724], [#39], [#29], [#1185]
+- Date: 2026-08-30; revised by [#1185] (2026-09-06) and [#1818] (2026-10-17)
+- Issues: [#724], [#39], [#29], [#1185], [#1818]
 - Modules: all (build and release engineering)
-- Current behavior: `justfile` § `stage-release`, `.agents/references/repository-guide.md`
+- Current behavior: `justfile` § `stage-release` and § `rehearse-release`,
+  `scripts/rehearse-release.py`, `.agents/references/repository-guide.md`
   § Version policy
 
 ## Context
@@ -39,7 +40,8 @@ irreversibility of a first Central release, not about feasibility.
 
 **A tag push stages both version lines and publishes only after both validate.**
 `.github/workflows/release.yaml` runs `just stage-release` once per version line on a `vX.Y.Z` tag push.
-Its `workflow_dispatch` trigger rehearses the same pair from a bare `X.Y.Z` input and drops both deployments after validation.
+Its `workflow_dispatch` trigger rehearses the same pair from a bare `X.Y.Z` input.
+By default it builds and inspects both bundles without uploading them; `mode: validate` uploads both and drops them after validation.
 The recipe re-versions the reactor with `versions:set` and runs
 `deploy -Drelease -DskipTests -Djapicmp.skip=true`. `-Drelease` activates two profiles at once:
 the connector parent's `release` (GPG signing at verify, the javadoc jar, the enforcer floor) and
@@ -105,12 +107,27 @@ every verify lane runs the real check, and for a release whose version equals
 resolves the reference from the reactor itself and japicmp reads the old side's whole compile
 classpath as old API (ADR-0124).
 
+**Every tag is preceded by a rehearsal that uploads nothing ([#1818]).**
+The first `v1.2.0` tag run failed Central validation: Maven 3.10.0 wrote local-repository files into the plugin's staging directory, and plugin 0.11.0 bundled them ([#1812]).
+The validate dry run would have caught it, but it had been skipped because a validated-then-dropped deployment may count toward the namespace's monthly Central usage.
+Plugin 0.12.0's `skipUpload` writes the real bundle and stops before the upload, without reading Central credentials.
+`just rehearse-release` (`scripts/rehearse-release.py`) stages both lines that way and fails on a directory without its POM, a local-repository file, the other line's version or an unsigned file.
+It reports each line's files and uncompressed bytes, which is how the Usage Center counts them.
+Those numbers inform a limit-raise request to Sonatype before the tag; they do not gate the run, because the limit is raised on request.
+The rehearsal became the dispatch's default mode, so a dispatch costs no Central usage unless `mode: validate` is chosen.
+
 ## Declined alternatives
 
 - **Publishing each line with `autoPublish=true`.**
   The first decision deferred automatic publication until the first real release.
   The revision automates it through the publisher API instead: plugin auto-publication could publish the 2.x line before the 1.20 build or validation failed.
   Per-PR CI covers 2.x; the weekly LTS lane does not prove that every tagged commit has passed a 1.20 build.
+- **Inspecting the bundle inside the tag run.**
+  The plugin builds and uploads in one goal, so a tag run can inspect its bundle only after the upload; Central validation already covers that point.
+  Splitting the goal to upload through the Portal API would replace the upload path for a check the pre-tag rehearsal already makes.
+- **Failing the rehearsal when the total exceeds the monthly limit.**
+  Considered for [#1818], together with publishing the two lines in different calendar months.
+  Declined: Sonatype raises a namespace's limit on request, so the route for a large release is a request before the tag, not a different way of publishing.
 - **Combining both version lines into one Portal bundle.**
   Considered for [#1185]; the maintainer chose to retain two deployments and require both validations before either publication.
   This keeps the existing staging builds and their module-local publication exclusions.
@@ -131,11 +148,12 @@ classpath as old API (ADR-0124).
 
 ## Consequences
 
-- A dispatch now stages **both lines per run** and names each deployment with its version, run ID, attempt and "dry run".
+- A validate dispatch stages **both lines per run** and names each deployment with its version, run ID, attempt and "dry run".
   Its final cleanup attempts to Drop every captured deployment in VALIDATED or FAILED state, including the first if the second staging run failed.
   A deployment still validating, a failed Drop, or runner termination can leave a deployment behind; its captured ID and the failure remain in the run log and summary.
   The event guard excludes both Publish and GitHub Release creation even when a dispatch targets a tag.
-  Rehearsals exercise ID capture, status and Drop authentication; Publish first runs at a real release.
+  Validate rehearsals exercise ID capture, status and Drop authentication; Publish first runs at a real release.
+  The default rehearsal exercises the signed build and the bundle, but neither the upload nor Central's validation; a defect only Central detects still surfaces at the tag, before Publish.
 - The staged bundle's validation report (signing, checksums, POM completeness, sources/javadoc
   presence) is produced by the Portal on every upload, giving each release a pre-publish
   checklist for free.
@@ -174,4 +192,6 @@ A tag cut on the wrong commit remains correctable only before Publish; afterward
 [#39]: https://github.com/flink-gcp/flink-connector-gcp/issues/39
 [#29]: https://github.com/flink-gcp/flink-connector-gcp/issues/29
 [#1185]: https://github.com/flink-gcp/flink-connector-gcp/issues/1185
+[#1812]: https://github.com/flink-gcp/flink-connector-gcp/issues/1812
+[#1818]: https://github.com/flink-gcp/flink-connector-gcp/issues/1818
 [Portal API]: https://central.sonatype.org/publish/publish-portal-api/

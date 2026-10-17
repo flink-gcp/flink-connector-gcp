@@ -103,7 +103,8 @@ def test_both_builds_use_capture_and_correct_version_line(
     steps, tmp_path, fake_just, event
 ):
     for name in ("Stage the Flink 2.x line", "Stage the Flink 1.20 LTS line"):
-        assert "if" not in steps[name], "both events must stage both lines"
+        # Only a rehearsal dispatch skips staging; a push has no inputs.
+        assert steps[name]["if"] == "inputs.mode != 'rehearse'"
         result = run(
             steps[name],
             tmp_path,
@@ -180,7 +181,9 @@ def test_dry_cleanup_handles_missing_and_partial_capture(
     steps, tmp_path, fake_just, captured
 ):
     cleanup = steps["Drop dry-run deployments"]
-    assert cleanup["if"] == "always() && github.event_name == 'workflow_dispatch'"
+    assert cleanup["if"] == (
+        "always() && github.event_name == 'workflow_dispatch' && inputs.mode != 'rehearse'"
+    )
     for filename, value in list(
         zip(("central-2x.id", "central-1x.id"), ("first", "second"))
     )[:captured]:
@@ -207,3 +210,48 @@ def test_dry_cleanup_failure_is_not_green(steps, tmp_path, fake_just):
         JUST_EXIT="3",
     )
     assert result.returncode == 3
+
+
+# Every step a rehearsal skips: staging, collection, and anything that reads a
+# Central token or writes Central settings.
+NOT_IN_REHEARSAL = (
+    "Resolve the LTS patch from the weekly matrix",
+    "Point Maven at the Central Portal credentials",
+    "Stage the Flink 2.x line",
+    "Collect the staged uber-jars",
+    "Stage the Flink 1.20 LTS line",
+    "Collect the 1.20 uber-jars",
+)
+
+
+def test_rehearsal_skips_staging_and_holds_no_central_credentials(
+    steps, tmp_path, fake_just
+):
+    for name in NOT_IN_REHEARSAL:
+        assert steps[name]["if"] == "inputs.mode != 'rehearse'", name
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yaml").read_text())
+    job = workflow["jobs"]["stage"]
+    assert "CENTRAL_TOKEN" not in str(workflow.get("env", {})) + str(job.get("env", {}))
+    for name, step in steps.items():
+        if "CENTRAL_TOKEN" in str(step.get("env", {})):
+            assert name in NOT_IN_REHEARSAL or step["if"] in (
+                "github.event_name == 'push'",
+                (
+                    "always() && github.event_name == 'workflow_dispatch'"
+                    " && inputs.mode != 'rehearse'"
+                ),
+            ), name
+    rehearse = steps["Rehearse both lines without uploading"]
+    assert rehearse["if"] == "inputs.mode == 'rehearse'"
+    assert set(rehearse["env"]) == {"VERSION", "MAVEN_GPG_KEY", "MAVEN_GPG_PASSPHRASE"}
+    result = run(rehearse, tmp_path, **fake_just, VERSION="1.3.0")
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "calls").read_text()) == ["rehearse-release", "1.3.0"]
+
+
+def test_dispatch_rehearses_by_default():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yaml").read_text())
+    # PyYAML reads the bare `on` key as True.
+    mode = workflow[True]["workflow_dispatch"]["inputs"]["mode"]
+    assert mode["default"] == "rehearse"
+    assert mode["options"] == ["rehearse", "validate"]
