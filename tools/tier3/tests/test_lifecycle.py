@@ -21,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import google.auth.exceptions
 import pytest
 import requests
 import urllib3
@@ -28,6 +29,7 @@ import yaml
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import metrics, repository
 from flink_tier3.common import ReadCeilingExceeded, TransportError
+from flink_tier3.google import StorageRequestFailed
 from flink_tier3.policy import CLEANUP_SECONDS, STATE_OBJECTS
 from google.cloud import storage
 
@@ -1126,6 +1128,10 @@ class SdkAdapter(requests.adapters.BaseAdapter):
     def send(self, request, **kwargs):
         self.calls.append((request, kwargs))
         reply = next(self.replies)
+        if callable(reply):
+            reply = reply()
+        if isinstance(reply, Exception):
+            raise reply
         status, payload = reply[:2]
         response = requests.Response()
         response.status_code = status
@@ -1136,10 +1142,12 @@ class SdkAdapter(requests.adapters.BaseAdapter):
             response.headers.update(reply[2])
         if status == 302:
             response.headers["Location"] = "https://foreign.invalid/redirect"
-        response.raw = urllib3.HTTPResponse(
-            body=io.BytesIO(
+        if not hasattr(payload, "read"):
+            payload = io.BytesIO(
                 payload if isinstance(payload, bytes) else rt.json_bytes(payload)
-            ),
+            )
+        response.raw = urllib3.HTTPResponse(
+            body=payload,
             status=status,
             preload_content=False,
         )
@@ -1237,7 +1245,7 @@ def test_storage_read_conflict_retries_are_bounded(status):
     assert len(sleeps) == 19 and max(sleeps) <= 4
 
 
-@pytest.mark.parametrize("status", [401, 403, 503])
+@pytest.mark.parametrize("status", [401, 403, 501])
 def test_storage_read_does_not_retry_other_download_failures(status):
     store, adapter = sdk_store(
         [
@@ -1245,10 +1253,219 @@ def test_storage_read_does_not_retry_other_download_failures(status):
             (status, {"error": {"message": "failure"}}),
         ]
     )
+    sleeps = []
+    store.sleep = sleeps.append
     with pytest.raises(rt.ApiError) as error:
         store.read("control")
     assert error.value.status == status
-    assert len(adapter.calls) == 2
+    assert len(adapter.calls) == 2 and sleeps == []
+
+
+class FailingBody(io.RawIOBase):
+    """A response body whose read fails after the headers arrived."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        raise self.error
+
+
+METADATA = (200, {"generation": "17", "size": "2"})
+BACKEND = (503, {"error": {"message": "backend"}})
+
+
+def storage_with_clock(replies):
+    """A store whose clock advances by what each reply says it took."""
+    now = [0.0]
+
+    def timed(reply):
+        def send():
+            seconds, outcome = reply if isinstance(reply, list) else (0, reply)
+            now[0] += seconds
+            # A factory, so a failing body is a fresh stream on every send.
+            return outcome() if callable(outcome) else outcome
+
+        return send
+
+    store, adapter = sdk_store([timed(reply) for reply in replies])
+    sleeps = []
+    store.sleep = lambda seconds: (
+        sleeps.append(seconds),
+        now.__setitem__(0, now[0] + seconds),
+    )
+    store.clock = lambda: now[0]
+    return store, adapter, sleeps
+
+
+@pytest.mark.parametrize("step", ["metadata", "download"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        BACKEND,
+        (429, {}),
+        (408, {}),
+        requests.exceptions.ConnectionError("connection refused"),
+        requests.exceptions.ConnectTimeout("connect timed out"),
+        requests.exceptions.ReadTimeout("read timed out"),
+        lambda: (200, FailingBody(TimeoutError("body stalled"))),
+        lambda: (200, FailingBody(ConnectionResetError("body cut short"))),
+    ],
+    ids=[
+        "503",
+        "429",
+        "408",
+        "refused",
+        "connect-timeout",
+        "read-timeout",
+        "body-stalled",
+        "body-reset",
+    ],
+)
+def test_storage_read_retries_a_failure_that_says_nothing(step, failure):
+    body = (200, b"{}")
+    replies = (
+        [failure, METADATA, body] if step == "metadata" else [METADATA, failure, body]
+    )
+    store, adapter, sleeps = storage_with_clock(replies)
+    assert store.read("control") == ({}, "17")
+    assert len(adapter.calls) == 3 and sleeps == [1]
+
+
+@pytest.mark.parametrize(
+    "error,said_nothing",
+    [
+        (google.auth.exceptions.TransportError("metadata server down"), True),
+        (google.auth.exceptions.RefreshError("refresh refused"), False),
+        (requests.exceptions.InvalidURL("bad url"), False),
+        # The SDK raises the built-in error for a download cut short.
+        (ConnectionError("truncated download"), None),
+    ],
+    ids=["transport", "refused", "invalid", "truncated"],
+)
+def test_storage_classifies_a_token_refresh_by_its_cause(error, said_nothing):
+    if said_nothing is None:
+        said_nothing = True
+    elif said_nothing:
+        refresh = google.auth.exceptions.RefreshError("refresh failed")
+        refresh.__cause__ = error
+        error = refresh
+    store, _ = sdk_store([])
+    with pytest.raises(rt.Failure) as raised, store.operation("GET", "control"):
+        raise error
+    assert isinstance(raised.value, StorageRequestFailed) is said_nothing
+
+
+def test_storage_read_stops_retrying_once_a_request_has_spent_a_timeout():
+    timeout = requests.exceptions.ReadTimeout("read timed out")
+    store, adapter, sleeps = storage_with_clock(
+        [METADATA, [rt.HTTP_TIMEOUT, timeout], [rt.HTTP_TIMEOUT, timeout]]
+    )
+    with pytest.raises(rt.Failure, match="GET storage request failed: ReadTimeout"):
+        store.read("control")
+    # One more attempt after a timed-out one, and none after the second.
+    assert len(adapter.calls) == 3 and sleeps == [1]
+
+    def stalled():
+        return (200, FailingBody(TimeoutError("body stalled")))
+
+    store, adapter, sleeps = storage_with_clock(
+        [METADATA, [rt.HTTP_TIMEOUT, stalled], [rt.HTTP_TIMEOUT, stalled]]
+    )
+    with pytest.raises(rt.Failure, match="ConnectionError"):
+        store.read("control")
+    # requests reports a stalled body as a ConnectionError; time bounds it too.
+    assert len(adapter.calls) == 3 and sleeps == [1]
+
+    # A slow failure that is not a timeout spends the budget as well.
+    timeout = requests.exceptions.ReadTimeout("read timed out")
+    store, adapter, sleeps = storage_with_clock(
+        [
+            METADATA,
+            [18, BACKEND],
+            [rt.HTTP_TIMEOUT, timeout],
+            [rt.HTTP_TIMEOUT, timeout],
+        ]
+    )
+    with pytest.raises(rt.Failure, match="ReadTimeout"):
+        store.read("control")
+    assert len(adapter.calls) == 3 and sleeps == [1]
+
+    # Fast failures within the budget take every delay.
+    store, adapter, sleeps = storage_with_clock(
+        [METADATA, [5, BACKEND], [5, BACKEND], [5, BACKEND], (200, b"{}")]
+    )
+    assert store.read("control") == ({}, "17")
+    assert sleeps == [1, 2, 4]
+
+
+@pytest.mark.parametrize("step", ["metadata", "download"])
+def test_storage_read_transient_retries_are_bounded(step):
+    replies = [BACKEND] * 4 if step == "metadata" else [METADATA] + [BACKEND] * 4
+    store, adapter, sleeps = storage_with_clock(replies)
+    with pytest.raises(rt.ApiError) as error:
+        store.read("control")
+    assert error.value.status == 503
+    assert len(adapter.calls) == len(replies) and sleeps == [1, 2, 4]
+
+
+def test_storage_read_after_a_retried_status_still_reports_absence_and_races():
+    store, adapter, sleeps = storage_with_clock(
+        [BACKEND, (404, {"error": {"message": "absent"}})]
+    )
+    assert store.read("control") == (None, "0")
+    assert sleeps == [1]
+
+    store, adapter, sleeps = storage_with_clock(
+        [
+            METADATA,
+            BACKEND,
+            (412, {"error": {"message": "generation replaced"}}),
+            (200, {"generation": "18", "size": "2"}),
+            (200, b"{}"),
+        ]
+    )
+    assert store.read("control") == ({}, "18")
+    # The status retry, then the race's jittered restart from fresh metadata.
+    assert len(adapter.calls) == 5 and sleeps[0] == 1 and 0 <= sleeps[1] <= 0.25
+
+
+def test_storage_list_retries_restart_the_listing():
+    first = {"name": "runs/one", "generation": "17", "size": "2"}
+    second = {**first, "name": "runs/two"}
+    store, adapter, sleeps = storage_with_clock(
+        [
+            (200, {"items": [first], "nextPageToken": "next"}),
+            BACKEND,
+            (200, {"items": [first], "nextPageToken": "next"}),
+            (200, {"items": [second]}),
+        ]
+    )
+    assert [entry["name"] for entry in store.objects("runs/")] == [
+        "runs/one",
+        "runs/two",
+    ]
+    assert len(adapter.calls) == 4 and sleeps == [1]
+
+    store, adapter, sleeps = storage_with_clock(
+        [
+            requests.exceptions.ReadTimeout("read timed out"),
+            (200, {"items": [], "prefixes": ["runs/one/"]}),
+        ]
+    )
+    assert store.prefixes("runs/") == {"runs/one/"}
+    assert len(adapter.calls) == 2 and sleeps == [1]
+
+
+def test_storage_write_is_not_retried_after_a_timeout():
+    store, adapter = sdk_store([requests.exceptions.ReadTimeout("read timed out")])
+    store.sleep = lambda _: pytest.fail("a write must not wait to retry")
+    with pytest.raises(rt.Failure, match="POST storage request failed: ReadTimeout"):
+        store.write("control", {}, "0")
+    assert len(adapter.calls) == 1
 
 
 def test_storage_sdk_list_keeps_pagination_and_fails_at_count_cap():
