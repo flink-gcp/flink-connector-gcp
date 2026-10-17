@@ -86,9 +86,9 @@ public final class EphemeralDatabases {
 
     /**
      * Returns a new database id carrying this moment's epoch seconds, for {@link
-     * #create(FirestoreAdminClient, String, Database.DatabaseType, String)}. A caller records the
-     * id before creating the database, so a create that fails after the service accepted it still
-     * leaves an id to delete.
+     * #create(FirestoreAdminClient, String, Database.DatabaseType, Database.DatabaseEdition,
+     * String)}. A caller records the id before creating the database, so a create that fails after
+     * the service accepted it still leaves an id to delete.
      *
      * @return a database id no other run or creation uses
      */
@@ -102,34 +102,43 @@ public final class EphemeralDatabases {
     }
 
     /**
-     * Creates a Standard-edition database of the given mode, with delete protection and
-     * point-in-time recovery off.
+     * Creates a database of the given mode and edition, with delete protection and point-in-time
+     * recovery off.
+     *
+     * <p>The edition is always named rather than defaulted, because it decides some of what the
+     * suite measures, such as whether an array may hold an array ({@code docs/adr/0185}). Only a
+     * Native-mode database can be Enterprise edition, and its Firestore API data access defaults to
+     * disabled for that edition ({@code firestore_data_access_mode} in the Admin API), so it is
+     * enabled here.
      *
      * @param admin the admin client
      * @param project the project to create it in
      * @param type the database's mode
+     * @param edition the database's edition
      * @param id the database's id, from {@link #newId()}
      */
     public static void create(
-            FirestoreAdminClient admin, String project, Database.DatabaseType type, String id)
+            FirestoreAdminClient admin,
+            String project,
+            Database.DatabaseType type,
+            Database.DatabaseEdition edition,
+            String id)
             throws ExecutionException, InterruptedException {
-        LOG.info("Creating ephemeral {} database {} in {}", type, id, LOCATION);
-        admin.createDatabaseAsync(
-                        ProjectName.of(project),
-                        Database.newBuilder()
-                                .setLocationId(LOCATION)
-                                .setType(type)
-                                // Set rather than defaulted: the edition decides some of what the
-                                // suite measures, such as whether an array may hold an array.
-                                .setDatabaseEdition(Database.DatabaseEdition.STANDARD)
-                                .setDeleteProtectionState(
-                                        Database.DeleteProtectionState.DELETE_PROTECTION_DISABLED)
-                                .setPointInTimeRecoveryEnablement(
-                                        Database.PointInTimeRecoveryEnablement
-                                                .POINT_IN_TIME_RECOVERY_DISABLED)
-                                .build(),
-                        id)
-                .get();
+        LOG.info("Creating ephemeral {} {} database {} in {}", edition, type, id, LOCATION);
+        Database.Builder database =
+                Database.newBuilder()
+                        .setLocationId(LOCATION)
+                        .setType(type)
+                        .setDatabaseEdition(edition)
+                        .setDeleteProtectionState(
+                                Database.DeleteProtectionState.DELETE_PROTECTION_DISABLED)
+                        .setPointInTimeRecoveryEnablement(
+                                Database.PointInTimeRecoveryEnablement
+                                        .POINT_IN_TIME_RECOVERY_DISABLED);
+        if (edition == Database.DatabaseEdition.ENTERPRISE) {
+            database.setFirestoreDataAccessMode(Database.DataAccessMode.DATA_ACCESS_MODE_ENABLED);
+        }
+        admin.createDatabaseAsync(ProjectName.of(project), database.build(), id).get();
     }
 
     /**

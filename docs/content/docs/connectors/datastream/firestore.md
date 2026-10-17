@@ -205,7 +205,8 @@ A reference read by the source arrives as the library's `DocumentReference`, whi
 
 Firestore's own limits stay the service's to enforce.
 A document over 1 MiB, a reserved `__name__`-style field or document id, or a map nested more than 20 levels deep is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.
-Google's documentation adds an array inside an array for a Standard-edition database, but the service stored one (measured 2026-10-10, Standard edition), so the sink does not refuse one; the emulator does.
+A Standard-edition database also refuses an array directly inside an array with `INVALID_ARGUMENT: Nested arrays are not allowed`, and the emulator refuses it with `INVALID_ARGUMENT`; only an Enterprise-edition database stores one (measured 2026-10-17).
+The sink does not know the database's edition, so it leaves that refusal to the service too.
 
 `update` and `delete` also take a `lastUpdateTime` precondition: the write applies only if the document was last updated at exactly that time, and Firestore refuses it with `FAILED_PRECONDITION` otherwise.
 That is the only precondition the client library exposes publicly.
@@ -670,7 +671,7 @@ The source tests read through the production planner and page reader, and a Mini
 The endpoint reaches the client through the builder, never through `FIRESTORE_EMULATOR_HOST`.
 
 The gated suite runs the Native-mode sink and source against the service, over application-default credentials, when `FIRESTORE_IT_PROJECT` names a project and only through `just e2e`.
-Each gated class creates a Standard-edition database of its own and deletes it afterwards ([ADR-0185]({{< param BookRepo >}}/blob/main/docs/adr/0185-the-firestore-e2e-suite-creates-an-ephemeral-database-per-gated-class.md)).
+Each gated class creates a Standard-edition database of its own, and the table's class also an Enterprise-edition one for the array inside an array, and deletes them afterwards ([ADR-0185]({{< param BookRepo >}}/blob/main/docs/adr/0185-the-firestore-e2e-suite-creates-an-ephemeral-database-per-gated-class.md)).
 It asserts the rejection table above, the request size and edition findings below, the service's partitioning, the read times it refuses, and the microsecond precision of version times and timestamp values.
 The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and MiniCluster jobs, the source's failing once after a checkpoint as the Native-mode one does; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
 The gated suite covers Datastore mode as well, each class in a Datastore-mode database of its own: the refusal table above and what a refused commit applies, the writer's confirmation pass against it, the splitter's sampling, the key order, which query shapes the source can split, and the raw answers the source relies on.
@@ -682,7 +683,7 @@ Where the two disagree, the service decides.
 
 | Deviation | Consequence |
 |---|---|
-| An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`; a Standard-edition database on the service stored one |
+| An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`, as a Standard-edition database does, so it cannot show what an Enterprise-edition database stores |
 | A refused Datastore-mode commit applies the writes ahead of the refusal | A commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applies only the writes ahead of the refused one, where the service applies all of its other writes; one refused with `INVALID_ARGUMENT` applies nothing, or the writes ahead of an entity over 1 MiB, where the service applies none. The writer's handling of the service's behavior is exercised only by the gated suite |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |

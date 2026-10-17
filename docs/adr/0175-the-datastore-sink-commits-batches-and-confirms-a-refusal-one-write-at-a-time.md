@@ -24,8 +24,9 @@ limitations under the License.
   (writer-side id allocation for the table sink) and 2026-10-11 by [#1707] (the service's answers,
   and an insert a refused commit already wrote), [#1729] (a commit the writer encodes, and the
   merge operation), [#1744] (each write encoded once), [#1743] (the masked update operation) and
-  [#1750] (missed updates count toward the rejection bound)
-- Issues: [#1542], [#355], [#1546], [#1651], [#1707], [#1729], [#1744], [#1743], [#1750]
+  [#1750] (missed updates count toward the rejection bound), and 2026-10-17 by [#1819] (the service
+  refuses an array inside an array)
+- Issues: [#1542], [#355], [#1546], [#1651], [#1707], [#1729], [#1744], [#1743], [#1750], [#1819]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`: `sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Datastore mode
 
@@ -105,7 +106,7 @@ The public types enter at `@PublicEvolving` (ADR-0170).
 The first broke the confirmation pass for inserts. A commit holding one insert of an existing key and several new ones was refused, the service wrote the new ones, and their re-sends then answered `ALREADY_EXISTS` and were routed as duplicates although they were written. The emulator never showed it, and the unit tests' fake modelled the emulator. The writer now looks the key up before routing an insert's `ALREADY_EXISTS`, through the same one-call `Lookup` the `NOT_FOUND` discriminator uses, now returning the entity it finds. It counts the insert as applied when the key holds exactly the entity the insert writes, every property value and index flag alike (the owner asked for the fix in this change, 2026-10-11).
 
 - That also counts as applied a retried commit that had in fact been applied, and a replay of an identical insert after a restart. Both were routed before, as the documented cost of at-least-once; now the key holds what the record asked for, and routing it would report a write that succeeded.
-- An insert whose key holds a different entity is routed as before. The lookup is retried on a transient status within the recovery budget, like the `NOT_FOUND` lookup. One that still fails routes the insert with the lookup's failure attached as suppressed; a stored entity the client library cannot read (an array inside an array) is answered as no entity and routes it with nothing attached, the decoding failure logged at DEBUG. Either way a failed lookup costs no more than the routing it replaces.
+- An insert whose key holds a different entity is routed as before. The lookup is retried on a transient status within the recovery budget, like the `NOT_FOUND` lookup. One that still fails routes the insert with the lookup's failure attached as suppressed; a stored entity the client library cannot read (an array inside an array, which the service stored until it began refusing one; measured stored on 2026-10-11 and refused on 2026-10-17, [#1819]) is answered as no entity and routes it with nothing attached, the decoding failure logged at DEBUG. Either way a failed lookup costs no more than the routing it replaces.
 - Neither outcome counts toward `maxConsecutiveRejections`. A match ends a run of rejections as an applied write does, and a routed insert leaves it as it was (the [#1750] section below).
 - A timestamp finer than a microsecond is stored floored, so an insert carrying one never matches and is routed as before.
 - Declined: sending inserts one per commit, which would cost a request per insert to avoid a refusal that is rare outside a replay, and reading the refused key out of the error message, whose wording is not an API.
@@ -227,3 +228,4 @@ Under a dropping or dead-lettering handler, a sink whose updates all addressed e
 [#1744]: https://github.com/flink-gcp/flink-connector-gcp/issues/1744
 [#1743]: https://github.com/flink-gcp/flink-connector-gcp/issues/1743
 [#1750]: https://github.com/flink-gcp/flink-connector-gcp/issues/1750
+[#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819

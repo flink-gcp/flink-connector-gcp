@@ -43,10 +43,10 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Clients authenticate with application-default credentials; the project comes from {@code
  * FIRESTORE_IT_PROJECT}. There is no companion variable, because nothing persistent is provisioned:
- * each class creates a Native-mode database of its own through {@link EphemeralDatabases} and
- * deletes it in {@link AfterAll}, together with any further database it created through {@link
- * #createDatabase(Database.DatabaseType)}. {@link EphemeralDatabases} records why per class and
- * what the service measured.
+ * each class creates a Standard-edition Native-mode database of its own through {@link
+ * EphemeralDatabases} and deletes it in {@link AfterAll}, together with any further database it
+ * created through {@link #createDatabase(Database.DatabaseType, Database.DatabaseEdition)}. {@link
+ * EphemeralDatabases} records why per class and what the service measured.
  *
  * <p>The gating annotations, {@code @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT",
  * matches = ".+")} and {@code @Tag("gated")}, are on each concrete subclass rather than here:
@@ -77,7 +77,9 @@ public abstract class AbstractFirestoreRealGcpITCase {
     protected static void createDatabaseAndClient() throws Exception {
         admin = FirestoreAdminClient.create();
         EphemeralDatabases.sweepStale(admin, PROJECT);
-        database = createDatabase(Database.DatabaseType.FIRESTORE_NATIVE);
+        database =
+                createDatabase(
+                        Database.DatabaseType.FIRESTORE_NATIVE, Database.DatabaseEdition.STANDARD);
         client = open(database);
     }
 
@@ -101,20 +103,22 @@ public abstract class AbstractFirestoreRealGcpITCase {
     }
 
     /**
-     * Creates a further ephemeral database of the given mode, deleted with the class's own.
+     * Creates a further ephemeral database of the given mode and edition, deleted with the class's
+     * own.
      *
      * @param type the database's mode
+     * @param edition the database's edition
      * @return the new database
      */
-    protected static DatabaseDestination createDatabase(Database.DatabaseType type)
-            throws Exception {
+    protected static DatabaseDestination createDatabase(
+            Database.DatabaseType type, Database.DatabaseEdition edition) throws Exception {
         String id = EphemeralDatabases.newId();
         CREATED.add(id);
-        EphemeralDatabases.create(admin, PROJECT, type, id);
+        EphemeralDatabases.create(admin, PROJECT, type, edition, id);
         return DatabaseDestination.of(PROJECT, id);
     }
 
-    /** Returns the class's Native-mode database. */
+    /** Returns the class's Standard-edition Native-mode database. */
     protected static DatabaseDestination database() {
         return database;
     }
@@ -128,7 +132,7 @@ public abstract class AbstractFirestoreRealGcpITCase {
      * Opens a client of the given database over application-default credentials; the caller closes
      * it.
      */
-    private static Firestore open(DatabaseDestination destination) {
+    protected static Firestore open(DatabaseDestination destination) {
         return FirestoreOptions.newBuilder()
                 .setProjectId(destination.getProject())
                 .setDatabaseId(destination.getDatabaseId())

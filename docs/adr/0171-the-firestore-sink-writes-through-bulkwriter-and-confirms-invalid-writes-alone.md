@@ -22,8 +22,9 @@ limitations under the License.
   `google-cloud-cli:583.0.0-emulators`, one run); revised 2026-10-10 by [#1680] (`add`) and by [#1706] (the rejection table measured against the
   service), and 2026-10-11 by [#1561] (the throttle defect measured and pinned; the defects reported
   upstream as issues, without fix pull requests) and by [#1747] (a value the library encodes is
-  no longer refused for the synchronous-refusal defect's sake)
-- Issues: [#1540], [#355], [#1556], [#1561], [#1606], [#1680], [#1706], [#1747]
+  no longer refused for the synchronous-refusal defect's sake), and 2026-10-17 by [#1819] (a
+  Standard-edition database refuses nested arrays)
+- Issues: [#1540], [#355], [#1556], [#1561], [#1606], [#1680], [#1706], [#1747], [#1819]
 - Modules: firestore (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Sink, § Error handling
 
@@ -61,7 +62,8 @@ Measured against the emulator, each shape sent as the only write of its request;
 
 Measured against the service on 2026-10-10 by `FirestoreRejectionRealGcpITCase` (one run, Standard edition, google-cloud-firestore 3.49.0): every row above holds, including `FAILED_PRECONDITION` for a stale precondition on a missing document, with two exceptions.
 Every `INVALID_ARGUMENT` shape answers every write of its request, not the reserved field name alone, which is what confirming alone guards against.
-Nested arrays are stored, although Google's documentation says a Standard-edition database refuses them; the emulator refuses them.
+Nested arrays were stored, although Google's documentation says a Standard-edition database refuses them; the emulator refuses them.
+By 2026-10-17 the service refused them too, with `INVALID_ARGUMENT: Nested arrays are not allowed`, and answers every write of the request like the other shapes; an Enterprise-edition database stores them ([#1819], one run each).
 The request of about 10.5 MiB is applied by the service too, so the writer's 9 MiB budget rests on the documented limit rather than on a refusal anyone has seen.
 A database id that names no database, well formed or not, answers `NOT_FOUND` for every write, and a Datastore-mode database answers `FAILED_PRECONDITION` for every write.
 Both are statuses this decision does not route for a write without a precondition, so either fails the job.
@@ -141,6 +143,7 @@ The public types enter at `@PublicEvolving` (ADR-0170).
 [#1680]: https://github.com/flink-gcp/flink-connector-gcp/issues/1680
 [#1706]: https://github.com/flink-gcp/flink-connector-gcp/issues/1706
 [#1747]: https://github.com/flink-gcp/flink-connector-gcp/issues/1747
+[#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
 [googleapis/google-cloud-java#14630]: https://github.com/googleapis/google-cloud-java/issues/14630
 [googleapis/google-cloud-java#14631]: https://github.com/googleapis/google-cloud-java/issues/14631
 [googleapis/google-cloud-java#14632]: https://github.com/googleapis/google-cloud-java/issues/14632

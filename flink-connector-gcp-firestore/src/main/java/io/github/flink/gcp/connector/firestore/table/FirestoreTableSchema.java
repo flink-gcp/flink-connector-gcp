@@ -205,9 +205,10 @@ public final class FirestoreTableSchema implements Serializable {
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 return;
             case ARRAY:
-                // An array directly inside an array is mapped too: Google's documentation refuses
-                // one in a Standard-edition database, but the service stored one when measured
-                // (FirestoreTableRealGcpITCase), and an Enterprise-edition database allows it.
+                // An array directly inside an array is mapped too: an Enterprise-edition database
+                // stores one, and a Standard-edition database refuses the write with
+                // INVALID_ARGUMENT (measured 2026-10-17, FirestoreTableRealGcpITCase). The
+                // edition is not known here, so the service decides.
                 LogicalType element = ((ArrayType) type).getElementType();
                 check(path, element, geoPoints, references, consumed, seen, ambiguous);
                 return;

@@ -403,11 +403,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image
   (`FirestoreEmulatorContainers` in test-utils, pinned with the Bigtable and Pub/Sub classes).
-  It does not enforce IAM, refuses an array inside an array that the service stores, and its
+  It does not enforce IAM, refuses an array inside an array as a Standard-edition database does
+  (an Enterprise-edition one stores it, #1819), and its
   statuses are not evidence about the service. Neither it nor the service refused a 10.5 MiB
   request.
 - The gated suite (`FIRESTORE_IT_PROJECT`, ADR-0185) extends `AbstractFirestoreRealGcpITCase`: one
-  Standard-edition database per class from `EphemeralDatabases`, public so that the
+  Standard-edition database per class from `EphemeralDatabases`, which takes the edition so that
+  `FirestoreTableRealGcpITCase` alone adds an Enterprise-edition one for the array-of-arrays round
+  trip; public so that the
   Datastore-mode harness (#1707) can share it. Gate annotations stay on the concrete classes. Teardown waits for a delete's acceptance
   and the database's absence, never for the operation: a database holding data outlived the
   client's five-minute polling. `scripts/sweep-e2e.sh` deliberately does not sweep databases.
