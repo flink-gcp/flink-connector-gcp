@@ -23,7 +23,7 @@ the client library's query splitter and write one in non-transactional commits.
 | Table API / SQL scan for Datastore mode (key ranges at one read time; key, version and time metadata; type-mismatch policy) | Implemented ([#1652](https://github.com/flink-gcp/flink-connector-gcp/issues/1652)) |
 | Table API / SQL lookup for Datastore mode (one `Lookup` per key name or id; sync or async; partial cache; property mask) | Implemented ([#1653](https://github.com/flink-gcp/flink-connector-gcp/issues/1653)) |
 | Geographical points and key values in the Datastore-mode table (geo-point and reference markers; sink, scan and lookup) | Implemented ([#1730](https://github.com/flink-gcp/flink-connector-gcp/issues/1730)) |
-| Gated real-GCP integration tests | Planned ([#1546](https://github.com/flink-gcp/flink-connector-gcp/issues/1546)) |
+| Gated real-GCP integration tests | Implemented ([#1546](https://github.com/flink-gcp/flink-connector-gcp/issues/1546)) |
 | Opt-in per-document submission order | Planned ([#1556](https://github.com/flink-gcp/flink-connector-gcp/issues/1556)) |
 | Change-stream source (the Firestore APIs have no change-stream read; reopen conditions recorded in [ADR-0170](../docs/adr/0170-firestore-and-datastore-share-one-module-with-two-package-roots.md#no-change-stream-source)) | Declined ([#355](https://github.com/flink-gcp/flink-connector-gcp/issues/355)) |
 
