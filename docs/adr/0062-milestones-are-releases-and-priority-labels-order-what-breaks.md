@@ -51,8 +51,8 @@ open issues — which expresses neither an order nor a release.
     evidence, the issue retains its `module:` or `area:` label, carries `priority:P3` and
     `help wanted`, but has no milestone. `help wanted` alone does not qualify an issue for this
     exception: the issue must state the unavailable capability and the evidence or support a
-    contributor must provide ([#248]). Assign a release milestone once the environment and
-    contributor support are available and the work can be scheduled.
+    contributor must provide. Assign a release milestone once the environment and contributor
+    support are available and the work can be scheduled.
   A temporary external service failure, a resource the maintainer can provision, or a future
   scheduling choice does not qualify for either exception.
 - **Milestone and priority are orthogonal where a milestone applies** — the milestone says which
@@ -63,7 +63,6 @@ open issues — which expresses neither an order nor a release.
   [#349]/[#350]/[#351]).
 
 [#36]: https://github.com/flink-gcp/flink-connector-gcp/issues/36
-[#248]: https://github.com/flink-gcp/flink-connector-gcp/issues/248
 [#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
 [#225]: https://github.com/flink-gcp/flink-connector-gcp/issues/225
 [#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348

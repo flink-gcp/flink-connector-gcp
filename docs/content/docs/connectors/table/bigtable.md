@@ -924,8 +924,12 @@ may reorder the lookup table's output. A join without row-key equality is reject
 By default each input row performs a synchronous Bigtable point read. Set `lookup.async = true`
 for asynchronous point reads. A missing Bigtable row produces no lookup result, so a left join
 keeps the input row with null lookup columns and an inner join drops it. Both forms apply the same
-family projection filter as a scan and use `scan.app-profile-id`; a Data Boost application profile
-cannot serve the point-read modes.
+family projection filter as a scan and use `scan.app-profile-id`. A Data Boost application profile
+serves the point reads as well, but Google's
+[Data Boost limitations](https://docs.cloud.google.com/bigtable/docs/data-boost-overview)
+list point-read-heavy traffic and more than 1,000 reads per second per cluster as unsupported, and
+each request is billed for at least 60 SPU-seconds. A FULL cache, which loads through a scan, is the
+lookup mode that matches Data Boost's intended workload.
 An additional equality key may name a whole physical family `ROW` whose children are scalar.
 Only the row key addresses the point read; the connector compares every field of the converted
 family row before returning it, independently of Flink's internal row representation.
@@ -1182,7 +1186,7 @@ DataStream builder.
 | Option | Type | Maps to |
 |---|---|---|
 | `scan.mode` | Enum | Selects `bounded` (default) or `change-stream`. This table-layer option chooses the source builder rather than calling one setter. `change-stream` makes the table source-only, so writing to it is rejected |
-| `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
+| `scan.app-profile-id` | String | `appProfileId(...)` on the selected source builder. Required for Change Streams, which refuse a Data Boost profile. Separate from `sink.app-profile-id`, because a Data Boost profile reads and cannot write, so one table legitimately scans and writes under different profiles |
 | `scan.max-rows-per-fetch` | Integer | `maxRowsPerFetch(...)` for bounded scans; unset keeps the builder default of 1,000 rows |
 | `scan.max-bytes-per-fetch` | MemorySize | `maxBytesPerFetch(...)` for bounded scans; unset keeps the builder default of 8 MiB. The target covers decoded input content and always allows one oversized row to progress |
 | `scan.row-key-encoding` | Enum | How row-key prefixes and range endpoints are decoded: `UTF8` (default) or canonical padded RFC 4648 standard `BASE64` |

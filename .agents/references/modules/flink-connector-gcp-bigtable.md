@@ -389,9 +389,12 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   `OptionSetters`.
 - **Retries stay in the client** on this side too: `ReadRowsResumptionStrategy` resumes a broken
   stream from its last key. A sampling failure **fails the job**; no single-split fallback.
-- **Nothing claims Data Boost was exercised** (#248). The testable statement is that a configured
-  `appProfileId` reaches the wire, and only the gated suite can make it — the emulator ignores
-  profiles.
+- **Data Boost was measured once, by hand, and has no recurring gate** (#248, ADR-0080 § Data
+  Boost measurement). Any instance is Enterprise unless told otherwise, so a Data Boost profile
+  needs no special instance. The recurring testable statement is that a configured `appProfileId`
+  reaches the wire, and only the gated suite can make it — the emulator ignores profiles. Data
+  Boost serves lookup point reads too (ADR-0095), but refuses writes and Change Streams with
+  `UNIMPLEMENTED`.
 - **Split planning is never an emulator test**: the emulator models no tablets (final key plus
   ~1-in-100 randoms). Since `583.0.0-emulators` every response also *trails* an end-of-table
   marker, so a three-row table answers `['c'@2, ''@3]` and an empty one `['']`, where
