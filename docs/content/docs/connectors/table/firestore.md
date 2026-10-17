@@ -32,7 +32,7 @@ A scan reads the collection as a bounded snapshot, and a lookup join reads one d
 A database in Datastore mode uses the [`datastore` connector]({{< relref "docs/connectors/table/datastore" >}}) instead.
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
-It is not on Maven Central yet: the release that first publishes the Firestore connector is tracked by [#1547]({{< param BookRepo >}}/issues/1547), and until then the jar is built from source as [Development]({{< relref "docs/development" >}}) describes.
+It is on Maven Central and attached to the [GitHub releases]({{< param BookRepo >}}/releases), in the two version lines the [Quickstart]({{< relref "docs/quickstart" >}}) index describes.
 The artifact bundles the connector and its runtime dependencies, for both Native mode and Datastore mode, while leaving Flink APIs provided by the cluster.
 Its bundled dependency implementations are relocated so it can coexist with other connector jars and with application dependencies.
 DataStream applications should depend on `flink-connector-gcp-firestore` instead of the SQL uber-jar.

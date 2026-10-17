@@ -27,7 +27,6 @@ A bounded source reads a whole collection group or one query at a single snapsho
 An at-least-once sink applies one document write per record, through the client library's `BulkWriter`, which batches writes into `BatchWrite` requests and throttles them to Firestore's ramp-up guidance.
 A second bounded source and a second at-least-once sink read and write a database in Datastore mode; [Datastore mode](#datastore-mode) covers both.
 
-The connector has not been released yet ([#1547]({{< param BookRepo >}}/issues/1547) tracks the release that first publishes it).
 The Datastore-mode source and sink live under their own package root, `io.github.flink.gcp.connector.datastore`, and reach the database through the Datastore client library.
 Every option is listed on the [Firestore options]({{< relref "docs/reference/firestore" >}}) page.
 

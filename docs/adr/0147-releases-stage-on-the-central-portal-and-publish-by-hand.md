@@ -49,7 +49,7 @@ re-pin, and `central-publishing-maven-plugin` with `autoPublish=false` and
 The upload stops at *validated*.
 `scripts/central-portal.py` captures each upload ID before the plugin waits for validation, preserving it even if Maven subsequently fails.
 After both staging commands and both artifact collections succeed, the helper checks both deployment states before sending either Publish request.
-It waits for both to be PUBLISHED before the workflow creates a public GitHub Release with generated notes, ten SQL uber-jars and their ten signatures.
+It waits for both to be PUBLISHED before the workflow creates a public GitHub Release with generated notes and every SQL uber-jar of both lines with its signature.
 The pinned `softprops/action-gh-release` v3.0.3 first creates an ordinary release as a draft, uploads its assets, then applies `draft: false` when finalizing it.
 
 **The first release used manual Publish and Drop; [#1185] retires those clicks.**
@@ -61,7 +61,7 @@ It changes the GitHub Release to `draft: false` at the same time.
 **Each release stages two version lines** (decided with the maintainer 2026-08-30, resolving
 the publishing half that ADR-0054 had left with [#39]'s suffix scheme): bare `X.Y.Z` is the
 Flink 2.x line — ADR-0053's one artifact covering the supported 2.x range — and `X.Y.Z-1.20`
-is the same 12 coordinates compiled for the 1.x LTS from the same tree, the `-1.20` suffix
+is the same coordinates compiled for the 1.x LTS from the same tree, the `-1.20` suffix
 form settled on [#39]. `just stage-release` adds `-Dflink.compat=flink1` itself for a `-1.20`
 version, requires the matching `-Dflink.version=1.20.<patch>`, and refuses a mislabelled
 pairing in either direction — a 2.x-built jar under a `-1.20` version would be discovered only
@@ -75,14 +75,15 @@ final effective model — the only place no probe/deploy divergence can exist.
 `japicmp.referenceVersion` tracks the bare line only; the LTS
 jar keeps ADR-0054's per-major stance, and no cross-major binary claim is added.
 
-**The published set per line is 13 artifacts**: the parent POM, `flink-connector-gcp-base`, the six
-connectors, and the five SQL uber-jars. `flink-connector-gcp-test-utils` stays reactor-only:
+**The published set per line is the parent POM, `flink-connector-gcp-base`, and each connector
+module with its SQL uber-jar**: 12 artifacts in 1.0.0 and 1.1.0, and 14 from 1.2.0, which adds
+Firestore. `flink-connector-gcp-test-utils` stays reactor-only:
 every dependent consumes it in `test` scope, which no consumer resolves, and publishing it would
 freeze its `Fake*` doubles under the same compatibility discipline as the connector API for no
 user benefit — adding it later is cheap, retracting it is impossible. The guard is a
 `skipPublishing` declaration in the module's own POM, the same module-local shape as
 docs-validation's deploy skip, rather than a root-level artifactId exclusion list that would
-silently stop matching on a rename. The five SQL uber-jars carry no sources, so Central's
+silently stop matching on a rename. The SQL uber-jars carry no sources, so Central's
 per-jar javadoc requirement is met by the sanctioned stub: one profile-managed jar execution
 attaches an `index.html` pointing at the published API reference, active only where a module
 provides `src/main/central-javadoc-stub`.
@@ -163,9 +164,9 @@ It checks every ID before acting, publishes only VALIDATED deployments, and wait
 PUBLISHED deployments need no further publication.
 If publication fails permanently, inspect the Portal error before choosing a recovery; the helper cannot roll back Central.
 
-If only GitHub Release creation failed, confirm both deployments are PUBLISHED, download the ten published SQL jars and their `.asc` files from Maven Central, then use `gh release create --draft --verify-tag --generate-notes` with the original tag and those twenty files.
+If only GitHub Release creation failed, confirm both deployments are PUBLISHED, download every published SQL uber-jar of both lines and its `.asc` file from Maven Central, then use `gh release create --draft --verify-tag --generate-notes` with the original tag and those files. `scripts/collect-release-jars.sh` fixes the set: six uber-jars and six signatures per line from 1.2.0, so 24 files.
 If the Release already exists with incomplete attachments, use `gh release upload` for the missing files.
-If it remains a draft, confirm all twenty files are attached, then publish it with `gh release edit <tag> --draft=false`.
+If it remains a draft, confirm all of those files are attached, then publish it with `gh release edit <tag> --draft=false`.
 Do not restage Central to repair GitHub attachments.
 A tag cut on the wrong commit remains correctable only before Publish; afterward, changed artifacts require a new version.
 

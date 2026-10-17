@@ -22,15 +22,7 @@ limitations under the License.
 
 # Write a stream into Firestore
 
-Assumes the credentials from the [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the [Java API reference]({{< api-docs-url >}}).
-The Firestore connector has not been released yet ([#1547]({{< param BookRepo >}}/issues/1547) tracks the release that first publishes it), so until then a job depends on a locally built snapshot.
-From a checkout of the repository, install the module and the modules it depends on into the local Maven repository:
-
-```sh
-./mvnw -pl flink-connector-gcp-firestore -am install -DskipTests
-```
-
-Then depend on `io.github.flink-gcp:flink-connector-gcp-firestore` at the version that command built, the `-SNAPSHOT` version in the root `pom.xml`, alongside the Flink dependencies the [Quickstart]({{< relref "docs/quickstart" >}}) index lists.
+Assumes the artifacts and credentials from the [Quickstart]({{< relref "docs/quickstart" >}}) index, and the imports an IDE resolves from the [Java API reference]({{< api-docs-url >}}).
 
 **Create the database first.** The sink writes to an existing Firestore database in Native mode and creates no database; collections need no creating.
 A project's `(default)` database is created once, for example with:
