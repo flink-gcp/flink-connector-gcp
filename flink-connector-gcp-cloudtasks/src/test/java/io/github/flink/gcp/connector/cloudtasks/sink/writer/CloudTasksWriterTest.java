@@ -157,12 +157,15 @@ class CloudTasksWriterTest {
         assertThat(time.getSleptMillis()).isPositive();
     }
 
-    @Test
-    void retriesAnInternalErrorEvenForAnUnnamedTask() throws Exception {
+    @ParameterizedTest
+    @EnumSource(
+            value = StatusCode.Code.class,
+            names = {"INTERNAL", "CANCELLED"})
+    void retriesAnAmbiguousFailureEvenForAnUnnamedTask(StatusCode.Code code) throws Exception {
         // Under unnamed tasks the retry may duplicate a task the failed call created after all,
-        // which at-least-once accepts rather than failing the job on one server-side error.
+        // which at-least-once accepts rather than failing the job on one failed call.
         CloudTasksWriter<String> writer = writer(retrying(3, Duration.ofMillis(100)));
-        creator.enqueueFailure(StatusCode.Code.INTERNAL);
+        creator.enqueueFailure(code);
 
         writer.write("order-1", TestContexts.NO_OP);
         writer.flush(false);
@@ -196,7 +199,13 @@ class CloudTasksWriterTest {
     @ParameterizedTest
     @EnumSource(
             value = StatusCode.Code.class,
-            names = {"UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"})
+            names = {
+                "UNAVAILABLE",
+                "DEADLINE_EXCEEDED",
+                "RESOURCE_EXHAUSTED",
+                "INTERNAL",
+                "CANCELLED"
+            })
     void failsOnceTheTransientBudgetIsSpent(StatusCode.Code code) throws Exception {
         CloudTasksWriter<String> writer = writer(retrying(2, Duration.ofMillis(100)));
         creator.enqueueFailures(2, code);

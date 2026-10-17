@@ -81,10 +81,11 @@ import java.util.PriorityQueue;
  * <p>Retrying is this sink's own responsibility: {@code CloudTasksStubSettings} gives {@code
  * CreateTask} an empty retryable-code set, as it does every mutating method. A failed creation is
  * therefore parked with a due time and re-dispatched from a later {@link #write} or {@link #flush}
- * — {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED} and {@code INTERNAL}
- * on the main budget, {@code NOT_FOUND} on a shorter one of its own, everything else terminal.
- * Under unnamed tasks a retry after {@code DEADLINE_EXCEEDED} or {@code INTERNAL} may duplicate the
- * task, which is what at-least-once prefers to losing it; naming removes the ambiguity.
+ * — {@code UNAVAILABLE}, {@code DEADLINE_EXCEEDED}, {@code RESOURCE_EXHAUSTED}, {@code INTERNAL}
+ * and {@code CANCELLED} on the main budget, {@code NOT_FOUND} on a shorter one of its own,
+ * everything else terminal. Under unnamed tasks a retry after {@code DEADLINE_EXCEEDED}, {@code
+ * INTERNAL} or {@code CANCELLED} may duplicate the task, which is what at-least-once prefers to
+ * losing it; naming removes the ambiguity.
  *
  * <p>The number of outstanding creations — in flight plus parked — is capped ({@code
  * CloudTasksWriterOptions.maxInFlightTasks}, default 1000); at the cap {@link #write} yields to the

@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-02 ([#207]); metrics 2026-08-03 ([#209]); revised by [#1051] and
   [#1058] (2026-08-23); scoped to the default delivery mode by [#1240] (2026-09-06, see ADR-0158);
-  `INTERNAL` made transient by [#1794] (2026-10-16, see ADR-0048)
-- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series), [#1240], [#1794]
+  `INTERNAL` made transient by [#1794] (2026-10-16, see ADR-0048); `CANCELLED` made transient by
+  [#1796] (2026-10-17, see ADR-0048)
+- Issues: [#207], [#209], [#1051], [#1058] (the [#37] series), [#1240], [#1794], [#1796]
 - Modules: cloudtasks
 - Current behavior: `docs/content/docs/connectors/datastream/cloudtasks.md` § Failed-task
   policy, § Metrics
@@ -92,3 +93,4 @@ authorization with `parseFrom`; `describeDestination()` is the queue resource pa
 [#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058
 [#1240]: https://github.com/flink-gcp/flink-connector-gcp/issues/1240
 [#1794]: https://github.com/flink-gcp/flink-connector-gcp/issues/1794
+[#1796]: https://github.com/flink-gcp/flink-connector-gcp/issues/1796

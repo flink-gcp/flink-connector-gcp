@@ -20,7 +20,8 @@ limitations under the License.
 - Date: 2026-09-06
 - Updated: 2026-09-24 (the mode ships as experimental after #1245's recovery acceptance and #1246's assessment, revised by [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246))
 - Updated: 2026-10-16 (`INTERNAL` is retried in the commit loop, revised by [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794))
-- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794)
+- Updated: 2026-10-17 (`CANCELLED` is retried in the commit loop, revised by [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796))
+- Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1240](https://github.com/flink-gcp/flink-connector-gcp/issues/1240), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794), [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796)
 - Supersedes: only [ADR-0104](0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md)'s Cloud Tasks decision ("bounded effectively-once task creation only")
 - Refines: [ADR-0048](0048-the-cloud-tasks-sink-owns-its-retry-loop-and-never-creates-queues.md) (the stateless writer becomes the default mode's property) and [ADR-0049](0049-exactly-three-cloud-tasks-failures-are-routed-and-the-argument-half-never-scans.md) (the routed failures belong to the default mode)
 - Modules: cloudtasks
@@ -171,8 +172,8 @@ The origin is a wall-clock instant because only a wall clock can be compared acr
 2. For each request, in the order received, wait for an in-flight slot (at most `maxInFlightTasks`), evaluate the authorization deadline, and send `CreateTask` with the absolute deadline.
 3. On `OK`, leave the request unsignaled; Flink treats an unsignaled request as committed.
    On `ALREADY_EXISTS`, call `signalAlreadyCommitted()`, which is Flink's documented meaning for exactly this outcome and feeds its already-committed counter, and count `tasksDeduplicated`.
-4. On a transient status (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `INTERNAL`; ADR-0048) or `NOT_FOUND`, wait out the existing recovery schedules of `CloudTasksWriterOptions`, including the separate short `NOT_FOUND` budget, then return to step 2 for that request.
-   A `DEADLINE_EXCEEDED` or `INTERNAL` is ambiguous, the task may exist; the retry sends the same name, so the ambiguity resolves to `OK` or `ALREADY_EXISTS`.
+4. On a transient status (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, `RESOURCE_EXHAUSTED`, `INTERNAL`, `CANCELLED`; ADR-0048) or `NOT_FOUND`, wait out the existing recovery schedules of `CloudTasksWriterOptions`, including the separate short `NOT_FOUND` budget, then return to step 2 for that request.
+   A `DEADLINE_EXCEEDED`, `INTERNAL` or `CANCELLED` is ambiguous, the task may exist; the retry sends the same name, so the ambiguity resolves to `OK` or `ALREADY_EXISTS`.
 5. On any other status, on an exhausted schedule, or on an expired deadline, throw.
    The commit fails and the job restarts from the last completed checkpoint.
    Flink then re-commits every request of that checkpoint from its snapshot, including the ones this attempt had already created, which answer `ALREADY_EXISTS`; per-request progress does not survive a thrown commit, and does not need to.

@@ -119,7 +119,7 @@ is under [Delivery guarantees and state]({{< relref "docs/connectors/datastream/
 |---|---|---|
 | `maxInFlightTasks` | 1000 | Caps outstanding creates, in flight plus parked. At the cap the eager writer yields to its mailbox; the staged committer waits for an in-flight slot |
 | `channelPoolSize` | *unset ⇒ the client's single channel* | Sizes the client's gRPC channel pool, which bounds how much of the in-flight cap the transport actually carries; the sizing rule and ramp caution are under [Tuning]({{< relref "docs/connectors/datastream/cloudtasks" >}}#tuning). Rejected beside `emulatorEndpoint` |
-| `recoveryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` / `INTERNAL` |
+| `recoveryInitialBackoff` | 100 ms | First backoff for `UNAVAILABLE` / `DEADLINE_EXCEEDED` / `RESOURCE_EXHAUSTED` / `INTERNAL` / `CANCELLED` |
 | `recoveryMaxBackoff` | 10 s | Cap that backoff doubles up to, before ±25% jitter |
 | `recoveryMaxAttempts` | 8 | Total attempts, the first create included. Exhausting the budget fails the job |
 | `notFoundRecoveryInitialBackoff` | 500 ms | First backoff of the separate `NOT_FOUND` budget |
