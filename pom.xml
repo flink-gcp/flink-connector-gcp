@@ -228,7 +228,11 @@ limitations under the License.
              `just stage-release` through the pluginManagement entries below so their
              pins live where dependabot reads. -->
         <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
-        <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+        <!-- At least 0.12.0 under the Maven 3.10.0 wrapper: that Maven writes local-repository
+             files (maven-metadata-local.xml, _remote.repositories, .locks) into the plugin's
+             file:// staging directory, 0.11.0 bundles them, and Central rejects the bundle
+             ("Bundle has content that does NOT have a .pom file", #1812). -->
+        <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
         <versions-maven-plugin.version>2.22.0</versions-maven-plugin.version>
         <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
 
