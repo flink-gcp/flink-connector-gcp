@@ -424,6 +424,60 @@ def test_already_exists_is_explained_only_by_an_earlier_named_attempt():
     assert "unexplained-duplicate" in reconcile(synthetic).reasons
 
 
+@pytest.mark.parametrize(
+    "earlier",
+    ["OK", "CANCELLED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "UNKNOWN", "INTERNAL"],
+)
+def test_every_explaining_status_explains_a_later_already_exists(earlier):
+    # OK created the task, and each other status leaves the client unable to
+    # tell whether the service did, so a later attempt's ALREADY_EXISTS for the
+    # same name is deduplication, not a defect.
+    synthetic = Synthetic(CELL_B)
+    synthetic.source()
+    name = f"{QUEUE}/tasks/fixed"
+    synthetic.part(
+        INC,
+        1,
+        [
+            synthetic.row(0, 1, earlier, name=name),
+            synthetic.row(0, 2, "ALREADY_EXISTS", name=name),
+        ],
+    )
+    synthetic.creator(INC, rows=2, parts=1)
+    result = reconcile(synthetic)
+    assert result.status == "complete", result.reasons
+    assert result.counts["already_exists_explained"] == 1
+    assert result.counts["already_exists_unexplained"] == 0
+
+
+@pytest.mark.parametrize(
+    "earlier, later",
+    [(255, 256), (300, 301), (ev.COUNT_CEILING - 1, ev.COUNT_CEILING)],
+)
+def test_attempt_ordinals_past_one_octet_still_order(earlier, later):
+    # A creator numbers every attempt it makes, so a retry deep into a cell
+    # carries an ordinal far beyond one record's retry count.
+    name = f"{QUEUE}/tasks/fixed"
+    for first, second, expected in (
+        (earlier, later, "complete"),
+        (later, earlier, "invalid"),
+    ):
+        synthetic = Synthetic(CELL_B)
+        synthetic.source()
+        synthetic.part(
+            INC,
+            1,
+            [
+                synthetic.row(0, first, "INTERNAL", name=name),
+                synthetic.row(0, second, "ALREADY_EXISTS", name=name),
+            ],
+        )
+        synthetic.creator(INC, rows=2, parts=1)
+        result = reconcile(synthetic)
+        assert result.status == expected, (first, second, result.reasons)
+        assert ("unexplained-duplicate" in result.reasons) == (expected == "invalid")
+
+
 def test_already_exists_across_incarnations_follows_start_order():
     name = f"{QUEUE}/tasks/fixed"
     # INC sorts before INC2 by UUID; the creator start receipts decide instead.
