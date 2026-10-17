@@ -39,7 +39,8 @@ from pathlib import Path
 
 ID_PATTERN = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-# central-publishing-maven-plugin 0.11.0; also observed in release run 33323702321.
+# central-publishing-maven-plugin 0.11.0, unchanged in 0.12.0's ArtifactUploaderImpl; also observed
+# in release runs 33323702321 and 39003308300.
 UPLOAD = re.compile(
     r"\[INFO\] Uploaded bundle successfully, deployment name: .*?, deploymentId: "
     rf"({ID_PATTERN})\. Deployment will require manual publishing"
