@@ -56,8 +56,9 @@ PARTS_CEILING = 100000
 KINDS = ("main", "calibration", "interrupt-control")
 # Statuses after which a later ALREADY_EXISTS for the same name is the
 # service's deduplication of an attempt whose outcome the client never saw.
+# INTERNAL is one: the sink retries it with the same name (#1794).
 EXPLAINING = frozenset(
-    {"OK", "CANCELLED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "UNKNOWN"}
+    {"OK", "CANCELLED", "UNAVAILABLE", "DEADLINE_EXCEEDED", "UNKNOWN", "INTERNAL"}
 )
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 PART = re.compile(rf"(?:^|/)rows/({_UUID})-([0-9]{{6}})\.csv\.gz\Z")
@@ -94,6 +95,14 @@ TERMINAL_FLAGS = (
     "rows_flush_failed",
     "complete",
 )
+# An explaining attempt is remembered in one 64-bit slot per sequence: a name
+# digest, the incarnation rank and the attempt ordinal. The ordinal counts every
+# attempt of a creator (ObservedTaskCreator), not one record's retries, so its
+# field must hold any count a creator receipt may carry.
+SLOT_ATTEMPT_BITS = 25
+SLOT_RANK_BITS = 8
+SLOT_DIGEST_BITS = 64 - 1 - SLOT_RANK_BITS - SLOT_ATTEMPT_BITS
+assert COUNT_CEILING < 1 << SLOT_ATTEMPT_BITS
 # Verdict precedence: a later, weaker status never hides an earlier stronger one.
 PRECEDENCE = {"complete": 0, "incomplete": 1, "restarted": 2, "invalid": 3}
 
@@ -369,12 +378,24 @@ class _Sequences:
         self.ok_count += int(ok) - int(was)
 
     @staticmethod
-    def _encode(name, rank, attempt):
-        digest = hashlib.blake2b(name.encode(), digest_size=6).digest()
+    def _rank(rank):
+        return min(rank, (1 << SLOT_RANK_BITS) - 1)
+
+    @staticmethod
+    def _attempt(attempt):
+        return min(attempt, (1 << SLOT_ATTEMPT_BITS) - 1)
+
+    @staticmethod
+    def _digest(name):
+        digest = hashlib.blake2b(name.encode(), digest_size=8).digest()
+        return int.from_bytes(digest, "big") >> (64 - SLOT_DIGEST_BITS)
+
+    @classmethod
+    def _encode(cls, name, rank, attempt):
         return (
-            (int.from_bytes(digest, "big") << 16)
-            | (min(rank, 255) << 8)
-            | min(attempt, 255)
+            (cls._digest(name) << (SLOT_RANK_BITS + SLOT_ATTEMPT_BITS))
+            | (cls._rank(rank) << SLOT_ATTEMPT_BITS)
+            | cls._attempt(attempt)
         ) + 1
 
     def remember(self, sequence, name, rank, attempt):
@@ -393,11 +414,12 @@ class _Sequences:
         if not value:
             return False
         value -= 1
-        earlier_rank, earlier_attempt = (value >> 8) & 255, value & 255
-        same_name = value >> 16 == (self._encode(name, 0, 0) - 1) >> 16
+        earlier_attempt = value & ((1 << SLOT_ATTEMPT_BITS) - 1)
+        earlier_rank = (value >> SLOT_ATTEMPT_BITS) & ((1 << SLOT_RANK_BITS) - 1)
+        same_name = value >> (SLOT_RANK_BITS + SLOT_ATTEMPT_BITS) == self._digest(name)
+        rank, attempt = self._rank(rank), self._attempt(attempt)
         return same_name and (
-            earlier_rank < min(rank, 255)
-            or (earlier_rank == min(rank, 255) and earlier_attempt < min(attempt, 255))
+            earlier_rank < rank or (earlier_rank == rank and earlier_attempt < attempt)
         )
 
 
