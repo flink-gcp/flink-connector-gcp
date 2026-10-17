@@ -427,7 +427,7 @@ The `recovery` outcome records the restored checkpoint, whether the boundary hel
 The `fault` outcome records the retained checkpoint, the latest completed checkpoint when the fault was decided, the replay cohort's publication marks, the deleted Pod or the upgraded generation, and the attempts before the fault and those it displaced.
 The redelivery's timing is read from these marks and from the output observations; shutdown is the last output observed before the fault.
 
-An eviction, preemption, node shutdown or container restart at any stage, or a Pod replacement outside `recovering`, stops the trial as inconclusive, as in the other recovery exercises, so a Spot TaskManager reclaimed mid-trial ends it.
+An eviction, preemption, node shutdown or container restart at any stage, a Pod replacement outside `recovering`, or a job restart the trial did not plan, read from the restores the job's checkpoint statistics count ([ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts)), stops the trial as inconclusive, as in the other recovery exercises, so a Spot TaskManager reclaimed mid-trial ends it.
 The supervisor records the exercise's completion as its own success; the final receipt reports success only when the exercise's [verdict](#verdict) is `usable`.
 Synthetic tests run each trial through the supervisor's loop over a simulated relay, Operator and service, including a lost boundary, a population that never returns, a replay under new input message IDs, foreign output, connector metrics that never appear, a checkpoint outside the run's state, an unplanned replacement and a wrong savepoint; they do not establish real-service redelivery, failover scope or timing.
 

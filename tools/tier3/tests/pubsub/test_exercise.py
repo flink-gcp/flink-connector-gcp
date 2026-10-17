@@ -120,6 +120,8 @@ class Relay:
         self.pods = 0
         self.history, self.next_id = [], 1
         self.completed, self.restored = {}, {}
+        # The restores the job's current JobMaster has counted.
+        self.restores = 0
         self.restart_at = None
         self.restart = None
         self.started = None
@@ -369,14 +371,18 @@ class Relay:
                 kept.append((message, attempt))
         self.unacked = kept
 
-    def restore(self, *, savepoint=None):
+    def restore(self, *, savepoint=None, kept=False):
         # An in-progress checkpoint is abandoned by the failover.
         self.inflight = None
+        # A new JobMaster counts its restores from one; one that `kept` the
+        # job adds this restore to its count.
+        self.restores = self.restores + 1 if kept else 1
         cp = savepoint or self.completed
         self.restored = {
             "id": cp["id"],
             "is_savepoint": savepoint is not None,
-            "restore_timestamp": self.clock() * 1000,
+            # Flink reports epoch milliseconds as a JSON integer.
+            "restore_timestamp": int(self.clock() * 1000),
             "external_path": cp["external_path"],
         }
 
@@ -403,7 +409,7 @@ class Relay:
                     if not self.ignore_delete:
                         self.pod("jobmanager")
                     self.requeue(lost)
-                    self.restore()
+                    self.restore(kept=self.ignore_delete)
                     self.start_attempts(range(self.parallelism), restored=restored)
 
             else:
@@ -420,7 +426,7 @@ class Relay:
                         current if self.ignore_delete else self.pod("taskmanager")
                     )
                     self.requeue(lost)
-                    self.restore()
+                    self.restore(kept=True)
                     for i in indices:
                         # The replaced attempt starts on the new Pod, the
                         # others where they ran.
@@ -518,7 +524,7 @@ class Relay:
         suffix = path.split("/proxy/jobs/")[1]
         if suffix.endswith("/checkpoints"):
             return {
-                "counts": {"completed": len(self.history)},
+                "counts": {"completed": len(self.history), "restored": self.restores},
                 "latest": {"completed": self.completed, "restored": self.restored},
                 "history": list(reversed(self.history[-10:])),
             }
@@ -807,6 +813,23 @@ def test_an_unplanned_pod_replacement_is_inconclusive(admitting, monkeypatch):
     relay.hooks.append(replace)
     control = world.run()
     assert replaced and "Unplanned workload replacement" in control.reason
+    assert control.pubsub["stage"] == "cleaned"
+
+
+@one("tm-replacement")
+def test_a_job_restart_after_the_recovery_is_inconclusive(admitting, monkeypatch):
+    """The kept JobMaster counts a second restore that no Pod change shows."""
+    world = World(admitting, monkeypatch)
+    relay, restarted = world.relay, []
+
+    def restart():
+        if stage(world) == "after" and not restarted:
+            restarted.append(relay.restores)
+            relay.restore(kept=True)
+
+    relay.hooks.append(restart)
+    control = world.run()
+    assert restarted == [1] and "Unplanned job restart" in control.reason
     assert control.pubsub["stage"] == "cleaned"
 
 

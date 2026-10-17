@@ -106,6 +106,8 @@ class World:
         self.query_calls = []
         self.history = {}
         self.cp, self.restore = {}, {}
+        # The restores the job's current JobMaster has counted.
+        self.restores = 0
         self.resources = QueryResources(self.plan)
         self.runner = handoff(self.runner_env, self.resources, initial)
         self.runner.initialize()
@@ -329,7 +331,7 @@ class World:
         if self.phase != "initial" and self.clock() - self.changed < 30:
             raise rt.ApiError(503, method, path)
         return {
-            "counts": {"completed": int(bool(self.cp))},
+            "counts": {"completed": int(bool(self.cp)), "restored": self.restores},
             "latest": {"completed": self.cp, "restored": self.restore},
         }
 
@@ -398,11 +400,17 @@ class World:
                     "triggerType": "UPGRADE",
                 }
             }
+            at = int((self.changed + 30) * 1000)
+            if self.restore.get("restore_timestamp") != at:
+                # A new JobMaster counts its restores from one; the one a
+                # TaskManager replacement keeps adds this one to its count.
+                kept = self.phase != "upgrade" and self.failover_kind != "jobmanager"
+                self.restores = self.restores + 1 if kept else 1
             self.restore = {
                 "id": 43,
                 "is_savepoint": self.phase == "upgrade",
                 # Flink reports epoch milliseconds as a JSON integer.
-                "restore_timestamp": int((self.changed + 30) * 1000),
+                "restore_timestamp": at,
                 "external_path": path
                 + ("savepoints/sp" if self.phase == "upgrade" else "checkpoints/cp"),
             }
@@ -445,6 +453,16 @@ class World:
             pod = self.kube.get("Pod", BIGQUERY, "tm-1")
             pod["status"]["containerStatuses"][0]["restartCount"] = 1
             self.kube.put(pod)
+        if self.fault == "job-restart" and now - self.start > 300 and not self.restore:
+            # The job restarts from its checkpoint on the same Pods, which
+            # leaves nothing in Kubernetes to see.
+            self.restores += 1
+            self.restore = {
+                "id": self.cp["id"],
+                "is_savepoint": False,
+                "restore_timestamp": int(now * 1000),
+                "external_path": self.cp["external_path"],
+            }
         self.kube.put(app)
 
     def results(self, slot):
@@ -929,6 +947,7 @@ def test_a_file_loads_failover_without_a_pod_to_delete_waits_for_no_load(
         ("wrong-state", "savepoint"),
         ("early-finish", "post-recovery"),
         ("restart", "interruption"),
+        ("job-restart", "Unplanned job restart"),
         ("upgrade-conflict", "precondition"),
         ("invisible", "query slots"),
         ("duplicates", "uniqueness"),

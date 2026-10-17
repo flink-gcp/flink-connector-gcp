@@ -170,3 +170,18 @@ The deduplication counter matched each failover's restored records, which leaves
 Every TaskManager these trials lost shut down on a SIGTERM, the deleted one and the Spot-reclaimed ones alike, as each TaskManager's own log in Cloud Logging records (`RECEIVED SIGNAL 15`); a TaskManager lost without one, detected only when its heartbeat times out, did not occur.
 The pilot ran the image without #1794, and its result says nothing about how that change behaves under a TaskManager replacement; the current image still fails a job on a single `CANCELLED` (#1796).
 An unplanned job restart is not checked by the exercise (#1798), so these trials establish no restart bound.
+
+## Revision after #1798
+
+[#1798](https://github.com/flink-gcp/flink-connector-gcp/issues/1798) made the shared recovery exercise stop a run on a job restart it did not plan, read from the restore and restore count in the job's checkpoint statistics, as [ADR-0165](../0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts) records.
+The exported `checkpoints` polls of these trials show the two restarts the observations above describe, and no other:
+
+| Run | Restore | Stage | Restore count, read and expected |
+| --- | --- | --- | --- |
+| `ct1778-tm-replacement-a1` | `chk-50` at 2026-10-15T16:04:27Z | `finishing`, about five minutes after its window closed at 15:59:05Z | 3; none expected outside a recovery, after the upgrade's 1 and the TaskManager replacement's 2 |
+| `ct1778-rescale-out-a6` | `chk-22` at 2026-10-17T00:01:55Z | inside the `upgraded` window, open since 23:58:57Z | 2; none expected outside a recovery, after the upgrade's 1 |
+
+Under the new rule the pilot would have stopped as "Unplanned job restart; trial is inconclusive" before its listing.
+Its `usable` verdict stands as the revision that produced it read it, like every archived verdict, and the result above keeps its listing: every sequence listed once across the restart.
+`ct1778-rescale-out-a6` would have stopped at its next poll instead of going on to its failover, with the same verdict.
+`ct1778-rescale-in-a2` restored only in its two recoveries.

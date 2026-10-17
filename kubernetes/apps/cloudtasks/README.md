@@ -324,6 +324,7 @@ It waits for the runner's release and for the namespace to hold no Pod, deletes 
 The supervisor runs the shared recovery exercise on the application's `cloudtasks-progress` lines, with the faults the trial's kind names: one savepoint upgrade, a rescale for `rescale-out` and `rescale-in`, while the initial input still flows, then one Pod deletion while the upgraded input flows.
 Each recovery is proved by a restored savepoint or checkpoint, advanced input and a new completed checkpoint; a rescale also by its checkpoints' subtask count moving as approved, and a TaskManager replacement also by the deleted Pod being gone under the same JobManager.
 The input lineage must stay the one the first progress line reported.
+A Pod interruption at any stage, a Pod replacement outside a recovery, and a job restart the exercise did not plan, read from the restores the job's checkpoint statistics count, each stop the run as inconclusive, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts) records.
 
 The exercise holds three measurement windows and reads the job's REST service once a minute throughout:
 
