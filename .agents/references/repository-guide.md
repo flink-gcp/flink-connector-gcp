@@ -697,7 +697,7 @@ facts); the rules a session needs:
   `releaseDocSurfacesNameOneReleasedVersion` holds all of those surfaces to one version, so a
   partial bump fails. A release that first publishes a module also removes that module's
   "not released yet" markers (the README modules table, the site front page's connector table, the
-  quickstart index, and the module's quickstart and DataStream pages) and adds it to the quickstart's list of artifact ids; no test holds those. The
+  quickstart index, and the module's quickstart, DataStream and Table API pages) and adds it to the quickstart's list of artifact ids; no test holds those. The
   bump merges before the tag, because the tag freezes those surfaces
   on that release's documentation line (ADR-0159). A follow-up PR then bumps the working tree to the next
   `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference

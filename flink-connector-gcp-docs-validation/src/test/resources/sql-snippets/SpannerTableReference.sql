@@ -40,7 +40,7 @@ LEFT JOIN orders FOR SYSTEM_TIME AS OF e.proc_time AS o
 -- end::lookup-equality[]
 
 -- tag::add-jar[]
-ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.1.0.jar';
+ADD JAR '/path/to/flink-sql-connector-gcp-spanner-1.2.0.jar';
 -- end::add-jar[]
 
 -- tag::named-schema[]

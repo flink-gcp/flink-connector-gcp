@@ -5,8 +5,8 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 
 > **Status: released.** Artifacts are on
 > [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp) under the
-> `io.github.flink-gcp` namespace, in two version lines per release: `1.1.0` for the supported
-> Flink 2.x range and `1.1.0-1.20` for the Flink 1.20 LTS. The SQL uber-jars are also attached
+> `io.github.flink-gcp` namespace, in two version lines per release: `1.2.0` for the supported
+> Flink 2.x range and `1.2.0-1.20` for the Flink 1.20 LTS. The SQL uber-jars are also attached
 > to the [GitHub releases](https://github.com/flink-gcp/flink-connector-gcp/releases).
 
 ## Modules
@@ -23,8 +23,8 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 | `flink-sql-connector-gcp-bigtable` | The Bigtable connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 | `flink-connector-gcp-spanner` | Spanner sink, bounded source and Change Streams source (both dialects), with Table API / SQL sink, scan, lookup, and change-stream CDC support |
 | `flink-sql-connector-gcp-spanner` | The Spanner connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
-| `flink-connector-gcp-firestore` | Firestore sink and bounded source for Native-mode databases: writes through the client library's `BulkWriter`, and reads a collection group or one query at a single snapshot time. A second source and sink read Datastore-mode databases in key ranges at a single snapshot time and write them in non-transactional commits. A Table API / SQL source and sink scan, look up and write Native-mode collections, and a second SQL source and sink scan and write Datastore-mode kinds. Not released yet ([#1547](https://github.com/flink-gcp/flink-connector-gcp/issues/1547)) |
-| `flink-sql-connector-gcp-firestore` | The Firestore connector as a single relocated uber-jar, for dropping into Flink's `lib/`. Not released yet ([#1547](https://github.com/flink-gcp/flink-connector-gcp/issues/1547)) |
+| `flink-connector-gcp-firestore` | Firestore sink and bounded source for Native-mode databases: writes through the client library's `BulkWriter`, and reads a collection group or one query at a single snapshot time. A second source and sink read Datastore-mode databases in key ranges at a single snapshot time and write them in non-transactional commits. A Table API / SQL source and sink scan, look up and write Native-mode collections, and a second SQL source and sink scan and write Datastore-mode kinds |
+| `flink-sql-connector-gcp-firestore` | The Firestore connector as a single relocated uber-jar, for dropping into Flink's `lib/` |
 
 ## Build
 

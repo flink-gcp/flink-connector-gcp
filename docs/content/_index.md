@@ -24,8 +24,8 @@ limitations under the License.
 Connectors for using Google Cloud services with [Apache Flink](https://flink.apache.org/).
 
 > **Status: released.** Artifacts are on
-> [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp): `1.1.0` for the
-> supported Flink 2.x range and `1.1.0-1.20` for the Flink 1.20 LTS. The
+> [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp): `1.2.0` for the
+> supported Flink 2.x range and `1.2.0-1.20` for the Flink 1.20 LTS. The
 > [Quickstart]({{< relref "docs/quickstart" >}}) shows the coordinates; building from source
 > is covered by [Development]({{< relref "docs/development" >}}).
 
@@ -82,7 +82,7 @@ the mechanism is documented). A 1.20 cluster does not need that build: the publi
 | Cloud Tasks | [Sink]({{< relref "docs/connectors/datastream/cloudtasks" >}}) — dispatch a stream as HTTP tasks the service executes later, paced by the queue's rate limit. Writable [from SQL]({{< relref "docs/connectors/table/cloudtasks" >}}) as well |
 | Bigtable | [Sink and source]({{< relref "docs/connectors/datastream/bigtable" >}}) — one row mutation per record through the bulk `MutateRows` batcher, into a fixed table or one the record names; a bounded scan source splitting a table by sampled row-key range; and a Change Streams source over `ReadChangeStream`. Readable and writable [from SQL]({{< relref "docs/connectors/table/bigtable" >}}) as well |
 | Spanner | [Sink and source]({{< relref "docs/connectors/datastream/spanner" >}}) — one `Mutation` per record through `batchWriteAtLeastOnce`; a bounded source reading a database at one snapshot on partitions the service planned; and a Change Streams source. Both dialects, GoogleSQL and PostgreSQL. Readable and writable [from SQL]({{< relref "docs/connectors/table/spanner" >}}) as well |
-| Firestore | [Sink and source]({{< relref "docs/connectors/datastream/firestore" >}}) — one document write per record through the client library's `BulkWriter`, throttled to Firestore's ramp-up guidance, into the collections each write names; and a bounded source reading a collection group on partitions the service planned, or one query, at a single snapshot time. Native mode, plus a source and a sink for a database in Datastore mode: the source reads a kind, a query or a GQL query in key ranges at a single snapshot time, and the sink applies one entity write per record in non-transactional commits. Readable and writable [from SQL]({{< relref "docs/connectors/table/firestore" >}}) in Native mode, and readable and writable [from SQL]({{< relref "docs/connectors/table/datastore" >}}) in Datastore mode. Not released yet ([#1547]({{< param BookRepo >}}/issues/1547)) |
+| Firestore | [Sink and source]({{< relref "docs/connectors/datastream/firestore" >}}) — one document write per record through the client library's `BulkWriter`, throttled to Firestore's ramp-up guidance, into the collections each write names; and a bounded source reading a collection group on partitions the service planned, or one query, at a single snapshot time. Native mode, plus a source and a sink for a database in Datastore mode: the source reads a kind, a query or a GQL query in key ranges at a single snapshot time, and the sink applies one entity write per record in non-transactional commits. Readable and writable [from SQL]({{< relref "docs/connectors/table/firestore" >}}) in Native mode, and readable and writable [from SQL]({{< relref "docs/connectors/table/datastore" >}}) in Datastore mode |
 
 ## API reference
 
