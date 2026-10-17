@@ -291,16 +291,38 @@ A constrained 192 MiB child-JVM test reads 384 generated 256 KiB rows while hold
   codes under a total timeout of its own, so a failure reaching the enumerator is a permissions,
   quota or configuration problem — and a fallback would turn it into a job that reads the whole
   table on one subtask for reasons nothing reports.
-- **Verifying Data Boost.** It needs an Enterprise-edition instance and SPU billing this project's
-  account cannot practically provide; [#248] holds the deferral. What ships is the `appProfileId`
-  pass-through, and the gated suite asserts a configured profile reaches the wire — which is the
-  only claim this project can make. The three facts the documentation states come from Google's own
-  pages rather than from the issue that cited them, checked 2026-08-09: the eligible methods are
-  `ReadRows`, `SampleRowKeys` and `PingAndWarm` (named by the `data_boost/ineligible_reasons`
-  metric's documentation); there is **no guarantee** for data written less than 35 minutes before
-  the read, which is stronger than staleness; and traffic above 1,000 read requests per second per
-  cluster becomes *ineligible* rather than failing, which a parallel source can reach without any
-  error to show for it.
+- **A recurring Data Boost gate.** What the connector contributes is the `appProfileId`
+  pass-through, which the gated suite already asserts reaches the wire. Whether the service then
+  runs the read on Data Boost is the service's answer, observable only through Cloud Monitoring
+  once the metrics are ingested, so a per-run gate would poll a monitoring API to re-measure a
+  property the connector does not control. The one-time measurement below stands instead.
+
+## Data Boost measurement ([#248], 2026-10-17)
+
+Data Boost needs no special instance. Google offers it from the Enterprise edition, and the admin
+API treats an unspecified edition as `ENTERPRISE`, so the one-node SSD instance the gated suite
+creates can carry a Data Boost profile; the profile itself bills per request. The measurement ran
+on such an instance for an hour.
+
+- **The scan is eligible.** A four-tablet scan through a Data Boost profile, built from the
+  DataStream source and from SQL, reported every `SampleRowKeys` and `ReadRows` call as
+  `READ_ELIGIBLE` in `bigtable.googleapis.com/server/data_boost/eligibility_count`, with no
+  ineligible reason recorded for any of them in `server/data_boost/ineligible_reasons`.
+- **Recent writes are absent, not stale.** Google documents no guarantee for data written less
+  than 35 minutes before the read. A scan finishing seven minutes after a 20,000-row write job
+  ended returned 5,000 rows, one at eleven minutes returned 15,000, and a read at twenty minutes
+  returned all of them. The eleven-minute scan was missing one whole tablet, and neither early scan
+  reported an error.
+- **Lookup point reads are served.** 400 NONE-mode lookups, synchronous and asynchronous, matched
+  every row and were `READ_ELIGIBLE` (ADR-0095); PARTIAL issues the same point reads. Google still
+  lists point-read-heavy traffic as unsupported and bills each request for at least 60
+  SPU-seconds.
+- **Writes and Change Streams are refused.** The at-least-once sink's `MutateRows` fails with
+  `UNIMPLEMENTED` ("Databoost can only be used for reads"), which is not a data-shaped failure and
+  so fails the job rather than reaching the failed-mutation handler. The Change Streams source
+  fails at `GenerateInitialChangeStreamPartitions` with `UNIMPLEMENTED`.
+- **Not measured.** The 1,000-requests-per-second-per-cluster ceiling was not approached, and a
+  free-trial instance, which this project no longer has, was not tried.
 
 ## Consequences
 

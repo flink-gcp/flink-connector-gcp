@@ -169,10 +169,10 @@ class BigtableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
 
     @Test
     void readsThroughAnApplicationProfileTheInstanceDefines() throws Exception {
-        // The one testable statement this project makes about Data Boost: a profile is named
-        // through appProfileId like any other. Nothing here exercises Data Boost itself, which
-        // needs an Enterprise-edition instance and SPU billing (#248). Gated because the emulator
-        // ignores application profiles entirely.
+        // The recurring statement this project makes about Data Boost: a profile is named through
+        // appProfileId like any other. Data Boost itself was measured once by hand (#248, ADR-0080)
+        // rather than here, because whether the service served a read on it shows only in Cloud
+        // Monitoring, not in the response. Gated because the emulator ignores application profiles.
         TableDestination table = createTable("source-app-profile");
         seedRows(table, key(0), key(1));
         createSingleClusterAppProfile(APP_PROFILE);

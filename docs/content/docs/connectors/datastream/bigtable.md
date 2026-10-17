@@ -289,34 +289,50 @@ watermark strategy over the records instead.
 
 ### Serverless reads with Data Boost
 
-Data Boost is Bigtable's read-only serverless compute, selected **by the application profile** — so
-a job points at it with `appProfileId(...)`, exactly as it would name any other profile. There is
+[Data Boost](https://docs.cloud.google.com/bigtable/docs/data-boost-overview)
+is Bigtable's read-only serverless compute, selected **by the application profile** — so a job
+points at it with `appProfileId(...)`, exactly as it would name any other profile. There is
 no separate switch, and there is nothing for the connector to validate: the profile is the
 server-side source of truth, and asking what kind a profile is would need admin permissions a read
 job should not have.
 
 Its eligible methods are `ReadRows`, `SampleRowKeys` and `PingAndWarm` — this source's whole RPC
-set, so both the scan and the split planning behind it are compatible with such a profile.
+set, so both the scan and the split planning behind it are compatible with such a profile. Data
+Boost needs no edition upgrade: Google offers it from the Enterprise edition, which is what an
+instance created without naming an edition gets.
 
-Three things to know before pointing a job at one.
+A scan of a four-tablet table through a Data Boost profile was measured on 2026-10-17
+([#248]({{< param BookRepo >}}/issues/248)). The service reported every `SampleRowKeys` and
+`ReadRows` call as `READ_ELIGIBLE` in `bigtable.googleapis.com/server/data_boost/eligibility_count`
+and recorded no ineligible reason for any of them in `server/data_boost/ineligible_reasons`, so the
+scan ran on Data Boost compute rather than on the cluster's nodes.
+
+Four things to know before pointing a job at one.
 
 **Recent writes may not be readable.** Bigtable documents no guarantee for data written less than
 **35 minutes** before the read, so a pipeline that writes with this sink and reads back through a
 Data Boost profile may not see its own recent work. That is a stronger statement than "the read is
-a little stale": the data is not merely old, it may be absent.
+a little stale": the data is not merely old, it may be absent. The measurement showed the shape. A
+scan that finished seven minutes after a 20,000-row write job ended returned 5,000 rows, one at
+eleven minutes returned 15,000, and a read twenty minutes after the write returned all of them.
+The eleven-minute scan was missing one whole tablet rather than scattered rows, and neither early
+scan reported an error.
 
 **Eligibility is a property of the traffic, not only of the profile**, and a parallel source is
 exactly the shape that can lose it: traffic above **1,000 read requests per second per cluster** is
 reported as *ineligible* rather than rejected, so the symptom is a bill and a metric
-(`data_boost/ineligible_reasons`) rather than an error. Reverse scans are ineligible too; this
-source issues none.
+(`server/data_boost/ineligible_reasons`) rather than an error. Reverse scans are ineligible too;
+this source issues none.
 
-**A Data Boost profile is read-only**, and takes single-cluster routing with no request priority:
-naming one on the sink's `appProfileId` breaks writes.
+**A Data Boost profile is read-only**, and takes single-cluster routing with no request priority.
+Named on the sink's `appProfileId`, it fails the job. Under the default `AT_LEAST_ONCE`, the
+service answers the first `MutateRows` batch with `UNIMPLEMENTED` ("Databoost can only be used for
+reads"), which is not a data-shaped failure, so the failed-mutation handler never sees it. Under
+`EXACTLY_ONCE`, the profile is refused before anything is written, because it does not allow
+transactional writes.
 
-**This project has not exercised Data Boost.** It needs an Enterprise-edition instance and SPU
-billing; the verification is [#248]({{< param BookRepo >}}/issues/248). What is covered here is that
-a configured `appProfileId` reaches the client, which the gated real-GCP suite asserts.
+**Change Streams cannot use one.** The service refuses `GenerateInitialChangeStreamPartitions`
+with `UNIMPLEMENTED`, so the job fails while the source initializes its partitions.
 
 ### Not here yet
 
@@ -400,7 +416,8 @@ a savepoint applies its new filter configuration to the restored split progress.
 These entry-projection setters belong to the DataStream mutation API and have no Table API or SQL
 option; SQL Change Streams preserve their documented envelope or selected-cell changelog contract.
 
-The application profile is required and must use single-cluster routing. The Bigtable emulator
+The application profile is required and must use single-cluster routing. A
+[Data Boost](#serverless-reads-with-data-boost) profile is refused. The Bigtable emulator
 does not implement Change Streams, so this builder deliberately has no emulator option.
 
 `serviceAccountKeyFile(path)` is read by the JobManager coordinator and by each TaskManager reader.

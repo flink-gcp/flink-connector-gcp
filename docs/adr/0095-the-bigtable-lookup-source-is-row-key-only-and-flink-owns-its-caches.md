@@ -21,7 +21,8 @@ limitations under the License.
 - Issues: [#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460),
   [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217)),
-  [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643)
+  [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643),
+  [#248](https://github.com/flink-gcp/flink-connector-gcp/issues/248)
 - Modules: bigtable, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -97,8 +98,14 @@ operation, correcting the prior rejection of a closed-start key.
 
 - Row-key equality is required; whole-family ROW equality adds a post-read condition in NONE and
   PARTIAL. It is refused with FULL. Nested qualifier conditions remain Flink residuals.
-- A Data Boost application profile can load FULL through a scan, but cannot serve NONE or PARTIAL
-  point reads. All lookup forms reuse `scan.app-profile-id` rather than adding a second profile key.
+- A Data Boost application profile serves every lookup form. FULL loads through a scan, which is
+  the workload Data Boost is meant for. Point reads are served too: 400 NONE-mode lookups,
+  synchronous and asynchronous, matched every row and were reported `READ_ELIGIBLE`
+  ([#248](https://github.com/flink-gcp/flink-connector-gcp/issues/248), 2026-10-17), and PARTIAL
+  issues the same point reads behind its cache. Google still lists point-read-heavy traffic as
+  unsupported, bills each request for at least 60 SPU-seconds, and reports traffic above 1,000
+  reads per second per cluster as ineligible. All lookup forms reuse `scan.app-profile-id` rather
+  than adding a second profile key.
 - The emulator suite executes hits and misses through sync, async, PARTIAL and FULL providers; the
   planner suite pins lookup selection after a reordered projection.
 - One parameterized emulator case carries the same lookup residual and configured closed-start

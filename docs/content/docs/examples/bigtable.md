@@ -57,9 +57,8 @@ Every per-cell decision belongs in that filter because the source has no separat
 
 A [Data Boost]({{< relref "docs/connectors/datastream/bigtable" >}}#serverless-reads-with-data-boost)
 profile is named here like any other.
-Its reads can be up to about 35 minutes stale, so a job that writes with the sink and reads back through it may not see its own recent writes.
-The profile is read-only, so using it on the sink breaks writes.
-This project has not exercised Data Boost; [#248]({{< param BookRepo >}}/issues/248) owns that verification.
+Bigtable guarantees no data written less than 35 minutes before a Data Boost read, so a job that writes with the sink and reads back through it may not see its own recent writes.
+The profile is read-only, so using it on the sink fails the job.
 
 ## DataStream sink
 
