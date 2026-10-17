@@ -78,7 +78,7 @@ The client library's retry of a create that was applied but whose answer was los
 | `BOOLEAN` | Boolean |
 | `BYTES`, `VARBINARY`, `BINARY` | Bytes |
 | `TIMESTAMP_LTZ(p)` | Timestamp; Firestore keeps microseconds |
-| `ARRAY<T>` | Array, including an array directly inside an array, which the service stored in a Standard-edition database although Google's documentation allows one only in Enterprise edition; the emulator refuses one |
+| `ARRAY<T>` | Array; an array directly inside an array needs an Enterprise-edition database (below) |
 | `ROW<...>` | Map, one entry per field |
 | `MAP<STRING, T>` | Map |
 | `ROW<latitude DOUBLE, longitude DOUBLE>` named by `geo-point-field-paths` | Geographical point |
@@ -87,6 +87,10 @@ The client library's retry of a create that was applied but whose answer was los
 Every other Flink type is refused when the statement is planned, naming the field: write an `INT` as a `BIGINT` and a `FLOAT` as a `DOUBLE`.
 `DECIMAL` has no Firestore counterpart and is not mapped.
 A SQL `NULL` is written as a Firestore null value, so the field exists and holds null.
+
+An array directly inside an array, such as a column of type `ARRAY<ARRAY<BIGINT>>`, is supported only in an Enterprise-edition database.
+A Standard-edition database refuses a row whose value holds an array as an element with `INVALID_ARGUMENT: Nested arrays are not allowed`, as Google's documentation says, and the emulator refuses it with `INVALID_ARGUMENT` too; the table has no dead-letter path, so the job fails.
+The table does not look up the database's edition, so it does not refuse the type when the statement is planned.
 
 A geographical point and a reference share their Flink types with ordinary values, so the table names them with two markers, each a semicolon-separated list of field paths.
 A path names a column, then a ROW field by `.name`; an `ARRAY` is passed through, so a path through an array names its elements, and a `MAP`'s values are `.value`.

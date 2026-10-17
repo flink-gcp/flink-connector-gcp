@@ -122,16 +122,6 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     }
 
     @Test
-    void anArrayInsideAnArrayIsStored() throws Exception {
-        // The emulator refuses this write with INVALID_ARGUMENT, and the vendor documentation says
-        // that "in Standard edition databases, an array cannot contain another array value as one
-        // of its elements". The suite's databases are Standard edition, and the service stores it.
-        assertThat(solo(access, FirestoreWrite.set(path("na"), Map.of("v", List.of(List.of(1L))))))
-                .isNull();
-        assertThat(read(path("na")).get("v")).isEqualTo(List.of(List.of(1L)));
-    }
-
-    @Test
     void stateRefusalsAnswerOnlyTheirOwnWriteInABatch() throws Exception {
         Map<FirestoreWrite, StatusCode.Code> refusals =
                 Map.of(
@@ -223,7 +213,9 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
 
     @Test
     void everyWriteToADatastoreModeDatabaseIsRefusedWithFailedPrecondition() throws Exception {
-        DatabaseDestination datastoreMode = createDatabase(Database.DatabaseType.DATASTORE_MODE);
+        DatabaseDestination datastoreMode =
+                createDatabase(
+                        Database.DatabaseType.DATASTORE_MODE, Database.DatabaseEdition.STANDARD);
         try (FirestoreDatabaseAccess wrongMode = RejectionProbes.open(datastoreMode, null)) {
             assertThat(batch(wrongMode, goodWrites(3, "mode"), null))
                     .containsOnly(StatusCode.Code.FAILED_PRECONDITION);
@@ -234,7 +226,12 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         return collection + "/" + id;
     }
 
-    /** One write of each shape the service refuses as invalid, each within the request limit. */
+    /**
+     * One write of each shape the service refuses as invalid, each within the request limit. The
+     * array inside an array is refused because the class's database is Standard edition: the
+     * service stored one there when measured on 2026-10-10 and refused it by 2026-10-17, and an
+     * Enterprise-edition database stores it ({@code FirestoreTableRealGcpITCase}).
+     */
     private List<FirestoreWrite> invalidWrites() {
         Object deep = 1L;
         for (int depth = 0; depth < 25; depth++) {
@@ -244,7 +241,8 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
                 FirestoreWrite.set(path("r"), Map.of("__x__", 1L)),
                 FirestoreWrite.set(path("__x__"), Map.of("v", 1L)),
                 FirestoreWrite.set(path("big"), Map.of("v", "x".repeat(1024 * 1024))),
-                FirestoreWrite.set(path("deep"), Map.of("v", deep)));
+                FirestoreWrite.set(path("deep"), Map.of("v", deep)),
+                FirestoreWrite.set(path("nested"), Map.of("v", List.of(List.of(1L)))));
     }
 
     private List<FirestoreWrite> goodWrites(int count, String prefix) {

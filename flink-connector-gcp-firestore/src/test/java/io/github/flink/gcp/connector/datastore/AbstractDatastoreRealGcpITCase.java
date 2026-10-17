@@ -46,9 +46,10 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * credentials runs.
  *
  * <p>The Native-mode harness's counterpart, sharing {@link EphemeralDatabases}: the project comes
- * from {@code FIRESTORE_IT_PROJECT}, and each class creates a Datastore-mode database of its own
+ * from {@code FIRESTORE_IT_PROJECT}, and each class creates a Datastore-mode database of its own,
  * and deletes it in {@link AfterAll}, together with any further database it created through {@link
- * #createDatabase(Database.DatabaseType)}.
+ * #createDatabase(Database.DatabaseType)}. Every one is Standard edition: a Datastore-mode database
+ * cannot be Enterprise edition, and no test here needs a Native-mode one that is.
  *
  * <p>The gating annotations, {@code @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT",
  * matches = ".+")} and {@code @Tag("gated")}, are on each concrete subclass rather than here, for
@@ -98,7 +99,8 @@ public abstract class AbstractDatastoreRealGcpITCase {
     }
 
     /**
-     * Creates a further ephemeral database of the given mode, deleted with the class's own.
+     * Creates a further ephemeral Standard-edition database of the given mode, deleted with the
+     * class's own.
      *
      * @param type the database's mode
      * @return the new database
@@ -107,7 +109,7 @@ public abstract class AbstractDatastoreRealGcpITCase {
             throws Exception {
         String id = EphemeralDatabases.newId();
         CREATED.add(id);
-        EphemeralDatabases.create(admin, PROJECT, type, id);
+        EphemeralDatabases.create(admin, PROJECT, type, Database.DatabaseEdition.STANDARD, id);
         return DatabaseDestination.of(PROJECT, id);
     }
 

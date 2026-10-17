@@ -21,7 +21,10 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.cloud.firestore.Firestore;
+import com.google.firestore.admin.v1.Database;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreRealGcpITCase;
+import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -32,20 +35,25 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The {@code firestore} table against the real service: what the emulator refuses, an array
- * directly inside an array, which the emulator answers with {@code INVALID_ARGUMENT} and Google's
- * documentation says a Standard-edition database does not store, but which the service stored when
- * measured (2026-10-10), and the default {@code merge} and {@code replace} write modes, which
- * {@code FirestoreTableSinkITCase} holds on the emulator. The table maps {@code ARRAY<ARRAY<T>>} on
- * that measurement; the unit tests cover the mapping and {@code FirestoreRejectionRealGcpITCase}
- * the service's answer, and this class is the one end-to-end check that a column of that type
- * survives a SQL write and read.
+ * The {@code firestore} table against the real service: an array directly inside an array, which
+ * the table maps, and the default {@code merge} and {@code replace} write modes, which {@code
+ * FirestoreTableSinkITCase} holds on the emulator. Whether an array may hold an array depends on
+ * the database's edition: measured on 2026-10-17, an Enterprise-edition database stores one, and a
+ * Standard-edition database refuses one with {@code INVALID_ARGUMENT}, as the emulator does. The
+ * service stored one in a Standard-edition database when measured on 2026-10-10, which is why this
+ * class holds both editions. The unit tests cover the mapping, and this class is the one end-to-end
+ * check that a column of that type survives a SQL write and read.
  */
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
 class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
+
+    private static final String INSERT_MATRIX =
+            "INSERT INTO matrices VALUES"
+                    + " ('m1', ARRAY[ARRAY[CAST(1 AS BIGINT), 2], ARRAY[CAST(3 AS BIGINT)]])";
 
     @Test
     void theDefaultMergeKeepsUndeclaredFieldsAndReplaceRemovesThem() throws Exception {
@@ -100,32 +108,26 @@ class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     }
 
     @Test
-    void anArrayOfArraysIsWrittenAndReadBackThroughSql() throws Exception {
+    void anArrayOfArraysIsWrittenAndReadBackThroughSqlInEnterpriseEdition() throws Exception {
+        DatabaseDestination enterprise =
+                createDatabase(
+                        Database.DatabaseType.FIRESTORE_NATIVE,
+                        Database.DatabaseEdition.ENTERPRISE);
         String collection = uniqueCollection();
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
-        table.executeSql(
-                "CREATE TABLE matrices ("
-                        + " id STRING NOT NULL,"
-                        + " cells ARRAY<ARRAY<BIGINT>>,"
-                        + " PRIMARY KEY (id) NOT ENFORCED) WITH ("
-                        + " 'connector' = 'firestore',"
-                        + " 'project' = '"
-                        + PROJECT
-                        + "', 'database' = '"
-                        + database().getDatabaseId()
-                        + "', 'collection' = '"
-                        + collection
-                        + "')");
+        table.executeSql(matrices(enterprise, collection));
 
-        table.executeSql(
-                        "INSERT INTO matrices VALUES"
-                                + " ('m1', ARRAY[ARRAY[CAST(1 AS BIGINT), 2], ARRAY[CAST(3 AS"
-                                + " BIGINT)]])")
-                .await(120, TimeUnit.SECONDS);
+        table.executeSql(INSERT_MATRIX).await(120, TimeUnit.SECONDS);
 
-        assertThat(read(collection + "/m1").get("cells"))
-                .isEqualTo(List.of(List.of(1L, 2L), List.of(3L)));
+        try (Firestore client = open(enterprise)) {
+            assertThat(
+                            client.document(collection + "/m1")
+                                    .get()
+                                    .get(30, TimeUnit.SECONDS)
+                                    .get("cells"))
+                    .isEqualTo(List.of(List.of(1L, 2L), List.of(3L)));
+        }
         List<Row> rows = new ArrayList<>();
         try (CloseableIterator<Row> collected =
                 table.executeSql("SELECT id, cells FROM matrices").collect()) {
@@ -135,5 +137,32 @@ class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         assertThat(rows.get(0).getField("id")).isEqualTo("m1");
         assertThat((Long[][]) rows.get(0).getField("cells"))
                 .isDeepEqualTo(new Long[][] {{1L, 2L}, {3L}});
+    }
+
+    @Test
+    void aStandardEditionDatabaseRefusesAnArrayOfArrays() throws Exception {
+        String collection = uniqueCollection();
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(matrices(database(), collection));
+
+        assertThatThrownBy(() -> table.executeSql(INSERT_MATRIX).await(120, TimeUnit.SECONDS))
+                .hasStackTraceContaining("Nested arrays are not allowed");
+        assertThat(read(collection + "/m1").exists()).isFalse();
+    }
+
+    private static String matrices(DatabaseDestination destination, String collection) {
+        return "CREATE TABLE matrices ("
+                + " id STRING NOT NULL,"
+                + " cells ARRAY<ARRAY<BIGINT>>,"
+                + " PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                + " 'connector' = 'firestore',"
+                + " 'project' = '"
+                + PROJECT
+                + "', 'database' = '"
+                + destination.getDatabaseId()
+                + "', 'collection' = '"
+                + collection
+                + "')";
     }
 }

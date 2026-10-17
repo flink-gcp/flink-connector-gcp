@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0185: The Firestore E2E suite creates an ephemeral database per gated class
 
 - Status: Accepted
-- Date: 2026-10-10; revised 2026-10-11 by [#1707] (the Datastore-mode harness)
-- Issues: [#1546], [#1705], [#1706], [#1707]
+- Date: 2026-10-10; revised 2026-10-11 by [#1707] (the Datastore-mode harness) and 2026-10-17 by
+  [#1819] (an Enterprise-edition database for the array inside an array)
+- Issues: [#1546], [#1705], [#1706], [#1707], [#1819]
 - Modules: firestore (tests), `opentofu/`, `scripts/`
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Testing; the
   `just e2e` entry of `.agents/references/repository-guide.md` § Build
@@ -32,7 +33,8 @@ resource to name. What is Firestore's own:
 
 - **A database, not an instance, and both modes from one harness.** `EphemeralDatabases` creates
   a database of either mode through the Admin API in `us-central1`, with delete protection and
-  point-in-time recovery off. It is public, and takes the mode as a parameter, because the
+  point-in-time recovery off, in the edition its caller names (Standard, unless a class needs
+  Enterprise; [#1819]). It is public, and takes the mode as a parameter, because the
   Datastore-mode harness (`AbstractDatastoreRealGcpITCase`, [#1707]) shares its naming and its sweep
   from the other package root. A class that needs a second database, such as one of the other mode
   to address through the wrong API, creates it through the same helper and deletes it with its own.
@@ -74,9 +76,16 @@ finer than a microsecond is refused with `INVALID_ARGUMENT`, version times are w
 and a timestamp value is floored to the microsecond.
 
 **Where the service and the emulator disagree.** The service stored an array inside an array in a
-Standard-edition database, which the emulator refuses with `INVALID_ARGUMENT` and Google's
-documentation allows only in Enterprise edition; the `firestore` table maps `ARRAY<ARRAY<…>>` on
-that measurement ([ADR-0179]'s revision), and a gated class writes and reads one through SQL. It applied a `BatchWrite` of 11,060,930 bytes (twelve documents of 900 KiB) in one request,
+Standard-edition database on 2026-10-10, which the emulator refuses with `INVALID_ARGUMENT` and
+Google's documentation allows only in Enterprise edition. By 2026-10-17 a Standard-edition
+database refused one too, in either mode, and an Enterprise-edition database stores one ([#1819]).
+The `firestore` table keeps mapping `ARRAY<ARRAY<…>>` for that edition ([ADR-0179]'s revisions),
+so `EphemeralDatabases` takes the edition as an argument and a gated class writes and reads one
+through SQL in an Enterprise-edition database of its own. Only a Native-mode database can be
+Enterprise edition, and the Admin API's `firestore_data_access_mode` defaults to disabled for
+that edition (google-cloud-firestore-admin 3.49.0), so the harness enables it.
+
+The service applied a `BatchWrite` of 11,060,930 bytes (twelve documents of 900 KiB) in one request,
 past the documented 10 MiB limit; fifteen such documents did not finish within the client's
 60-second deadline from a residential uplink, so where the ceiling lies was not established. A
 read time from before the database existed is refused with `INVALID_ARGUMENT: The requested
@@ -110,6 +119,7 @@ database standing for it was declined below.
 [#1705]: https://github.com/flink-gcp/flink-connector-gcp/issues/1705
 [#1706]: https://github.com/flink-gcp/flink-connector-gcp/issues/1706
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
+[#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
 [ADR-0044]: 0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md
 [ADR-0088]: 0088-the-spanner-e2e-suite-creates-an-ephemeral-standard-edition-instance-per-gated-class.md
 [ADR-0119]: 0119-a-scheduled-source-derived-sweep-returns-billed-e2e-fixtures-to-their-idle-state.md

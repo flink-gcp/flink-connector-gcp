@@ -41,7 +41,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Measures what the real service answers each shape of refused commit with in Datastore mode, and
@@ -215,10 +214,10 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     }
 
     @Test
-    void anArrayInsideAnArrayIsStoredButTheClientLibraryCannotReadIt() {
-        // Sent as a raw commit: the client library will not build such a value, and it refuses to
-        // read the one the service stores, which is why the datastore table keeps refusing the
-        // type.
+    void anArrayInsideAnArrayIsRefusedWithInvalidArgument() {
+        // Sent as a raw commit, because the client library will not build such a value. The service
+        // stored one when measured on 2026-10-11 and refused it by 2026-10-17. A Datastore-mode
+        // database cannot be Enterprise edition, the only edition that stores one.
         Value nested =
                 Value.newBuilder()
                         .setArrayValue(
@@ -247,7 +246,7 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                         .putProperties("v", nested)
                         .build();
 
-        @Nullable StatusCode.Code code = null;
+        @Nullable RuntimeException refusal = null;
         try {
             rpc().commit(
                             CommitRequest.newBuilder()
@@ -257,14 +256,11 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                                     .addMutations(Mutation.newBuilder().setUpsert(entity))
                                     .build());
         } catch (RuntimeException e) {
-            code = DatastoreErrorClassifier.statusCode(e);
+            refusal = e;
         }
-        assertThat(code).isNull();
-        assertThatThrownBy(() -> client().get(key(kind, "nested")))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessage("Cannot contain another list");
-        // The writer's lookup still answers, with nothing it can compare an insert to.
-        assertThat(access.lookup(key(kind, "nested"))).isNull();
+        assertThat(refusal).hasMessageContaining("Nested arrays are not allowed");
+        assertThat(DatastoreErrorClassifier.statusCode(refusal))
+                .isEqualTo(StatusCode.Code.INVALID_ARGUMENT);
     }
 
     @Test
