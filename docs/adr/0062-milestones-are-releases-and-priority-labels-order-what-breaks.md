@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0062: Milestones are releases and priority labels order what breaks inside them
 
 - Status: Accepted
-- Date: 2026-08-07 (the `v0.3.0+` catch-all retired at 50 open issues)
-- Issues: [#567], [#577]
+- Date: 2026-08-07 (the `v0.3.0+` catch-all retired at 50 open issues); revised by [#1834]
+  (2026-10-18)
+- Issues: [#567], [#577], [#1834]
 - Modules: all (tracker)
 
 ## Context
@@ -41,7 +42,7 @@ open issues — which expresses neither an order nor a release.
   correctness with a narrower blast radius or a blocker for going public, `P2` is a feature,
   performance or guardrail that breaks nothing by waiting, `P3` is a future feature or one
   blocked outside the repository.
-- **Externally blocked work has two milestone exceptions**:
+- **Three kinds of issue carry no milestone**, two of them externally blocked:
   - When an issue cannot be completed until another project changes or publishes a release, it
     retains its `module:` or `area:` label, carries `priority:P3` and
     `status:blocked-upstream`, but has no milestone. Once the upstream condition clears, remove
@@ -53,8 +54,15 @@ open issues — which expresses neither an order nor a release.
     exception: the issue must state the unavailable capability and the evidence or support a
     contributor must provide. Assign a release milestone once the environment and contributor
     support are available and the work can be scheduled.
-  A temporary external service failure, a resource the maintainer can provision, or a future
-  scheduling choice does not qualify for either exception.
+  - When the owner has accepted a feature or improvement but has not chosen its release, the
+    issue retains its `priority:` and `module:` or `area:` labels and carries `status:backlog`,
+    but has no milestone. Filing it records the idea and its evidence; it does not commit a
+    release to it. Assign a release milestone and remove the status before implementation
+    starts.
+  A temporary external service failure or a resource the maintainer can provision does not
+  qualify for the two external exceptions, and an issue whose release is chosen takes that
+  milestone rather than `status:backlog`. The backlog is not the retired catch-all: each of its
+  issues was accepted by the owner, and none claims a release it has not been given.
 - **Milestone and priority are orthogonal where a milestone applies** — the milestone says which
   release, while the label says the order inside it, which a milestone alone cannot express.
 - **GitHub sub-issues are used where a parent genuinely decomposes** ([#36] → [#220]–[#225]);
@@ -71,3 +79,4 @@ open issues — which expresses neither an order nor a release.
 [#351]: https://github.com/flink-gcp/flink-connector-gcp/issues/351
 [#567]: https://github.com/flink-gcp/flink-connector-gcp/issues/567
 [#577]: https://github.com/flink-gcp/flink-connector-gcp/issues/577
+[#1834]: https://github.com/flink-gcp/flink-connector-gcp/issues/1834

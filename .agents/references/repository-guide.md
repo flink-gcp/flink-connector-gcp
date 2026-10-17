@@ -583,7 +583,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `v1.0.0` (going public); read each milestone's description for its theme rather than guessing
   from the number. Priority is ordered by *what breaks*, not by urgency — `P0` a shipped path
   breaking silently, down to `P3` future or externally blocked — and is orthogonal to the
-  milestone where one applies. Externally blocked work has two milestone exceptions. An issue
+  milestone where one applies. Three kinds of issue carry no milestone. An issue
   that cannot be completed until another project changes or publishes a release retains its
   `module:` or `area:` label, carries `priority:P3` and `status:blocked-upstream`, but has no
   milestone; remove the status and assign a release milestone before implementation starts once
@@ -592,8 +592,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `priority:P3` and `help wanted`, but has no milestone when an external contributor must supply
   that access or evidence. `help wanted` alone does not qualify: name the unavailable capability
   and what the contributor must provide, then assign a release milestone once the environment
-  and contributor support are available. A temporary external service failure, a resource the
-  maintainer can provision, or a future scheduling choice does not qualify for either exception.
+  and contributor support are available. A feature or improvement the owner accepted without
+  choosing its release retains its `priority:` and `module:` or `area:` labels and carries
+  `status:backlog`; assign a release milestone and remove the status before implementation
+  starts. A temporary external service failure or a resource the maintainer can provision does
+  not qualify for the two external exceptions, and an issue whose release is chosen takes that
+  milestone rather than `status:backlog`.
   GitHub sub-issues only where a parent genuinely decomposes; a *cluster* sharing one root cause
   is recorded as a comment on the one to work instead, so each keeps its own closure record
 - PRs close their issue with `Closes #N`, written **unformatted** — a closing keyword inside a
