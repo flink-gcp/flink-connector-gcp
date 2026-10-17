@@ -258,6 +258,34 @@ limitations under the License.
              tag excluded everywhere runs nowhere and nothing goes red. -->
         <test.excluded.groups>gated,slow</test.excluded.groups>
 
+        <!-- Extra surefire JVM arguments (issue #1824). flink-connector-parent appends this
+             property, which it leaves empty, to the argLine of the default-test and
+             integration-tests executions it defines. Surefire's plugin-level argLine omits
+             it, so an execution a module adds itself (docs-validation's
+             validate-documentation-sql) runs without it, and a module that sets its own
+             value replaces this one rather than adding to it.
+
+             The connect timeout bounds an HttpURLConnection that sets none of its own,
+             which is the GCP platform detection google-cloud-bigtable 2.85.0's built-in
+             metrics run when a client closes (detector-resources-support 0.33.0, which
+             google-cloud-spanner 6.124.0 also depends on; Spanner's call path was not
+             measured). Off GCP, where metadata.google.internal resolves to 169.254.169.254
+             and nothing answers, one detection blocked for the OS connect timeout, 75 s,
+             and it repeats for every client because a failure is not cached; with this
+             1000 ms value it measured 1.0-1.1 s (2026-10-17, GoogleCloudPlatform/
+             opentelemetry-operations-java#421). Only connections with no connect timeout
+             of their own are bounded: java.net.http.HttpClient ignores the property, the
+             Google HTTP transport sets explicit timeouts, and repository code opens no
+             HttpURLConnection. The one other caller is Testcontainers 1.21.4's
+             HttpWaitStrategy, used by the BigQuery emulator harness, which sets only a
+             read timeout. It dials the mapped port on whichever host Testcontainers
+             resolves (usually loopback); under this property an attempt whose connect
+             takes longer than 1 s fails, and the strategy retries until its own startup
+             timeout.
+             No read timeout is set: the stall is the connect, and a read bound would also
+             cut short a legitimately slow response. -->
+        <surefire.module.config>-Dsun.net.client.defaultConnectTimeout=1000</surefire.module.config>
+
         <!-- Ceiling on one integration-test fork, in seconds (issue #959). Coupled to the
              sweep's staleness threshold rather than chosen for comfort - the surefire
              execution below says what depends on it, and why it is 90 minutes rather than
