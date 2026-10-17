@@ -50,13 +50,29 @@ COLLECTIONS = {
 
 
 # A control-plane blip answers a read with one of these; pilot
-# bq1312-alo-10-a6 lost a run to a single 503 after both recoveries passed.
-TRANSIENT_READ_STATUSES = (500, 502, 503, 504)
+# bq1312-alo-10-a6 lost a run to a single 503 after both recoveries passed,
+# and ct1778-rescale-out-a6 to a single 429 during its JobManager failover.
+TRANSIENT_READ_STATUSES = (429, 500, 502, 503, 504)
 # Seconds before each retry of a read; mutations are never retried.
 READ_RETRY_DELAYS = (1, 2, 4)
 
 
 INVENTORY = tuple(k for k in COLLECTIONS if k not in ("ResourceQuota", "Event"))
+
+
+def retry_after(headers):
+    """The seconds a `Retry-After` header names, or None.
+
+    The API server sends whole seconds; an HTTP date, a value too long for
+    `int` to convert, or anything else falls back to the scheduled delay.
+    """
+    value = (headers or {}).get("Retry-After", "").strip()
+    if not value.isdecimal():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 class KubernetesTransport:
@@ -96,7 +112,9 @@ class KubernetesTransport:
                 response.close()
                 response.release_conn()
         except kubernetes_client.exceptions.ApiException as error:
-            raise ApiError(error.status, method, parts.path) from error
+            raise ApiError(
+                error.status, method, parts.path, retry_after(error.headers)
+            ) from error
         except urllib3.exceptions.HTTPError as error:
             raise TransportError(
                 f"{method} Kubernetes request failed: {type(error).__name__}"
@@ -116,7 +134,8 @@ class Kubernetes:
 
         A transport error is not retried: a timed-out read has already spent
         its whole timeout, and repeating it would multiply that against the
-        caller's deadline.
+        caller's deadline. A `Retry-After` longer than the scheduled delay is
+        honoured up to the longest one, so no single wait exceeds it.
         """
         for delay in READ_RETRY_DELAYS:
             try:
@@ -124,6 +143,8 @@ class Kubernetes:
             except ApiError as error:
                 if error.status not in TRANSIENT_READ_STATUSES:
                     raise
+                if error.retry_after is not None:
+                    delay = min(max(delay, error.retry_after), READ_RETRY_DELAYS[-1])
             self.sleep(delay)
         return call()
 

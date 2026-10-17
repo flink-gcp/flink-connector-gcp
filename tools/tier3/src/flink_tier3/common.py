@@ -63,8 +63,11 @@ INCONCLUSIVE = "inconclusive"
 
 
 class ApiError(Failure):
-    def __init__(self, status, method, path):
+    def __init__(self, status, method, path, retry_after=None):
         self.status = status
+        # Seconds the server asked the caller to wait, when it named them;
+        # only the Kubernetes transport reads the header.
+        self.retry_after = retry_after
         super().__init__(f"{method} {path}: HTTP {status}")
 
 

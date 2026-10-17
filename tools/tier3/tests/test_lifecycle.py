@@ -2180,11 +2180,11 @@ class SdkPool:
 
     def request(self, *args, **kwargs):
         self.calls.append((args, kwargs))
-        status, body = next(self.replies)
+        status, body, *headers = next(self.replies)
         return urllib3.HTTPResponse(
             body=io.BytesIO(body if isinstance(body, bytes) else rt.json_bytes(body)),
             status=status,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **dict(headers)},
             preload_content=False,
         )
 
@@ -2265,6 +2265,63 @@ def test_a_transient_read_is_retried_and_a_mutation_is_not():
     kube, pool = sdk_kube([(503, {})])
     kube.sleep = lambda _delay: pytest.fail("A mutation was retried")
     with pytest.raises(rt.ApiError, match="503"):
+        kube.delete(obj("Pod", "owned"))
+    assert len(pool.calls) == 1
+
+
+def test_a_throttled_read_is_retried_and_a_persistent_throttle_still_fails():
+    """Run ct1778-rescale-out-a6 ended on one 429 during its JobManager failover."""
+    kube, pool = sdk_kube([(429, {}), (200, {"metadata": {"uid": "u"}})])
+    slept = []
+    kube.sleep = slept.append
+    assert kube.get("Pod", rt.SYSTEM, "owned") == {"metadata": {"uid": "u"}}
+    assert len(pool.calls) == 2 and slept == [1]
+    kube, pool = sdk_kube([(429, {})] * 4)
+    slept = []
+    kube.sleep = slept.append
+    with pytest.raises(rt.ApiError, match="429"):
+        kube.get("Pod", rt.SYSTEM, "owned")
+    assert len(pool.calls) == 4 and slept == [1, 2, 4]
+
+
+@pytest.mark.parametrize(
+    "status, header, slept",
+    [
+        (429, "3", [3, 3, 4]),
+        (429, "60", [4, 4, 4]),
+        (429, "0", [1, 2, 4]),
+        # Far enough ahead that honouring the date would wait the longest delay.
+        (429, "Fri, 01 Jan 2100 00:00:00 GMT", [1, 2, 4]),
+        (429, "9" * 5000, [1, 2, 4]),
+        (503, "3", [3, 3, 4]),
+    ],
+    ids=["longer", "over-the-longest", "shorter", "http-date", "too-long", "on-503"],
+)
+def test_a_retry_after_is_honoured_within_the_scheduled_delays(status, header, slept):
+    """A longer wait is honoured, but never past the longest scheduled delay."""
+    kube, pool = sdk_kube([(status, {}, ("Retry-After", header))] * 4)
+    waits = []
+    kube.sleep = waits.append
+    with pytest.raises(rt.ApiError, match=str(status)):
+        kube.items("Pod", rt.SYSTEM)
+    assert len(pool.calls) == 4 and waits == slept
+
+
+def test_a_throttled_log_read_is_retried():
+    """Logs go through the same transport, so a 429 there is retried too."""
+    kube, pool = sdk_kube([(429, {}, ("Retry-After", "2")), (200, b"line\n")])
+    waits = []
+    kube.sleep = waits.append
+    pod = obj("Pod", "owned")
+    pod["spec"] = {"containers": [{"name": "main"}]}
+    assert kube.logs(pod) == b"line\n"
+    assert len(pool.calls) == 2 and waits == [2]
+
+
+def test_a_throttled_mutation_is_not_retried():
+    kube, pool = sdk_kube([(429, {}, ("Retry-After", "1"))])
+    kube.sleep = lambda _delay: pytest.fail("A mutation was retried")
+    with pytest.raises(rt.ApiError, match="429"):
         kube.delete(obj("Pod", "owned"))
     assert len(pool.calls) == 1
 

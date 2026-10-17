@@ -107,7 +107,7 @@ The rescale in's later windows run one sink subtask, which then carries the whol
   The pilot listed every sequence once, so its restart does not touch its oracle result; the rescale in's JobManager log shows no restart, and neither does the exported log of `ct-1362-a1`.
 - **The platform interrupted most attempts.**
   Compute Engine reclaimed a Spot node carrying TaskManagers twice (`ct1778-rescale-out-a1` and `ct1778-rescale-out-a5`), and a `kube-system` Pod of system priority preempted the JobManager once (`ct1778-rescale-out-a2`) and the supervisor twice before the queue was created (`ct1778-rescale-out-a3` and `ct1778-rescale-in-a1`).
-  One Kubernetes read was refused with HTTP 429 (`ct1778-rescale-out-a6`), which the rig does not retry; [#1797](https://github.com/flink-gcp/flink-connector-gcp/issues/1797) records it.
+  One Kubernetes read was refused with HTTP 429 (`ct1778-rescale-out-a6`), which the rig did not then retry; [#1797](https://github.com/flink-gcp/flink-connector-gcp/issues/1797) made such a read retried.
   The Spot reclamations are read from Compute Engine's `compute.instances.preempted` audit entries and the preemptors from the Kubernetes audit log, since the exported evidence carries only the Pods' `Killing` and `Preempted` events.
 
 ## Cleanup
