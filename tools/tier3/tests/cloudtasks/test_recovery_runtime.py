@@ -14,6 +14,7 @@
 """The shared lifecycle with a Cloud Tasks approval, its queue faked."""
 
 import copy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -252,6 +253,16 @@ def test_admission_quota_is_three_pods_and_state_includes_staging(prepared):
         (f"runs/{run_id}/", CLOUDTASKS_STATE),
         (f".inprogress/{CLOUDTASKS_STATE}/runs/{run_id}/", CLOUDTASKS_STATE),
     ]
+
+
+def test_the_state_bucket_is_the_one_the_application_writes_to():
+    # The exercise reads checkpoints and cleanup deletes state in the policy's
+    # bucket; the CUE package names the bucket the job writes them to.
+    application = (
+        Path(__file__).resolve().parents[4]
+        / "kubernetes/pkg/cloudtasks/application.cue"
+    ).read_text()
+    assert f'"gs://{CLOUDTASKS_STATE}/runs/' in application
 
 
 def test_the_runner_needs_its_queue_controller_in_its_own_environment(prepared, env):

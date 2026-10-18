@@ -25,8 +25,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
 | `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
 | `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
-| `flink-gcp/cloudtasks-benchmark.tf` | Cloud Tasks recovery workload identity, its queue role and temporary-object bucket |
-| `flink-gcp/tier3-cloudtasks.tf` | Queue-control roles and benchmark-bucket state access for the Cloud Tasks recovery lifecycle |
+| `flink-gcp/tier3-cloudtasks.tf` | Cloud Tasks recovery workload identity, one-day state bucket, queue roles and lifecycle state access |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
 | `flink-gcp/tier3-pubsub.tf` | Pub/Sub recovery workload identity, one-day state bucket and lifecycle state access |
@@ -162,8 +161,8 @@ Autopilot's required managed Prometheus collection stays enabled, with automatic
 Optional application scraping and its ingestion cost belong to each run's CUE definition and budget.
 System and workload logging also remain enabled; a run must bound application log volume and include its ingestion cost.
 
-The separate `cloudtasks-benchmark` runtime account has the queue role described under [Cloud Tasks cluster resources](#cloud-tasks-cluster-resources) and object read/write/delete access only to `flink-gcp-cloudtasks-benchmark`.
-The Kubernetes identity `tier3-cloudtasks/cloudtasks-benchmark` may impersonate it through Workload Identity Federation for GKE; the workload ServiceAccount must carry the corresponding GCP account annotation.
+The separate `tier3-cloudtasks` runtime account has the queue role described under [Cloud Tasks cluster resources](#cloud-tasks-cluster-resources) and object read/write/delete access only to `flink-gcp-tier3-cloudtasks`.
+The Kubernetes identity `tier3-cloudtasks/cloudtasks` may impersonate it through Workload Identity Federation for GKE; the workload ServiceAccount must carry the corresponding GCP account annotation.
 Neither the node account nor the runtime account receives IAM administration permissions.
 The cluster foundation grants the apply identity `compute.networkAdmin`, `container.clusterAdmin`, `artifactregistry.admin` and permission to attach the dedicated node account.
 The service lifecycle controls below also grant it project-wide custom-role administration, which their custom roles depend on.
@@ -178,20 +177,22 @@ Cluster deletion protection prevents accidental removal; deliberate decommission
 
 ### Cloud Tasks cluster resources
 
-The cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) runs its job as `cloudtasks-benchmark` in `tier3-cloudtasks`, with checkpoint storage in the benchmark bucket.
+The cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) runs its job as the `cloudtasks` KSA in `tier3-cloudtasks`, which impersonates the `tier3-cloudtasks` GSA, with checkpoint storage in the `flink-gcp-tier3-cloudtasks` bucket.
 Its [GCP grants](flink-gcp/tier3-cloudtasks.tf) are three project-wide custom roles, each holding only what its identity calls:
 
 | Identity | Role | Permissions |
 | --- | --- | --- |
-| `cloudtasks-benchmark` | `tier3CloudTasksRecoveryWorkload` | `cloudtasks.queues.get`, `cloudtasks.tasks.create` |
+| `tier3-cloudtasks` | `tier3CloudTasksRecoveryWorkload` | `cloudtasks.queues.get`, `cloudtasks.tasks.create` |
 | `tier3-runner` | `tier3CloudTasksRecoveryRunner` | `cloudtasks.queues.create`, `cloudtasks.queues.get`, `cloudtasks.queues.pause` |
 | `tier3-supervisor` | `tier3CloudTasksRecoverySupervisor` | `cloudtasks.queues.delete`, `cloudtasks.queues.get`, `cloudtasks.tasks.list` |
 
-The runner and supervisor also hold Object Viewer on the benchmark bucket and Object User on its `runs/` and `.inprogress/flink-gcp-cloudtasks-benchmark/runs/` prefixes, as for the BigQuery state bucket.
+The runner and supervisor also hold Object Viewer on the state bucket and Object User on its `runs/` and `.inprogress/flink-gcp-tier3-cloudtasks/runs/` prefixes, as for the BigQuery state bucket.
 The bindings are project-wide, and the lifecycle acts only on the queue its run's intent names; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-foundation) records why no predefined role or narrower binding is used.
 
 The cluster measurement session's queue-control roles and benchmark-bucket bindings went with that session in [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723).
 A deleted custom role's ID stays unavailable until its permanent deletion, which IAM completes within 44 days of the request, so the recovery roles carry new IDs.
+
+The workload identity and bucket that #1723 kept for the recovery trial, `cloudtasks-benchmark` and `flink-gcp-cloudtasks-benchmark`, took the `tier3-<app>` names of the other workloads in [#1857](https://github.com/flink-gcp/flink-connector-gcp/issues/1857).
 
 ### BigQuery trial foundation
 

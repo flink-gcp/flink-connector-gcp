@@ -12,6 +12,55 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# The workload identity and state bucket of the Cloud Tasks recovery trial
+# (#1362) on the Tier-3 GKE cluster.
+resource "google_service_account" "tier3_cloudtasks" {
+  account_id   = "tier3-cloudtasks"
+  display_name = "Tier-3 Cloud Tasks recovery workload"
+  description  = "Creates tasks in a lifecycle-created queue and stores Cloud Tasks recovery checkpoints, savepoints and HA metadata"
+}
+
+resource "google_storage_bucket" "tier3_cloudtasks" {
+  name                        = "${local.project_id}-tier3-cloudtasks"
+  location                    = "us-central1"
+  storage_class               = "STANDARD"
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  # An explicit zero avoids retaining deleted experiment objects for the
+  # service's default soft-delete interval after verified logical cleanup.
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+
+  versioning {
+    enabled = false
+  }
+
+  lifecycle_rule {
+    action {
+      type = "Delete"
+    }
+    condition {
+      age = 1
+    }
+  }
+}
+
+resource "google_storage_bucket_iam_member" "tier3_cloudtasks_workload" {
+  bucket = google_storage_bucket.tier3_cloudtasks.name
+  role   = "roles/storage.objectUser"
+  member = google_service_account.tier3_cloudtasks.member
+}
+
+resource "google_service_account_iam_member" "tier3_cloudtasks_gke" {
+  service_account_id = google_service_account.tier3_cloudtasks.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "serviceAccount:${local.project_id}.svc.id.goog[tier3-cloudtasks/cloudtasks]"
+
+  depends_on = [google_container_cluster.tier3]
+}
+
 # Queue access for the Cloud Tasks recovery trial (#1362). The runner creates
 # the run's queue and pauses it before admitting the job; the workload creates
 # tasks in it; the supervisor reads the queue, lists its tasks for the oracle
@@ -37,7 +86,7 @@ locals {
     workload = {
       role_id     = "tier3CloudTasksRecoveryWorkload"
       description = "Creates tasks in a queue and reads the queue; no queue control or dispatch"
-      member      = google_service_account.cloudtasks_benchmark.member
+      member      = google_service_account.tier3_cloudtasks.member
       permissions = ["cloudtasks.queues.get", "cloudtasks.tasks.create"]
     }
     runner = {
@@ -80,14 +129,14 @@ resource "google_project_iam_member" "tier3_cloudtasks" {
 # either actor, as it does for the BigQuery and Pub/Sub state buckets.
 resource "google_storage_bucket_iam_member" "tier3_cloudtasks_reader" {
   for_each = local.tier3_cloudtasks_lifecycle
-  bucket   = google_storage_bucket.cloudtasks_benchmark.name
+  bucket   = google_storage_bucket.tier3_cloudtasks.name
   role     = "roles/storage.objectViewer"
   member   = each.value
 }
 
 resource "google_storage_bucket_iam_member" "tier3_cloudtasks_state" {
   for_each = local.tier3_cloudtasks_lifecycle
-  bucket   = google_storage_bucket.cloudtasks_benchmark.name
+  bucket   = google_storage_bucket.tier3_cloudtasks.name
   role     = "roles/storage.objectUser"
   member   = each.value
   condition {
@@ -95,6 +144,6 @@ resource "google_storage_bucket_iam_member" "tier3_cloudtasks_state" {
     description = "Clean Flink state and its staged uploads under run prefixes"
     # Flink's GCS writer stages every object as .inprogress/<bucket>/<object>/
     # in the same bucket before composing it into place.
-    expression = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.cloudtasks_benchmark.name}/objects/runs/') || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.cloudtasks_benchmark.name}/objects/.inprogress/${google_storage_bucket.cloudtasks_benchmark.name}/runs/')"
+    expression = "resource.name.startsWith('projects/_/buckets/${google_storage_bucket.tier3_cloudtasks.name}/objects/runs/') || resource.name.startsWith('projects/_/buckets/${google_storage_bucket.tier3_cloudtasks.name}/objects/.inprogress/${google_storage_bucket.tier3_cloudtasks.name}/runs/')"
   }
 }

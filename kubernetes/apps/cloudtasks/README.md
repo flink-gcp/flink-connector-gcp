@@ -62,7 +62,7 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 | `--attempt-limit` | Window mode: explicitly approved per-creator ceiling, from 1 through three times the generated record count |
 | `--control-delay-millis` | Window calibration only: 0 (default) or 100; a nonzero value requires `UNNAMED`, parallelism/concurrency 1 and CSV output |
 | `--emit-attempts` | `true` (default), or `false` for a window calibration that measures accounting without CSV formatting/output |
-| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Defaults to `gs://flink-gcp-cloudtasks-benchmark/runs/`, which is what the removed cluster session used without passing it; a rig that writes elsewhere passes its own, and the single-host controller passes one inside each run's directory |
+| `--evidence-root` | Prefix the rows and receipts are written under: a hierarchical URI with a scheme and a non-empty path, ending in `/`, without a query or fragment, and for `file:` without a host. Required; the single-host controller passes one inside each run's directory |
 
 Record-count mode remains available for finite wiring checks.
 Window mode requires all four window arguments and rejects `--records` and `--warmup-records`.
@@ -106,7 +106,7 @@ Named failures retain the requested name so deduplicated replay can be reconcile
 It does not establish the reason for cancellation; an RPC reporting `DEADLINE_EXCEEDED` retains that status.
 The row describes the RPC future, whereas the committer classifies its local expiry as `DEADLINE_EXCEEDED` in connector error-class metrics; those two observations need not carry the same status.
 
-Window mode writes the rows through the installed Flink filesystem plugin as gzip-compressed CSV parts under `<evidence root><run>/cells/<cell>/rows/<incarnation>-<NNNNNN>.csv.gz`, which is `gs://flink-gcp-cloudtasks-benchmark/runs/` unless `--evidence-root` names another.
+Window mode writes the rows through the installed Flink filesystem plugin as gzip-compressed CSV parts under `<evidence root><run>/cells/<cell>/rows/<incarnation>-<NNNNNN>.csv.gz`.
 Part indices start at `000001` and are contiguous within a creator incarnation.
 Each part is created with `NO_OVERWRITE`, so a repeated incarnation fails instead of replacing evidence.
 A part is opened by its first row and rolled before the next row once it holds 8 MiB of uncompressed rows or has been open for 60 seconds.
@@ -318,7 +318,7 @@ A create that did not return keeps its marker, and then neither the release nor 
 A create refused before it was sent, for example because the admission deadline passed while the marker was being written, clears the marker and the creation intent.
 
 Only the supervisor deletes the queue, and only one whose creation intent the record holds.
-It waits for the runner's release and for the namespace to hold no Pod, deletes the queue and reads it back until it is gone, and shared cleanup then removes the run's state under `runs/<run-id>/` and `.inprogress/flink-gcp-cloudtasks-benchmark/runs/<run-id>/` in the benchmark bucket.
+It waits for the runner's release and for the namespace to hold no Pod, deletes the queue and reads it back until it is gone, and shared cleanup then removes the run's state under `runs/<run-id>/` and `.inprogress/flink-gcp-tier3-cloudtasks/runs/<run-id>/` in the `flink-gcp-tier3-cloudtasks` state bucket.
 
 ### Exercise and oracle
 
