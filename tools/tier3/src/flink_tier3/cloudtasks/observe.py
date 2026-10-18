@@ -23,8 +23,7 @@ from ..metrics import (
     SOURCE_METRICS,
     TASK_METRICS,
     checkpoint_statistics,
-    discover,
-    sample,
+    job_vertices,
     subtask_metrics,
     taskmanagers,
     unavailable,
@@ -62,31 +61,10 @@ def vertices(rest, known=None):
     """The source and sink vertex ids, and the sink's discovered metric ids.
 
     The job is two vertices: the source chained to the identity operator, and
-    the sink, whose committer is chained to its writer. A connector metric's id
-    carries its operator name, so it is discovered and unioned across calls,
-    as the BigQuery reader does: a listing taken before the committer opens
-    holds none of its metrics.
+    the sink, whose committer is chained to its writer, so the committer's
+    metrics are the sink vertex's.
     """
-    plan = sample(lambda: rest.job(""))
-    if unavailable(plan):
-        return known if known and not unavailable(known) else plan
-    listed = [v for v in (plan.get("vertices") or []) if v.get("id")]
-    sources = [v for v in listed if str(v.get("name", "")).startswith("Source")]
-    sinks = [v for v in listed if v not in sources]
-    if len(sources) != 1 or len(sinks) != 1:
-        return {"unavailable": f"expected one source and one sink, found {len(listed)}"}
-    sink = sinks[0]["id"]
-    listing = sample(lambda: rest.job(f"/vertices/{sink}/subtasks/metrics"))
-    previous = known if known and not unavailable(known) else {}
-    if unavailable(listing):
-        return known if previous.get("sink_metrics") else listing
-    return {
-        "source": sources[0]["id"],
-        "sink": sink,
-        "sink_metrics": discover(
-            listing, SINK_METRICS, previous.get("sink_metrics", [])
-        ),
-    }
+    return job_vertices(rest, known, SINK_METRICS)
 
 
 def observation(rest, state):

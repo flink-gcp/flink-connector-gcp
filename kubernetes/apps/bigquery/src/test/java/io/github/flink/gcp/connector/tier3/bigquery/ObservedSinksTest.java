@@ -52,10 +52,8 @@ class ObservedSinksTest {
                         getClass().getClassLoader());
         var env = StreamExecutionEnvironment.getExecutionEnvironment();
         BigQueryRecoveryJob.configure(env, options, sink);
-        assertThat(
-                        StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph())
-                                .getNumberOfVertices())
-                .isGreaterThanOrEqualTo(2);
+        // A Storage Write sink is one vertex, the EO committer chained to its writer.
+        assertThat(sinkVertices(env)).hasSize(1);
         try (var capture = LogCapture.of(AppenderObservations.class, LogCapture.Level.INFO)) {
             for (int subtask = 0; subtask < 2; subtask++) {
                 try (var writer = sink.createWriter(new StubWriterInitContext(subtask))) {
@@ -91,9 +89,26 @@ class ObservedSinksTest {
                 .isEqualTo("us-central1");
         var env = StreamExecutionEnvironment.getExecutionEnvironment();
         BigQueryRecoveryJob.configure(env, options, sink);
-        assertThat(StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph()).getVertices())
-                .extracting(JobVertex::getName)
-                .anySatisfy(name -> assertThat(name).contains("Committer"));
+        // The writer and a committer vertex of its own, as the observer names them.
+        var names = sinkVertices(env).stream().map(JobVertex::getName).toList();
+        assertThat(names).hasSize(2);
+        assertThat(names).filteredOn(name -> name.contains(": Writer")).hasSize(1);
+        assertThat(names)
+                .filteredOn(name -> name.endsWith(": Committer") && !name.contains(": Writer"))
+                .hasSize(1);
+    }
+
+    /**
+     * The vertices besides the job's source, which the rig's observer takes to be the one vertex
+     * whose name starts with {@code Source}, refusing a plan with none or several.
+     */
+    private static List<JobVertex> sinkVertices(StreamExecutionEnvironment env) {
+        var vertices =
+                List.of(
+                        StreamingJobGraphGenerator.createJobGraph(env.getStreamGraph())
+                                .getVerticesAsArray());
+        assertThat(vertices).filteredOn(vertex -> vertex.getName().startsWith("Source")).hasSize(1);
+        return vertices.stream().filter(vertex -> !vertex.getName().startsWith("Source")).toList();
     }
 
     @Test
