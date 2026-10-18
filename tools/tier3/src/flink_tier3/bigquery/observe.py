@@ -19,8 +19,7 @@ from ..metrics import (
     SOURCE_METRICS,
     TASK_METRICS,
     checkpoint_statistics,
-    discover,
-    sample,
+    job_vertices,
     subtask_metrics,
     taskmanagers,
     unavailable,
@@ -64,16 +63,12 @@ SINK_FAMILIES = {
 SINK_METRICS = frozenset(name for names in SINK_FAMILIES.values() for name in names)
 
 
-def _sinks(listed, source, mode):
-    """The writer vertex, and FILE_LOADS's separate committer vertex.
+def _file_loads_sinks(sinks):
+    """FILE_LOADS's writer vertex and its separate committer vertex.
 
-    The Storage Write sinks are one vertex, the EO committer chained to its
-    writer. FILE_LOADS routes every committable to one committer subtask, so
-    its committer is a vertex of its own, named `<sink>: Committer`.
+    FILE_LOADS routes every committable to one committer subtask, so its
+    committer is a vertex of its own, named `<sink>: Committer`.
     """
-    sinks = [v for v in listed if v["id"] != source]
-    if mode != "FILE_LOADS":
-        return (sinks[0]["id"], None) if len(sinks) == 1 else None
     committers = [
         v
         for v in sinks
@@ -89,50 +84,20 @@ def _sinks(listed, source, mode):
 def vertices(rest, known=None, mode=None):
     """The source and sink vertex ids, and the sink's discovered metric ids.
 
-    A connector metric is reported as ``<sanitised operator>.<name>``, so the
-    id cannot be predicted; it is discovered and then asked for by id. A task
-    registers its own metrics when it deploys and the sink's operators theirs
-    when they open, so one listing can hold the task names and none of the
-    connector gauges: ids are unioned across calls rather than frozen on the
-    first answer, which would silently drop the active-writer observation for
-    the rest of the run. A FILE_LOADS run also names its committer vertex and
-    that vertex's metric ids.
+    A FILE_LOADS run also names its committer vertex and that vertex's metric
+    ids; a Storage Write sink is one vertex, the EO committer chained to its
+    writer.
     """
-    plan = sample(lambda: rest.job(""))
-    if unavailable(plan):
-        return known if known and not unavailable(known) else plan
-    listed = [v for v in (plan.get("vertices") or []) if v.get("id")]
-    source = next(
-        (v["id"] for v in listed if str(v.get("name", "")).startswith("Source")), None
+    if mode != "FILE_LOADS":
+        return job_vertices(rest, known, SINK_METRICS)
+    return job_vertices(
+        rest,
+        known,
+        SINK_METRICS,
+        select=_file_loads_sinks,
+        shape="a writer and a committer",
+        committer_names=COMMITTER_METRICS,
     )
-    found = _sinks(listed, source, mode) if source is not None else None
-    if found is None:
-        shape = "a writer and a committer" if mode == "FILE_LOADS" else "one sink"
-        return {"unavailable": f"expected one source and {shape}, found {len(listed)}"}
-    sink, committer = found
-    listing = sample(lambda: rest.job(f"/vertices/{sink}/subtasks/metrics"))
-    previous = known if known and not unavailable(known) else {}
-    if unavailable(listing):
-        return known if previous.get("sink_metrics") else listing
-    state = {
-        "source": source,
-        "sink": sink,
-        "sink_metrics": discover(
-            listing, SINK_METRICS, previous.get("sink_metrics", [])
-        ),
-    }
-    if committer is not None:
-        # The committer's ids are discovered the same way; until they are,
-        # its reading is the named absence `metrics` returns for no ids.
-        ids = previous.get("committer_metrics", [])
-        listing = sample(lambda: rest.job(f"/vertices/{committer}/subtasks/metrics"))
-        state["committer"] = committer
-        state["committer_metrics"] = (
-            ids
-            if unavailable(listing)
-            else discover(listing, frozenset(COMMITTER_METRICS), ids)
-        )
-    return state
 
 
 def checkpoint_durations(rest, state):

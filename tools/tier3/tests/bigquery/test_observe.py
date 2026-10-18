@@ -386,6 +386,54 @@ def test_a_file_loads_plan_of_another_shape_is_named_unavailable(plan):
     )
 
 
+@pytest.mark.parametrize(
+    "mode,plan,shape",
+    [
+        (
+            "EO",
+            [{"id": "a", "name": "Source: a"}, {"id": "b", "name": "Source: b"}],
+            "one sink",
+        ),
+        (
+            "FILE_LOADS",
+            [
+                {"id": "a", "name": "Source: a"},
+                {"id": "b", "name": "Source: b -> X: Writer"},
+                {"id": "c", "name": "X: Committer"},
+            ],
+            "a writer and a committer",
+        ),
+        # Two sources beside a sink of the trial's shape are still not one.
+        (
+            "EO",
+            [
+                {"id": "a", "name": "Source: a"},
+                {"id": "b", "name": "Source: b"},
+                {"id": "sink", "name": "Sink: bigquery"},
+            ],
+            "one sink",
+        ),
+        (
+            "FILE_LOADS",
+            [
+                {"id": "a", "name": "Source: a"},
+                {"id": "b", "name": "Source: b"},
+                {"id": "w", "name": "X: Writer"},
+                {"id": "c", "name": "X: Committer"},
+            ],
+            "a writer and a committer",
+        ),
+    ],
+)
+def test_a_second_source_is_not_read_as_a_sink(mode, plan, shape):
+    """One source, as Cloud Tasks requires; the first of two once read the second."""
+    cluster, rest = file_loads_reader()
+    cluster.plan = plan
+    assert vertices(rest, mode=mode) == {
+        "unavailable": f"expected one source and {shape}, found {len(plan)}"
+    }
+
+
 def test_a_file_loads_reading_samples_the_committer_and_checkpoint_durations():
     cluster, rest = file_loads_reader()
     reading = observation(rest, vertices(rest, mode="FILE_LOADS"))

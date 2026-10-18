@@ -141,6 +141,67 @@ def sample(read):
         return {"unavailable": str(error)}
 
 
+def one_sink(sinks):
+    """The sink of a job whose only vertices are its source and one sink."""
+    return (sinks[0]["id"], None) if len(sinks) == 1 else None
+
+
+def job_vertices(
+    rest,
+    known,
+    sink_names,
+    *,
+    select=one_sink,
+    shape="one sink",
+    committer_names=frozenset(),
+):
+    """The source and sink vertex ids, and the sink's discovered metric ids.
+
+    The source is the one vertex whose name starts with ``Source``; a job with
+    none or several is not the trial's. ``select`` takes the other vertices and
+    returns the sink's id and a committer vertex's id or None, or returns None
+    when they are not ``shape``.
+
+    A connector metric is reported as ``<sanitised operator>.<name>``, so the
+    id cannot be predicted; it is discovered and then asked for by id. A task
+    registers its own metrics when it deploys and the sink's operators theirs
+    when they open, so one listing can hold the task names and none of the
+    connector gauges: ids are unioned across calls rather than frozen on the
+    first answer, which would silently drop them for the rest of the run. A
+    committer vertex's ids, of ``committer_names``, are discovered the same way.
+    """
+    plan = sample(lambda: rest.job(""))
+    if unavailable(plan):
+        return known if known and not unavailable(known) else plan
+    listed = [v for v in (plan.get("vertices") or []) if v.get("id")]
+    sources = [v for v in listed if str(v.get("name", "")).startswith("Source")]
+    found = (
+        select([v for v in listed if v not in sources]) if len(sources) == 1 else None
+    )
+    if found is None:
+        return {"unavailable": f"expected one source and {shape}, found {len(listed)}"}
+    sink, committer = found
+    listing = sample(lambda: rest.job(f"/vertices/{sink}/subtasks/metrics"))
+    previous = known if known and not unavailable(known) else {}
+    if unavailable(listing):
+        return known if previous.get("sink_metrics") else listing
+    state = {
+        "source": sources[0]["id"],
+        "sink": sink,
+        "sink_metrics": discover(listing, sink_names, previous.get("sink_metrics", [])),
+    }
+    if committer is not None:
+        # Until the committer's ids are discovered, its reading is the named
+        # absence `subtask_metrics` returns for no ids.
+        ids = previous.get("committer_metrics", [])
+        listing = sample(lambda: rest.job(f"/vertices/{committer}/subtasks/metrics"))
+        state["committer"] = committer
+        state["committer_metrics"] = (
+            ids if unavailable(listing) else discover(listing, committer_names, ids)
+        )
+    return state
+
+
 def subtask_metrics(rest, vertex, ids):
     """The named metrics of one vertex, aggregated over its subtasks."""
     if not ids:
