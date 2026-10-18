@@ -30,7 +30,7 @@ from ..policy import (
     QUERY_EVIDENCE_BYTES,
 )
 from .observe import observation, vertices
-from .oracle import EXACTLY_ONCE, FAULTS, assess
+from .oracle import EXACTLY_ONCE, assess
 from .verdict import COMPLETE_STAGE, MEASUREMENT_EVENT, summarize, verdict
 
 
@@ -96,8 +96,9 @@ class BigQueryExercise(RecoveryExercise):
         self.records = self.trial.records
         # The JobManager and the initial phase's TaskManagers.
         self.expected_pods = 1 + self.trial.parallelism("initial")
-        fault = FAULTS.get(self.trial.fault, {})
-        super().__init__(env, upgrade, **fault)
+        super().__init__(
+            env, upgrade, failover=self.trial.failover, rescale=self.trial.rescale
+        )
         self.deadline = min(
             env.schedule.started + self.timing["input_seconds"],
             env.schedule.cleanup_at,

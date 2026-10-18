@@ -22,9 +22,9 @@ import (
 )
 
 // The reviewed trial's inputs, which dispatch and the offline renderer supply.
-pubsubTrial:      *"jm-replacement" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(pubsub_trial)
-pubsubRecords:    *1000 | (int & >=2 & <=10000)                                       @tag(pubsub_records,type=int)
-pubsubEntryPoint: *"datastream" | "table"                                             @tag(pubsub_entry_point)
+pubsubTrial: *defaultFault | or([for kind, _ in faultKinds {kind}]) @tag(pubsub_trial)
+pubsubRecords:    *1000 | (int & >=2 & <=10000) @tag(pubsub_records,type=int)
+pubsubEntryPoint: *"datastream" | "table"       @tag(pubsub_entry_point)
 // The workload access probe's test plan and program, from `pubsub_plan.prepare`,
 // which checks the rendered Pod against both.
 pubsubProbe:       *"{}" | string @tag(pubsub_probe)
@@ -37,10 +37,9 @@ if scenario == "pubsub-recovery" {
 			delivery: resources: app: (pubsub.#Application & {
 				run: {
 					id: runID, image: applicationImage, recordsPerSubscription: pubsubRecords, entryPoint: pubsubEntryPoint
-					if pubsubTrial == "rescale-out" && !recovery || pubsubTrial == "rescale-in" && recovery {parallelism: 1}
-					if pubsubTrial == "rescale-out" && recovery || pubsubTrial == "rescale-in" && !recovery || pubsubTrial == "jm-replacement" || pubsubTrial == "tm-replacement" {parallelism: 2}
-					if recovery && (pubsubTrial == "rescale-out" || pubsubTrial == "rescale-in") {phase: "upgrade"}
-					if !recovery || pubsubTrial == "jm-replacement" || pubsubTrial == "tm-replacement" {phase: "initial"}
+					// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the upgrade phase.
+					parallelism: faultKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
+					phase: [if recovery && faultKinds[pubsubTrial].rescale != null {"upgrade"}, "initial"][0]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce
