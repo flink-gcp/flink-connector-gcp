@@ -65,7 +65,8 @@ every option each connector takes, with its default.
 
 ## Blog series
 
-This series introduces the project and its five connectors as they were released in 1.0.0.
+The series began with the project introduction and the five connectors available in 1.0.0.
+The Firestore article covers the connector added in 1.2.0.
 For current setup and supported behavior, see the [documentation].
 
 - [Release introduction](https://blog.laughingman7743.org/posts/flink-connector-gcp-1-0-0/)
@@ -74,6 +75,7 @@ For current setup and supported behavior, see the [documentation].
 - [Spanner](https://blog.laughingman7743.org/posts/flink-connector-gcp-spanner/)
 - [Bigtable](https://blog.laughingman7743.org/posts/flink-connector-gcp-bigtable/)
 - [Cloud Tasks](https://blog.laughingman7743.org/posts/flink-connector-gcp-cloud-tasks/)
+- [Firestore](https://blog.laughingman7743.org/posts/flink-connector-gcp-firestore/)
 
 [documentation]: https://flink-gcp.github.io/flink-connector-gcp/
 
