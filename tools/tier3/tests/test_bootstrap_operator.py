@@ -42,6 +42,7 @@ def documents():
         "tier3-cloudtasks",
         "tier3-bigquery",
         "tier3-pubsub",
+        "tier3-bigtable",
     ):
         objects.extend(
             [
@@ -90,7 +91,7 @@ def documents():
                     "namespace": "tier3-system",
                 },
                 "data": {
-                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub\n"
+                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable\n"
                 },
             },
             {
@@ -335,6 +336,7 @@ def test_bad_chart_never_reaches_helm(monkeypatch, tmp_path, case):
         "watch-missing-cloudtasks",
         "watch-missing-bigquery",
         "watch-missing-pubsub",
+        "watch-missing-bigtable",
         "watch-duplicate",
         "config-scalar",
         "binding-subject",
@@ -380,11 +382,12 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
     elif case.startswith("watch-"):
         watched = {
             "watch-all": "",
-            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,default",
-            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery,tier3-pubsub",
-            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks,tier3-pubsub",
-            "watch-missing-pubsub": "tier3-smoke,tier3-cloudtasks,tier3-bigquery",
-            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigquery",
+            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,default",
+            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery,tier3-pubsub,tier3-bigtable",
+            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks,tier3-pubsub,tier3-bigtable",
+            "watch-missing-pubsub": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-bigtable",
+            "watch-missing-bigtable": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub",
+            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-bigquery",
         }[case]
         objects[-2]["data"]["flink-conf.yaml"] = (
             "kubernetes.operator.watched.namespaces: " + watched
@@ -421,6 +424,8 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
         "bigquery-wrong-binding",
         "pubsub-missing",
         "pubsub-wrong-binding",
+        "bigtable-missing",
+        "bigtable-wrong-binding",
     ],
 )
 def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
@@ -436,6 +441,7 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             "tier3-cloudtasks": "cloudtasks",
             "tier3-bigquery": "bigquery",
             "tier3-pubsub": "pubsub",
+            "tier3-bigtable": "bigtable",
         }.get(namespace, "smoke")
         if (
             case == "cloudtasks-missing"
@@ -455,6 +461,12 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             and kind == "serviceaccount"
         ):
             raise RuntimeError("Pub/Sub ServiceAccount not found")
+        if (
+            case == "bigtable-missing"
+            and namespace == "tier3-bigtable"
+            and kind == "serviceaccount"
+        ):
+            raise RuntimeError("Bigtable ServiceAccount not found")
         if case == "missing" and kind == "serviceaccount":
             raise RuntimeError("ServiceAccount not found")
         if kind == "crd":
@@ -488,6 +500,10 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                         and namespace == "tier3-bigquery"
                     )
                     or (case == "pubsub-wrong-binding" and namespace == "tier3-pubsub")
+                    or (
+                        case == "bigtable-wrong-binding"
+                        and namespace == "tier3-bigtable"
+                    )
                     else account,
                     "namespace": namespace,
                 }
@@ -607,6 +623,33 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                 "-o",
                 "json",
             ),
+            (
+                "get",
+                "serviceaccount",
+                "bigtable",
+                "--namespace",
+                "tier3-bigtable",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "role",
+                "tier3-bigtable-job",
+                "--namespace",
+                "tier3-bigtable",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "rolebinding",
+                "tier3-bigtable-job",
+                "--namespace",
+                "tier3-bigtable",
+                "-o",
+                "json",
+            ),
         ]
     else:
         with pytest.raises(RuntimeError):
@@ -665,6 +708,7 @@ def test_unknown_root_is_rejected(tmp_path):
         "live-config",
         "live-rbac",
         "pubsub-live-rbac",
+        "bigtable-live-rbac",
         "live-resources",
     ],
 )
@@ -727,6 +771,12 @@ def test_post_apply_verification_reads_release_and_live_resources(
             and actual["metadata"]["namespace"] == "tier3-pubsub"
         ):
             actual["rules"] = []
+        if (
+            case == "bigtable-live-rbac"
+            and actual["kind"] == "Role"
+            and actual["metadata"]["namespace"] == "tier3-bigtable"
+        ):
+            actual["rules"] = []
         if case == "live-resources" and actual["kind"] == "Deployment":
             actual["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"][
                 "memory"
@@ -737,7 +787,7 @@ def test_post_apply_verification_reads_release_and_live_resources(
     monkeypatch.setattr(cluster, "kubectl", kubectl)
     if case == "idle":
         cluster.verify_operator()
-        assert len(calls) == 15
+        assert len(calls) == 17
     else:
         with pytest.raises(RuntimeError):
             cluster.verify_operator()

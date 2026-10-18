@@ -40,12 +40,14 @@ NAMESPACES = (
     "tier3-cloudtasks",
     "tier3-bigquery",
     "tier3-pubsub",
+    "tier3-bigtable",
 )
 OPERATOR_WATCH_NAMESPACES = {
     "tier3-smoke",
     "tier3-cloudtasks",
     "tier3-bigquery",
     "tier3-pubsub",
+    "tier3-bigtable",
 }
 MAX_CHART_BYTES = 2 * 1024 * 1024
 OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
@@ -71,11 +73,13 @@ OPERATOR_RESOURCES = {
     ("Role", "tier3-cloudtasks", "flink-operator"),
     ("Role", "tier3-bigquery", "flink-operator"),
     ("Role", "tier3-pubsub", "flink-operator"),
+    ("Role", "tier3-bigtable", "flink-operator"),
     ("RoleBinding", "tier3-system", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-smoke", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-cloudtasks", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-bigquery", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-pubsub", "flink-operator-role-binding"),
+    ("RoleBinding", "tier3-bigtable", "flink-operator-role-binding"),
 }
 
 
@@ -540,6 +544,7 @@ class Cluster:
             ("tier3-cloudtasks", "cloudtasks", "tier3-cloudtasks-job"),
             ("tier3-bigquery", "bigquery", "tier3-bigquery-job"),
             ("tier3-pubsub", "pubsub", "tier3-pubsub-job"),
+            ("tier3-bigtable", "bigtable", "tier3-bigtable-job"),
         ):
             for kind, name in (
                 ("serviceaccount", account),
