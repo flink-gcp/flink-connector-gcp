@@ -37,6 +37,7 @@ kubernetes/
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
   apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
   apps/cloudtasks/               # Cloud Tasks measurement and recovery applications and local tests
+  apps/bigtable/                 # Bigtable sink and Change Streams recovery application and local tests
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
@@ -225,6 +226,12 @@ The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite
 Its tests cover input restoration, emulator sink wiring and appender observations.
 The [trial publication](images/README.md#bigquery-trial-publication) carried the appender observations into the Storage Write trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427); the [FILE_LOADS trial publication](images/README.md#bigquery-file_loads-trial-publication) carried the FILE_LOADS mode into the `fl-10` trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), whose [findings](../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) record its result.
 The [fault trial publication](images/README.md#bigquery-fault-trial-publication) carries the `--parallelism` argument into the `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779).
+
+## Bigtable recovery application
+
+The [Bigtable recovery application](apps/bigtable/README.md) supplies the one graph that the trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) share: the sink in both delivery modes and a Change Streams relay.
+Build it with `just tier3-bigtable-verify`.
+Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph; it has no namespace, grants or scenario yet.
 
 ## Pub/Sub recovery application
 

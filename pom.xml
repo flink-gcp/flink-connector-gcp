@@ -1190,6 +1190,12 @@ limitations under the License.
             </modules>
         </profile>
         <profile>
+            <id>tier3-bigtable</id>
+            <modules>
+                <module>kubernetes/apps/bigtable</module>
+            </modules>
+        </profile>
+        <profile>
             <id>tier3-cloudtasks</id>
             <modules>
                 <module>kubernetes/apps/cloudtasks</module>

@@ -80,6 +80,9 @@ jobs:
       - name: Verify the Cloud Tasks recovery payload
         run: just tier3-cloudtasks-verify
 
+      - name: Verify the Bigtable recovery payload
+        run: just tier3-bigtable-verify
+
       - name: Export the locked lifecycle dependencies
         run: just tier3-lifecycle-requirements
 
@@ -194,6 +197,24 @@ jobs:
           tags: ${{ steps.cloudtasks_meta.outputs.tags }}
           labels: ${{ steps.cloudtasks_meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: bigtable_meta
+        with:
+          images: ${{ env.GAR }}/bigtable-recovery
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: bigtable_build
+        with:
+          context: kubernetes/apps/bigtable
+          platforms: linux/amd64
+          build-args: |
+            FLINK_IMAGE=${{ steps.recovery_base.outputs.image }}
+            FLINK_VERSION=2.2.1
+          push: true
+          tags: ${{ steps.bigtable_meta.outputs.tags }}
+          labels: ${{ steps.bigtable_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
@@ -202,6 +223,7 @@ jobs:
           RECOVERY_BASE: ${{ steps.recovery_base.outputs.image }}
           PUBSUB_DIGEST: ${{ steps.pubsub_build.outputs.digest }}
           CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
+          BIGTABLE_DIGEST: ${{ steps.bigtable_build.outputs.digest }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
@@ -214,4 +236,5 @@ jobs:
             printf '%s/bigquery-recovery@%s\n' "$GAR" "$BIGQUERY_DIGEST"
             printf '%s/pubsub-recovery@%s\n' "$GAR" "$PUBSUB_DIGEST"
             printf '%s/cloudtasks-recovery@%s\n' "$GAR" "$CLOUDTASKS_DIGEST"
+            printf '%s/bigtable-recovery@%s\n' "$GAR" "$BIGTABLE_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"
