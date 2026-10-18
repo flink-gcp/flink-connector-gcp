@@ -48,8 +48,12 @@ The input runs at parallelism one; every other vertex runs at `--parallelism`, o
 - **`AT_LEAST_ONCE` sink into `alo`:** the same contribution without staging. A replay after a restore adds to the SUM again, and so does a client retry of an entry whose first attempt was applied, so a SUM above 1 counts extra contributions without naming their cause.
 - **Change-stream relay from `eo` into `relay`:** for every change that adds to `agg`, the relay writes the row key with one cell in family `r`. Its qualifier is `<phase>/<uuid>/<n>`: the phase, a UUID drawn when the task instance opens, and the delivery's position in that instance. Its value is the change's commit time in microseconds. A change the source delivers again, whether after a restore or within one instance (as when the connector restarts a partition that lost its continuation token), therefore adds a qualifier, and the number of qualifiers in a relay row counts its deliveries. A change without a contribution, such as one holding only markers, is skipped; a row outside the input is relayed for the oracle to report.
 
-The source starts at `--change-stream-start` on a fresh start and stops at `--change-stream-end`, so the job finishes once the input is complete and the source reaches its end.
-The connector rejects a start later than the JobManager's clock, so the rig passes an instant it has already passed, such as the table's creation.
+On a fresh start the source reads from the instant its enumerator initializes, and it stops at `--change-stream-end`, so the job finishes once the input is complete and the source reaches its end.
+Starting there loses nothing: the enumerator refuses to snapshot before it has initialized, so no checkpoint completes, and the staged sink commits nothing, before the start.
+The start is read from the JobManager's clock, while commit times and the service's check come from the service's clock.
+The service refuses a start later than its current time, and a JobManager clock running ahead would also place the start after commits made just after the first checkpoint, so both hold only while the JobManager's clock does not lead the service's by more than the time from initialization to the first commit, which no setting bounds from below.
+The GKE nodes keep Google's time synchronization, which keeps that lead far below a checkpoint's duration, but it is an assumption of the trial rather than a guarantee.
+A restore resumes from the checkpointed positions instead, so the start is chosen once per run without an argument the rig would have to render before the table exists.
 The source signals its end only when no partition is missing, so a partition the connector is still reconciling holds the job past the end.
 The connector recovers a gap 2 minutes after it first observes it when pending merges' continuation tokens cover it and 20 minutes after when they do not, and then replays it; neither grace is measured from the end, so neither bounds when the job finishes.
 A restored partition whose position has fallen outside the table's retention fails the job rather than skipping ahead; the connector's restart of a partition that lost its token is instead moved forward to a minute inside the retention, which a position from a trial of a few hours never needs.
@@ -74,12 +78,23 @@ Progress lines use the `bigtable-progress` event in the shape the shared recover
 | `--instance` | The run's instance ID, `bt1316-` followed by a label. |
 | `--records` | Records in the input, 2 to 360,000. |
 | `--records-per-second` | Offered input rate, 1 to 100. The staged committers apply each checkpoint's input in one burst. |
-| `--change-stream-start`, `--change-stream-end` | ISO-8601 instants; the end follows the start by at most the 24 hours of retention. |
+| `--change-stream-end` | An ISO-8601 instant at which the source stops. |
 | `--phase` | `initial` or `upgrade`. |
 | `--require-restored` | `true` refuses a fresh start; `upgrade` requires it. |
 | `--parallelism` | Subtasks of every vertex but the input, 1 or 2 (default 2). |
 
-The run, instance, input and change-stream span form the trial identity that the restored input state must match; the phase and parallelism may change in an upgrade.
+The run, instance, input and change-stream end form the trial identity that the restored input state must match; the phase and parallelism may change in an upgrade.
 The check runs only while the input is active: once the input has finished, Flink restores its vertex as finished without initializing its state, so a later restore is not checked.
 The trials' recoveries all complete while the input runs, because the shared exercise fails a run whose input finishes before its post-recovery window.
-The grants, the CUE delivery, the scenario and its oracles belong to [#1853](https://github.com/flink-gcp/flink-connector-gcp/issues/1853) and [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
+
+## Deployment definition
+
+[`pkg/bigtable.#Application`](../../pkg/bigtable/application.cue) defines the job on Flink 2.2.1 / Java 17, and the [`bigtable-recovery`](../../lifecycle/bigtable.cue) lifecycle scenario renders its initial and upgrade phases from one input identity.
+The delivery supplies the run ID, image digest, phase, parallelism and change-stream end, and optionally the record count and rate, 180,000 records at 100 per second unless given; the package refuses more than 30 minutes of input.
+It names the instance `bt1316-<run-id>`, so the run ID has at most 26 characters, and passes no emulator endpoint or credentials file.
+
+The deployment runs as the `tier3-bigtable/bigtable` KSA, which selects the `tier3-bigtable` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-bigtable.tf) limit it to the `bt1316-` instances.
+Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-bigtable/runs/<run-id>/`, deleted one day after creation.
+One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
+Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
+The `tier3-bigtable` namespace, its KSA and RBAC, and the rig scenario that creates the instance and judges the trial belong to [#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860) and [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
