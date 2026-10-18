@@ -481,6 +481,10 @@ tier3-cloudtasks-verify:
 tier3-bigquery-verify:
     just verify -P tier3-bigquery -pl kubernetes/apps/bigquery -am clean
 
+# Verify the internal Bigtable recovery application without GCP access.
+tier3-bigtable-verify:
+    just verify -P tier3-bigtable -pl kubernetes/apps/bigtable -am clean
+
 # Verify the internal Pub/Sub recovery relay and offline evidence oracle.
 tier3-pubsub-verify:
     just verify -P tier3-pubsub -pl kubernetes/apps/pubsub -am clean

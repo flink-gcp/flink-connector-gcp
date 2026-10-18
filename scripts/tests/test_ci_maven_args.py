@@ -418,6 +418,14 @@ def test_full_mode_builds_everything(ci_maven_args):
     out = outputs(run_cli("--full"))
     assert out["run_build"] == "true"
     assert out["check_notice_sources"] == "false"
+    # Every opt-in Tier-3 application builds on a full run too.
+    assert {k: v for k, v in out.items() if k.startswith("run_tier3_")} == {
+        "run_tier3_smoke": "true",
+        "run_tier3_cloudtasks": "true",
+        "run_tier3_bigquery": "true",
+        "run_tier3_bigtable": "true",
+        "run_tier3_pubsub": "true",
+    }
     # Two lanes, and between them every module and every NOTICE the single-lane
     # contract used to carry: splitting the build must not narrow what it covers.
     assert sorted(lane["name"] for lane in lanes(out)) == CONNECTOR_LANES
@@ -637,6 +645,7 @@ def test_ignored_only_skips_the_build(ci_maven_args):
         "run_tier3_smoke": "false",
         "run_tier3_cloudtasks": "false",
         "run_tier3_bigquery": "false",
+        "run_tier3_bigtable": "false",
         "run_tier3_pubsub": "false",
         "run_build": "false",
         "lanes": "[]",
@@ -931,6 +940,41 @@ def test_bigquery_application_and_its_dependencies_select_its_build(
 )
 def test_unrelated_changes_do_not_select_bigquery_application(ci_maven_args, path):
     assert not ci_maven_args.requires_tier3_bigquery([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/bigtable/pom.xml",
+        "kubernetes/apps/bigtable/src/main/java/Job.java",
+        "flink-connector-gcp-bigtable/src/main/java/Writer.java",
+        "flink-connector-gcp-base/src/main/java/Rpc.java",
+        "flink-connector-gcp-test-utils/pom.xml",
+        "pom.xml",
+        "justfile",
+        "mise.toml",
+        ".mvn/wrapper/maven-wrapper.properties",
+        ".github/workflows/verify.yaml",
+        "tools/maven/checkstyle.xml",
+    ],
+)
+def test_bigtable_application_and_its_dependencies_select_its_build(
+    ci_maven_args, path
+):
+    assert ci_maven_args.requires_tier3_bigtable([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/bigquery/pom.xml",
+        "flink-connector-gcp-bigquery/src/main/java/Writer.java",
+        "opentofu/tier3-bootstrap/bigquery.tf",
+        "docs/adr/example.md",
+    ],
+)
+def test_unrelated_changes_do_not_select_bigtable_application(ci_maven_args, path):
+    assert not ci_maven_args.requires_tier3_bigtable([path])
 
 
 @pytest.mark.parametrize(
