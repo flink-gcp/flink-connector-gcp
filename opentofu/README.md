@@ -274,7 +274,7 @@ If the apply fails, review the fresh plan in the recovery draft PR opened by tfa
 
 The [Pub/Sub bootstrap stage](tier3-bootstrap/README.md#pubsub-recovery-foundation) adds the namespace/KSA, installer and job RBAC, lifecycle access and zero idle quotas after the GCP foundation is verified.
 The [bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan; separate reads verified the Pub/Sub identity, observed zero quotas, empty inventory and runner access.
-The common helper inspects all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) adds `tier3-pubsub` to its watch set.
+The common helper then inspected all five namespaces, and the [idle Operator configuration](tier3-operator/README.md) added `tier3-pubsub` to its watch set.
 The initial foundation deferred Pub/Sub topic/subscription grants; the lifecycle authority below follows the concrete application and owned resource design.
 The initial eight-resource stage introduced no Pub/Sub data or resource-administration permissions.
 Application image publication, ownership-aware service cleanup and run admission have since landed, as the [Pub/Sub runbook](../kubernetes/apps/pubsub/README.md) describes.
@@ -320,7 +320,7 @@ The condition is `resource.name.startsWith('projects/flink-gcp/instances/bt1316-
 A create request names the project as the instance's parent, which no instance condition matches, so the creator role is unconditional, as is the client-metrics role, whose time series are written to the project; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-foundation) records why each permission is there and what is measured before the first trial.
 Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
 IAM roles and bindings are free, and the bucket holds only one run's state at a time.
-The `tier3-bigtable` namespace and its KSA follow in the bootstrap root.
+The `tier3-bigtable` namespace, its `bigtable` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#bigtable-recovery-foundation).
 
 ### Operator installation follows the cluster
 

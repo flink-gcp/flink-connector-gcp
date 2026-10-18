@@ -62,7 +62,7 @@ The provider contains only the fixed context and Secret storage driver.
 Its wrapper clears inherited Kubernetes overrides and supplies that runner's verified kubeconfig, preserving ADC/WIF environment settings.
 Neither an expiring token nor the plan runner's kubeconfig path is serialized into the provider configuration.
 
-Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and all four application identities/RoleBindings.
+Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and the four watched application namespaces' identities/RoleBindings.
 It checks observed zero quotas and idle workload inventory in `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`.
 It checks that the rendered chart contains precisely the thirteen owned resources, zero replicas, the pinned image, the four expected watched namespaces and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
 This is a bounded idle inventory check, not an exhaustive audit of every Kubernetes controller or the [lifecycle supervisor](../../kubernetes/lifecycle/README.md).
@@ -113,5 +113,5 @@ Do not automatically advance Helm when the shared CRD/schema pin changes.
 A new ownership or authorization boundary requires an explicit bootstrap change before the Helm change.
 
 The [bounded lifecycle](../../kubernetes/lifecycle/README.md) implements temporary scale-up, numeric workload limits and cleanup behind a separate execution approval.
-All five bootstrap-owned idle quotas continue to forbid Pods and PVCs.
+All six bootstrap-owned idle quotas continue to forbid Pods and PVCs.
 Scaling down the Operator would not stop an existing Flink job, and an idle installation is not an unconditional zero-cost guarantee.
