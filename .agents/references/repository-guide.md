@@ -628,8 +628,8 @@ Cloud Tasks recovery trial (#1362) is the `cloudtasks-recovery` scenario in `tie
 its dispatch names one of four fault kinds (#1777). Read
 `kubernetes/apps/cloudtasks/README.md#recovery-trial` and ADR-0165 before changing its
 queue lifecycle, oracle, fault kinds or measurement windows. The Bigtable recovery trials
-(#1316, #1317) have their `bigtable-recovery` CUE delivery and GCP grants; the namespace and rig
-scenario follow (#1860, #1854). The `pubsub-recovery` dispatch names a reviewed trial file under
+(#1316, #1317) have their `bigtable-recovery` CUE delivery, GCP grants and namespace (#1860); the
+rig scenario follows (#1854). The `pubsub-recovery` dispatch names a reviewed trial file under
 `kubernetes/lifecycle/pubsub-trials/`; read the [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials)
 and `kubernetes/apps/pubsub/README.md` before adding one. Create the directory with its first
 reviewed trial, and keep it TOML so it carries the licence

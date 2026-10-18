@@ -13,7 +13,8 @@
 # limitations under the License.
 
 # Adopt administrator-provisioned namespaces, idle quotas and installer access.
-# Adding a namespace requires its six prerequisites before CI plans this root.
+# Adding a namespace requires its six prerequisites, and the namespace in the
+# bootstrap ClusterRoles' resourceNames, before CI plans this root.
 import {
   for_each = local.namespaces
   to       = kubernetes_namespace_v1.tier3[each.key]
