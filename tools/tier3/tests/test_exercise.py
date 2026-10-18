@@ -20,10 +20,17 @@ for each poll, so each fault kind's proof and its refusals are held here.
 """
 
 import copy
+import inspect
 
 import pytest
 from flink_tier3.common import TRANSIENT_STATUSES, ApiError, Failure, TransportError
-from flink_tier3.exercise import RecoveryExercise
+from flink_tier3.exercise import (
+    DEFAULT_FAULT,
+    FAULTS,
+    REPLACEMENT_KINDS,
+    RESCALE_KINDS,
+    RecoveryExercise,
+)
 from flink_tier3.policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE
 
 from .cloudtasks.test_recovery_plan import inputs as inputs  # noqa: PLC0414
@@ -480,12 +487,59 @@ def test_a_rescale_does_not_add_a_section_the_application_lacks(world):
 
 @pytest.mark.parametrize(
     "kind",
-    [{"failover": "taskmanagers"}, {"failover": None}, {"rescale": "sideways"}],
+    [
+        {"failover": "taskmanagers"},
+        {"failover": None},
+        {"rescale": "sideways"},
+        # Each is an argument some kind takes, but no kind takes both.
+        {"failover": "taskmanager", "rescale": "out"},
+    ],
 )
 def test_the_fault_kind_must_be_one_the_exercise_runs(prepared, kind):
     environment, _, upgrade, _ = prepared
     with pytest.raises(Failure, match="approved fault kind"):
         Exercise(environment, upgrade, **kind)
+
+
+@pytest.mark.parametrize("name", list(FAULTS))
+def test_every_fault_kind_is_one_the_exercise_runs(prepared, name):
+    """Each kind's failover and rescale are arguments the exercise accepts."""
+    environment, _, upgrade, _ = prepared
+    fault = FAULTS[name]
+    exercise = Exercise(
+        environment, upgrade, failover=fault.failover, rescale=fault.rescale
+    )
+    assert (exercise.failover, exercise.rescale) == (fault.failover, fault.rescale)
+
+
+def test_the_fault_kinds_are_the_four_the_trials_have_run():
+    """Each name is in archived approvals and analysis reports; none may move."""
+    # In order, which the workflow options and descriptions list them in.
+    assert [
+        (name, fault.failover, fault.rescale, fault.initial, fault.upgrade)
+        for name, fault in FAULTS.items()
+    ] == [
+        ("jm-replacement", "jobmanager", None, 2, 2),
+        ("tm-replacement", "taskmanager", None, 2, 2),
+        ("rescale-out", "jobmanager", "out", 1, 2),
+        ("rescale-in", "jobmanager", "in", 2, 1),
+    ]
+    # The exercise's own defaults are the kind a trial that names none runs.
+    default = FAULTS[DEFAULT_FAULT]
+    parameters = inspect.signature(RecoveryExercise).parameters
+    assert parameters["failover"].default == default.failover
+    assert parameters["rescale"].default == default.rescale
+    assert REPLACEMENT_KINDS == {
+        "jobmanager": "jm-replacement",
+        "taskmanager": "tm-replacement",
+    }
+    assert RESCALE_KINDS == {"out": "rescale-out", "in": "rescale-in"}
+
+
+@pytest.mark.parametrize("phase", ["", "recovery", None])
+def test_a_fault_kind_sizes_only_the_two_phases(phase):
+    with pytest.raises(ValueError, match="Unknown trial phase"):
+        FAULTS[DEFAULT_FAULT].parallelism(phase)
 
 
 @pytest.fixture

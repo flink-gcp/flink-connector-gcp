@@ -2773,6 +2773,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     import yaml
     from flink_tier3.bigquery import plan as bigquery_plan
     from flink_tier3.cloudtasks import trial as cloudtasks_trial
+    from flink_tier3.exercise import FAULTS
 
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
@@ -2782,6 +2783,11 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     # "none" is not a kind, so a Cloud Tasks dispatch that names none is refused.
     assert inputs["cloudtasks_trial"]["options"] == ["none", *cloudtasks_trial.KINDS]
     assert inputs["cloudtasks_trial"]["default"] == "none"
+    # Both descriptions list the shared kinds, which name the Pub/Sub files too.
+    *first, last = FAULTS
+    kinds = "(" + ", ".join(first) + " or " + last + ")"
+    for name in ("pubsub_trial", "cloudtasks_trial"):
+        assert inputs[name]["description"].endswith(kinds), name
     # Dispatching is the approval: no phrase, expiry or second copy of the
     # commit is typed.
     assert set(inputs) == {

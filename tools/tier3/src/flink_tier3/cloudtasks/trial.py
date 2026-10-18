@@ -16,6 +16,7 @@
 import hashlib
 from dataclasses import dataclass
 
+from ..exercise import DEFAULT_FAULT, FAULTS
 from ..policy import PROJECT, REGION, RUN_ID
 
 # The application's bounds (kubernetes/apps/cloudtasks RecoveryOptions) and the
@@ -24,11 +25,9 @@ MAX_RECORDS = 360000
 MAX_RECORDS_PER_SECOND = 100
 MAX_INPUT_SECONDS = 1800
 QUEUE_PREFIX = "ct1362-"
-# Every trial runs a savepoint upgrade and then a Pod deletion; each kind but
-# the first replaces one of the two with the fault it names, as the shared
-# exercise runs it: a TaskManager deleted in place of the JobManager, or an
-# upgrade that rescales the sink from one subtask to two or from two to one.
-KINDS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
+# Every trial runs a savepoint upgrade and then a Pod deletion; each shared
+# fault kind but the default replaces one of the two with the fault it names.
+KINDS = tuple(FAULTS)
 
 
 def parent():
@@ -50,7 +49,7 @@ class Trial:
     run_id: str
     records: int
     records_per_second: int
-    kind: str = KINDS[0]
+    kind: str = DEFAULT_FAULT
 
     def __post_init__(self):
         if not isinstance(self.run_id, str) or not RUN_ID.fullmatch(self.run_id):
@@ -72,25 +71,16 @@ class Trial:
     @property
     def failover(self):
         """The Pod the second recovery deletes, as the shared exercise names it."""
-        return "taskmanager" if self.kind == "tm-replacement" else "jobmanager"
+        return FAULTS[self.kind].failover
 
     @property
     def rescale(self):
         """The direction the upgrade rescales the sink in, or None."""
-        if not self.kind.startswith("rescale-"):
-            return None
-        return self.kind.removeprefix("rescale-")
+        return FAULTS[self.kind].rescale
 
     def sink_parallelism(self, phase):
         """The sink's subtasks in one phase, and the TaskManagers running them."""
-        if phase not in ("initial", "upgrade"):
-            raise ValueError("Unknown Cloud Tasks phase")
-        if (self.kind, phase) in (
-            ("rescale-out", "initial"),
-            ("rescale-in", "upgrade"),
-        ):
-            return 1
-        return 2
+        return FAULTS[self.kind].parallelism(phase)
 
     @property
     def queue(self):

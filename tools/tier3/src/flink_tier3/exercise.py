@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import re
+from dataclasses import dataclass
 
 from .common import (
     ApiError,
@@ -39,8 +40,55 @@ from .metrics import FlinkRest
 # The Pod the second recovery deletes, by the name the approved trial gives it,
 # and the role its deletion messages name.
 FAILOVERS = {"jobmanager": "JM", "taskmanager": "TM"}
-# The directions a rescale moves the checkpointed subtasks in.
-RESCALE_DIRECTIONS = ("out", "in")
+
+
+@dataclass(frozen=True)
+class Fault:
+    """One fault kind: the Pod it deletes, its rescale and its writers' sizes.
+
+    ``initial`` and ``upgrade`` are the sink or writers' parallelism of each
+    phase, one subtask per single-slot TaskManager. A rescale moves it between
+    one and two, inside the three-Pod quota of the BigQuery and Cloud Tasks
+    namespaces, and every other kind keeps two.
+    """
+
+    failover: str
+    rescale: str | None
+    initial: int
+    upgrade: int
+
+    def parallelism(self, phase):
+        """The writers' parallelism, and TaskManager count, of a phase."""
+        if phase not in ("initial", "upgrade"):
+            raise ValueError("Unknown trial phase")
+        return self.initial if phase == "initial" else self.upgrade
+
+
+# The fault kinds every recovery scenario names its trials by: in approvals,
+# dispatch, the lifecycle delivery's sizes and the analysis report. A BigQuery
+# or Cloud Tasks trial runs the savepoint upgrade and then deletes the
+# ``failover`` Pod, and a rescale kind makes that upgrade the rescale; a
+# Pub/Sub trial runs only the kind's fault, deleting the Pod of a replacement
+# or making a rescale its one upgrade. `kubernetes/lifecycle/faults.cue`
+# renders the same sizes, and a test holds it to this table.
+FAULTS = {
+    "jm-replacement": Fault("jobmanager", None, 2, 2),
+    "tm-replacement": Fault("taskmanager", None, 2, 2),
+    "rescale-out": Fault("jobmanager", "out", 1, 2),
+    "rescale-in": Fault("jobmanager", "in", 2, 1),
+}
+# The kind of a trial that names none. A BigQuery or Cloud Tasks trial of it
+# runs the upgrade and then the JobManager failover, as those scenarios did
+# before they had fault kinds.
+DEFAULT_FAULT = "jm-replacement"
+# The kinds that replace a Pod, by the Pod each deletes, and the rescales by
+# the direction each moves the checkpointed subtasks in.
+REPLACEMENT_KINDS = {
+    fault.failover: kind for kind, fault in FAULTS.items() if fault.rescale is None
+}
+RESCALE_KINDS = {
+    fault.rescale: kind for kind, fault in FAULTS.items() if fault.rescale is not None
+}
 # The timing a scenario that samples the job sizes its windows with.
 WINDOW_TIMING = {
     "warmup_seconds",
@@ -100,8 +148,9 @@ class RecoveryExercise:
             raise Failure("A sampling exercise requires its windows' events and timing")
         if upgrade is None:
             raise Failure("Recovery requires the approved upgrade manifest")
-        if failover not in FAILOVERS or (
-            rescale is not None and rescale not in RESCALE_DIRECTIONS
+        if not any(
+            (failover, rescale) == (fault.failover, fault.rescale)
+            for fault in FAULTS.values()
         ):
             raise Failure("Recovery requires an approved fault kind")
         self.env, self.upgrade = env, upgrade

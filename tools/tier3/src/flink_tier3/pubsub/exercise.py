@@ -17,7 +17,7 @@
 import re
 
 from ..common import Failure, contains, utc
-from ..exercise import RecoveryExercise
+from ..exercise import FAILOVERS, FAULTS, RecoveryExercise
 from ..metrics import sample, subset, unavailable
 from ..policy import PUBSUB, PUBSUB_EXERCISE, PUBSUB_STATE
 from .messages import COHORTS, cohort_ranges
@@ -86,6 +86,10 @@ class PubSubExercise(RecoveryExercise):
             raise Failure("Pub/Sub exercise requires a Pub/Sub approval")
         super().__init__(env, upgrade)
         self.kind = env.approval.pubsub_trial["trial"]
+        # The Pod a replacement deletes; a rescale deletes none.
+        self.replaced = (
+            FAULTS[self.kind].failover if self.kind in REPLACEMENTS else None
+        )
         self.handoff = handoff
         self.collector = OutputCollector(handoff)
         self.ranges = cohort_ranges(self.collector.records)
@@ -314,7 +318,7 @@ class PubSubExercise(RecoveryExercise):
 
     def target(self, pods, replayed):
         """The Pod the fault removes, or None while it cannot yet be named."""
-        if self.kind == "jm-replacement":
+        if self.replaced == "jobmanager":
             return self.jobmanager(pods)
         counts = {}
         for item in replayed:
@@ -351,7 +355,7 @@ class PubSubExercise(RecoveryExercise):
                 return
             displaced = (
                 before
-                if self.kind == "jm-replacement"
+                if self.replaced == "jobmanager"
                 else {
                     attempt
                     for attempt, owner in self.attempts.items()
@@ -392,7 +396,7 @@ class PubSubExercise(RecoveryExercise):
         self.persist("recovering", observed=self.summary())
         self.check_open()
         if self.kind in REPLACEMENTS:
-            self.delete_pod(pod, "JM" if self.kind == "jm-replacement" else "TM")
+            self.delete_pod(pod, FAILOVERS[self.replaced])
         else:
             self.patch_upgrade(
                 app,
@@ -424,11 +428,11 @@ class PubSubExercise(RecoveryExercise):
             jm = self.jobmanager(pods)
             if jm is None:
                 return None
-            if self.kind == "jm-replacement" and (
+            if self.replaced == "jobmanager" and (
                 jm["metadata"]["uid"] == self.fault["jm_uid"]
             ):
                 return None
-            if self.kind == "tm-replacement" and any(
+            if self.replaced == "taskmanager" and any(
                 pod["metadata"]["uid"] == self.fault["pod_uid"] for pod in pods
             ):
                 return None

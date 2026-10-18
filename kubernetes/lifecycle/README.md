@@ -19,12 +19,15 @@ limitations under the License.
 ```text
 lifecycle/
   delivery.cue       # Shared inputs, ConfigMap and supervisor Job
+  faults.cue         # Recovery fault kinds and each phase's sizes
   smoke.cue          # Smoke application
   bigquery.cue       # BigQuery trial inputs and applications
   pubsub.cue         # Pub/Sub trial inputs, applications and access probe
+  cloudtasks.cue     # Cloud Tasks trial inputs and applications
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
+The three recovery scenarios take their fault kinds and each phase's sizes from [faults.cue](faults.cue), the copy of the shared exercise's `FAULTS` table that a test holds to it ([#1789](https://github.com/flink-gcp/flink-connector-gcp/issues/1789)).
 The runner selects the scenario through its existing input.
 
 The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
@@ -107,7 +110,7 @@ gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
 
 The cluster rig's Cloud Tasks measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM.
 The [`cloudtasks-recovery`](cloudtasks.cue) delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) renders its initial and upgrade phases in `tier3-cloudtasks` from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given, refuses more than 30 minutes of input, and names the run's queue `ct1362-<run-id>`.
-Its `cloudtasks_trial` tag, `jm-replacement` unless given, sizes each phase's sink and TaskManagers: one subtask in the initial phase of `rescale-out` and the upgrade phase of `rescale-in`, two otherwise.
+Its `cloudtasks_trial` tag, `jm-replacement` unless given, sizes each phase's sink and TaskManagers from [faults.cue](faults.cue).
 Dispatch renders it at the dispatched kind and the input every kind shares, and the [recovery trial runbook](../apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
 Every run's inventory lists `tier3-cloudtasks`.
 

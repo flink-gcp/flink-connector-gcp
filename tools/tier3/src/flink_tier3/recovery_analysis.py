@@ -24,13 +24,16 @@ of its own, which this reading does not cover.
 """
 
 from .common import Failure, timestamp
+from .exercise import REPLACEMENT_KINDS, RESCALE_KINDS
 
 # The recoveries the shared exercise proves, in the order it runs them, and
 # the fault each one is when its proof names no other. A rescale's proof
 # carries its direction, and a TaskManager replacement's the Pod it replaced;
-# the names are the Pub/Sub trials' where that scenario has the fault.
-RECOVERIES = {"upgrade": "savepoint-upgrade", "failover": "jm-replacement"}
-RESCALES = {"out": "rescale-out", "in": "rescale-in"}
+# every name but ``savepoint-upgrade`` is a shared fault kind.
+RECOVERIES = {
+    "upgrade": "savepoint-upgrade",
+    "failover": REPLACEMENT_KINDS["jobmanager"],
+}
 # Epoch milliseconds a JSON reader can still divide: 2**53 is in the year
 # 287,396, and a larger integer can overflow the report's seconds.
 LATEST_MILLISECONDS = 2**53
@@ -140,13 +143,17 @@ def milliseconds(value):
 def _fault(name, proof):
     """The fault the proof names, or None when it names one unreadably."""
     if name == "failover":
-        return "tm-replacement" if "replaced" in proof else RECOVERIES[name]
+        return (
+            REPLACEMENT_KINDS["taskmanager"]
+            if "replaced" in proof
+            else RECOVERIES[name]
+        )
     if "rescale" not in proof:
         return RECOVERIES[name]
     rescale = proof["rescale"]
     direction = rescale.get("direction") if isinstance(rescale, dict) else None
     # A list or an object would not even be a key to look up.
-    return RESCALES.get(direction) if isinstance(direction, str) else None
+    return RESCALE_KINDS.get(direction) if isinstance(direction, str) else None
 
 
 def _timing(began, proof):

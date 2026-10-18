@@ -21,6 +21,7 @@ from decimal import Decimal
 
 from ..bundle import package_sources
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
+from ..exercise import FAULTS
 from ..model import Schedule, _hourly
 from ..policy import CLEANUP_SECONDS, GAR, POD_RESOURCES, SHA, WINDOWS
 from ..workflow import render
@@ -28,7 +29,7 @@ from .access import probe_spec
 from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
 from .resources import ResourcePlan
 
-TRIALS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
+TRIALS = tuple(FAULTS)
 ENTRY_POINTS = ("datastream", "table")
 WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
@@ -187,14 +188,11 @@ def manifest_jobs(run_id, trial):
     upgrade phase.
     """
     validate_trial(trial)
-    kind = trial["trial"]
+    fault = FAULTS[trial["trial"]]
     jobs = []
     for parallelism, phase in (
-        (1 if kind == "rescale-out" else 2, "initial"),
-        (
-            1 if kind == "rescale-in" else 2,
-            "upgrade" if kind.startswith("rescale-") else "initial",
-        ),
+        (fault.initial, "initial"),
+        (fault.upgrade, "initial" if fault.rescale is None else "upgrade"),
     ):
         jobs.append(
             (

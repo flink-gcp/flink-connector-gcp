@@ -24,16 +24,16 @@ import (
 bigqueryMode:         *"EO" | "ALO" | "FILE_LOADS" @tag(bigquery_mode)
 bigqueryDestinations: *10 | 50                     @tag(bigquery_destinations,type=int)
 // The fault a trial runs in place of one of the two recoveries every trial has run, or none.
-bigqueryFault: *"none" | "tm-replacement" | "rescale-out" | "rescale-in" @tag(bigquery_fault)
+bigqueryFault: *"none" | or([for kind, _ in faultKinds if kind != defaultFault {kind}]) @tag(bigquery_fault)
 
-// The writers' parallelism of each phase: a rescale moves it between one and two, inside the
-// namespace's three-Pod quota, and every other trial keeps two.
-_bigqueryParallelism: {
-	"none": {initial: 2, upgrade: 2}
-	"tm-replacement": {initial: 2, upgrade: 2}
-	"rescale-out": {initial: 1, upgrade: 2}
-	"rescale-in": {initial: 2, upgrade: 1}
-}[bigqueryFault]
+// The writers' parallelism of each phase, the fault kind's; a trial without a fault keeps the
+// default kind's. Indexed, because with the package sources on standard input, as every render
+// supplies them, the tag's disjunction alone refused no fault in an export of the applications.
+_bigqueryFaults: {
+	"none": faultKinds[defaultFault]
+	for kind, sizes in faultKinds if kind != defaultFault {(kind): sizes}
+}
+_bigqueryParallelism: _bigqueryFaults[bigqueryFault]
 
 // Both BigQuery phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it

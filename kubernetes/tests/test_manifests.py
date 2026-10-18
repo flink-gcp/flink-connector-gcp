@@ -31,6 +31,7 @@ from flink_tier3 import repository
 from flink_tier3.bigquery import plan as bigquery_plan
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.common import Failure, digest, timestamp, verify_pod
+from flink_tier3.exercise import DEFAULT_FAULT, FAULTS
 from flink_tier3.lifecycle import bind
 from flink_tier3.model import Approval, validate_approval
 from flink_tier3.policy import GAR, POD_RESOURCES
@@ -2051,6 +2052,80 @@ def test_bigquery_fault_renders_each_phase_size(module, fault, initial, upgrade,
     args[args.index("--parallelism") + 1] = str(upgrade)
     args[args.index("--require-restored") + 1] = "true"
     assert second == expected
+
+
+def test_the_lifecycle_fault_kinds_are_the_exercise_table(module):
+    """The CUE copy of `FAULTS`, so a kind added to or changed in one fails here."""
+    result = lifecycle_export(module, "[faultKinds, defaultFault]")
+    assert result.returncode == 0, result.stderr
+    kinds, default = json.loads(result.stdout)
+    assert list(kinds) == list(FAULTS)
+    assert kinds == {
+        name: {
+            "rescale": fault.rescale,
+            "initial": fault.initial,
+            "upgrade": fault.upgrade,
+        }
+        for name, fault in FAULTS.items()
+    }
+    assert default == DEFAULT_FAULT
+
+
+@pytest.mark.parametrize("name", list(FAULTS))
+@pytest.mark.parametrize(
+    "scenario,tag,image",
+    [
+        ("bigquery-recovery", "bigquery_fault", "bigquery-recovery"),
+        ("cloudtasks-recovery", "cloudtasks_trial", "cloudtasks-recovery"),
+        ("pubsub-recovery", "pubsub_trial", "pubsub-recovery"),
+    ],
+)
+def test_every_scenario_renders_each_fault_kinds_sizes(
+    module, name, scenario, tag, image
+):
+    """Each phase's job parallelism and TaskManagers are the kind's, in each scenario."""
+    fault = FAULTS[name]
+    # A BigQuery trial names no fault for the default kind.
+    value = "none" if tag == "bigquery_fault" and name == DEFAULT_FAULT else name
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication]",
+        scenario,
+        run_id="proposal-1789",
+        active_seconds="5220",
+        application_image=GAR + image + "@" + SYNTHETIC_DIGEST,
+        **{tag: value},
+    )
+    assert result.returncode == 0, result.stderr
+    # A Pub/Sub replacement's recovery manifest stays in the initial phase.
+    recovery = (
+        "initial" if tag == "pubsub_trial" and fault.rescale is None else "upgrade"
+    )
+    for app, phase, rendered in zip(
+        json.loads(result.stdout), ("initial", "upgrade"), ("initial", recovery)
+    ):
+        size = fault.parallelism(phase)
+        assert app["spec"]["job"]["parallelism"] == size
+        assert app["spec"]["taskManager"]["replicas"] == size
+        flags = " ".join(app["spec"]["job"]["args"]).replace("=", " ")
+        assert f"--phase {rendered} " in flags
+        assert re.search(rf"--(sink-)?parallelism {size}( |$)", flags), flags
+
+
+@pytest.mark.parametrize("trial", ["rescale", "none", ""])
+def test_pubsub_rejects_an_unknown_trial(module, trial):
+    """Chosen by comparisons, an unknown trial rendered both applications at one."""
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication]",
+        "pubsub-recovery",
+        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        pubsub_trial=trial,
+    )
+    assert result.returncode != 0
+    assert not result.stdout.strip()
+    # The kind table refuses it, as it refuses an unknown Cloud Tasks trial.
+    assert re.search(rf'undefined field: "?{re.escape(trial)}"?:', result.stderr)
 
 
 @pytest.mark.parametrize("fault", ["jm-replacement", "rescale", ""])

@@ -17,6 +17,7 @@
 import math
 
 from ..common import INCONCLUSIVE, USABLE
+from ..exercise import REPLACEMENT_KINDS, RESCALE_KINDS
 from ..metrics import coverage_reasons, fold_coverage, metric_name
 from .observe import FAMILIES
 
@@ -24,8 +25,8 @@ COMPLETE_STAGE = "complete"
 # The evidence events the exercise writes and the offline analysis reads.
 COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "pubsub-measurement"
-REPLACEMENTS = ("jm-replacement", "tm-replacement")
-RESCALES = ("rescale-out", "rescale-in")
+REPLACEMENTS = tuple(REPLACEMENT_KINDS.values())
+RESCALES = tuple(RESCALE_KINDS.values())
 # The windows a sample counts toward. The stages before the fault are one
 # window, because the first of them can end within a poll of the job starting,
 # before its operators have registered anything; the window after recovery is
