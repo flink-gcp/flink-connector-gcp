@@ -22,7 +22,7 @@ limitations under the License.
   each release also publishes the per-major LTS jar as `X.Y.Z-1.20` — support stays
   source-level and per-major, and no cross-major binary claim is added; revised by [#1635]
   (2026-10-04): the shared Table source forwards Flink 2.x watermark declarations
-- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404], [#1635]
+- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404], [#724], [#1635]
 - Modules: all connectors, base
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
   § Supported versions
