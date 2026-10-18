@@ -217,8 +217,8 @@ It cannot declare the bootstrap resource kinds, which prevents accidental owners
 
 The bootstrap runbook documents credentials, RBAC, initial administrator permission grants, adoption of existing resources and CI plan/apply.
 The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
-The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`.
-All five application namespaces retain zero Pod/PVC quotas until separately approved admission; `tier3-bigtable` joins the watch set once its foundation is verified ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)).
+The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable`.
+All five application namespaces retain zero Pod/PVC quotas until separately approved admission.
 After calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed.
 The `tier3-cloudtasks` namespace runs the `cloudtasks-recovery` scenario, the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); its [runbook](apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict, and its [findings](../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record its result.
 The [Cloud Tasks fault trial publication](images/README.md#cloud-tasks-fault-trial-publication) carries the `--sink-parallelism` argument into the TaskManager replacement and rescale trials of [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778), and the [Cloud Tasks INTERNAL retry publication](images/README.md#cloud-tasks-internal-retry-publication) their later attempts; the [findings](../docs/adr/evidence/0165-cloudtasks-fault-trials-findings-1778.md) record their results.
@@ -234,7 +234,7 @@ The [fault trial publication](images/README.md#bigquery-fault-trial-publication)
 The [Bigtable recovery application](apps/bigtable/README.md) supplies the one graph that the trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) share: the sink in both delivery modes and a Change Streams relay.
 Build it with `just tier3-bigtable-verify`.
 Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph.
-The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery and its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf) exist, and so do the `tier3-bigtable` namespace, its `bigtable` KSA and RBAC ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)); the rig scenario that admits the delivery follows in [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
+The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery and its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf) exist, and so do the `tier3-bigtable` namespace, its `bigtable` KSA and RBAC ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)), which the Operator watches ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)); the rig scenario that admits the delivery follows in [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
 
 ## Pub/Sub recovery application
 

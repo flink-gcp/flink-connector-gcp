@@ -249,7 +249,7 @@ The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-p
 The administrator extends the two existing ClusterRoles before that plan; after refresh their rules should already match, with only possible metadata reconciliation.
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
 The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed with empty refreshed bootstrap and GCP plans; runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
-That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extends the current scope.
+That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extended that scope, and the [Bigtable preparation](#bigtable-tier-3-preparation) extends it to the current one.
 Application publication and runtime admission are separate from this foundation, and each paid trial dispatch needs its own execution approval.
 
 ### Pub/Sub Tier-3 preparation
@@ -320,7 +320,7 @@ The condition is `resource.name.startsWith('projects/flink-gcp/instances/bt1316-
 A create request names the project as the instance's parent, which no instance condition matches, so the creator role is unconditional, as is the client-metrics role, whose time series are written to the project; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-foundation) records why each permission is there and what is measured before the first trial.
 Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
 IAM roles and bindings are free, and the bucket holds only one run's state at a time.
-The `tier3-bigtable` namespace, its `bigtable` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#bigtable-recovery-foundation).
+The `tier3-bigtable` namespace, its `bigtable` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#bigtable-recovery-foundation), and the common helper inspects the namespace and the [idle Operator configuration](tier3-operator/README.md) watches it ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)).
 
 ### Operator installation follows the cluster
 

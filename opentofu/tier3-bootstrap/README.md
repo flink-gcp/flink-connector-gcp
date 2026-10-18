@@ -71,7 +71,7 @@ These are trusted Operator administrators, as described in [ADR-0165](../../docs
 The new namespace retains zero Pod/PVC quotas.
 The [successful foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35234958991) and subsequent empty refreshed plan completed the namespace prerequisites.
 After verification of the runner's new read permissions, that extension added Cloud Tasks to the common bootstrap helper and the [Helm root](../tier3-operator/README.md), keeping zero replicas.
-BigQuery subsequently extended the helper to four namespaces and the watch set to three application namespaces; Pub/Sub acceptance below establishes the current five-namespace preflight and four-namespace watch set.
+BigQuery subsequently extended the helper to four namespaces and the watch set to three application namespaces; Pub/Sub acceptance below established a five-namespace preflight and four-namespace watch set, and [#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864), after the Bigtable foundation, the current six-namespace preflight and five-namespace watch set.
 The smoke runner still admits only its existing smoke scenarios.
 The cluster measurement session that ran here was removed by [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723) after the assessment moved to a single VM; the namespace, KSA and job Role remain for the recovery scenario of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362).
 
@@ -145,7 +145,7 @@ Each run's lifecycle creates its topics, subscriptions and their resource-level 
 Dispatch runs one of the four reviewed Pub/Sub trials, as the [Pub/Sub runbook](../../kubernetes/apps/pubsub/README.md#approval-dispatch) describes.
 The [namespace apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35485438834) succeeded with an empty refreshed plan.
 Separate namespace/KSA reads and runner-impersonated quota/inventory reads confirmed the applied identity, observed zero quotas and absence of workloads.
-The common helper now includes Pub/Sub in preflight, and the [idle Helm root](../tier3-operator/README.md) adds it to the watch set.
+The common helper then included Pub/Sub in preflight, and the [idle Helm root](../tier3-operator/README.md) added it to the watch set.
 
 ### Administrator prerequisites for Pub/Sub
 
@@ -182,7 +182,8 @@ The namespace `resourceNames` of `tier3-bootstrap-reader` and `tier3-bootstrap-w
 `kubectl auth can-i --as` then gave both installer identities the same answers in `tier3-bigtable` as in `tier3-pubsub`.
 CI imports the six prerequisites and creates five objects: the KSA, job Role/RoleBinding and lifecycle Role/RoleBinding; a local refreshed plan read `6 to import, 5 to add, 0 to change, 0 to destroy`.
 
-After the merge-triggered apply, verify the namespace's zero quotas, empty workload inventory, expected KSA annotation and runner reads before adding the namespace to the shared preflight and the Helm watch set ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)).
+After the merge-triggered apply, verify the namespace's zero quotas, empty workload inventory, expected KSA annotation and runner reads before adding the namespace to the shared preflight and the Helm watch set.
+The [verification](https://github.com/flink-gcp/flink-connector-gcp/issues/1860) found the quotas zero, the inventory empty, the annotation in place and the reads granted, and [#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864) added the namespace to both.
 
 ## PR plan and merge apply
 
@@ -279,7 +280,7 @@ No local service-account impersonation grant is required.
 ## Next stage
 
 After bootstrap is applied and its plan is empty, the [separate Helm root](../tier3-operator/README.md) installs the idle release with `replicas = 0`, `webhook.create = false`, `skip_crds = true` and `create_namespace = false`.
-The original release watched `tier3-smoke` only; the accepted Cloud Tasks, BigQuery and Pub/Sub namespace extensions add `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub` as described above.
+The original release watched `tier3-smoke` only; the accepted Cloud Tasks, BigQuery, Pub/Sub and Bigtable namespace extensions add `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable` as described above.
 CRD upgrades precede Helm upgrades; ordinary application cleanup preserves the foundation.
 The [image publication path](../../kubernetes/images/README.md) supplies GAR runtime pins.
 The [bounded lifecycle](../../kubernetes/lifecycle/README.md) supplies admission and cleanup; a generic smoke run requires separate execution approval.
@@ -327,7 +328,7 @@ Quota writes in the application namespaces also name only `tier3-idle`.
 Dynamic Pod names cannot be constrained to a run using RBAC: the runtime must check UID and ownership before deletion.
 The shared bootstrap reader binding supplies read access to the managed namespace identities, the four CRDs and the named bootstrap RBAC objects.
 The lifecycle Roles do not directly grant Secret access, identity/RBAC writes, namespace/CRD writes, or unrestricted bind/escalate/impersonate.
-They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery` and `tier3-pubsub`, including Secret access and Pod creation.
+They do allow Jobs in `tier3-system` to select the chart's `flink-operator` KSA and thereby use its permissions in `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable`, including Secret access and Pod creation.
 Treat the runner and supervisor as trusted Operator administrators; the direct Role inventory is not a boundary on their reachable permissions.
 This trust does not extend to the smoke workload identity, which cannot create workloads in `tier3-system`.
 
