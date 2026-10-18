@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-05
-- Issue: #1179; general SQL commands follow in #1226
+- Issues: [#1179](https://github.com/flink-gcp/flink-connector-gcp/issues/1179); general SQL commands follow in [#1226](https://github.com/flink-gcp/flink-connector-gcp/issues/1226)
 - Refines: ADR-0148
 - Refined by: [ADR-0167](0167-bigtable-conditional-sql-commands-compile-ddl-into-request-templates.md), DDL-defined SQL commands
 
