@@ -35,7 +35,7 @@ import (
 	}
 	// The queue the lifecycle creates paused for this run, named from the run.
 	let queue = "ct1362-\(run.id)"
-	let storage = "gs://flink-gcp-cloudtasks-benchmark/runs/\(run.id)"
+	let storage = "gs://flink-gcp-tier3-cloudtasks/runs/\(run.id)"
 	let containerResources = {
 		requests: {cpu: "1", memory: "2Gi", "ephemeral-storage": "1Gi"}
 		limits: {cpu: "1", memory: "2Gi", "ephemeral-storage": "1Gi"}
@@ -46,7 +46,7 @@ import (
 		spec: {
 			image:          run.image
 			flinkVersion:   "v2_2"
-			serviceAccount: "cloudtasks-benchmark"
+			serviceAccount: "cloudtasks"
 			mode:           "native"
 			// The interval is the one the application enables, which takes precedence.
 			flinkConfiguration: {

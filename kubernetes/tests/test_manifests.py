@@ -963,7 +963,7 @@ def test_lifecycle_configmap_keeps_data_headroom(module, scenario):
         (("spec", "job", "parallelism"), 3),
         (("spec", "job", "parallelism"), 4),
         (("spec", "flinkVersion"), "v1_20"),
-        (("spec", "serviceAccount"), "cloudtasks-benchmark"),
+        (("spec", "serviceAccount"), "cloudtasks"),
     ],
 )
 def test_smoke_namespace_policy_admits_only_its_own_shapes(module, location, value):
@@ -1409,7 +1409,7 @@ def cloudtasks_args(run_id, phase, records=180000, rate=100, parallelism=2):
 
 
 def cloudtasks_configuration(run_id):
-    storage = f"gs://flink-gcp-cloudtasks-benchmark/runs/{run_id}"
+    storage = f"gs://flink-gcp-tier3-cloudtasks/runs/{run_id}"
     return {
         "kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false",
         "kubernetes.operator.snapshot.resource.enabled": "false",
@@ -1441,7 +1441,7 @@ def assert_cloudtasks_application(
     assert app["metadata"]["annotations"]["flink-gcp.io/expires-at"] == expires_at
     spec = app["spec"]
     assert spec["flinkVersion"] == "v2_2"
-    assert spec["serviceAccount"] == "cloudtasks-benchmark"
+    assert spec["serviceAccount"] == "cloudtasks"
     assert spec["mode"] == "native"
     assert spec["image"] == f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}"
     assert spec["job"] == {
@@ -1638,7 +1638,7 @@ def test_cloudtasks_namespace_policy_without_application_package(module, overrid
     spec = document["delivery"]["resources"]["job"]["spec"]
     spec.update(
         flinkVersion="v2_2",
-        serviceAccount="cloudtasks-benchmark",
+        serviceAccount="cloudtasks",
         image=f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
     )
     spec["job"]["parallelism"] = 2

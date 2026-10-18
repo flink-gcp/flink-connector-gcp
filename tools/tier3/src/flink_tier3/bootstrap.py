@@ -537,7 +537,7 @@ class Cluster:
                 )
         for namespace, account, role in (
             ("tier3-smoke", "smoke", "tier3-smoke-job"),
-            ("tier3-cloudtasks", "cloudtasks-benchmark", "tier3-cloudtasks-job"),
+            ("tier3-cloudtasks", "cloudtasks", "tier3-cloudtasks-job"),
             ("tier3-bigquery", "bigquery", "tier3-bigquery-job"),
             ("tier3-pubsub", "pubsub", "tier3-pubsub-job"),
         ):

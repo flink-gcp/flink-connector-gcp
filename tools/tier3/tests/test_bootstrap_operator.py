@@ -433,7 +433,7 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
         item = {"metadata": {"name": name}}
         namespace = arguments[4] if kind != "crd" else ""
         account = {
-            "tier3-cloudtasks": "cloudtasks-benchmark",
+            "tier3-cloudtasks": "cloudtasks",
             "tier3-bigquery": "bigquery",
             "tier3-pubsub": "pubsub",
         }.get(namespace, "smoke")
@@ -529,7 +529,7 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             (
                 "get",
                 "serviceaccount",
-                "cloudtasks-benchmark",
+                "cloudtasks",
                 "--namespace",
                 "tier3-cloudtasks",
                 "-o",

@@ -29,12 +29,6 @@ import java.util.Set;
 final class MeasurementOptions implements Serializable {
     private static final long serialVersionUID = 1L;
 
-    /**
-     * Where a cluster session's evidence went. It was the default because a session file carried no
-     * such field: only a rig that writes elsewhere passes {@code --evidence-root}.
-     */
-    private static final String CLUSTER_EVIDENCE_ROOT = "gs://flink-gcp-cloudtasks-benchmark/runs/";
-
     enum Arm {
         UNNAMED,
         NAMED_HASH,
@@ -63,7 +57,7 @@ final class MeasurementOptions implements Serializable {
     final int controlDelayMillis;
     final boolean emitAttempts;
 
-    /** Where the receipts and rows go. The cluster never sets it; a local rig does. */
+    /** Where the receipts and rows go; the rig that launches the job names it. */
     final String evidenceRoot;
 
     private MeasurementOptions(Map<String, String> args) {
@@ -208,7 +202,7 @@ final class MeasurementOptions implements Serializable {
             throw new IllegalArgumentException("--emit-attempts must be true or false");
         }
         emitAttempts = emit.equals("true");
-        evidenceRoot = args.getOrDefault("evidence-root", CLUSTER_EVIDENCE_ROOT);
+        evidenceRoot = required(args, "evidence-root");
         if (!evidenceRoot.endsWith("/")) {
             throw new IllegalArgumentException("--evidence-root must end with /");
         }

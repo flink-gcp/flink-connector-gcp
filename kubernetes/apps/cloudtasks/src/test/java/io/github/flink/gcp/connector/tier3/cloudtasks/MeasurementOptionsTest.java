@@ -59,7 +59,9 @@ class MeasurementOptionsTest {
                                 "--distribution",
                                 "even",
                                 "--offered-rate",
-                                "100"));
+                                "100",
+                                "--evidence-root",
+                                "gs://evidence/runs/"));
         for (int i = 0; i < changes.length; i += 2) {
             int position = args.indexOf(changes[i]);
             if (position < 0) {
@@ -72,13 +74,20 @@ class MeasurementOptionsTest {
         return args.toArray(String[]::new);
     }
 
-    static String[] windowArguments(String... changes) {
-        List<String> args = new ArrayList<>(List.of(arguments(changes)));
-        for (String name : List.of("--records", "--warmup-records")) {
+    static String[] without(String[] arguments, String... names) {
+        List<String> args = new ArrayList<>(List.of(arguments));
+        for (String name : names) {
             int position = args.indexOf(name);
             args.remove(position + 1);
             args.remove(position);
         }
+        return args.toArray(String[]::new);
+    }
+
+    static String[] windowArguments(String... changes) {
+        List<String> args =
+                new ArrayList<>(
+                        List.of(without(arguments(changes), "--records", "--warmup-records")));
         for (String[] entry :
                 List.of(
                         new String[] {"--warmup-seconds", "60"},
@@ -93,20 +102,23 @@ class MeasurementOptionsTest {
     }
 
     @Test
-    void theDefaultEvidenceRootIsTheClusterBucketAndACellGetsItsOwnPrefix() {
+    void aCellGetsItsOwnPrefixUnderTheEvidenceRootTheRigNames() {
         var options = MeasurementOptions.parse(arguments());
         assertThat(options.rowsPrefix())
-                .isEqualTo(
-                        "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/rows/");
+                .isEqualTo("gs://evidence/runs/ct1246-test/cells/hash-1/rows/");
         assertThat(options.receiptPrefix())
                 .isEqualTo(options.rowsPrefix().replace("rows/", "receipts/"));
+
+        var local = MeasurementOptions.parse(arguments("--evidence-root", "file:///tmp/ct1246/"));
+        assertThat(local.rowsPrefix())
+                .isEqualTo("file:///tmp/ct1246/ct1246-test/cells/hash-1/rows/");
     }
 
     @Test
-    void aRigThatWritesLocallyGetsItsOwnEvidenceRoot() {
-        var options = MeasurementOptions.parse(arguments("--evidence-root", "file:///tmp/ct1246/"));
-        assertThat(options.rowsPrefix())
-                .isEqualTo("file:///tmp/ct1246/ct1246-test/cells/hash-1/rows/");
+    void anEvidenceRootIsRequired() {
+        assertThatThrownBy(() -> MeasurementOptions.parse(without(arguments(), "--evidence-root")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("--evidence-root");
     }
 
     @Test
@@ -147,11 +159,9 @@ class MeasurementOptionsTest {
         assertThat(options.warmup).isZero();
         assertThat(options.attemptLimit).isEqualTo(60000);
         assertThat(options.receiptPrefix())
-                .isEqualTo(
-                        "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/receipts/");
+                .isEqualTo("gs://evidence/runs/ct1246-test/cells/hash-1/receipts/");
         assertThat(options.rowsPrefix())
-                .isEqualTo(
-                        "gs://flink-gcp-cloudtasks-benchmark/runs/ct1246-test/cells/hash-1/rows/");
+                .isEqualTo("gs://evidence/runs/ct1246-test/cells/hash-1/rows/");
         assertThatThrownBy(
                         () ->
                                 MeasurementOptions.parse(

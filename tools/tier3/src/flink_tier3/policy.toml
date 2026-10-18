@@ -30,7 +30,7 @@ repository = 'flink-gcp/flink-connector-gcp'
 # approves before a dispatch, not an admission deadline (ADR-0165).
 pricing_reviewed = '2026-09-14T00:00:00Z'
 cloudtasks = 'tier3-cloudtasks'
-cloudtasks_state = 'flink-gcp-cloudtasks-benchmark'
+cloudtasks_state = 'flink-gcp-tier3-cloudtasks'
 bigquery = 'tier3-bigquery'
 bigquery_state = 'flink-gcp-tier3-bigquery'
 pubsub = 'tier3-pubsub'

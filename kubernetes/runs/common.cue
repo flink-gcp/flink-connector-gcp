@@ -91,7 +91,7 @@ delivery: resources: [string]: {
 			}
 			if run.namespace == "tier3-cloudtasks" {
 				flinkVersion:   "v2_2"
-				serviceAccount: "cloudtasks-benchmark"
+				serviceAccount: "cloudtasks"
 				image:          =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/cloudtasks-recovery@sha256:[0-9a-f]{64}$"
 				job: parallelism: 1 | 2
 			}

@@ -15,11 +15,11 @@
 # The GCP root owns this workload's GSA, bucket grant and KSA impersonation trust.
 resource "kubernetes_service_account_v1" "cloudtasks" {
   metadata {
-    name      = "cloudtasks-benchmark"
+    name      = "cloudtasks"
     namespace = kubernetes_namespace_v1.tier3["tier3-cloudtasks"].metadata[0].name
     labels    = local.labels
     annotations = {
-      "iam.gke.io/gcp-service-account" = "cloudtasks-benchmark@flink-gcp.iam.gserviceaccount.com"
+      "iam.gke.io/gcp-service-account" = "tier3-cloudtasks@flink-gcp.iam.gserviceaccount.com"
     }
   }
   depends_on = [kubernetes_manifest.crd]

@@ -36,6 +36,7 @@ The [lifecycle foundation](#lifecycle-foundation) also owns the dedicated superv
 | `opentofu-plan` | Read all five namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
 | `opentofu` | Manage bootstrap and Helm objects in the five namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
 | `tier3-smoke/smoke` | The chart's job permissions for Pods, ConfigMaps and Deployments in `tier3-smoke` |
+| `tier3-cloudtasks/cloudtasks` | The same job permissions in `tier3-cloudtasks`; no permissions in `tier3-system` |
 | `tier3-bigquery/bigquery` | The same job permissions in `tier3-bigquery`; no permissions in `tier3-system` |
 | `tier3-pubsub/pubsub` | The same job permissions in `tier3-pubsub`; no permissions in `tier3-system` |
 | `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads |
@@ -55,11 +56,12 @@ All five namespaces keep `tier3-idle` with `pods: "0"` and `persistentvolumeclai
 A quota does not terminate existing Pods, and scaling down the Operator does not stop Flink jobs.
 Paid workload admission uses the [bounded lifecycle](../../kubernetes/lifecycle/README.md) and needs separate execution approval with concrete limits and stop conditions.
 
-## Cloud Tasks benchmark foundation
+## Cloud Tasks recovery foundation
 
-[Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) uses the existing cluster with the dedicated `tier3-cloudtasks` namespace.
-Its `cloudtasks-benchmark` KSA selects the existing `cloudtasks-benchmark@flink-gcp.iam.gserviceaccount.com` GSA.
-The [GCP root](../flink-gcp/cloudtasks-benchmark.tf) already owns that GSA, its Cloud Tasks recovery workload role, the isolated checkpoint/artifact bucket and this exact KSA's impersonation trust.
+[Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) added the dedicated `tier3-cloudtasks` namespace to the existing cluster, and the Cloud Tasks recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) runs there.
+Its `cloudtasks` KSA selects the `tier3-cloudtasks@flink-gcp.iam.gserviceaccount.com` GSA.
+The [GCP root](../flink-gcp/tier3-cloudtasks.tf) owns that GSA, its Cloud Tasks recovery workload role, the isolated state bucket and this exact KSA's impersonation trust.
+Until [#1857](https://github.com/flink-gcp/flink-connector-gcp/issues/1857), the KSA and GSA were both `cloudtasks-benchmark`.
 The job Role permits native Flink Pod, ConfigMap and Deployment management within this namespace.
 It does not grant the job access to the supervisor namespace.
 The runner and supervisor receive the same application lifecycle Role used for smoke, now also in `tier3-cloudtasks`.
