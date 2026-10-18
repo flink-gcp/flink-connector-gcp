@@ -33,6 +33,7 @@ kubernetes/
   pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
   pkg/pubsub/application.cue     # Pub/Sub recovery contract
   pkg/cloudtasks/application.cue # Cloud Tasks recovery trial contract
+  pkg/bigtable/application.cue   # Bigtable recovery trial contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
   apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
@@ -118,6 +119,7 @@ The root supplies common project labels.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism one or two and `v2_2`.
 The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one or two and `v2_2`.
+In `tier3-bigtable` it requires the `bigtable` ServiceAccount, the `bigtable-recovery` GAR package, parallelism one or two and `v2_2`.
 The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its [offline proposal](apps/pubsub/README.md#offline-trial-proposal) renders a reviewable delivery, and [dispatch](apps/pubsub/README.md#approval-dispatch) runs a reviewed trial through the runner's [admission](apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](apps/pubsub/README.md#recovery-exercise).
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
@@ -231,7 +233,8 @@ The [fault trial publication](images/README.md#bigquery-fault-trial-publication)
 
 The [Bigtable recovery application](apps/bigtable/README.md) supplies the one graph that the trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) share: the sink in both delivery modes and a Change Streams relay.
 Build it with `just tier3-bigtable-verify`.
-Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph; it has no namespace, grants or scenario yet.
+Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph.
+The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery and its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf) exist; the `tier3-bigtable` namespace and the rig scenario that admits the delivery follow in [#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860) and [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
 
 ## Pub/Sub recovery application
 

@@ -28,6 +28,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/tier3-cloudtasks.tf` | Cloud Tasks recovery workload identity, one-day state bucket, queue roles and lifecycle state access |
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
+| `flink-gcp/tier3-bigtable.tf` | Bigtable recovery workload identity, one-day state bucket, instance roles and lifecycle state access |
 | `flink-gcp/tier3-pubsub.tf` | Pub/Sub recovery workload identity, one-day state bucket and lifecycle state access |
 | `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
 | `flink-gcp/pubsub-lifecycle.tf` | Project-wide Pub/Sub lifecycle control and an unbound resource consumer role |
@@ -146,6 +147,7 @@ A failed start before an update fails the step instead, and nothing is applied; 
 [Issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38) owns the shared GKE Autopilot rig.
 [Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) supplies its first Cloud Tasks performance scenario.
 [Issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) adds the [Pub/Sub recovery preparation](#pubsub-tier-3-preparation).
+Issues [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) add the [Bigtable recovery preparation](#bigtable-tier-3-preparation).
 Routine E2E remains on MiniCluster; this rig is on demand and does not gate a release.
 
 ### Persistent foundation
@@ -297,6 +299,28 @@ Review the saved GCP plan for these five additions and no unrelated changes befo
 After the merge-triggered apply, verify the role permissions and bindings and an empty refreshed GCP plan before integrating runtime admission.
 Per-resource grants and identity-specific effective-access checks remain inside the future approved lifecycle; an empty infrastructure plan alone cannot validate them.
 This preparation starts no Kubernetes workload or Pub/Sub data operation.
+
+### Bigtable Tier-3 preparation
+
+The Bigtable recovery trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) run their job as the `tier3-bigtable` GSA against an instance the lifecycle creates for each run, named `bt1316-<run-id>`.
+The GSA trusts only `tier3-bigtable/bigtable` through GKE Workload Identity and has `roles/storage.objectUser` over the `flink-gcp-tier3-bigtable` STANDARD bucket in `us-central1`, which has the Pub/Sub state bucket's settings: uniform access, public access prevention, no versioning or soft delete, and deletion one day after creation.
+The runner and supervisor hold Object Viewer on that bucket and Object User on its `runs/` and `.inprogress/flink-gcp-tier3-bigtable/runs/` prefixes, as for the BigQuery and Cloud Tasks state buckets.
+
+The [instance grants](flink-gcp/tier3-bigtable.tf) are five custom roles, each holding only what its identity calls:
+
+| Identity | Role | Permissions | Condition |
+| --- | --- | --- | --- |
+| `tier3-bigtable` | `tier3BigtableRecoveryWorkload` | `bigtable.appProfiles.get`, `bigtable.instances.ping`, `bigtable.tables.get`, `bigtable.tables.mutateRows`, `bigtable.tables.readRows` | `bt1316-` instances |
+| `tier3-bigtable` | `tier3BigtableRecoveryClientMetrics` | `monitoring.timeSeries.create` | none |
+| `tier3-runner` | `tier3BigtableRecoveryRunner` | `bigtable.appProfiles.create`, `bigtable.appProfiles.get`, `bigtable.instances.get`, `bigtable.tables.create`, `bigtable.tables.get` | `bt1316-` instances |
+| `tier3-runner` | `tier3BigtableRecoveryInstanceCreator` | `bigtable.clusters.create`, `bigtable.instances.create` | none |
+| `tier3-supervisor` | `tier3BigtableRecoverySupervisor` | `bigtable.instances.delete`, `bigtable.instances.get`, `bigtable.tables.get`, `bigtable.tables.readRows`, `bigtable.tables.update` | `bt1316-` instances |
+
+The condition is `resource.name.startsWith('projects/flink-gcp/instances/bt1316-')`, which Bigtable evaluates for instances, clusters, tables and app profiles.
+A create request names the project as the instance's parent, which no instance condition matches, so the creator role is unconditional, as is the client-metrics role, whose time series are written to the project; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-foundation) records why each permission is there and what is measured before the first trial.
+Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
+IAM roles and bindings are free, and the bucket holds only one run's state at a time.
+The `tier3-bigtable` namespace and its KSA follow in the bootstrap root.
 
 ### Operator installation follows the cluster
 

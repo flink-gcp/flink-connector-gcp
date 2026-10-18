@@ -65,7 +65,6 @@ class RecoveryInputTest {
     @CsvSource({
         "run-id,other",
         "instance,bt1316-other",
-        "change-stream-start,2026-10-18T00:00:01Z",
         "change-stream-end,2026-10-18T02:00:01Z",
         "records,101",
         "records-per-second,99"

@@ -27,7 +27,7 @@ lifecycle/
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
-The three recovery scenarios take their fault kinds and each phase's sizes from [faults.cue](faults.cue), the copy of the shared exercise's `FAULTS` table that a test holds to it ([#1789](https://github.com/flink-gcp/flink-connector-gcp/issues/1789)).
+The recovery scenarios take their fault kinds and each phase's sizes from [faults.cue](faults.cue), the copy of the shared exercise's `FAULTS` table that a test holds to it ([#1789](https://github.com/flink-gcp/flink-connector-gcp/issues/1789)).
 The runner selects the scenario through its existing input.
 
 The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
@@ -95,7 +95,7 @@ The owner approves the scenario, a unique run ID and the run's cost estimate bef
 The estimate is `estimated_cost` over the window for smoke, and `bigquery_plan.estimate`, `pubsub_plan.estimate` or `cloudtasks_plan.estimate` for a service trial, which their rendered proposals carry.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
-The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery or Cloud Tasks trial 90 minutes after it.
+The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks or Bigtable trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
 
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
@@ -113,6 +113,10 @@ The [`cloudtasks-recovery`](cloudtasks.cue) delivery of the recovery trial of [#
 Its `cloudtasks_trial` tag, `jm-replacement` unless given, sizes each phase's sink and TaskManagers from [faults.cue](faults.cue).
 Dispatch renders it at the dispatched kind and the input every kind shares, and the [recovery trial runbook](../apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
 Every run's inventory lists `tier3-cloudtasks`.
+
+The [`bigtable-recovery`](bigtable.cue) delivery of the Bigtable recovery trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) renders its initial and upgrade phases in `tier3-bigtable` from the optional `bigtable_records` and `bigtable_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, and the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops.
+Its `bigtable_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `bt1316-<run-id>`, so the run ID has at most 26 characters.
+Dispatch does not offer it yet: [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854) adds the rig scenario that creates the instance, admits the delivery and judges the trial.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.

@@ -35,7 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RecoveryOptionsTest {
-    static final String START = "2026-10-18T00:00:00Z";
     static final String END = "2026-10-18T02:00:00Z";
 
     static String[] arguments(String... overrides) {
@@ -44,7 +43,6 @@ class RecoveryOptionsTest {
         values.put("--instance", "bt1316-bigtable-it");
         values.put("--records", "100");
         values.put("--records-per-second", "100");
-        values.put("--change-stream-start", START);
         values.put("--change-stream-end", END);
         for (int i = 0; i < overrides.length; i += 2) {
             values.put(overrides[i], overrides[i + 1]);
@@ -61,7 +59,6 @@ class RecoveryOptionsTest {
         assertThat(options.instance).isEqualTo("bt1316-bigtable-it");
         assertThat(options.records).isEqualTo(100);
         assertThat(options.recordsPerSecond).isEqualTo(100);
-        assertThat(options.changeStreamStart).isEqualTo(Instant.parse(START));
         assertThat(options.changeStreamEnd).isEqualTo(Instant.parse(END));
         assertThat(options.phase).isEqualTo("initial");
         assertThat(options.requireRestored).isFalse();
@@ -93,11 +90,9 @@ class RecoveryOptionsTest {
         "instance,bt1316-Upper",
         "instance,bt1316-aaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "instance,projects/flink-gcp/instances/bt1316-bigtable-it",
-        "change-stream-start,2026-10-18",
-        "change-stream-start,2026-10-18T02:00:00Z",
-        "change-stream-end,2026-10-18T00:00:00Z",
-        "change-stream-end,2026-10-17T23:59:59Z",
-        "change-stream-end,2026-10-19T00:00:01Z",
+        "change-stream-end,2026-10-18",
+        "change-stream-end,later",
+        "change-stream-start,2026-10-18T00:00:00Z",
         "phase,other",
         "phase,upgrade",
         "require-restored,yes",
@@ -143,14 +138,7 @@ class RecoveryOptionsTest {
 
     @ParameterizedTest
     @ValueSource(
-            strings = {
-                "run-id",
-                "instance",
-                "records",
-                "records-per-second",
-                "change-stream-start",
-                "change-stream-end"
-            })
+            strings = {"run-id", "instance", "records", "records-per-second", "change-stream-end"})
     void requiresEveryTrialInput(String name) {
         String[] all = arguments();
         String[] without =
@@ -229,7 +217,6 @@ class RecoveryOptionsTest {
                     {"--instance", "bt1316-other"},
                     {"--records", "101"},
                     {"--records-per-second", "99"},
-                    {"--change-stream-start", "2026-10-18T00:00:01Z"},
                     {"--change-stream-end", "2026-10-18T02:00:01Z"}
                 }) {
             assertThat(RecoveryOptions.parse(arguments(change)).identity())

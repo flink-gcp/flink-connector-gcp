@@ -88,7 +88,9 @@ public final class BigtableRecoveryJob {
                             .table(options.table(RecoveryOptions.EXACTLY_ONCE_TABLE))
                             .appProfileId(RecoveryOptions.APP_PROFILE)
                             .deserializer(new ChangeRelay.Deserializer())
-                            .startPosition(StartPosition.at(options.changeStreamStart))
+                            // A fresh start reads from when the enumerator initializes. No
+                            // checkpoint completes before that, so no staged commit precedes it.
+                            .startPosition(StartPosition.latest())
                             .boundedTimestamp(options.changeStreamEnd)
                             .build(),
                     BigtableSink.<Tuple3<String, String, Long>>builder()

@@ -22,7 +22,6 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import java.io.Serializable;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.HashMap;
@@ -57,8 +56,6 @@ final class RecoveryOptions implements Serializable {
     // The rig runs one subtask of each parallel vertex on each of at most two single-slot
     // TaskManagers, and a rescale trial moves between one and two.
     private static final int MAX_TRIAL_PARALLELISM = 2;
-    // The change-stream retention the runner sets; a restore outside it fails the job.
-    private static final Duration MAX_CHANGE_STREAM_SPAN = Duration.ofHours(24);
     // Bigtable instance IDs have at most 33 characters.
     private static final int MAX_INSTANCE_LENGTH = 33;
 
@@ -69,7 +66,6 @@ final class RecoveryOptions implements Serializable {
                     "instance",
                     "records",
                     "records-per-second",
-                    "change-stream-start",
                     "change-stream-end",
                     "phase",
                     "require-restored",
@@ -80,9 +76,7 @@ final class RecoveryOptions implements Serializable {
     final String instance;
     final long records;
     final long recordsPerSecond;
-    // A fresh source starts reading the eo table's change stream here, which the connector refuses
-    // when it lies after the JobManager's clock, and stops at the end.
-    final Instant changeStreamStart;
+    // The source stops reading the eo table's change stream here, so the job can finish.
     final Instant changeStreamEnd;
     final String phase;
     final boolean requireRestored;
@@ -111,15 +105,7 @@ final class RecoveryOptions implements Serializable {
             throw new IllegalArgumentException(
                     "--records-per-second must be between 1 and " + MAX_RECORDS_PER_SECOND);
         }
-        changeStreamStart = instant(args, "change-stream-start");
         changeStreamEnd = instant(args, "change-stream-end");
-        if (!changeStreamEnd.isAfter(changeStreamStart)
-                || changeStreamEnd.isAfter(changeStreamStart.plus(MAX_CHANGE_STREAM_SPAN))) {
-            throw new IllegalArgumentException(
-                    "--change-stream-end must follow --change-stream-start by at most "
-                            + MAX_CHANGE_STREAM_SPAN.toHours()
-                            + " hours");
-        }
         phase = args.getOrDefault("phase", "initial");
         if (!Set.of("initial", "upgrade").contains(phase)) {
             throw new IllegalArgumentException("--phase must be initial or upgrade");
@@ -188,8 +174,6 @@ final class RecoveryOptions implements Serializable {
                 + records
                 + "/"
                 + recordsPerSecond
-                + "/"
-                + changeStreamStart
                 + "/"
                 + changeStreamEnd;
     }
