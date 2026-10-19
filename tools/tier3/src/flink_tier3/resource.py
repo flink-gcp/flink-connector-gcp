@@ -237,7 +237,14 @@ class ResourceLifecycle:
             except Failure as error:
                 if not transient(error) or self.env.clock() >= deadline:
                     raise
-            self.env.sleep(min(SETTLE_POLL, max(0, deadline - self.env.clock())))
+            self._pause(deadline)
+
+    def _pause(self, deadline):
+        """Wait one settle poll toward `deadline`; False once it has passed."""
+        if self.env.clock() >= deadline:
+            return False
+        self.env.sleep(min(SETTLE_POLL, max(0, deadline - self.env.clock())))
+        return True
 
     def _begin_create(self):
         """Record the creation intent and the call marker in one write.

@@ -76,6 +76,17 @@ on:
           - 'tm-replacement'
           - 'rescale-out'
           - 'rescale-in'
+      campaign:
+        description: 'Cloud Tasks or Bigtable only: kinds to run after this attempt, comma-separated; the run ID is <prefix>-<jm|tm|ro|ri>-a<attempt>, and each next attempt is dispatched once this one is idle'
+        required: false
+        type: string
+        default: ''
+      repeats:
+        description: 'Campaign only: attempts it may repeat after a stop before the application existed or a Pod the platform preempted'
+        required: false
+        type: choice
+        default: '0'
+        options: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
 
 permissions: {}
 concurrency:
@@ -94,6 +105,12 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
+    outputs:
+      run_id: ${{ steps.next.outputs.run_id }}
+      kind: ${{ steps.next.outputs.kind }}
+      campaign: ${{ steps.next.outputs.campaign }}
+      repeats: ${{ steps.next.outputs.repeats }}
+      trial_input: ${{ steps.next.outputs.trial_input }}
     steps:
       - name: Verify the rig commit heads a branch of this repository
         # Runs from main's workflow before any rig source is checked out, so a
@@ -139,9 +156,15 @@ jobs:
           PUBSUB_TRIAL: ${{ inputs.pubsub_trial }}
           CLOUDTASKS_TRIAL: ${{ inputs.cloudtasks_trial }}
           BIGTABLE_TRIAL: ${{ inputs.bigtable_trial }}
+          CAMPAIGN: ${{ inputs.campaign }}
+          REPEATS: ${{ inputs.repeats }}
           RIG_SHA: ${{ inputs.rig_sha }}
         run: |
           start=(start --run-id "$RUN_ID" --scenario "$SCENARIO")
+          # Only when named, so a rig_sha that predates campaigns still runs.
+          if [ -n "$CAMPAIGN" ] || [ "$REPEATS" != 0 ]; then
+            start+=(--campaign "$CAMPAIGN" --repeats "$REPEATS")
+          fi
           if [ -n "$RIG_SHA" ]; then
             start+=(--rig-sha "$RIG_SHA")
           fi
@@ -178,9 +201,49 @@ jobs:
           service_account: tier3-runner@flink-gcp.iam.gserviceaccount.com
       - name: Verify idle again, retain result and release the environment lock
         if: ${{ !cancelled() && steps.receipt-auth.outcome == 'success' }}
+        id: finish
+        # It fails for every run that is not usable, after writing the receipt
+        # and releasing the lock, which `finished` reports for the campaign.
         run: >-
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
           --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" finish
+      - name: Choose the campaign's next attempt from this one's receipt
+        if: ${{ !cancelled() && steps.finish.outputs.finished == 'true' && (inputs.campaign != '' || inputs.repeats != '0') }}
+        id: next
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          CAMPAIGN: ${{ inputs.campaign }}
+          REPEATS: ${{ inputs.repeats }}
+        run: >-
+          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle next
+          --run-id "$RUN_ID" --campaign "$CAMPAIGN" --repeats "$REPEATS" >> "$GITHUB_OUTPUT"
       - name: Preserve lifecycle failure
         if: ${{ !cancelled() && steps.lifecycle.outcome == 'failure' }}
         run: exit 1
+
+  # A separate job holds the one write grant a campaign needs, to dispatch its
+  # next attempt, which waits in the concurrency group until this run ends.
+  continue:
+    needs: lifecycle
+    if: ${{ !cancelled() && needs.lifecycle.outputs.run_id != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the campaign's next attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCENARIO: ${{ inputs.scenario }}
+          RUN_ID: ${{ needs.lifecycle.outputs.run_id }}
+          KIND: ${{ needs.lifecycle.outputs.kind }}
+          CAMPAIGN: ${{ needs.lifecycle.outputs.campaign }}
+          REPEATS: ${{ needs.lifecycle.outputs.repeats }}
+          TRIAL_INPUT: ${{ needs.lifecycle.outputs.trial_input }}
+          APPLICATION_DIGEST: ${{ inputs.application_digest }}
+          RIG_SHA: ${{ inputs.rig_sha }}
+        run: |
+          gh workflow run tier3-run.yaml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f scenario="$SCENARIO" -f run_id="$RUN_ID" -f "$TRIAL_INPUT=$KIND" \
+            -f application_digest="$APPLICATION_DIGEST" -f rig_sha="$RIG_SHA" \
+            -f campaign="$CAMPAIGN" -f repeats="$REPEATS"

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from ..common import ApiError, Failure, transient
-from ..resource import SETTLE_POLL, ResourceLifecycle
+from ..resource import ResourceLifecycle
 from .instance import ROUTING, TABLES
 from .trial import APP_PROFILE, EXACTLY_ONCE_TABLE
 
@@ -42,17 +42,45 @@ class BigtableLifecycle(ResourceLifecycle):
         run stopped before it reads keeps its marker for an operator.
         """
         while self._settled(api.get, deadline) is None:
-            if self.env.clock() >= deadline:
+            if not self._pause(deadline):
                 raise Failure("Bigtable instance create did not become readable")
-            self.env.sleep(min(SETTLE_POLL, max(0, deadline - self.env.clock())))
 
     def _populate(self, api, deadline):
         """Wait for the instance, create its tables and profile, and read them back."""
         self._ready(api, deadline)
         for table in TABLES:
-            api.create_table(table)
-        api.create_app_profile()
+            self._created(
+                lambda table=table: api.create_table(table),
+                lambda table=table: api.table(table),
+                deadline,
+            )
+        self._created(api.create_app_profile, api.app_profile, deadline)
         return self._readback(api, deadline)
+
+    def _created(self, create, read, deadline):
+        """Create one resource in the instance, whatever its create answered.
+
+        A create runs on in the service after a request that timed out, and
+        a table with initial splits and a change stream can outlast the
+        transport's timeout, so a create that failed without saying why, or
+        that answered 409 because an earlier attempt landed, is read back,
+        and repeated while the resource is still absent, until `deadline`.
+        """
+        while True:
+            # A stop requested while the last attempt waited sends no other.
+            self.env.admission_open()
+            try:
+                create()
+                return
+            except Failure as error:
+                exists = isinstance(error, ApiError) and error.status == 409
+                if not (exists or transient(error)):
+                    raise
+                self.env.emit("bigtable-create-uncertain", {"cause": str(error)})
+            if self._settled(read, deadline) is not None:
+                return
+            if not self._pause(deadline):
+                raise Failure("Bigtable instance contents were not created in time")
 
     def _ready(self, api, deadline):
         """Wait for the created instance to read back as ready."""
@@ -60,9 +88,8 @@ class BigtableLifecycle(ResourceLifecycle):
             instance = self._settled(api.get, deadline)
             if isinstance(instance, dict) and instance.get("state") == "READY":
                 return
-            if self.env.clock() >= deadline:
+            if not self._pause(deadline):
                 raise Failure("Bigtable instance did not become ready")
-            self.env.sleep(min(SETTLE_POLL, max(0, deadline - self.env.clock())))
 
     def _readback(self, api, deadline):
         """The tables' families and change stream and the app profile's routing.

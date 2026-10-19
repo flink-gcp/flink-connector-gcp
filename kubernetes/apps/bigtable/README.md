@@ -143,11 +143,26 @@ The owner approves the run's estimate before dispatching it; dispatching is the 
 The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
 The run ID has at most 26 characters, because the run's instance is `bt1316-<run-id>` and an instance ID has at most 33.
 
+One dispatch can carry a campaign: `campaign` lists the kinds to run after the dispatched one, comma-separated, and `repeats`, 0 to 9, the attempts it may repeat.
+The run ID then reads `<prefix>-<kind>-a<attempt>`, with `jm`, `tm`, `ro` or `ri` for the kind, which dispatch checks before anything runs.
+Once an attempt is idle and has released the lock, its receipt decides the next one, which the workflow dispatches itself and which waits behind the current run in the workflow's concurrency group:
+
+- **`usable`**: the next kind, at attempt 1.
+- **A stop the platform caused, while repeats remain**: the same kind at the next attempt. A stop before the application existed counts as one, because no connector code ran, whether a system Pod preempted the supervisor or a service call never answered. So does "Unplanned workload interruption", which the exercise raises only for a workload Pod the scheduler preempted, a node drain or upgrade evicted, or whose node shut down or was lost.
+- **Anything else**: the campaign ends for the owner to read. This covers "Unplanned workload replacement", since a TaskManager whose JVM died is replaced too, "Unplanned workload eviction", which may follow the Pod's own storage limit, "Unplanned container restart", a failed oracle, and a run that did not reach idle.
+
+The owner approves the campaign's estimate once, for its kinds and its repeats, by dispatching it.
+A cause that recurs before the application exists, such as a refused grant, spends the repeats, which bound what it costs.
+Three things end a campaign early, each before its next attempt holds anything: a CI plan or apply that takes the environment lock between attempts, another dispatch of the run workflow while a campaign runs, which GitHub's one pending run in the concurrency group replaces or is replaced by, and a run ID that would exceed 26 characters or already has evidence.
+Each attempt checks out `main` as it is at its own dispatch unless `rig_sha` names a commit, so merge no rig change while a campaign runs.
+For example, `bigtable_trial=tm-replacement`, `run_id=bt1855-tm-a4`, `campaign=rescale-out,rescale-in` and `repeats=2` run the three remaining trials from one dispatch, for at most five attempts.
+
 ### Instance lifecycle
 
 After the supervisor heartbeats and the Operator is ready, the runner records the instance's intent, reads that the name is free, and records the creation intent and a call marker in one control write.
 It then creates the instance with one SSD node in the cluster `recovery` in `us-central1-b`, reads it until it is `READY`, creates `eo`, `alo`, `relay` and the `recovery` app profile, and reads all four back.
 It polls the instance rather than the create's long-running operation, so admission needs no permission on operations.
+A table or app-profile create that failed transiently, timed out or answered 409 is read back, and repeated while the resource is absent, until the startup deadline: the service goes on creating after a request that timed out, and a table with initial splits and a change stream can outlast the 20-second transport timeout.
 The readback compares each table's family names and `eo`'s change stream, and the app profile's single-cluster routing with single-row transactions; only then does the runner open the namespace quota for three Pods and create the FlinkDeployment.
 An instance that already carries the name refuses the run, which then deletes nothing, and so does a create the service refuses although the name read free.
 The create answers with a long-running operation, so the marker stays until the instance first reads back, in any state: until then the operation could still create an instance after cleanup found none.

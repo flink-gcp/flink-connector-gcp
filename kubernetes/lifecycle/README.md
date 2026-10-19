@@ -370,6 +370,7 @@ A BigQuery trial is dispatched through the same run workflow, which takes the tr
 A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
 A Bigtable trial takes its kind and the published application digest, as [Dispatch](../apps/bigtable/README.md#dispatch) describes.
+A Cloud Tasks or Bigtable dispatch can also carry a campaign, the kinds to run after its own and a repeat budget, which dispatches each next attempt once the last is idle, as the [Bigtable dispatch section](../apps/bigtable/README.md#dispatch) describes for both.
 
 ## Reviewed Pub/Sub trials
 

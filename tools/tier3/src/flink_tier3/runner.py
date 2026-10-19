@@ -534,6 +534,15 @@ class Runner:
                 )
             ),
         }
+        # Whether any workload ran, and why the run stopped, for a campaign
+        # deciding whether to repeat it.
+        # The intent is written before admission's last check, so it can
+        # outlive a create that never ran; the root is what settlement found,
+        # having adopted any application created but not remembered.
+        result.update(
+            application_created=bool(control.roots.get("application")),
+            reason=control.reason,
+        )
         failure = control.evidence_failure or self.env.evidence_failure
         if failure is not None:
             # Why `success` is false although every other input may say usable.
