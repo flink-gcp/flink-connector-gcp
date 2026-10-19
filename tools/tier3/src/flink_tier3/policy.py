@@ -190,9 +190,9 @@ RATE_LIMIT_BACKOFF = (1, 2, 4, 8, 16, 32)
 # after at most about 64 seconds of waiting.
 GENERATION_RACES = 20
 RACE_BACKOFF_FIRST, RACE_BACKOFF_CAP = 0.25, 4
-# The most writes one update makes: nineteen lost races, six refused writes
-# and the attempt that settles it.
-UPDATE_ATTEMPTS = GENERATION_RACES + len(RATE_LIMIT_BACKOFF)
+# A control or evidence write that got no answer is sent again at most this
+# often; only a later read or answer says whether it landed (ADR-0165).
+UNANSWERED_RESENDS = 2
 
 
 PUBSUB_EXERCISE = {

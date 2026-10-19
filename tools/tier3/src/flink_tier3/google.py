@@ -32,7 +32,13 @@ from google.auth.transport.requests import Request as AuthRequest
 from google.cloud import storage
 from google.cloud.storage.exceptions import DataCorruption
 
-from .common import TRANSIENT_STATUSES, ApiError, Failure, json_bytes
+from .common import (
+    TRANSIENT_STATUSES,
+    ApiError,
+    Failure,
+    StorageRequestFailed,
+    json_bytes,
+)
 from .policy import (
     EVIDENCE,
     GENERATION_RACES,
@@ -112,14 +118,6 @@ def _no_answer(error):
             return True
         error = error.__cause__
     return False
-
-
-class StorageRequestFailed(Failure):
-    """A storage request that got no answer.
-
-    Kept apart from `TransportError`, which `transient` reads as a failure that
-    says nothing: a storage write without an answer may have landed.
-    """
 
 
 class Storage:

@@ -15,12 +15,16 @@
 """Conditional control updates."""
 
 import pytest
-from flink_tier3.common import ApiError, Failure
+from flink_tier3.common import ApiError, Failure, StorageRequestFailed
 from flink_tier3.records import conditional_update
 
 
 class Store:
-    """One object whose writes fail with the queued statuses, then succeed."""
+    """One object whose writes fail with the queued statuses, then succeed.
+
+    `"landed"` stores the write and then loses its answer; `"lost"` loses the
+    request itself; both raise as a storage timeout does.
+    """
 
     def __init__(self, *statuses):
         self.statuses = list(statuses)
@@ -31,8 +35,13 @@ class Store:
 
     def write(self, path, value, generation):
         self.writes += 1
-        if self.statuses:
-            raise ApiError(self.statuses.pop(0), "POST", path)
+        status = self.statuses.pop(0) if self.statuses else None
+        if status == "landed":
+            self.value, self.generation = value, self.generation + 1
+        if status in ("landed", "lost"):
+            raise StorageRequestFailed("POST storage request failed: ReadTimeout")
+        if status:
+            raise ApiError(status, "POST", path)
         assert generation == str(self.generation)
         self.value, self.generation = value, self.generation + 1
 
@@ -88,7 +97,7 @@ def test_twenty_lost_races_do_not_settle():
     assert store.writes == 20 and len(sleeps) == 19
 
 
-def test_an_update_makes_at_most_twenty_six_writes():
+def test_refused_writes_do_not_spend_the_race_budget():
     store, sleeps = Store(*[412] * 19, *[429] * 6, 412), []
     with pytest.raises(Failure, match="did not settle"):
         update(store, sleeps)
@@ -113,3 +122,51 @@ def test_the_first_actor_to_begin_cleanup_names_the_stop():
     env.records.begin_cleanup(INTERRUPTED)
     env.records.begin_cleanup("external settlement")
     assert env.refresh().reason == INTERRUPTED
+
+
+@pytest.mark.parametrize("fate", ["landed", "lost"])
+def test_an_unanswered_update_that_reads_back_unchanged_is_applied_once(fate):
+    """bt1855-tm-a4 stopped on one; the increment would show a double edit."""
+    store, sleeps = Store(fate), []
+    assert update(store, sleeps) == {"count": 1}
+    assert store.value == {"count": 1}
+    assert store.writes == (1 if fate == "landed" else 2)
+
+
+def test_updates_that_never_answer_still_fail():
+    store = Store("lost", "lost", "lost")
+    with pytest.raises(StorageRequestFailed):
+        update(store, [])
+    assert store.writes == 3
+
+
+@pytest.mark.parametrize("fates", [["landed"], ["lost"], ["lost", 503], ["lost"] * 3])
+def test_an_unanswered_evidence_event_is_written_once_or_fails(fates):
+    """A 412 on a repeat is the first attempt landing; nothing else is."""
+    from .cloudtasks.test_recovery_lifecycle import Environment
+
+    env = Environment()
+    write = env.store.write
+    sent = []
+
+    def flaky(name, data):
+        sent.append(name)
+        fate = fates[len(sent) - 1] if len(sent) <= len(fates) else None
+        if fate == "landed":
+            write(name, data)
+        if fate in ("landed", "lost"):
+            raise StorageRequestFailed("POST storage request failed: ReadTimeout")
+        if fate:
+            raise ApiError(fate, "POST", name)
+        return write(name, data)
+
+    env.store.write = flaky
+    stored = lambda: [key for key in env.store.data if "/supervisor/" in key[1]]
+    if fates in (["lost", 503], ["lost"] * 3):
+        with pytest.raises((ApiError, StorageRequestFailed)):
+            env.records.evidence("probe", {"n": 1})
+        assert len(sent) == len(fates) and not stored()
+        return
+    env.records.evidence("probe", {"n": 1})
+    assert len(sent) == 2 and sent[0] == sent[1]
+    assert len(stored()) == 1
