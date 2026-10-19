@@ -20,7 +20,7 @@ import re
 from dataclasses import asdict
 from decimal import Decimal
 
-from ..common import Failure, digest, json_bytes, quantity, timestamp, utc
+from ..common import Failure, digest, json_bytes, timestamp, utc
 from ..model import Schedule, _hourly
 from ..policy import (
     BIGQUERY_OBSERVATIONS,
@@ -31,6 +31,7 @@ from ..policy import (
     SHA,
     WINDOWS,
 )
+from ..proposal import verify_resources
 from ..workflow import render
 from .oracle import FAULTS, ROW_BYTES, Trial
 from .resources import ResourcePlan
@@ -129,23 +130,6 @@ def resource_plan(run_id, nonce, expires_at, trial):
     )
 
 
-def _verify_resources(pod, role):
-    containers = pod.get("containers", [])
-    if (
-        len(containers) != 1
-        or pod.get("initContainers")
-        or pod.get("ephemeralContainers")
-    ):
-        raise Failure("Rendered Pod differs from the proposed container budget")
-    expected = POD_RESOURCES[role]
-    for category in ("requests", "limits"):
-        actual = containers[0].get("resources", {}).get(category, {})
-        if set(actual) != set(expected) or any(
-            quantity(actual[key]) != quantity(value) for key, value in expected.items()
-        ):
-            raise Failure("Rendered Pod differs from the proposed resource budget")
-
-
 def prepare(
     *,
     run_id,
@@ -219,8 +203,8 @@ def prepare(
             "memory": "2Gi",
         }:
             raise Failure("Rendered application differs from the proposed Pod budget")
-        _verify_resources(shape.get("podTemplate", {}).get("spec", {}), "smoke")
-    _verify_resources(delivery["supervisor"]["spec"]["template"]["spec"], "supervisor")
+        verify_resources(shape.get("podTemplate", {}).get("spec", {}), "smoke")
+    verify_resources(delivery["supervisor"]["spec"]["template"]["spec"], "supervisor")
     if initial["spec"]["job"]["args"] != identity.arguments("initial") or initial[
         "spec"
     ]["job"].get("parallelism") != identity.parallelism("initial"):

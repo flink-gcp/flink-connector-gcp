@@ -16,26 +16,29 @@
 import flink_tier3 as rt
 
 from .bigquery.exercise import require_handoff
-from .policy import BIGQUERY_OBSERVATIONS, CLOUDTASKS_OBSERVATIONS
+from .policy import BIGQUERY_OBSERVATIONS
 from .pubsub.admission import admit, require_admission
 from .pubsub.guard import admission_deadline
 from .pubsub.handoff import CohortUnstarted
 from .records import require_services_clean, write_artifact
+from .resource import RESOURCE_SCENARIOS
 
 # Scenarios whose success is the verdict their exercise decided when it
 # completed.
-SERVICE_TRIALS = ("bigquery-recovery", "pubsub-recovery", "cloudtasks-recovery")
+SERVICE_TRIALS = ("bigquery-recovery", "pubsub-recovery", *RESOURCE_SCENARIOS)
 
 
 class Runner:
-    def __init__(self, env, bigquery=None, *, pubsub=None, cloudtasks=None):
+    def __init__(self, env, bigquery=None, *, pubsub=None, resource=None):
         if bigquery is not None and bigquery.env is not env:
             raise rt.Failure("BigQuery handoff belongs to another runner environment")
         # The controller itself is bound to the scenario and the runner role.
-        if cloudtasks is not None and (
-            bigquery is not None or pubsub is not None or cloudtasks.env is not env
+        if resource is not None and (
+            bigquery is not None or pubsub is not None or resource.env is not env
         ):
-            raise rt.Failure("Cloud Tasks queue belongs to another runner environment")
+            raise rt.Failure(
+                resource.subject + " belongs to another runner environment"
+            )
         if pubsub is not None and (
             bigquery is not None
             or pubsub.env is not env
@@ -45,7 +48,7 @@ class Runner:
             raise rt.Failure("Pub/Sub handoff requires its original runner environment")
         self.env = env
         self.env.actor = "runner"
-        self.bigquery, self.pubsub, self.cloudtasks = bigquery, pubsub, cloudtasks
+        self.bigquery, self.pubsub, self.resource = bigquery, pubsub, resource
         self.cleanup = rt.Cleanup(env)
 
     @property
@@ -64,14 +67,14 @@ class Runner:
             self.env.clock() >= admission_deadline(self.env)
         ):
             raise rt.Failure("Pub/Sub admission deadline expired")
-        if (
-            self.env.approval.scenario == "cloudtasks-recovery"
-            and self.env.clock() >= self.cloudtasks_admission_deadline()
-        ):
-            raise rt.Failure("Cloud Tasks startup deadline expired")
+        scenario = RESOURCE_SCENARIOS.get(self.env.approval.scenario)
+        if scenario and self.env.clock() >= self.resource_admission_deadline():
+            raise rt.Failure(scenario.service + " startup deadline expired")
 
-    def cloudtasks_admission_deadline(self):
-        return self.env.schedule.started + CLOUDTASKS_OBSERVATIONS["startup_seconds"]
+    def resource_admission_deadline(self):
+        """When a run that creates its own resource must have created the application."""
+        scenario = RESOURCE_SCENARIOS[self.env.approval.scenario]
+        return self.env.schedule.started + scenario.timing["startup_seconds"]
 
     def supervisor_ended(self):
         """Whether the supervisor Job is gone or has ended.
@@ -185,9 +188,11 @@ class Runner:
             if rt.digest(application) != self.env.approval.application_sha256:
                 raise rt.Failure("Application differs from the approved manifest")
             self.admission_open()
-        if self.env.approval.scenario == "cloudtasks-recovery":
-            if self.cloudtasks is None:
-                raise rt.Failure("Cloud Tasks admission requires its queue controller")
+        if scenario := RESOURCE_SCENARIOS.get(self.env.approval.scenario):
+            if self.resource is None:
+                raise rt.Failure(
+                    f"{scenario.service} admission requires its {scenario.noun} controller"
+                )
             if rt.digest(application) != self.env.approval.application_sha256:
                 raise rt.Failure("Application differs from the approved manifest")
             self.admission_open()
@@ -234,9 +239,9 @@ class Runner:
             self.bigquery.provision()
             self.admission_open()
             self.supervisor_open()
-        if self.env.approval.scenario == "cloudtasks-recovery":
-            self.cloudtasks.initialize()
-            self.cloudtasks.provision(self.cloudtasks_admission_deadline())
+        if self.env.approval.scenario in RESOURCE_SCENARIOS:
+            self.resource.initialize()
+            self.resource.provision(self.resource_admission_deadline())
             self.admission_open()
             self.supervisor_open()
         if pubsub:
@@ -283,28 +288,30 @@ class Runner:
         )
         if not pubsub_serving:
             release_pubsub()
-        # Without a queue controller there is nothing to release.
-        cloudtasks_released = self.cloudtasks is None
-        last_cloudtasks_error = None
+        # Without a resource controller there is nothing to release.
+        resource_released = self.resource is None
+        last_resource_error = None
 
-        def release_cloudtasks():
-            # The runner makes no queue call after admission, so it releases at
-            # once and retries on every poll: the supervisor cannot delete the
-            # queue until this succeeds.
-            nonlocal cloudtasks_released, last_cloudtasks_error
-            if cloudtasks_released:
+        def release_resource():
+            # The runner makes no service call after admission, so it releases
+            # at once and retries on every poll: the supervisor cannot delete
+            # the resource until this succeeds.
+            nonlocal resource_released, last_resource_error
+            if resource_released:
                 return
             try:
-                if self.env.refresh().cloudtasks is not None:
-                    self.cloudtasks.release()
-                cloudtasks_released = True
+                if getattr(self.env.refresh(), self.resource.field) is not None:
+                    self.resource.release()
+                resource_released = True
             except (rt.Failure, OSError, ValueError) as error:
                 cause = str(error)
-                if cause != last_cloudtasks_error:
-                    self.env.emit("cloudtasks-release-blocked", {"cause": cause})
-                    last_cloudtasks_error = cause
+                if cause != last_resource_error:
+                    self.env.emit(
+                        self.resource.field + "-release-blocked", {"cause": cause}
+                    )
+                    last_resource_error = cause
 
-        release_cloudtasks()
+        release_resource()
         try:
             self.env.refresh()
             if request_stop or self.env.stopping:
@@ -338,7 +345,7 @@ class Runner:
             nonlocal query_failed, pubsub_serving, pubsub_failed
             if not pubsub_serving:
                 release_pubsub()
-            release_cloudtasks()
+            release_resource()
             control = self.env.refresh()
             if self.env.stopping:
                 self.env.records.request_stop()
@@ -396,7 +403,7 @@ class Runner:
         finally:
             release_queries()
             release_pubsub()
-            release_cloudtasks()
+            release_resource()
         control = self.env.refresh()
         if control.application_intent and "application" not in self.env.roots:
             application, _ = self.env.store.read(
@@ -412,7 +419,7 @@ class Runner:
             control.success
             and not query_failed
             and not pubsub_failed
-            and cloudtasks_released,
+            and resource_released,
         )
         if (
             "supervisor" in self.env.roots
@@ -543,18 +550,23 @@ class Runner:
                 bigquery_trial=self.env.approval.bigquery_trial,
                 recovery=control.recovery,
             )
-        if self.env.approval.scenario == "cloudtasks-recovery":
+        if scenario := RESOURCE_SCENARIOS.get(self.env.approval.scenario):
             result.update(
-                scenario=self.env.approval.scenario,
-                cloudtasks_trial=self.env.approval.cloudtasks_trial,
-                recovery=control.recovery,
+                {
+                    "scenario": self.env.approval.scenario,
+                    scenario.field + "_trial": getattr(
+                        self.env.approval, scenario.field + "_trial"
+                    ),
+                    "recovery": control.recovery,
+                }
             )
         if control.pubsub is not None:
             result["pubsub"] = control.pubsub
         if control.bigquery is not None:
             result["bigquery"] = control.bigquery
-        if control.cloudtasks is not None:
-            result["cloudtasks"] = control.cloudtasks
+        for scenario in RESOURCE_SCENARIOS.values():
+            if getattr(control, scenario.field) is not None:
+                result[scenario.field] = getattr(control, scenario.field)
         return result
 
     def finalize(self, plans):

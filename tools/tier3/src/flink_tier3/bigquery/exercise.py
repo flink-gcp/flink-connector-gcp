@@ -15,13 +15,11 @@
 
 from __future__ import annotations
 
-import uuid
-
 import google.auth.exceptions
 import requests
 
 from ..common import Failure, transient, utc
-from ..exercise import RecoveryExercise
+from ..exercise import FiniteInputExercise, RecoveryExercise
 from ..policy import (
     BIGQUERY,
     BIGQUERY_OBSERVATIONS,
@@ -31,7 +29,7 @@ from ..policy import (
 )
 from .observe import observation, vertices
 from .oracle import EXACTLY_ONCE, assess
-from .verdict import COMPLETE_STAGE, MEASUREMENT_EVENT, summarize, verdict
+from .verdict import MEASUREMENT_EVENT, summarize, verdict
 
 
 def require_handoff(env, handoff):
@@ -70,7 +68,7 @@ def _said_nothing(error):
     return False
 
 
-class BigQueryExercise(RecoveryExercise):
+class BigQueryExercise(FiniteInputExercise):
     """Recover the finite input, then obtain a bounded query-visible result.
 
     The caller supplies the actors and the cleanup quiescence barrier.
@@ -82,6 +80,8 @@ class BigQueryExercise(RecoveryExercise):
     namespace = BIGQUERY
     state_bucket = BIGQUERY_STATE
     timing = BIGQUERY_OBSERVATIONS
+    service = "BigQuery"
+    oracle_stage = "visibility"
     progress_event = "bigquery-progress"
     measurement_event = MEASUREMENT_EVENT
     baseline_event = "bigquery-baseline-window"
@@ -89,47 +89,11 @@ class BigQueryExercise(RecoveryExercise):
     def __init__(self, env, upgrade, connector_jobs):
         if env.approval.scenario != "bigquery-recovery":
             raise Failure("BigQuery exercise requires a BigQuery approval")
-        self.trial = env.approval.bigquery_plan.trial
+        trial = env.approval.bigquery_plan.trial
         # The supervisor's listing of the run's connector jobs that are not
         # DONE; a FILE_LOADS failover waits for one to be RUNNING.
         self.connector_jobs = connector_jobs
-        self.records = self.trial.records
-        # The JobManager and the initial phase's TaskManagers.
-        self.expected_pods = 1 + self.trial.parallelism("initial")
-        super().__init__(
-            env, upgrade, failover=self.trial.failover, rescale=self.trial.rescale
-        )
-        self.deadline = min(
-            env.schedule.started + self.timing["input_seconds"],
-            env.schedule.cleanup_at,
-        )
-
-    def progress(self, pod, text):
-        super().progress(pod, text)
-        lineage = self.env.refresh().lineage
-        for sample in self.samples.values():
-            try:
-                valid = str(uuid.UUID(sample["lineage"])) == sample["lineage"]
-            except ValueError:
-                valid = False
-            if sample["at"] > self.env.clock():
-                raise Failure("BigQuery progress is dated in the future")
-            if not valid or (lineage is not None and sample["lineage"] != lineage):
-                raise Failure("BigQuery input lineage changed or is invalid")
-            if lineage is None:
-                self.env.records.record_lineage(sample["lineage"])
-                lineage = sample["lineage"]
-
-    def active_input(self, phase):
-        samples = self.fresh_progress(phase)
-        if not samples:
-            return False
-        latest = max(samples, key=lambda sample: sample["at"])
-        if latest["at"] > self.env.clock():
-            raise Failure("BigQuery progress is dated in the future")
-        return (
-            latest["processed"] < self.records and self.env.clock() - latest["at"] <= 60
-        )
+        super().__init__(env, upgrade, trial)
 
     def begin_failover(self, app, proof, pods):
         # The FILE_LOADS wait and its record precede the deletion, so they
@@ -137,7 +101,8 @@ class BigQueryExercise(RecoveryExercise):
         if not self.active_input("upgrade") or self.failover_target(pods) is None:
             return
         if self.trial.mode != "FILE_LOADS":
-            super().begin_failover(app, proof, pods)
+            # The input check above already passed; skip the base's repeat.
+            RecoveryExercise.begin_failover(self, app, proof, pods)
             return
         listed_at, running, errors = self._await_running_load()
         # Written before the deletion, so the failover record holds it even
@@ -148,7 +113,7 @@ class BigQueryExercise(RecoveryExercise):
             "listing_errors": errors,
         }
         self.outcomes["failover_in_flight"] = record
-        super().begin_failover(app, proof, pods)
+        RecoveryExercise.begin_failover(self, app, proof, pods)
         record["failover_at"] = utc(self.boundary)
         # A load listed RUNNING before the delete and again after it was
         # running when the delete landed, since a job's state only moves
@@ -207,11 +172,6 @@ class BigQueryExercise(RecoveryExercise):
                 return started, running, errors
             now = self.env.clock()
             self.env.sleep(max(0, min(started + poll, self.deadline) - now))
-
-    def persist(self, stage, **details):
-        if stage == "complete":
-            stage = "visibility"
-        super().persist(stage, **details)
 
     def discover(self, rest, known):
         return vertices(rest, known, self.trial.mode)
@@ -272,22 +232,7 @@ class BigQueryExercise(RecoveryExercise):
                 # receipt. It is decided over the record the transition is
                 # about to write, because the offline analyzer recomputes it
                 # from that same record once the evidence is exported.
-                coverage = self._coverage()
-                decided = verdict(
-                    {
-                        "stage": COMPLETE_STAGE,
-                        "outcomes": self.outcomes,
-                        "coverage": coverage,
-                    },
-                    self.trial.mode,
-                )
-                # Bypass the FINISHED-to-visibility transition only after the oracle passes.
-                super().persist(
-                    COMPLETE_STAGE,
-                    processed=self.records,
-                    coverage=coverage,
-                    **decided,
-                )
+                self.complete(lambda record: verdict(record, self.trial.mode))
                 return
             self.env.sleep(min(POLL, max(0, self.deadline - self.env.clock())))
         raise Failure("BigQuery final visibility exhausted its approved query slots")

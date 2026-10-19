@@ -116,7 +116,8 @@ Every run's inventory lists `tier3-cloudtasks`.
 
 The [`bigtable-recovery`](bigtable.cue) delivery of the Bigtable recovery trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) renders its initial and upgrade phases in `tier3-bigtable` from the optional `bigtable_records` and `bigtable_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, and the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops.
 Its `bigtable_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `bt1316-<run-id>`, so the run ID has at most 26 characters.
-Dispatch does not offer it yet: [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854) adds the rig scenario that creates the instance, admits the delivery and judges the trial.
+Dispatch renders it at the dispatched kind, the input every kind shares and a change-stream end 3,900 seconds into the run's window, and the [recovery trial runbook](../apps/bigtable/README.md#recovery-trial) describes the instance, the exercise and the verdict ([#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854)).
+Every run's inventory lists `tier3-bigtable`.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -363,10 +364,12 @@ The lifecycle delivery requires package sources from this command or the runner;
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
 The offline `cloudtasks-recovery` proposal is described in the [Cloud Tasks trial runbook](../apps/cloudtasks/README.md#trial-and-estimate).
+The offline `bigtable-recovery` proposal is described in the [Bigtable trial runbook](../apps/bigtable/README.md#trial-and-estimate).
 The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, or an `eo-10` or `fl-10` fault trial) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
 A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
+A Bigtable trial takes its kind and the published application digest, as [Dispatch](../apps/bigtable/README.md#dispatch) describes.
 
 ## Reviewed Pub/Sub trials
 

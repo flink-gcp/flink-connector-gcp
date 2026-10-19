@@ -19,11 +19,12 @@ import json
 from decimal import Decimal
 
 import pytest
+from flink_tier3 import proposal
 from flink_tier3 import render as command
 from flink_tier3.cloudtasks import plan
 from flink_tier3.cloudtasks.trial import Trial
 from flink_tier3.common import Failure, digest
-from flink_tier3.policy import CLOUDTASKS_OBSERVATIONS, POLL
+from flink_tier3.policy import CLOUDTASKS_OBSERVATIONS, GAR, POLL
 
 RUN_ID = "ct-proposal"
 
@@ -37,7 +38,7 @@ def inputs():
         "expires_at": "2026-10-13T01:30:00Z",
         "active_seconds": 5220,
         "revision": "b" * 40,
-        "application_image": plan.GAR + "cloudtasks-recovery@sha256:" + "c" * 64,
+        "application_image": GAR + "cloudtasks-recovery@sha256:" + "c" * 64,
         "trial": plan.trial("jm-replacement"),
     }
 
@@ -55,7 +56,7 @@ def renderer(monkeypatch):
             options["cloudtasks_records_per_second"],
             options["cloudtasks_trial"],
         )
-        size = trial.sink_parallelism("initial")
+        size = trial.parallelism("initial")
         resources = {
             category: dict(plan.POD_RESOURCES["smoke"])
             for category in ("requests", "limits")
@@ -85,8 +86,8 @@ def renderer(monkeypatch):
             }
         upgrade = copy.deepcopy(initial)
         upgrade["spec"]["job"]["args"] = trial.arguments("upgrade")
-        upgrade["spec"]["job"]["parallelism"] = trial.sink_parallelism("upgrade")
-        upgrade["spec"]["taskManager"]["replicas"] = trial.sink_parallelism("upgrade")
+        upgrade["spec"]["job"]["parallelism"] = trial.parallelism("upgrade")
+        upgrade["spec"]["taskManager"]["replicas"] = trial.parallelism("upgrade")
         delivery = {
             "config": {
                 "data": {
@@ -105,9 +106,7 @@ def renderer(monkeypatch):
                                         category: dict(plan.POD_RESOURCES["supervisor"])
                                         for category in ("requests", "limits")
                                     },
-                                    "image": plan.GAR
-                                    + "lifecycle-tools@sha256:"
-                                    + "d" * 64,
+                                    "image": GAR + "lifecycle-tools@sha256:" + "d" * 64,
                                 }
                             ]
                         }
@@ -117,7 +116,7 @@ def renderer(monkeypatch):
         }
         return initial, upgrade, delivery
 
-    monkeypatch.setattr(plan, "render", render)
+    monkeypatch.setattr(proposal, "render", render)
     return calls
 
 
@@ -178,11 +177,11 @@ def test_each_kind_names_its_fault_and_its_sizes(kind, failover, rescale, sizes)
     trial = Trial(RUN_ID, 180000, 100, kind)
     assert (trial.failover, trial.rescale) == (failover, rescale)
     assert (
-        trial.sink_parallelism("initial"),
-        trial.sink_parallelism("upgrade"),
+        trial.parallelism("initial"),
+        trial.parallelism("upgrade"),
     ) == sizes
     with pytest.raises(ValueError, match="phase"):
-        trial.sink_parallelism("resume")
+        trial.parallelism("resume")
 
 
 def test_an_approval_without_a_kind_is_the_first_trial():
@@ -333,7 +332,7 @@ def test_each_trial_renders_its_sizes_and_the_same_estimate(
     [
         ("run_id", "../bad"),
         ("revision", "b" * 39),
-        ("application_image", plan.GAR + "bigquery-recovery@sha256:" + "c" * 64),
+        ("application_image", GAR + "bigquery-recovery@sha256:" + "c" * 64),
         ("started_at", "2026-10-13T00:00:01Z"),
         ("active_seconds", 5221),
         (
@@ -372,7 +371,7 @@ def test_invalid_inputs_are_refused_before_render(inputs, renderer, field, value
 def test_renderer_drift_does_not_produce_a_proposal(
     inputs, renderer, monkeypatch, change, match
 ):
-    render = plan.render
+    render = proposal.render
     if change == "rescale-true":
         inputs["trial"] = plan.trial("rescale-in")
 
@@ -412,7 +411,7 @@ def test_renderer_drift_does_not_produce_a_proposal(
             delivery["config"]["data"]["approval.json"] = '{"x": 1}'
         return initial, upgrade, delivery
 
-    monkeypatch.setattr(plan, "render", altered)
+    monkeypatch.setattr(proposal, "render", altered)
     with pytest.raises(Failure, match=match):
         plan.prepare(**inputs)
 

@@ -17,15 +17,14 @@ import copy
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.cloudtasks.lifecycle import (
-    CloudTasksLifecycle,
-    require_cloudtasks_clean,
-)
-from flink_tier3.cloudtasks.queue import QUEUE_CONFIGURATION, Unsent
+from flink_tier3.cloudtasks.lifecycle import CloudTasksLifecycle
+from flink_tier3.cloudtasks.queue import QUEUE_CONFIGURATION
 from flink_tier3.cloudtasks.trial import Trial
 from flink_tier3.common import ApiError, Failure, TransportError, digest
 from flink_tier3.model import Phase, RunRecord
 from flink_tier3.records import Records
+from flink_tier3.resource import require_resources_clean
+from flink_tier3.rest import Unsent
 
 from ..test_lifecycle import Store
 
@@ -98,6 +97,7 @@ class FakeQueue:
 
     def __init__(self, trial=TRIAL):
         self.trial = trial
+        self.name = trial.queue_path
         self.queue = None
         self.calls = []
         self.reads = []
@@ -363,7 +363,7 @@ def test_cleanup_needs_the_release_and_the_barrier_then_deletes(env, api):
     record = env.refresh()
     assert record.cloudtasks["cleaned"] is True
     assert record.stop_requested is True
-    require_cloudtasks_clean(record)
+    require_resources_clean(record)
 
 
 def test_cleanup_retries_until_the_deletion_is_visible(env, api):

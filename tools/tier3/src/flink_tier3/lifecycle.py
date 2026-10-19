@@ -32,18 +32,20 @@ from pathlib import Path
 
 import flink_tier3 as rt
 
+from . import actors as resource_actors
 from . import bootstrap, repository
 from . import runner as runner_api
 from . import workflow as wf
 from .bigquery import actors as bigquery_actors
 from .bigquery import plan as bigquery_plan
-from .cloudtasks import actors as cloudtasks_actors
-from .cloudtasks import plan as cloudtasks_plan
+from .bigtable import trial as bigtable_trial
 from .cloudtasks import trial as cloudtasks_trial
 from .model import APPROVAL_VERSION, SCENARIOS
-from .policy import BIGQUERY, CLOUDTASKS, DIGEST, PUBSUB
+from .policy import BIGQUERY, DIGEST, PUBSUB
 from .pubsub import actors as pubsub_actors
 from .pubsub import plan as pubsub_plan
+from .render import RESOURCE_PLANS
+from .resource import RESOURCE_SCENARIOS
 
 PUBSUB_TRIALS = Path("kubernetes/lifecycle/pubsub-trials")
 
@@ -373,8 +375,9 @@ def start_bigquery(args, store):
     )
 
 
-def cloudtasks_approval(
+def resource_approval(
     *,
+    scenario,
     run_id,
     nonce,
     sha,
@@ -394,14 +397,14 @@ def cloudtasks_approval(
     """
     return {
         "version": APPROVAL_VERSION,
-        "scenario": "cloudtasks-recovery",
+        "scenario": scenario,
         "run_id": run_id,
         "nonce": nonce,
         "sha": sha,
         "started_at": proposal["started_at"],
         "expires_at": proposal["expires_at"],
         "cleanup_at": proposal["cleanup_at"],
-        "cloudtasks_trial": copy.deepcopy(trial),
+        RESOURCE_SCENARIOS[scenario].field + "_trial": copy.deepcopy(trial),
         "namespaces": namespaces,
         "operator_uid": operator_uid,
         "baseline_uids": baseline,
@@ -413,38 +416,45 @@ def cloudtasks_approval(
     }
 
 
-def start_cloudtasks(args, store):
-    """Dispatch one Cloud Tasks recovery trial.
+def start_resource(args, store, scenario):
+    """Dispatch one trial of a scenario whose runner creates its own resource.
 
     Everything that can refuse without the lock does so first, including the
-    rendering and ConfigMap size. The run's queue is created by the runner
+    rendering and ConfigMap size. The run's resource is created by the runner
     once the supervisor and the Operator are ready, after the lock.
     """
-    try:
-        trial = cloudtasks_plan.trial(args.cloudtasks_trial)
-    except ValueError as error:
+    plan = RESOURCE_PLANS[scenario]
+    namespace = plan.NAMESPACE
+    service, field = (
+        RESOURCE_SCENARIOS[scenario].service,
+        RESOURCE_SCENARIOS[scenario].field,
+    )
+    # Checked here rather than left to the plan, because a Bigtable trial is
+    # built from the window, which is read only after the run's evidence is.
+    kind = getattr(args, field + "_trial", None)
+    if kind not in plan.KINDS:
         raise rt.Failure(
-            "Cloud Tasks trials need a --cloudtasks-trial kind: "
-            + ", ".join(cloudtasks_trial.KINDS)
-        ) from error
+            f"{service} trials need a --{field}-trial kind: " + ", ".join(plan.KINDS)
+        )
     if not DIGEST.fullmatch(args.application_digest or ""):
-        raise rt.Failure("Cloud Tasks trials need a sha256 --application-digest")
-    application_image = rt.GAR + "cloudtasks-recovery@" + args.application_digest
+        raise rt.Failure(f"{service} trials need a sha256 --application-digest")
+    application_image = rt.GAR + scenario + "@" + args.application_digest
     sha = refuse_before_admission(args, store)
-    started, end = window(cloudtasks_plan.WINDOW_SECONDS)
+    started, end = window(plan.WINDOW_SECONDS)
+    trial = plan.trial(kind, rt.utc(started))
     nonce = uuid.uuid4().hex
     owner = rig_owner(wf.execution("run", nonce), args.run_id, sha)
     kube = external(args.kubeconfig, idle=True)
     bootstrap.Cluster(args.kubeconfig).can_i(
-        True, "create", "flink.apache.org", "flinkdeployments", CLOUDTASKS
+        True, "create", "flink.apache.org", "flinkdeployments", namespace
     )
-    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, CLOUDTASKS)
-    rendered = cloudtasks_plan.prepare(
+    namespaces, operator_uid, operator_image, baseline = wf.snapshot(kube, namespace)
+    rendered = plan.prepare(
         run_id=args.run_id,
         nonce=nonce,
         started_at=rt.utc(started),
         expires_at=rt.utc(end),
-        active_seconds=cloudtasks_plan.ACTIVE_SECONDS,
+        active_seconds=plan.ACTIVE_SECONDS,
         revision=sha,
         application_image=application_image,
         trial=trial,
@@ -458,7 +468,8 @@ def start_cloudtasks(args, store):
     receipts = wf.image_receipts(
         rt.authorized_session(rt.GoogleToken()), images, proposal["expires_at"]
     )
-    approval = cloudtasks_approval(
+    approval = resource_approval(
+        scenario=scenario,
         run_id=args.run_id,
         nonce=nonce,
         sha=sha,
@@ -480,7 +491,7 @@ def start_cloudtasks(args, store):
         store,
         kube,
         foundation=(namespaces, operator_uid, operator_image, baseline),
-        namespace=CLOUDTASKS,
+        namespace=namespace,
         owner=owner,
         approval=approval,
         documents={
@@ -488,9 +499,9 @@ def start_cloudtasks(args, store):
             "images.json": receipts,
             "upgrade-application.json": rendered["upgrade_application"],
         },
-        # The queue's release needs no runner token: only this process's
+        # The resource's release needs no runner token: only this process's
         # controller can write it.
-        actor=lambda env, runner_token: cloudtasks_actors.runner(
+        actor=lambda env, runner_token: resource_actors.runner(
             env, rendered["application"]
         ),
         admitted=(
@@ -570,8 +581,8 @@ def start(args, store):
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
         return start_pubsub(args, store)
-    if scenario == "cloudtasks-recovery":
-        return start_cloudtasks(args, store)
+    if scenario in RESOURCE_SCENARIOS:
+        return start_resource(args, store, scenario)
     sha = refuse_before_admission(args, store)
     now, end = window(rt.WINDOWS["smoke"])
     expires_at = rt.utc(end)
@@ -887,6 +898,10 @@ def main(argv=None):
     run.add_argument(
         "--cloudtasks-trial",
         help="Cloud Tasks trial: " + ", ".join(cloudtasks_trial.KINDS),
+    )
+    run.add_argument(
+        "--bigtable-trial",
+        help="Bigtable trial: " + ", ".join(bigtable_trial.KINDS),
     )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)

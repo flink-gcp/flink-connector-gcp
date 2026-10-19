@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 import re
+import uuid
 from dataclasses import dataclass
 
 from .common import (
@@ -943,4 +944,117 @@ class RecoveryExercise:
             isinstance(error, TransportError)
             or isinstance(error, ApiError)
             and error.status in (404, 502, 503, 504)
+        )
+
+
+# The stage that completes a run, which carries its verdict.
+COMPLETE_STAGE = "complete"
+# The wait before repeating an oracle's read that failed transiently.
+RETRY_SECONDS = 5
+# What an oracle's read window leaves before the cleanup start, for writing the
+# record's transition, which the cleanup start refuses.
+RECORD_SECONDS = 60
+
+
+class FiniteInputExercise(RecoveryExercise):
+    """A recovery exercise over one finite, checkpointed input lineage.
+
+    A subclass names `service` for its messages and `oracle_stage`, the stage
+    a finished application waits in until the scenario's oracle has passed. It
+    sets its own attributes before calling this constructor with the trial.
+    The initial phase runs the JobManager and one single-slot TaskManager per
+    subtask the trial's `parallelism` names.
+    """
+
+    service: str
+    oracle_stage: str
+
+    def __init__(self, env, upgrade, trial):
+        self.trial = trial
+        self.records = trial.records
+        self.expected_pods = 1 + trial.parallelism("initial")
+        super().__init__(env, upgrade, failover=trial.failover, rescale=trial.rescale)
+        self.deadline = min(
+            env.schedule.started + self.timing["input_seconds"],
+            env.schedule.cleanup_at,
+        )
+
+    def progress(self, pod, text):
+        super().progress(pod, text)
+        lineage = self.env.refresh().lineage
+        for sample in self.samples.values():
+            try:
+                valid = str(uuid.UUID(sample["lineage"])) == sample["lineage"]
+            except ValueError:
+                valid = False
+            if sample["at"] > self.env.clock():
+                raise Failure(f"{self.service} progress is dated in the future")
+            if not valid or (lineage is not None and sample["lineage"] != lineage):
+                raise Failure(f"{self.service} input lineage changed or is invalid")
+            if lineage is None:
+                self.env.records.record_lineage(sample["lineage"])
+                lineage = sample["lineage"]
+
+    def active_input(self, phase):
+        """Whether the phase's input is still flowing, so a fault lands mid-input."""
+        samples = self.fresh_progress(phase)
+        if not samples:
+            return False
+        latest = max(samples, key=lambda sample: sample["at"])
+        if latest["at"] > self.env.clock():
+            raise Failure(f"{self.service} progress is dated in the future")
+        return (
+            latest["processed"] < self.records and self.env.clock() - latest["at"] <= 60
+        )
+
+    def begin_failover(self, app, proof, pods):
+        if self.active_input("upgrade"):
+            super().begin_failover(app, proof, pods)
+
+    def persist(self, stage, **details):
+        if stage == COMPLETE_STAGE:
+            stage = self.oracle_stage
+        super().persist(stage, **details)
+
+    def oracle_window(self):
+        """When the oracle's reads must end; the transition keeps the cleanup start."""
+        until = min(
+            self.env.clock() + self.timing["visibility_seconds"],
+            self.env.schedule.cleanup_at - RECORD_SECONDS,
+        )
+        self.deadline = self.env.schedule.cleanup_at
+        return until
+
+    def retried(self, call, until, closed=None):
+        """One oracle read, repeated while it fails without saying anything.
+
+        Before `until`, a non-transient failure says something about the read
+        and is raised. Once it has passed, any failure is raised, as `closed`
+        when the caller names the window's closing apart.
+        """
+        while True:
+            try:
+                return call()
+            except Failure as error:
+                if self.env.clock() >= until:
+                    if closed is None:
+                        raise
+                    raise closed(str(error)) from error
+                if not transient(error):
+                    raise
+            self.env.sleep(RETRY_SECONDS)
+
+    def complete(self, verdict):
+        """Write the completing transition with the verdict decided over it.
+
+        `verdict` decides from the record the transition is about to write,
+        which the offline analyzer recomputes once the evidence is exported.
+        """
+        coverage = self._coverage()
+        decided = verdict(
+            {"stage": COMPLETE_STAGE, "outcomes": self.outcomes, "coverage": coverage}
+        )
+        # The stage the oracle waited in is complete only now.
+        RecoveryExercise.persist(
+            self, COMPLETE_STAGE, processed=self.records, coverage=coverage, **decided
         )

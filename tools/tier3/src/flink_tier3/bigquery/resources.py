@@ -16,17 +16,14 @@
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import time
 from dataclasses import asdict, dataclass
 
-import google.auth.exceptions
-import requests
-
-from ..common import ApiError, Failure, TransportError, digest, json_bytes
-from ..policy import BIGQUERY_STATE, HTTP_TIMEOUT, REGION
+from ..common import ApiError, Failure, digest, json_bytes
+from ..policy import BIGQUERY_STATE, REGION
+from ..rest import JsonService
 from .oracle import (
     DATASET,
     FIELDS,
@@ -170,12 +167,17 @@ def job_state(job):
     return status.get("state") if isinstance(status, dict) else None
 
 
-class BigQueryResources:
+class BigQueryResources(JsonService):
     """No automatic retries or polling; failed writes retain their exact identity.
 
     Inject a Google authorized session with retries disabled. The absolute UTC
     deadline bounds starting calls and result pagination, not server execution.
     """
+
+    label = "BigQuery"
+    base = BASE
+    max_response_bytes = MAX_RESPONSE_BYTES
+    refuse_late_body = True
 
     def __init__(self, http, plan, deadline, clock=time.time):
         if not isinstance(plan, ResourcePlan):
@@ -191,50 +193,6 @@ class BigQueryResources:
         return BigQueryResources(
             self.http, self.plan, min(self.deadline, deadline), self.clock
         )
-
-    def _remaining(self):
-        remaining = self.deadline - self.clock()
-        if remaining <= 0:
-            raise Failure("BigQuery operation deadline exceeded")
-        return min(HTTP_TIMEOUT, remaining)
-
-    def _call(self, method, path, body=None, params=None, absent=False):
-        timeout = self._remaining()
-        try:
-            with self.http.request(
-                method,
-                BASE + path,
-                json=body,
-                params=params,
-                timeout=timeout,
-                allow_redirects=False,
-                stream=True,
-            ) as response:
-                self._remaining()
-                if absent and response.status_code == 404:
-                    return None
-                if not 200 <= response.status_code < 300:
-                    raise ApiError(response.status_code, method, path)
-                data = bytearray()
-                for chunk in response.iter_content(8192):
-                    self._remaining()
-                    data.extend(chunk)
-                    if len(data) > MAX_RESPONSE_BYTES:
-                        raise Failure("BigQuery response exceeds 1 MiB")
-                self._remaining()
-                result = json.loads(data) if data else {}
-                if not isinstance(result, dict):
-                    raise Failure("BigQuery response must be an object")
-                return result
-        except (
-            requests.exceptions.RequestException,
-            google.auth.exceptions.GoogleAuthError,
-        ) as error:
-            raise TransportError(
-                f"{method} BigQuery request failed: {type(error).__name__}"
-            ) from error
-        except (ValueError, UnicodeError) as error:
-            raise Failure("Invalid BigQuery JSON response") from error
 
     def _table_path(self, destination):
         table = self.plan.table_body(destination)["tableReference"]["tableId"]

@@ -20,8 +20,8 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// The trial's inputs, which dispatch and the offline renderer are to supply once the rig scenario
-// of #1854 exists; the package owns their defaults and bounds.
+// The trial's inputs, which dispatch and the offline renderer supply; the package owns their
+// defaults and bounds.
 bigtableRecords:          int    @tag(bigtable_records,type=int)
 bigtableRecordsPerSecond: int    @tag(bigtable_records_per_second,type=int)
 bigtableChangeStreamEnd:  string @tag(bigtable_change_stream_end)

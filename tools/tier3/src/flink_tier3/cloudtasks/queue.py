@@ -15,15 +15,8 @@
 
 from __future__ import annotations
 
-import json
-import math
-import time
-
-import google.auth.exceptions
-import requests
-
-from ..common import ApiError, Failure, TransportError, contains
-from ..policy import HTTP_TIMEOUT
+from ..common import Failure, contains
+from ..rest import TrialService
 from .trial import Trial, parent
 
 # v2beta3, because v2 has no `tombstoneTtl`, the retention the staged sink's
@@ -42,73 +35,21 @@ PAGE_SIZE = 1000
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
-class Unsent(Failure):
-    """A call refused before its request was sent, so it reached no service."""
-
-
-class Queue:
+class Queue(TrialService):
     """No automatic retries; the caller owns admission, intent and ownership.
 
     Inject a Google authorized session with retries disabled. The absolute UTC
     deadline bounds starting each call and reading its response.
     """
 
-    def __init__(self, http, trial, deadline, clock=time.time):
-        if not isinstance(trial, Trial):
-            raise TypeError("trial must be a validated Trial")
-        if type(deadline) not in (int, float) or not math.isfinite(deadline):
-            raise ValueError("deadline must be a finite UTC timestamp")
-        self.http, self.trial, self.deadline, self.clock = http, trial, deadline, clock
-        self.name = trial.queue_path
+    label = "Cloud Tasks"
+    base = BASE
+    max_response_bytes = MAX_RESPONSE_BYTES
+    trial_type = Trial
 
-    def with_deadline(self, deadline):
-        """Share the transport with a deadline that cannot extend this one."""
-        if type(deadline) not in (int, float) or not math.isfinite(deadline):
-            raise ValueError("deadline must be a finite UTC timestamp")
-        return Queue(self.http, self.trial, min(self.deadline, deadline), self.clock)
-
-    def _remaining(self, error=Failure):
-        remaining = self.deadline - self.clock()
-        if remaining <= 0:
-            raise error("Cloud Tasks operation deadline exceeded")
-        return min(HTTP_TIMEOUT, remaining)
-
-    def _call(self, method, path, body=None, params=None, absent=False):
-        timeout = self._remaining(Unsent)
-        try:
-            with self.http.request(
-                method,
-                BASE + path,
-                json=body,
-                params=params,
-                timeout=timeout,
-                allow_redirects=False,
-                stream=True,
-            ) as response:
-                self._remaining()
-                if absent and response.status_code == 404:
-                    return None
-                if not 200 <= response.status_code < 300:
-                    raise ApiError(response.status_code, method, path)
-                data = bytearray()
-                for chunk in response.iter_content(8192):
-                    self._remaining()
-                    data.extend(chunk)
-                    if len(data) > MAX_RESPONSE_BYTES:
-                        raise Failure("Cloud Tasks response exceeds 4 MiB")
-                result = json.loads(data) if data else {}
-                if not isinstance(result, dict):
-                    raise Failure("Cloud Tasks response must be an object")
-                return result
-        except (
-            requests.exceptions.RequestException,
-            google.auth.exceptions.GoogleAuthError,
-        ) as error:
-            raise TransportError(
-                f"{method} Cloud Tasks request failed: {type(error).__name__}"
-            ) from error
-        except (ValueError, UnicodeError) as error:
-            raise Failure("Invalid Cloud Tasks JSON response") from error
+    @staticmethod
+    def resource_name(trial):
+        return trial.queue_path
 
     def get(self):
         """The queue, or None when it does not exist."""

@@ -234,7 +234,7 @@ The [fault trial publication](images/README.md#bigquery-fault-trial-publication)
 The [Bigtable recovery application](apps/bigtable/README.md) supplies the one graph that the trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) share: the sink in both delivery modes and a Change Streams relay.
 Build it with `just tier3-bigtable-verify`.
 Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph.
-The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery and its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf) exist, and so do the `tier3-bigtable` namespace, its `bigtable` KSA and RBAC ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)), which the Operator watches ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)); the rig scenario that admits the delivery follows in [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
+The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery runs it in the `tier3-bigtable` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf), and the rig scenario of [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/bigtable/README.md#recovery-trial) describes.
 
 ## Pub/Sub recovery application
 

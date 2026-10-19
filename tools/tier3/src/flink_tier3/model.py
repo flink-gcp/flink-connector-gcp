@@ -26,6 +26,7 @@ from typing import ClassVar
 from .common import Failure, quantity, timestamp
 from .policy import (
     BIGQUERY,
+    BIGTABLE,
     CLEANUP_SECONDS,
     CLOUDTASKS,
     COST_RATES,
@@ -75,6 +76,13 @@ def _hourly(shapes):
 # reads a held run's approval as written.
 APPROVAL_VERSION = 6
 SCENARIOS = tuple(WINDOWS)
+# Each service scenario's application namespace; a smoke run's is SMOKE.
+APPLICATION_NAMESPACES = {
+    "pubsub-recovery": PUBSUB,
+    "bigquery-recovery": BIGQUERY,
+    "cloudtasks-recovery": CLOUDTASKS,
+    "bigtable-recovery": BIGTABLE,
+}
 
 
 def validate_approval(approval):
@@ -134,11 +142,7 @@ def validate_approval(approval):
         or timestamp(approval["cleanup_at"]) != end - CLEANUP_SECONDS
     ):
         raise Failure("Approval window differs from its scenario's policy")
-    application = {
-        "pubsub-recovery": PUBSUB,
-        "bigquery-recovery": BIGQUERY,
-        "cloudtasks-recovery": CLOUDTASKS,
-    }.get(scenario, SMOKE)
+    application = APPLICATION_NAMESPACES.get(scenario, SMOKE)
     if set(approval["namespaces"]) != {application, SYSTEM}:
         raise Failure("Approval must name its application and control namespaces")
     for saved in approval["namespaces"].values():
@@ -255,6 +259,7 @@ class Approval:
     bigquery_trial: dict = field(default_factory=dict)
     pubsub_trial: dict = field(default_factory=dict)
     cloudtasks_trial: dict = field(default_factory=dict)
+    bigtable_trial: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value):
@@ -271,13 +276,7 @@ class Approval:
 
     @property
     def application_namespace(self):
-        if self.scenario == "pubsub-recovery":
-            return PUBSUB
-        if self.scenario == "bigquery-recovery":
-            return BIGQUERY
-        if self.scenario == "cloudtasks-recovery":
-            return CLOUDTASKS
-        return SMOKE
+        return APPLICATION_NAMESPACES.get(self.scenario, SMOKE)
 
     @property
     def bigquery_plan(self):
@@ -308,6 +307,15 @@ class Approval:
             raise Failure("Approval does not describe a Cloud Tasks trial")
         return Trial(self.run_id, **self.cloudtasks_trial)
 
+    @property
+    def bigtable_plan(self):
+        """Derive the trial's input and instance from a Bigtable approval."""
+        from .bigtable.trial import Trial
+
+        if self.scenario != "bigtable-recovery":
+            raise Failure("Approval does not describe a Bigtable trial")
+        return Trial(self.run_id, **self.bigtable_trial)
+
     def to_dict(self):
         value = asdict(self)
         if self.scenario != "pubsub-recovery":
@@ -316,6 +324,8 @@ class Approval:
             value.pop("bigquery_trial")
         if self.scenario != "cloudtasks-recovery":
             value.pop("cloudtasks_trial")
+        if self.scenario != "bigtable-recovery":
+            value.pop("bigtable_trial")
         return value
 
 
@@ -389,6 +399,7 @@ class RunRecord:
     bigquery: dict | None = None
     pubsub: dict | None = None
     cloudtasks: dict | None = None
+    bigtable: dict | None = None
 
     @classmethod
     def from_dict(cls, value):
