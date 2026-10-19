@@ -160,6 +160,9 @@ class RecoveryExercise:
     # its own measurement or none.
     measurement_event = None
     baseline_event = None
+    # The failover regions a TaskManager's loss restarts, each restoring the
+    # job's checkpoint once: one for a connected graph.
+    failover_regions = 1
 
     def __init__(self, env, upgrade, *, failover="jobmanager", rescale=None):
         if self.measurement_event and (
@@ -198,7 +201,8 @@ class RecoveryExercise:
         self.vertices = None
         self.baseline_until, self.post_until = None, None
         # The latest restore a planned recovery accounted for: its time, the
-        # JobMaster's count and the stage whose recovery it was.
+        # JobMaster's count, the stage whose recovery it was and the count the
+        # recovery started from.
         self.last_restore = None
 
     @property
@@ -221,11 +225,14 @@ class RecoveryExercise:
         Every restart that restores a checkpoint advances the restore the
         job's checkpoint statistics report, and each JobMaster counts its own
         restores. A planned recovery restores once: a new JobMaster's count is
-        then one, and a recovery that keeps the JobMaster adds one to it. A
-        restore outside a recovery, a second one inside a recovery, or a count
-        that shows a restore no poll saw is a restart the exercise did not
-        plan, and its windows' readings or its proof's restore are no longer
-        the planned fault's. Called with each poll's checkpoint statistics
+        then one. A TaskManager replacement keeps the JobMaster, and Flink
+        restarts each failover region the lost TaskManager held, so it adds
+        one restore per region, `failover_regions`, which polls may see
+        together or in turn. A restore outside a recovery, one more inside a
+        recovery, or a count that shows a restore no poll saw is a restart the
+        exercise did not plan, and its windows' readings or its proof's
+        restore are no longer the planned fault's. Called with each poll's
+        checkpoint statistics
         before the exercise observes the poll, and again just before a fault
         that replaces the JobMaster. A restart before the first completed
         checkpoint restores nothing and is not seen here.
@@ -242,12 +249,20 @@ class RecoveryExercise:
         count = (rest.get("counts") or {}).get("restored")
         if type(count) is not int:
             raise Failure("Checkpoint statistics have no restore count")
-        # None where no restore is planned: outside a recovery, or after the
-        # recovery's own.
-        expected = None
-        if self.recovering and not (last and last["stage"] == self.stage):
-            expected = 1 + (last["count"] if last and self.keeps_jobmaster() else 0)
-        if count != expected:
+        first = self.recovering and not (last and last["stage"] == self.stage)
+        if self.keeps_jobmaster():
+            # The JobMaster's count before the replacement, which its own
+            # restores raise by up to one per region.
+            base = (last["count"] if last else 0) if first else last["base"]
+            expected = base + self.failover_regions
+            planned = (last["count"] if last else 0) < count <= expected
+        else:
+            base = 0
+            # None where no restore is planned: outside a recovery, or after
+            # the recovery's own.
+            expected = 1 if first else None
+            planned = count == expected
+        if not planned:
             self.env.emit(
                 "unplanned-restore",
                 {
@@ -258,7 +273,12 @@ class RecoveryExercise:
                 },
             )
             raise Failure("Unplanned job restart; trial is inconclusive")
-        self.last_restore = {"at": at, "count": count, "stage": self.stage}
+        self.last_restore = {
+            "at": at,
+            "count": count,
+            "stage": self.stage,
+            "base": base,
+        }
 
     def restarts_before_fault(self):
         """Read the restores once more just before the JobMaster is replaced.
@@ -526,7 +546,7 @@ class RecoveryExercise:
         replaced = self.keeps_jobmaster()
         if replaced:
             # Only the TaskManager was approved to go; the JobManager keeps the
-            # job, and only the region on the lost TaskManager may restart.
+            # job, and only the regions on the lost TaskManager may restart.
             if jm["metadata"]["uid"] != self.before["jm_uid"]:
                 raise Failure(
                     "JobManager was replaced during the TaskManager replacement"

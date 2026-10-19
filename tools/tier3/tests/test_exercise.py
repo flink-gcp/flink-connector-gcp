@@ -109,6 +109,7 @@ class World:
         self.restored, self.completed = {}, {}
         # The restores the job's current JobMaster has counted.
         self.restores = 0
+        self.upgrade_restores = 1
         self.processed = 0
         self.exercise = exercise(
             self.env, self.upgrade, failover=failover, rescale=rescale
@@ -212,7 +213,8 @@ class World:
             "restore_timestamp": int(self.env.clock() * 1000),
             "external_path": self.exercise.prefix("savepoints") + "sp-1",
         }
-        self.restores = 1
+        # A new JobMaster's count, one unless a test shows a restore unseen.
+        self.restores = self.upgrade_restores
         for pod in progress_from:
             self.advance(5)
             self.progress(pod, "upgrade")
@@ -755,6 +757,37 @@ def test_a_taskmanager_replacement_adds_one_restore_to_the_jobmaster(world, coun
     restarted(world, count)
     with pytest.raises(Failure, match="Unplanned job restart"):
         world.observe()
+
+
+@pytest.mark.parametrize("world", [{"failover": "taskmanager"}], indirect=True)
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_a_taskmanager_replacement_restores_once_per_region(world, count):
+    """As `bt1855-tm-a5`'s two pipelines did; a third restore is a restart."""
+    world.exercise.failover_regions = 2
+    world.baseline()
+    world.upgraded()
+    restarted(world, count)
+    if count == 4:
+        with pytest.raises(Failure, match="Unplanned job restart"):
+            world.observe()
+        return
+    world.observe()
+    assert world.exercise.last_restore["count"] == count
+    if count == 2:
+        # The second region's restore, which a later poll sees.
+        restarted(world, 3)
+        world.observe()
+        restarted(world, 4)
+        with pytest.raises(Failure, match="Unplanned job restart"):
+            world.observe()
+
+
+def test_a_new_jobmaster_restores_exactly_once(world):
+    """The upgrade's JobMaster counts from nothing: two is one no poll saw."""
+    world.baseline()
+    world.upgrade_restores = 2
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        world.upgraded()
 
 
 def test_a_restore_outside_a_recovery_is_unplanned(world, monkeypatch):

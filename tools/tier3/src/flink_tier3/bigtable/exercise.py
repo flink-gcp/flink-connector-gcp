@@ -51,6 +51,9 @@ class BigtableExercise(FiniteInputExercise):
     progress_event = "bigtable-progress"
     measurement_event = MEASUREMENT_EVENT
     baseline_event = "bigtable-baseline-window"
+    # The input with both sinks, and the Change Streams relay: two disconnected
+    # pipelines, each of which a lost TaskManager restarts.
+    failover_regions = 2
 
     def __init__(self, env, upgrade, instance):
         if env.approval.scenario != "bigtable-recovery":
