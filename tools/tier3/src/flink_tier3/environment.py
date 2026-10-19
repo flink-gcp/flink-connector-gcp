@@ -134,7 +134,7 @@ class Environment:
             self.evidence_failure = failure
         print(json.dumps({"event": "evidence-failed", **failure}), flush=True)
         if first and not operation.startswith("evidence:"):
-            # One attempt, unguarded by this method so it cannot recurse.
+            # One call, unguarded by this method so it cannot recurse.
             try:
                 self.records.evidence("evidence-failed", failure, self.actor)
             except (Failure, ValueError, OSError):

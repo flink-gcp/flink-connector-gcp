@@ -22,7 +22,7 @@ import time
 import uuid
 
 from .bigquery.handoff import require_bigquery_clean
-from .common import ApiError, Failure, utc
+from .common import ApiError, Failure, StorageRequestFailed, utc
 from .model import Phase, RunRecord
 from .policy import (
     ENVIRONMENT,
@@ -30,6 +30,7 @@ from .policy import (
     RACE_BACKOFF_CAP,
     RACE_BACKOFF_FIRST,
     RATE_LIMIT_BACKOFF,
+    UNANSWERED_RESENDS,
 )
 from .pubsub.lifecycle import require_pubsub_clean
 from .resource import require_resources_clean
@@ -50,15 +51,31 @@ def conditional_update(
     A write refused for the object's mutation rate, and a lost race, are
     retried after a randomized exponential backoff from a fresh read, so the
     edit and every deadline it checks run again before the write is sent.
+
+    A write that got no answer may have landed. The next read holding exactly
+    what was sent says it did; any other read is edited again, as after a lost
+    race, although the write may have landed under another writer's. An
+    idempotent edit then rewrites the same state, and one that guards against
+    applying twice refuses, ending the run as the unanswered write did before.
     """
     sleep = sleep or time.sleep
-    races = throttled = 0
+    races = throttled = unanswered = 0
+    unanswered_value = None
     while True:
         value, generation = read()
-        edit(value)
-        try:
-            store.write(path, serialize(value), generation)
+        if unanswered_value is not None and serialize(value) == unanswered_value:
             return value
+        edit(value)
+        sent = serialize(value)
+        try:
+            store.write(path, sent, generation)
+            return value
+        except StorageRequestFailed:
+            unanswered += 1
+            if unanswered > UNANSWERED_RESENDS:
+                raise
+            unanswered_value = sent
+            continue
         except ApiError as error:
             if error.status == 429 and throttled < len(RATE_LIMIT_BACKOFF):
                 sleep(RATE_LIMIT_BACKOFF[throttled] + random.random())
@@ -241,7 +258,20 @@ class Records:
     def evidence(self, event, payload, actor="supervisor"):
         prefix = f"runs/{self.approval.run_id}/{actor}/"
         data = {"event": event, "at": utc(self.clock()), "payload": payload}
-        self.store.write(prefix + str(uuid.uuid4()) + ".json", data)
+        name = prefix + str(uuid.uuid4()) + ".json"
+        # A create of a unique name: repeating one that got no answer is safe,
+        # and a 412 on the repeat means the unanswered attempt landed.
+        for attempt in range(UNANSWERED_RESENDS + 1):
+            try:
+                self.store.write(name, data)
+                return
+            except StorageRequestFailed:
+                if attempt == UNANSWERED_RESENDS:
+                    raise
+            except ApiError as error:
+                if attempt and error.status == 412:
+                    return
+                raise
 
 
 class EnvironmentLock:

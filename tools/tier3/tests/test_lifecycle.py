@@ -28,8 +28,7 @@ import urllib3
 import yaml
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import metrics, repository
-from flink_tier3.common import ReadCeilingExceeded, TransportError
-from flink_tier3.google import StorageRequestFailed
+from flink_tier3.common import ReadCeilingExceeded, StorageRequestFailed, TransportError
 from flink_tier3.policy import CLEANUP_SECONDS, STATE_OBJECTS
 from google.cloud import storage
 
@@ -1461,9 +1460,12 @@ def test_storage_list_retries_restart_the_listing():
 
 
 def test_storage_write_is_not_retried_after_a_timeout():
+    """It raises the class the control and evidence writers resolve (#1869)."""
     store, adapter = sdk_store([requests.exceptions.ReadTimeout("read timed out")])
     store.sleep = lambda _: pytest.fail("a write must not wait to retry")
-    with pytest.raises(rt.Failure, match="POST storage request failed: ReadTimeout"):
+    with pytest.raises(
+        StorageRequestFailed, match="POST storage request failed: ReadTimeout"
+    ):
         store.write("control", {}, "0")
     assert len(adapter.calls) == 1
 

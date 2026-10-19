@@ -39,6 +39,14 @@ class TransportError(Failure):
     """A Kubernetes transport failure, distinct from an invariant violation."""
 
 
+class StorageRequestFailed(Failure):
+    """A storage request that got no answer.
+
+    Kept apart from `TransportError`, which `transient` reads as a failure that
+    says nothing: a storage write without an answer may have landed.
+    """
+
+
 class ReadCeilingExceeded(Failure):
     """A Kubernetes response larger than its reader allows."""
 
