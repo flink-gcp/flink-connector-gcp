@@ -18,10 +18,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.cloudtasks import actors, plan
+from flink_tier3 import actors
+from flink_tier3.cloudtasks import plan
 from flink_tier3.cloudtasks.exercise import LISTING_STAGE, CloudTasksExercise
-from flink_tier3.cloudtasks.lifecycle import require_cloudtasks_clean
-from flink_tier3.cloudtasks.queue import Unsent
 from flink_tier3.cloudtasks.verdict import (
     COMPLETE_EVENT,
     MEASUREMENT_EVENT,
@@ -39,6 +38,8 @@ from flink_tier3.policy import (
     POD_RESOURCES,
     POLL,
 )
+from flink_tier3.resource import require_resources_clean
+from flink_tier3.rest import Unsent
 from flink_tier3.runner import Runner
 
 from ..test_lifecycle import app, lifecycle, prepared_supervisor, rt
@@ -89,6 +90,10 @@ class Controller:
     It keeps the controller's refusals: a release with an unresolved call
     marker, and a cleanup before the release or the barrier.
     """
+
+    field = "cloudtasks"
+    subject = "Cloud Tasks queue"
+    service = "Cloud Tasks"
 
     def __init__(self, env, trial=None):
         self.env = env
@@ -241,7 +246,7 @@ def test_a_cloudtasks_approval_validates_and_derives_its_trial(prepared):
 
 def test_admission_quota_is_three_pods_and_state_includes_staging(prepared):
     environment, _, _, _ = prepared
-    runner = Runner(environment, cloudtasks=Controller(environment))
+    runner = Runner(environment, resource=Controller(environment))
     runner.cleanup.quota(CLOUDTASKS, "run")
     hard = environment.kube.get("ResourceQuota", CLOUDTASKS, "tier3-idle")["spec"][
         "hard"
@@ -268,7 +273,7 @@ def test_the_state_bucket_is_the_one_the_application_writes_to():
 def test_the_runner_needs_its_queue_controller_in_its_own_environment(prepared, env):
     environment, application, _, _ = prepared
     with pytest.raises(Failure, match="another runner environment"):
-        Runner(environment, cloudtasks=Controller(lifecycle(env, Runner).env))
+        Runner(environment, resource=Controller(lifecycle(env, Runner).env))
     runner = Runner(environment)
     with pytest.raises(Failure, match="requires its queue controller"):
         runner.start({}, {}, application)
@@ -279,7 +284,7 @@ def test_admission_provisions_the_queue_before_the_quota_and_application(
 ):
     environment, application, _, _ = prepared
     controller = Controller(environment)
-    runner = Runner(environment, cloudtasks=controller)
+    runner = Runner(environment, resource=controller)
     order = []
     monkeypatch.setattr(runner, "create_root", lambda key, _: order.append(key))
     monkeypatch.setattr(runner, "supervisor_open", lambda: None)
@@ -313,7 +318,7 @@ def test_admission_provisions_the_queue_before_the_quota_and_application(
 
 def test_admission_closes_at_the_startup_deadline(prepared):
     environment, _, _, _ = prepared
-    runner = Runner(environment, cloudtasks=Controller(environment))
+    runner = Runner(environment, resource=Controller(environment))
     runner.admission_open()
     environment.clock.now = (
         environment.schedule.started + CLOUDTASKS_OBSERVATIONS["startup_seconds"]
@@ -325,7 +330,7 @@ def test_admission_closes_at_the_startup_deadline(prepared):
 def test_settlement_releases_the_queue_at_once_without_stopping_the_run(env):
     environment = running(env)
     controller = Controller(environment)
-    runner = Runner(environment, cloudtasks=controller)
+    runner = Runner(environment, resource=controller)
     sleeps = 0
 
     def advance(seconds):
@@ -352,7 +357,7 @@ def test_a_blocked_release_is_retried_and_reported_once(env):
     environment.records._change(lambda r: setattr(r, "success", True))
     controller = Controller(environment)
     controller.release_errors = [Failure("conflict"), Failure("conflict")]
-    runner = Runner(environment, cloudtasks=controller)
+    runner = Runner(environment, resource=controller)
 
     def advance(seconds):
         env[3].sleep(seconds)
@@ -371,7 +376,7 @@ def test_a_release_that_never_lands_keeps_the_lock(env):
     environment = running(env)
     environment.records._change(lambda r: r.cloudtasks.update(inflight={"id": "x"}))
     finish_job(environment)
-    runner = Runner(environment, cloudtasks=Controller(environment))
+    runner = Runner(environment, resource=Controller(environment))
     with pytest.raises(Failure, match="Cloud Tasks queue cleanup"):
         runner.settle(request_stop=True)
     assert environment.root("application") is None
@@ -390,7 +395,7 @@ def test_supervisor_cleanup_waits_for_the_release_and_the_barrier(env):
         # The first call finds the namespace not yet empty.
         return len(barriers) > 1
 
-    supervisor = rt.Supervisor(environment, cloudtasks=controller, quiesce=quiesce)
+    supervisor = rt.Supervisor(environment, resource=controller, quiesce=quiesce)
 
     def advance(seconds):
         env[3].sleep(seconds)
@@ -402,7 +407,7 @@ def test_supervisor_cleanup_waits_for_the_release_and_the_barrier(env):
     assert controller.cleanups == 2
     assert environment.refresh().phase == rt.Phase.CLEANED
     assert environment.refresh().success
-    require_cloudtasks_clean(environment.refresh())
+    require_resources_clean(environment.refresh())
 
 
 def test_an_unfinished_admission_waits_for_the_release_before_teardown(prepared):
@@ -412,7 +417,7 @@ def test_an_unfinished_admission_waits_for_the_release_before_teardown(prepared)
     pending(environment)
     controller = Controller(environment, environment.approval.cloudtasks_plan)
     supervisor = rt.Supervisor(
-        environment, upgrade, cloudtasks=controller, quiesce=lambda: True
+        environment, upgrade, resource=controller, quiesce=lambda: True
     )
     released_at = []
 

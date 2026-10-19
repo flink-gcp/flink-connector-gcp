@@ -45,6 +45,8 @@ BIGQUERY = _policy["environment"]["bigquery"]
 BIGQUERY_STATE = _policy["environment"]["bigquery_state"]
 PUBSUB = _policy["environment"]["pubsub"]
 PUBSUB_STATE = _policy["environment"]["pubsub_state"]
+BIGTABLE = _policy["environment"]["bigtable"]
+BIGTABLE_STATE = _policy["environment"]["bigtable_state"]
 
 BIGQUERY_OBSERVATIONS = {
     # The measurement windows: a baseline after a warm-up, one after the
@@ -112,6 +114,26 @@ CLOUDTASKS_OBSERVATIONS = {
     "measure_seconds": 60,
 }
 
+BIGTABLE_OBSERVATIONS = {
+    # From admission to the application's creation: the supervisor and
+    # Operator readiness every scenario waits for, then the run's instance
+    # created and ready, and its tables and app profile created and read back.
+    "startup_seconds": 600,
+    # As for Cloud Tasks, from admission to input flowing.
+    "input_seconds": 1200,
+    "recovery_seconds": 300,
+    # From the finished application to the oracles' last read.
+    "visibility_seconds": 600,
+    # The measurement windows and their interval, as for Cloud Tasks.
+    "warmup_seconds": 60,
+    "baseline_seconds": 300,
+    "post_upgrade_seconds": 300,
+    "post_recovery_seconds": 300,
+    # A 30-second checkpoint interval and a poll to see it complete, twice over.
+    "upgrade_wait_seconds": 120,
+    "measure_seconds": 60,
+}
+
 PUBSUB_ADMISSION = {
     # From admission to the application's creation. Beyond the supervisor and
     # Operator readiness every scenario waits for, Pub/Sub admission creates
@@ -123,7 +145,7 @@ PUBSUB_ADMISSION = {
 
 
 # Application namespaces first, then the control namespace.
-NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, SYSTEM)
+NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, BIGTABLE, SYSTEM)
 
 
 RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\Z")

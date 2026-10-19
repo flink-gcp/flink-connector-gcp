@@ -78,7 +78,7 @@ class Trial:
         """The direction the upgrade rescales the sink in, or None."""
         return FAULTS[self.kind].rescale
 
-    def sink_parallelism(self, phase):
+    def parallelism(self, phase):
         """The sink's subtasks in one phase, and the TaskManagers running them."""
         return FAULTS[self.kind].parallelism(phase)
 
@@ -106,7 +106,7 @@ class Trial:
             "--require-restored",
             str(phase == "upgrade").lower(),
             "--sink-parallelism",
-            str(self.sink_parallelism(phase)),
+            str(self.parallelism(phase)),
         ]
 
     def task_id(self, sequence):

@@ -2749,13 +2749,14 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     # timeout shorter than a window kills the job mid-run.
     match = re.fullmatch(
         r"\$\{\{ \(inputs\.scenario == 'bigquery-recovery' \|\| "
-        r"inputs\.scenario == 'cloudtasks-recovery'\) && (\d+) \|\| (\d+) \}\}",
+        r"inputs\.scenario == 'cloudtasks-recovery' \|\| "
+        r"inputs\.scenario == 'bigtable-recovery'\) && (\d+) \|\| (\d+) \}\}",
         str(timeout),
     )
     assert match, timeout
     trial_minutes, smoke_minutes = (int(m) for m in match.groups())
     assert schedule.serial_budget <= smoke_minutes * 60
-    for scenario in ("bigquery-recovery", "cloudtasks-recovery"):
+    for scenario in ("bigquery-recovery", "cloudtasks-recovery", "bigtable-recovery"):
         trial = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS[scenario])
         assert trial.serial_budget <= trial_minutes * 60
     # Pub/Sub takes the default timeout: its window is the smoke run's hour.
@@ -2772,6 +2773,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     """Its inputs are a second copy of these values; drift would strand one."""
     import yaml
     from flink_tier3.bigquery import plan as bigquery_plan
+    from flink_tier3.bigtable import trial as bigtable_trial
     from flink_tier3.cloudtasks import trial as cloudtasks_trial
     from flink_tier3.exercise import FAULTS
 
@@ -2783,10 +2785,12 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     # "none" is not a kind, so a Cloud Tasks dispatch that names none is refused.
     assert inputs["cloudtasks_trial"]["options"] == ["none", *cloudtasks_trial.KINDS]
     assert inputs["cloudtasks_trial"]["default"] == "none"
-    # Both descriptions list the shared kinds, which name the Pub/Sub files too.
+    assert inputs["bigtable_trial"]["options"] == ["none", *bigtable_trial.KINDS]
+    assert inputs["bigtable_trial"]["default"] == "none"
+    # The descriptions list the shared kinds, which name the Pub/Sub files too.
     *first, last = FAULTS
     kinds = "(" + ", ".join(first) + " or " + last + ")"
-    for name in ("pubsub_trial", "cloudtasks_trial"):
+    for name in ("pubsub_trial", "cloudtasks_trial", "bigtable_trial"):
         assert inputs[name]["description"].endswith(kinds), name
     # Dispatching is the approval: no phrase, expiry or second copy of the
     # commit is typed.
@@ -2798,6 +2802,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "trial",
         "pubsub_trial",
         "cloudtasks_trial",
+        "bigtable_trial",
     }
     assert (
         f"under {cli.PUBSUB_TRIALS}, without .toml"
@@ -3261,6 +3266,7 @@ def test_reviewed_policy_preserves_the_fixed_windows_and_shapes():
         "bigquery-recovery": 5400,
         "pubsub-recovery": 3600,
         "cloudtasks-recovery": 5400,
+        "bigtable-recovery": 5400,
     }
     assert CLEANUP_SECONDS == 900
     assert STATE_OBJECTS == 10000
@@ -3652,6 +3658,12 @@ WORKFLOW_INPUTS = {
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
+    "bigtable-recovery": [
+        "--bigtable-trial",
+        "rescale-out",
+        "--application-digest",
+        "sha256:" + "d" * 64,
+    ],
 }
 
 
@@ -3686,6 +3698,7 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
         "bigquery-recovery",
         "pubsub-recovery",
         "cloudtasks-recovery",
+        "bigtable-recovery",
     }
     # Each flag with the workflow input it carries, not only its name.
     expected = {
@@ -3699,6 +3712,10 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
         ],
         "cloudtasks-recovery": [
             ("--cloudtasks-trial", "CLOUDTASKS_TRIAL"),
+            ("--application-digest", "APPLICATION_DIGEST"),
+        ],
+        "bigtable-recovery": [
+            ("--bigtable-trial", "BIGTABLE_TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
         ],
     }

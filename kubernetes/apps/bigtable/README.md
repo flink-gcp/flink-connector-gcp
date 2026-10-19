@@ -97,4 +97,90 @@ The deployment runs as the `tier3-bigtable/bigtable` KSA, which selects the `tie
 Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-bigtable/runs/<run-id>/`, deleted one day after creation.
 One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
 Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
-The `tier3-bigtable` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#bigtable-recovery-foundation) ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)); the rig scenario that creates the instance and judges the trial belongs to [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854).
+The `tier3-bigtable` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#bigtable-recovery-foundation) ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)), and the [recovery trial](#recovery-trial) below creates the instance and judges the trial.
+
+## Recovery trial
+
+The `bigtable-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-bigtable` against an instance it creates for the run, measures the job before and after each recovery, and judges each of the three components on its own table.
+It is the trial set of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-trial) records its design ([#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854)).
+It follows the [Cloud Tasks recovery trial](../cloudtasks/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
+
+### Trial and estimate
+
+Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and runs a savepoint upgrade and then deletes a Pod.
+Its kind names the fault that makes it a trial of its own:
+
+| Kind | Upgrade | Pod deleted | Subtasks of every vertex but the input, initial then upgrade |
+| --- | --- | --- | --- |
+| `jm-replacement` | Keeps its sizes | The JobManager | 2, 2 |
+| `tm-replacement` | Keeps its sizes | The TaskManager that reported the latest input | 2, 2 |
+| `rescale-out` | Rescales the job | The JobManager | 1, 2 |
+| `rescale-in` | Rescales the job | The JobManager | 2, 1 |
+
+The change-stream end is 3,900 seconds after the window's start, so dispatch derives it from the window and the trial carries it.
+The input begins within the 1,200 seconds the exercise allows and runs 1,800 seconds, and each recovery pauses it for a minute or two, so the input finishes before the end with room to spare.
+The job then finishes at the end, which leaves the table reads 540 seconds, up to a minute before the cleanup start.
+A partition the connector is still reconciling at the end holds the job past it, as [the graph](#graph-and-what-each-table-records) describes, and a job held past the cleanup start ends the run without a verdict.
+Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
+
+```sh
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
+  --scenario bigtable-recovery \
+  --run-id example-1316 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --started-at 2026-10-20T00:00:00Z --expires-at 2026-10-20T01:30:00Z \
+  --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
+  --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigtable-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --bigtable-trial rescale-out > /tmp/bigtable-proposal.json
+```
+
+A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
+The estimate is the same for every kind, about USD 3.36: the Pods for the window as the Cloud Tasks estimate prices them, two node-hours of the one-node instance at USD 0.65, since the window is billed as two hours, and a USD 1.00 reserve for storage, state, evidence and telemetry.
+
+### Dispatch
+
+The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigtable-recovery` with two inputs beyond the common ones: `bigtable_trial`, the kind, which the dispatch refuses when it is left at `none`; and `application_digest`, the published `bigtable-recovery` GAR digest, verified live at dispatch and never pinned.
+The owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios.
+The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
+The run ID has at most 26 characters, because the run's instance is `bt1316-<run-id>` and an instance ID has at most 33.
+
+### Instance lifecycle
+
+After the supervisor heartbeats and the Operator is ready, the runner records the instance's intent, reads that the name is free, and records the creation intent and a call marker in one control write.
+It then creates the instance with one SSD node in the cluster `recovery` in `us-central1-b`, reads it until it is `READY`, creates `eo`, `alo`, `relay` and the `recovery` app profile, and reads all four back.
+It polls the instance rather than the create's long-running operation, so admission needs no permission on operations.
+The readback compares each table's family names and `eo`'s change stream, and the app profile's single-cluster routing with single-row transactions; only then does the runner open the namespace quota for three Pods and create the FlinkDeployment.
+An instance that already carries the name refuses the run, which then deletes nothing, and so does a create the service refuses although the name read free.
+The create answers with a long-running operation, so the marker stays until the instance first reads back, in any state: until then the operation could still create an instance after cleanup found none.
+From then on a failure creating its tables or reading them back clears the marker and keeps the creation intent, so cleanup deletes the instance; a create that did not return, or whose instance never read back before admission stopped, keeps its marker, and then neither the release nor cleanup proceeds, as for a Cloud Tasks queue.
+
+Only the supervisor deletes the instance, and only one whose creation intent the record holds.
+It waits for the runner's release and for the namespace to hold no Pod, disables `eo`'s change stream, deletes the instance and reads it back until it is gone.
+The service refuses to delete an instance whose table has a change stream, and disabling one is itself an operation, so a deletion or disable refused with status 400 or 409, or a call that failed transiently, is left to cleanup's next pass, which reads the change stream again before disabling it.
+Shared cleanup then removes the run's state under `runs/<run-id>/` and `.inprogress/flink-gcp-tier3-bigtable/runs/<run-id>/` in the `flink-gcp-tier3-bigtable` state bucket.
+
+### Exercise and oracles
+
+The supervisor runs the shared recovery exercise on the application's `bigtable-progress` lines, with the faults and the three measurement windows of the Cloud Tasks trial.
+A reading is a `bigtable-measurement` evidence event; the exercise finds the four vertices by the names [the graph](#graph-and-what-each-table-records) chains them under, because two of them are sources.
+Its families are each component vertex's task, network and connector metrics and its subtasks' shares of the latest completed checkpoint, and each TaskManager's memory metrics, which describe the job, since the components share TaskManagers.
+The source's enumerator metrics register on the JobManager, which no vertex reading reaches.
+
+When the upgraded application reaches `FINISHED`, after the change stream's end, with the whole input processed, the supervisor reads `eo`, `alo` and `relay` in pages of up to 5,000 rows, each resuming after the last row key as the service sent it, until a page comes back empty.
+A transiently failing read, including a stream that ends with an error after it began, is repeated every 5 seconds until the read window closes, 600 seconds after the application finishes or a minute before the cleanup start, whichever is first; any other failure ends the run without a verdict.
+Each oracle reports counts and the first 20 row keys of each kind of deviation:
+
+- **`eo`:** every input row is present, its `agg:count` SUM is 1, it has exactly one marker, and no row or family lies outside the input.
+- **`alo`:** every input row is present with a SUM of at least 1; contributions beyond one are counted and reported, not failed.
+- **`relay`:** every row `eo` applied was relayed at least once and no row lies outside the input; deliveries beyond one are counted and reported, not failed, and a relayed row that `eo` did not apply fails it.
+
+The relay is judged only when the input's last progress line came at least 120 seconds before the change stream's end, the time its staged commit can take, because a change committed after the end is not relayed.
+
+### Verdict and analysis
+
+The run is `usable` when both recoveries are proved, all three oracles pass, the relay's having been judged, and each of the three windows read every family; anything short of that is `inconclusive`.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
+
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory, with the coverage rebuilt from the exported readings and the recoveries' timing, as the Cloud Tasks section does.
+It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
+
+Before the first trial, the [preregistration](https://github.com/flink-gcp/flink-connector-gcp/issues/1855) measures what the grants' [ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-foundation) leaves unmeasured: that a create is checked against the project, and that the instance conditions apply on the data plane, which the oracles' reads depend on.

@@ -16,7 +16,7 @@
 
 The analyzer reads a local mirror of ``gs://flink-gcp-tier3-evidence/runs/``
 (one run directory or a directory of them) and recomputes each deployed
-BigQuery, Pub/Sub and Cloud Tasks recovery run's assessment from its exported
+BigQuery, Pub/Sub, Cloud Tasks and Bigtable recovery run's assessment from its exported
 evidence. It never contacts a cluster or a bucket, keeps every ratio a
 ``Fraction`` until rendering, and writes byte-identical reports for identical
 input. Single-host Cloud Tasks campaigns have their own analyzer,
@@ -32,6 +32,7 @@ from fractions import Fraction
 from pathlib import Path
 
 from .bigquery import analyze as bigquery_analyze
+from .bigtable import analyze as bigtable_analyze
 from .cloudtasks import analyze as cloudtasks_analyze
 from .common import Failure
 from .pubsub import analyze as pubsub_analyze
@@ -64,6 +65,7 @@ def render_markdown(report):
         + bigquery_analyze.render(report.get("bigquery") or [])
         + pubsub_analyze.render(report.get("pubsub") or [])
         + cloudtasks_analyze.render(report.get("cloudtasks") or [])
+        + bigtable_analyze.render(report.get("bigtable") or [])
     )
 
 
@@ -86,6 +88,7 @@ def analyze(evidence):
         "bigquery": bigquery_analyze.assess_runs(runs),
         "pubsub": pubsub_analyze.assess_runs(runs),
         "cloudtasks": cloudtasks_analyze.assess_runs(runs),
+        "bigtable": bigtable_analyze.assess_runs(runs),
     }
 
 
@@ -115,6 +118,11 @@ def summary_line(report, out):
         + (
             f"; cloudtasks runs: {cloudtasks}"
             if (cloudtasks := run_counts(report.get("cloudtasks") or []))
+            else ""
+        )
+        + (
+            f"; bigtable runs: {bigtable}"
+            if (bigtable := run_counts(report.get("bigtable") or []))
             else ""
         )
         + f"; reports in {out}"

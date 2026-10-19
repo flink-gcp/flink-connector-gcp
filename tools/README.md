@@ -44,8 +44,9 @@ The package uses a `src/` layout and ordinary imports; its CLI, bootstrap helper
 The wheel includes all Python modules and the reviewed `policy.toml`.
 It is a local build artifact; this change adds no package-registry publication.
 
-Service tooling lives in the `flink_tier3.bigquery`, `flink_tier3.pubsub`, and `flink_tier3.cloudtasks` subpackages.
+Service tooling lives in the `flink_tier3.bigquery`, `flink_tier3.pubsub`, `flink_tier3.cloudtasks` and `flink_tier3.bigtable` subpackages.
 Shared approval, lifecycle, transport, source delivery, and report entry points remain in `flink_tier3`.
+A scenario whose runner creates one resource before the application, Cloud Tasks and Bigtable, shares its resource lifecycle, actors, REST calls and proposal checks through `flink_tier3.resource`, `actors`, `rest` and `proposal`.
 Cloud Tasks owns the single-host rig: its campaign tooling, evidence reconciliation, offline analysis and `protocol_1246.toml`.
 Tests follow the same service directories, with shared lifecycle and package tests at their parent.
 Internal imports use the new paths; the CLI command names and arguments remain unchanged.

@@ -113,7 +113,7 @@ def cluster(env, renderer, monkeypatch):
         seen.update(env=env, application=application, runner=Recorded(env))
         yield seen["runner"]
 
-    monkeypatch.setattr(cli.cloudtasks_actors, "runner", runner)
+    monkeypatch.setattr(cli.resource_actors, "runner", runner)
     return SimpleNamespace(
         store=store, locks=locks, seen=seen, asked=asked, snapshots=snapshots
     )
@@ -198,7 +198,8 @@ def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
     environment, _, _, proposal = prepared
     reference = environment.approval.to_dict()
     trial = plan.trial("tm-replacement")
-    approval = cli.cloudtasks_approval(
+    approval = cli.resource_approval(
+        scenario="cloudtasks-recovery",
         run_id=reference["run_id"],
         nonce=reference["nonce"],
         sha=reference["sha"],

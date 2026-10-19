@@ -21,6 +21,7 @@ import re
 import uuid
 
 from .bigquery.exercise import BigQueryExercise, require_handoff
+from .bigtable.exercise import BigtableExercise
 from .cleanup import Cleanup
 from .cloudtasks.exercise import CloudTasksExercise
 from .common import ApiError, Failure, transient, utc
@@ -30,6 +31,13 @@ from .policy import MIB, POLL, SMOKE
 from .pubsub.exercise import PubSubExercise
 from .pubsub.guard import PubSubGuard, admission_deadline
 from .pubsub.handoff import runner_released
+from .resource import RESOURCE_SCENARIOS
+
+# The exercise of each scenario whose runner creates one resource.
+RESOURCE_EXERCISES = {
+    "cloudtasks-recovery": CloudTasksExercise,
+    "bigtable-recovery": BigtableExercise,
+}
 
 
 class Supervisor:
@@ -42,16 +50,16 @@ class Supervisor:
         *,
         bigquery=None,
         pubsub=None,
-        cloudtasks=None,
+        resource=None,
         quiesce=None,
     ):
         self.env = env
-        self.bigquery, self.pubsub, self.cloudtasks = bigquery, pubsub, cloudtasks
+        self.bigquery, self.pubsub, self.resource = bigquery, pubsub, resource
         self.cleanup = Cleanup(
             env,
             bigquery=bigquery,
             pubsub=pubsub,
-            cloudtasks=cloudtasks,
+            resource=resource,
             quiesce=quiesce,
         )
         self.log_since = {}
@@ -63,10 +71,10 @@ class Supervisor:
             if env.approval.scenario == "pubsub-recovery"
             and upgrade is not None
             and pubsub is not None
-            else CloudTasksExercise(env, upgrade, cloudtasks)
-            if env.approval.scenario == "cloudtasks-recovery"
+            else RESOURCE_EXERCISES[env.approval.scenario](env, upgrade, resource)
+            if env.approval.scenario in RESOURCE_EXERCISES
             and upgrade is not None
-            and cloudtasks is not None
+            and resource is not None
             else None
         )
 
@@ -278,12 +286,11 @@ class Supervisor:
                     "BigQuery recovery supervision requires its exercise and handoff"
                 )
             require_handoff(self.env, self.bigquery)
-        if self.env.approval.scenario == "cloudtasks-recovery" and (
-            self.exercise is None
-        ):
+        scenario = RESOURCE_SCENARIOS.get(self.env.approval.scenario)
+        if scenario and self.exercise is None:
             raise Failure(
-                "Cloud Tasks recovery supervision requires its queue controller "
-                "and its approved upgrade manifest"
+                f"{scenario.service} recovery supervision requires its "
+                f"{scenario.noun} controller and its approved upgrade manifest"
             )
         self.env.refresh()
         job = self.env.root("supervisor")
@@ -376,6 +383,8 @@ class Supervisor:
                             self.exercise.verify_rows(self)
                         if isinstance(self.exercise, CloudTasksExercise):
                             self.exercise.verify_tasks()
+                        if isinstance(self.exercise, BigtableExercise):
+                            self.exercise.verify_tables()
                         success, reason = True, "recovery exercise finished"
                         break
                     self.env.sleep(POLL)
@@ -419,17 +428,15 @@ class Supervisor:
             # durable first, so this write cannot delay it.
             self.env.emit("admission-stopped", {"reason": reason})
             current = self.env.refresh()
+            scenario = RESOURCE_SCENARIOS.get(self.env.approval.scenario)
             if self.env.approval.scenario == "pubsub-recovery" and current.pubsub:
                 # Only this side deletes Pub/Sub resources, so it waits for the
                 # runner to settle and release rather than leaving them.
                 self.env.wait(self.runner_released, self.env.schedule.cleanup_at)
-            elif (
-                self.env.approval.scenario == "cloudtasks-recovery"
-                and current.cloudtasks
-            ):
-                # Only this side deletes the queue, so it waits for the runner
-                # to settle and release rather than leaving it.
-                self.env.wait(self.cloudtasks.released, self.env.schedule.cleanup_at)
+            elif scenario and getattr(current, scenario.field):
+                # Only this side deletes the resource, so it waits for the
+                # runner to settle and release rather than leaving it.
+                self.env.wait(self.resource.released, self.env.schedule.cleanup_at)
             elif (
                 self.env.approval.scenario != "bigquery-recovery"
                 or current.bigquery is None
