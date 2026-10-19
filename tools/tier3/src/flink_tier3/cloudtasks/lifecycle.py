@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from ..common import Failure
-from ..resource import SETTLE_POLL, ResourceLifecycle
+from ..resource import ResourceLifecycle
 from .queue import configured
 
 # The only state a queue reports on the way to the pause it was just given.
@@ -65,9 +65,8 @@ class CloudTasksLifecycle(ResourceLifecycle):
                     if reads > 1:
                         self.env.emit("cloudtasks-queue-settling", {"reads": reads})
                     return readback
-            if self.env.clock() >= deadline:
+            if not self._pause(deadline):
                 break
-            self.env.sleep(min(SETTLE_POLL, max(0, deadline - self.env.clock())))
         self.env.emit("cloudtasks-queue-deviation", {"readback": readback})
         raise Failure("Cloud Tasks queue readback is not the paused configuration")
 

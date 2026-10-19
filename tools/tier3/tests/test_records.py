@@ -101,3 +101,15 @@ def test_other_failures_are_not_retried(status):
     with pytest.raises(ApiError):
         update(store, sleeps)
     assert store.writes == 1 and sleeps == []
+
+
+def test_the_first_actor_to_begin_cleanup_names_the_stop():
+    """The supervisor stops on the exercise's cause; the runner settles after it."""
+    from flink_tier3.exercise import INTERRUPTED
+
+    from .cloudtasks.test_recovery_lifecycle import Environment
+
+    env = Environment()
+    env.records.begin_cleanup(INTERRUPTED)
+    env.records.begin_cleanup("external settlement")
+    assert env.refresh().reason == INTERRUPTED

@@ -449,9 +449,21 @@ class World:
                 "num_subtasks": self.subtasks(app),
                 "external_path": f"gs://{BIGQUERY_STATE}/runs/{self.approval.run_id}/checkpoints/cp",
             }
-        if self.fault == "restart" and now - self.start > 300:
+        if self.fault in ("restart", "shutdown", "evicted") and now - self.start > 300:
             pod = self.kube.get("Pod", BIGQUERY, "tm-1")
             pod["status"]["containerStatuses"][0]["restartCount"] = 1
+            # A node shutdown is the platform's, whatever else the Pod shows;
+            # a disruption alone may be an eviction under the Pod's own limits.
+            disruption = {"type": "DisruptionTarget", "status": "True"}
+            if self.fault == "shutdown":
+                # As the kubelet's graceful node shutdown leaves the Pod.
+                pod["status"]["reason"] = "Terminated"
+                disruption["reason"] = "TerminationByKubelet"
+            if self.fault == "evicted":
+                pod["status"]["reason"] = "Evicted"
+                disruption["reason"] = "TerminationByKubelet"
+            if self.fault != "restart":
+                pod["status"].setdefault("conditions", []).append(disruption)
             self.kube.put(pod)
         if self.fault == "job-restart" and now - self.start > 300 and not self.restore:
             # The job restarts from its checkpoint on the same Pods, which
@@ -946,7 +958,9 @@ def test_a_file_loads_failover_without_a_pod_to_delete_waits_for_no_load(
         ("fresh-lineage", "lineage"),
         ("wrong-state", "savepoint"),
         ("early-finish", "post-recovery"),
-        ("restart", "interruption"),
+        ("restart", "container restart"),
+        ("shutdown", "Unplanned workload interruption"),
+        ("evicted", "Unplanned workload eviction"),
         ("job-restart", "Unplanned job restart"),
         ("upgrade-conflict", "precondition"),
         ("invisible", "query slots"),

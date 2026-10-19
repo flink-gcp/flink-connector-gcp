@@ -304,6 +304,7 @@ Dispatch checks the trial kind, the digest, the run ID and an existing run's evi
 A `rig_sha` older than the trial kinds takes no `--cloudtasks-trial` and fails at its argument parsing, before the lock.
 The run's queue is `ct1362-<run-id>` in `flink-gcp/us-central1`.
 Choose a run ID that has not been used: a deleted queue's name can stay unavailable for a tombstone window of up to three days, and a used ID already has evidence, which dispatch refuses.
+A dispatch can also carry a campaign of the remaining kinds and a repeat budget, as the [Bigtable dispatch section](../bigtable/README.md#dispatch) describes for both scenarios.
 
 ### Queue lifecycle
 

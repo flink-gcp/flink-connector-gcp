@@ -33,7 +33,7 @@ from pathlib import Path
 import flink_tier3 as rt
 
 from . import actors as resource_actors
-from . import bootstrap, repository
+from . import bootstrap, campaign, repository
 from . import runner as runner_api
 from . import workflow as wf
 from .bigquery import actors as bigquery_actors
@@ -436,6 +436,9 @@ def start_resource(args, store, scenario):
         raise rt.Failure(
             f"{service} trials need a --{field}-trial kind: " + ", ".join(plan.KINDS)
         )
+    campaign.parse(
+        args.run_id, kind, getattr(args, "campaign", ""), getattr(args, "repeats", "0")
+    )
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure(f"{service} trials need a sha256 --application-digest")
     application_image = rt.GAR + scenario + "@" + args.application_digest
@@ -577,6 +580,11 @@ def start(args, store):
     scenario = getattr(args, "scenario", "smoke")
     if scenario not in SCENARIOS:
         raise rt.Failure("Unknown smoke scenario")
+    if (
+        campaign.requested(getattr(args, "campaign", ""), getattr(args, "repeats", "0"))
+        and scenario not in RESOURCE_SCENARIOS
+    ):
+        raise rt.Failure("Only a Cloud Tasks or Bigtable trial runs a campaign")
     if scenario == "bigquery-recovery":
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
@@ -721,6 +729,28 @@ def idle_output():
             output.write("idle=true\n")
 
 
+def next_attempt(args, store):
+    """Print the campaign's next attempt as workflow outputs, or nothing.
+
+    Reads the finished attempt's receipt, which `finish` wrote once the
+    environment was idle and the lock released.
+    """
+    receipt, _ = store.read(f"runs/{args.run_id}/result.json")
+    if not isinstance(receipt, dict):
+        raise rt.Failure("The finished attempt has no receipt")
+    scenario = RESOURCE_SCENARIOS.get(receipt.get("scenario"))
+    trial = receipt.get(scenario.field + "_trial") if scenario else None
+    kind = trial.get("kind") if isinstance(trial, dict) else None
+    attempt = campaign.next_attempt(
+        receipt, args.run_id, kind, args.campaign, args.repeats
+    )
+    if attempt is not None:
+        # The workflow input that names the kind for this scenario.
+        attempt["trial_input"] = scenario.field + "_trial"
+        for key, value in attempt.items():
+            print(f"{key}={value}")
+
+
 def finish(args, store):
     owner = json.loads((args.directory / "owner.json").read_text())
     plans_receipt = json.loads((args.directory / "plans.json").read_text())
@@ -741,6 +771,10 @@ def finish(args, store):
             "runner",
         )
         success = runner.finalize(plans_receipt)
+        # The receipt is written and the lock released: a campaign may go on.
+        if os.environ.get("GITHUB_OUTPUT"):
+            with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+                output.write("finished=true\n")
     else:
         if (
             plans_receipt.get("nonce") != owner["nonce"]
@@ -899,6 +933,17 @@ def main(argv=None):
         "--cloudtasks-trial",
         help="Cloud Tasks trial: " + ", ".join(cloudtasks_trial.KINDS),
     )
+    after = sub.add_parser("next")
+    after.add_argument("--run-id", required=True)
+    for command in (run, after):
+        command.add_argument(
+            "--campaign",
+            default="",
+            help="kinds the dispatch still runs after this attempt, comma-separated",
+        )
+        command.add_argument(
+            "--repeats", default="0", help="attempts the campaign may still repeat"
+        )
     run.add_argument(
         "--bigtable-trial",
         help="Bigtable trial: " + ", ".join(bigtable_trial.KINDS),
@@ -913,7 +958,7 @@ def main(argv=None):
     locking.add_argument("--kind", choices=("plan", "apply"))
     locking.add_argument("--target")
     args = parser.parse_args(argv)
-    if args.command != "lock" and args.kubeconfig is None:
+    if args.command not in ("lock", "next") and args.kubeconfig is None:
         parser.error("--kubeconfig is required")
     if args.command == "lock" and args.operation == "acquire" and args.kind is None:
         parser.error("lock acquire requires --kind")
@@ -924,6 +969,7 @@ def main(argv=None):
         "plans": plans,
         "finish": finish,
         "lock": lock,
+        "next": next_attempt,
     }[args.command](args, store)
 
 

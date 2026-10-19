@@ -38,6 +38,25 @@ from .common import (
 )
 from .metrics import FlinkRest
 
+# Why a run stops when the platform preempts a workload Pod or loses its node,
+# and when a Pod is replaced outside a planned recovery.
+INTERRUPTED = "Unplanned workload interruption; trial is inconclusive"
+REPLACED = "Unplanned workload replacement; trial is inconclusive"
+# The stops of a run already admitted that a campaign repeats: only the
+# platform's own. A replacement is not one of them, because a TaskManager
+# whose JVM died is replaced too, its Pod never restarting a container.
+PLATFORM_STOPS = (INTERRUPTED,)
+# The `DisruptionTarget` reasons only the platform sets: the scheduler's
+# preemption, a node's taint or loss, and an eviction through the API, as a
+# node drain or upgrade makes.
+PLATFORM_DISRUPTIONS = frozenset(
+    {
+        "PreemptionByScheduler",
+        "DeletionByTaintManager",
+        "DeletionByPodGC",
+        "EvictionByEvictionAPI",
+    }
+)
 # The Pod the second recovery deletes, by the name the approved trial gives it,
 # and the role its deletion messages name.
 FAILOVERS = {"jobmanager": "JM", "taskmanager": "TM"}
@@ -377,7 +396,10 @@ class RecoveryExercise:
     def scheduling(self, pods):
         owned = set(self.env.observed)
         new_events = []
-        interrupted = False
+        # A Pod the platform took for another or lost with its node, an
+        # evicted or disrupted one, which may be its own limits' doing, and a
+        # restarted container, which may be the application's own failure.
+        interrupted = evicted = restarted = False
         for event in self.env.kube.items("Event", self.namespace):
             if event.get("involvedObject", {}).get("uid") not in owned:
                 continue
@@ -386,32 +408,38 @@ class RecoveryExercise:
                 continue
             self.events[meta["uid"]] = meta["resourceVersion"]
             new_events.append(event)
-            if event.get("reason") in (
-                "Preempted",
-                "Evicted",
-                "Shutdown",
-                "NodeNotReady",
-            ):
+            if event.get("reason") in ("Preempted", "Shutdown", "NodeNotReady"):
                 interrupted = True
+            evicted |= event.get("reason") == "Evicted"
         if new_events:
             self.env.emit("scheduling-events", new_events)
         smoke = [p for p in pods if p["metadata"]["namespace"] == self.namespace]
         for pod in smoke:
             status = pod.get("status", {})
-            if (
-                status.get("reason") in ("Evicted", "Shutdown", "NodeLost")
-                or any(
-                    c.get("restartCount", 0)
-                    for c in status.get("containerStatuses", [])
-                )
-                or any(
-                    c.get("type") == "DisruptionTarget" and c.get("status") == "True"
-                    for c in status.get("conditions", [])
-                )
-            ):
-                interrupted = True
+            disruptions = {
+                c.get("reason")
+                for c in status.get("conditions", [])
+                if c.get("type") == "DisruptionTarget" and c.get("status") == "True"
+            }
+            # The kubelet's graceful node shutdown sets `Terminated` (once
+            # `Shutdown`), and a resource-pressure eviction `Evicted`; both set
+            # the same `TerminationByKubelet` disruption, so it decides nothing.
+            interrupted |= status.get("reason") in (
+                "Shutdown",
+                "Terminated",
+                "NodeLost",
+            )
+            interrupted |= bool(disruptions & PLATFORM_DISRUPTIONS)
+            evicted |= status.get("reason") == "Evicted" or bool(disruptions)
+            restarted |= any(
+                c.get("restartCount", 0) for c in status.get("containerStatuses", [])
+            )
         if interrupted:
-            raise Failure("Unplanned workload interruption; trial is inconclusive")
+            raise Failure(INTERRUPTED)
+        if evicted:
+            raise Failure("Unplanned workload eviction; trial is inconclusive")
+        if restarted:
+            raise Failure("Unplanned container restart; trial is inconclusive")
         identities = {p["metadata"]["uid"] for p in smoke} - self.retiring_pods
         if (
             self.stable_pods is None
@@ -431,7 +459,7 @@ class RecoveryExercise:
                 and identities < self.stable_pods
             )
         ):
-            raise Failure("Unplanned workload replacement; trial is inconclusive")
+            raise Failure(REPLACED)
 
     def running(self, pods, component):
         """This namespace's running Pods of one Flink component, none terminating."""

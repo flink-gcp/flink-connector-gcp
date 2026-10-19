@@ -20,7 +20,7 @@ import pytest
 from flink_tier3.bigtable.instance import ROUTING, TABLES
 from flink_tier3.bigtable.lifecycle import BigtableLifecycle
 from flink_tier3.bigtable.trial import Trial
-from flink_tier3.common import ApiError, Failure, digest
+from flink_tier3.common import ApiError, Failure, TransportError, digest
 from flink_tier3.resource import require_resources_clean
 
 from ..cloudtasks.test_recovery_lifecycle import NOW
@@ -90,6 +90,8 @@ class FakeInstance:
 
     def create_table(self, table):
         self._ready("create_table:" + table)
+        if table in self.tables:
+            raise ApiError(409, "POST", "tables")
         self.tables[table] = copy.deepcopy(TABLES[table])
 
     def table(self, table):
@@ -164,7 +166,7 @@ def test_a_refused_create_drops_the_intent_and_a_later_failure_keeps_it(env, api
         runner.provision(DEADLINE)
     assert env.refresh().bigtable["creation_intent"] is False
     other, api = Environment(), FakeInstance()
-    api.errors["create_table:alo"] = ApiError(503, "POST", "tables")
+    api.errors["create_table:alo"] = ApiError(403, "POST", "tables")
     runner = controller(other, api)
     runner.initialize()
     with pytest.raises(ApiError):
@@ -172,6 +174,66 @@ def test_a_refused_create_drops_the_intent_and_a_later_failure_keeps_it(env, api
     # The instance exists, so cleanup must delete it.
     state = other.refresh().bigtable
     assert (state["creation_intent"], state["inflight"]) == (True, None)
+
+
+@pytest.mark.parametrize("landed", [True, False])
+def test_a_table_create_that_did_not_answer_is_read_back(env, api, landed):
+    """The create may run on in the service; bt1855-tm-a3 timed out on `eo`'s.
+
+    Landed, the read-back finds the table, or the repeated create answers 409
+    while it is not yet readable; not landed, the create is repeated.
+    """
+    create = api.create_table
+    read = api.table
+
+    def slow(table):
+        if table == "eo" and "slow" not in api.calls:
+            api.calls.append("slow")
+            if landed:
+                create(table)
+            raise TransportError("POST Bigtable request failed: ReadTimeout")
+        create(table)
+
+    def lagging(table):
+        # A landed table reads back only on the second read after its create.
+        if landed and table == "eo" and api.calls.count("table:eo") < 1:
+            api.calls.append("table:eo")
+            return None
+        return read(table)
+
+    api.create_table, api.table = slow, lagging
+    runner = controller(env, api)
+    runner.initialize()
+    receipt = runner.provision(DEADLINE)
+    assert set(receipt["tables"]) == set(TABLES)
+    assert env.refresh().bigtable["inflight"] is None
+    creates = [call for call in api.calls if call == "create_table:eo"]
+    # Landed, the repeat answers 409; not landed, the repeat is the create.
+    assert len(creates) == (2 if landed else 1)
+
+
+def test_a_create_retry_stops_once_admission_closes(env, api):
+    """The stop arrives while the loop waits after an absent read-back."""
+
+    def unanswered(table):
+        api.calls.append("create_table:" + table)
+        raise TransportError("POST Bigtable request failed: ReadTimeout")
+
+    api.create_table = unanswered
+    api.table = lambda table: None
+    runner = controller(env, api)
+    runner.initialize()
+    sleep = env.sleep
+
+    def stopped(seconds):
+        if "create_table:eo" in api.calls:
+            env.records.request_stop()
+        sleep(seconds)
+
+    env.sleep = stopped
+    with pytest.raises(Failure, match="Admission closed"):
+        runner.provision(DEADLINE)
+    assert api.calls.count("create_table:eo") == 1
 
 
 def test_a_create_never_seen_to_land_keeps_its_marker(env, api):

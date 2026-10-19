@@ -153,10 +153,13 @@ class Records:
         return self._change(edit)
 
     def begin_cleanup(self, reason):
+        """Start cleanup; the first actor to start it records why."""
+
         def edit(record):
             if record.phase != Phase.CLEANED:
+                if record.phase != Phase.CLEANING or not record.reason:
+                    record.reason = reason
                 record.set_phase(Phase.CLEANING)
-                record.reason = reason
 
         return self._change(edit)
 

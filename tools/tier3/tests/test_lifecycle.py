@@ -2803,6 +2803,8 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "pubsub_trial",
         "cloudtasks_trial",
         "bigtable_trial",
+        "campaign",
+        "repeats",
     }
     assert (
         f"under {cli.PUBSUB_TRIALS}, without .toml"
