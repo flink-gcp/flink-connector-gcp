@@ -121,7 +121,12 @@ BIGTABLE_OBSERVATIONS = {
     "startup_seconds": 600,
     # As for Cloud Tasks, from admission to input flowing.
     "input_seconds": 1200,
-    "recovery_seconds": 300,
+    # A replacement Pod may need a new node, as for Pub/Sub. bt1855-ri-a1's
+    # TaskManager found the nodes its predecessors vacated already retiring
+    # and waited for a scale-up, so 300 s ran out before a checkpoint after
+    # its restore completed; trials whose TaskManagers reused their nodes
+    # proved in 94 to 131 s.
+    "recovery_seconds": 600,
     # From the finished application to the oracles' last read.
     "visibility_seconds": 600,
     # The measurement windows and their interval, as for Cloud Tasks.
