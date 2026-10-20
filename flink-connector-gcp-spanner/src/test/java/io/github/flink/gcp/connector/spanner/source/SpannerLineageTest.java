@@ -183,7 +183,7 @@ public class SpannerLineageTest {
                         .coordinatorClientFactory(new ThrowingCoordinatorFactory())
                         .queryClientFactory(new ThrowingQueryFactory());
         if (bounded) {
-            builder.endTimestamp(Instant.parse("2026-09-01T00:00:00Z"));
+            builder.boundedTimestamp(Instant.parse("2026-09-01T00:00:00Z"));
         }
         return builder.build();
     }

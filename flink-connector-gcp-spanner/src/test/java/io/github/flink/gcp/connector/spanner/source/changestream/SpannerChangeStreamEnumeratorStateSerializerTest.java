@@ -35,7 +35,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SpannerChangeStreamEnumeratorStateSerializerTest {
 
-    private static final int SERIALIZER_VERSION = 3;
+    private static final int SERIALIZER_VERSION = 4;
+    private static final int VERSION_THREE = 3;
 
     @Test
     void roundTripsCompactLineageAndFinishedParentProofs() throws Exception {
@@ -73,20 +74,79 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
     }
 
     @Test
-    void roundTripsAnEmptyBoundedLedger() throws Exception {
+    void roundTripsAnEmptyBoundedLedgerWithItsBound() throws Exception {
+        Instant bound = Instant.parse("2026-08-12T00:00:00.123456789Z");
         SpannerChangeStreamEnumeratorState state =
-                new SpannerChangeStreamEnumeratorState(
-                        Collections.emptyList(), Collections.emptySet(), true, 123L);
+                SpannerChangeStreamEnumeratorState.versionFour(
+                        Collections.emptyList(), Collections.emptySet(), bound, 123L);
         SpannerChangeStreamEnumeratorStateSerializer serializer =
                 new SpannerChangeStreamEnumeratorStateSerializer();
 
         SpannerChangeStreamEnumeratorState restored =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(state));
 
+        assertThat(restored).isEqualTo(state);
         assertThat(restored.getPartitions()).isEmpty();
         assertThat(restored.getFinishedParentProofs()).isEmpty();
         assertThat(restored.isBounded()).isTrue();
+        assertThat(restored.getBoundedTimestamp()).isEqualTo(bound);
         assertThat(restored.getSourceWatermark()).isEqualTo(123L);
+    }
+
+    /**
+     * Version 3 recorded only the flag, so its completed bounded ledger cannot name the bound it
+     * finished at; a non-empty one names it through its partitions.
+     */
+    @Test
+    void readsTheBoundOfVersionThreeStateFromItsPartitions() throws Exception {
+        SpannerChangeStreamEnumeratorStateSerializer serializer =
+                new SpannerChangeStreamEnumeratorStateSerializer();
+        DataOutputSerializer completed = versionThreeOutput(true, 0);
+        completed.writeInt(0);
+        completed.writeLong(123L);
+
+        SpannerChangeStreamEnumeratorState empty =
+                serializer.deserialize(VERSION_THREE, completed.getCopyOfBuffer());
+
+        assertThat(empty.isBounded()).isTrue();
+        assertThat(empty.getBoundedTimestamp()).isNull();
+        assertThatThrownBy(() -> serializer.serialize(empty))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must name its bound");
+
+        Instant bound = Instant.EPOCH.plusSeconds(10);
+        DataOutputSerializer running = versionThreeOutput(true, 1);
+        ChangeStreamPartitionSplitSerializer.writeSplit(
+                running,
+                ChangeStreamPartitionSplit.initial(Instant.EPOCH, bound, 2_000)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING));
+        running.writeInt(0);
+        running.writeLong(Long.MIN_VALUE);
+
+        assertThat(
+                        serializer
+                                .deserialize(VERSION_THREE, running.getCopyOfBuffer())
+                                .getBoundedTimestamp())
+                .isEqualTo(bound);
+    }
+
+    @Test
+    void rejectsAVersionFourPartitionThatEndsElsewhereThanTheBound() {
+        Instant bound = Instant.EPOCH.plusSeconds(10);
+
+        assertThatThrownBy(
+                        () ->
+                                SpannerChangeStreamEnumeratorState.versionFour(
+                                        Collections.singletonList(
+                                                ChangeStreamPartitionSplit.initial(
+                                                        Instant.EPOCH,
+                                                        bound.plusSeconds(1),
+                                                        2_000)),
+                                        Collections.emptySet(),
+                                        bound,
+                                        Long.MIN_VALUE))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not at the checkpointed bound " + bound);
     }
 
     @Test
@@ -148,10 +208,7 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
         DataOutputSerializer negative = new DataOutputSerializer(8);
         negative.writeBoolean(false);
         negative.writeInt(-1);
-        assertThatThrownBy(
-                        () ->
-                                serializer.deserialize(
-                                        serializer.getVersion(), negative.getCopyOfBuffer()))
+        assertThatThrownBy(() -> serializer.deserialize(VERSION_THREE, negative.getCopyOfBuffer()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("negative partition count -1");
 
@@ -160,10 +217,7 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
         ChangeStreamPartitionSplitSerializer.writeSplit(corrupt, initial);
         corrupt.writeInt(0);
         corrupt.writeLong(Long.MIN_VALUE);
-        assertThatThrownBy(
-                        () ->
-                                serializer.deserialize(
-                                        serializer.getVersion(), corrupt.getCopyOfBuffer()))
+        assertThatThrownBy(() -> serializer.deserialize(VERSION_THREE, corrupt.getCopyOfBuffer()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("Corrupt")
                 .hasRootCauseMessage(
@@ -226,7 +280,7 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
         assertThatThrownBy(
                         () ->
                                 serializer.deserialize(
-                                        serializer.getVersion(), duplicateProof.getCopyOfBuffer()))
+                                        VERSION_THREE, duplicateProof.getCopyOfBuffer()))
                 .isInstanceOf(IOException.class)
                 .hasRootCauseMessage("finished parent proof finished-parent appeared twice");
     }
@@ -413,7 +467,7 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                                 },
                         StartPosition.latest(),
                         null,
-                        null,
+                        start.plusSeconds(10),
                         2_000,
                         restored);
         enumerator.start();

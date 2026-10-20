@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
 
 import org.apache.flink.api.connector.source.SourceEvent;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.util.FlinkRuntimeException;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -35,6 +36,8 @@ import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+
+import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -574,7 +577,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                                 firstWaitingChild,
                                 secondWaitingChild),
                         Collections.singleton(sharedProof),
-                        false,
+                        null,
                         Long.MIN_VALUE);
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
         SpannerChangeStreamSplitEnumerator enumerator =
@@ -979,15 +982,9 @@ class SpannerChangeStreamSplitEnumeratorTest {
     @Test
     void boundedLedgerSignalsNoMoreSplitsAfterTheFinalPartitionFinishes() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        Instant bound = Instant.now().plus(Duration.ofHours(1));
         SpannerChangeStreamSplitEnumerator enumerator =
-                new SpannerChangeStreamSplitEnumerator(
-                        context,
-                        ScriptedClient::new,
-                        StartPosition.latest(),
-                        null,
-                        Instant.now().plus(Duration.ofHours(1)),
-                        2_000,
-                        null);
+                configured(context, StartPosition.latest(), null, bound, null);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1005,6 +1002,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(finished.getPartitions()).isEmpty();
         assertThat(finished.getFinishedParentProofs()).isEmpty();
         assertThat(finished.isBounded()).isTrue();
+        assertThat(finished.getBoundedTimestamp()).isEqualTo(bound);
         assertThat(context.<Long>gauge(SpannerMetricNames.CHANGE_STREAM_PARTITION_LEDGER_ENTRIES))
                 .isZero();
         assertThat(context.<Long>gauge(SpannerMetricNames.CHANGE_STREAM_FINISHED_PARENT_PROOFS))
@@ -1013,7 +1011,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> restoredContext = context(1);
         SpannerChangeStreamSplitEnumerator restoredEnumerator =
-                enumerator(restoredContext, new ScriptedClient(), finished);
+                configured(restoredContext, StartPosition.latest(), null, bound, finished);
         restoredEnumerator.start();
         restoredEnumerator.handleSplitRequest(0, "localhost");
         restoredContext.runAsyncCalls();
@@ -1021,6 +1019,196 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(restoredContext.events()).containsExactly("noMoreSplits:0");
         assertThat(restoredEnumerator.snapshotState(2).isBounded()).isTrue();
         restoredEnumerator.close();
+    }
+
+    @Test
+    void freshStartResolvedPastTheBoundFailsTheSource() {
+        Instant bound = Instant.now().minus(Duration.ofHours(1));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(context, StartPosition.latest(), null, bound, null);
+        enumerator.start();
+
+        assertThat(catchThrowable(context::runAsyncCalls))
+                .hasMessageContaining("Failed to initialize")
+                .rootCause()
+                .hasMessageContaining("start position StartPosition{latest} resolved to")
+                .hasMessageContaining("after the bounded timestamp " + bound);
+    }
+
+    @Test
+    void freshStartAtTheBoundReadsTheBoundsInstant() throws Exception {
+        Instant bound = Instant.now().minus(Duration.ofHours(1));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(context, StartPosition.at(bound), null, bound, null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+
+        assertThat(context.assignedSplits(0))
+                .singleElement()
+                .satisfies(
+                        split -> {
+                            assertThat(split.getStartTimestamp()).isEqualTo(bound);
+                            assertThat(split.getEndTimestamp()).isEqualTo(bound);
+                        });
+        enumerator.close();
+    }
+
+    @Test
+    void expiredLedgerReplacedByTheFallbackStartsUnderTheConfiguredBound() throws Exception {
+        Instant expired = Instant.now().minus(Duration.ofDays(8));
+        Instant configured = Instant.now().plus(Duration.ofHours(1));
+        ChangeStreamPartitionSplit checkpointed =
+                ChangeStreamPartitionSplit.initial(expired, expired.plusSeconds(60), 2_000)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(
+                        context,
+                        StartPosition.latest(),
+                        StartPosition.ago(Duration.ofHours(1)),
+                        configured,
+                        new SpannerChangeStreamEnumeratorState(
+                                Collections.singletonList(checkpointed)));
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+
+        assertThat(context.assignedSplits(0))
+                .singleElement()
+                .satisfies(split -> assertThat(split.getEndTimestamp()).isEqualTo(configured));
+        enumerator.close();
+    }
+
+    @Test
+    void resumeFallbackResolvedPastTheBoundFailsTheSource() {
+        Instant expired = Instant.now().minus(Duration.ofDays(8));
+        Instant bound = Instant.now().minus(Duration.ofHours(2));
+        Instant fallback = Instant.now().minus(Duration.ofHours(1));
+        ChangeStreamPartitionSplit initial =
+                ChangeStreamPartitionSplit.initial(expired, bound, 2_000)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(
+                        context,
+                        StartPosition.latest(),
+                        StartPosition.at(fallback),
+                        bound,
+                        new SpannerChangeStreamEnumeratorState(Collections.singletonList(initial)));
+        enumerator.start();
+
+        assertThat(catchThrowable(context::runAsyncCalls))
+                .rootCause()
+                .hasMessageContaining("resume fallback")
+                .hasMessageContaining("resolved to " + fallback)
+                .hasMessageContaining("after the bounded timestamp " + bound);
+    }
+
+    @Test
+    void restoreUnderADifferentBoundFailsTheSource() {
+        Instant start = Instant.now().minus(Duration.ofHours(1));
+        Instant checkpointed = Instant.now().plus(Duration.ofHours(1));
+        Instant configured = checkpointed.plus(Duration.ofHours(1));
+        SpannerChangeStreamEnumeratorState restored =
+                new SpannerChangeStreamEnumeratorState(
+                        Collections.singletonList(
+                                ChangeStreamPartitionSplit.initial(start, checkpointed, 2_000)
+                                        .withLifecycleState(PartitionLifecycleState.RUNNING)));
+
+        assertThat(restoreFailure(configured, restored))
+                .hasMessageContaining("is bounded at " + checkpointed)
+                .hasMessageContaining("configured with the bounded timestamp " + configured)
+                .hasMessageContaining("SpannerChangeStreamSourceBuilder.boundedTimestamp(...)")
+                .hasMessageContaining("scan.bounded.timestamp-millis");
+    }
+
+    @Test
+    void restoreThatAddsOrDropsTheBoundFailsTheSource() {
+        Instant start = Instant.now().minus(Duration.ofHours(1));
+        SpannerChangeStreamEnumeratorState unbounded =
+                new SpannerChangeStreamEnumeratorState(
+                        Collections.singletonList(
+                                ChangeStreamPartitionSplit.initial(start, null, 2_000)
+                                        .withLifecycleState(PartitionLifecycleState.RUNNING)));
+        Instant bound = Instant.now().plus(Duration.ofHours(1));
+        assertThat(restoreFailure(bound, unbounded))
+                .hasMessageContaining("is unbounded, but the source is configured with");
+
+        SpannerChangeStreamEnumeratorState finishedBounded =
+                SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
+                        Collections.emptyList(), Collections.emptySet(), bound, Long.MIN_VALUE);
+        assertThat(restoreFailure(null, finishedBounded))
+                .hasMessageContaining(
+                        "is bounded at " + bound + ", but the source is configured unbounded");
+    }
+
+    /**
+     * Every partition of a completed ledger has finished, so only the checkpointed bound can tell a
+     * restore under a later one that the interval between them was never read.
+     */
+    @Test
+    void completedLedgerRestoredUnderALaterBoundFailsTheSource() {
+        Instant checkpointed = Instant.now().minus(Duration.ofHours(1));
+        Instant configured = checkpointed.plus(Duration.ofMinutes(30));
+        SpannerChangeStreamEnumeratorState completed =
+                SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
+                        Collections.emptyList(),
+                        Collections.emptySet(),
+                        checkpointed,
+                        Long.MIN_VALUE);
+
+        assertThat(restoreFailure(configured, completed))
+                .hasMessageContaining("is bounded at " + checkpointed)
+                .hasMessageContaining("configured with the bounded timestamp " + configured);
+    }
+
+    /** Version 3 recorded only that a completed ledger was bounded, so any bound restores it. */
+    @Test
+    void completedVersionThreeLedgerRestoresUnderAnyBound() throws Exception {
+        DataOutputSerializer versionThree = new DataOutputSerializer(32);
+        versionThree.writeBoolean(true);
+        versionThree.writeInt(0);
+        versionThree.writeInt(0);
+        versionThree.writeLong(Long.MIN_VALUE);
+        SpannerChangeStreamEnumeratorState completed =
+                new SpannerChangeStreamEnumeratorStateSerializer()
+                        .deserialize(3, versionThree.getCopyOfBuffer());
+        Instant configured = Instant.now().plus(Duration.ofHours(1));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(context, StartPosition.latest(), null, configured, completed);
+        enumerator.start();
+        enumerator.handleSplitRequest(0, "localhost");
+        context.runAsyncCalls();
+
+        assertThat(context.events()).containsExactly("noMoreSplits:0");
+        assertThat(enumerator.snapshotState(1).getBoundedTimestamp()).isEqualTo(configured);
+        enumerator.close();
+    }
+
+    private static Throwable restoreFailure(
+            @Nullable Instant configuredBound, SpannerChangeStreamEnumeratorState restored) {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(context, StartPosition.latest(), null, configuredBound, restored);
+        enumerator.start();
+        Throwable failure = catchThrowable(context::runAsyncCalls);
+        assertThat(failure).hasMessageContaining("Failed to initialize");
+        assertThat(context.assignedSplits(0)).isEmpty();
+        return failure.getCause();
+    }
+
+    private static SpannerChangeStreamSplitEnumerator configured(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            StartPosition start,
+            @Nullable StartPosition resumeFallback,
+            @Nullable Instant bound,
+            @Nullable SpannerChangeStreamEnumeratorState restored) {
+        return new SpannerChangeStreamSplitEnumerator(
+                context, ScriptedClient::new, start, resumeFallback, bound, 2_000, restored);
     }
 
     private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {

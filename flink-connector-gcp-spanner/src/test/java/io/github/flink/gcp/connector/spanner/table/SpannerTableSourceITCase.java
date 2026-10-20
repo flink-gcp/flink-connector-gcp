@@ -35,6 +35,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -200,6 +201,75 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         Row.ofKind(RowKind.UPDATE_BEFORE, 1L, "Ada"),
                         Row.ofKind(RowKind.UPDATE_AFTER, 1L, "Grace"),
                         Row.ofKind(RowKind.DELETE, 1L, "Grace"));
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void boundedChangeStreamTableFinishesWithEveryChangeUpToTheBound(Dialect dialect)
+            throws Exception {
+        DatabaseDestination database =
+                createDatabase(
+                        dialect,
+                        dialect == Dialect.POSTGRESQL
+                                ? "CREATE TABLE records (id bigint NOT NULL PRIMARY KEY, name varchar(64))"
+                                : "CREATE TABLE records (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)",
+                        "CREATE CHANGE STREAM changes FOR records",
+                        dialect == Dialect.POSTGRESQL
+                                ? "ALTER CHANGE STREAM changes SET (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')"
+                                : "ALTER CHANGE STREAM changes SET OPTIONS (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')");
+        Instant first = insert(database, 1L, "Ada");
+        Instant last = insert(database, 2L, "Grace");
+        // The option is in milliseconds; rounding up keeps the last commit inside the bound.
+        Instant bound =
+                Instant.ofEpochMilli(
+                        Math.addExact(
+                                last.toEpochMilli(), last.getNano() % 1_000_000 == 0 ? 0 : 1));
+        List<Row> expected = new ArrayList<>();
+        expected.add(Row.ofKind(RowKind.INSERT, 1L, "Ada"));
+        expected.add(Row.ofKind(RowKind.INSERT, 2L, "Grace"));
+        // Write until a commit lies past the bound; one that still lands inside the bound's
+        // millisecond is read like the others.
+        long id = 3L;
+        Instant committed;
+        do {
+            committed = insert(database, id, "Hedy");
+            if (!committed.isAfter(bound)) {
+                expected.add(Row.ofKind(RowKind.INSERT, id, "Hedy"));
+            }
+            id++;
+        } while (!committed.isAfter(bound));
+
+        TableEnvironment table =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                changeStreamTableDdl(database, dialect, null, "records", first.toEpochMilli())
+                        .replace(
+                                "  'scan.parallelism' = '1',\n",
+                                "  'scan.parallelism' = '1',\n"
+                                        + "  'scan.bounded.timestamp-millis' = '"
+                                        + bound.toEpochMilli()
+                                        + "',\n"));
+
+        // Asking for one row more than the bound admits returns early with it if the bound is
+        // ignored, and the deadline fails rather than hangs a source that never finishes.
+        assertThat(firstRows(table, "SELECT id, name FROM cdc", expected.size() + 1, ROW_DEADLINE))
+                .containsExactlyInAnyOrderElementsOf(expected);
+    }
+
+    private static Instant insert(DatabaseDestination database, long id, String name) {
+        Timestamp commit =
+                client(database)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertBuilder("records")
+                                                .set("id")
+                                                .to(id)
+                                                .set("name")
+                                                .to(name)
+                                                .build()));
+        return Instant.ofEpochSecond(commit.getSeconds(), commit.getNanos());
     }
 
     private static Stream<Arguments> changeStreamTableCases() {

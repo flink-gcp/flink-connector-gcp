@@ -122,6 +122,12 @@ import java.util.function.LongSupplier;
  * and starts one null-token query, since advancing a single stale token could skip the terminal
  * child record that would have completed the lineage.
  *
+ * <p>A bounded source's bound travels with the ledger: the initial split carries it, every child
+ * inherits its parent's, and the checkpoint records the bound even once no partition is left to
+ * carry it. A restore whose configured bound differs therefore fails rather than reading to the
+ * checkpointed one, and a start that resolves past the bound fails rather than seeding a query with
+ * nothing to read.
+ *
  * <p>See {@code docs/adr/0099} for the protocol's evidence and {@code docs/adr/0094} for the start
  * position and restore-expiry rules.
  */
@@ -226,9 +232,10 @@ public final class SpannerChangeStreamSplitEnumerator
         Duration retention = created.initialize();
         StartPositionResolver resolver = StartPositionResolver.create(getClass(), () -> retention);
         if (restoredState == null) {
+            Instant start = resolver.resolve(startPosition);
+            checkWithinBound("start position", startPosition, start);
             return Initialization.fresh(
-                    ChangeStreamPartitionSplit.initial(
-                            resolver.resolve(startPosition), endTimestamp, heartbeatMillis),
+                    ChangeStreamPartitionSplit.initial(start, endTimestamp, heartbeatMillis),
                     false,
                     Long.MIN_VALUE);
         }
@@ -242,6 +249,7 @@ public final class SpannerChangeStreamSplitEnumerator
                     .ifPresent(expiries::add);
         }
         if (expiries.isEmpty()) {
+            checkRestoredBound(restoredState);
             return Initialization.restored(
                     restoredState.getPartitions(),
                     restoredState.getFinishedParentProofs(),
@@ -260,6 +268,7 @@ public final class SpannerChangeStreamSplitEnumerator
 
         StartPosition requestedFallback = resumeFallback;
         Instant resolvedFallback = resolver.resolveFallback(requestedFallback);
+        checkWithinBound("resume fallback", requestedFallback, resolvedFallback);
         RestoreExpiry oldest = oldest(expiries);
         LOG.warn(
                 "{} unfinished Spanner Change Streams partition(s) have expired restored state;"
@@ -278,6 +287,54 @@ public final class SpannerChangeStreamSplitEnumerator
                 ChangeStreamPartitionSplit.initial(resolvedFallback, endTimestamp, heartbeatMillis),
                 true,
                 Long.MIN_VALUE);
+    }
+
+    private void checkWithinBound(String role, StartPosition requested, Instant resolved) {
+        if (endTimestamp != null && resolved.isAfter(endTimestamp)) {
+            throw new FlinkRuntimeException(
+                    "The Spanner Change Streams "
+                            + role
+                            + " "
+                            + requested
+                            + " resolved to "
+                            + resolved
+                            + ", after the bounded timestamp "
+                            + endTimestamp
+                            + "; there is nothing to read up to the bound. Set the bound through"
+                            + " SpannerChangeStreamSourceBuilder.boundedTimestamp(...) or"
+                            + " scan.bounded.timestamp-millis at or after the position the source"
+                            + " starts from.");
+        }
+    }
+
+    /**
+     * Refuses a restore whose checkpointed bound differs from the configured one. Every partition
+     * carries the bound it reads to and a child inherits its parent's, so the ledger cannot follow
+     * a changed configuration; reading on to the checkpointed bound would silently ignore it.
+     */
+    private void checkRestoredBound(SpannerChangeStreamEnumeratorState restored) {
+        // A completed version-3 ledger cannot name its bound, so only its boundedness is compared.
+        Instant restoredBound = restored.getBoundedTimestamp();
+        boolean matches =
+                restored.isBounded() == (endTimestamp != null)
+                        && (restoredBound == null || restoredBound.equals(endTimestamp));
+        if (!matches) {
+            throw new FlinkRuntimeException(
+                    "The restored Spanner Change Streams partition ledger is "
+                            + (restored.isBounded()
+                                    ? "bounded"
+                                            + (restoredBound == null ? "" : " at " + restoredBound)
+                                    : "unbounded")
+                            + ", but the source is configured "
+                            + (endTimestamp == null
+                                    ? "unbounded"
+                                    : "with the bounded timestamp " + endTimestamp)
+                            + ". A restore reads to the bound it was checkpointed with; configure"
+                            + " the same bound through"
+                            + " SpannerChangeStreamSourceBuilder.boundedTimestamp(...) or"
+                            + " scan.bounded.timestamp-millis, or start without the job's state to"
+                            + " read to a different bound.");
+        }
     }
 
     private synchronized boolean installClient(SpannerChangeStreamCoordinatorClient created)
@@ -824,7 +881,7 @@ public final class SpannerChangeStreamSplitEnumerator
         return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
                 ledger.values(),
                 finishedParentProofReferences.keySet(),
-                boundedLedger,
+                endTimestamp,
                 sourceWatermark);
     }
 

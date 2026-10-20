@@ -48,13 +48,17 @@ import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import javax.annotation.Nullable;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** An unbounded Table API source for one table observed through a Spanner change stream. */
+/**
+ * A Table API source for one table observed through a Spanner change stream, unbounded unless
+ * {@code scan.bounded.timestamp-millis} bounds it.
+ */
 @Internal
 public final class SpannerChangeStreamDynamicSource
         implements ScanTableSource, SupportsReadingMetadata, SupportsSourceWatermark {
@@ -66,6 +70,7 @@ public final class SpannerChangeStreamDynamicSource
     private final ChangeStreamChangelogMode changelogMode;
     private final StartPosition startPosition;
     @Nullable private final StartPosition resumeFallback;
+    @Nullable private final Instant boundedTimestamp;
     private final Duration absentRetentionFallback;
     private final Duration heartbeatInterval;
     @Nullable private final SpannerRpcPriority rpcPriority;
@@ -104,6 +109,9 @@ public final class SpannerChangeStreamDynamicSource
                 config.get(SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE),
                 ChangeStreamStartPositionMapper.startup(config),
                 ChangeStreamStartPositionMapper.resumeFallback(config),
+                config.getOptional(SpannerConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS)
+                        .map(Instant::ofEpochMilli)
+                        .orElse(null),
                 config.get(SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK),
                 config.get(SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL),
                 config.getOptional(SpannerConnectorOptions.SCAN_RPC_PRIORITY).orElse(null),
@@ -124,6 +132,7 @@ public final class SpannerChangeStreamDynamicSource
             ChangeStreamChangelogMode changelogMode,
             StartPosition startPosition,
             @Nullable StartPosition resumeFallback,
+            @Nullable Instant boundedTimestamp,
             Duration absentRetentionFallback,
             Duration heartbeatInterval,
             @Nullable SpannerRpcPriority rpcPriority,
@@ -145,6 +154,7 @@ public final class SpannerChangeStreamDynamicSource
         this.changelogMode = changelogMode;
         this.startPosition = startPosition;
         this.resumeFallback = resumeFallback;
+        this.boundedTimestamp = boundedTimestamp;
         this.absentRetentionFallback = absentRetentionFallback;
         this.heartbeatInterval = heartbeatInterval;
         this.rpcPriority = rpcPriority;
@@ -224,6 +234,10 @@ public final class SpannerChangeStreamDynamicSource
         if (resumeFallback != null) {
             builder.resumeFallback(resumeFallback);
         }
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS.key(),
+                boundedTimestamp,
+                builder::boundedTimestamp);
         if (rpcPriority != null) {
             builder.rpcPriority(rpcPriority);
         }
@@ -250,6 +264,7 @@ public final class SpannerChangeStreamDynamicSource
                 changelogMode,
                 startPosition,
                 resumeFallback,
+                boundedTimestamp,
                 absentRetentionFallback,
                 heartbeatInterval,
                 rpcPriority,
@@ -285,6 +300,7 @@ public final class SpannerChangeStreamDynamicSource
                 && changelogMode == that.changelogMode
                 && startPosition.equals(that.startPosition)
                 && Objects.equals(resumeFallback, that.resumeFallback)
+                && Objects.equals(boundedTimestamp, that.boundedTimestamp)
                 && absentRetentionFallback.equals(that.absentRetentionFallback)
                 && heartbeatInterval.equals(that.heartbeatInterval)
                 && rpcPriority == that.rpcPriority
@@ -305,6 +321,7 @@ public final class SpannerChangeStreamDynamicSource
                 changelogMode,
                 startPosition,
                 resumeFallback,
+                boundedTimestamp,
                 absentRetentionFallback,
                 heartbeatInterval,
                 rpcPriority,

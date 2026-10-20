@@ -142,7 +142,7 @@ The byte estimate counts decoded logical content, not JVM object overhead, and m
 
 `@PublicEvolving`: the change-stream API may change at a minor release, announced in the release
 notes.
-The unbounded Change Streams source.
+The Change Streams source, unbounded unless `boundedTimestamp` is set.
 Its partition lifecycle, checkpoint recovery, and delivery semantics are under [Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
 
 | Option | Default | What it does |
@@ -152,6 +152,7 @@ Its partition lifecycle, checkpoint recovery, and delivery semantics are under [
 | `deserializer` | **required** | Emits zero or more non-null output records from each `DataChangeRecord` through a Flink `Collector`. Emit synchronously during the call; do not retain the collector |
 | `startPosition` | `StartPosition.latest()` | Where a fresh ledger begins. Absolute, latest, and relative start positions resolve once on the coordinator |
 | `resumeFallback` | *unset ⇒ fail an expired restore* | Where to restart after restored partition positions fall outside retention. Setting it permits discarding the whole stale partition ledger and can lose the unavailable interval |
+| `boundedTimestamp` | *unset ⇒ unbounded* | The last commit timestamp the source reads, inclusive; the source finishes once every partition has been read to it. A start or resume fallback resolving after it fails the source, and a restore must configure the checkpointed bound; see [Bounded reads]({{< relref "docs/connectors/datastream/spanner" >}}#bounded-reads) |
 | `absentRetentionFallback` | `7 days` | Retention to assume when `INFORMATION_SCHEMA.CHANGE_STREAM_OPTIONS` has no explicit retention row. It must be longer than the one-minute safety margin used at the moving retention boundary |
 | `heartbeatInterval` | `2 s` | Service heartbeat interval, from 1 second through 5 minutes. Heartbeats advance the coordinator's unfinished-ledger source watermark |
 | `rpcPriority` | `HIGH` | `LOW`, `MEDIUM`, or `HIGH`, applied to every partition query |

@@ -23,7 +23,7 @@ limitations under the License.
 # Spanner connector
 
 An at-least-once sink applies one Spanner `Mutation` per record.
-The module also provides a bounded snapshot source and an unbounded Change Streams source.
+The module also provides a bounded snapshot source and a Change Streams source, which is unbounded unless it is bounded at a commit timestamp.
 Both dialects, GoogleSQL and PostgreSQL, are supported from the same code; the dialect is a property of the database rather than a builder option.
 
 Every option is listed on the [Spanner options]({{< relref "docs/reference/spanner" >}}) page.
@@ -332,7 +332,8 @@ The boundary can therefore be delivered again; advancing past it could skip anot
 The coordinator checkpoint contains only unfinished partition entries.
 When an already-discovered child is still waiting for another parent, a completed parent remains only as a compact split-id proof until that child becomes schedulable.
 The proof then leaves the checkpoint too, so partition-lineage state follows the unfinished topology rather than all historical transitions.
-Enumerator-state versions 1 and 2 remain restorable and are compacted when read; new checkpoints use version 3.
+Enumerator-state versions 1 to 3 remain restorable, and versions 1 and 2 are compacted when read; new checkpoints use version 4, which also records the bound of a bounded source.
+A connector release that writes version 3 cannot restore a version-4 checkpoint, so rolling a job back across this change needs a checkpoint taken before it.
 
 The source is **at least once**.
 Downstream state that requires uniqueness should deduplicate with a domain key that includes enough of the Spanner record identity, such as the server transaction id and record sequence, rather than assuming the commit timestamp is unique.
@@ -347,6 +348,23 @@ That ordering prevents an expired token from reaching Spanner before the coordin
 The source requires database read access for both the generated Change Stream read function and its startup `INFORMATION_SCHEMA` queries.
 In particular, the workload principal needs `spanner.databases.select` plus the session permissions needed by the Spanner client.
 The connector does not create a metadata table and needs no write permission for its partition ledger; Flink checkpoints own that state.
+
+### Bounded reads
+
+`boundedTimestamp(...)` bounds the source at a commit timestamp; without it the source is unbounded.
+The bound is inclusive, as Spanner's read function treats its end timestamp: each partition query returns the records committed at or before the bound and then ends.
+A child partition the service reports during a query starts within that query's range, so it reads to the same bound, and the source finishes once every partition in the lineage has finished.
+The Table API sets the same bound in epoch milliseconds through `scan.bounded.timestamp-millis`.
+
+A start position that resolves after the bound fails the source when the coordinator starts, because the stream holds nothing to read; `latest()` combined with a bound in the past is the usual cause.
+A resume fallback that resolves after the bound fails in the same way.
+
+The bound belongs to the checkpointed partition ledger, since every partition carries it and a child inherits its parent's.
+A restore must therefore configure the checkpointed bound, or none for a ledger checkpointed without one.
+The checkpoint records the bound itself, so this holds even after every partition has finished.
+A restore configured differently fails rather than reading to the checkpointed bound and ignoring the configured one; to read to another bound, start the job without its state.
+The one restore that takes the configured bound is one whose expired ledger the resume fallback discards, because it starts a new lineage.
+Restored positions remain subject to the stream's retention, as for an unbounded source.
 
 ### Event time
 

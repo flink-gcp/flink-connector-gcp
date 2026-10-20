@@ -216,11 +216,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   release under real use; the path itself calls no vendor change-stream API (plain SQL over the
   TVF).
 - The enumerator state is the only partition-lifecycle recovery record; do not add Beam's external
-  metadata table. Its version-3 state checkpoints only unfinished entries and split-id proofs for
-  finished parents still named by `CREATED` children. Remove a finished split immediately, remove
-  each proof when its last child becomes schedulable, and preserve separately whether an empty
-  ledger belongs to a bounded source. Versions 1 and 2 remain readable as validated complete
-  ledgers and compact during restore.
+  metadata table. Its version-4 state checkpoints the bound or its absence, only unfinished
+  entries, and split-id proofs for finished parents still named by `CREATED` children. Remove a
+  finished split immediately, remove each proof when its last child becomes schedulable, and keep
+  the bound of an empty bounded ledger, which no partition is left to carry. Versions 1 and 2
+  remain readable as validated complete ledgers and compact during restore; version 3 recorded
+  only boundedness, so its completed bounded ledger compares by boundedness alone.
 - The enumerator owns one checkpointed source-watermark frontier: the minimum safe watermark across
   every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` ledger entry. Broadcast it to every reader,
   including readers with no assigned split, and reject any transition that would move it backwards.
@@ -232,6 +233,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - A valid restored ledger wins and never seeds another null-token query. If an unfinished position
   expired, the default is failure; an explicit fallback discards the entire Spanner ledger and
   seeds one null-token query because advancing one old token can skip its terminal child record.
+- The public bound (`boundedTimestamp`, `scan.bounded.timestamp-millis`) is inclusive and travels
+  with the ledger: the initial entry carries it and every child inherits it. A restore whose
+  configured bound differs from the checkpointed one fails; do not re-bound a restored ledger,
+  because finished partitions are no longer in it (ADR-0099). A start or fallback resolving after
+  the bound fails initialization.
 - Missing explicit retention metadata uses the configured fallback, whose connector default is
   seven days.
 - Initialize the dialect, stream scope, watched tables and their all-columns mode, retention,

@@ -22,7 +22,7 @@ limitations under the License.
 
 # Spanner SQL connector
 
-The `spanner` connector reads bounded Table API and SQL scans, emits unbounded Change Streams changelogs, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
+The `spanner` connector reads bounded Table API and SQL scans, emits Change Streams changelogs that are unbounded unless bounded at a timestamp, serves primary-key lookup joins, and writes rows through `flink-connector-gcp-spanner`.
 It maps onto the [DataStream source and sink]({{< relref "docs/connectors/datastream/spanner" >}}), so partitioning, snapshot, batching, retry, delivery, metrics, and failure behavior remain the same.
 A read-only [catalog](#catalog) resolves tables from each database's `INFORMATION_SCHEMA`, so a statement can use them without a `CREATE TABLE`.
 
@@ -324,7 +324,11 @@ Changing an existing column from `STRING` to `UUID` therefore requires coordinat
 
 ## Change Streams scan behavior
 
-Set `scan.mode = 'change-stream'` to replace the bounded scan with an unbounded CDC source over one Spanner Change Stream.
+Set `scan.mode = 'change-stream'` to replace the bounded scan with a CDC source over one Spanner Change Stream.
+The source is unbounded unless `scan.bounded.timestamp-millis` names the last commit timestamp it reads; it then finishes once every partition has been read to that instant, which the DataStream page's [bounded read]({{< relref "docs/connectors/datastream/spanner" >}}#bounded-reads) section describes.
+The `bounded` in that key names where the change stream stops, not `scan.mode = 'bounded'`, and setting it on a batch-read table is rejected.
+Spanner commit timestamps are finer than a millisecond, so a bound meant to include a particular commit rounds that commit's timestamp up to the next millisecond; truncating it would exclude the commit.
+A bounded change-stream table still emits an updating changelog, which Flink's batch execution mode refuses for any source, so it runs in streaming mode and simply finishes.
 The default remains `bounded`, so existing DDL keeps its snapshot behavior.
 Change-stream mode maps the declared `named-schema` and `table` to the exact dialect-aware native table name and silently advances past records for other watched tables.
 It does not support lookup joins, projection or filter pushdown, bounded-scan fetch, partition, and timestamp options, or lookup options.
@@ -360,7 +364,7 @@ Spanner change streams do not watch a generated column outside the primary key, 
 Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
 A conversion failure identifies the table, commit timestamp, transaction, record sequence, and mod index without including row JSON or credential paths.
 
-Startup, expired-restore fallback, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
+Startup, expired-restore fallback, the bounded timestamp, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
 The checkpoint, retention, delivery, and capacity contracts therefore remain those of the [DataStream Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
 
 ## Options
@@ -380,13 +384,14 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 | `dialect` | `GOOGLE_STANDARD_SQL` | Database dialect; use `POSTGRESQL` for PostgreSQL `jsonb` values |
 | `proto-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BYTES` carriers map to Spanner PROTO |
 | `enum-type-names` | empty | Comma-separated `field-path:fully.qualified.Type` entries whose `BIGINT` carriers map to Spanner ENUM |
-| `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits an unbounded CDC changelog and makes the table source-only, so writing to it is rejected |
+| `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits a CDC changelog, unbounded unless `scan.bounded.timestamp-millis` is set, and makes the table source-only, so writing to it is rejected |
 | `scan.change-stream.name` | **required in change-stream mode** | Change Stream whose generated read function supplies records |
 | `scan.change-stream.changelog-mode` | **required in change-stream mode** | `full` emits retract rows from `NEW_ROW_AND_OLD_VALUES`; `upsert` emits keyed upserts from `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` |
 | `scan.startup.mode` | `latest` | Fresh Change Streams start: `earliest`, `latest`, or `timestamp` |
 | `scan.startup.timestamp-millis` | *unset* | Unix epoch milliseconds required only when startup mode is `timestamp` |
 | `scan.resume-fallback.mode` | *unset ⇒ fail an expired restore* | Position used after discarding an expired restored ledger: `earliest`, `latest`, or `timestamp` |
 | `scan.resume-fallback.timestamp-millis` | *unset* | Unix epoch milliseconds required only when resume-fallback mode is `timestamp` |
+| `scan.bounded.timestamp-millis` | *unset ⇒ unbounded* | Unix epoch milliseconds of the last commit the Change Streams source reads before it finishes, inclusive. Requires `scan.mode = 'change-stream'`; a restore must keep the checkpointed value |
 | `scan.change-stream.absent-retention-fallback` | `7 d` | Retention assumed when the Change Stream has no explicit retention row |
 | `scan.change-stream.heartbeat-interval` | `2 s` | Change Streams service heartbeat interval, from one second through five minutes |
 | `scan.max-concurrent-queries-per-subtask` | `8` | Maximum Change Streams partition queries opened concurrently by one source subtask |
