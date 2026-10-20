@@ -202,8 +202,8 @@ Before it ran, the `operator` and `flink` versions created 2026-10-09T16:22Z wer
 | `cloudtasks-recovery` | `sha256:d2b32bdbcf112e5409e3674fdedd3188eea718f711c4ee2b54166f97a1422a65` | 2026-10-14T12:18:11Z | 2026-10-21T12:18:11Z |
 
 The digests are the ones the `sha-25260e67…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
-[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests and cites this run for the recreated `flink` version; the `bigquery-recovery` digest stays a dispatch input verified live.
-Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication must be admitted so that its 90-minute window ends before 2026-10-20T12:17:04Z.
+[pins.cue](pins.cue) adopted the lifecycle-tools and smoke digests and cited this run for the recreated `flink` version until the [Bigtable rescale-in rerun publication](#bigtable-rescale-in-rerun-publication) below; the `bigquery-recovery` digest stays a dispatch input verified live.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication had to be admitted so that its 90-minute window ended before 2026-10-20T12:17:04Z.
 The `pubsub-recovery` and `cloudtasks-recovery` images were built from the same commit, which nothing adopts; the Cloud Tasks changes of [#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777) are not in this commit, so its `cloudtasks-recovery` image refuses their `--sink-parallelism` argument, and a Cloud Tasks trial needs the [Cloud Tasks fault trial publication](#cloud-tasks-fault-trial-publication) below.
 
 ### Cloud Tasks fault trial publication
@@ -222,8 +222,8 @@ The [Cloud Tasks fault trial publication](https://github.com/flink-gcp/flink-con
 
 The digests are the ones the `sha-3546b6ed…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
 The `operator` and `flink` copies kept the creation times of the [BigQuery fault trial publication](#bigquery-fault-trial-publication), because the registry still held those digests.
-The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts: [pins.cue](pins.cue) keeps that publication's lifecycle-tools and smoke pins, because the lifecycle image's inputs (its Dockerfile, the Tier-3 member dependencies and `uv.lock`) are unchanged between the two commits, no Cloud Tasks trial pulls `smoke`, and both earlier versions outlive the `operator` mirror; the `cloudtasks-recovery` digest stays a dispatch input verified live.
-Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication must be admitted so that its 90-minute window ends before 2026-10-20T12:17:04Z.
+The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts: [pins.cue](pins.cue) kept that publication's lifecycle-tools and smoke pins, because the lifecycle image's inputs (its Dockerfile, the Tier-3 member dependencies and `uv.lock`) are unchanged between the two commits, no Cloud Tasks trial pulls `smoke`, and both earlier versions outlived the `operator` mirror; the `cloudtasks-recovery` digest stays a dispatch input verified live.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication had to be admitted so that its 90-minute window ended before 2026-10-20T12:17:04Z.
 Its `cloudtasks-recovery` image fails a staged commit on a single `INTERNAL` from `CreateTask`, which [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794) made transient; the [Cloud Tasks INTERNAL retry publication](#cloud-tasks-internal-retry-publication) below carries that change.
 
 ### Cloud Tasks INTERNAL retry publication
@@ -242,8 +242,8 @@ The [Cloud Tasks INTERNAL retry publication](https://github.com/flink-gcp/flink-
 
 The digests are the ones the `sha-3a5832b8…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
 The `operator` and `flink` copies kept the creation times of the [BigQuery fault trial publication](#bigquery-fault-trial-publication), because the registry still held those digests.
-The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts: [pins.cue](pins.cue) keeps the BigQuery fault trial publication's lifecycle-tools and smoke pins, because the lifecycle image's inputs are also unchanged between `25260e678` and `3a5832b88` and no Cloud Tasks trial pulls `smoke`; the `cloudtasks-recovery` digest stays a dispatch input verified live.
-Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication must be admitted so that its 90-minute window ends before 2026-10-20T12:17:04Z.
+The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts: [pins.cue](pins.cue) kept the BigQuery fault trial publication's lifecycle-tools and smoke pins, because the lifecycle image's inputs are also unchanged between `25260e678` and `3a5832b88` and no Cloud Tasks trial pulls `smoke`; the `cloudtasks-recovery` digest stays a dispatch input verified live.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication had to be admitted so that its 90-minute window ended before 2026-10-20T12:17:04Z.
 Its `cloudtasks-recovery` image fails a staged commit on a single `CANCELLED` from `CreateTask`, which [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796) made transient; the [Cloud Tasks CANCELLED retry publication](#cloud-tasks-cancelled-retry-publication) below carries that change.
 
 ### Cloud Tasks CANCELLED retry publication
@@ -262,8 +262,46 @@ The [Cloud Tasks CANCELLED retry publication](https://github.com/flink-gcp/flink
 
 The digests are the ones the `sha-526a186f…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; the built digests match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
 The `operator` and `flink` copies kept the creation times of the [BigQuery fault trial publication](#bigquery-fault-trial-publication), because the registry still held those digests.
-The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts: [pins.cue](pins.cue) keeps the BigQuery fault trial publication's lifecycle-tools and smoke pins, because the lifecycle image's inputs are also unchanged between `25260e678` and `526a186f0` and no Cloud Tasks trial pulls `smoke`; the `cloudtasks-recovery` digest stays a dispatch input verified live.
-Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication must be admitted so that its 90-minute window ends before 2026-10-20T12:17:04Z.
+The same run republished the lifecycle-tools, smoke, BigQuery and Pub/Sub images, which nothing adopts: [pins.cue](pins.cue) kept the BigQuery fault trial publication's lifecycle-tools and smoke pins, because the lifecycle image's inputs are also unchanged between `25260e678` and `526a186f0` and no Cloud Tasks trial pulls `smoke`; the `cloudtasks-recovery` digest stays a dispatch input verified live.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so a trial from this publication had to be admitted so that its 90-minute window ended before 2026-10-20T12:17:04Z.
+
+### Bigtable recovery publication
+
+The [Bigtable recovery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/39202375380) built main commit `ed422edd40e617b04bfe6ca6af8a6eb7e99e6a8d` on 2026-10-19 UTC, the first after the Bigtable scenario merged, for the trials of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855); its `bigtable-recovery` image is the one every one of those trials names as a dispatch input.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `lifecycle-tools` | `sha256:4602184875c3fa8c2de7a4a609670dc3dc3b6ee851211039c17e718fd1e020bf` | 2026-10-19T05:18:32Z | 2026-10-26T05:18:32Z |
+| `smoke` | `sha256:d3cf553cb06023b97fef07ea128fe0ee603085b265f3154c5819a1da5cb915ae` | 2026-10-19T05:18:54Z | 2026-10-26T05:18:54Z |
+| `bigquery-recovery` | `sha256:a7118fab0f19cf599f183a96c285960d7f79e5ea45281b06dcc36b5976053265` | 2026-10-19T05:19:02Z | 2026-10-26T05:19:02Z |
+| `pubsub-recovery` | `sha256:6ac404667118a23621fd9f5d490531d71894665b031ef306e6a3127f41f5ee0b` | 2026-10-19T05:19:08Z | 2026-10-26T05:19:08Z |
+| `cloudtasks-recovery` | `sha256:bd1e5d2917b3252d7ad49f11b69fb0b7a55e5d3ec516f971026303d40cc15097` | 2026-10-19T05:19:14Z | 2026-10-26T05:19:14Z |
+| `bigtable-recovery` | `sha256:f041f5486adbbe505d98ed112a7bf270f506863c5ad1cafefbcfbfac6cadf2bf` | 2026-10-19T05:19:20Z | 2026-10-26T05:19:20Z |
+
+The digests are the ones the `sha-ed422edd…` tag resolves to, read from GAR afterwards, and match the run log.
+The `operator` and `flink` copies kept the creation times of the [BigQuery fault trial publication](#bigquery-fault-trial-publication), because the registry still held those digests.
+The same run republished the lifecycle-tools, smoke, BigQuery, Pub/Sub and Cloud Tasks images, which nothing adopts, so [pins.cue](pins.cue) kept the BigQuery fault trial publication's lifecycle-tools and smoke pins, and no trial could end after 2026-10-20T12:17:04Z; the `bigtable-recovery` digest stays a dispatch input verified live.
+
+### Bigtable rescale-in rerun publication
+
+The [Bigtable rescale-in rerun publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/39449756339) built main commit `5b505786ebcdfd5d7300468e8f1e62edbb816017` on 2026-10-20 UTC for the rescale-in rerun of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855).
+Before it ran, the `operator` and `flink` versions created 2026-10-14T12:17Z were deleted by hand with the owner's approval, as the [BigQuery fault trial publication](#bigquery-fault-trial-publication) did, so both mirrors took fresh creation times.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78` | 2026-10-20T15:54:54Z | 2026-10-27T15:54:54Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-10-20T15:54:56Z | 2026-10-27T15:54:56Z |
+| `lifecycle-tools` | `sha256:2298529af059233d04adfc17ca7c2ad21f63113737c496a589c3f4c522ef91fc` | 2026-10-20T15:55:16Z | 2026-10-27T15:55:16Z |
+| `smoke` | `sha256:774b98d2f0fab8ae960fcb44126437443f82f8448d45dfe602b9c515a3b188dc` | 2026-10-20T15:55:40Z | 2026-10-27T15:55:40Z |
+| `bigquery-recovery` | `sha256:84d974f80d9f8d1a993f7e549629a927b600febbb81df79c95a042e540901c61` | 2026-10-20T15:55:50Z | 2026-10-27T15:55:50Z |
+| `pubsub-recovery` | `sha256:a50736308c8003345cab86a8378356a56e089c4e417e575ac55ac9e0d0649c34` | 2026-10-20T15:55:56Z | 2026-10-27T15:55:56Z |
+| `cloudtasks-recovery` | `sha256:a165ca956fd4dd43b206c3fb6975d08e3a1e5ffed4fb37f432d21521f184c664` | 2026-10-20T15:56:03Z | 2026-10-27T15:56:03Z |
+| `bigtable-recovery` | `sha256:ded86d4c19c7ba15e04040e912fd0ec7a508d65425160140137fe56f1e7575dd` | 2026-10-20T15:56:10Z | 2026-10-27T15:56:10Z |
+
+The digests are the ones the `sha-5b505786…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; the built digests match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
+[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests and cites this run for the recreated `flink` version; the lifecycle image's inputs are unchanged since `25260e678`.
+Nothing adopts this run's recovery application images: the Bigtable rerun keeps `f041f548…`, so all four Bigtable trials run one application image.
+Dispatch refuses an image unless the run's window ends a day before eligibility, so every run, which checks the `operator` mirror, the lifecycle-tools pin and its application or smoke image, must end before 2026-10-26T15:54:54Z, and one whose application image is older before that image's own bound: a Bigtable trial, which pulls `f041f548…`, must end before 2026-10-25T05:19:20Z.
 
 For a shell or Docker build argument, read a pin with:
 
