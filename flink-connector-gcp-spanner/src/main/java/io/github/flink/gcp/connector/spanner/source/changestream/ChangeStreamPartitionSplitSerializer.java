@@ -127,15 +127,14 @@ public final class ChangeStreamPartitionSplitSerializer
         }
     }
 
-    private static void writeNullableInstant(DataOutputSerializer out, Instant instant)
-            throws IOException {
+    static void writeNullableInstant(DataOutputSerializer out, Instant instant) throws IOException {
         out.writeBoolean(instant != null);
         if (instant != null) {
             writeInstant(out, instant);
         }
     }
 
-    private static Instant readNullableInstant(DataInputDeserializer in) throws IOException {
+    static Instant readNullableInstant(DataInputDeserializer in) throws IOException {
         return in.readBoolean() ? readInstant(in) : null;
     }
 

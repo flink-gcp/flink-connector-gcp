@@ -98,6 +98,7 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                         SpannerConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                        SpannerConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
                         SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK,
@@ -299,6 +300,15 @@ public final class SpannerDynamicTableFactory
             SpannerTableSchemaConverter schema) {
         ScanMode mode = config.get(SpannerConnectorOptions.SCAN_MODE);
         if (mode == ScanMode.BOUNDED) {
+            String boundKey = SpannerConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS.key();
+            if (supplied.containsKey(boundKey)) {
+                throw new ValidationException(
+                        String.format(
+                                "%s is incompatible with %2$s=bounded: it stops a change-stream"
+                                        + " source, while %2$s=bounded selects a batch read of the"
+                                        + " current table. Remove it or set %2$s=change-stream.",
+                                boundKey, SpannerConnectorOptions.SCAN_MODE.key()));
+            }
             rejectChangeStreamOptions(supplied, "scan.mode=bounded");
             return;
         }
@@ -359,6 +369,7 @@ public final class SpannerDynamicTableFactory
                 SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                 SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                 SpannerConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                SpannerConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                 SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
                 SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
                 SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK);

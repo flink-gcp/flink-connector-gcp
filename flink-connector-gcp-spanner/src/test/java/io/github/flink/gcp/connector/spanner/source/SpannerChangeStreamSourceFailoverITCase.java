@@ -93,7 +93,7 @@ class SpannerChangeStreamSourceFailoverITCase extends AbstractSpannerEmulatorITC
                         .heartbeatInterval(Duration.ofSeconds(1))
                         .maxConcurrentQueriesPerSubtask(2)
                         .emulatorEndpoint(emulatorEndpoint())
-                        .endTimestamp(seeded.end)
+                        .boundedTimestamp(seeded.end)
                         .build();
 
         List<Long> ids = new ArrayList<>();

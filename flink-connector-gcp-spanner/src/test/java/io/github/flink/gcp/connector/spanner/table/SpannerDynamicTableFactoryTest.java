@@ -93,6 +93,7 @@ class SpannerDynamicTableFactoryTest {
                     Map.entry("scan.startup.timestamp-millis", "1000"),
                     Map.entry("scan.resume-fallback.mode", "earliest"),
                     Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
+                    Map.entry("scan.bounded.timestamp-millis", "2000"),
                     Map.entry("scan.change-stream.absent-retention-fallback", "3 d"),
                     Map.entry("scan.change-stream.heartbeat-interval", "2 s"),
                     Map.entry("scan.max-concurrent-queries-per-subtask", "4"));
@@ -705,6 +706,39 @@ class SpannerDynamicTableFactoryTest {
     }
 
     @Test
+    void boundsTheChangeStreamSourceAtTheConfiguredTimestamp() {
+        Map<String, String> options = changeStreamOptions("full");
+        options.put("scan.bounded.timestamp-millis", "1767225600000");
+        ScanTableSource dynamic = (ScanTableSource) source(SCHEMA, options);
+        Source<?, ?, ?> runtime =
+                ((SourceProvider)
+                                dynamic.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                        .createSource();
+
+        assertThat(runtime.getBoundedness()).isEqualTo(Boundedness.BOUNDED);
+        assertThat(TestSources.changeStreamConfig(runtimeSource(runtime)).getEndTimestamp())
+                .isEqualTo(Instant.parse("2026-01-01T00:00:00Z"));
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+        assertThat(dynamic).isNotEqualTo(source(SCHEMA, changeStreamOptions("full")));
+    }
+
+    /**
+     * The key's {@code bounded} segment names the change-stream stop, not {@code
+     * scan.mode=bounded}, so the refusal says which one a DDL that combines them has confused.
+     */
+    @Test
+    void explainsTheBoundedSegmentWhenTheBoundIsSetOnABatchRead() {
+        Map<String, String> options = options();
+        options.put("scan.bounded.timestamp-millis", "1767225600000");
+
+        assertThatThrownBy(() -> source(SCHEMA, options))
+                .hasStackTraceContaining(
+                        "scan.bounded.timestamp-millis is incompatible with scan.mode=bounded")
+                .hasStackTraceContaining("it stops a change-stream source")
+                .hasStackTraceContaining("set scan.mode=change-stream");
+    }
+
+    @Test
     void exposesChangeStreamMetadataAndKeepsAppliedAbilityState() {
         SpannerChangeStreamDynamicSource dynamic =
                 (SpannerChangeStreamDynamicSource) source(SCHEMA, changeStreamOptions("full"));
@@ -1036,6 +1070,21 @@ class SpannerDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.max-bytes-per-fetch' is invalid")
                 .hasMessageContaining("maxBytesPerFetch must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenTheBoundLiesOutsideSpannersTimestampRange() {
+        Map<String, String> options = changeStreamOptions("full");
+        options.put("scan.bounded.timestamp-millis", String.valueOf(Long.MAX_VALUE));
+
+        assertThatThrownBy(
+                        () ->
+                                ((ScanTableSource) source(SCHEMA, options))
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.bounded.timestamp-millis' is invalid")
+                .hasMessageContaining("boundedTimestamp must lie within Spanner's TIMESTAMP range");
     }
 
     @Test

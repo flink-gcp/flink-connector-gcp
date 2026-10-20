@@ -71,6 +71,9 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     public static final int DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK = 8;
 
     private static final Duration MIN_HEARTBEAT_INTERVAL = Duration.ofSeconds(1);
+    private static final Instant MIN_SPANNER_TIMESTAMP = Instant.parse("0001-01-01T00:00:00Z");
+    private static final Instant MAX_SPANNER_TIMESTAMP =
+            Instant.parse("9999-12-31T23:59:59.999999999Z");
     private static final Duration MAX_HEARTBEAT_INTERVAL = Duration.ofMinutes(5);
 
     @Nullable private DatabaseDestination database;
@@ -88,7 +91,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     private List<Pattern> columnExcludeList = Collections.emptyList();
     private boolean skipMessagesWithoutChange;
     @Nullable private String serviceAccountKeyFile;
-    @Nullable private Instant endTimestamp;
+    @Nullable private Instant boundedTimestamp;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     @Nullable private SpannerChangeStreamQueryClientFactory queryClientFactory;
@@ -173,6 +176,40 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     public SpannerChangeStreamSourceBuilder<T> resumeFallback(StartPosition resumeFallback) {
         this.resumeFallback =
                 Preconditions.checkNotNull(resumeFallback, "resumeFallback must not be null");
+        return this;
+    }
+
+    /**
+     * Makes the source bounded at a commit timestamp. Optional; unset means the source is
+     * unbounded.
+     *
+     * <p>The bound is inclusive: every partition query, including those of the child partitions the
+     * service reports before the bound, reads the records committed at or before it and then
+     * finishes, and the source finishes once every partition has. A fresh start position, or a
+     * {@link #resumeFallback(StartPosition)}, that resolves to an instant after the bound fails the
+     * source when its coordinator starts.
+     *
+     * <p>The bound belongs to the checkpointed partition ledger: a restore must configure the same
+     * bound, or none for a ledger checkpointed without one, and otherwise fails rather than read to
+     * a bound other than the one configured. A restore whose expired ledger the resume fallback
+     * replaces starts under the configured bound.
+     *
+     * @param boundedTimestamp the last commit timestamp the source reads, within Spanner's {@code
+     *     TIMESTAMP} range of 0001-01-01T00:00:00Z through 9999-12-31T23:59:59.999999999Z
+     * @return this builder
+     */
+    public SpannerChangeStreamSourceBuilder<T> boundedTimestamp(Instant boundedTimestamp) {
+        Preconditions.checkNotNull(boundedTimestamp, "boundedTimestamp must not be null");
+        // Out of range, every partition query would fail on a TaskManager naming neither this
+        // setter nor its Table option.
+        Preconditions.checkArgument(
+                !boundedTimestamp.isBefore(MIN_SPANNER_TIMESTAMP)
+                        && !boundedTimestamp.isAfter(MAX_SPANNER_TIMESTAMP),
+                "boundedTimestamp must lie within Spanner's TIMESTAMP range, %s through %s, but was %s",
+                MIN_SPANNER_TIMESTAMP,
+                MAX_SPANNER_TIMESTAMP,
+                boundedTimestamp);
+        this.boundedTimestamp = boundedTimestamp;
         return this;
     }
 
@@ -378,13 +415,6 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
-    @VisibleForTesting
-    SpannerChangeStreamSourceBuilder<T> endTimestamp(Instant endTimestamp) {
-        this.endTimestamp =
-                Preconditions.checkNotNull(endTimestamp, "endTimestamp must not be null");
-        return this;
-    }
-
     /**
      * Builds the source.
      *
@@ -448,7 +478,7 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                                 columnIncludeList,
                                 columnExcludeList,
                                 skipMessagesWithoutChange),
-                        endTimestamp,
+                        boundedTimestamp,
                         coordinatorFactory,
                         readerFactory));
     }

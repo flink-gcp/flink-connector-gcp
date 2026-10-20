@@ -19,6 +19,9 @@ package io.github.flink.gcp.connector.spanner.source.changestream;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nullable;
+
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -43,13 +46,19 @@ import java.util.TreeSet;
  *
  * <p>The public constructors read the complete-ledger shape written by serializer versions 1 and 2.
  * They validate the historical ledger before compacting it, so corrupt legacy state cannot become
- * an apparently valid proof. The compact constructor validates version 3 directly: split ids and
- * proofs are disjoint, every created dependency is present as a live split or a proof, proofs have
- * a created dependent, and the live graph is acyclic.
+ * an apparently valid proof. The compact constructors validate versions 3 and 4 directly: split ids
+ * and proofs are disjoint, every created dependency is present as a live split or a proof, proofs
+ * have a created dependent, and the live graph is acyclic.
  *
  * <p>The coordinator snapshot factory skips those graph checks because every mutation path has
  * already enforced them. Avoiding a topological sort at each checkpoint keeps snapshot cost
  * proportional to copying the current compact state.
+ *
+ * <p>Version 4 records the bound itself rather than only whether the ledger is bounded, because a
+ * bounded ledger whose every partition has finished holds no partition to carry it, and a restore
+ * must still be able to tell the bound it finished at from the one it is configured with. Earlier
+ * versions recorded only the flag; their bound is read from the partitions that carry one, and is
+ * unknown for a completed version-3 ledger.
  *
  * <p>The source frontier is stored rather than recomputed. A validating path rejects a frontier
  * ahead of any unfinished partition, but restore must replay the value readers actually saw rather
@@ -61,6 +70,7 @@ public final class SpannerChangeStreamEnumeratorState {
     private final List<ChangeStreamPartitionSplit> partitions;
     private final Set<String> finishedParentProofs;
     private final boolean bounded;
+    @Nullable private final Instant boundedTimestamp;
     private final long sourceWatermark;
 
     /** Reads and compacts the complete-ledger shape used by serializer version 1. */
@@ -80,17 +90,43 @@ public final class SpannerChangeStreamEnumeratorState {
             Collection<String> finishedParentProofs,
             boolean bounded,
             long sourceWatermark) {
-        this(partitions, finishedParentProofs, bounded, sourceWatermark, true);
+        this(
+                partitions,
+                finishedParentProofs,
+                bounded,
+                recordedBound(partitions),
+                sourceWatermark,
+                true);
+    }
+
+    /** Reads the compact shape used by serializer version 4, which records the bound itself. */
+    static SpannerChangeStreamEnumeratorState versionFour(
+            Collection<ChangeStreamPartitionSplit> partitions,
+            Collection<String> finishedParentProofs,
+            @Nullable Instant boundedTimestamp,
+            long sourceWatermark) {
+        return new SpannerChangeStreamEnumeratorState(
+                partitions,
+                finishedParentProofs,
+                boundedTimestamp != null,
+                boundedTimestamp,
+                sourceWatermark,
+                true);
     }
 
     /** Copies compact state whose invariants were enforced by coordinator mutation paths. */
     public static SpannerChangeStreamEnumeratorState snapshotOfCoordinatorLedger(
             Collection<ChangeStreamPartitionSplit> partitions,
             Collection<String> finishedParentProofs,
-            boolean bounded,
+            @Nullable Instant boundedTimestamp,
             long sourceWatermark) {
         return new SpannerChangeStreamEnumeratorState(
-                partitions, finishedParentProofs, bounded, sourceWatermark, false);
+                partitions,
+                finishedParentProofs,
+                boundedTimestamp != null,
+                boundedTimestamp,
+                sourceWatermark,
+                false);
     }
 
     private SpannerChangeStreamEnumeratorState(CompactedLegacyState legacy) {
@@ -98,6 +134,7 @@ public final class SpannerChangeStreamEnumeratorState {
                 legacy.partitions,
                 legacy.finishedParentProofs,
                 legacy.bounded,
+                legacy.boundedTimestamp,
                 legacy.sourceWatermark,
                 true);
     }
@@ -106,19 +143,32 @@ public final class SpannerChangeStreamEnumeratorState {
             Collection<ChangeStreamPartitionSplit> partitions,
             Collection<String> finishedParentProofs,
             boolean bounded,
+            @Nullable Instant boundedTimestamp,
             long sourceWatermark,
             boolean validate) {
         Preconditions.checkNotNull(partitions, "partitions must not be null");
         Preconditions.checkNotNull(finishedParentProofs, "finishedParentProofs must not be null");
         if (validate) {
-            validateCompact(partitions, finishedParentProofs, bounded);
+            validateCompact(partitions, finishedParentProofs, bounded, boundedTimestamp);
             validateSourceWatermark(partitions, sourceWatermark);
         }
         this.partitions = Collections.unmodifiableList(new ArrayList<>(partitions));
         this.finishedParentProofs =
                 Collections.unmodifiableSet(new LinkedHashSet<>(finishedParentProofs));
         this.bounded = bounded;
+        this.boundedTimestamp = boundedTimestamp;
         this.sourceWatermark = sourceWatermark;
+    }
+
+    /** The bound a pre-version-4 ledger's partitions carry; a child inherits its parent's. */
+    @Nullable
+    private static Instant recordedBound(Collection<ChangeStreamPartitionSplit> partitions) {
+        for (ChangeStreamPartitionSplit partition : partitions) {
+            if (partition.getEndTimestamp() != null) {
+                return partition.getEndTimestamp();
+            }
+        }
+        return null;
     }
 
     private static CompactedLegacyState compactLegacyLedger(
@@ -144,7 +194,12 @@ public final class SpannerChangeStreamEnumeratorState {
                 }
             }
         }
-        return new CompactedLegacyState(unfinished, finishedParentProofs, bounded, sourceWatermark);
+        return new CompactedLegacyState(
+                unfinished,
+                finishedParentProofs,
+                bounded,
+                recordedBound(partitions),
+                sourceWatermark);
     }
 
     private static long inferredSourceWatermark(Collection<ChangeStreamPartitionSplit> partitions) {
@@ -196,7 +251,8 @@ public final class SpannerChangeStreamEnumeratorState {
     private static void validateCompact(
             Collection<ChangeStreamPartitionSplit> partitions,
             Collection<String> finishedParentProofs,
-            boolean bounded) {
+            boolean bounded,
+            @Nullable Instant boundedTimestamp) {
         Preconditions.checkArgument(
                 bounded || !partitions.isEmpty(),
                 "unbounded compact partition ledger must contain an unfinished partition");
@@ -220,6 +276,13 @@ public final class SpannerChangeStreamEnumeratorState {
                     "compact partition %s boundedness does not match checkpoint flag %s",
                     partition.splitId(),
                     bounded);
+            Preconditions.checkArgument(
+                    boundedTimestamp == null
+                            || boundedTimestamp.equals(partition.getEndTimestamp()),
+                    "compact partition %s ends at %s, not at the checkpointed bound %s",
+                    partition.splitId(),
+                    partition.getEndTimestamp(),
+                    boundedTimestamp);
             for (String parentId : partition.getParentPartitionIds()) {
                 boolean liveParent = partitionsById.containsKey(parentId);
                 boolean finishedProof = proofs.contains(parentId);
@@ -325,6 +388,15 @@ public final class SpannerChangeStreamEnumeratorState {
         return bounded;
     }
 
+    /**
+     * Returns the bound this ledger reads to, or {@code null} when it is unbounded or when a
+     * completed ledger was checkpointed before version 4 recorded the bound.
+     */
+    @Nullable
+    public Instant getBoundedTimestamp() {
+        return boundedTimestamp;
+    }
+
     public long getSourceWatermark() {
         return sourceWatermark;
     }
@@ -339,6 +411,7 @@ public final class SpannerChangeStreamEnumeratorState {
         }
         SpannerChangeStreamEnumeratorState other = (SpannerChangeStreamEnumeratorState) o;
         return bounded == other.bounded
+                && Objects.equals(boundedTimestamp, other.boundedTimestamp)
                 && sourceWatermark == other.sourceWatermark
                 && partitions.equals(other.partitions)
                 && finishedParentProofs.equals(other.finishedParentProofs);
@@ -346,7 +419,8 @@ public final class SpannerChangeStreamEnumeratorState {
 
     @Override
     public int hashCode() {
-        return Objects.hash(partitions, finishedParentProofs, bounded, sourceWatermark);
+        return Objects.hash(
+                partitions, finishedParentProofs, bounded, boundedTimestamp, sourceWatermark);
     }
 
     private static final class CompactedLegacyState {
@@ -354,16 +428,19 @@ public final class SpannerChangeStreamEnumeratorState {
         private final List<ChangeStreamPartitionSplit> partitions;
         private final Set<String> finishedParentProofs;
         private final boolean bounded;
+        @Nullable private final Instant boundedTimestamp;
         private final long sourceWatermark;
 
         private CompactedLegacyState(
                 List<ChangeStreamPartitionSplit> partitions,
                 Set<String> finishedParentProofs,
                 boolean bounded,
+                @Nullable Instant boundedTimestamp,
                 long sourceWatermark) {
             this.partitions = partitions;
             this.finishedParentProofs = finishedParentProofs;
             this.bounded = bounded;
+            this.boundedTimestamp = boundedTimestamp;
             this.sourceWatermark = sourceWatermark;
         }
     }

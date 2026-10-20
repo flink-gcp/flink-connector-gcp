@@ -195,7 +195,7 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
                         .heartbeatInterval(Duration.ofSeconds(1))
                         .maxConcurrentQueriesPerSubtask(2)
                         .emulatorEndpoint(emulatorEndpoint())
-                        .endTimestamp(end);
+                        .boundedTimestamp(end);
         configure.accept(builder);
         SpannerChangeStreamSource<DataChangeRecord> source = builder.build();
 

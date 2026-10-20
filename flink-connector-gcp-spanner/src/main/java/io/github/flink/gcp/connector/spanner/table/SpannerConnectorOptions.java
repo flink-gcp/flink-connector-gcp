@@ -218,6 +218,17 @@ public final class SpannerConnectorOptions {
                     .withDescription(
                             "The Unix epoch timestamp in milliseconds used with scan.resume-fallback.mode=timestamp.");
 
+    /**
+     * The Unix epoch timestamp in milliseconds of the last commit a change-stream source reads
+     * before it finishes; requires scan.mode=change-stream.
+     */
+    public static final ConfigOption<Long> SCAN_BOUNDED_TIMESTAMP_MILLIS =
+            ConfigOptions.key("scan.bounded.timestamp-millis")
+                    .longType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Unix epoch timestamp in milliseconds of the last commit a change-stream source reads before it finishes; requires scan.mode=change-stream.");
+
     /** The retention assumed when the change stream has no explicit retention option. */
     public static final ConfigOption<Duration> SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK =
             ConfigOptions.key("scan.change-stream.absent-retention-fallback")

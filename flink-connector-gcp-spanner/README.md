@@ -2,7 +2,8 @@
 
 Cloud Spanner connector for Apache Flink. The sink applies one `Mutation` per record through
 `batchWriteAtLeastOnce` into the tables of one database; the bounded source reads a database at one
-snapshot, on partitions the service planned; and the unbounded source reads a Change Stream.
+snapshot, on partitions the service planned; and the Change Streams source reads a Change Stream,
+unbounded or up to a commit timestamp.
 Both dialects, GoogleSQL and PostgreSQL.
 
 | Feature | Status |
@@ -13,6 +14,7 @@ Both dialects, GoogleSQL and PostgreSQL.
 | Emulator integration tests, both dialects | Implemented ([#220](https://github.com/flink-gcp/flink-connector-gcp/issues/220)) |
 | DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/flink-gcp/flink-connector-gcp/issues/221)) |
 | DataStream Change Streams source, both dialects, including real-GCP recovery acceptance | Implemented ([#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534), [#536](https://github.com/flink-gcp/flink-connector-gcp/issues/536), [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535)) |
+| Bounded Change Streams read up to a commit timestamp, DataStream and Table API | Implemented ([#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842)) |
 | Table API / SQL sink, native type mapping, and DDL factory | Implemented ([#502](https://github.com/flink-gcp/flink-connector-gcp/issues/502)) |
 | Table API / SQL bounded scan and projection | Implemented ([#503](https://github.com/flink-gcp/flink-connector-gcp/issues/503)) |
 | Table API / SQL lookup source | Implemented ([#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504)) |

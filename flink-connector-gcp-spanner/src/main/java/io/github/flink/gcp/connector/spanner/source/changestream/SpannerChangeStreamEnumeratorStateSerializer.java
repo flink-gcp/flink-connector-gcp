@@ -20,8 +20,10 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
+import org.apache.flink.util.Preconditions;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,7 +32,7 @@ import java.util.List;
 public final class SpannerChangeStreamEnumeratorStateSerializer
         implements SimpleVersionedSerializer<SpannerChangeStreamEnumeratorState> {
 
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final int INITIAL_BUFFER_SIZE = 4096;
 
     @Override
@@ -40,8 +42,13 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
 
     @Override
     public byte[] serialize(SpannerChangeStreamEnumeratorState state) throws IOException {
+        // Only a completed version-3 ledger has a bound it cannot name, and the coordinator never
+        // snapshots one: it restores under the configured bound and checkpoints that.
+        Preconditions.checkArgument(
+                !state.isBounded() || state.getBoundedTimestamp() != null,
+                "a bounded Spanner change-stream ledger must name its bound to be written");
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
-        out.writeBoolean(state.isBounded());
+        ChangeStreamPartitionSplitSerializer.writeNullableInstant(out, state.getBoundedTimestamp());
         out.writeInt(state.getPartitions().size());
         for (ChangeStreamPartitionSplit partition : state.getPartitions()) {
             ChangeStreamPartitionSplitSerializer.writeSplit(out, partition);
@@ -57,7 +64,7 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
     @Override
     public SpannerChangeStreamEnumeratorState deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != 1 && version != 2 && version != VERSION) {
+        if (version < 1 || version > VERSION) {
             throw new IOException(
                     "Unsupported Spanner change-stream enumerator state serialization version "
                             + version
@@ -66,15 +73,22 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
                             + ".");
         }
         DataInputDeserializer in = new DataInputDeserializer(serialized);
-        if (version == VERSION) {
-            return deserializeVersionThree(in);
+        if (version >= 3) {
+            return deserializeCompact(version, in);
         }
         return deserializeLegacy(version, in);
     }
 
-    private static SpannerChangeStreamEnumeratorState deserializeVersionThree(
-            DataInputDeserializer in) throws IOException {
-        boolean bounded = in.readBoolean();
+    private static SpannerChangeStreamEnumeratorState deserializeCompact(
+            int version, DataInputDeserializer in) throws IOException {
+        boolean bounded;
+        Instant boundedTimestamp = null;
+        if (version == 3) {
+            bounded = in.readBoolean();
+        } else {
+            boundedTimestamp = ChangeStreamPartitionSplitSerializer.readNullableInstant(in);
+            bounded = boundedTimestamp != null;
+        }
         int count = ChangeStreamPartitionSplitSerializer.readCount(in, "partition");
         List<ChangeStreamPartitionSplit> partitions = new ArrayList<>(Math.min(count, 1024));
         for (int i = 0; i < count; i++) {
@@ -87,8 +101,11 @@ public final class SpannerChangeStreamEnumeratorStateSerializer
             finishedParentProofs.add(in.readUTF());
         }
         try {
-            return new SpannerChangeStreamEnumeratorState(
-                    partitions, finishedParentProofs, bounded, in.readLong());
+            return version == 3
+                    ? new SpannerChangeStreamEnumeratorState(
+                            partitions, finishedParentProofs, bounded, in.readLong())
+                    : SpannerChangeStreamEnumeratorState.versionFour(
+                            partitions, finishedParentProofs, boundedTimestamp, in.readLong());
         } catch (RuntimeException e) {
             throw new IOException("Corrupt Spanner change-stream enumerator state.", e);
         }
