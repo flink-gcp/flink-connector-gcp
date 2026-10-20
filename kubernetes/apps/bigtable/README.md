@@ -118,8 +118,9 @@ Its kind names the fault that makes it a trial of its own:
 | `rescale-in` | Rescales the job | The JobManager | 2, 1 |
 
 The change-stream end is 3,900 seconds after the window's start, so dispatch derives it from the window and the trial carries it.
-The input begins within the 1,200 seconds the exercise allows and runs 1,800 seconds, and each recovery pauses it for a minute or two, so the input finishes before the end with room to spare.
-The job then finishes at the end, which leaves the table reads 540 seconds, up to a minute before the cleanup start.
+The input begins within the 1,200 seconds the exercise allows and runs 1,800 seconds, and each recovery pauses it for up to the exercise's 600-second recovery budget.
+In the usable trials the input finished 1,250 to 1,485 seconds before the end, but a trial whose input starts late and whose recoveries both run long can finish past it, and its relay is then unjudged rather than judged on a partial stream.
+The job then finishes at the end, which leaves the table reads 540 seconds, up to a minute before the cleanup start; a job whose input finishes past the end finishes with the input and leaves them less.
 A partition the connector is still reconciling at the end holds the job past it, as [the graph](#graph-and-what-each-table-records) describes, and a job held past the cleanup start ends the run without a verdict.
 Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
 

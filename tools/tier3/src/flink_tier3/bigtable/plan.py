@@ -37,9 +37,12 @@ ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 INPUT = {"records": 180000, "records_per_second": 100}
 # Where the change-stream source stops, from the window's start. The input
 # starts within `input_seconds` and runs for 30 minutes, 3,000 seconds in all,
-# and each recovery pauses it for a minute or two; the job finishes at the end,
-# and the oracles' `visibility_seconds` then fit before the cleanup start at
-# 4,500 seconds.
+# and each recovery pauses it for up to `recovery_seconds`; the job finishes at
+# the end, and the oracles' `visibility_seconds` then fit before the cleanup
+# start at 4,500 seconds. In the usable trials the input finished 1,250 to
+# 1,485 seconds before the end; one that starts late and has two slow
+# recoveries can finish past it, which leaves the relay unjudged and the
+# job, finishing with the input, less time for the oracles' reads.
 CHANGE_STREAM_END_SECONDS = 3900
 REVIEWED_AT = "2026-10-18T00:00:00Z"
 # A one-node SSD cluster in us-central1, billed by the hour: the 90-minute
