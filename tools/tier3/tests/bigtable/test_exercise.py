@@ -135,3 +135,8 @@ def test_an_input_finished_too_close_to_the_change_streams_end_is_unjudged(exerc
     record = value.env.refresh().recovery
     assert record["reasons"] == ["relay-oracle-unjudged"]
     assert record["outcomes"]["oracles"]["relay"]["verdict"] == "pass"
+
+
+def test_a_taskmanager_replacement_restarts_both_pipelines():
+    """The input with both sinks, and the relay; one would read bt1855-tm-a5's second restore as unplanned."""
+    assert BigtableExercise.failover_regions == 2
