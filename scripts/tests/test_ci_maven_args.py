@@ -430,6 +430,7 @@ def test_full_mode_builds_everything(ci_maven_args):
         "run_tier3_cloudtasks": "true",
         "run_tier3_bigquery": "true",
         "run_tier3_bigtable": "true",
+        "run_tier3_spanner": "true",
         "run_tier3_pubsub": "true",
     }
     # Two lanes, and between them every module and every NOTICE the single-lane
@@ -652,6 +653,7 @@ def test_ignored_only_skips_the_build(ci_maven_args):
         "run_tier3_cloudtasks": "false",
         "run_tier3_bigquery": "false",
         "run_tier3_bigtable": "false",
+        "run_tier3_spanner": "false",
         "run_tier3_pubsub": "false",
         "run_build": "false",
         "lanes": "[]",
@@ -982,6 +984,39 @@ def test_bigtable_application_and_its_dependencies_select_its_build(
 )
 def test_unrelated_changes_do_not_select_bigtable_application(ci_maven_args, path):
     assert not ci_maven_args.requires_tier3_bigtable([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/spanner/pom.xml",
+        "kubernetes/apps/spanner/src/main/java/Job.java",
+        "flink-connector-gcp-spanner/src/main/java/Writer.java",
+        "flink-connector-gcp-base/src/main/java/Rpc.java",
+        "flink-connector-gcp-test-utils/pom.xml",
+        "pom.xml",
+        "justfile",
+        "mise.toml",
+        ".mvn/wrapper/maven-wrapper.properties",
+        ".github/workflows/verify.yaml",
+        "tools/maven/checkstyle.xml",
+    ],
+)
+def test_spanner_application_and_its_dependencies_select_its_build(ci_maven_args, path):
+    assert ci_maven_args.requires_tier3_spanner([path])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "kubernetes/apps/bigtable/pom.xml",
+        "flink-connector-gcp-bigtable/src/main/java/Writer.java",
+        "opentofu/tier3-bootstrap/bigtable.tf",
+        "docs/adr/example.md",
+    ],
+)
+def test_unrelated_changes_do_not_select_spanner_application(ci_maven_args, path):
+    assert not ci_maven_args.requires_tier3_spanner([path])
 
 
 @pytest.mark.parametrize(

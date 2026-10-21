@@ -118,6 +118,7 @@ Output of the three classification modes, one `$GITHUB_OUTPUT`-style line each:
   run_tier3_pubsub=true|false selects the opt-in Pub/Sub recovery application.
   run_tier3_bigquery=true|false selects the opt-in BigQuery recovery application.
   run_tier3_bigtable=true|false selects the opt-in Bigtable recovery application.
+  run_tier3_spanner=true|false selects the opt-in Spanner recovery application.
   run_tier3_smoke=true|false   selects the opt-in smoke application for its own
                           inputs and shared build inputs; --full selects it too.
   lanes=<json array>      the build matrix: one object per lane, each with a
@@ -222,7 +223,7 @@ def requires_tier3_application(files: list[str], application: str) -> bool:
         ".github/maven/",
         "tools/maven/",
     )
-    if application in ("cloudtasks", "bigquery", "bigtable", "pubsub"):
+    if application in ("cloudtasks", "bigquery", "bigtable", "spanner", "pubsub"):
         prefixes += (
             f"flink-connector-gcp-{application}/",
             "flink-connector-gcp-base/",
@@ -249,6 +250,10 @@ def requires_tier3_bigquery(files: list[str]) -> bool:
 
 def requires_tier3_bigtable(files: list[str]) -> bool:
     return requires_tier3_application(files, "bigtable")
+
+
+def requires_tier3_spanner(files: list[str]) -> bool:
+    return requires_tier3_application(files, "spanner")
 
 
 # ...except the inputs of the one checker whose CI step the deriver can switch
@@ -492,6 +497,7 @@ def main() -> None:
         print("run_tier3_cloudtasks=true")
         print("run_tier3_bigquery=true")
         print("run_tier3_bigtable=true")
+        print("run_tier3_spanner=true")
         print("run_tier3_pubsub=true")
         emit(
             run_build=True,
@@ -509,6 +515,7 @@ def main() -> None:
     )
     print(f"run_tier3_bigquery={'true' if requires_tier3_bigquery(files) else 'false'}")
     print(f"run_tier3_bigtable={'true' if requires_tier3_bigtable(files) else 'false'}")
+    print(f"run_tier3_spanner={'true' if requires_tier3_spanner(files) else 'false'}")
     fetch = any(moves_a_licence_source(f.strip().lstrip("/")) for f in files)
     ignored, selected, root_only, everything = classify(files, modules)
     print(

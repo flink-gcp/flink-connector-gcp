@@ -41,7 +41,9 @@ jobs:
   publish:
     if: github.repository_id == '1305440656' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Six application verifications, each building its connector with -am, bring the job to
+    # about 28 minutes; this leaves room for a slow runner.
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -103,6 +105,9 @@ jobs:
 
       - name: Verify the Bigtable recovery payload
         run: just tier3-bigtable-verify
+
+      - name: Verify the Spanner recovery payload
+        run: just tier3-spanner-verify
 
       - name: Export the locked lifecycle dependencies
         run: just tier3-lifecycle-requirements
@@ -236,6 +241,24 @@ jobs:
           tags: ${{ steps.bigtable_meta.outputs.tags }}
           labels: ${{ steps.bigtable_meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: spanner_meta
+        with:
+          images: ${{ env.GAR }}/spanner-recovery
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: spanner_build
+        with:
+          context: kubernetes/apps/spanner
+          platforms: linux/amd64
+          build-args: |
+            FLINK_IMAGE=${{ steps.recovery_base.outputs.image }}
+            FLINK_VERSION=2.2.1
+          push: true
+          tags: ${{ steps.spanner_meta.outputs.tags }}
+          labels: ${{ steps.spanner_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
@@ -245,6 +268,7 @@ jobs:
           PUBSUB_DIGEST: ${{ steps.pubsub_build.outputs.digest }}
           CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
           BIGTABLE_DIGEST: ${{ steps.bigtable_build.outputs.digest }}
+          SPANNER_DIGEST: ${{ steps.spanner_build.outputs.digest }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
@@ -258,4 +282,5 @@ jobs:
             printf '%s/pubsub-recovery@%s\n' "$GAR" "$PUBSUB_DIGEST"
             printf '%s/cloudtasks-recovery@%s\n' "$GAR" "$CLOUDTASKS_DIGEST"
             printf '%s/bigtable-recovery@%s\n' "$GAR" "$BIGTABLE_DIGEST"
+            printf '%s/spanner-recovery@%s\n' "$GAR" "$SPANNER_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"

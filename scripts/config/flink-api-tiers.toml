@@ -216,14 +216,15 @@ sources that emit generalized watermarks."""
 
 [experimental."org.apache.flink.connector.datagen.source.DataGeneratorSource"]
 reason = """
-The input of the smoke, BigQuery recovery, Cloud Tasks and Bigtable recovery jobs
-(kubernetes/apps/{smoke,bigquery,cloudtasks,bigtable}): a bounded, checkpointed,
-rate-limited sequence. The rate is what the Cloud Tasks and BigQuery campaigns offer
-and measure, and what spreads the smoke run and the Bigtable recovery trials across
-their planned disruptions. The @Public NumberSequenceSource has no rate control, so
-replacing it means writing a rate-limited source. A Flink change that breaks it
-surfaces in that module's just tier3-*-verify lane, which CI selects on any change to
-the module or the root pom, and the job adapts there."""
+The input of the smoke, BigQuery recovery, Cloud Tasks, Bigtable and Spanner recovery
+jobs (kubernetes/apps/{smoke,bigquery,cloudtasks,bigtable,spanner}): a bounded,
+checkpointed, rate-limited sequence. The rate is what the Cloud Tasks and BigQuery
+campaigns offer and measure, and what spreads the smoke run and the Bigtable and
+Spanner recovery trials across their planned disruptions. The @Public
+NumberSequenceSource has no rate control, so replacing it means writing a rate-limited
+source. A Flink change that breaks it surfaces in that module's just tier3-*-verify
+lane, which CI selects on any change to the module or the root pom, and the job adapts
+there."""
 
 [experimental."org.apache.flink.connector.datagen.source.GeneratorFunction"]
 reason = """

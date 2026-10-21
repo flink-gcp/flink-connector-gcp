@@ -94,7 +94,7 @@ The lifecycle stage must export evidence before cleanup and keep the run within 
 
 Merge the reviewed application/identity change and verify the GCP and bootstrap CI applies and empty refreshed plans before publishing.
 Review the exact new bucket/GSA and the publication scope before approving those operations.
-Publication uses the existing serialized, main-only workflow with its 30-minute timeout and seven-day GAR cleanup policy.
+Publication uses the existing serialized, main-only workflow with its 45-minute timeout and seven-day GAR cleanup policy.
 After a successful publication, verify the recorded smoke digest in GAR and adopt it with concrete run IDs and expiries in a separate reviewed delivery change.
 Do not insert a stand-in digest or create `ci.cue` to make a delivery render before publication.
 
