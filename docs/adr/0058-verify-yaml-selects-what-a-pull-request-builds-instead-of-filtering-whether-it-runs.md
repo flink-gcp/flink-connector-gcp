@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-02 ([#243]; the root-only class added the same day, [#253]); revised by
-  [#1095] (2026-08-23)
-- Issues: [#243], [#253], [#1095]
+  [#1095] (2026-08-23); revised by [#1887] (2026-10-22)
+- Issues: [#243], [#253], [#1095], [#1887]
 - Modules: all (CI)
 - Current behavior: `scripts/ci-maven-args.py` (its docstring is the specification)
 
@@ -51,7 +51,8 @@ workflow-level filter. The pieces:
   blocked and a tofu-only merge stays free. The list: `opentofu/**`, the tofu workflows,
   `**/README.md` / `**/CLAUDE.md` — the last two only because apache-rat's exclude list
   already carries exactly those patterns, so no licence-header check is lost — plus
-  everything under `.github/` that is **not** a workflow or a composite action (templates,
+  everything under `.github/` that is **not** a workflow, a composite action or the CI Maven
+  settings under `.github/maven/` (templates,
   CODEOWNERS, `dependabot.yml`; a rule, not a list, so a new template needs no edit). The two
   copies are no longer identical: the push list names inert `.github/` files individually
   (today, the PR template) rather than mirroring the rule, because GitHub's `!` negation in
@@ -158,6 +159,7 @@ workflow-level filter. The pieces:
 [#243]: https://github.com/flink-gcp/flink-connector-gcp/issues/243
 [#249]: https://github.com/flink-gcp/flink-connector-gcp/issues/249
 [#1095]: https://github.com/flink-gcp/flink-connector-gcp/issues/1095
+[#1887]: https://github.com/flink-gcp/flink-connector-gcp/issues/1887
 [#253]: https://github.com/flink-gcp/flink-connector-gcp/issues/253
 
 [#453]: https://github.com/flink-gcp/flink-connector-gcp/issues/453

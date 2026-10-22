@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Copyright 2026 The flink-gcp authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<!--
+The CI jobs' Maven settings (issue #1887), passed through MAVEN_ARGS. Maven Central
+answers GitHub-hosted runners with HTTP 429 often enough to fail a lane that changed
+nothing, so every release artifact is read first from Google's mirror of Central. The
+mirror is a repository ahead of Central, not a <mirror> of it: an artifact the mirror
+has not synced yet still resolves from Central. The release workflow does not use
+this file: its Central Portal credentials live in the ~/.m2/settings.xml that
+scripts/write-central-settings.sh writes, which a settings file passed here would replace.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+    <profiles>
+        <profile>
+            <id>google-maven-central</id>
+            <repositories>
+                <repository>
+                    <id>google-maven-central</id>
+                    <url>https://maven-central.storage-download.googleapis.com/maven2/</url>
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+                </repository>
+            </repositories>
+            <pluginRepositories>
+                <pluginRepository>
+                    <id>google-maven-central</id>
+                    <url>https://maven-central.storage-download.googleapis.com/maven2/</url>
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+                </pluginRepository>
+            </pluginRepositories>
+        </profile>
+    </profiles>
+    <activeProfiles>
+        <activeProfile>google-maven-central</activeProfile>
+    </activeProfiles>
+</settings>

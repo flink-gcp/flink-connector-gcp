@@ -20,11 +20,14 @@ limitations under the License.
 - Date: 2026-08-16 (measured 2026-08-16); revised by
   [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) (2026-08-23); revised by
   [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728) (2026-08-31: published-1.0.0
-  verification recorded, and the deferred cache decision resolved by measurement)
+  verification recorded, and the deferred cache decision resolved by measurement); revised by
+  [#1887](https://github.com/flink-gcp/flink-connector-gcp/issues/1887) (2026-10-22: which
+  lanes' references the cache carries)
 - Issues: [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728),
   [#39](https://github.com/flink-gcp/flink-connector-gcp/issues/39),
   [#29](https://github.com/flink-gcp/flink-connector-gcp/issues/29),
-  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783)
+  [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783),
+  [#1887](https://github.com/flink-gcp/flink-connector-gcp/issues/1887)
 - Modules: all
 - Current behavior: `docs/content/_index.md` § API reference
 
@@ -212,9 +215,13 @@ reference with no warning and compared all six connector jars against it, and a 
   measurement (2026-08-31, [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728)):
   the cache's `io/github/flink-gcp` negation never excluded anything — the pinned
   actions/cache resolves paths without implicit descendants and hands `~/.m2/repository` to a
-  recursive tar — so the released reference the lanes download is already saved and restored
-  with the cache, and no verify lane installs anything under the group that the negation
-  would have needed to keep out. The residual exposure is a cache miss coinciding with a
+  recursive tar — so the released reference the saving lane downloads is already saved and
+  restored with the cache, and no verify lane installs anything under the group that the
+  negation would have needed to keep out. Only that lane saves the entry, so the other lanes'
+  references are not in it: measured on
+  [#1888](https://github.com/flink-gcp/flink-connector-gcp/pull/1888), each other lane fetched
+  its own after a restore, through the CI mirror of Central that
+  [#1887](https://github.com/flink-gcp/flink-connector-gcp/issues/1887) added. The residual exposure is a cache miss coinciding with a
   Central outage — in the per-PR lanes and equally in `weekly.yaml`, whose setup-java
   `cache: maven` restores the reference on an exact key hit and re-downloads on a miss;
   accepted.

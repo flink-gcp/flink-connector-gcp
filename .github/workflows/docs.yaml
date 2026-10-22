@@ -113,6 +113,10 @@ jobs:
         working-directory: controller
     env:
       HUGO_CACHEDIR: ${{ github.workspace }}/.hugo_cache
+      # The controller's settings serve every source line, which may predate them:
+      # Maven reads Google's mirror of Central first (issue #1887).
+      MAVEN_ARGS: --settings ${{ github.workspace }}/controller/.github/maven/settings.xml
+      MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -148,7 +152,9 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.m2/wrapper
-          key: maven-docs-${{ hashFiles('source/**/pom.xml') }}
+          # The CI settings move the wrapper's Maven download, whose URL names its directory, so
+          # an entry saved under other settings would never hold the one this run needs.
+          key: maven-docs-${{ hashFiles('source/**/pom.xml', 'controller/.github/maven/settings.xml') }}
           restore-keys: maven-docs-
       - name: Test documentation version rendering
         if: matrix.id == 'development'

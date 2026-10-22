@@ -708,7 +708,8 @@ facts); the rules a session needs:
   on that release's documentation line (ADR-0159). A follow-up PR then bumps the working tree to the next
   `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
   rides the CI Maven cache — measured on #728, the cache archives the whole local repository
-  including it; ADR-0124's revision records why)
+  including it; ADR-0124's revision records why. Measured on #1888, that holds for the saving
+  lane's modules, while each other lane fetches its own reference through the CI mirror)
 - **Releases publish after both Central Portal deployments validate** (ADR-0147, issues #724, #1185):
   `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
   version line on a `vX.Y.Z` tag push, with `workflow_dispatch` as the dry run (bare `X.Y.Z`
@@ -887,6 +888,17 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   `pull_request`-only, since tfaction takes the newest run on the head branch with no event
   filter. When a fresh PR shows "no checks reported", run `gh pr view <n> --json mergeable`
   **first**: a `CONFLICTING` pull request triggers zero `pull_request` runs at all
+- **CI Maven runs read Google's mirror of Central first** (#1887): `.github/maven/settings.xml`
+  adds it as a repository ahead of Central, so an artifact it has not synced still resolves, and
+  every Maven workflow but `release.yaml` (whose Central Portal credentials live in the
+  `~/.m2/settings.xml` that `scripts/write-central-settings.sh` writes, which `--settings` would
+  replace) passes it through `MAVEN_ARGS`, with `MVNW_REPOURL` for the wrapper's own download. A
+  new Maven workflow sets both. **A Maven cache restore lists exactly the saved entry's `path:`
+  lines, negation included**: the cache's version derives from them, and the Tier-3 lanes missed
+  every restore until #1888. The settings file is part of the key, and before a new entry is saved
+  the saving lane runs `just ci-maven-cache-warmup`, which packages the whole reactor and every
+  `tier3-*` profile without tests, so the entry holds every lane's dependencies except the other
+  modules' japicmp references
 - **`pinact.yaml` is deliberately not enrolled in that gate** (ADR-0121), for the reason
   ADR-0058 already gives: it is paths-filtered, and a required check that never reports blocks a
   pull request forever. It reports as its own non-required check

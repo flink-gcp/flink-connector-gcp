@@ -170,11 +170,17 @@ def test_ignored_paths_select_nothing(fake_repo, ci_maven_args, path):
 
 
 @pytest.mark.parametrize(
-    "path", [".github/workflows/ci.yaml", ".github/actions/setup/action.yml"]
+    "path",
+    [
+        ".github/workflows/ci.yaml",
+        ".github/actions/setup/action.yml",
+        ".github/maven/settings.xml",
+    ],
 )
 def test_what_drives_ci_stays_unknown_territory(fake_repo, ci_maven_args, path):
-    # The two directories under .github/ that decide what CI itself does are
-    # the exception to the rule above: a change there is unknown territory.
+    # The directories under .github/ that decide what CI itself does, the CI Maven
+    # settings among them, are the exception to the rule above: a change there is
+    # unknown territory.
     _, selected, root_only, everything = classify(ci_maven_args, [path])
     assert not selected and not root_only
     assert everything == [path]
@@ -955,6 +961,7 @@ def test_unrelated_changes_do_not_select_bigquery_application(ci_maven_args, pat
         "mise.toml",
         ".mvn/wrapper/maven-wrapper.properties",
         ".github/workflows/verify.yaml",
+        ".github/maven/settings.xml",
         "tools/maven/checkstyle.xml",
     ],
 )

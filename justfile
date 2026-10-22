@@ -481,6 +481,12 @@ tier3-cloudtasks-verify:
 tier3-bigquery-verify:
     just verify -P tier3-bigquery -pl kubernetes/apps/bigquery -am clean
 
+# Package the whole reactor and every Tier-3 application without tests, so the CI Maven
+# cache saved after it holds every lane's dependencies (issue #1887). verify.yaml runs it
+# before saving a new entry.
+ci-maven-cache-warmup:
+    profiles="$(sed -n 's#.*<id>\(tier3-[a-z0-9-]*\)</id>.*#\1#p' pom.xml | paste -sd, -)" && test -n "$profiles" && {{ mvn }} -P "$profiles" clean package -DskipTests -Dcheckstyle.skip -Dspotless.check.skip -Drat.skip
+
 # Verify the internal Bigtable recovery application without GCP access.
 tier3-bigtable-verify:
     just verify -P tier3-bigtable -pl kubernetes/apps/bigtable -am clean

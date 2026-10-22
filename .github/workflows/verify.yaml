@@ -50,6 +50,14 @@ on:
 permissions:
   contents: read
 
+# Every Maven run reads Google's mirror of Central first, and the wrapper fetches
+# Maven itself from it: Central rate-limits GitHub-hosted runners (issue #1887).
+# .github/maven/settings.xml says why it is a repository ahead of Central rather
+# than a mirror of it.
+env:
+  MAVEN_ARGS: --settings ${{ github.workspace }}/.github/maven/settings.xml
+  MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
+
 jobs:
   # Decides what the build job runs (issue #243): a pull request builds the
   # modules its changes affect instead of the whole reactor — a full-reactor
@@ -167,9 +175,10 @@ jobs:
       # negation removes nothing. That is currently harmless in both
       # directions: no verify lane installs this group (nothing writes a
       # SNAPSHOT to exclude), and the one thing that does land there — the
-      # released japicmp reference, downloaded from Central during the run —
+      # released japicmp reference, downloaded during the run —
       # is immutable and exactly what ADR-0124's deferred cache decision
-      # wanted kept (issue #728 records the measurement). If a lane ever
+      # wanted kept (issue #728 records the measurement; since #1887 the mirror serves it,
+      # and only the saving lane's own references reach the entry). If a lane ever
       # gains an install step, this negation will not protect it.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: maven_cache
@@ -178,7 +187,7 @@ jobs:
             ~/.m2/repository
             ~/.m2/wrapper
             !~/.m2/repository/io/github/flink-gcp
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
           restore-keys: maven-verify-
 
       # install-action rather than mise: this drops one binary on PATH and
@@ -209,32 +218,6 @@ jobs:
       # so this job is safe to run on any pull request.
       - name: Build and verify
         run: just verify ${{ matrix.lane.args }}
-
-      # The save half of the restore above. `github.ref` is the caller's, so this
-      # is `refs/heads/main` for a push and `refs/pull/N/merge` for a pull
-      # request reaching here through ci.yaml. Skipped on an exact-key hit
-      # because the entry already exists and keys are immutable.
-      # One lane saves, not all of them. The key is shared, so without the index every
-      # lane would race to reserve it on a push to main: four lose with "already
-      # exists", and which lane's downloads end up in the entry is arbitrary. Lane 0
-      # restores the accumulated union through the prefix first, so what it writes back
-      # is that union plus its own additions rather than a slice.
-      #
-      # Not a key per lane, which is the other way to remove the race: each lane restores
-      # the union and would save a near-full copy of it, so five entries of ~428 MiB per
-      # pom hash — against a quota already at 9.6 GiB of 10 GB, which would evict the
-      # docs and toolchain caches to buy nothing.
-      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: >-
-          github.ref == 'refs/heads/main'
-          && strategy.job-index == 0
-          && steps.maven_cache.outputs.cache-hit != 'true'
-        with:
-          path: |
-            ~/.m2/repository
-            ~/.m2/wrapper
-            !~/.m2/repository/io/github/flink-gcp
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
 
       # Holds each shaded module's generated META-INF/NOTICE and pinned licence
       # texts to what Maven resolves for its bundle. A step of its own rather than part of
@@ -303,6 +286,54 @@ jobs:
           && strategy.job-index == 0
         run: just check-notice-sources
 
+      # The entry this lane saves is what every lane and every Tier-3 lane restores, but this lane
+      # builds only its own modules: measured on #1888, the Firestore lane fetched 33 files after a
+      # restore, and the Bigtable and Pub/Sub Tier-3 lanes 25 each. Before saving a new entry, this
+      # lane therefore also packages the whole reactor and every Tier-3 application without tests,
+      # which resolves their compile, test and packaging dependencies (about three minutes locally
+      # against a warm repository, so longer here). Each other lane's japicmp reference, resolved at
+      # verify, still comes through the mirror. It runs last because `clean` removes the targets the
+      # steps above read, and only when the key has no entry: after a pom, wrapper or CI settings
+      # change, or an eviction. A failure here must not redden main, so the save still keeps what
+      # was resolved. Its own timeout leaves room in the job's for the save: a job that reaches
+      # its timeout is cancelled, skipping the save and failing, which continue-on-error does
+      # not prevent.
+      - name: Resolve every module's dependencies for the saved entry
+        if: >-
+          github.ref == 'refs/heads/main'
+          && strategy.job-index == 0
+          && steps.maven_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        timeout-minutes: 15
+        run: just ci-maven-cache-warmup
+
+      # The save half of the restore above. `github.ref` is the caller's, so this
+      # is `refs/heads/main` for a push and `refs/pull/N/merge` for a pull
+      # request reaching here through ci.yaml. Skipped on an exact-key hit
+      # because the entry already exists and keys are immutable.
+      # One lane saves, not all of them. The key is shared, so without the index every
+      # lane would race to reserve it on a push to main: four lose with "already
+      # exists", and which lane's downloads end up in the entry is arbitrary. Lane 0
+      # restores the accumulated union through the prefix first, so what it writes back
+      # is that union plus its own additions and the step above's, rather than a slice.
+      #
+      # Not a key per lane, which is the other way to remove the race: each lane restores
+      # the union and would save a near-full copy of it, so six entries of ~600 MiB (593 MiB
+      # measured on #1887) per key — against the 10 GB quota, which would evict the docs and
+      # toolchain caches to buy nothing. The CI Maven settings are part of the key because
+      # they decide which repository an entry's artifacts are recorded under.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: >-
+          github.ref == 'refs/heads/main'
+          && strategy.job-index == 0
+          && steps.maven_cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
+
   # The internal application follows its image runtime, not the connector release matrix.
   tier3_smoke:
     name: Verify Tier-3 smoke application
@@ -320,10 +351,13 @@ jobs:
 
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
+          # The same paths as the saved entry, negation included: the cache's version
+          # is derived from them, so any other list never restores it (issue #1887).
           path: |
             ~/.m2/repository
             ~/.m2/wrapper
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
           restore-keys: maven-verify-
 
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
@@ -352,7 +386,8 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.m2/wrapper
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
           restore-keys: maven-verify-
 
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
@@ -394,7 +429,8 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.m2/wrapper
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
           restore-keys: maven-verify-
 
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
@@ -436,7 +472,8 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.m2/wrapper
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
           restore-keys: maven-verify-
 
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
@@ -478,7 +515,8 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.m2/wrapper
-          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
           restore-keys: maven-verify-
 
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
