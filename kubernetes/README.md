@@ -235,6 +235,7 @@ The [Bigtable recovery application](apps/bigtable/README.md) supplies the one gr
 Build it with `just tier3-bigtable-verify`.
 Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph.
 The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery runs it in the `tier3-bigtable` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf), and the rig scenario of [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/bigtable/README.md#recovery-trial) describes.
+Its four trials each reached `usable`, as the [Bigtable recovery trial findings](../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) record.
 
 ## Pub/Sub recovery application
 
