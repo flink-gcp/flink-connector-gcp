@@ -101,4 +101,14 @@ Progress lines use the `spanner-progress` event in the shape the shared recovery
 The run, instance, input and change-stream end form the trial identity that the restored input state must match; the phase, parallelism and seed pace may change in an upgrade.
 The check runs only while the input is active: once the input has finished, Flink restores its vertex as finished without initializing its state, so a later restore is not checked.
 
-The grants and the deployment definition follow in [#1874](https://github.com/flink-gcp/flink-connector-gcp/issues/1874), the namespace in [#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875), the Operator's watch set in [#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876) and the trial scenario in [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877).
+## Deployment definition
+
+[`pkg/spanner.#Application`](../../pkg/spanner/application.cue) defines the job on Flink 2.2.1 / Java 17, and the [`spanner-recovery`](../../lifecycle/spanner.cue) lifecycle scenario renders its initial and upgrade phases from one input identity.
+The delivery supplies the run ID, image digest, phase, parallelism and change-stream end, and optionally the record count and rate, 180,000 records at 100 per second unless given, and the seed pace, 50 rows per second per reading subtask unless given; the package refuses more than 30 minutes of input.
+It names the instance `sp1360-<run-id>`, which a run ID of the full 40 characters keeps at 47 of Spanner's 64, and passes no emulator endpoint or credentials file.
+
+The deployment runs as the `tier3-spanner/spanner` KSA, which selects the `tier3-spanner` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-spanner.tf) limit it to the `sp1360-` instances.
+Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-spanner/runs/<run-id>/`, deleted one day after creation.
+One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
+Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
+The `tier3-spanner` namespace, its KSA and RBAC follow in [#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875), the Operator's watch set in [#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876), and the rig scenario that creates the instance and its database, seeds it and judges the trial in [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877).
