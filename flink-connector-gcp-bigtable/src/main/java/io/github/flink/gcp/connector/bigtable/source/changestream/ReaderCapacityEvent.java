@@ -20,19 +20,43 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.util.Preconditions;
 
-/** Absolute number of additional partition splits one reader can accept. */
+/** One reader's free read slots, the splits it holds, and the splits it has received. */
 @Internal
 public final class ReaderCapacityEvent implements SourceEvent {
 
     private static final long serialVersionUID = 1L;
     private final int freeSlots;
+    private final int heldSplits;
+    private final long receivedSplits;
 
-    public ReaderCapacityEvent(int freeSlots) {
+    /**
+     * Creates the event.
+     *
+     * @param freeSlots the reads this reader can still open, after its queued splits
+     * @param heldSplits its queued splits plus its active reads that have not seen CloseStream
+     * @param receivedSplits the splits assigned to this reader attempt since it started
+     */
+    public ReaderCapacityEvent(int freeSlots, int heldSplits, long receivedSplits) {
         Preconditions.checkArgument(freeSlots >= 0, "freeSlots must not be negative");
+        Preconditions.checkArgument(heldSplits >= 0, "heldSplits must not be negative");
+        Preconditions.checkArgument(receivedSplits >= 0, "receivedSplits must not be negative");
         this.freeSlots = freeSlots;
+        this.heldSplits = heldSplits;
+        this.receivedSplits = receivedSplits;
     }
 
+    /** The reads this reader can still open, after its queued splits. */
     public int getFreeSlots() {
         return freeSlots;
+    }
+
+    /** Its queued splits plus its active reads that have not seen CloseStream. */
+    public int getHeldSplits() {
+        return heldSplits;
+    }
+
+    /** The splits assigned to this reader attempt since it started. */
+    public long getReceivedSplits() {
+        return receivedSplits;
     }
 }

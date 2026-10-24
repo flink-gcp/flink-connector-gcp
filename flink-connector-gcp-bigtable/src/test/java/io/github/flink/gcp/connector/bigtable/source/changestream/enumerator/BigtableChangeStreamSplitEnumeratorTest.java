@@ -43,6 +43,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -56,10 +57,13 @@ class BigtableChangeStreamSplitEnumeratorTest {
     private static final ByteStringRange LEFT = ByteStringRange.unbounded().endOpen("m");
     private static final ByteStringRange RIGHT = ByteStringRange.unbounded().startClosed("m");
     private static final ByteStringRange WHOLE = ByteStringRange.unbounded();
+    private static final ByteStringRange FIRST = ByteStringRange.unbounded().endOpen("f");
+    private static final ByteStringRange SECOND = ByteStringRange.create("f", "s");
+    private static final ByteStringRange THIRD = ByteStringRange.unbounded().startClosed("s");
 
     @Test
-    void assignsOnlyTheAbsoluteCapacityAdvertisedByAReader() throws Exception {
-        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+    void fillsOnlyFreeSlotsUntilEveryReaderHasReported() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
         BigtableChangeStreamSplitEnumerator enumerator =
                 enumerator(
                         context,
@@ -67,7 +71,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         null);
 
         enumerator.start();
-        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2));
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
         context.runAsyncCalls();
 
         assertThat(context.assignedSplits(0))
@@ -77,18 +81,235 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-2");
 
-        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1));
+        // Subtask 1 has still not reported, so only a slot subtask 0 frees takes the third split.
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 1, 2));
 
         assertThat(context.assignedSplits(0))
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("change-stream-0", "change-stream-1", "change-stream-2");
+        assertThat(context.assignedSplits(1)).isEmpty();
         assertThat(context.counter("changeStreamPartitionsDiscovered")).isEqualTo(3);
         assertThat(context.counter(BigtableMetricNames.SPLITS_ASSIGNED)).isEqualTo(3);
         enumerator.close();
     }
 
     @Test
-    void redistributesRestoredSplitsDeterministicallyWithinReaderCapacity() throws Exception {
+    void aReportOlderThanItsSplitsAddsNoSlots() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT, WHOLE),
+                        null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+
+        // The same report again, sent before the two splits reached the reader, still has them in
+        // flight: they fill the two slots it advertises.
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+
+        assertThat(context.assignedSplits(0)).hasSize(2);
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits()).hasSize(1);
+        enumerator.close();
+    }
+
+    @Test
+    void handsSplitsBeyondItsFreeSlotsToTheOnlyReader() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT, WHOLE, FIRST),
+                        null);
+
+        enumerator.start();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        context.runAsyncCalls();
+
+        // The reader queues the two its open reads cannot take and rotates them in at service
+        // heartbeats; waiting for a free slot would leave them unread while its partitions last.
+        assertThat(context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly(
+                        "change-stream-0", "change-stream-1", "change-stream-2", "change-stream-3");
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
+        assertThat(checkpoint.getUnassignedSplits()).isEmpty();
+        assertThat(checkpoint.getAssignedSplits())
+                .containsExactlyElementsOf(context.assignedSplits(0));
+        assertThat(context.<Long>gauge("unassignedSplits")).isZero();
+        assertThat(context.counter(BigtableMetricNames.SPLITS_ASSIGNED)).isEqualTo(4);
+        enumerator.close();
+    }
+
+    @Test
+    void handsTheExcessToTheReaderHoldingTheFewest() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(
+                                LEFT, RIGHT, WHOLE, FIRST, SECOND, THIRD),
+                        null);
+        enumerator.start();
+        context.runAsyncCalls();
+
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(2, 0, 0));
+
+        // Free slots first: one to subtask 0 and two to subtask 1. The three left then go one at a
+        // time to whichever holds fewer, the lower subtask on a tie.
+        assertThat(context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-0", "change-stream-3", "change-stream-4");
+        assertThat(context.assignedSplits(1))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1", "change-stream-2", "change-stream-5");
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits()).isEmpty();
+        enumerator.close();
+    }
+
+    @Test
+    void weighsTheSplitsEachReaderReportsHolding() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT), null);
+        enumerator.start();
+        context.runAsyncCalls();
+
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0, 5, 0));
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(0, 1, 0));
+
+        assertThat(context.assignedSplits(0)).isEmpty();
+        assertThat(context.assignedSplits(1)).hasSize(2);
+        enumerator.close();
+    }
+
+    @Test
+    void countsTheSplitsAReaderHasNotYetAcknowledged() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(
+                                LEFT, RIGHT, WHOLE, FIRST, SECOND, THIRD),
+                        null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(1, 0, 0));
+        List<ChangeStreamPartitionSplit> lost = context.assignedSplits(1);
+        assertThat(context.assignedSplits(0)).hasSize(3);
+        assertThat(lost).hasSize(3);
+
+        // Subtask 0 reports having received only its first split; the other two are still in
+        // flight to it, so it still holds three when subtask 1 fails and its splits come back.
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0, 1, 1));
+        context.unregisterReader(1);
+        enumerator.addSplitsBack(lost, 1);
+        context.registerReader(1);
+        enumerator.addReader(1);
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(1, 0, 0));
+
+        assertThat(context.assignedSplits(1).subList(3, 6)).containsExactlyElementsOf(lost);
+        assertThat(context.assignedSplits(0)).hasSize(3);
+        enumerator.close();
+    }
+
+    @Test
+    void holdsTheExcessBackWhileAFailedReaderIsAway() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT, WHOLE, FIRST),
+                        null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(2, 0, 0));
+        List<ChangeStreamPartitionSplit> lost = context.assignedSplits(1);
+        assertThat(lost).hasSize(2);
+
+        // Flink unregisters a failed reader before it returns the reader's splits.
+        context.unregisterReader(1);
+        enumerator.addSplitsBack(lost, 1);
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0, 2, 2));
+
+        assertThat(context.assignedSplits(0)).hasSize(2);
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits())
+                .containsExactlyElementsOf(lost);
+
+        // Registered again, but until it reports, its report from before the failure counts for
+        // nothing, so subtask 0's next report still hands nothing out.
+        context.registerReader(1);
+        enumerator.addReader(1);
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0, 2, 2));
+
+        assertThat(context.assignedSplits(0)).hasSize(2);
+
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(2, 0, 0));
+
+        assertThat(context.assignedSplits(1).subList(2, 4)).containsExactlyElementsOf(lost);
+        assertThat(context.assignedSplits(0)).hasSize(2);
+        assertThat(enumerator.snapshotState(2).getUnassignedSplits()).isEmpty();
+        enumerator.close();
+    }
+
+    @Test
+    void aFailedAttemptsReportDeferredByInitializationIsNotReplayedForTheNextOne()
+            throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT, WHOLE, FIRST),
+                        null);
+        enumerator.start();
+
+        // Subtask 0's first attempt reports and fails, and its next attempt registers and reports,
+        // all before initialization finishes; subtask 1 never reports.
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        context.unregisterReader(0);
+        enumerator.addSplitsBack(Collections.emptyList(), 0);
+        context.registerReader(0);
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        context.runAsyncCalls();
+
+        // Replayed, the failed attempt's report would fill two slots the next attempt does not
+        // have, ahead of the excess subtask 1 has yet to report for.
+        assertThat(context.assignedSplits(0)).hasSize(2);
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits()).hasSize(2);
+        enumerator.close();
+    }
+
+    @Test
+    void handsAFullReaderTheSuccessorsOfItsSplit() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0, 1, 1));
+
+        enumerator.handleSourceEvent(
+                0, transition(parent, successor(LEFT, "left"), successor(RIGHT, "right")));
+
+        assertThat(context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::getPartition)
+                .containsExactly(WHOLE, LEFT, RIGHT);
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
+        assertThat(checkpoint.getUnassignedSplits()).isEmpty();
+        assertThat(checkpoint.getAssignedSplits())
+                .extracting(ChangeStreamPartitionSplit::getPartition)
+                .containsExactly(LEFT, RIGHT);
+        enumerator.close();
+    }
+
+    @Test
+    void redistributesReturnedSplitsDeterministically() throws Exception {
         Instant recent = Instant.now().minus(Duration.ofMinutes(1));
         ChangeStreamPartitionSplit first = restoredSplit("change-stream-7", LEFT, recent);
         ChangeStreamPartitionSplit second = restoredSplit("change-stream-8", RIGHT, recent);
@@ -109,9 +330,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
 
         enumerator.addSplitsBack(Arrays.asList(first, second, third, fourth), 0);
-        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1));
-        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(2));
-        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1));
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(2, 0, 0));
 
         assertThat(context.assignedSplits(0)).containsExactly(first, fourth);
         assertThat(context.assignedSplits(1)).containsExactly(second, third);
@@ -188,7 +408,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.handleSplitRequest(0, "localhost");
         enumerator.handleSplitRequest(0, "localhost");
         ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
-        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0));
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(0, 1, 1));
 
         enumerator.handleSourceEvent(
                 0,
@@ -197,9 +417,12 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         parent.getLowWatermark(),
                         Arrays.asList(successor(LEFT, "left"), successor(RIGHT, "right"))));
 
-        assertThat(context.assignedSplits(0)).containsExactly(parent);
+        // Where the children went is the assignment policy's business; that both exist at once,
+        // each with its own token, is this test's.
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(2);
         List<ChangeStreamPartitionSplit> children =
-                enumerator.snapshotState(2).getUnassignedSplits();
+                new ArrayList<>(checkpoint.getUnassignedSplits());
+        children.addAll(checkpoint.getAssignedSplits());
         assertThat(children)
                 .extracting(ChangeStreamPartitionSplit::getPartition)
                 .containsExactlyInAnyOrder(LEFT, RIGHT);
@@ -207,8 +430,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 .flatExtracting(ChangeStreamPartitionSplit::getContinuationTokens)
                 .extracting(ChangeStreamContinuationToken::getToken)
                 .containsExactlyInAnyOrder("left", "right");
-        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(2L);
-        assertThat(enumerator.snapshotState(2).getPendingMerges()).isEmpty();
+        assertThat(checkpoint.getPendingMerges()).isEmpty();
         assertThat(context.counter("changeStreamPartitionsDiscovered")).isEqualTo(3);
         assertThat(context.counter("changeStreamPartitionSplits")).isEqualTo(2);
         assertThat(context.counter("changeStreamPartitionMerges")).isZero();
@@ -435,8 +657,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
         ChangeStreamPartitionSplit assigned = context.assignedSplits(0).get(0);
-        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1));
-        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(1));
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(1, 1, 1));
+        enumerator.handleSourceEvent(1, new ReaderCapacityEvent(1, 0, 0));
 
         enumerator.addSplitsBack(Collections.singletonList(assigned), 0);
 

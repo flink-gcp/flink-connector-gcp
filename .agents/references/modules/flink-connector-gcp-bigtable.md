@@ -546,8 +546,12 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   deserialization under the explicit skip flag, while both paths advance token and low-watermark
   state and report removed entries (#586).
 - **Concurrency is a reader-subtask bound, not a service quota** (`docs/adr/0103`). The enumerator
-  assigns the absolute free-slot count a reader advertises; the reader keeps excess restored or
-  successor splits in FIFO order and rotates at emitted heartbeats. Each active read has at most
+  fills the free slots a reader advertises, then, once every subtask has reported, hands every
+  split still left to the reader holding the fewest (#1893), because a split waiting for a free
+  slot would not be read while the readers' partitions stay stable. A report can predate splits
+  already sent, so the reader also reports the splits its attempt has received and the
+  enumerator counts the rest as in flight. The reader keeps every split beyond its bound in FIFO
+  order and rotates at emitted heartbeats. Each active read has at most
   one outstanding response, and the shared handover queue has the same bound as active reads.
   Remove a response before requesting the next one, and keep the physical read slot occupied until
   a cancelled RPC actually terminates. The five-second heartbeat that paces those rotations is an

@@ -74,7 +74,7 @@ class BigtableChangeStreamReaderTest {
         reader = reader(2);
         reader.start();
 
-        assertThat(capacities()).containsExactly(2);
+        assertThat(capacities()).containsExactly("2 free, 0 held, 0 received");
 
         reader.addSplits(Arrays.asList(split("first"), split("second"), split("queued")));
 
@@ -84,7 +84,8 @@ class BigtableChangeStreamReaderTest {
         assertThat(counter("changeStreamReadsStarted")).isEqualTo(2);
         assertThat(gauge("activeChangeStreamReads")).isEqualTo(2);
         assertThat(gauge("queuedChangeStreamPartitions")).isEqualTo(1);
-        assertThat(capacities()).containsExactly(2, 0);
+        assertThat(capacities())
+                .containsExactly("2 free, 0 held, 0 received", "0 free, 3 held, 3 received");
         assertThat(reader.snapshotState(1L))
                 .extracting(ChangeStreamPartitionSplit::splitId)
                 .containsExactly("first", "second", "queued");
@@ -145,6 +146,34 @@ class BigtableChangeStreamReaderTest {
                 .singleElement()
                 .extracting(token -> token.getToken())
                 .isEqualTo("first-heartbeat");
+    }
+
+    @Test
+    void rotatesASplitAssignedAfterStartIntoAFullReader() throws Exception {
+        reader = reader(1);
+        reader.start();
+        reader.addSplits(Collections.singletonList(split("first")));
+        reader.addSplits(Collections.singletonList(split("beyond")));
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+
+        assertThat(opener.openedSplitIds()).containsExactly("first");
+        assertThat(capacities())
+                .containsExactly(
+                        "1 free, 0 held, 0 received",
+                        "0 free, 1 held, 1 received",
+                        "0 free, 2 held, 2 received");
+
+        opener.deliver(
+                0,
+                TestChangeStreamRecords.heartbeat(
+                        Instant.parse("2026-08-13T01:00:00Z"), "first-heartbeat"));
+        reader.pollNext(output);
+        reader.pollNext(output);
+
+        assertThat(opener.openedSplitIds()).containsExactly("first", "beyond");
+        assertThat(reader.snapshotState(1L))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("beyond", "first");
     }
 
     @Test
@@ -407,6 +436,27 @@ class BigtableChangeStreamReaderTest {
     }
 
     @Test
+    void countsAClosingReadOutOfTheHeldSplitsButStillReportsANewSplit() throws Exception {
+        opener.completeCancellation = false;
+        reader = reader(2);
+        reader.start();
+        reader.addSplits(Arrays.asList(split("closing"), split("open"), split("queued")));
+
+        opener.deliver(0, TestChangeStreamRecords.close("successor"));
+        reader.pollNext(new CollectingReaderOutput<>());
+        reader.addSplits(Collections.singletonList(split("arriving")));
+
+        // The closing read still holds its physical slot, so no slot frees, and it no longer holds
+        // a partition, so the arriving split leaves the held count where it was: only the received
+        // count says the split has arrived.
+        assertThat(capacities())
+                .containsExactly(
+                        "2 free, 0 held, 0 received",
+                        "0 free, 3 held, 3 received",
+                        "0 free, 3 held, 4 received");
+    }
+
+    @Test
     void cancelsAReadWhoseOpenFailsAfterInstallingItsController() {
         opener.throwAfterStart = true;
         reader = reader(1);
@@ -509,12 +559,19 @@ class BigtableChangeStreamReaderTest {
                 new BigtableChangeStreamReaderMetrics(metricGroup));
     }
 
-    private List<Integer> capacities() {
-        List<Integer> capacities = new ArrayList<>();
+    private List<String> capacities() {
+        List<String> capacities = new ArrayList<>();
         context.sourceEvents().stream()
                 .filter(ReaderCapacityEvent.class::isInstance)
                 .map(ReaderCapacityEvent.class::cast)
-                .map(ReaderCapacityEvent::getFreeSlots)
+                .map(
+                        event ->
+                                event.getFreeSlots()
+                                        + " free, "
+                                        + event.getHeldSplits()
+                                        + " held, "
+                                        + event.getReceivedSplits()
+                                        + " received")
                 .forEach(capacities::add);
         return capacities;
     }
