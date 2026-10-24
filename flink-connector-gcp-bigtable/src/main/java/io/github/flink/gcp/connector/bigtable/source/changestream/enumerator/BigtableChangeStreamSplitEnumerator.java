@@ -115,7 +115,8 @@ public final class BigtableChangeStreamSplitEnumerator
     private final List<ByteStringRange> completedPartitions = new ArrayList<>();
     private final ChangeStreamPartitionReconciler reconciler =
             new ChangeStreamPartitionReconciler();
-    private final Map<Integer, Integer> readerCapacities = new LinkedHashMap<>();
+    private final Map<Integer, ReaderState> readers = new LinkedHashMap<>();
+
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicInteger unassignedMetricCount = new AtomicInteger();
     private final AtomicLong oldestUnassignedPositionMillis = new AtomicLong(Long.MAX_VALUE);
@@ -486,7 +487,8 @@ public final class BigtableChangeStreamSplitEnumerator
     public void handleSplitRequest(int subtaskId, @Nullable String requesterHostname) {
         // A reader that asks for work has capacity for at least one split, whether or not it has
         // advertised a figure yet; the assignment waits for initialization, the floor does not.
-        readerCapacities.put(subtaskId, Math.max(1, readerCapacities.getOrDefault(subtaskId, 0)));
+        ReaderState reader = readers.computeIfAbsent(subtaskId, ignored -> new ReaderState());
+        reader.freeSlots = Math.max(reader.inFlight() + 1, reader.freeSlots);
         if (!initialized) {
             return;
         }
@@ -495,10 +497,11 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private void assignAvailable(int subtaskId) {
         if (!context.registeredReaders().containsKey(subtaskId)) {
-            readerCapacities.remove(subtaskId);
+            readers.remove(subtaskId);
             return;
         }
-        int capacity = readerCapacities.getOrDefault(subtaskId, 0);
+        ReaderState reader = readers.get(subtaskId);
+        int capacity = reader == null ? 0 : reader.free();
         if (capacity <= 0 || unassigned.isEmpty()) {
             // Called for its effect, not its verdict: a bounded run with nothing left anywhere
             // signals no-more-splits here, and there is nothing to assign either way.
@@ -512,7 +515,7 @@ public final class BigtableChangeStreamSplitEnumerator
             splits.add(split);
         }
         refreshUnassignedMetrics();
-        readerCapacities.put(subtaskId, capacity - splits.size());
+        reader.sentSplits += splits.size();
         splitsAssigned.inc(splits.size());
         context.assignSplits(new SplitsAssignment<>(Collections.singletonMap(subtaskId, splits)));
     }
@@ -520,6 +523,16 @@ public final class BigtableChangeStreamSplitEnumerator
     @Override
     public void addSplitsBack(List<ChangeStreamPartitionSplit> splits, int subtaskId) {
         if (!initialized) {
+            // A capacity report deferred from the failed attempt would be replayed against the
+            // next one, which registers under the same subtask: splits sent on it would count
+            // against state the returned splits then drop, and the next attempt would receive
+            // them uncounted. Its progress and transition events still describe its splits.
+            deferredActions.removeIf(
+                    deferred ->
+                            deferred instanceof DeferredSourceEvent
+                                    && ((DeferredSourceEvent) deferred).subtaskId == subtaskId
+                                    && ((DeferredSourceEvent) deferred).sourceEvent
+                                            instanceof ReaderCapacityEvent);
             deferredActions.add(new DeferredSplitsBack(splits, subtaskId));
             return;
         }
@@ -527,7 +540,7 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private void addSplitsBackInitialized(List<ChangeStreamPartitionSplit> splits, int subtaskId) {
-        readerCapacities.remove(subtaskId);
+        readers.remove(subtaskId);
         for (ChangeStreamPartitionSplit split : splits) {
             if (assigned.remove(split.splitId()) != null) {
                 unassigned.add(split);
@@ -561,8 +574,13 @@ public final class BigtableChangeStreamSplitEnumerator
     private void handleSourceEventInitialized(int subtaskId, SourceEvent sourceEvent) {
         if (sourceEvent instanceof ReaderCapacityEvent) {
             ReaderCapacityEvent capacity = (ReaderCapacityEvent) sourceEvent;
-            readerCapacities.put(subtaskId, capacity.getFreeSlots());
+            ReaderState reader = readers.computeIfAbsent(subtaskId, ignored -> new ReaderState());
+            reader.freeSlots = capacity.getFreeSlots();
+            reader.heldSplits = capacity.getHeldSplits();
+            reader.receivedSplits = capacity.getReceivedSplits();
+            reader.reported = true;
             assignAvailable(subtaskId);
+            assignBeyondFreeSlots();
             return;
         }
         if (sourceEvent instanceof PartitionProgressEvent) {
@@ -639,11 +657,66 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private void serveAvailableReaders() {
-        for (int subtaskId : new ArrayList<>(readerCapacities.keySet())) {
+        for (int subtaskId : new ArrayList<>(readers.keySet())) {
             if (unassigned.isEmpty()) {
                 break;
             }
             assignAvailable(subtaskId);
+        }
+        assignBeyondFreeSlots();
+    }
+
+    /**
+     * Hands every split still unassigned to the readers holding the fewest, one at a time.
+     *
+     * <p>Free slots are filled first, by {@code assignAvailable}; what this hands out goes to a
+     * reader's queue, which the reader rotates through its open reads at service heartbeats.
+     * Waiting for a free slot instead would leave a split unread for as long as the reader's
+     * partitions stay stable, which for an unbounded source can be until the split's position
+     * leaves the table's change-stream retention (#1893).
+     *
+     * <p>It waits until every subtask has registered and reported, so that the readers that start
+     * first do not take every split. A reader that failed is unregistered until it starts again,
+     * which holds the excess back for that long rather than piling it on the others.
+     */
+    private void assignBeyondFreeSlots() {
+        if (unassigned.isEmpty() || boundedComplete) {
+            return;
+        }
+        Map<Integer, ?> registered = context.registeredReaders();
+        if (registered.size() < context.currentParallelism()) {
+            return;
+        }
+        for (int subtaskId : registered.keySet()) {
+            ReaderState reader = readers.get(subtaskId);
+            if (reader == null || !reader.reported) {
+                return;
+            }
+        }
+        Map<Integer, List<ChangeStreamPartitionSplit>> batches = new LinkedHashMap<>();
+        int handedOut = 0;
+        while (!unassigned.isEmpty()) {
+            int target = -1;
+            int fewest = Integer.MAX_VALUE;
+            for (int subtaskId : registered.keySet()) {
+                int load = readers.get(subtaskId).load();
+                if (load < fewest || (load == fewest && subtaskId < target)) {
+                    target = subtaskId;
+                    fewest = load;
+                }
+            }
+            ChangeStreamPartitionSplit split = unassigned.removeFirst();
+            assigned.put(split.splitId(), split);
+            batches.computeIfAbsent(target, ignored -> new ArrayList<>()).add(split);
+            readers.get(target).sentSplits++;
+            handedOut++;
+        }
+        refreshUnassignedMetrics();
+        splitsAssigned.inc(handedOut);
+        for (Map.Entry<Integer, List<ChangeStreamPartitionSplit>> batch : batches.entrySet()) {
+            context.assignSplits(
+                    new SplitsAssignment<>(
+                            Collections.singletonMap(batch.getKey(), batch.getValue())));
         }
     }
 
@@ -660,7 +733,7 @@ public final class BigtableChangeStreamSplitEnumerator
         for (int subtaskId : context.registeredReaders().keySet()) {
             context.signalNoMoreSplits(subtaskId);
         }
-        readerCapacities.clear();
+        readers.clear();
         return true;
     }
 
@@ -871,6 +944,36 @@ public final class BigtableChangeStreamSplitEnumerator
         @Override
         public void replay(BigtableChangeStreamSplitEnumerator enumerator) {
             enumerator.addSplitsBackInitialized(splits, subtaskId);
+        }
+    }
+
+    /**
+     * What one reader attempt last reported, and the splits sent to it.
+     *
+     * <p>A report can be older than the splits sent after it, so it counts {@code receivedSplits},
+     * and the difference from {@code sentSplits} is in flight: the reader holds those already, and
+     * has a slot fewer for each, whatever its report says. A failed reader's state is dropped,
+     * because its next attempt counts from zero and its last report described splits it has
+     * returned.
+     */
+    private static final class ReaderState {
+
+        private int freeSlots;
+        private int heldSplits;
+        private long receivedSplits;
+        private long sentSplits;
+        private boolean reported;
+
+        private int inFlight() {
+            return (int) Math.max(0, sentSplits - receivedSplits);
+        }
+
+        private int free() {
+            return Math.max(0, freeSlots - inFlight());
+        }
+
+        private int load() {
+            return heldSplits + inFlight();
         }
     }
 }

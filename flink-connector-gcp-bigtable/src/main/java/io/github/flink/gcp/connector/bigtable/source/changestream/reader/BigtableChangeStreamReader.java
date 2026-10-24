@@ -82,6 +82,9 @@ public final class BigtableChangeStreamReader<T>
     private boolean noMoreSplits;
     private volatile boolean closed;
     private int advertisedFreeSlots = -1;
+    private int advertisedHeldSplits = -1;
+    private long receivedSplits;
+    private long advertisedReceivedSplits = -1;
 
     public BigtableChangeStreamReader(
             SourceReaderContext context, BigtableChangeStreamSourceConfig<T> config) {
@@ -315,6 +318,9 @@ public final class BigtableChangeStreamReader<T>
         }
         queued.addAll(additions);
         if (started) {
+            // Splits restored before start were assigned to an earlier attempt, so only these count
+            // toward what the enumerator has sent this one.
+            receivedSplits += additions.size();
             startQueuedReads();
             advertiseCapacity();
         } else {
@@ -358,9 +364,24 @@ public final class BigtableChangeStreamReader<T>
             return;
         }
         int freeSlots = Math.max(0, maximumStreams - active.size() - queued.size());
-        if (freeSlots != advertisedFreeSlots) {
+        int heldSplits = queued.size();
+        for (ActiveRead read : active.values()) {
+            if (!read.closeSeen) {
+                heldSplits++;
+            }
+        }
+        // Each count is worth an event on its own. A CloseStream lowers the held count without
+        // freeing a slot while the reader still has a queue, and a split that arrives as another
+        // read closes changes only the received count, which tells the enumerator that split is
+        // no longer in flight.
+        if (freeSlots != advertisedFreeSlots
+                || heldSplits != advertisedHeldSplits
+                || receivedSplits != advertisedReceivedSplits) {
             advertisedFreeSlots = freeSlots;
-            context.sendSourceEventToCoordinator(new ReaderCapacityEvent(freeSlots));
+            advertisedHeldSplits = heldSplits;
+            advertisedReceivedSplits = receivedSplits;
+            context.sendSourceEventToCoordinator(
+                    new ReaderCapacityEvent(freeSlots, heldSplits, receivedSplits));
         }
     }
 

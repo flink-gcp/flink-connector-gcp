@@ -445,6 +445,8 @@ retaining the collector or using it from another thread is invalid.
 Each subtask uses asynchronous `ReadChangeStream` calls with manual inbound flow control and one shared bounded handover budget.
 Callbacks may receive a continuation token before the task thread consumes its record, but checkpoints retain only the position the task thread has emitted.
 When assigned partitions outnumber the subtask limit, the reader queues the excess and rotates stable streams at service heartbeats so every queued partition can open or reopen from its checkpointed position.
+The coordinator fills each subtask's free read slots first, and once every source subtask has reported, it hands each partition still left to the subtask holding the fewest, which queues it.
+So when a table has more partitions than the job has read slots, every partition is read part of the time rather than some waiting for a slot that a stable partition never frees.
 Connector-initiated rotation and shutdown cancellation do not complete or fail a partition.
 Every request asks for a five-second heartbeat, so a partition queued behind others waits several rotations, and a stream still draining responses rotates only once its next heartbeat reaches the task thread.
 That interval is not configurable, and the `heartbeatInterval` of the Spanner Change Streams source has no counterpart here; [ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md) records why.
@@ -1362,11 +1364,11 @@ for a table's sections and say nothing about how many rows are left inside a ran
 ### Operating Change Streams capacity
 
 Read `activeChangeStreamReads`, both queued metrics, `unassignedSplits`, and `unassignedChangeStreamPartitionLagMillis` together.
-If aggregate active reads reach `source parallelism * maxConcurrentStreamsPerSubtask` while queued or unassigned lag grows, increase source parallelism or raise the per-subtask bound after checking subtask and Bigtable cluster resources.
+If aggregate active reads reach `source parallelism * maxConcurrentStreamsPerSubtask` while queued lag grows, increase source parallelism or raise the per-subtask bound after checking subtask and Bigtable cluster resources; unassigned lag is not a capacity signal, as below.
 If the goal is fewer reads and less callback work in each subtask without reducing aggregate capacity, increase source parallelism before lowering the per-subtask bound.
 
 Persistently queued partitions beside free read slots indicate a reader scheduling, rotation, or handover problem; infer free slots in a subtask from its configured bound minus its active and queued counts.
-Persistently unassigned partitions while readers have inferred free slots indicate an assignment-protocol problem.
+Partitions stay unassigned only until every source subtask has reported its reads, and while a failed subtask restarts; persistently unassigned partitions indicate an assignment-protocol problem.
 Alert before the minimum active or queued low watermark, or the oldest unassigned position, approaches the table's configured Change Streams retention boundary.
 
 The connector metrics cannot reproduce Bigtable cluster load or retained log volume.

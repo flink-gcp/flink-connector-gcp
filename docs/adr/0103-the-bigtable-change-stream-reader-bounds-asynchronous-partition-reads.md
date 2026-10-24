@@ -17,9 +17,10 @@ limitations under the License.
 # ADR-0103: The Bigtable Change Streams reader bounds asynchronous partition reads
 
 - Status: Accepted
-- Date: 2026-08-13 (revised 2026-08-22)
+- Date: 2026-08-13, revised by [#980](https://github.com/flink-gcp/flink-connector-gcp/issues/980) (2026-08-22) and [#1893](https://github.com/flink-gcp/flink-connector-gcp/issues/1893) (2026-10-24)
 - Issues: [#553](https://github.com/flink-gcp/flink-connector-gcp/issues/553),
-  [#980](https://github.com/flink-gcp/flink-connector-gcp/issues/980)
+  [#980](https://github.com/flink-gcp/flink-connector-gcp/issues/980),
+  [#1893](https://github.com/flink-gcp/flink-connector-gcp/issues/1893)
 - Modules: bigtable (`source.changestream`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/bigtable.md#change-streams-source)
 
@@ -41,9 +42,12 @@ The conservative default is the smallest value that exercises concurrent partiti
 gated acceptance case measures two simultaneous live reads in each of two source subtasks.
 The configured job-wide capacity is source parallelism multiplied by this value; it is a connector resource bound rather than a Bigtable quota.
 
-The reader reports its absolute free-slot count to the enumerator.
-The enumerator assigns at most that many splits and retains the remaining fresh, returned, or successor splits in its checkpointed unassigned ledger.
-Restored assignments that exceed the local bound remain in the reader's checkpointed FIFO.
+The reader reports to the enumerator its absolute free-slot count, the splits it reads or queues, and the splits its attempt has received.
+A report can predate splits already sent, so the enumerator counts what it has sent each reader attempt: the difference is in flight, held by the reader and taking a slot each.
+The enumerator fills a reader's free slots first.
+Once every source subtask has registered and reported, it hands each fresh, returned, or successor split still left to the reader holding the fewest, the lower subtask on a tie, so a split reaches a reader's FIFO rather than waiting for a slot.
+Until then, and while a failed subtask is away, the excess stays in the checkpointed unassigned ledger: a split handed out earlier would go to the readers that registered first, and a failed reader's last report counts splits it has returned.
+Restored assignments that exceed the local bound remain in the reader's checkpointed FIFO in the same way.
 
 Each partition uses the pinned client's `readChangeStreamAsync` API with automatic inbound flow control disabled.
 Each active read has at most one requested response, and the subtask-wide handover queue has the same capacity as the active-stream bound.
@@ -71,7 +75,7 @@ Lag calculations return zero for future positions and saturate on subtraction ov
 ## Evidence
 
 Reader tests drive manual request counts, simultaneous heartbeat handover, availability-future replacement, the shared concurrency bound, delivered-versus-emitted snapshots, FIFO heartbeat rotation, bounded completion after delayed cancellation termination, and RPC failure, unexpected completion, and unrequested responses without split loss.
-Enumerator tests advertise capacity before initialization, assign only that absolute count, and redistribute four restored splits across two readers in stable order without exceeding either advertised capacity.
+Enumerator tests advertise capacity before initialization, assign only the free slots until every reader has reported, then hand the rest to the reader holding the fewest by its report and the splits still in flight to it, add no slots for a report older than its splits, hold the excess back while a failed reader is away and until it reports again, hand a full reader the successors of its split into the checkpointed ledger, and redistribute four returned splits across two readers in stable order.
 Metric tests use a controllable clock for queue lag, heartbeat intervals, future timestamps, and overflow without wall-clock waiting.
 The savepoint rescaling test drives six partitions through parallelism 1 to 3 to 1, verifies per-reader peaks of 6, then 2/2/2, then 2, and covers unbounded first and last partition boundaries.
 The request test verifies the explicit five-second heartbeat in the protobuf sent by the client adapter.
@@ -81,6 +85,11 @@ The emulator cannot provide that evidence because it does not implement Change S
 
 ## Alternatives declined
 
+- **Assign only free slots and keep the excess in the coordinator's ledger.**
+  A reader frees a slot only when a read ends, which for a stable partition of an unbounded source means a service split or merge, so a split held back for a slot could stay unread until its position left the table's change-stream retention.
+  The deployed Bigtable trials of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855) showed two of four partitions held unassigned for ten minutes at one subtask, read only after a rescale out ([#1893](https://github.com/flink-gcp/flink-connector-gcp/issues/1893)).
+- **Rotate the excess from the coordinator.**
+  Flink gives an enumerator no way to take a split back from a reader, so this would need a revocation protocol of its own, while the reader's FIFO already rotates whatever it holds.
 - **Raise source parallelism and keep one stream per subtask.**
   This couples Flink task allocation to the service's private partition count and gives one quiet partition an entire subtask.
 - **Use one blocking thread per partition.**
@@ -107,5 +116,6 @@ The emulator cannot provide that evidence because it does not implement Change S
 - A rotation reopens from the continuation token the task thread has just emitted, and no response is outstanding when it cancels, so the replay that at-least-once delivery permits comes from a checkpoint restore rather than from rotation.
 - The heartbeat interval reaches no public surface, so a builder setter and its Table option stay additive and non-breaking if a measured need for them appears.
 - A parallelism or bound reduction preserves excess splits in checkpoint state and trades per-partition freshness for a lower resource ceiling.
+- When a table has more partitions than the job has read slots, each partition is open for roughly the slots' share of a rotation, so its changes arrive later, but none waits indefinitely.
 - The connector exposes capacity and lag but does not change Flink operator parallelism automatically.
 - Operators must combine connector lag with Bigtable CPU-load and Change Streams log-volume metrics; Bigtable streaming-request latency measures RPC lifetime rather than change-processing delay.
