@@ -176,6 +176,25 @@ class Kubernetes:
                 return None
             raise
 
+    def node_events(self, reason):
+        """The events of one reason on Nodes, which Kubernetes records in `default`.
+
+        A Spot reclamation shows on the node, not the Pods: the kubelet records
+        `Shutdown` there before it stops them, and the cluster autoscaler records
+        `ScaleDown` before it removes a node. Only the one reason is read,
+        through the field selector, so the read stays small however many other
+        events the cluster's nodes record. The namespace is outside Tier-3's on
+        purpose, and the read is all its Role allows there.
+        """
+        query = urllib.parse.urlencode(
+            {"fieldSelector": "involvedObject.kind=Node,reason=" + reason}
+        )
+        page = self.request("GET", "/api/v1/namespaces/default/events?" + query)
+        return [
+            {**item, "kind": "Event", "apiVersion": "v1"}
+            for item in page.get("items", [])
+        ]
+
     def items(self, kind, namespace):
         result, token = [], None
         while True:

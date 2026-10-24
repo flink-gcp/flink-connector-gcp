@@ -57,9 +57,28 @@ PLATFORM_DISRUPTIONS = frozenset(
         "EvictionByEvictionAPI",
     }
 )
+# The message of the kubelet's `Shutdown` event for a shutdown it carries out.
+SHUTDOWN_MESSAGE = "Shutdown manager detected shutdown event"
+# How long before a node's `Shutdown` the cluster autoscaler's `ScaleDown` on it
+# shows that it removed the node rather than the platform reclaiming it: 3 to 6
+# seconds before every scale-down shutdown of the nodes from 2026-10-19 to
+# 2026-10-22, and none before the reclamation in bt1855-ri-a2.
+SCALE_DOWN_LEAD_SECONDS = 600
 # The Pod the second recovery deletes, by the name the approved trial gives it,
 # and the role its deletion messages name.
 FAILOVERS = {"jobmanager": "JM", "taskmanager": "TM"}
+
+
+def bound_at(pod):
+    """When the scheduler bound a Pod to its node, or its creation if not reported."""
+    for condition in pod.get("status", {}).get("conditions", []):
+        if (
+            condition.get("type") == "PodScheduled"
+            and condition.get("status") == "True"
+            and condition.get("lastTransitionTime")
+        ):
+            return timestamp(condition["lastTransitionTime"])
+    return timestamp(pod["metadata"]["creationTimestamp"])
 
 
 @dataclass(frozen=True)
@@ -186,6 +205,9 @@ class RecoveryExercise:
         self.boundary = env.schedule.started
         self.samples = {}
         self.events = {}
+        # Each workload Pod's node and when it was bound there, kept after the
+        # Pod is gone.
+        self.placements = {}
         self.before = {}
         self.outcomes = {}
         self.initialized = False
@@ -435,6 +457,10 @@ class RecoveryExercise:
             self.env.emit("scheduling-events", new_events)
         smoke = [p for p in pods if p["metadata"]["namespace"] == self.namespace]
         for pod in smoke:
+            node = pod.get("spec", {}).get("nodeName")
+            if node:
+                self.placements[pod["metadata"]["uid"]] = (node, bound_at(pod))
+        for pod in smoke:
             status = pod.get("status", {})
             disruptions = {
                 c.get("reason")
@@ -479,7 +505,57 @@ class RecoveryExercise:
                 and identities < self.stable_pods
             )
         ):
+            if self.reclaimed(self.stable_pods - identities):
+                raise Failure(INTERRUPTED)
             raise Failure(REPLACED)
+
+    def reclaimed(self, lost):
+        """Whether a lost Pod's node shut down gracefully after the Pod was bound there.
+
+        A Spot reclamation leaves nothing on the Pod to read: the kubelet stops
+        it, and Flink deletes the TaskManager's Pod and asks for another within a
+        second, before the next poll. The node's own `Shutdown` event is what is
+        left. The autoscaler's removal of an empty node records the same event,
+        just after its own `ScaleDown` on the node, so a shutdown that follows one
+        is not counted; nor is one recorded before the Pod was bound, an earlier
+        life of the same node name, or the kubelet's cancellation of a shutdown,
+        which carries the same reason. It is read only for a Pod lost outside a
+        planned recovery.
+        """
+        placed = [self.placements[uid] for uid in lost if uid in self.placements]
+        if not placed:
+            return False
+        # The shutdowns first, so that the scale-down read sees every mark that
+        # preceded one of them.
+        candidates = [
+            event
+            for event in self.env.kube.node_events("Shutdown")
+            if event.get("message") == SHUTDOWN_MESSAGE and event.get("lastTimestamp")
+        ]
+        if not candidates:
+            return False
+        scale_downs = [
+            (event["involvedObject"]["name"], timestamp(event["lastTimestamp"]))
+            for event in self.env.kube.node_events("ScaleDown")
+            if event.get("lastTimestamp")
+        ]
+        shutdowns = []
+        for event in candidates:
+            node = event["involvedObject"]["name"]
+            at = timestamp(event["lastTimestamp"])
+            # Any recent mark on the node vetoes, even one from before the
+            # binding, which an in-flight binding can follow: a removal read as a
+            # reclamation would repeat a failure that may be the application's.
+            if any(
+                node == removed and 0 <= at - marked <= SCALE_DOWN_LEAD_SECONDS
+                for removed, marked in scale_downs
+            ):
+                continue
+            if any(node == placed_on and at >= bound for placed_on, bound in placed):
+                shutdowns.append(event)
+        if shutdowns:
+            self.env.emit("scheduling-events", shutdowns)
+        return bool(shutdowns)
 
     def running(self, pods, component):
         """This namespace's running Pods of one Flink component, none terminating."""
