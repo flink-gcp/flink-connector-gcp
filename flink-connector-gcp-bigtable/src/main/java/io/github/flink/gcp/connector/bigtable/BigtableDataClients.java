@@ -21,7 +21,9 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.stub.metrics.CustomOpenTelemetryMetricsProvider;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.opentelemetry.api.OpenTelemetry;
 
 import javax.annotation.Nullable;
 
@@ -104,5 +106,37 @@ public final class BigtableDataClients {
             settings.setAppProfileId(appProfileId);
         }
         return settings;
+    }
+
+    /**
+     * Applies the two client-metrics choices to settings built by {@link #settings}.
+     *
+     * <p>They are independent in the client (2.85.0, {@code BigtableClientContext}). The built-in
+     * Cloud Monitoring exporter is created whenever internal metrics are enabled, whatever the
+     * metrics provider; a {@code CustomOpenTelemetryMetricsProvider} adds a second recorder beside
+     * it rather than replacing it, and {@code NoopMetricsProvider} does not remove it. So exporting
+     * to Flink leaves the Cloud Monitoring export running, and only {@code
+     * disableInternalMetrics()} stops it.
+     *
+     * <p>The provider is set on the emulator path too. The emulator builder sets {@code
+     * NoopMetricsProvider}, and a later provider replaces it: the client then records against the
+     * emulator like any other endpoint, which is what lets an emulator test observe the bridged
+     * series. The emulator builder has already disabled the Cloud Monitoring export.
+     *
+     * @param settings the settings to apply them to
+     * @param openTelemetry the bridge's instance to record into, or {@code null} to export nothing
+     *     to Flink
+     * @param exportToCloudMonitoring whether the client keeps its built-in Cloud Monitoring export
+     */
+    public static void applyClientMetrics(
+            BigtableDataSettings.Builder settings,
+            @Nullable OpenTelemetry openTelemetry,
+            boolean exportToCloudMonitoring) {
+        if (openTelemetry != null) {
+            settings.setMetricsProvider(CustomOpenTelemetryMetricsProvider.create(openTelemetry));
+        }
+        if (!exportToCloudMonitoring) {
+            settings.disableInternalMetrics();
+        }
     }
 }

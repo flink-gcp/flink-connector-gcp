@@ -93,6 +93,24 @@ limitations under the License.
             <artifactId>protobuf-java</artifactId>
         </dependency>
 
+        <!-- OpenTelemetry (version managed by the root opentelemetry-bom import) -->
+        <dependency>
+            <!-- The OpenTelemetry instance base.metrics.sdk hands to a client (#713). -->
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+        <dependency>
+            <!-- The meter provider, views and pull reader behind that instance. -->
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-metrics</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Resource and CompletableResultCode, which the reader and the provider's
+                 configuration name. -->
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-common</artifactId>
+        </dependency>
+
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.apache.flink</groupId>

@@ -1279,6 +1279,49 @@ futures asynchronously, so any latency this writer could report would measure it
 rather than the service's response time — a missing number beats a wrong one. There is no committer
 either (the sink is single-phase), so Flink's committer metrics do not apply.
 
+### Client-library metrics
+
+The Bigtable client measures its own RPCs, and by default it exports those measurements only to Cloud Monitoring.
+With `exportClientMetricsToFlink(true)` (`client-metrics.export-to-flink` in SQL), the writer also reports them on its own metric group, so every configured Flink metric reporter sees them.
+The connector reads the client's OpenTelemetry instruments into Flink counters; it sends nothing to Cloud Monitoring or any other service on their behalf.
+
+Each RPC method gets a `sdkMethod.METHOD` subgroup, where `METHOD` is the method name without its `Bigtable.` prefix.
+The writer registers `MutateRows`, the one method its batchers send, when it opens.
+A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees the method as a tag on one metric name, as it sees `CODE` under `errorClass`.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `sdkMethod.METHOD.operations` | counter | operations the client completed, successful or not; an operation spans its retries |
+| `sdkMethod.METHOD.operationTimeMillis` | counter | their total duration in milliseconds, retries and backoff included |
+| `sdkMethod.METHOD.attempts` | counter | RPC attempts the client sent, retries included |
+| `sdkMethod.METHOD.attemptTimeMillis` | counter | their total duration in milliseconds, as the client observed it |
+| `sdkMethod.METHOD.retries` | counter | attempts after the first of each operation |
+| `sdkMethod.METHOD.connectivityErrors` | counter | attempts that never reached a Google data center, judged by the absence of Google's response headers |
+| `sdkMethod.METHOD.serverTimedAttempts` | counter | attempts whose response carried the Google front end's server timing; the denominator of `serverTimeMillis` |
+| `sdkMethod.METHOD.serverTimeMillis` | counter | their total time from entering the Google data center to completion, in milliseconds |
+| `sdkMethod.METHOD.firstResponseTimeMillis` | counter | total time from an operation's start to its first response, in milliseconds; divide by `operations`. The client records it for `ReadRows`, so it stays zero under `MutateRows` |
+| `sdkMethod.METHOD.applicationTimeMillis` | counter | total time per operation that its attempts did not spend on the server, in milliseconds, which the client attributes to the application consuming responses; divide by `operations` |
+| `sdkMethod.METHOD.throttlingTimeMillis` | counter | total time attempts waited in the client for transport or flow control, in milliseconds; divide by `attempts` |
+
+Latencies arrive as a count and a millisecond sum, so a backend divides the rate of the sum by the rate of the count for the mean over any window.
+No percentile, bucket or extreme is reported: the client's histograms are cumulative and keep no per-request samples, so any percentile derived from them would be invented.
+Three histograms report only their sum, because the client records them once per operation or once per attempt and their counts would repeat `operations` or `attempts`.
+
+Every attribute the client attaches other than the method (status, table, application profile, cluster, zone, client id) is aggregated away before Flink sees the data, so a writer reports eleven series per method whatever it writes to.
+Failures by status are what `errorClass.CODE.errors` already counts.
+A writer whose clients reach several instances reports their RPCs together.
+
+The values are collected on the reporter's thread, at most once a second per writer subtask, and the first report after the client's first request carries them; until then the counters read zero.
+A method the client reports and the writer did not register is logged once, at `WARN`, and is not reported.
+Against the emulator the client records too, with one deviation: the emulator sends none of the Google front end's headers, so every attempt counts under `connectivityErrors` and `serverTimedAttempts` stays zero.
+
+**Exporting to Flink does not stop the export to Cloud Monitoring.**
+The client keeps its built-in exporter beside the second recorder this option adds, and it also exports per-connection and channel-pool measurements that only Cloud Monitoring receives.
+`exportClientMetricsToCloudMonitoring(false)` (`client-metrics.export-to-cloud-monitoring = 'false'`) removes that exporter, whether or not anything is exported to Flink.
+Off Google Cloud it also removes a stall: when a client closes, the exporter detects the platform by connecting to the metadata server's address with no timeout, and where nothing answers there, each close waits for the operating system's connect timeout (75 seconds measured on [#1815]({{< param BookRepo >}}/issues/1815)).
+
+Both options apply to the at-least-once writer for now; `EXACTLY_ONCE` refuses them, and the single-row writers, the sources and the lookups do not take them yet.
+
 ### Single-row request metrics
 
 Registered by the [single-row runtime](#single-row-request-writes) on the sink writer's group or, on

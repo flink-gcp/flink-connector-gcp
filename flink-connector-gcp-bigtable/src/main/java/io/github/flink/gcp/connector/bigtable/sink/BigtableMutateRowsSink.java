@@ -30,8 +30,10 @@ import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.sdk.SdkMetricsBridge;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
+import io.github.flink.gcp.connector.bigtable.BigtableSdkMetrics;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.BigtableWriter;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.DefaultMutationBatcherFactory;
@@ -54,6 +56,9 @@ import java.util.Objects;
 public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
+
+    /** The one RPC the writer's clients call: its batchers send {@code MutateRows}. */
+    private static final String MUTATE_ROWS = "MutateRows";
 
     private final BigtableSinkConfig<T> config;
     private final LineageMetadata lineage;
@@ -117,13 +122,22 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         CredentialsProvider credentials =
                 BigtableCredentials.loadDataAndTableAdmin(config.getServiceAccountKeyFile());
+        // Registered here, as the writer opens and before any reporter reads its group. The
+        // factory owns the bridge from now on and closes it after its clients, on every path that
+        // closes the factory, including a failed creation below.
+        SdkMetricsBridge clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? BigtableSdkMetrics.register(context.metricGroup(), MUTATE_ROWS)
+                        : null;
         return createWriter(
                 context,
                 new DefaultMutationBatcherFactory(
                         config.getAppProfileId(),
                         config.getWriterOptions(),
                         config.getEmulatorEndpoint(),
-                        credentials),
+                        credentials,
+                        config.isExportClientMetricsToCloudMonitoring(),
+                        clientMetrics),
                 credentials);
     }
 

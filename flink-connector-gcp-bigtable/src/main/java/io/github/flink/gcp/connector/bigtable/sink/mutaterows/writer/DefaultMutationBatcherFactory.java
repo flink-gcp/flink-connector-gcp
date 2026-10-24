@@ -30,6 +30,8 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.cloud.bigtable.data.v2.stub.BigtableBatchingCallSettings;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.sdk.SdkMetricsBridge;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableClientReaper;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
@@ -79,6 +81,13 @@ import java.util.function.Function;
  * closes that client synchronously before reporting the scheduling failure, preferring an
  * exceptional wait on the task thread to a leaked client.
  *
+ * <h2>Client metrics</h2>
+ *
+ * <p>Every client this factory builds records into the one {@link SdkMetricsBridge} it was given,
+ * if any, so a writer reports its instances' RPCs as one set of series. The factory closes the
+ * bridge in {@link #close()}, after the clients: a client closed later would record into a closed
+ * meter provider, which drops the values, while the bridge's final collect would miss them.
+ *
  * <p>That is why {@code BigtableBatcherAdapter} holds no client, unlike the shape #324 left: a
  * batcher that closed the client it was built over would tear down every sibling batcher of the
  * same instance, and since {@link BigtableDataClient} reports nothing about having been closed, the
@@ -95,6 +104,13 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     private final BigtableWriterOptions writerOptions;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final CredentialsProvider credentialsOverride;
+    private final boolean exportClientMetricsToCloudMonitoring;
+
+    /**
+     * The bridge every client records into, or {@code null} when nothing is exported to Flink.
+     * Transient: a bridge is runtime state the writer creates on its own metric group.
+     */
+    @Nullable private transient SdkMetricsBridge clientMetrics;
 
     /**
      * The clients built so far, one per (project, instance), in creation order so a close reports
@@ -131,10 +147,38 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             BigtableWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable CredentialsProvider credentialsOverride) {
+        this(appProfileId, writerOptions, emulatorEndpoint, credentialsOverride, true, null);
+    }
+
+    /**
+     * Creates the factory with the client-metrics choices.
+     *
+     * @param appProfileId the application profile to route through, or {@code null} for the
+     *     instance's default
+     * @param writerOptions the writer tuning options, whose batch thresholds are applied to the
+     *     client
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for production Bigtable
+     * @param credentialsOverride the runtime-loaded service-account provider, or {@code null} to
+     *     use application-default credentials
+     * @param exportClientMetricsToCloudMonitoring whether each client keeps its built-in Cloud
+     *     Monitoring export
+     * @param clientMetrics the bridge every client records into, closed by {@link #close()}, or
+     *     {@code null} to export nothing to Flink
+     */
+    public DefaultMutationBatcherFactory(
+            @Nullable String appProfileId,
+            BigtableWriterOptions writerOptions,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentialsOverride,
+            boolean exportClientMetricsToCloudMonitoring,
+            @Nullable SdkMetricsBridge clientMetrics) {
         this.appProfileId = appProfileId;
         this.writerOptions = writerOptions;
         this.emulatorEndpoint = emulatorEndpoint;
         this.credentialsOverride = credentialsOverride;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        this.clientMetrics = clientMetrics;
     }
 
     @Override
@@ -286,10 +330,16 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      * synchronously before the factory attempts the next, so only the normal path guarantees this
      * overlap. One client failing to close cannot strand the rest, and the map is cleared whatever
      * happens: a factory that reported a failure must not hand a closed client to a later {@link
-     * #create(TableDestination)}.
+     * #create(TableDestination)}. The client-metrics bridge closes last, whatever the clients did.
      */
     @Override
     public void close() throws Exception {
+        SdkMetricsBridge metrics = clientMetrics;
+        clientMetrics = null;
+        Closers.closeAll(this::closeClients, metrics);
+    }
+
+    private void closeClients() throws Exception {
         if (clients == null && clientReaper == null) {
             return;
         }
@@ -325,8 +375,8 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      * put every other connector's options mapping under a unit test of its own.
      *
      * <p>Everything the connector's data clients share — the emulator-versus-credentials branch,
-     * the project and instance, the application profile — comes from {@link BigtableDataClients}.
-     * Only the batch thresholds are the sink's own.
+     * the project and instance, the application profile, the client-metrics choices — comes from
+     * {@link BigtableDataClients}. Only the batch thresholds are the sink's own.
      */
     @VisibleForTesting
     BigtableDataSettings settings(TableDestination destination) {
@@ -334,6 +384,10 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
                 BigtableDataClients.settings(
                         destination, appProfileId, emulatorEndpoint, credentialsOverride);
         applyBatchThresholds(settings);
+        BigtableDataClients.applyClientMetrics(
+                settings,
+                clientMetrics == null ? null : clientMetrics.openTelemetry(),
+                exportClientMetricsToCloudMonitoring);
         return settings.build();
     }
 

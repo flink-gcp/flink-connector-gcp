@@ -254,6 +254,12 @@
                                     <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.opencensus</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <!-- OpenTelemetry arrives with base's client-metrics bridge
+                                         (ADR-0186); the Cloud Tasks client brings none. -->
+                                    <pattern>io.opentelemetry</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.opentelemetry</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>io.perfmark</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.perfmark</shadedPattern>
                                 </relocation>

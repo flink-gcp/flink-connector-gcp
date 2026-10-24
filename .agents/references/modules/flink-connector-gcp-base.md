@@ -31,7 +31,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
   interfaces that expose state, committers or topologies.
 - Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
   (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
-  (BOM-managed). `flink-table-common` serves `base.catalog` and `base.table`; base has no other
+  (BOM-managed) and `opentelemetry-api`/`opentelemetry-sdk-metrics`/`opentelemetry-sdk-common`
+  (managed by the root `opentelemetry-bom` import, `docs/adr/0186`). `flink-table-common` serves `base.catalog` and `base.table`; base has no other
   table-layer type.
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
@@ -84,6 +85,20 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - Every connector declares its names in one `<Product>MetricNames` inventory at its module root;
   counters name events, gauges name states, and **no name takes Flink's `num` prefix**
   (`docs/adr/0038`; the mechanical half is `just check-metric-docs`).
+
+## `base.metrics.sdk` (`docs/adr/0186`)
+
+- `SdkMetricsBridge` turns a client library's OpenTelemetry instruments into read-only Flink
+  counters. It owns its meter provider and never touches `GlobalOpenTelemetry`. It collects only
+  when a counter is read, at most once a second, and owns no thread. **Nothing registers a metric
+  during a read**: Flink's OTLP reporter iterates its counter map under its own lock while it reads,
+  and a same-thread registration would fail that report. Adapters register every series at
+  component open.
+- The bridge keeps one attribute (the method) and maps monotonic sums and histogram count/sum
+  only; a duration sum is converted from `ms` or `s`. Add gauge or non-monotonic mapping only for an
+  adopter that has such an instrument.
+- The per-connector adapter (`BigtableSdkMetrics`) carries the leaf names and is a `[[subgroups]]`
+  source of `scripts/config/metric-docs.toml`; leaf constants stay in the adapter, never in base.
 
 ## `base.catalog` (`docs/adr/0168`)
 
