@@ -403,8 +403,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - The emulator is `gcloud emulators firestore` from the shared `google-cloud-cli` image
   (`FirestoreEmulatorContainers` in test-utils, pinned with the Bigtable and Pub/Sub classes).
-  It does not enforce IAM, refuses an array inside an array as a Standard-edition database does
-  (an Enterprise-edition one stores it, #1819), and its
+  It does not enforce IAM, refuses an array inside an array (Google documents that a
+  Standard-edition database does; the service has answered both ways, #1819 and #1895), and its
   statuses are not evidence about the service. Neither it nor the service refused a 10.5 MiB
   request.
 - The gated suite (`FIRESTORE_IT_PROJECT`, ADR-0185) extends `AbstractFirestoreRealGcpITCase`: one

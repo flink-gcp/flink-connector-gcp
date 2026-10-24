@@ -206,9 +206,9 @@ public final class FirestoreTableSchema implements Serializable {
                 return;
             case ARRAY:
                 // An array directly inside an array is mapped too: an Enterprise-edition database
-                // stores one, and a Standard-edition database refuses the write with
-                // INVALID_ARGUMENT (measured 2026-10-17, FirestoreTableRealGcpITCase). The
-                // edition is not known here, so the service decides.
+                // stores one, and a Standard-edition database has both stored one and refused the
+                // write with INVALID_ARGUMENT (2026-10, FirestoreTableRealGcpITCase). The edition
+                // is not known here, so the service decides.
                 LogicalType element = ((ArrayType) type).getElementType();
                 check(path, element, geoPoints, references, consumed, seen, ambiguous);
                 return;

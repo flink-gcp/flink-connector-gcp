@@ -178,7 +178,7 @@ class DatastoreTableSchemaTest {
                                                         DataTypes.ARRAY(
                                                                 DataTypes.ARRAY(
                                                                         DataTypes.STRING()))))))
-                .hasMessageContaining("does not store an array directly in an array");
+                .hasMessageContaining("neither builds nor reads an array directly in an array");
     }
 
     @Test

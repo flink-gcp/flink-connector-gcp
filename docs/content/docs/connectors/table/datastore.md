@@ -78,7 +78,7 @@ The sink writes each row's own key without ancestors, which are deferred until a
 | `BOOLEAN` | Boolean |
 | `BYTES`, `VARBINARY`, `BINARY` | Blob |
 | `TIMESTAMP_LTZ(p)` | Timestamp from year 1 to 9999; Datastore keeps microseconds and rounds a finer value down |
-| `ARRAY<T>` | Array; an array directly inside an array is refused, because Datastore refuses one with `INVALID_ARGUMENT` and the client library neither builds nor reads one |
+| `ARRAY<T>` | Array; an array directly inside an array is refused, because the client library neither builds nor reads one, and Datastore may refuse one with `INVALID_ARGUMENT` too |
 | `ROW<...>` | Embedded entity without a key, one property per field |
 | `ROW<latitude DOUBLE, longitude DOUBLE>` named by `geo-point-field-paths` | Geographical point |
 | `ROW<kind STRING, name STRING, id BIGINT>` named by `reference-field-paths`, optionally followed by `ancestors ARRAY<ROW<kind STRING, name STRING, id BIGINT>>` | Key value in the table's project, database and namespace |

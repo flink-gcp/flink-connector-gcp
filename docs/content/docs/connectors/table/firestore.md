@@ -89,7 +89,8 @@ Every other Flink type is refused when the statement is planned, naming the fiel
 A SQL `NULL` is written as a Firestore null value, so the field exists and holds null.
 
 An array directly inside an array, such as a column of type `ARRAY<ARRAY<BIGINT>>`, is supported only in an Enterprise-edition database.
-A Standard-edition database refuses a row whose value holds an array as an element with `INVALID_ARGUMENT: Nested arrays are not allowed`, as Google's documentation says, and the emulator refuses it with `INVALID_ARGUMENT` too; the table has no dead-letter path, so the job fails.
+A Standard-edition database may refuse a row whose value holds an array as an element with `INVALID_ARGUMENT: Nested arrays are not allowed`, as Google's documentation says, and the emulator refuses it with `INVALID_ARGUMENT` too; the table has no dead-letter path, so the job fails.
+The service's answer in a Standard-edition database has changed: it stored such a row on 2026-10-10, refused it on 2026-10-17 and stored it again on 2026-10-24, so a job that writes one there can start failing without a change of its own.
 The table does not look up the database's edition, so it does not refuse the type when the statement is planned.
 
 A geographical point and a reference share their Flink types with ordinary values, so the table names them with two markers, each a semicolon-separated list of field paths.

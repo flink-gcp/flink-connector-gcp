@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-10-04 (client library facts read in google-cloud-firestore 3.49.0 through
   libraries-bom 26.90.0; emulator behavior measured 2026-10-04 against the pinned
   `google-cloud-cli` emulators image, one run); revised 2026-10-04 by [#1608] (the scan) and [#1643] (lookup equality keys), and 2026-10-10 by [#1680] (rows of a table without a PRIMARY KEY) and [#1706] (an array
-  directly inside an array), and 2026-10-11 by [#1729] (`merge` the default write mode, `set` renamed `replace`), and 2026-10-17 by [#1819] (a Standard-edition database refuses an array directly inside an array)
-- Issues: [#1607], [#1608], [#1544], [#355], [#1556], [#1643], [#1680], [#1706], [#1729], [#1819]
+  directly inside an array), and 2026-10-11 by [#1729] (`merge` the default write mode, `set` renamed `replace`), and 2026-10-17 by [#1819] (a Standard-edition database refuses an array directly inside an array), and 2026-10-24 by [#1895] (it stores one again)
+- Issues: [#1607], [#1608], [#1544], [#355], [#1556], [#1643], [#1680], [#1706], [#1729], [#1819], [#1895]
 - Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`, `table.source`); base (`lineage.internal`, `table`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/firestore.md`
 
@@ -92,6 +92,13 @@ The owner kept the mapping (2026-10-17): it shipped in v1.2.0, an Enterprise-edi
 On a Standard-edition database a row holding an array as an element is refused like any other invalid document, and the table layer has no dead-letter path, so the job fails.
 `FirestoreTableRealGcpITCase` writes and reads such a column through SQL against an Enterprise-edition database and asserts the refusal against a Standard-edition one, so a further change in either edition fails the weekly run.
 
+The Standard edition's answer is not pinned (revised 2026-10-24, [#1895]).
+The weekly gated run of 2026-10-24 found a Standard-edition database storing an array directly inside an array again, in Native and Datastore mode, a week after it refused one; the further change the paragraph above provided for happened, and the assertion it made failed the run.
+The premise of the mapping is unchanged: an Enterprise-edition database stores such a column, and the docs claim support for that edition only.
+A Standard-edition database may refuse the row, and the docs say so rather than that it does.
+`FirestoreTableRealGcpITCase` keeps the Enterprise-edition round trip and accepts either Standard-edition answer, holding that a refusal fails the job and leaves no document and that a stored row reads back unchanged; it logs which answer it saw, so the weekly log keeps the record.
+Declined: pinning the answer of the day again, which the two changes in two weeks show would turn the weekly run red at the next change without a connector defect behind it.
+
 **`merge` is the default write mode, and `set` is `replace`** (revised 2026-10-11, [#1729]).
 The `set` default replaced the whole document, so a field the table does not declare was removed from every document the sink wrote, and a job maintaining some fields of a collection another application also writes erased that application's fields unless its author chose otherwise; the [#1548] investigation found the same loss through a schema derived from a sample.
 Neither table connector had been released, so the default could change without a compatibility cost.
@@ -129,3 +136,4 @@ A `NULL` column writes a null under every mode, as before.
 [#1548]: https://github.com/flink-gcp/flink-connector-gcp/issues/1548
 [#1729]: https://github.com/flink-gcp/flink-connector-gcp/issues/1729
 [#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
+[#1895]: https://github.com/flink-gcp/flink-connector-gcp/issues/1895

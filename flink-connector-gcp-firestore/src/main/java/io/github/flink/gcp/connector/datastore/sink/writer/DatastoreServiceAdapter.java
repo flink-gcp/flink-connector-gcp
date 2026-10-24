@@ -98,8 +98,9 @@ final class DatastoreServiceAdapter implements DatastoreDatabaseAccess {
             return Entity.fromPb(response.getFound(0).getEntity());
         } catch (RuntimeException e) {
             // A value the client library cannot read, such as an array inside an array, which the
-            // service stored until it began refusing one in 2026-10: the lookup was still
-            // answered, which is all a caller confirming the database asks.
+            // service has both stored and refused in a Standard-edition database (2026-10), so a
+            // database may hold one: the lookup was still answered, which is all a caller
+            // confirming the database asks.
             LOG.debug("The entity stored under {} cannot be read by the client library.", key, e);
             return null;
         }

@@ -104,9 +104,9 @@ class DatastoreServiceAdapterTest {
 
     @Test
     void aLookupAnswersAnEntityTheClientLibraryCannotReadAsNoEntity() throws Exception {
-        // An array inside an array, which the service stored until it began refusing one in
-        // 2026-10, so a database may still hold one. The lookup was answered, which is all the
-        // writer confirming the database asks.
+        // An array inside an array, which the service has both stored and refused in a
+        // Standard-edition database (2026-10), so a database may hold one. The lookup was
+        // answered, which is all the writer confirming the database asks.
         Value nested =
                 Value.newBuilder()
                         .setArrayValue(

@@ -34,6 +34,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -41,6 +43,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Measures what the real service answers each shape of refused commit with in Datastore mode, and
@@ -56,6 +59,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
 class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(DatastoreRejectionRealGcpITCase.class);
 
     private static final String LONG_STRING = "x".repeat(1_600);
 
@@ -214,10 +220,14 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     }
 
     @Test
-    void anArrayInsideAnArrayIsRefusedWithInvalidArgument() {
-        // Sent as a raw commit, because the client library will not build such a value. The service
-        // stored one when measured on 2026-10-11 and refused it by 2026-10-17. A Datastore-mode
-        // database cannot be Enterprise edition, the only edition that stores one.
+    void anArrayInsideAnArrayIsStoredOrRefusedAndTheLookupAnswersNoEntity() {
+        // Sent as a raw commit, because the client library will not build such a value. Google's
+        // documentation says a Standard-edition database refuses one, and a Datastore-mode database
+        // cannot be Enterprise edition, but the service's answer has changed twice: stored when
+        // measured on 2026-10-11, refused on 2026-10-17, stored again on 2026-10-24. Asserting
+        // either answer alone turned the weekly run red at each change, so the test accepts both
+        // and holds what the connector relies on under each. Each answer is logged only once its
+        // assertions hold, so the weekly log records the service's answer and not another failure.
         Value nested =
                 Value.newBuilder()
                         .setArrayValue(
@@ -258,9 +268,23 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         } catch (RuntimeException e) {
             refusal = e;
         }
-        assertThat(refusal).hasMessageContaining("Nested arrays are not allowed");
-        assertThat(DatastoreErrorClassifier.statusCode(refusal))
-                .isEqualTo(StatusCode.Code.INVALID_ARGUMENT);
+        if (refusal != null) {
+            assertThat(refusal).hasMessageContaining("Nested arrays are not allowed");
+            assertThat(DatastoreErrorClassifier.statusCode(refusal))
+                    .isEqualTo(StatusCode.Code.INVALID_ARGUMENT);
+            // Nothing was stored: a stored entity would make the client library throw instead.
+            assertThat(read(key(kind, "nested"))).isNull();
+            LOG.info("A Standard-edition Datastore-mode database refused an array in an array.");
+        } else {
+            // The client library refuses to read the stored value.
+            assertThatThrownBy(() -> client().get(key(kind, "nested")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("Cannot contain another list");
+            LOG.info("A Standard-edition Datastore-mode database stored an array in an array.");
+        }
+        // Either way the writer's lookup answers with nothing it can compare an insert to: no
+        // entity, or one DatastoreServiceAdapter cannot decode and answers as none.
+        assertThat(access.lookup(key(kind, "nested"))).isNull();
     }
 
     @Test

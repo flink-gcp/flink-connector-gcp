@@ -28,28 +28,36 @@ import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The {@code firestore} table against the real service: an array directly inside an array, which
  * the table maps, and the default {@code merge} and {@code replace} write modes, which {@code
  * FirestoreTableSinkITCase} holds on the emulator. Whether an array may hold an array depends on
- * the database's edition: measured on 2026-10-17, an Enterprise-edition database stores one, and a
- * Standard-edition database refuses one with {@code INVALID_ARGUMENT}, as the emulator does. The
- * service stored one in a Standard-edition database when measured on 2026-10-10, which is why this
- * class holds both editions. The unit tests cover the mapping, and this class is the one end-to-end
- * check that a column of that type survives a SQL write and read.
+ * the database's edition. An Enterprise-edition database stores one, and the docs claim support for
+ * that edition only. Google's documentation says a Standard-edition database refuses one, as the
+ * emulator does, but the service's answer there has changed twice: stored when measured on
+ * 2026-10-10, refused with {@code INVALID_ARGUMENT} on 2026-10-17, stored again on 2026-10-24. This
+ * class therefore holds the Enterprise edition's round trip and accepts either Standard-edition
+ * answer. The unit tests cover the mapping, and this class is the one end-to-end check that a
+ * column of that type survives a SQL write and read.
  */
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
 class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
+
+    private static final Logger LOG = LoggerFactory.getLogger(FirestoreTableRealGcpITCase.class);
 
     private static final String INSERT_MATRIX =
             "INSERT INTO matrices VALUES"
@@ -140,15 +148,32 @@ class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     }
 
     @Test
-    void aStandardEditionDatabaseRefusesAnArrayOfArrays() throws Exception {
+    void aStandardEditionDatabaseStoresOrRefusesAnArrayOfArrays() throws Exception {
+        // Either answer passes, because the service has given both within two weeks (the class
+        // comment). What the test holds is that neither is half of the other: a refusal fails the
+        // job and leaves no document, since the table has no dead-letter path, and a stored row
+        // reads back unchanged. A timeout is neither, so it is not caught. Each answer is logged
+        // only once its assertions hold, so the weekly log records the service's answer.
         String collection = uniqueCollection();
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         table.executeSql(matrices(database(), collection));
 
-        assertThatThrownBy(() -> table.executeSql(INSERT_MATRIX).await(120, TimeUnit.SECONDS))
-                .hasStackTraceContaining("Nested arrays are not allowed");
-        assertThat(read(collection + "/m1").exists()).isFalse();
+        @Nullable ExecutionException refusal = null;
+        try {
+            table.executeSql(INSERT_MATRIX).await(120, TimeUnit.SECONDS);
+        } catch (ExecutionException e) {
+            refusal = e;
+        }
+        if (refusal != null) {
+            assertThat(refusal).hasStackTraceContaining("Nested arrays are not allowed");
+            assertThat(read(collection + "/m1").exists()).isFalse();
+            LOG.info("A Standard-edition database refused an array of arrays written through SQL.");
+        } else {
+            assertThat(read(collection + "/m1").get("cells"))
+                    .isEqualTo(List.of(List.of(1L, 2L), List.of(3L)));
+            LOG.info("A Standard-edition database stored an array of arrays written through SQL.");
+        }
     }
 
     private static String matrices(DatabaseDestination destination, String collection) {
