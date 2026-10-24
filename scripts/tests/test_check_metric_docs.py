@@ -737,6 +737,54 @@ def test_a_module_registering_without_an_inventory_and_no_mapping_fails(
     assert "unmapped registers metrics" in capsys.readouterr().err
 
 
+def connector_registrar_tree(root, claimed=True):
+    """A connector module carrying its own registrar, as a client-metrics adapter does."""
+    connector(root)
+    source = write_source(
+        root,
+        "conn",
+        "SdkMetrics.java",
+        subgroup_class("SdkMetrics", "GROUP", "sdkMethod", ["OPERATIONS"]),
+    )
+    page = write_page(
+        root,
+        "conn.md",
+        metric_page(
+            ("`rowsSent`", "counter"), ("`sdkMethod.METHOD.operations`", "counter")
+        ),
+    )
+    write_config(
+        root, connectors=[("conn", page)], subgroups=[source] if claimed else []
+    )
+
+
+def test_a_claimed_registrar_inside_a_connector_module_passes(root, check_metric_docs):
+    # Its leaves are template leaves, held by the templated row, so the
+    # inventory rule must not demand a *MetricNames constant for them.
+    connector_registrar_tree(root)
+    assert exit_code(check_metric_docs) == 0
+
+
+def test_an_unclaimed_registrar_inside_a_connector_module_fails(
+    root, check_metric_docs, capsys
+):
+    # The claim is what exempts it: without one, its registrations are the
+    # module's own, and they name no inventory constant.
+    connector_registrar_tree(root, claimed=False)
+    assert exit_code(check_metric_docs) == 1
+    assert "registers a counter by a name outside" in capsys.readouterr().err
+
+
+def test_a_claimed_connector_registrar_still_owes_its_rows(
+    root, check_metric_docs, capsys
+):
+    connector_registrar_tree(root)
+    write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
+    assert exit_code(check_metric_docs) == 1
+    err = capsys.readouterr().err
+    assert "uses SdkMetrics but no `Metric`-headed table documents" in err
+
+
 def test_an_unclaimed_registrar_shaped_source_is_stray(root, check_metric_docs, capsys):
     # The [[subgroups]] claim is what keeps the base registrars out of the
     # unmapped-module report; a registrar the config does not claim must

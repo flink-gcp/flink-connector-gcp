@@ -262,6 +262,18 @@ class BigtableStagedSinkTest {
         }
     }
 
+    @Test
+    void refusesTheClientMetricsChoicesItDoesNotApplyYet() {
+        assertThatThrownBy(() -> builder().exportClientMetricsToFlink(true).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("exportClientMetricsToFlink");
+        assertThatThrownBy(() -> builder().exportClientMetricsToCloudMonitoring(false).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("exportClientMetricsToCloudMonitoring");
+        assertThat(builder().exportClientMetricsToFlink(false).build())
+                .isInstanceOf(BigtableStagedSink.class);
+    }
+
     private static BigtableSinkBuilder<String> builder() {
         return BigtableSink.<String>builder()
                 .table(TableDestination.of("p", "i", "t"))

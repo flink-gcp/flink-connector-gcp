@@ -70,7 +70,10 @@ public final class WriteModeOptionChecks {
                             BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
                             BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                             BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
-                            BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS);
+                            BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                            // Wired into the MutateRows writer only, so far (#713).
+                            BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
+                            BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING);
         } else {
             rejected =
                     !usesBatchWriter(mode)
@@ -87,7 +90,11 @@ public final class WriteModeOptionChecks {
                                     BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
                                     BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                                     BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
-                                    BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS)
+                                    BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                                    // Wired into the MutateRows writer only, so far (#713).
+                                    BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
+                                    BigtableConnectorOptions
+                                            .CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING)
                             : List.of(
                                     BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
                                     BigtableConnectorOptions.SINK_REQUEST_TIMEOUT,

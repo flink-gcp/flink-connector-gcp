@@ -159,6 +159,15 @@ limitations under the License.
              warning and pass. -->
         <japicmp.referenceVersion>1.2.0</japicmp.referenceVersion>
         <google-cloud-libraries-bom.version>26.90.0</google-cloud-libraries-bom.version>
+        <!-- OpenTelemetry, which base's client-metrics bridge (#713) compiles against and which
+             every Google Cloud client brings in transitively. libraries-bom manages none of it,
+             so this import is what keeps the bridge and the clients on one version. Pinned to
+             what libraries-bom ${google-cloud-libraries-bom.version} resolves through the
+             clients, and moved with every libraries-bom bump: a managed version is forced onto
+             the clients too, so a pin left behind would be a silent downgrade. The
+             requireUpperBoundDeps execution below fails the build when a client asks for a
+             newer OpenTelemetry than this. -->
+        <opentelemetry-bom.version>1.62.0</opentelemetry-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.2</avro.version>
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
@@ -311,6 +320,13 @@ limitations under the License.
                 <groupId>com.google.cloud</groupId>
                 <artifactId>libraries-bom</artifactId>
                 <version>${google-cloud-libraries-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-bom</artifactId>
+                <version>${opentelemetry-bom.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -849,6 +865,39 @@ limitations under the License.
                             <sources>
                                 <source>src/test/java-${flink.compat}</source>
                             </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <!-- The tripwire for opentelemetry-bom.version: the import above manages the version
+                     for every module, the clients included, so a libraries-bom bump whose clients
+                     need a newer OpenTelemetry would otherwise resolve the older one without a word.
+                     This fails that bump's build instead, naming the client and the version it
+                     asked for. Scoped to OpenTelemetry: the rest of the tree is held by the
+                     libraries BOM and is not this rule's concern. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>opentelemetry-upper-bound</id>
+                        <goals>
+                            <goal>enforce</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <requireUpperBoundDeps>
+                                    <!-- Exact coordinates: this plugin version matches no
+                                         wildcard here (a bare group or group:* matched nothing,
+                                         measured). The two base declares stand for the family,
+                                         which releases under one version. -->
+                                    <includes>
+                                        <include>io.opentelemetry:opentelemetry-api</include>
+                                        <include>io.opentelemetry:opentelemetry-sdk-metrics</include>
+                                    </includes>
+                                </requireUpperBoundDeps>
+                            </rules>
                         </configuration>
                     </execution>
                 </executions>

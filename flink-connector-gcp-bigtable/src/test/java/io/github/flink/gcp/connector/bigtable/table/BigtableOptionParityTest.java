@@ -103,6 +103,12 @@ class BigtableOptionParityTest {
         map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
         map.put("createDisposition", BigtableConnectorOptions.SINK_CREATE_DISPOSITION);
         map.put("deliveryGuarantee", BigtableConnectorOptions.SINK_DELIVERY_GUARANTEE);
+        map.put(
+                "exportClientMetricsToFlink",
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK);
+        map.put(
+                "exportClientMetricsToCloudMonitoring",
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING);
         return Collections.unmodifiableMap(map);
     }
 

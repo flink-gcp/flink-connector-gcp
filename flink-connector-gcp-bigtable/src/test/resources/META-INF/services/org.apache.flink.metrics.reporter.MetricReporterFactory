@@ -13,3 +13,4 @@
 # limitations under the License.
 
 io.github.flink.gcp.connector.bigtable.source.ActiveChangeStreamReadsReporter
+io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.SdkSeriesReporter

@@ -47,6 +47,7 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
+import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
@@ -355,6 +356,46 @@ class BigtableDynamicTableFactoryTest {
     }
 
     @Test
+    void carriesTheClientMetricsChoicesToTheSinkRuntime() {
+        Map<String, String> options = minimalOptions();
+        options.put("client-metrics.export-to-flink", "true");
+        options.put("client-metrics.export-to-cloud-monitoring", "false");
+
+        BigtableSinkConfig<?> config = built(SCHEMA, options).getConfig();
+        assertThat(config.isExportClientMetricsToFlink()).isTrue();
+        assertThat(config.isExportClientMetricsToCloudMonitoring()).isFalse();
+    }
+
+    @Test
+    void leavesTheClientMetricsAtTheBuildersDefaults() {
+        BigtableSinkConfig<?> config = built(SCHEMA, minimalOptions()).getConfig();
+
+        assertThat(config.isExportClientMetricsToFlink()).isFalse();
+        assertThat(config.isExportClientMetricsToCloudMonitoring()).isTrue();
+    }
+
+    @Test
+    void refusesTheClientMetricsOptionsWhereTheyAreNotAppliedYet() {
+        // Only the MutateRows writer applies them so far (#713); a single-row write mode or
+        // staged delivery refuses them rather than ignoring them.
+        for (String key :
+                new String[] {
+                    "client-metrics.export-to-flink", "client-metrics.export-to-cloud-monitoring"
+                }) {
+            Map<String, String> append = minimalOptions();
+            append.put("sink.write-mode", "append");
+            append.put(key, "true");
+            assertThatThrownBy(() -> sink(append))
+                    .hasStackTraceContaining("Option '" + key + "' cannot be used with");
+
+            Map<String, String> staged = stagedOptions();
+            staged.put(key, "true");
+            assertThatThrownBy(() -> sink(staged))
+                    .hasStackTraceContaining("Option '" + key + "' cannot be used with");
+        }
+    }
+
+    @Test
     void copyCarriesEveryValue() {
         // A copy() that dropped emulator-endpoint would send a job at the real service where the
         // DDL said emulator, and the planner copies a sink on every applied ability and on
@@ -369,6 +410,8 @@ class BigtableDynamicTableFactoryTest {
         options.put("sink.create-disposition", "create-if-needed");
         options.put("sink.table-create.gc-rule.max-versions", "2");
         options.put("sink.cell-timestamp.truncate-to-millis", "true");
+        options.put("client-metrics.export-to-flink", "true");
+        options.put("client-metrics.export-to-cloud-monitoring", "false");
         DynamicTableSink original = sink(options);
 
         assertThat(original.copy()).isEqualTo(original).hasSameHashCodeAs(original);

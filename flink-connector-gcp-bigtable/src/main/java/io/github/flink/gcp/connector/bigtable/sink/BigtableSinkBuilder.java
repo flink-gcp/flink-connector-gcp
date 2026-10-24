@@ -58,6 +58,8 @@ public class BigtableSinkBuilder<T> {
     @Nullable private TableCreateOptions tableCreateOptions;
     private BigtableDeliveryGuarantee deliveryGuarantee = BigtableDeliveryGuarantee.AT_LEAST_ONCE;
     @Nullable private BigtableStagedOptions stagedOptions;
+    private boolean exportClientMetricsToFlink;
+    private boolean exportClientMetricsToCloudMonitoring = true;
 
     BigtableSinkBuilder() {}
 
@@ -217,6 +219,47 @@ public class BigtableSinkBuilder<T> {
     }
 
     /**
+     * Exports the Bigtable client's own metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>The writer registers them under its metric group as {@code sdkMethod.METHOD.leaf}: per RPC
+     * method, the client's operation and attempt counts and latencies, its retries, its
+     * connectivity errors, and its server, first-response, application and throttling time.
+     * Latencies are reported as a count and a millisecond sum, so a backend divides their rates for
+     * the mean over any window; no percentile is reported. A reporter sees the first values at its
+     * first report after the client sends a request.
+     *
+     * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
+     * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public BigtableSinkBuilder<T> exportClientMetricsToFlink(boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
+     * Sets whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
+     * Monitoring, which it does by default. Optional; on by default.
+     *
+     * <p>Off, the client creates no Cloud Monitoring exporter at all. Besides the export, that
+     * removes the exporter's platform detection when a client closes: off Google Cloud, where
+     * nothing answers on the metadata server's address, each close otherwise waits for that
+     * connection attempt to time out. It is independent of {@link
+     * #exportClientMetricsToFlink(boolean)}, which neither needs nor stops this export.
+     *
+     * @param exportClientMetricsToCloudMonitoring whether the client exports to Cloud Monitoring
+     * @return this builder
+     */
+    public BigtableSinkBuilder<T> exportClientMetricsToCloudMonitoring(
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        return this;
+    }
+
+    /**
      * Sets whether the sink may create the destination table when a mutation finds it — or one of
      * its column families — missing. Defaults to {@link CreateDisposition#CREATE_NEVER}, under
      * which the table and its families must exist.
@@ -294,8 +337,15 @@ public class BigtableSinkBuilder<T> {
                         serviceAccountKeyFile,
                         emulatorEndpoint,
                         createDisposition,
-                        tableCreateOptions);
+                        tableCreateOptions,
+                        exportClientMetricsToFlink,
+                        exportClientMetricsToCloudMonitoring);
         if (deliveryGuarantee == BigtableDeliveryGuarantee.EXACTLY_ONCE) {
+            Preconditions.checkState(
+                    !exportClientMetricsToFlink && exportClientMetricsToCloudMonitoring,
+                    "EXACTLY_ONCE does not apply the client-metrics settings yet: leave"
+                            + " exportClientMetricsToFlink and exportClientMetricsToCloudMonitoring"
+                            + " at their defaults.");
             Preconditions.checkState(
                     !writerOptionsExplicit,
                     "EXACTLY_ONCE uses stagedOptions.requestOptions, not writerOptions");

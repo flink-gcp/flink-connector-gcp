@@ -51,7 +51,11 @@ so marked whose name the module *does* register fails, so the marker cannot be
 used to hide a stale row. Subgroup rows (`errorClass.CODE.errors`,
 `destination.TABLE.recordsSend`) are templated — the middle segment is an
 all-caps placeholder — and their group and leaf names are read from the
-`base.metrics` sources that register them, listed under [[subgroups]].
+sources that register them, listed under [[subgroups]]. Those are the
+`base.metrics` registrars and, since #713, a connector's own client-metrics
+adapter (`sdkMethod.METHOD.operations`): a [[subgroups]] source inside a mapped
+module registers template leaves, not inventory names, so the inventory rule
+below does not read it.
 
 Exit codes: 0 clean, 1 policy violation (undocumented, stale or mis-typed
 metric), 2 infrastructure or config authoring error (missing file, invalid
@@ -526,8 +530,16 @@ def main() -> int:
         module, page = entry["module"], ROOT / entry["page"]
         sources = parsed_sources(module)
         constants = inventory(module, sources)
+        # A [[subgroups]] source in the module registers its leaves through
+        # its own constants, by design; the template check below holds them.
         registered, used_constants, reg_problems = registrations(
-            module, sources, constants
+            module,
+            {
+                source: parsed
+                for source, parsed in sources.items()
+                if str(source.relative_to(ROOT)) not in claimed
+            },
+            constants,
         )
         problems.extend(reg_problems)
         if not registered:

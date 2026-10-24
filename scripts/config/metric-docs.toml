@@ -21,7 +21,7 @@
 # adding one:
 #
 #   [[connectors]]  module -> page      what must be documented
-#   [[subgroups]]   a base.metrics source registering templated subgroup leaves
+#   [[subgroups]]   a source registering templated subgroup leaves
 #   [exempt]        source side         a registered name with no row
 #   [extra]         page side           a row that exists with no registration
 #
@@ -82,6 +82,14 @@ source = "flink-connector-gcp-base/src/main/java/io/github/flink/gcp/connector/b
 
 [[subgroups]]
 source = "flink-connector-gcp-base/src/main/java/io/github/flink/gcp/connector/base/metrics/DestinationMetrics.java"
+
+# A connector's client-library metrics adapter (#713): the same one-addGroup shape,
+# under `sdkMethod`, with the client's per-method series as its leaves. It lives
+# in the connector module because the leaves are that client's instruments; the
+# claim here is also what keeps its registrations out of the module's
+# *MetricNames inventory rule.
+[[subgroups]]
+source = "flink-connector-gcp-bigtable/src/main/java/io/github/flink/gcp/connector/bigtable/BigtableSdkMetrics.java"
 
 # SOURCE SIDE. Registered names that deliberately have no row, keyed
 # `Class.name` — the inventory class (or [[subgroups]] class) and the name

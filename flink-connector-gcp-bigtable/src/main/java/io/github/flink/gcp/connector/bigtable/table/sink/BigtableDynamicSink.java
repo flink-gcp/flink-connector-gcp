@@ -99,6 +99,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private final InsertOnlyInputMode insertOnlyInputMode;
     private final boolean truncateCellTimestampToMillis;
     private final MapFamilyUpdateMode mapFamilyUpdateMode;
+    private final boolean exportClientMetricsToFlink;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /** Metadata keys the planner selected, in {@link WritableMetadata#listAll()} order. */
     private List<String> metadataKeys;
@@ -131,6 +133,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 Preconditions.checkNotNull(
                         builder.insertOnlyInputMode, "insertOnlyInputMode must not be null");
         this.truncateCellTimestampToMillis = builder.truncateCellTimestampToMillis;
+        this.exportClientMetricsToFlink = builder.exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = builder.exportClientMetricsToCloudMonitoring;
         this.mapFamilyUpdateMode =
                 Preconditions.checkNotNull(
                         builder.mapFamilyUpdateMode, "mapFamilyUpdateMode must not be null");
@@ -284,7 +288,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         if (staged) {
             builder.deliveryGuarantee(deliveryGuarantee).stagedOptions(stagedOptions);
         } else {
-            builder.writerOptions(writerOptions);
+            builder.writerOptions(writerOptions)
+                    .exportClientMetricsToFlink(exportClientMetricsToFlink)
+                    .exportClientMetricsToCloudMonitoring(exportClientMetricsToCloudMonitoring);
         }
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
@@ -349,6 +355,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 .insertOnlyInputMode(insertOnlyInputMode)
                 .truncateCellTimestampToMillis(truncateCellTimestampToMillis)
                 .mapFamilyUpdateMode(mapFamilyUpdateMode)
+                .exportClientMetricsToFlink(exportClientMetricsToFlink)
+                .exportClientMetricsToCloudMonitoring(exportClientMetricsToCloudMonitoring)
                 .metadataKeys(metadataKeys)
                 .build();
     }
@@ -388,6 +396,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && insertOnlyInputMode == that.insertOnlyInputMode
                 && truncateCellTimestampToMillis == that.truncateCellTimestampToMillis
                 && mapFamilyUpdateMode == that.mapFamilyUpdateMode
+                && exportClientMetricsToFlink == that.exportClientMetricsToFlink
+                && exportClientMetricsToCloudMonitoring == that.exportClientMetricsToCloudMonitoring
                 && metadataKeys.equals(that.metadataKeys);
     }
 
@@ -415,6 +425,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 insertOnlyInputMode,
                 truncateCellTimestampToMillis,
                 mapFamilyUpdateMode,
+                exportClientMetricsToFlink,
+                exportClientMetricsToCloudMonitoring,
                 metadataKeys);
     }
 
@@ -442,6 +454,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private InsertOnlyInputMode insertOnlyInputMode;
         private boolean truncateCellTimestampToMillis;
         private MapFamilyUpdateMode mapFamilyUpdateMode = MapFamilyUpdateMode.MERGE;
+        private boolean exportClientMetricsToFlink;
+        private boolean exportClientMetricsToCloudMonitoring = true;
         private List<String> metadataKeys = Collections.emptyList();
 
         @Nullable private String lineageTableName;
@@ -571,6 +585,27 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder tableCreateOptions(@Nullable TableCreateOptions tableCreateOptions) {
             this.tableCreateOptions = tableCreateOptions;
+            return this;
+        }
+
+        /**
+         * @param exportClientMetricsToFlink whether the client's own metrics are exported through
+         *     Flink's metric system
+         * @return this builder
+         */
+        public Builder exportClientMetricsToFlink(boolean exportClientMetricsToFlink) {
+            this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+            return this;
+        }
+
+        /**
+         * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+         *     Monitoring export
+         * @return this builder
+         */
+        public Builder exportClientMetricsToCloudMonitoring(
+                boolean exportClientMetricsToCloudMonitoring) {
+            this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
             return this;
         }
 

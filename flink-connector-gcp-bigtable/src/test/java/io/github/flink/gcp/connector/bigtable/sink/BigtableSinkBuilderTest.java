@@ -82,6 +82,25 @@ class BigtableSinkBuilderTest {
         // garbage-collection policy somebody then has to fix.
         assertThat(config.getCreateDisposition()).isEqualTo(CreateDisposition.CREATE_NEVER);
         assertThat(config.getTableCreateOptions()).isNull();
+        // The client's own metrics stay as the client ships them: nothing exported to Flink, and
+        // its built-in Cloud Monitoring export on.
+        assertThat(config.isExportClientMetricsToFlink()).isFalse();
+        assertThat(config.isExportClientMetricsToCloudMonitoring()).isTrue();
+    }
+
+    @Test
+    void carriesTheClientMetricsChoices() {
+        BigtableSinkConfig<String> config =
+                config(
+                        BigtableSink.<String>builder()
+                                .table(TABLE)
+                                .serializer(SERIALIZER)
+                                .exportClientMetricsToFlink(true)
+                                .exportClientMetricsToCloudMonitoring(false)
+                                .build());
+
+        assertThat(config.isExportClientMetricsToFlink()).isTrue();
+        assertThat(config.isExportClientMetricsToCloudMonitoring()).isFalse();
     }
 
     @Test
