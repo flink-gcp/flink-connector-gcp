@@ -40,7 +40,7 @@ The [lifecycle foundation](#lifecycle-foundation) also owns the dedicated superv
 | `tier3-bigquery/bigquery` | The same job permissions in `tier3-bigquery`; no permissions in `tier3-system` |
 | `tier3-pubsub/pubsub` | The same job permissions in `tier3-pubsub`; no permissions in `tier3-system` |
 | `tier3-bigtable/bigtable` | The same job permissions in `tier3-bigtable`; no permissions in `tier3-system` |
-| `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads |
+| `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads; for the supervisor alone, Node events in `default` through the administrator-owned Role of [Node shutdown events](#node-shutdown-events) |
 
 The installer holds the explicit chart permission inventory so Kubernetes permits creating and binding its Roles without unrestricted `bind`, `escalate` or `impersonate` grants.
 The existing GCP IAM permissions remain effective: additive Kubernetes RBAC does not narrow them.
@@ -184,6 +184,47 @@ CI imports the six prerequisites and creates five objects: the KSA, job Role/Rol
 
 After the merge-triggered apply, verify the namespace's zero quotas, empty workload inventory, expected KSA annotation and runner reads before adding the namespace to the shared preflight and the Helm watch set.
 The [verification](https://github.com/flink-gcp/flink-connector-gcp/issues/1860) found the quotas zero, the inventory empty, the annotation in place and the reads granted, and [#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864) added the namespace to both.
+
+## Node shutdown events
+
+The recovery exercise attributes a Spot reclamation to the platform from the kubelet's `Shutdown` event, which Kubernetes records on the Node in the `default` namespace, and tells it from the autoscaler's removal of a node by the autoscaler's `ScaleDown` event there ([#1892](https://github.com/flink-gcp/flink-connector-gcp/issues/1892)).
+The supervisor reads those events through a Role and RoleBinding named `tier3-node-events` in `default`, which grant `get`, `list` and `watch` on `events` to the `tier3-supervisor` KSA and nothing else.
+They are administrator-owned rather than in this root, because the bootstrap identity holds no rights in `default` and creating a Role there would need an escalation this root does not have.
+An administrator applies them with server-side apply:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tier3-node-events
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: flink-tier3
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tier3-node-events
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: flink-tier3
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tier3-node-events
+subjects:
+  - kind: ServiceAccount
+    name: tier3-supervisor
+    namespace: tier3-system
+```
+
+`kubectl auth can-i --as=system:serviceaccount:tier3-system:tier3-supervisor` then answers yes for `list events -n default` and no for `create events -n default` and `list pods -n default`.
+The supervisor reads them only when a workload Pod is lost outside a planned recovery; without the Role that read is refused, and the run stops on the refusal instead of either stop, which a campaign does not repeat.
+This root does not recreate them, so a rebuild of the cluster applies them again by hand.
 
 ## PR plan and merge apply
 

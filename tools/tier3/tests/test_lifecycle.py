@@ -210,6 +210,16 @@ class Kube:
             if item["kind"] == kind and item["metadata"]["namespace"] == namespace
         ]
 
+    def node_events(self, reason):
+        return [
+            item
+            for item in self.inventory()
+            if item["kind"] == "Event"
+            and item["metadata"]["namespace"] == "default"
+            and item.get("reason") == reason
+            and item.get("involvedObject", {}).get("kind") == "Node"
+        ]
+
     def patch(self, value, changes, subresource=""):
         assert not subresource
         current = self.get(
