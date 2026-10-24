@@ -30,6 +30,7 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 | `pubsub-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Pub/Sub recovery application](../apps/pubsub/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
 | `cloudtasks-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Cloud Tasks recovery application](../apps/cloudtasks/README.md#recovery-application) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
 | `bigtable-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Bigtable recovery application](../apps/bigtable/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
+| `spanner-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [Spanner recovery application](../apps/spanner/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |
 | `smoke` | Reviewed Flink base pin, the [generic smoke application](../apps/smoke/README.md) and the unchanged Apache Datagen 2.2.1 JAR | Build the application payload with Maven, then its Dockerfile for AMD64 |
 
 Operator and Flink use `crane copy`; they are not rebuilt.
@@ -52,7 +53,7 @@ mise x -- just tier3-lifecycle-requirements
 Run the export recipe before a local Docker build as well; the publication workflow runs it before cloud authentication.
 The locked export fails when dependency declarations and `uv.lock` disagree.
 Docker's setup-buildx, metadata and build-push actions build it, apply a full-commit `sha-...` tag and OCI labels, and publish it.
-The BigQuery, Pub/Sub, Cloud Tasks and Bigtable contexts are `kubernetes/apps/bigquery`, `kubernetes/apps/pubsub`, `kubernetes/apps/cloudtasks` and `kubernetes/apps/bigtable`; their `.dockerignore` files admit only each Dockerfile, application JAR and packaged runtime dependency JARs.
+The BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner contexts are `kubernetes/apps/bigquery`, `kubernetes/apps/pubsub`, `kubernetes/apps/cloudtasks`, `kubernetes/apps/bigtable` and `kubernetes/apps/spanner`; their `.dockerignore` files admit only each Dockerfile, application JAR and packaged runtime dependency JARs.
 Their CI lanes also build the Dockerfiles without publishing, using the public digest that the publication workflow mirrors into GAR.
 The lifecycle build context is only `kubernetes/images/lifecycle`; the smoke context is `kubernetes/apps/smoke`, with `.dockerignore` allowing only the Dockerfile and two packaged JARs.
 
@@ -86,14 +87,14 @@ The workflow no longer publishes the Cloud Tasks measurement images (`cloudtasks
 Versions already published expire under the repository's seven-day cleanup policy.
 It publishes the Cloud Tasks recovery application as `cloudtasks-recovery` instead, for the cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), on the Flink 2.2.1 line only.
 
-Every dispatch verifies smoke, BigQuery, Pub/Sub, Cloud Tasks and Bigtable before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all five application images with BuildKit.
-BigQuery, Pub/Sub, Cloud Tasks and Bigtable publication require separate approval before dispatch; adding this path does not authorize a publication or trial.
-It uses one standard Ubuntu runner, permits one publication at a time and has a 30-minute job timeout.
+Every dispatch verifies smoke, BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all six application images with BuildKit.
+BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner publication require separate approval before dispatch; adding this path does not authorize a publication or trial.
+It uses one standard Ubuntu runner, permits one publication at a time and has a 45-minute job timeout.
 The fixed source digests define what is transferred; there is no custom image-content inspector, capacity quota or intermediate receipt format.
 Docker's login action logs out when the job ends.
 
 A successful run lists the Operator, Flink, lifecycle tools and smoke digest references in the GitHub Actions job summary.
-It also lists the shared recovery application base once, followed by the BigQuery, Pub/Sub, Cloud Tasks and Bigtable recovery application digests.
+It also lists the shared recovery application base once, followed by the BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner recovery application digests.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
 The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
 The build action also supplies its standard build summary.

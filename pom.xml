@@ -1196,6 +1196,12 @@ limitations under the License.
             </modules>
         </profile>
         <profile>
+            <id>tier3-spanner</id>
+            <modules>
+                <module>kubernetes/apps/spanner</module>
+            </modules>
+        </profile>
+        <profile>
             <id>tier3-cloudtasks</id>
             <modules>
                 <module>kubernetes/apps/cloudtasks</module>

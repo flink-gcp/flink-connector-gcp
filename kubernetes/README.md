@@ -39,6 +39,7 @@ kubernetes/
   apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
   apps/cloudtasks/               # Cloud Tasks measurement and recovery applications and local tests
   apps/bigtable/                 # Bigtable sink and Change Streams recovery application and local tests
+  apps/spanner/                  # Spanner sink, Change Streams and batch-read recovery application and local tests
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
@@ -236,6 +237,12 @@ Build it with `just tier3-bigtable-verify`.
 Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph.
 The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery runs it in the `tier3-bigtable` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf), and the rig scenario of [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/bigtable/README.md#recovery-trial) describes.
 Its four trials each reached `usable`, as the [Bigtable recovery trial findings](../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) record.
+
+## Spanner recovery application
+
+The [Spanner recovery application](apps/spanner/README.md) supplies the one graph that the trials of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) share: the sink, a Change Streams relay and a paced batch-read copy.
+Build it with `just tier3-spanner-verify`.
+Its tests run the production graph against the Spanner emulator through savepoint upgrades and both rescales and pin the graph; it has no namespace, grants or scenario yet.
 
 ## Pub/Sub recovery application
 

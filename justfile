@@ -491,6 +491,10 @@ ci-maven-cache-warmup:
 tier3-bigtable-verify:
     just verify -P tier3-bigtable -pl kubernetes/apps/bigtable -am clean
 
+# Verify the internal Spanner recovery application without GCP access.
+tier3-spanner-verify:
+    just verify -P tier3-spanner -pl kubernetes/apps/spanner -am clean
+
 # Verify the internal Pub/Sub recovery relay and offline evidence oracle.
 tier3-pubsub-verify:
     just verify -P tier3-pubsub -pl kubernetes/apps/pubsub -am clean
