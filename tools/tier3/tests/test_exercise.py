@@ -39,6 +39,8 @@ from .cloudtasks.test_recovery_runtime import prepared as prepared  # noqa: PLC0
 from .test_lifecycle import env as env  # noqa: PLC0414
 from .test_lifecycle import rt
 
+SHUTDOWN = "Shutdown manager detected shutdown event"
+
 LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
 
 
@@ -635,6 +637,185 @@ def test_a_pod_replaced_inside_the_held_window_is_unplanned(held):
     held.pod("tm-3", "taskmanager")
     with pytest.raises(Failure, match="Unplanned workload replacement"):
         held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+def node_event(world, reason, node, at, message):
+    """An event on a Node, as Kubernetes records it in `default`."""
+    name = f"{reason}-{node}-{at}"
+    world.env.kube.put(
+        {
+            "kind": "Event",
+            "apiVersion": "v1",
+            "metadata": {
+                "namespace": "default",
+                "name": name,
+                "uid": name + "-uid",
+                "resourceVersion": "1",
+            },
+            "involvedObject": {"kind": "Node", "name": node},
+            "reason": reason,
+            "message": message,
+            "lastTimestamp": at,
+        }
+    )
+
+
+def shutdown(world, seconds, node="spot-node", message=SHUTDOWN):
+    """The kubelet's `Shutdown`, ``seconds`` after the poll that last saw tm-2."""
+    node_event(world, "Shutdown", node, rt.utc(world.env.clock() + seconds), message)
+
+
+def scale_down(world, seconds, node="spot-node"):
+    node_event(
+        world,
+        "ScaleDown",
+        node,
+        rt.utc(world.env.clock() + seconds),
+        "marked the node as toBeDeleted/unschedulable",
+    )
+
+
+def place(world, pod, node, bound=-3600):
+    """Binds a Pod to a node ``bound`` seconds from now; it was created three hours ago."""
+    now = world.env.clock()
+    world.pods[pod]["spec"] = {"nodeName": node}
+    world.pods[pod]["metadata"]["creationTimestamp"] = rt.utc(now - 10800)
+    world.pods[pod]["status"]["conditions"] = [
+        {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": rt.utc(now + bound),
+        }
+    ]
+
+
+def lose_tm2(held, bound=-3600):
+    """The poll that last sees tm-2 on its node, then Flink's replacement of it."""
+    place(held, "tm-2", "spot-node", bound)
+    held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+    del held.pods["tm-2"]
+    held.pod("tm-3", "taskmanager")
+
+
+def test_a_pod_replaced_after_its_node_shut_down_is_an_interruption(held, monkeypatch):
+    hold(held)
+    lose_tm2(held)
+    shutdown(held, 16)
+    emitted = []
+    monkeypatch.setattr(
+        held.env, "emit", lambda event, payload: emitted.append((event, payload))
+    )
+
+    # Flink has already replaced the Pod, so only the node's event shows the reclamation.
+    with pytest.raises(Failure, match="Unplanned workload interruption"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+    assert [
+        (event, [item["involvedObject"]["name"] for item in payload])
+        for event, payload in emitted
+    ] == [("scheduling-events", ["spot-node"])]
+
+
+def test_a_shutdown_a_long_poll_after_the_pod_is_still_an_interruption(held):
+    hold(held)
+    lose_tm2(held)
+    shutdown(held, 75)
+
+    with pytest.raises(Failure, match="Unplanned workload interruption"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+@pytest.mark.parametrize(
+    ("node", "marked"),
+    [
+        # Another node's removal.
+        ("other-node", 70),
+        # A removal marked more than ten minutes before the shutdown.
+        ("spot-node", 75 - 601),
+        # A mark recorded after the shutdown.
+        ("spot-node", 80),
+    ],
+)
+def test_a_scale_down_that_did_not_remove_the_node_vetoes_nothing(held, node, marked):
+    hold(held)
+    lose_tm2(held)
+    scale_down(held, marked, node=node)
+    shutdown(held, 75)
+
+    with pytest.raises(Failure, match="Unplanned workload interruption"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+@pytest.mark.parametrize(
+    ("node", "seconds", "scaled_down", "message"),
+    [
+        # An earlier life of the node name: after the Pod's creation, before its binding.
+        ("spot-node", -7200, False, SHUTDOWN),
+        # The autoscaler removing the node, just after marking it.
+        ("spot-node", 75, True, SHUTDOWN),
+        # Another node, which held none of the run's Pods.
+        ("other-node", 16, False, SHUTDOWN),
+        # The kubelet cancelling a shutdown, under the same reason.
+        (
+            "spot-node",
+            16,
+            False,
+            "Shutdown manager detected shutdown cancellation event",
+        ),
+    ],
+)
+def test_a_shutdown_that_did_not_stop_the_pod_is_no_interruption(
+    held, node, seconds, scaled_down, message
+):
+    hold(held)
+    lose_tm2(held)
+    if scaled_down:
+        scale_down(held, seconds - 5, node=node)
+    shutdown(held, seconds, node=node, message=message)
+
+    with pytest.raises(Failure, match="Unplanned workload replacement"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+def test_a_mark_from_before_the_binding_still_vetoes(held):
+    # An in-flight binding can follow the autoscaler's mark, so the mark still
+    # counts, and the error, if any, is the stop a campaign does not repeat.
+    hold(held)
+    lose_tm2(held, bound=-300)
+    scale_down(held, -400)
+    shutdown(held, 75)
+
+    with pytest.raises(Failure, match="Unplanned workload replacement"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+def test_a_mark_published_while_the_shutdowns_are_read_still_vetoes(held, monkeypatch):
+    # The autoscaler marks the node just before it shuts it down, so a mark can
+    # land between two reads; the shutdowns are read first for that reason.
+    hold(held)
+    lose_tm2(held)
+    read = held.env.kube.node_events
+
+    def node_events(reason):
+        events = read(reason)
+        if reason == "Shutdown":
+            scale_down(held, 70)
+            shutdown(held, 75)
+            events = read(reason)
+        return events
+
+    monkeypatch.setattr(held.env.kube, "node_events", node_events)
+
+    with pytest.raises(Failure, match="Unplanned workload replacement"):
+        held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+
+
+def test_a_node_shutdown_with_no_pod_lost_is_no_interruption(held):
+    hold(held)
+    place(held, "tm-2", "spot-node")
+    held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
+    shutdown(held, 16)
+
+    held.exercise.scheduling(copy.deepcopy(list(held.pods.values())))
 
 
 def test_a_rest_error_inside_the_held_window_is_not_a_recoverys(held):
