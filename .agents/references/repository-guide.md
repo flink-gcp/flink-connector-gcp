@@ -857,7 +857,8 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
 - **A multi-step sequence is named once, in the `justfile`, and CI calls that recipe** (#111;
   ADR-0057). CI helpers live in `scripts/` as files — rat-headed, shellchecked, runnable by
   hand, which is the first move on any red CI job that has a recipe — while `tools/` holds
-  build tool *configuration* and nothing lints inside a recipe body
+  build tool *configuration* and the Tier-3 package, and nothing lints inside an ordinary recipe
+  body
 - **Where a tool's version lives decides how CI installs it** (ADR-0057): pin in `mise.toml`
   and install with `jdx/mise-action` + `install_args` naming the job's subset when a version
   skew could fail an unchanged pull request; otherwise `taiki-e/install-action` unversioned —
