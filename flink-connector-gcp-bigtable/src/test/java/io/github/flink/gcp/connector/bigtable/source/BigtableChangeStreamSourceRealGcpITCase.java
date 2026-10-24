@@ -43,9 +43,11 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -65,11 +67,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
 
     private static final String APP_PROFILE = "flink-it-change-stream";
+    private static final String ROTATION_APP_PROFILE = "flink-it-change-stream-rotation";
     private static final int ROWS = 100;
     private static final AtomicBoolean CHECKPOINTED_AFTER_RECORDS = new AtomicBoolean();
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
     private static final AtomicInteger SEEN = new AtomicInteger();
     private static final Map<Integer, Set<Integer>> TABLET_RANGES_BY_SUBTASK =
+            new ConcurrentHashMap<>();
+    private static final Map<Integer, Instant> FIRST_ARRIVAL_BY_TABLET_RANGE =
             new ConcurrentHashMap<>();
 
     @Test
@@ -169,7 +174,7 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         // the job client, and the fetch loop leaves by its terminated-job branch. That branch can
         // also surface as an IOException instead of an orderly end, which is why the catch below
         // reports the deadline rather than letting a cancellation stack stand as the diagnosis.
-        // Five minutes is well over twice the whole class's duration when the run completes.
+        // Five minutes is well over twice this case's duration when the run completes.
         CountDownLatch collectionFinished = new CountDownLatch(1);
         AtomicBoolean cancelledByDeadline = new AtomicBoolean();
 
@@ -220,11 +225,126 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                 .containsEntry(1, 2);
     }
 
+    @Test
+    void readsEveryPartitionBeyondTheReadSlotsLongBeforeTheEnd() throws Exception {
+        FIRST_ARRIVAL_BY_TABLET_RANGE.clear();
+        TableDestination table =
+                createChangeStreamTableWithSplits(
+                        "change-stream-rotation", "row-0025", "row-0050", "row-0075");
+        createSingleClusterAppProfile(ROTATION_APP_PROFILE);
+        try (DefaultChangeStreamCoordinatorClient coordinator =
+                new DefaultChangeStreamCoordinatorClient(table, ROTATION_APP_PROFILE)) {
+            assertThat(coordinator.generateInitialPartitions())
+                    .as("more partitions than the subtask's two read slots")
+                    .hasSizeGreaterThanOrEqualTo(4);
+        }
+        Instant start = awaitReadableChangeStreamStart(table, ROTATION_APP_PROFILE, "marker");
+        String[] expected =
+                IntStream.range(0, ROWS)
+                        .mapToObj(index -> String.format("row-%04d", index))
+                        .toArray(String[]::new);
+        seedRows(table, expected);
+        Instant end = Instant.now().plusSeconds(180);
+        BigtableChangeStreamMutationDeserializationSchema deserializer =
+                new BigtableChangeStreamMutationDeserializationSchema();
+        // One subtask with two read slots and four partitions: two partitions are more than it
+        // can open at once.
+        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
+                BigtableChangeStreamSource.<BigtableChangeStreamMutation>builder()
+                        .table(table)
+                        .appProfileId(ROTATION_APP_PROFILE)
+                        .maxConcurrentStreamsPerSubtask(2)
+                        .deserializer(deserializer)
+                        .startPosition(StartPosition.at(start))
+                        .boundedTimestamp(end)
+                        .build();
+        StreamExecutionEnvironment environment =
+                StreamExecutionEnvironment.createLocalEnvironment(new Configuration());
+        environment.setParallelism(1);
+        List<String> keys = new ArrayList<>();
+        // The same five-minute collect deadline as the first case, for the same reason: a bounded
+        // run that never completes blocks hasNext() past JUnit's interrupt, and only closing the
+        // iterator cancels the job.
+        ExecutorService deadlineExecutor = Executors.newSingleThreadExecutor();
+        CountDownLatch collectionFinished = new CountDownLatch(1);
+        AtomicBoolean cancelledByDeadline = new AtomicBoolean();
+        try (CloseableIterator<BigtableChangeStreamMutation> mutations =
+                environment
+                        .fromSource(source, WatermarkStrategy.noWatermarks(), "change-stream")
+                        .map(new RecordFirstArrival())
+                        .returns(deserializer.getProducedType())
+                        .executeAndCollect()) {
+            Future<?> collectDeadline =
+                    deadlineExecutor.submit(
+                            () -> {
+                                if (!collectionFinished.await(5, TimeUnit.MINUTES)) {
+                                    cancelledByDeadline.set(true);
+                                    mutations.close();
+                                }
+                                return null;
+                            });
+            try {
+                mutations.forEachRemaining(
+                        mutation -> keys.add(mutation.getRowKey().toStringUtf8()));
+            } catch (Exception e) {
+                if (!cancelledByDeadline.get()) {
+                    throw e;
+                }
+                throw new AssertionError(deadlineDiagnosis(), e);
+            } finally {
+                collectionFinished.countDown();
+            }
+            collectDeadline.get();
+        } finally {
+            deadlineExecutor.shutdownNow();
+        }
+
+        assertThat(cancelledByDeadline).as(deadlineDiagnosis()).isFalse();
+        assertThat(keys).contains(expected);
+        // Before #1893 the enumerator held the two partitions the subtask had no slot for until
+        // the two it read ended at the bounded timestamp, so their first rows arrived about two
+        // minutes after the others, past the end; now the subtask queues them and rotates them in
+        // at five-second service heartbeats. Measured from the earliest arrival, so a job that
+        // starts late does not fail it.
+        Instant earliest = Collections.min(FIRST_ARRIVAL_BY_TABLET_RANGE.values());
+        // A job that started so late that the end came within a heartbeat or two of its first row
+        // would let the held partitions arrive inside the minute below without any rotation.
+        assertThat(earliest)
+                .as("the job's first row arrived early enough to judge, before %s", end)
+                .isBefore(end.minusSeconds(90));
+        Map<Integer, Long> secondsAfterEarliest = new TreeMap<>();
+        FIRST_ARRIVAL_BY_TABLET_RANGE.forEach(
+                (range, arrival) ->
+                        secondsAfterEarliest.put(
+                                range, java.time.Duration.between(earliest, arrival).getSeconds()));
+        assertThat(secondsAfterEarliest)
+                .as("seconds from the earliest tablet range's first row to each range's")
+                .containsOnlyKeys(0, 1, 2, 3)
+                .allSatisfy((range, seconds) -> assertThat(seconds).isLessThan(60));
+    }
+
     private static String deadlineDiagnosis() {
         return "the bounded Change Streams job did not complete at its end time and was cancelled"
                 + " by the five-minute collect deadline; the enumerator never signalled"
                 + " completion, so look for repeated tokenless partition restarts in the"
                 + " JobManager log (#951)";
+    }
+
+    /** Records when the first row of each tablet range reaches the job. */
+    private static final class RecordFirstArrival
+            extends RichMapFunction<BigtableChangeStreamMutation, BigtableChangeStreamMutation> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public BigtableChangeStreamMutation map(BigtableChangeStreamMutation mutation) {
+            String key = mutation.getRowKey().toStringUtf8();
+            if (key.startsWith("row-")) {
+                int tabletRange = Math.min(Integer.parseInt(key.substring(4)) / 25, 3);
+                FIRST_ARRIVAL_BY_TABLET_RANGE.putIfAbsent(tabletRange, Instant.now());
+            }
+            return mutation;
+        }
     }
 
     /** Fails on the first mutation written after a checkpoint that included earlier mutations. */
