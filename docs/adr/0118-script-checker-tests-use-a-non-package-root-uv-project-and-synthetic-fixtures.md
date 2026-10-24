@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0118: Script checker tests use a non-package root uv project and synthetic fixtures
 
 - Status: Accepted
-- Date: 2026-08-02; revised by [#1115] (2026-08-29), [#1185] (2026-09-06) and [#1310] (2026-09-15)
-- Issues: [#243], [#249], [#1115], [#1185], [#1310]
+- Date: 2026-08-02; revised by [#1115] (2026-08-29), [#1185] (2026-09-06), [#1310] (2026-09-15) and [#1890] (2026-10-22)
+- Issues: [#243], [#249], [#1115], [#1185], [#1310], [#1890]
 - Modules: scripts, CI
 - Current behavior: [`pyproject.toml`](../../pyproject.toml), [`just test-scripts`](../../justfile),
   [script test sources](../../scripts/tests)
@@ -80,7 +80,7 @@ The upstream fix is present on the main branch but was not released when the con
 ## Alternatives declined
 
 - **Install pytest through mise/pipx only**: it would pin an executable but provide no dependency lock or configuration home for the growing suite.
-- **Package all remaining scripts together**: the checker and release scripts retain distinct responsibilities and callers. Tier-3 now builds its own workspace member; further migrations can introduce `tools/checks` and `tools/release` when their code and tests move.
+- **Package all remaining scripts together**: the checker and release scripts retain distinct responsibilities and callers. Tier-3 builds its own workspace member because it is installed and run as a CLI; the `justfile` and CI run the checker and release scripts by path, so [#1890] keeps them in `scripts/` rather than introducing `tools/checks` and `tools/release` members.
 - **Assert every checker against the live repository**: the lint workflow would need to enumerate every source and documentation input, and a missed path would make the test stale silently.
 - **Treat line coverage as sufficient evidence**: a test can execute a rule while accepting both the original and mutated behavior, as the two surviving controls demonstrated.
 - **Give each Java-aware checker separate PEP 723 metadata**: seven copies would let their compatible ranges and resolved parser versions drift even though they consume one shared parsing module.
@@ -100,3 +100,4 @@ Buildable members own their package dependencies independently of that root poli
 [#1185]: https://github.com/flink-gcp/flink-connector-gcp/issues/1185
 
 [#1310]: https://github.com/flink-gcp/flink-connector-gcp/issues/1310
+[#1890]: https://github.com/flink-gcp/flink-connector-gcp/issues/1890

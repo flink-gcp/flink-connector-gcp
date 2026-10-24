@@ -14,21 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Python workspace
+# Tools
+
+`tools/` holds build-tool configuration and the Tier-3 Python package.
+Repository checks, release helpers and shell programs live in `scripts/`, and the `just` recipes are the local command interface.
+
+| Directory | Contents |
+| --- | --- |
+| `maven/` | Checkstyle configuration (`checkstyle.xml`, `suppressions.xml`) taken from the Apache Flink connectors and used by the Maven build's Checkstyle check |
+| `tier3/` | `flink-tier3`, the Tier-3 package for foundation authentication, schemas and bounded workload lifecycle |
+
+The japicmp check writes its reports to `japicmp-output/`, which is ignored by Git.
+
+## Python workspace
 
 The repository root owns one uv workspace and one `uv.lock`.
-Each tool package declares its runtime dependencies and console entry points in its own `pyproject.toml`.
-
-| Directory | Responsibility | Migration |
-| --- | --- | --- |
-| `tier3/` | Foundation authentication, schemas and bounded workload lifecycle | Packaged |
-| `checks/` | Repository checks and shared source analysis | Not created; existing Python checks remain in `scripts/` |
-| `release/` | Release validation and publication helpers | Not created; existing helpers remain in `scripts/` |
-
-Add the latter workspace members when their callers and tests move; empty placeholder packages are unnecessary.
-Shell programs remain in `scripts/`.
-The existing `just` recipes remain the local command interface.
-`just test-scripts` runs both the remaining script tests and the Tier-3 package tests.
+The root project is not packaged; it holds the dependencies of the scripts and their tests.
+`tier3/` is the only workspace member, and declares its runtime dependencies and console entry point in its own `pyproject.toml`.
+`just test-scripts` runs both the script tests and the Tier-3 package tests.
 
 ## Tier-3
 
@@ -40,21 +43,19 @@ mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycl
 mise x uv -- uv build --package flink-tier3 --out-dir tools/tier3/target/dist
 ```
 
-The package uses a `src/` layout and ordinary imports; its CLI, bootstrap helper and schema generator no longer require file-path imports or script-specific dependency pins.
+The package uses a `src/` layout and ordinary imports.
 The wheel includes all Python modules and the reviewed `policy.toml`.
-It is a local build artifact; this change adds no package-registry publication.
+It is a local build artifact and is not published to a package registry.
 
 Service tooling lives in the `flink_tier3.bigquery`, `flink_tier3.pubsub`, `flink_tier3.cloudtasks` and `flink_tier3.bigtable` subpackages.
-Shared approval, lifecycle, transport, source delivery, and report entry points remain in `flink_tier3`.
+Shared approval, lifecycle, transport, source delivery, and report entry points live in `flink_tier3`.
 A scenario whose runner creates one resource before the application, Cloud Tasks and Bigtable, shares its resource lifecycle, actors, REST calls and proposal checks through `flink_tier3.resource`, `actors`, `rest` and `proposal`.
 Cloud Tasks owns the single-host rig: its campaign tooling, evidence reconciliation, offline analysis and `protocol_1246.toml`.
 Tests follow the same service directories, with shared lifecycle and package tests at their parent.
-Internal imports use the new paths; the CLI command names and arguments remain unchanged.
 
 Source collection includes nested Python modules and TOML data.
 The supervisor delivery follows imports, package initializers, deferred actors, and referenced package data.
 ConfigMap keys replace path separators with dots, while volume projection restores the original package directories.
-Moving source changes both source pins; historical approvals retain their recorded hashes, and execution from this layout needs a new approval.
 
 Commands that read CUE or OpenTofu inputs require a repository checkout.
 The current directory is the default root; an installed CLI can select another checkout with `flink-tier3 --repository /path/to/checkout COMMAND ...`.
@@ -62,7 +63,7 @@ Other relative arguments, including kubeconfig and evidence paths, remain relati
 The in-cluster `supervisor` command needs only the projected package and approval/application data.
 The offline `bigquery query` and `bigquery assess` commands also work outside the checkout and perform no cloud operations; the [BigQuery application runbook](../kubernetes/apps/bigquery/README.md#offline-query-oracle) defines their aggregate contract and evidence limits.
 The internal [BigQuery resource adapter](../kubernetes/apps/bigquery/README.md#resource-adapter) prepares owned table and bounded query operations for the BigQuery actors.
-The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after the [quiescence barrier](../kubernetes/apps/bigquery/README.md#quiescence-barrier), which the supervisor factory now builds from the run's own identity rather than taking from its caller; the BigQuery runner and supervisor use explicit actor handoffs, and the production dispatch and supervisor entrypoints build them through the actor factories.
+The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after the [quiescence barrier](../kubernetes/apps/bigquery/README.md#quiescence-barrier), which the supervisor factory builds from the run's own identity; the BigQuery runner and supervisor use explicit actor handoffs, and the production dispatch and supervisor entrypoints build them through the actor factories.
 The [actor factories](../kubernetes/apps/bigquery/README.md#internal-actors) bind external approvals and BigQuery sessions to those internal loops; the production entrypoints build them, and building them does not approve a run.
 The render-only [BigQuery execution proposal](../kubernetes/apps/bigquery/README.md#offline-execution-proposal) binds the resource plan and both application phases to a reviewable supervisor bundle without creating an approval.
 The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/README.md#approval-bound-delivery-bundle) prepares and verifies delivery against a separately supplied approval without admitting execution.
@@ -70,5 +71,5 @@ The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/RE
 The internal [BigQuery recovery exercise](../kubernetes/apps/bigquery/README.md#internal-recovery-execution) coordinates table provisioning, state-preserving recovery and bounded final queries.
 
 The [lifecycle runbook](../kubernetes/lifecycle/README.md) defines execution approval and cleanup.
-Third-party dependencies remain installed in the pinned image, while the reviewed package source the supervisor entrypoint can import is projected through an immutable ConfigMap.
+Third-party dependencies are installed in the pinned image, while the reviewed package source the supervisor entrypoint can import is projected through an immutable ConfigMap.
 There is no package installation during Pod startup.
