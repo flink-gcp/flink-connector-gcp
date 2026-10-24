@@ -205,7 +205,8 @@ A reference read by the source arrives as the library's `DocumentReference`, whi
 
 Firestore's own limits stay the service's to enforce.
 A document over 1 MiB, a reserved `__name__`-style field or document id, or a map nested more than 20 levels deep is refused with `INVALID_ARGUMENT`, and the next section says what the sink does with that.
-A Standard-edition database also refuses an array directly inside an array with `INVALID_ARGUMENT: Nested arrays are not allowed`, and the emulator refuses it with `INVALID_ARGUMENT`; only an Enterprise-edition database stores one (measured 2026-10-17).
+A Standard-edition database may also refuse an array directly inside an array with `INVALID_ARGUMENT: Nested arrays are not allowed`, as Google's documentation says, and the emulator refuses it with `INVALID_ARGUMENT`; only an Enterprise-edition database is documented to store one.
+The service has answered both ways in a Standard-edition database: it stored one on 2026-10-10 and 2026-10-24 and refused one on 2026-10-17.
 The sink does not know the database's edition, so it leaves that refusal to the service too.
 
 `update` and `delete` also take a `lastUpdateTime` precondition: the write applies only if the document was last updated at exactly that time, and Firestore refuses it with `FAILED_PRECONDITION` otherwise.
@@ -683,7 +684,7 @@ Where the two disagree, the service decides.
 
 | Deviation | Consequence |
 |---|---|
-| An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`, as a Standard-edition database does, so it cannot show what an Enterprise-edition database stores |
+| An array inside an array is refused | The emulator answers `INVALID_ARGUMENT`, as Google's documentation says a Standard-edition database does, so it cannot show what an Enterprise-edition database stores |
 | A refused Datastore-mode commit applies the writes ahead of the refusal | A commit refused with `ALREADY_EXISTS` or `NOT_FOUND` applies only the writes ahead of the refused one, where the service applies all of its other writes; one refused with `INVALID_ARGUMENT` applies nothing, or the writes ahead of an entity over 1 MiB, where the service applies none. The writer's handling of the service's behavior is exercised only by the gated suite |
 | No IAM checks | The emulator accepts its placeholder token for everything, so `PERMISSION_DENIED` is not exercised |
 | No ramp-up or quota behavior | Throttling and `RESOURCE_EXHAUSTED` handling are not exercised |

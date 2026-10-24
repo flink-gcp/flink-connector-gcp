@@ -252,8 +252,13 @@ public final class DatastoreTableSchema implements Serializable {
             case ARRAY:
                 LogicalType element = ((ArrayType) type).getElementType();
                 if (element.is(LogicalTypeRoot.ARRAY)) {
+                    // The client library is the reason, not the service, whose Standard edition
+                    // has both stored and refused one (2026-10, DatastoreRejectionRealGcpITCase).
                     throw unsupported(
-                            path, type, "Datastore does not store an array directly in an array.");
+                            path,
+                            type,
+                            "The Datastore client library neither builds nor reads an array"
+                                    + " directly in an array.");
                 }
                 check(path, element, markers);
                 return;

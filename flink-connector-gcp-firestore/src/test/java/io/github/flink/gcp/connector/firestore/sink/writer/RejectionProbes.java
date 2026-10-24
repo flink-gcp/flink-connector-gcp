@@ -71,7 +71,20 @@ final class RejectionProbes {
             throws Exception {
         ApiFuture<WriteResult> future = access.submit(write);
         access.sendOutstanding();
-        return outcome(future);
+        Throwable failure = failure(future);
+        return failure == null ? null : FirestoreErrorClassifier.statusCode(failure);
+    }
+
+    /**
+     * Sends one write as the only write of its request; returns what it failed with, null if
+     * applied, for a caller that asserts the service's message as well as its status.
+     */
+    @Nullable
+    static Throwable soloFailure(FirestoreDatabaseAccess access, FirestoreWrite write)
+            throws Exception {
+        ApiFuture<WriteResult> future = access.submit(write);
+        access.sendOutstanding();
+        return failure(future);
     }
 
     /**
@@ -79,6 +92,23 @@ final class RejectionProbes {
      * null for each write applied.
      */
     static List<StatusCode.Code> batch(
+            FirestoreDatabaseAccess access,
+            List<FirestoreWrite> writes,
+            @Nullable FirestoreWrite last)
+            throws Exception {
+        List<StatusCode.Code> outcomes = new ArrayList<>();
+        for (Throwable failure : batchFailures(access, writes, last)) {
+            outcomes.add(failure == null ? null : FirestoreErrorClassifier.statusCode(failure));
+        }
+        return outcomes;
+    }
+
+    /**
+     * Sends the writes, and {@code last} if given, as one request; returns what each failed with in
+     * order, null for each write applied, for a caller that asserts the service's message as well
+     * as its status.
+     */
+    static List<Throwable> batchFailures(
             FirestoreDatabaseAccess access,
             List<FirestoreWrite> writes,
             @Nullable FirestoreWrite last)
@@ -91,20 +121,20 @@ final class RejectionProbes {
             futures.add(access.submit(last));
         }
         access.sendOutstanding();
-        List<StatusCode.Code> outcomes = new ArrayList<>();
+        List<Throwable> failures = new ArrayList<>();
         for (ApiFuture<WriteResult> future : futures) {
-            outcomes.add(outcome(future));
+            failures.add(failure(future));
         }
-        return outcomes;
+        return failures;
     }
 
     @Nullable
-    private static StatusCode.Code outcome(ApiFuture<WriteResult> future) throws Exception {
+    private static Throwable failure(ApiFuture<WriteResult> future) throws Exception {
         try {
             future.get(60, TimeUnit.SECONDS);
             return null;
         } catch (ExecutionException e) {
-            return FirestoreErrorClassifier.statusCode(e.getCause());
+            return e.getCause();
         }
     }
 }

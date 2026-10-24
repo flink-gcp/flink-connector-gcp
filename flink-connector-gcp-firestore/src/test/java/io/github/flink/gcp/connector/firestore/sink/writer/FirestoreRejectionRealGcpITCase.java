@@ -33,6 +33,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -56,6 +58,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
 class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
+
+    private static final Logger LOG =
+            LoggerFactory.getLogger(FirestoreRejectionRealGcpITCase.class);
 
     private static final Timestamp STALE = Timestamp.ofTimeSecondsAndNanos(1, 0);
 
@@ -156,6 +161,70 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     }
 
     @Test
+    void anArrayInsideAnArrayIsStoredOrRefusedForTheWholeRequest() throws Exception {
+        // Google's documentation says that "in Standard edition databases, an array cannot contain
+        // another array value as one of its elements", and the emulator refuses one with
+        // INVALID_ARGUMENT. The service's answer in the class's Standard-edition database has
+        // changed twice: stored when measured on 2026-10-10, refused with "Nested arrays are not
+        // allowed" on 2026-10-17, stored again on 2026-10-24. Asserting either answer alone turned
+        // the weekly run red at each change, so the test accepts both and holds what the writer
+        // relies on under each: a refusal names the nested array, answers every write of its
+        // request like the shapes in invalidWrites() and applies none of them, and a stored value
+        // reads back unchanged. An Enterprise-edition database stores one
+        // (FirestoreTableRealGcpITCase). Each answer is logged only once its assertions hold, so
+        // the weekly log records the service's answer and not a transient failure.
+        List<Long> inner = List.of(1L);
+        @Nullable
+        Throwable alone =
+                RejectionProbes.soloFailure(
+                        access, FirestoreWrite.set(path("nested"), Map.of("v", List.of(inner))));
+        if (alone == null) {
+            assertThat(read(path("nested")).get("v")).isEqualTo(List.of(inner));
+            LOG.info("A Standard-edition database stored an array in an array.");
+        } else {
+            // The message as well as the status, so that an INVALID_ARGUMENT for another reason,
+            // such as a value the connector encoded wrongly, is not taken for this refusal.
+            assertThat(FirestoreErrorClassifier.statusCode(alone))
+                    .isEqualTo(StatusCode.Code.INVALID_ARGUMENT);
+            assertThat(alone).hasStackTraceContaining("Nested arrays are not allowed");
+            assertThat(read(path("nested")).exists()).isFalse();
+            LOG.info("A Standard-edition database refused an array in an array.");
+        }
+
+        // The batch is judged on its own rather than against the solo answer, so a change of the
+        // service's answer between the two requests cannot fail the test; what may not happen is
+        // a request whose writes are answered differently.
+        List<Throwable> fanned =
+                RejectionProbes.batchFailures(
+                        access,
+                        goodWrites(5, "fanned"),
+                        FirestoreWrite.set(path("nested-batch"), Map.of("v", List.of(inner))));
+        List<String> good = List.of("fanned0", "fanned1", "fanned2", "fanned3", "fanned4");
+        if (fanned.get(5) == null) {
+            assertThat(fanned).containsOnlyNulls();
+            // Every document is read back as well, because a failure without a status would not
+            // fail an assertion on the statuses alone.
+            assertThat(read(path("nested-batch")).get("v")).isEqualTo(List.of(inner));
+            for (String id : good) {
+                assertThat(read(path(id)).get("v")).as("%s", id).isEqualTo(1L);
+            }
+        } else {
+            for (Throwable failure : fanned) {
+                assertThat(failure).isNotNull();
+                assertThat(FirestoreErrorClassifier.statusCode(failure))
+                        .isEqualTo(StatusCode.Code.INVALID_ARGUMENT);
+            }
+            // The nested write's own message, as for the solo write, so that a request refused
+            // for another reason is not taken for this refusal.
+            assertThat(fanned.get(5)).hasStackTraceContaining("Nested arrays are not allowed");
+            assertThat(read(path("nested-batch")).exists()).isFalse();
+            for (String id : good) {
+                assertThat(read(path(id)).exists()).as("%s", id).isFalse();
+            }
+        }
+    }
+
+    @Test
     void aRequestOverTenMebibytesIsApplied() throws Exception {
         // The service documents a 10 MiB request limit, and the writer budgets 9 MiB per request
         // on that premise. Twelve documents of 900 KiB, each within its own limit, are one request
@@ -227,10 +296,9 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     }
 
     /**
-     * One write of each shape the service refuses as invalid, each within the request limit. The
-     * array inside an array is refused because the class's database is Standard edition: the
-     * service stored one there when measured on 2026-10-10 and refused it by 2026-10-17, and an
-     * Enterprise-edition database stores it ({@code FirestoreTableRealGcpITCase}).
+     * One write of each shape the service refuses as invalid, each within the request limit. An
+     * array inside an array is not one of them, because the service's answer to it changes ({@code
+     * anArrayInsideAnArrayIsStoredOrRefusedForTheWholeRequest}).
      */
     private List<FirestoreWrite> invalidWrites() {
         Object deep = 1L;
@@ -241,8 +309,7 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
                 FirestoreWrite.set(path("r"), Map.of("__x__", 1L)),
                 FirestoreWrite.set(path("__x__"), Map.of("v", 1L)),
                 FirestoreWrite.set(path("big"), Map.of("v", "x".repeat(1024 * 1024))),
-                FirestoreWrite.set(path("deep"), Map.of("v", deep)),
-                FirestoreWrite.set(path("nested"), Map.of("v", List.of(List.of(1L)))));
+                FirestoreWrite.set(path("deep"), Map.of("v", deep)));
     }
 
     private List<FirestoreWrite> goodWrites(int count, String prefix) {

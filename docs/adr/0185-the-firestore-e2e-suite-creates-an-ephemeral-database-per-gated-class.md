@@ -17,9 +17,10 @@ limitations under the License.
 # ADR-0185: The Firestore E2E suite creates an ephemeral database per gated class
 
 - Status: Accepted
-- Date: 2026-10-10; revised 2026-10-11 by [#1707] (the Datastore-mode harness) and 2026-10-17 by
-  [#1819] (an Enterprise-edition database for the array inside an array)
-- Issues: [#1546], [#1705], [#1706], [#1707], [#1819]
+- Date: 2026-10-10; revised 2026-10-11 by [#1707] (the Datastore-mode harness), 2026-10-17 by
+  [#1819] (an Enterprise-edition database for the array inside an array) and 2026-10-24 by [#1895]
+  (either Standard-edition answer accepted)
+- Issues: [#1546], [#1705], [#1706], [#1707], [#1819], [#1895]
 - Modules: firestore (tests), `opentofu/`, `scripts/`
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Testing; the
   `just e2e` entry of `.agents/references/repository-guide.md` § Build
@@ -79,6 +80,9 @@ and a timestamp value is floored to the microsecond.
 Standard-edition database on 2026-10-10, which the emulator refuses with `INVALID_ARGUMENT` and
 Google's documentation allows only in Enterprise edition. By 2026-10-17 a Standard-edition
 database refused one too, in either mode, and an Enterprise-edition database stores one ([#1819]).
+On 2026-10-24 a Standard-edition database stored one again, in either mode ([#1895]), so the
+gated classes accept either Standard-edition answer, log which one they saw, and hold what the
+connector relies on under each.
 The `firestore` table keeps mapping `ARRAY<ARRAY<…>>` for that edition ([ADR-0179]'s revisions),
 so `EphemeralDatabases` takes the edition as an argument and a gated class writes and reads one
 through SQL in an Enterprise-edition database of its own. Only a Native-mode database can be
@@ -120,6 +124,7 @@ database standing for it was declined below.
 [#1706]: https://github.com/flink-gcp/flink-connector-gcp/issues/1706
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
+[#1895]: https://github.com/flink-gcp/flink-connector-gcp/issues/1895
 [ADR-0044]: 0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md
 [ADR-0088]: 0088-the-spanner-e2e-suite-creates-an-ephemeral-standard-edition-instance-per-gated-class.md
 [ADR-0119]: 0119-a-scheduled-source-derived-sweep-returns-billed-e2e-fixtures-to-their-idle-state.md
