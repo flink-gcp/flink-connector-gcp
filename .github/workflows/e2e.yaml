@@ -72,6 +72,14 @@ permissions:
   contents: read
   id-token: write
 
+# Every Maven run reads Google's mirror of Central first, and the wrapper fetches
+# Maven itself from it: Central rate-limits GitHub-hosted runners (issue #1887).
+# .github/maven/settings.xml says why it is a repository ahead of Central rather
+# than a mirror of it.
+env:
+  MAVEN_ARGS: --settings ${{ github.workspace }}/.github/maven/settings.xml
+  MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
+
 jobs:
   gates:
     # Scheduled workflows are inherited by forks; this keeps them from running

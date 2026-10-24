@@ -29,6 +29,14 @@ concurrency:
   group: tier3-image-publication
   cancel-in-progress: false
 
+# Every Maven run reads Google's mirror of Central first, and the wrapper fetches
+# Maven itself from it: Central rate-limits GitHub-hosted runners (issue #1887).
+# .github/maven/settings.xml says why it is a repository ahead of Central rather
+# than a mirror of it.
+env:
+  MAVEN_ARGS: --settings ${{ github.workspace }}/.github/maven/settings.xml
+  MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
+
 jobs:
   publish:
     if: github.repository_id == '1305440656' && github.ref == 'refs/heads/main'
@@ -62,6 +70,19 @@ jobs:
       - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: just
+
+      # The verify lanes' entry, restored only: every verification below builds a connector
+      # and its application with -am, which that entry already resolves (issue #1887). The
+      # paths are the saved entry's, negation included, because the cache's version derives
+      # from them.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+            !~/.m2/repository/io/github/flink-gcp
+          key: maven-verify-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties', '.github/maven/settings.xml') }}
+          restore-keys: maven-verify-
 
       - name: Verify the smoke application payload
         run: just tier3-smoke-verify

@@ -45,8 +45,8 @@ Each changed file is classified by the first matching rule:
    carries exactly those patterns, so skipping them loses no licence-header
    check), `opentofu/**`, `tfaction-root.yaml` and the three tofu workflows
    (the tfaction workflows check those), and everything under `.github/` that
-   is not a workflow or a composite action — templates, CODEOWNERS,
-   dependabot.yml — since GitHub reads those and no build does. This is the
+   is not a workflow, a composite action or the CI Maven settings — templates,
+   CODEOWNERS, dependabot.yml — since GitHub reads those and no build does. This is the
    pull_request half of the old workflow-level paths-ignore; the push trigger
    keeps the real one, so merges that cannot affect the Maven build stay free
    on main too. The push list stays an explicit handful rather than mirroring
@@ -184,11 +184,13 @@ IGNORED_FILES = {
 
 # Everything under .github/ is inert to the Maven build — GitHub reads it, no
 # build does, and it is rat-excluded so it does not even buy the root-only rat
-# run — EXCEPT the two directories that decide what CI itself does. Stated as a
+# run — EXCEPT the directories that decide what CI itself does: the workflows,
+# the composite actions, and the Maven settings every CI build resolves through
+# (issue #1887). Stated as a
 # rule rather than as a file list that grows by one entry per template: the
 # templates, CODEOWNERS, dependabot.yml and whatever GitHub adds next are all
 # the same case, and the case that is not is small and named.
-GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/")
+GITHUB_BUILD_RELEVANT = (".github/workflows/", ".github/actions/", ".github/maven/")
 
 # Rule 3: nothing Maven builds from these, but the root module's rat run does
 # scan them, so they select `-pl .` rather than nothing at all.
@@ -214,7 +216,12 @@ def requires_tier3_application(files: list[str], application: str) -> bool:
         ".github/workflows/tier3-images.yaml",
         "kubernetes/images/pins.cue",
     }
-    prefixes = (f"kubernetes/apps/{application}/", ".mvn/", "tools/maven/")
+    prefixes = (
+        f"kubernetes/apps/{application}/",
+        ".mvn/",
+        ".github/maven/",
+        "tools/maven/",
+    )
     if application in ("cloudtasks", "bigquery", "bigtable", "pubsub"):
         prefixes += (
             f"flink-connector-gcp-{application}/",
