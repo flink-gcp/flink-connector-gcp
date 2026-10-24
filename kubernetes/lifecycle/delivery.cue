@@ -21,14 +21,14 @@ import (
 	"github.com/flink-gcp/flink-connector-gcp/kubernetes/images"
 )
 
-runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                                                @tag(run_id)
-nonce:            string & =~"^[0-9a-f]{32}$"                                                                      @tag(nonce)
-expires:          time.Time                                                                                        @tag(expires_at)
-approval:         *"{}" | string                                                                                   @tag(approval)
-activeSeconds:    int & >0                                                                                         @tag(active_seconds,type=int)
-scenario:         *"smoke" | "bigquery-recovery" | "pubsub-recovery" | "cloudtasks-recovery" | "bigtable-recovery" @tag(scenario)
-applicationImage: *"" | string                                                                                     @tag(application_image)
-// Shared offline proposal document for BigQuery, Pub/Sub, Cloud Tasks and Bigtable.
+runID:            string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"                                                                     @tag(run_id)
+nonce:            string & =~"^[0-9a-f]{32}$"                                                                                           @tag(nonce)
+expires:          time.Time                                                                                                             @tag(expires_at)
+approval:         *"{}" | string                                                                                                        @tag(approval)
+activeSeconds:    int & >0                                                                                                              @tag(active_seconds,type=int)
+scenario:         *"smoke" | "bigquery-recovery" | "pubsub-recovery" | "cloudtasks-recovery" | "bigtable-recovery" | "spanner-recovery" @tag(scenario)
+applicationImage: *"" | string                                                                                                          @tag(application_image)
+// Shared offline proposal document for BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner.
 proposal: *"{}" | string @tag(proposal)
 // Supplied as JSON by flink-tier3 render or the lifecycle runner.
 packageSources: {
@@ -40,14 +40,15 @@ packageSources: {
 	[=~"^[a-z0-9_]+(/[a-z0-9_]+)*[.](py|toml)$"]: string
 }
 
-// A smoke run and a Pub/Sub trial have a 60-minute window, a BigQuery, Cloud Tasks or Bigtable
-// trial a 90-minute one.
+// A smoke run and a Pub/Sub trial have a 60-minute window, a BigQuery, Cloud Tasks, Bigtable or
+// Spanner trial a 90-minute one.
 activeSeconds: <={
 	"smoke":               3420
 	"pubsub-recovery":     3420
 	"bigquery-recovery":   5220
 	"cloudtasks-recovery": 5220
 	"bigtable-recovery":   5220
+	"spanner-recovery":    5220
 }[scenario]
 
 upgradeApplication: _
