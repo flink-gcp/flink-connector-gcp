@@ -22,7 +22,7 @@ import (
 run: {
 	id:        string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$" @tag(run_id)
 	expiresAt: time.Time                                         @tag(expires_at)
-	namespace: *"tier3-smoke" | "tier3-bigquery" | "tier3-pubsub" | "tier3-cloudtasks" | "tier3-bigtable"
+	namespace: *"tier3-smoke" | "tier3-bigquery" | "tier3-pubsub" | "tier3-cloudtasks" | "tier3-bigtable" | "tier3-spanner"
 	image:     string @tag(image)
 }
 
@@ -99,6 +99,12 @@ delivery: resources: [string]: {
 				flinkVersion:   "v2_2"
 				serviceAccount: "bigtable"
 				image:          =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/bigtable-recovery@sha256:[0-9a-f]{64}$"
+				job: parallelism: 1 | 2
+			}
+			if run.namespace == "tier3-spanner" {
+				flinkVersion:   "v2_2"
+				serviceAccount: "spanner"
+				image:          =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/spanner-recovery@sha256:[0-9a-f]{64}$"
 				job: parallelism: 1 | 2
 			}
 			podTemplate: flinkPodPolicy

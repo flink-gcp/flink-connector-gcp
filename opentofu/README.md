@@ -29,6 +29,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/tier3-smoke.tf` | Generic smoke workload identity and one-day checkpoint/savepoint/HA bucket |
 | `flink-gcp/tier3-bigquery.tf` | Isolated dataset, workload identity, state bucket and lifecycle grants for BigQuery trials |
 | `flink-gcp/tier3-bigtable.tf` | Bigtable recovery workload identity, one-day state bucket, instance roles and lifecycle state access |
+| `flink-gcp/tier3-spanner.tf` | Spanner recovery workload identity, one-day state bucket, instance roles and lifecycle state access |
 | `flink-gcp/tier3-pubsub.tf` | Pub/Sub recovery workload identity, one-day state bucket and lifecycle state access |
 | `flink-gcp/tier3-lifecycle.tf` | Lifecycle identities, immutable run evidence and mutable coordination records |
 | `flink-gcp/pubsub-lifecycle.tf` | Project-wide Pub/Sub lifecycle control and an unbound resource consumer role |
@@ -148,6 +149,7 @@ A failed start before an update fails the step instead, and nothing is applied; 
 [Issue #1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246) supplies its first Cloud Tasks performance scenario.
 [Issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) adds the [Pub/Sub recovery preparation](#pubsub-tier-3-preparation).
 Issues [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) add the [Bigtable recovery preparation](#bigtable-tier-3-preparation).
+Issues [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) add the [Spanner recovery preparation](#spanner-tier-3-preparation).
 Routine E2E remains on MiniCluster; this rig is on demand and does not gate a release.
 
 ### Persistent foundation
@@ -321,6 +323,34 @@ A create request names the project as the instance's parent, which no instance c
 Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
 IAM roles and bindings are free, and the bucket holds only one run's state at a time.
 The `tier3-bigtable` namespace, its `bigtable` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#bigtable-recovery-foundation), and the common helper inspects the namespace and the [idle Operator configuration](tier3-operator/README.md) watches it ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)).
+
+### Spanner Tier-3 preparation
+
+The Spanner recovery trials of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) run their job as the `tier3-spanner` GSA against an instance the lifecycle creates for each run, named `sp1360-<run-id>`.
+The GSA trusts only `tier3-spanner/spanner` through GKE Workload Identity and has `roles/storage.objectUser` over the `flink-gcp-tier3-spanner` STANDARD bucket in `us-central1`, which has the Pub/Sub state bucket's settings: uniform access, public access prevention, no versioning or soft delete, and deletion one day after creation.
+The runner and supervisor hold Object Viewer on that bucket and Object User on its `runs/` and `.inprogress/flink-gcp-tier3-spanner/runs/` prefixes, as for the BigQuery, Cloud Tasks and Bigtable state buckets.
+
+The [instance grants](flink-gcp/tier3-spanner.tf) are five custom roles, each holding only what its identity calls:
+
+| Identity | Role | Permissions | Condition |
+| --- | --- | --- | --- |
+| `tier3-spanner` | `tier3SpannerRecoveryWorkload` | `spanner.databases.beginReadOnlyTransaction`, `spanner.databases.partitionRead`, `spanner.databases.read`, `spanner.databases.select`, `spanner.databases.write`, `spanner.sessions.create` | `sp1360-` instances |
+| `tier3-spanner` | `tier3SpannerRecoveryClientMetrics` | `monitoring.timeSeries.create` | none |
+| `tier3-runner` | `tier3SpannerRecoveryRunner` | `spanner.databases.addSplitPoints`, `spanner.databases.create`, `spanner.databases.get`, `spanner.databases.getDdl`, `spanner.databases.write`, `spanner.instances.get`, `spanner.sessions.create` | `sp1360-` instances |
+| `tier3-runner` | `tier3SpannerRecoveryInstanceCreator` | `spanner.instances.create` | none |
+| `tier3-supervisor` | `tier3SpannerRecoverySupervisor` | `spanner.databases.select`, `spanner.databases.write`, `spanner.instances.delete`, `spanner.instances.get`, `spanner.sessions.create` | `sp1360-` instances |
+
+The condition is `resource.name.startsWith('projects/flink-gcp/instances/sp1360-')`, which Spanner evaluates for instances and databases.
+The condition reaches every instance whose ID starts with `sp1360-`, not only the current run's.
+A create request names the project as the instance's parent, which no instance condition matches, so the creator role is unconditional and lets the runner create any instance; only the runner's code bounds what it creates.
+The client-metrics role is unconditional too, because its time series are written to the project.
+The workload, runner and supervisor roles hold `spanner.sessions.create` and no other session permission: the workload's pinned client never deletes or gets its multiplexed sessions, and the contract below keeps the runner and the supervisor to the same.
+The runner and the supervisor are not written yet ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)), so their roles are a contract: one multiplexed session, writes through `Commit` in a single-use read-write transaction or `BatchWrite`, oracle reads through single-use queries, and waits that read the instance and the database back rather than poll their long-running operations.
+That the condition applies to data calls, which IAM checks on session names, is not documented, and the reference requires only `spanner.databases.create` for the database create, whose DDL runs with it.
+If either does not hold, the pilot trial's first data call or the runner's database create fails with `PERMISSION_DENIED` before any input runs, and the preregistration ([#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878)) records which; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) records why each permission is there and which premises those are.
+Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
+IAM roles and bindings are free, and the bucket holds only one run's state at a time.
+The `tier3-spanner` namespace and its KSA follow in the bootstrap root ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)).
 
 ### Operator installation follows the cluster
 

@@ -20,6 +20,7 @@ import shutil
 
 import pytest
 import yaml
+from flink_tier3.bundle import delivered_sources
 from flink_tier3.exercise import DEFAULT_FAULT, FAULTS
 from test_manifests import (
     KUBERNETES,
@@ -368,9 +369,25 @@ def test_bigtable_proposal_binds_both_phases_of_each_fault_kind(module, name):
         assert annotations["flink-gcp.io/approval"] == "a" * 32
         assert annotations["flink-gcp.io/scenario"] == "bigtable-recovery"
     config = delivery["config"]
+    assert config["immutable"] is True
+    assert json.loads(config["data"]["approval.json"]) == {}
+    assert json.loads(config["data"]["proposal.json"]) == {}
     assert json.loads(config["data"]["application.json"]) == initial
     assert json.loads(config["data"]["upgrade-application.json"]) == upgrade
-    assert delivery["supervisor"]["spec"]["activeDeadlineSeconds"] == 5220
+    supervisor = delivery["supervisor"]
+    assert supervisor["spec"]["activeDeadlineSeconds"] == 5220
+    projection = supervisor["spec"]["template"]["spec"]["volumes"][0]["configMap"][
+        "items"
+    ]
+    mounted = {item["path"]: config["data"][item["key"]] for item in projection}
+    assert len(mounted) == len(projection)
+    assert {item["key"] for item in projection} == config["data"].keys()
+    assert mounted.keys() == {
+        "approval.json",
+        "application.json",
+        "upgrade-application.json",
+        "proposal.json",
+    } | {"flink_tier3/" + name for name in delivered_sources()}
 
 
 def test_bigtable_proposal_defaults_to_the_default_fault_and_takes_the_input_tags(
