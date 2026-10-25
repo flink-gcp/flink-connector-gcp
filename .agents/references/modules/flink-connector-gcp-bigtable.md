@@ -314,6 +314,16 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   counted except a batched row-level rejection, whose place `parkedEntries` takes.
   `activeClients` gauges the bounded instance set; `capacityEvictions` and `idleEvictions`
   count logical client removals, not table-batcher removals.
+- Client-library metrics (`docs/adr/0186`): `BigtableClientMetrics` is the adapter and a
+  `[[subgroups]]` source, so a new leaf owes a templated docs row. A component registers the RPC
+  methods its client calls when it opens; a method missing from that list is dropped with a single
+  `WARN`, so a new call site adds its method there. The Flink export and the Cloud Monitoring export are
+  independent in the client: only `disableInternalMetrics()` removes the built-in exporter, and
+  `NoopMetricsProvider` does not. `BigtableDataClients.applyClientMetrics` is the one place both
+  are applied. On the session (vRPC) path of 2.85.0, `MetricsImpl.newTableTracer` returns a no-op
+  tracer when internal metrics are disabled, so turning the Cloud Monitoring export off also hides
+  session RPCs (`ReadRow`, `MutateRow`) from the Flink export; the MutateRows batcher is not on that
+  path. Re-read both facts on a client upgrade.
 
 ## Scan source (`docs/adr/0080`, `0083`)
 

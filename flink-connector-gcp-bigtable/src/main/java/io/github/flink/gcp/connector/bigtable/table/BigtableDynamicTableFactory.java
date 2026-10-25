@@ -39,6 +39,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions;
@@ -124,6 +125,8 @@ public class BigtableDynamicTableFactory
                 Arrays.asList(
                         BigtableConnectorOptions.EMULATOR_ENDPOINT,
                         BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
+                        BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
+                        BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING,
                         BigtableConnectorOptions.NULL_STRING_LITERAL,
                         BigtableConnectorOptions.DECODE_TRAILING_BYTES,
                         BigtableConnectorOptions.SCAN_MODE,
@@ -241,8 +244,16 @@ public class BigtableDynamicTableFactory
                     "Option 'sink.staged.marker-family' must name a reserved family outside the DDL data families.");
         }
 
-        return BigtableDynamicSink.builder()
-                .deliveryGuarantee(guarantee)
+        BigtableDynamicSink.Builder sink = BigtableDynamicSink.builder();
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
+                sink::exportClientMetricsToFlink);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING,
+                sink::exportClientMetricsToCloudMonitoring);
+        return sink.deliveryGuarantee(guarantee)
                 .stagedOptions(stagedOptions)
                 .lineageTableName(context.getObjectIdentifier().asSummaryString())
                 .schema(schema)

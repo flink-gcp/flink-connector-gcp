@@ -87,6 +87,14 @@ limitations under the License.
             <artifactId>google-cloud-bigtable</artifactId>
         </dependency>
         <dependency>
+            <!-- base.metrics's OpenTelemetry API, which base declares optional so that only an
+                 adopting connector carries it (ADR-0186), and the type BigtableDataClients hands to
+                 the client's metrics provider. Version managed by the root opentelemetry-bom import;
+                 the client brings it already. -->
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+        <dependency>
             <!-- Direct dependency: MutateRowsRequest.Entry is what a failed mutation carries as
                  its dead-letter payload, and the row key is read from it — RowMutationEntry
                  exposes neither. Version managed by the libraries BOM. -->

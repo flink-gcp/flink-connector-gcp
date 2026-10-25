@@ -31,7 +31,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
   interfaces that expose state, committers or topologies.
 - Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
   (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
-  (BOM-managed). `flink-table-common` serves `base.catalog` and `base.table`; base has no other
+  (BOM-managed) and `opentelemetry-api` (managed by the root `opentelemetry-bom` import,
+  **optional**: a connector adopting `ClientMetrics` declares it itself, and base adds it to no
+  other connector's SQL jar, though a client may bring it; `docs/adr/0186`). **No OpenTelemetry SDK**: `ClientMetrics` implements
+  the API. `flink-table-common` serves `base.catalog` and `base.table`; base has no other
   table-layer type.
   Consumers depend on this module at **compile** scope, so it is bundled into the
   `flink-sql-connector-gcp-*` uber-jars and must be relocated there (`docs/adr/0015`), and it is
@@ -84,6 +87,23 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - Every connector declares its names in one `<Product>MetricNames` inventory at its module root;
   counters name events, gauges name states, and **no name takes Flink's `num` prefix**
   (`docs/adr/0038`; the mechanical half is `just check-metric-docs`).
+
+## `base.metrics` (`docs/adr/0186`)
+
+- `ClientMetrics` implements the narrow part of the OpenTelemetry Metrics API that client
+  libraries record through (long counters, double and long histograms, `MeterBuilder`, the
+  `Context` overloads) and adds each value straight into a `LongAdder`/`DoubleAdder` behind a
+  read-only Flink counter. **No OpenTelemetry SDK, no collection step, no thread.** Every other
+  instrument kind goes to the no-op meter with one `WARN`; extend `ClientMetrics` only for an adopter
+  that records through such a kind. `ignore(instrument)` silences an instrument the adapter
+  deliberately leaves out (Bigtable's mis-recorded `throttling_latencies`), and its caller says why. Negative and non-finite values are dropped, so counters stay
+  monotonic. It never touches `GlobalOpenTelemetry`.
+- One histogram must stay one class per API interface: `DoubleHistogram` and `LongHistogram` declare
+  the same default methods, which one class cannot inherit from both.
+- Adapters register every series at component open. A registration from a client thread would race
+  a reporter's iteration (`Slf4jReporter` loses that report). The per-connector adapter
+  (`BigtableClientMetrics`) carries the leaf names and is a `[[subgroups]]` source of
+  `scripts/config/metric-docs.toml`; leaf constants stay in the adapter, never in base.
 
 ## `base.catalog` (`docs/adr/0168`)
 

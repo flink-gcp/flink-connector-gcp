@@ -1256,7 +1256,8 @@ to the client (see [Retries belong to the client](#retries-belong-to-the-client)
 entry inside the batcher and surfaces nothing until it gives up. Every code counted here is
 therefore a mutation the client already exhausted its budget on — `UNAVAILABLE` here means an outage
 that outlasted ten minutes of backoff, not one slow call. The client's own retry attempts are
-invisible to this sink, and no metric in this table reports them.
+invisible to this sink, and no metric in this table reports them; the client reports them itself
+under `rpcMethod.METHOD.retries`, with [its own metrics](#client-library-metrics) exported.
 
 **`numRecordsSend` counts records, not attempts**, as it does in every connector here, which is what
 makes the number comparable across them. Retries inside the SDK cost nothing to exclude, since they
@@ -1276,8 +1277,53 @@ counters simply restate the totals above.
 
 `currentSendTime` is deliberately **not** set: the client batches mutations and completes their
 futures asynchronously, so any latency this writer could report would measure its own bookkeeping
-rather than the service's response time — a missing number beats a wrong one. There is no committer
+rather than the service's response time — a missing number beats a wrong one. The client's own
+latencies are what [the client-library metrics](#client-library-metrics) report. There is no committer
 either (the sink is single-phase), so Flink's committer metrics do not apply.
+
+### Client-library metrics
+
+The Bigtable client measures its own RPCs, and by default it exports those measurements only to Cloud Monitoring.
+With `exportClientMetricsToFlink(true)` (`client-metrics.export-to-flink` in SQL), the writer also reports them on its own metric group, so every configured Flink metric reporter sees them.
+The client records them into an OpenTelemetry instance the connector supplies, which adds each value straight into a Flink counter; the connector sends nothing to Cloud Monitoring or any other service on their behalf.
+
+Each RPC method gets a `rpcMethod.METHOD` subgroup, where `METHOD` is the method name without its `Bigtable.` prefix.
+The writer registers `MutateRows`, the one method its batchers send, when it opens.
+A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees the method as a tag on one metric name, as it sees `CODE` under `errorClass`.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `rpcMethod.METHOD.operations` | counter | operations the client completed, successful or not; an operation spans its retries |
+| `rpcMethod.METHOD.operationTimeMillis` | counter | their total duration in milliseconds, retries and backoff included |
+| `rpcMethod.METHOD.attempts` | counter | RPC attempts the client sent, retries included |
+| `rpcMethod.METHOD.attemptTimeMillis` | counter | their total duration in milliseconds, as the client observed it |
+| `rpcMethod.METHOD.retries` | counter | attempts after the first of each operation |
+| `rpcMethod.METHOD.connectivityErrors` | counter | attempts that never reached a Google data center, judged by the absence of Google's response headers |
+| `rpcMethod.METHOD.attemptsWithServerTiming` | counter | attempts whose response carried the Google front end's server timing; the denominator of `serverTimeMillis` |
+| `rpcMethod.METHOD.serverTimeMillis` | counter | their total time from entering the Google data center to completion, in milliseconds |
+| `rpcMethod.METHOD.firstResponseTimeMillis` | counter | total time from an operation's start to its first response, in milliseconds; divide by `operations`. The client records it for `ReadRows`, so it stays zero under `MutateRows` |
+| `rpcMethod.METHOD.applicationTimeMillis` | counter | total time per operation that its attempts did not spend on the server, in milliseconds, which the client attributes to the application consuming responses; divide by `operations` |
+
+Latencies arrive as a count and a millisecond sum, so a backend divides the rate of the sum by the rate of the count for the mean over any window.
+Only those two are kept, not percentiles, buckets or extremes, which keeps every series a monotonic counter that any reporter can rate.
+Two histograms report only their sum, because the client records them once per operation and their counts would repeat `operations`.
+The client's `throttling_latencies` is not reported at all: the client adds a batch's flow-control wait to it in milliseconds but records the total as nanoseconds, and carries the total across attempts, so it measures neither a duration nor one attempt.
+
+Every attribute the client attaches other than the method (status, table, application profile, cluster, zone, client id) is ignored, so a writer reports ten series per method whatever it writes to.
+Failures by status are what `errorClass.CODE.errors` already counts.
+A writer whose clients reach several instances reports their RPCs together.
+
+The client adds to the counters as it records, so a report reads the totals up to that moment: the attempt series move as each RPC attempt ends, and the operation series as each operation ends, retries included. Until then they read zero.
+A count and its sum are added separately, so a report taken while the client records can see one value more in one of them; over a rate window the difference vanishes.
+A method the client reports and the writer did not register is logged once, at `WARN`, and is not reported.
+Against the emulator the client records too, with one deviation: the emulator sends none of the Google front end's headers, so every attempt counts under `connectivityErrors` and `attemptsWithServerTiming` stays zero.
+
+**Exporting to Flink does not stop the export to Cloud Monitoring.**
+The client keeps its built-in exporter beside the second recorder this option adds, and it also exports per-connection and channel-pool measurements that only Cloud Monitoring receives.
+`exportClientMetricsToCloudMonitoring(false)` (`client-metrics.export-to-cloud-monitoring = 'false'`) removes that exporter, whether or not anything is exported to Flink.
+Off Google Cloud it also removes a stall: when a client closes, the exporter detects the platform by connecting to the metadata server's address with no timeout, and where nothing answers there, a close can wait for the operating system's connect timeout (75 seconds, measured on [#1815]({{< param BookRepo >}}/issues/1815) and again on [#1902]({{< param BookRepo >}}/issues/1902), where a client without the exporter closed in under a millisecond).
+
+Both options apply to the at-least-once writer for now; `EXACTLY_ONCE` refuses them, and the single-row writers, the sources and the lookups do not take them yet.
 
 ### Single-row request metrics
 

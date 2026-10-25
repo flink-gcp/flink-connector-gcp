@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer;
 
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.function.ThrowingRunnable;
 
@@ -29,10 +30,16 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import com.google.cloud.bigtable.data.v2.stub.metrics.CustomOpenTelemetryMetricsProvider;
+import com.google.cloud.bigtable.data.v2.stub.metrics.DefaultMetricsProvider;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.testutils.LogCapture;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.LongCounter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -159,6 +166,86 @@ class DefaultMutationBatcherFactoryTest {
 
         assertThat(factory.settings(TABLE).getStubSettings().getCredentialsProvider())
                 .isSameAs(provider);
+    }
+
+    @Test
+    void leavesTheClientsMetricsAsItShipsThemByDefault() {
+        BigtableDataSettings settings =
+                new DefaultMutationBatcherFactory(null, BigtableWriterOptions.defaults(), null)
+                        .settings(TABLE);
+
+        assertThat(settings.getMetricsProvider()).isSameAs(DefaultMetricsProvider.INSTANCE);
+        assertThat(settings.areInternalMetricsEnabled()).isTrue();
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsBesideTheCloudMonitoringExport() {
+        ClientMetrics metrics = ClientMetrics.create("method");
+        BigtableDataSettings settings = metricsFactory(null, true, metrics).settings(TABLE);
+
+        assertThat(settings.getMetricsProvider())
+                .isInstanceOfSatisfying(
+                        CustomOpenTelemetryMetricsProvider.class,
+                        provider ->
+                                assertThat(provider.getOpenTelemetry())
+                                        .isSameAs(metrics.openTelemetry()));
+        // The client metrics are a second recorder, not a replacement: the client still builds its
+        // built-in exporter, which only disableInternalMetrics() removes.
+        assertThat(settings.areInternalMetricsEnabled()).isTrue();
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsOnTheEmulatorPathToo() {
+        // The emulator builder installs NoopMetricsProvider; the metrics's provider replaces it.
+        ClientMetrics metrics = ClientMetrics.create("method");
+        BigtableDataSettings settings =
+                metricsFactory(
+                                EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint"),
+                                true,
+                                metrics)
+                        .settings(TABLE);
+
+        assertThat(settings.getMetricsProvider())
+                .isInstanceOf(CustomOpenTelemetryMetricsProvider.class);
+    }
+
+    @Test
+    void stoppingTheCloudMonitoringExportDisablesTheClientsInternalMetrics() {
+        BigtableDataSettings settings = metricsFactory(null, false, null).settings(TABLE);
+
+        assertThat(settings.areInternalMetricsEnabled()).isFalse();
+        assertThat(settings.getMetricsProvider()).isSameAs(DefaultMetricsProvider.INSTANCE);
+    }
+
+    @Test
+    void closeClosesTheClientMetricsEvenWhenNoClientWasBuilt() throws Exception {
+        ClientMetrics metrics = ClientMetrics.create("method");
+        Counter retries = metrics.counterSum("retry_count", "Bigtable.MutateRows");
+        LongCounter recorder =
+                metrics.openTelemetry()
+                        .getMeterProvider()
+                        .get("bigtable")
+                        .counterBuilder("retry_count")
+                        .build();
+
+        metricsFactory(null, true, metrics).close();
+        recorder.add(5, Attributes.of(AttributeKey.stringKey("method"), "Bigtable.MutateRows"));
+
+        // Closed client metrics take nothing more; an open one would read the 5.
+        assertThat(retries.getCount()).isZero();
+    }
+
+    private static DefaultMutationBatcherFactory metricsFactory(
+            EmulatorEndpoint emulatorEndpoint,
+            boolean exportToCloudMonitoring,
+            ClientMetrics metrics) {
+        return new DefaultMutationBatcherFactory(
+                null,
+                BigtableWriterOptions.defaults(),
+                emulatorEndpoint,
+                null,
+                exportToCloudMonitoring,
+                metrics);
     }
 
     @Test

@@ -47,7 +47,7 @@ public final class Stage2BudgetedBatcherFactory extends DefaultMutationBatcherFa
     }
 
     @Override
-    BigtableDataSettings settings(TableDestination destination) {
+    public BigtableDataSettings settings(TableDestination destination) {
         BigtableDataSettings.Builder settings = super.settings(destination).toBuilder();
         InstantiatingGrpcChannelProvider provider =
                 (InstantiatingGrpcChannelProvider)

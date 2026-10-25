@@ -93,6 +93,18 @@ limitations under the License.
             <artifactId>protobuf-java</artifactId>
         </dependency>
 
+        <!-- OpenTelemetry's Metrics API, which base.metrics implements for a client library to
+             record into (ADR-0186); version managed by the root opentelemetry-bom import. Optional,
+             because base is bundled into every SQL jar and only a connector that uses
+             base.metrics.ClientMetrics needs it: an adopting connector declares it itself, and
+             base adds it to no other connector's jar (a client may still bring it, as Spanner's
+             and Pub/Sub's do). -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.apache.flink</groupId>
