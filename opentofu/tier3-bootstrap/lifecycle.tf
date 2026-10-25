@@ -112,3 +112,40 @@ resource "kubernetes_role_binding_v1" "lifecycle" {
     prevent_destroy = true
   }
 }
+
+# The kubelet's Shutdown and the autoscaler's ScaleDown events are recorded on
+# Nodes in default; the supervisor reads them to attribute a lost Pod (#1892).
+resource "kubernetes_role_v1" "node_events" {
+  metadata {
+    name      = "tier3-node-events"
+    namespace = "default"
+    labels    = local.labels
+  }
+  rule {
+    api_groups = [""]
+    resources  = ["events"]
+    verbs      = ["list"]
+  }
+  depends_on = [kubernetes_role_binding_v1.installer]
+}
+
+resource "kubernetes_role_binding_v1" "node_events" {
+  metadata {
+    name      = "tier3-node-events"
+    namespace = "default"
+    labels    = local.labels
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role_v1.node_events.metadata[0].name
+  }
+  subject {
+    kind      = "ServiceAccount"
+    name      = kubernetes_service_account_v1.supervisor.metadata[0].name
+    namespace = kubernetes_service_account_v1.supervisor.metadata[0].namespace
+  }
+  lifecycle {
+    prevent_destroy = true
+  }
+}

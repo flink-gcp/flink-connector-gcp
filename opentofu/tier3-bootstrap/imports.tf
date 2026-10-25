@@ -52,3 +52,13 @@ import {
   to = kubernetes_cluster_role_binding_v1.writer
   id = "tier3-bootstrap-writer"
 }
+
+# Adopt the supervisor's Node event read, which #1892 applied by hand.
+import {
+  to = kubernetes_role_v1.node_events
+  id = "default/tier3-node-events"
+}
+import {
+  to = kubernetes_role_binding_v1.node_events
+  id = "default/tier3-node-events"
+}

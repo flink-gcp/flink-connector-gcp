@@ -25,7 +25,7 @@ The existing GCP root retains GKE, GAR, GSA and IAM ownership; the separate [Ope
 
 ## Resources and identities
 
-This root owns `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable`, `tier3-spanner`, their idle quotas, installer RBAC, the four Flink CRDs and the persistent smoke, Cloud Tasks, BigQuery, Pub/Sub, Bigtable and Spanner job identities.
+This root owns `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable`, `tier3-spanner`, their idle quotas, installer RBAC, the supervisor's [Node event read](#node-shutdown-events) in `default`, the four Flink CRDs and the persistent smoke, Cloud Tasks, BigQuery, Pub/Sub, Bigtable and Spanner job identities.
 The Helm release owns its Operator Deployment, configuration, ServiceAccount, Roles/RoleBindings and release Secrets.
 Its chart-managed job identity/RBAC, namespace creation and CRD installation are disabled.
 No resource in this root starts a Pod or allocates a PVC.
@@ -33,15 +33,15 @@ The [lifecycle foundation](#lifecycle-foundation) also owns the dedicated superv
 
 | Identity | Added Kubernetes permissions |
 | --- | --- |
-| `opentofu-plan` | Read all seven namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, and get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings |
-| `opentofu` | Manage bootstrap and Helm objects in the seven namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects |
+| `opentofu-plan` | Read all seven namespaces' configuration and workload inventory, read Helm Secrets in `tier3-system`, get the named namespaces, CRDs and bootstrap ClusterRoles/ClusterRoleBindings, and get the three named Roles/RoleBindings in `default`, which project Viewer already permits |
+| `opentofu` | Manage bootstrap and Helm objects in the seven namespaces; create Namespace/CRD/ClusterRole/ClusterRoleBinding objects and update the named cluster-scoped foundation objects; in `default`, patch and delete the three named Roles/RoleBindings, create Roles/RoleBindings and list events |
 | `tier3-smoke/smoke` | The chart's job permissions for Pods, ConfigMaps and Deployments in `tier3-smoke` |
 | `tier3-cloudtasks/cloudtasks` | The same job permissions in `tier3-cloudtasks`; no permissions in `tier3-system` |
 | `tier3-bigquery/bigquery` | The same job permissions in `tier3-bigquery`; no permissions in `tier3-system` |
 | `tier3-pubsub/pubsub` | The same job permissions in `tier3-pubsub`; no permissions in `tier3-system` |
 | `tier3-bigtable/bigtable` | The same job permissions in `tier3-bigtable`; no permissions in `tier3-system` |
 | `tier3-spanner/spanner` | The same job permissions in `tier3-spanner`; no permissions in `tier3-system` |
-| `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads; for the supervisor alone, Node events in `default` through the administrator-owned Role of [Node shutdown events](#node-shutdown-events) |
+| `tier3-runner` and `tier3-system/tier3-supervisor` | Lifecycle Roles for smoke admission/cleanup, system supervisor Jobs/configuration and the named Operator scale/quota controls; shared bootstrap metadata reads; for the supervisor alone, Node events in `default` through the Role of [Node shutdown events](#node-shutdown-events) |
 
 The installer holds the explicit chart permission inventory so Kubernetes permits creating and binding its Roles without unrestricted `bind`, `escalate` or `impersonate` grants.
 The existing GCP IAM permissions remain effective: additive Kubernetes RBAC does not narrow them.
@@ -207,43 +207,32 @@ After the merge-triggered apply, verify the namespace's zero quotas, empty workl
 ## Node shutdown events
 
 The recovery exercise attributes a Spot reclamation to the platform from the kubelet's `Shutdown` event, which Kubernetes records on the Node in the `default` namespace, and tells it from the autoscaler's removal of a node by the autoscaler's `ScaleDown` event there ([#1892](https://github.com/flink-gcp/flink-connector-gcp/issues/1892)).
-The supervisor reads those events through a Role and RoleBinding named `tier3-node-events` in `default`, which grant `get`, `list` and `watch` on `events` to the `tier3-supervisor` KSA and nothing else.
-They are administrator-owned rather than in this root, because the bootstrap identity holds no rights in `default` and creating a Role there would need an escalation this root does not have.
-An administrator applies them with server-side apply:
+The supervisor lists those events through a Role and RoleBinding named `tier3-node-events` in `default`, which grant `list` on `events` to the `tier3-supervisor` KSA and nothing else.
+This root owns them ([#1904](https://github.com/flink-gcp/flink-connector-gcp/issues/1904)) and the two installer Roles and RoleBindings below, and no other object in `default`: no namespace, quota or idle-inventory check covers it.
+An administrator applied `tier3-node-events` by hand for #1892, and this root adopted it through import blocks.
 
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: tier3-node-events
-  namespace: default
-  labels:
-    app.kubernetes.io/part-of: flink-tier3
-rules:
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["get", "list", "watch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: tier3-node-events
-  namespace: default
-  labels:
-    app.kubernetes.io/part-of: flink-tier3
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: tier3-node-events
-subjects:
-  - kind: ServiceAccount
-    name: tier3-supervisor
-    namespace: tier3-system
-```
+The `default-plan` and `default-apply` entries of `local.installer_roles` in `access.tf` are the CI identities' RBAC in `default`.
+`tier3-bootstrap-plan` lets `opentofu-plan` get the three named Roles and RoleBindings: the two installer objects and `tier3-node-events`.
+Project Viewer already lets that identity read them through GKE IAM; the Role keeps the plan independent of that grant, like the other namespaces' plan Roles.
+`tier3-bootstrap-apply` lets `opentofu` get, patch and delete those named objects, create Roles and RoleBindings, and list events.
+Kubernetes cannot restrict `create` by name, so CI can recreate `tier3-node-events` after it is deleted.
+Escalation checks bound what a Role it creates or binds there grants to what the identity already holds in `default`, which includes that `create`; the event `list` is what lets it delegate the supervisor's read without `escalate` or `bind`.
 
-`kubectl auth can-i --as=system:serviceaccount:tier3-system:tier3-supervisor` then answers yes for `list events -n default` and no for `create events -n default` and `list pods -n default`.
-The supervisor reads them only when a workload Pod is lost outside a planned recovery; without the Role that read is refused, and the run stops on the refusal instead of either stop, which a campaign does not repeat.
-This root does not recreate them, so a rebuild of the cluster applies them again by hand.
+### Administrator prerequisite for the Node event read
+
+CI cannot grant itself these rights, so an administrator creates the installer objects before the first plan that adopts them:
+
+1. Check that `default` holds no `tier3-bootstrap-plan` or `tier3-bootstrap-apply` Role or RoleBinding, and stop on a colliding object.
+2. Create the two Roles from the `default-plan` and `default-apply` entries in `access.tf`, with this root's labels, and a RoleBinding of each to its entry's User principal.
+3. Verify with `kubectl auth can-i --as=<principal>` that `opentofu-plan` can get `roles/tier3-node-events` but not patch it, that `opentofu` can patch it, create Roles and RoleBindings and list events, and that neither can get or patch another Role, list Pods, or `escalate` or `bind` Roles in `default`.
+
+The administrator applied them on 2026-10-25, and `kubectl auth can-i --as` gave those answers.
+That first application also granted `update`, and `get` and `watch` on events; CI's adoption narrows both Roles to the entries above.
+
+A cluster rebuilt with this root's state retained needs the installer objects again before its first plan; the plan then recreates `tier3-node-events`.
+With the state lost as well, the import blocks need `tier3-node-events` to exist, so the administrator also creates it from `lifecycle.tf`.
+`kubectl auth can-i --as=system:serviceaccount:tier3-system:tier3-supervisor` answers yes for `list events -n default` and no for `create events -n default` and `list pods -n default`.
+The supervisor lists the events only when a workload Pod is lost outside a planned recovery; without the Role that read is refused, and the run stops on the refusal instead of either stop, which a campaign does not repeat.
 
 ## PR plan and merge apply
 
