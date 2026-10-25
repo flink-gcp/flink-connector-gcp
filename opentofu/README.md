@@ -350,7 +350,7 @@ That the condition applies to data calls, which IAM checks on session names, is 
 If either does not hold, the pilot trial's first data call or the runner's database create fails with `PERMISSION_DENIED` before any input runs, and the preregistration ([#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878)) records which; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) records why each permission is there and which premises those are.
 Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
 IAM roles and bindings are free, and the bucket holds only one run's state at a time.
-The `tier3-spanner` namespace and its KSA follow in the bootstrap root ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)).
+The `tier3-spanner` namespace, its `spanner` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)); the common helper and the [idle Operator configuration](tier3-operator/README.md) gain the namespace in [#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876).
 
 ### Operator installation follows the cluster
 
