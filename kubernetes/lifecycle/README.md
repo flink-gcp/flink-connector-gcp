@@ -24,6 +24,9 @@ lifecycle/
   bigquery.cue       # BigQuery trial inputs and applications
   pubsub.cue         # Pub/Sub trial inputs, applications and access probe
   cloudtasks.cue     # Cloud Tasks trial inputs and applications
+  bigtable.cue       # Bigtable trial inputs and applications
+  spanner.cue        # Spanner trial inputs and applications
+  pubsub-trials/     # Reviewed Pub/Sub trial files
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
@@ -95,7 +98,7 @@ The owner approves the scenario, a unique run ID and the run's cost estimate bef
 The estimate is `estimated_cost` over the window for smoke, and `bigquery_plan.estimate`, `pubsub_plan.estimate` or `cloudtasks_plan.estimate` for a service trial, which their rendered proposals carry.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
-The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks or Bigtable trial 90 minutes after it.
+The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks, Bigtable or Spanner trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
 
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
@@ -118,6 +121,10 @@ The [`bigtable-recovery`](bigtable.cue) delivery of the Bigtable recovery trials
 Its `bigtable_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `bt1316-<run-id>`, so the run ID has at most 26 characters.
 Dispatch renders it at the dispatched kind, the input every kind shares and a change-stream end 3,900 seconds into the run's window, and the [recovery trial runbook](../apps/bigtable/README.md#recovery-trial) describes the instance, the exercise and the verdict ([#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854)).
 Every run's inventory lists `tier3-bigtable`.
+
+The [`spanner-recovery`](spanner.cue) delivery of the Spanner recovery trials of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) renders its initial and upgrade phases in `tier3-spanner` from the optional `spanner_records` and `spanner_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, the optional `spanner_seed_rows_per_second` tag, the seed copy's pace per reading subtask, 50 unless given and at most 1,000, and the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops.
+Its `spanner_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `sp1360-<run-id>`, which a run ID of the full 40 characters keeps within Spanner's 64-character instance IDs.
+Dispatch does not offer it yet: [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877) adds the rig scenario that creates the instance and its database, admits the delivery and judges the trial.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
