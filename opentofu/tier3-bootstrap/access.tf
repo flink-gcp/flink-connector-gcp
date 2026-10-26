@@ -129,14 +129,37 @@ locals {
         { api_groups = ["coordination.k8s.io"], resources = ["leases"], verbs = local.write_verbs }
       ], local.lifecycle_installer_system)
     }
+    # Kubernetes records Node events in default, which this root does not
+    # otherwise own. The apply entry can create Roles and RoleBindings there
+    # (create cannot be restricted by name), and lists events so it can
+    # delegate that read.
+    "default-plan" = {
+      namespace = "default"
+      name      = "tier3-bootstrap-plan"
+      principal = "opentofu-plan@flink-gcp.iam.gserviceaccount.com"
+      rules = [
+        { api_groups = ["rbac.authorization.k8s.io"], resources = ["roles", "rolebindings"], verbs = ["get"], resource_names = local.default_rbac_names }
+      ]
+    }
+    "default-apply" = {
+      namespace = "default"
+      name      = "tier3-bootstrap-apply"
+      principal = "opentofu@flink-gcp.iam.gserviceaccount.com"
+      rules = [
+        { api_groups = ["rbac.authorization.k8s.io"], resources = ["roles", "rolebindings"], verbs = ["get", "patch", "delete"], resource_names = local.default_rbac_names },
+        { api_groups = ["rbac.authorization.k8s.io"], resources = ["roles", "rolebindings"], verbs = ["create"] },
+        { api_groups = [""], resources = ["events"], verbs = ["list"] }
+      ]
+    }
   }
+  default_rbac_names = ["tier3-bootstrap-plan", "tier3-bootstrap-apply", "tier3-node-events"]
 }
 
 resource "kubernetes_role_v1" "installer" {
   for_each = local.installer_roles
   metadata {
     name      = each.value.name
-    namespace = kubernetes_namespace_v1.tier3[each.value.namespace].metadata[0].name
+    namespace = each.value.namespace
     labels    = local.labels
   }
   dynamic "rule" {
