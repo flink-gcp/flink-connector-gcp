@@ -119,5 +119,5 @@ Do not automatically advance Helm when the shared CRD/schema pin changes.
 A new ownership or authorization boundary requires an explicit bootstrap change before the Helm change.
 
 The [bounded lifecycle](../../kubernetes/lifecycle/README.md) implements temporary scale-up, numeric workload limits and cleanup behind a separate execution approval.
-All six bootstrap-owned idle quotas continue to forbid Pods and PVCs.
+All seven bootstrap-owned idle quotas continue to forbid Pods and PVCs.
 Scaling down the Operator would not stop an existing Flink job, and an idle installation is not an unconditional zero-cost guarantee.
