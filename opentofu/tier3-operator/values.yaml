@@ -29,6 +29,7 @@ watchNamespaces:
   - tier3-bigquery
   - tier3-pubsub
   - tier3-bigtable
+  - tier3-spanner
 webhook:
   create: false
 image:

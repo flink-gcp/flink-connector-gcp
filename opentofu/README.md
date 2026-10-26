@@ -251,7 +251,7 @@ The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-p
 The administrator extends the two existing ClusterRoles before that plan; after refresh their rules should already match, with only possible metadata reconciliation.
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
 The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed with empty refreshed bootstrap and GCP plans; runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
-That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extended that scope, and the [Bigtable preparation](#bigtable-tier-3-preparation) extends it to the current one.
+That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extended that scope, the [Bigtable preparation](#bigtable-tier-3-preparation) extended it again, and the [Spanner preparation](#spanner-tier-3-preparation) extends it to the current one.
 Application publication and runtime admission are separate from this foundation, and each paid trial dispatch needs its own execution approval.
 
 ### Pub/Sub Tier-3 preparation
@@ -350,7 +350,7 @@ That the condition applies to data calls, which IAM checks on session names, is 
 If either does not hold, the pilot trial's first data call or the runner's database create fails with `PERMISSION_DENIED` before any input runs, and the preregistration ([#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878)) records which; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) records why each permission is there and which premises those are.
 Merging applies 18 additions: the GSA, the bucket, its workload grant, the KSA trust, five roles, five project bindings and four lifecycle bucket grants.
 IAM roles and bindings are free, and the bucket holds only one run's state at a time.
-The `tier3-spanner` namespace, its `spanner` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)); the common helper and the [idle Operator configuration](tier3-operator/README.md) gain the namespace in [#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876).
+The `tier3-spanner` namespace, its `spanner` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)), and the common helper inspects the namespace and the [idle Operator configuration](tier3-operator/README.md) watches it ([#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876)).
 
 ### Operator installation follows the cluster
 
