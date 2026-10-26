@@ -224,7 +224,7 @@ class CloudTasksTombstoneRealGcpITCase {
                                         EmulatorEndpoint.parse(
                                                 proxy.endpoint(), "acceptance proxy"),
                                         null)
-                                .create()) {
+                                .create(null)) {
             proxy.inject(RecordingTaskProxy.Fault.HOLD_RESPONSE, 1);
             var lost = creator.createTask(control.request, Deadline.after(20, TimeUnit.SECONDS));
             try {

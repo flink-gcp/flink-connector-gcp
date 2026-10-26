@@ -22,15 +22,21 @@ import org.apache.flink.api.connector.sink2.CommitterInitContext;
 import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
 import io.github.flink.gcp.connector.testutils.TestSinkCommitterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.OptionalLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,12 +88,40 @@ class CloudTasksStagedRetentionTest {
         assertThat(factory.closed).isEqualTo(3);
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void theCommitterRegistersTheClientSeriesOnlyWhenExportedAndHandsTheirMetricsToItsCreator(
+            boolean export) throws Exception {
+        // Under EXACTLY_ONCE the committer owns the client, so it is the component that registers.
+        var factory = new RecordingFactory();
+        var metrics = TestSinkCommitterMetricGroup.create();
+        try (var ignored =
+                sink(CloudTasksStagedOptions.builder().build(), true, factory, export)
+                        .createCommitter(context(metrics))) {
+            assertThat(metrics.hasMetric("rpcMethod", "CreateTask", "operations"))
+                    .isEqualTo(export);
+            assertThat(metrics.hasMetric("rpcMethod", "CreateTask", "operationTimeMillis"))
+                    .isEqualTo(export);
+            assertThat(factory.clientMetrics).hasSize(1);
+            assertThat(factory.clientMetrics.get(0) != null).isEqualTo(export);
+        }
+    }
+
     private static CloudTasksStagedCreateTaskSink<String> sink(
             CloudTasksStagedOptions options, boolean emulator, RecordingFactory factory) {
+        return sink(options, emulator, factory, false);
+    }
+
+    private static CloudTasksStagedCreateTaskSink<String> sink(
+            CloudTasksStagedOptions options,
+            boolean emulator,
+            RecordingFactory factory,
+            boolean exportClientMetricsToFlink) {
         var builder =
                 CloudTasksSink.<String>builder()
                         .queue(QueueDestination.of("p", "l", "q"))
-                        .serializer(value -> Task.getDefaultInstance());
+                        .serializer(value -> Task.getDefaultInstance())
+                        .exportClientMetricsToFlink(exportClientMetricsToFlink);
         if (emulator) {
             builder.emulatorEndpoint("localhost:1");
         }
@@ -103,8 +137,11 @@ class CloudTasksStagedRetentionTest {
     }
 
     private static CommitterInitContext context() {
+        return context(TestSinkCommitterMetricGroup.create());
+    }
+
+    private static CommitterInitContext context(SinkCommitterMetricGroup metrics) {
         return new CommitterInitContext() {
-            private final SinkCommitterMetricGroup metrics = TestSinkCommitterMetricGroup.create();
 
             @Override
             public SinkCommitterMetricGroup metricGroup() {
@@ -135,6 +172,7 @@ class CloudTasksStagedRetentionTest {
         private int reads;
         private int creators;
         private int closed;
+        private final List<ClientMetrics> clientMetrics = new ArrayList<>();
 
         private RecordingFactory() {
             super(null, null, null);
@@ -151,8 +189,9 @@ class CloudTasksStagedRetentionTest {
         }
 
         @Override
-        public TaskCreator create() {
+        public TaskCreator create(@Nullable ClientMetrics clientMetrics) {
             creators++;
+            this.clientMetrics.add(clientMetrics);
             return new TaskCreator() {
                 @Override
                 public com.google.api.core.ApiFuture<Task> createTask(

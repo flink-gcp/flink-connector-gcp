@@ -25,10 +25,12 @@ import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
 import com.google.api.gax.grpc.GrpcCallContext;
 import com.google.api.gax.rpc.UnaryCallable;
+import com.google.api.gax.tracing.OpenTelemetryMetricsFactory;
 import com.google.cloud.tasks.v2.CloudTasksClient;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.grpc.CallOptions;
@@ -49,12 +51,20 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>The client's own retry configuration is left alone: it retries {@code CreateTask} on nothing
  * at all, which is the reason the writer owns retrying (see {@code CloudTasksWriterOptions}).
- * Transport sizing is the one gax setting this factory does touch: a configured {@code
+ * Transport sizing is one of the two gax settings this factory does touch: a configured {@code
  * channelPoolSize} replaces the production transport provider with one carrying that many channels,
  * because the default single channel delivers far less concurrency than the writer's in-flight cap
  * (ADR-0134). The emulator arm keeps its single caller-owned channel (ADR-0081), so the constructor
  * rejects a pool beside an emulator endpoint — the sink builder and the table factory already
  * refuse the combination, and this keeps the impossible state unrepresentable here too.
+ *
+ * <p>The other is the tracer factory, set only when the caller passes client metrics: gax's {@code
+ * OpenTelemetryMetricsFactory} over their {@code OpenTelemetry}, on the emulator arm as on the
+ * production one, since gax records each call whatever the endpoint. The Cloud Tasks client has no
+ * metrics of its own, so this is the only source of its RPC timings. {@code setTracerFactory} is
+ * {@code @BetaApi} in the pinned gax, and gax creates the factory's histogram only when the client
+ * declares its library metadata, which {@code google-cloud-tasks} 2.99.0 does; reread both on a BOM
+ * bump (ADR-0186).
  *
  * <p>Checkpointed creation also uses this factory for a production-only v2beta3 queue-retention
  * readback with the same credential selection. That client surface is beta in the pinned SDK;
@@ -114,7 +124,7 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
     }
 
     @Override
-    public TaskCreator create() throws IOException {
+    public TaskCreator create(@Nullable ClientMetrics clientMetrics) throws IOException {
         ManagedChannel ownedChannel = null;
         try {
             CloudTasksSettings.Builder settings;
@@ -126,8 +136,9 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
             } else {
                 settings = productionSettings(serviceAccountKeyFile, channelPoolSize);
             }
+            applyClientMetrics(settings, clientMetrics);
             return new CloudTasksClientAdapter(
-                    CloudTasksClient.create(settings.build()), ownedChannel);
+                    CloudTasksClient.create(settings.build()), ownedChannel, clientMetrics);
         } catch (IOException | RuntimeException e) {
             // The channel is owned here until the adapter takes it over on success.
             if (ownedChannel != null) {
@@ -157,6 +168,23 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
                             .build());
         }
         return settings;
+    }
+
+    /**
+     * Makes the client record into the given client metrics, through gax's public OpenTelemetry
+     * metrics factory; nothing is changed when they are {@code null}. Separate so that a test can
+     * see the factory reach the settings on the production arm, which no emulator job exercises.
+     *
+     * @param settings the settings to apply it to
+     * @param clientMetrics the client metrics to record into, or {@code null}
+     */
+    static void applyClientMetrics(
+            CloudTasksSettings.Builder settings, @Nullable ClientMetrics clientMetrics) {
+        if (clientMetrics != null) {
+            settings.getStubSettingsBuilder()
+                    .setTracerFactory(
+                            new OpenTelemetryMetricsFactory(clientMetrics.openTelemetry()));
+        }
     }
 
     /**
@@ -209,17 +237,31 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
         return java.time.Duration.ofSeconds(ttl.getSeconds(), ttl.getNanos());
     }
 
-    /** Adapts the SDK {@link CloudTasksClient} to the writer-facing {@link TaskCreator}. */
+    /**
+     * Adapts the SDK {@link CloudTasksClient} to the writer-facing {@link TaskCreator}. It closes
+     * the client metrics it was given after the client and its channel: closed client metrics drop
+     * what they are given, so a call still completing would lose its recording.
+     */
     static final class CloudTasksClientAdapter implements TaskCreator {
 
         private final CloudTasksClient client;
         private final UnaryCallable<CreateTaskRequest, Task> createTaskCallable;
         @Nullable private final ManagedChannel ownedChannel;
+        @Nullable private final ClientMetrics clientMetrics;
 
-        CloudTasksClientAdapter(CloudTasksClient client, @Nullable ManagedChannel ownedChannel) {
+        CloudTasksClientAdapter(
+                CloudTasksClient client,
+                @Nullable ManagedChannel ownedChannel,
+                @Nullable ClientMetrics clientMetrics) {
             this.client = client;
             this.createTaskCallable = client.createTaskCallable();
             this.ownedChannel = ownedChannel;
+            this.clientMetrics = clientMetrics;
+        }
+
+        /** The adapted client; the test seam reading the settings the factory built. */
+        CloudTasksClient client() {
+            return client;
         }
 
         @Override
@@ -248,6 +290,9 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
             } finally {
                 if (ownedChannel != null) {
                     ownedChannel.shutdownNow();
+                }
+                if (clientMetrics != null) {
+                    clientMetrics.close();
                 }
             }
         }

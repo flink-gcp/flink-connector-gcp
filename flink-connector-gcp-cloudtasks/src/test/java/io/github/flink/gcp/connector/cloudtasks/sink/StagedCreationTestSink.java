@@ -28,12 +28,15 @@ import com.google.cloud.tasks.v2.HttpMethod;
 import com.google.cloud.tasks.v2.HttpRequest;
 import com.google.cloud.tasks.v2.Task;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksStagedWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TimeSource;
 import io.grpc.Deadline;
 import io.grpc.Status;
+
+import javax.annotation.Nullable;
 
 import java.nio.ByteBuffer;
 import java.security.SecureRandom;
@@ -137,7 +140,8 @@ final class StagedCreationTestSink extends CloudTasksStagedCreateTaskSink<String
     }
 
     @Override
-    protected TaskCreator createTaskCreator(DefaultTaskCreatorFactory factory) {
+    protected TaskCreator createTaskCreator(
+            DefaultTaskCreatorFactory factory, @Nullable ClientMetrics clientMetrics) {
         Probe probe = PROBES.get(runId);
         return new TaskCreator() {
             private boolean closed;

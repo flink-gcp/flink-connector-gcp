@@ -40,6 +40,9 @@ This project bundles the following dependencies under the Apache Software Licens
 - io.grpc:grpc-xds:1.83.0
 - io.opencensus:opencensus-api:0.31.1
 - io.opencensus:opencensus-contrib-http-util:0.31.1
+- io.opentelemetry:opentelemetry-api:1.62.0
+- io.opentelemetry:opentelemetry-common:1.62.0
+- io.opentelemetry:opentelemetry-context:1.62.0
 - io.perfmark:perfmark-api:0.27.0
 - org.apache.httpcomponents:httpclient:4.5.14
 - org.apache.httpcomponents:httpcore:4.4.16

@@ -144,7 +144,7 @@ class CreateTaskCancellationTest {
                         null,
                         EmulatorEndpoint.parse("127.0.0.1:" + server.getPort(), "emulatorEndpoint"),
                         null)
-                .create();
+                .create(null);
     }
 
     private static Server start(

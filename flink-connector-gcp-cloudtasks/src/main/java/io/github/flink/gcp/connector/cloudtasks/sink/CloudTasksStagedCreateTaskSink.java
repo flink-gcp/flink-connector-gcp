@@ -38,6 +38,8 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.cloudtasks.CloudTasksClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.committer.CloudTasksStagedCommitter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksStagedWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
@@ -176,7 +178,14 @@ public class CloudTasksStagedCreateTaskSink<T>
         if (options.isVerifyQueueRetention() && config.getEmulatorEndpoint() == null) {
             verifyQueueRetention(factory, queue);
         }
-        TaskCreator creator = createTaskCreator(factory);
+        // Registered as the committer opens, before any reporter reads its group; the creator
+        // owns them once it exists and closes them after its client. They hold no resource, so a
+        // failed creation leaves nothing to release.
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? CloudTasksClientMetrics.register(context.metricGroup())
+                        : null;
+        TaskCreator creator = createTaskCreator(factory, clientMetrics);
         try {
             return new CloudTasksStagedCommitter(
                     queue,
@@ -201,9 +210,16 @@ public class CloudTasksStagedCreateTaskSink<T>
 
     /**
      * Constructs a fresh creator per committer incarnation; test adapters may inject a registry.
+     *
+     * @param factory the factory {@link #taskCreatorFactory()} built
+     * @param clientMetrics the client metrics the creator's client records into, or {@code null}
+     * @return the creator, which owns the client metrics
+     * @throws IOException if the client cannot be created
      */
-    protected TaskCreator createTaskCreator(DefaultTaskCreatorFactory factory) throws IOException {
-        return factory.create();
+    protected TaskCreator createTaskCreator(
+            DefaultTaskCreatorFactory factory, @Nullable ClientMetrics clientMetrics)
+            throws IOException {
+        return factory.create(clientMetrics);
     }
 
     /** Supplies the wall clock used at each send authorization. */

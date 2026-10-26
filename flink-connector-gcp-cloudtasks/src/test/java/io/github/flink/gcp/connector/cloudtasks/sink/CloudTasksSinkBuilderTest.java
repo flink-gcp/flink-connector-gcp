@@ -57,6 +57,38 @@ class CloudTasksSinkBuilderTest {
         assertThat(config.getTaskIdExtractor()).isNull();
         assertThat(config.getServiceAccountKeyFile()).isNull();
         assertThat(config.getEmulatorEndpoint()).isNull();
+        assertThat(config.isExportClientMetricsToFlink()).isFalse();
+    }
+
+    @Test
+    void carriesTheClientMetricsExportIntoBothModesThroughJobGraphSerialization() throws Exception {
+        // The eager sink's writer and the staged sink's committer each read it from the config
+        // when they open, so it has to survive the job graph in both.
+        Sink<String> eager =
+                CloudTasksSink.<String>builder()
+                        .queue(QUEUE)
+                        .serializer(SERIALIZER)
+                        .exportClientMetricsToFlink(true)
+                        .build();
+        Sink<String> staged =
+                CloudTasksSink.<String>builder()
+                        .queue(QUEUE)
+                        .serializer(SERIALIZER)
+                        .deliveryGuarantee(CloudTasksDeliveryGuarantee.EXACTLY_ONCE)
+                        .exportClientMetricsToFlink(true)
+                        .build();
+
+        assertThat(config(roundTrip(eager)).isExportClientMetricsToFlink()).isTrue();
+        assertThat(
+                        ((CloudTasksStagedCreateTaskSink<String>) roundTrip(staged))
+                                .getConfig()
+                                .isExportClientMetricsToFlink())
+                .isTrue();
+    }
+
+    private Sink<String> roundTrip(Sink<String> sink) throws Exception {
+        return InstantiationUtil.deserializeObject(
+                InstantiationUtil.serializeObject(sink), getClass().getClassLoader());
     }
 
     @Test

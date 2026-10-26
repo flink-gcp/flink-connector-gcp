@@ -92,6 +92,7 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                         CloudTasksConnectorOptions.APP_ENGINE_INSTANCE,
                         CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
                         CloudTasksConnectorOptions.EMULATOR_ENDPOINT,
+                        CloudTasksConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
                         CloudTasksConnectorOptions.SINK_IN_FLIGHT_MAX_TASKS,
                         CloudTasksConnectorOptions.SINK_CHANNEL_POOL_SIZE,
                         CloudTasksConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
@@ -147,6 +148,8 @@ public class CloudTasksDynamicTableFactory implements DynamicTableSinkFactory {
                 config.getOptional(CloudTasksConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                         .orElse(null),
                 config.getOptional(CloudTasksConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                config.getOptional(CloudTasksConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK)
+                        .orElse(null),
                 config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null));
     }
 

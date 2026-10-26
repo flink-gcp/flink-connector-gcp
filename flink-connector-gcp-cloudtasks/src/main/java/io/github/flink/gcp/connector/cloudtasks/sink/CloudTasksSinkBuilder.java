@@ -54,6 +54,7 @@ public class CloudTasksSinkBuilder<T> {
     private FailureHandler<? super FailedTask> failedTaskHandler = FailureHandler.failJob();
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
+    private boolean exportClientMetricsToFlink;
 
     CloudTasksSinkBuilder() {}
 
@@ -196,6 +197,28 @@ public class CloudTasksSinkBuilder<T> {
     }
 
     /**
+     * Exports the Cloud Tasks client's RPC metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>The component that owns the client registers them under its metric group as {@code
+     * rpcMethod.CreateTask.leaf}: the at-least-once writer, or the committer under {@link
+     * CloudTasksDeliveryGuarantee#EXACTLY_ONCE}. They are the number of {@code CreateTask} calls
+     * the client completed, successful or not, and their total duration in milliseconds, as the
+     * client measured it, so a backend divides their rates for the mean over any window; no
+     * percentile is reported. Both move as each call completes.
+     *
+     * <p>The Cloud Tasks client has no built-in export of its own, so there is no Cloud Monitoring
+     * counterpart to switch off.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public CloudTasksSinkBuilder<T> exportClientMetricsToFlink(boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
      * Selects eager creation or checkpointed named creation within the documented recovery window.
      *
      * @param deliveryGuarantee the task-creation mode
@@ -248,7 +271,8 @@ public class CloudTasksSinkBuilder<T> {
                         writerOptions,
                         failedTaskHandler,
                         serviceAccountKeyFile,
-                        emulatorEndpoint);
+                        emulatorEndpoint,
+                        exportClientMetricsToFlink);
         if (deliveryGuarantee == CloudTasksDeliveryGuarantee.EXACTLY_ONCE) {
             Preconditions.checkState(
                     destinationResolver instanceof FixedDestinationResolver,

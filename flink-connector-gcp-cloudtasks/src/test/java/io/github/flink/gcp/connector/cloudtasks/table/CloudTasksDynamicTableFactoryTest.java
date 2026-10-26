@@ -30,6 +30,7 @@ import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 
 import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.table.form.FormUrlEncodedFormatFactory;
 import io.github.flink.gcp.connector.cloudtasks.table.sink.AppEngineTargetSpec;
@@ -295,6 +296,38 @@ class CloudTasksDynamicTableFactoryTest {
     void omittedWriterOptionsPreserveEveryDataStreamDefault() {
         assertThat(runtimeSink(minimalOptions()).getConfig().getWriterOptions())
                 .isEqualTo(CloudTasksWriterOptions.builder().build());
+    }
+
+    @Test
+    void mapsTheClientMetricsExportInBothDeliveryModes() {
+        Map<String, String> eager = minimalOptions();
+        eager.put("client-metrics.export-to-flink", "true");
+        Map<String, String> staged = minimalOptions();
+        staged.put("client-metrics.export-to-flink", "true");
+        staged.put("emulator-endpoint", "localhost:8123");
+        staged.put("sink.delivery-guarantee", "exactly-once");
+
+        assertThat(runtimeSink(minimalOptions()).getConfig().isExportClientMetricsToFlink())
+                .isFalse();
+        assertThat(runtimeSink(eager).getConfig().isExportClientMetricsToFlink()).isTrue();
+        CloudTasksStagedCreateTaskSink<?> stagedSink =
+                (CloudTasksStagedCreateTaskSink<?>)
+                        ((SinkV2Provider)
+                                        FactoryMocks.createTableSink(SCHEMA, staged)
+                                                .getSinkRuntimeProvider(
+                                                        new SinkRuntimeProviderContext(false)))
+                                .createSink();
+        assertThat(stagedSink.getConfig().isExportClientMetricsToFlink()).isTrue();
+    }
+
+    @Test
+    void theClientMetricsExportTakesPartInPlannerEqualityAndSurvivesCopy() {
+        Map<String, String> on = minimalOptions();
+        on.put("client-metrics.export-to-flink", "true");
+        DynamicTableSink exported = FactoryMocks.createTableSink(SCHEMA, on);
+
+        assertThat(exported).isNotEqualTo(FactoryMocks.createTableSink(SCHEMA, minimalOptions()));
+        assertThat(exported.copy()).isEqualTo(exported).hasSameHashCodeAs(exported);
     }
 
     @Test

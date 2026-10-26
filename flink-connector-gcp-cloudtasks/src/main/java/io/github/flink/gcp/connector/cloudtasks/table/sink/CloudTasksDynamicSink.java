@@ -61,6 +61,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
     @Nullable private final CloudTasksStagedOptions stagedOptions;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
+    @Nullable private final Boolean exportClientMetricsToFlink;
     @Nullable private final Integer parallelism;
 
     private List<String> metadataKeys = Collections.emptyList();
@@ -88,6 +89,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 null,
                 serviceAccountKeyFile,
                 emulatorEndpoint,
+                null,
                 parallelism);
     }
 
@@ -103,6 +105,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
             @Nullable CloudTasksStagedOptions stagedOptions,
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
+            @Nullable Boolean exportClientMetricsToFlink,
             @Nullable Integer parallelism) {
         this.logicalTableName =
                 Preconditions.checkNotNull(logicalTableName, "logicalTableName must not be null");
@@ -119,6 +122,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         this.stagedOptions = stagedOptions;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
         this.parallelism = parallelism;
     }
 
@@ -201,6 +205,9 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
+        if (exportClientMetricsToFlink != null) {
+            builder.exportClientMetricsToFlink(exportClientMetricsToFlink);
+        }
         if (deliveryGuarantee == CloudTasksDeliveryGuarantee.EXACTLY_ONCE) {
             CloudTasksStagedCreateTaskSink<RowData> sink =
                     (CloudTasksStagedCreateTaskSink<RowData>) builder.build();
@@ -262,6 +269,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                         stagedOptions,
                         serviceAccountKeyFile,
                         emulatorEndpoint,
+                        exportClientMetricsToFlink,
                         parallelism);
         copy.metadataKeys = metadataKeys;
         return copy;
@@ -292,6 +300,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 && Objects.equals(stagedOptions, that.stagedOptions)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
+                && Objects.equals(exportClientMetricsToFlink, that.exportClientMetricsToFlink)
                 && Objects.equals(parallelism, that.parallelism)
                 && metadataKeys.equals(that.metadataKeys);
     }
@@ -310,6 +319,7 @@ public final class CloudTasksDynamicSink implements DynamicTableSink, SupportsWr
                 stagedOptions,
                 serviceAccountKeyFile,
                 emulatorEndpoint,
+                exportClientMetricsToFlink,
                 parallelism,
                 metadataKeys);
     }

@@ -318,6 +318,20 @@ public final class CloudTasksConnectorOptions {
                             "Host and port of a Cloud Tasks emulator. It uses plaintext with no"
                                     + " credentials and is for tests only.");
 
+    /**
+     * Whether the Cloud Tasks client's RPC metrics are exported through Flink's metric system as
+     * rpcMethod.CreateTask.* series of the writer or, with exactly-once delivery, the committer.
+     */
+    public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_FLINK =
+            ConfigOptions.key("client-metrics.export-to-flink")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the Cloud Tasks client's RPC metrics are exported through"
+                                    + " Flink's metric system as rpcMethod.CreateTask.* series of"
+                                    + " the writer or, with exactly-once delivery, the"
+                                    + " committer.");
+
     /** The cap on outstanding task creations per sink subtask. */
     public static final ConfigOption<Integer> SINK_IN_FLIGHT_MAX_TASKS =
             ConfigOptions.key("sink.in-flight.max-tasks")

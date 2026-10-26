@@ -111,6 +111,15 @@ limitations under the License.
             <artifactId>gax-grpc</artifactId>
         </dependency>
         <dependency>
+            <!-- base.metrics's OpenTelemetry API, which base declares optional so that only an
+                 adopting connector carries it (ADR-0186), and the type gax's
+                 OpenTelemetryMetricsFactory records into. gax declares it optional as well, so
+                 nothing else brings it here. Version managed by the root opentelemetry-bom
+                 import. -->
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+        <dependency>
             <!-- StatusRuntimeException on the writer's status classification path.
                  Version managed by the libraries BOM. -->
             <groupId>io.grpc</groupId>

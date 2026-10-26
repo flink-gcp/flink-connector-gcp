@@ -76,7 +76,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Keep Flink 2.x graph/listener tests in `src/test/java-flink2`; direct inspection and
   serialization tests also run on 1.20.
 
-## Failure policy and metrics (`docs/adr/0049`)
+## Failure policy and metrics (`docs/adr/0049`, `docs/adr/0186`)
 
 - **In the default eager mode, exactly three failures are routed**: serializer rejection, extractor throw, creation
   rejected `INVALID_ARGUMENT`. An extractor's missing key is per-stream and fatal; a serializer
@@ -90,6 +90,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   No separate retries counter exists. `ALREADY_EXISTS` is `tasksDeduplicated`, never an error;
   per-queue counters are looked up per record (no per-destination state exists to cache a handle
   on).
+- Client RPC metrics (`docs/adr/0186`): `CloudTasksClientMetrics` is the adapter and a
+  `[[subgroups]]` source, so a new leaf owes a templated docs row. The client has no metrics of
+  its own; `DefaultTaskCreatorFactory.applyClientMetrics` sets gax's public
+  `OpenTelemetryMetricsFactory` as its tracer factory, on both arms. Every component that owns a
+  creation client registers `rpcMethod.CreateTask` when it opens (the eager writer, the staged
+  committer) and passes the `ClientMetrics` to `TaskCreatorFactory.create`, whose creator closes
+  them after its client. A new RPC on that client needs its method registered too, or it is
+  dropped with one `WARN`. On a BOM bump re-read two facts: `setTracerFactory` is `@BetaApi`, and
+  gax records nothing unless the stub settings declare library metadata
+  (`CloudTasksClientMetricsITCase` fails if they stop).
 
 ## Table sink (`docs/adr/0107`; shared rules `docs/adr/0139`)
 

@@ -20,10 +20,13 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksStagedCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -103,8 +106,9 @@ final class ObservedSinks {
                     getConfig().getEmulatorEndpoint(),
                     getConfig().getWriterOptions().getChannelPoolSize()) {
                 @Override
-                public TaskCreator create() throws IOException {
-                    return observe(super.create(), options);
+                public TaskCreator create(@Nullable ClientMetrics clientMetrics)
+                        throws IOException {
+                    return observe(super.create(clientMetrics), options);
                 }
             };
         }
@@ -120,9 +124,10 @@ final class ObservedSinks {
         }
 
         @Override
-        protected TaskCreator createTaskCreator(DefaultTaskCreatorFactory factory)
+        protected TaskCreator createTaskCreator(
+                DefaultTaskCreatorFactory factory, @Nullable ClientMetrics clientMetrics)
                 throws IOException {
-            return observe(super.createTaskCreator(factory), options);
+            return observe(super.createTaskCreator(factory, clientMetrics), options);
         }
     }
 }
