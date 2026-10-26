@@ -30,6 +30,8 @@ import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -54,6 +56,9 @@ import java.util.Objects;
 public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
+
+    /** The one RPC the writer's clients call: its batchers send {@code MutateRows}. */
+    private static final String MUTATE_ROWS = "MutateRows";
 
     private final BigtableSinkConfig<T> config;
     private final LineageMetadata lineage;
@@ -117,14 +122,35 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         CredentialsProvider credentials =
                 BigtableCredentials.loadDataAndTableAdmin(config.getServiceAccountKeyFile());
+        // Registered here, as the writer opens and before any reporter reads its group. The
+        // factory owns the client metrics from now on and closes them after its clients, on every
+        // path that
+        // closes the factory, including a failed creation below.
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? BigtableClientMetrics.register(context.metricGroup(), MUTATE_ROWS)
+                        : null;
         return createWriter(
-                context,
-                new DefaultMutationBatcherFactory(
-                        config.getAppProfileId(),
-                        config.getWriterOptions(),
-                        config.getEmulatorEndpoint(),
-                        credentials),
-                credentials);
+                context, batcherFactory(config, credentials, clientMetrics), credentials);
+    }
+
+    /**
+     * Builds the production batch factory from the sink configuration. Separate so that a test can
+     * see each client-metrics choice reach the client's settings: neither is observable through a
+     * job against the emulator, whose client builder already disables the Cloud Monitoring export.
+     */
+    @VisibleForTesting
+    static DefaultMutationBatcherFactory batcherFactory(
+            BigtableSinkConfig<?> config,
+            @Nullable CredentialsProvider credentials,
+            @Nullable ClientMetrics clientMetrics) {
+        return new DefaultMutationBatcherFactory(
+                config.getAppProfileId(),
+                config.getWriterOptions(),
+                config.getEmulatorEndpoint(),
+                credentials,
+                config.isExportClientMetricsToCloudMonitoring(),
+                clientMetrics);
     }
 
     /**
@@ -146,20 +172,21 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
             MutationBatcherFactory factory,
             @Nullable CredentialsProvider credentials)
             throws IOException {
+        // The factory exists already and may own the writer's client metrics, so a failure before
+        // the
+        // writer's own guard below closes it too.
+        TableAdmin tableAdmin;
         try {
-            config.getSerializer().open(context.asSerializationSchemaInitializationContext());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException(
-                    "Interrupted while opening the Bigtable serialization schema.", e);
-        } catch (Exception e) {
-            throw new IOException("Failed to open the Bigtable serialization schema.", e);
+            openSerializer(context);
+            config.getFailedMutationHandler().open(DefaultFailureHandlerContext.of(context));
+            // Constructed unconditionally, and opening no connection: the admin's client is
+            // per-call, built for schema validation or a creation repair, as the factory builds a
+            // client per instance on the first record routed there.
+            tableAdmin = new BigtableTableAdmin(config.getEmulatorEndpoint(), credentials);
+        } catch (Throwable e) {
+            Closers.closeAllSuppressing(e, factory);
+            throw e;
         }
-        config.getFailedMutationHandler().open(DefaultFailureHandlerContext.of(context));
-        // Both constructed unconditionally, and neither opens a connection: the factory builds a
-        // client per instance on the first record routed there, and the admin's client is per-call,
-        // built for schema validation or a creation repair.
-        TableAdmin tableAdmin = new BigtableTableAdmin(config.getEmulatorEndpoint(), credentials);
         try {
             BigtableWriter<T> writer =
                     (BigtableWriter<T>)
@@ -185,6 +212,18 @@ public class BigtableMutateRowsSink<T> implements CrossVersionSink<T>, LineageVe
             Closers.closeAllSuppressing(
                     e, factory, tableAdmin, config.getFailedMutationHandler()::close);
             throw e;
+        }
+    }
+
+    private void openSerializer(WriterInitContext context) throws IOException {
+        try {
+            config.getSerializer().open(context.asSerializationSchemaInitializationContext());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException(
+                    "Interrupted while opening the Bigtable serialization schema.", e);
+        } catch (Exception e) {
+            throw new IOException("Failed to open the Bigtable serialization schema.", e);
         }
     }
 

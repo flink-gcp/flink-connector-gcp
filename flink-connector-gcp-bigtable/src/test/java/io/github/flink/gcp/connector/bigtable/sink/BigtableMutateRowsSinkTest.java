@@ -21,9 +21,13 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
+import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
+import com.google.cloud.bigtable.data.v2.stub.metrics.CustomOpenTelemetryMetricsProvider;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcher;
 import io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.MutationBatcherFactory;
@@ -227,6 +231,60 @@ class BigtableMutateRowsSinkTest {
 
         assertThat(handler.opens).isZero();
         assertThat(handler.closes).isZero();
+    }
+
+    @Test
+    void closesTheFactoryWhenTheSerializerCannotBeOpened() {
+        // The factory exists before the serializer opens, and in production it may already own the
+        // writer's client metrics, so this earliest failure releases it too.
+        RecordingMutationBatcherFactory factory = new RecordingMutationBatcherFactory();
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .table(TABLE)
+                                .serializer(new FailingSerializationSchema())
+                                .build();
+
+        assertThatThrownBy(() -> sink.createWriter(new StubWriterInitContext(0), factory))
+                .hasMessageContaining("Failed to open the Bigtable serialization schema.");
+
+        assertThat(factory.closes).isEqualTo(1);
+    }
+
+    @Test
+    void handsBothClientMetricsChoicesToTheBatchFactory() {
+        ClientMetrics metrics = ClientMetrics.create("method");
+        BigtableMutateRowsSink<String> sink =
+                (BigtableMutateRowsSink<String>)
+                        BigtableSink.<String>builder()
+                                .table(TABLE)
+                                .serializer(SERIALIZER)
+                                .exportClientMetricsToCloudMonitoring(false)
+                                .build();
+
+        // Not observable through an emulator job: the emulator builder already disables the
+        // Cloud Monitoring export, so the production settings are what a test can read.
+        BigtableDataSettings settings =
+                BigtableMutateRowsSink.batcherFactory(
+                                sink.getConfig(), NoCredentialsProvider.create(), metrics)
+                        .settings(TABLE);
+
+        assertThat(settings.areInternalMetricsEnabled()).isFalse();
+        assertThat(settings.getMetricsProvider())
+                .isInstanceOf(CustomOpenTelemetryMetricsProvider.class);
+        assertThat(
+                        BigtableMutateRowsSink.batcherFactory(
+                                        ((BigtableMutateRowsSink<String>)
+                                                        BigtableSink.<String>builder()
+                                                                .table(TABLE)
+                                                                .serializer(SERIALIZER)
+                                                                .build())
+                                                .getConfig(),
+                                        NoCredentialsProvider.create(),
+                                        null)
+                                .settings(TABLE)
+                                .areInternalMetricsEnabled())
+                .isTrue();
     }
 
     @Test

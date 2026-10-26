@@ -160,6 +160,37 @@ public final class BigtableConnectorOptions {
                                     + " component that opens a client. Cannot be combined with"
                                     + " emulator-endpoint.");
 
+    /**
+     * Whether the Bigtable client's own metrics, per RPC method, are exported through Flink's
+     * metric system as rpcMethod.METHOD.* series of the writer. Applies to the upsert, keep-latest
+     * and aggregate write modes.
+     */
+    public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_FLINK =
+            ConfigOptions.key("client-metrics.export-to-flink")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the Bigtable client's own metrics, per RPC method, are"
+                                    + " exported through Flink's metric system as"
+                                    + " rpcMethod.METHOD.* series of the writer. Applies to the"
+                                    + " upsert, keep-latest and aggregate write modes.");
+
+    /**
+     * Whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
+     * Monitoring. Turning it off also removes the exporter's platform detection when a client
+     * closes. Applies to the upsert, keep-latest and aggregate write modes.
+     */
+    public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING =
+            ConfigOptions.key("client-metrics.export-to-cloud-monitoring")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the Bigtable client keeps exporting its built-in client-side"
+                                    + " metrics to Cloud Monitoring. Turning it off also removes"
+                                    + " the exporter's platform detection when a client closes."
+                                    + " Applies to the upsert, keep-latest and aggregate write"
+                                    + " modes.");
+
     // ------------------------------------------------------------------------
     //  Cell encoding
     // ------------------------------------------------------------------------

@@ -45,6 +45,8 @@ public final class BigtableSinkConfig<T> implements Serializable {
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final CreateDisposition createDisposition;
     @Nullable private final TableCreateOptions tableCreateOptions;
+    private final boolean exportClientMetricsToFlink;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     BigtableSinkConfig(
             DestinationResolver<? super T> destinationResolver,
@@ -55,7 +57,9 @@ public final class BigtableSinkConfig<T> implements Serializable {
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             CreateDisposition createDisposition,
-            @Nullable TableCreateOptions tableCreateOptions) {
+            @Nullable TableCreateOptions tableCreateOptions,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.appProfileId = appProfileId;
@@ -65,6 +69,8 @@ public final class BigtableSinkConfig<T> implements Serializable {
         this.emulatorEndpoint = emulatorEndpoint;
         this.createDisposition = createDisposition;
         this.tableCreateOptions = tableCreateOptions;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     /** Returns the resolver naming the table each record is written to. */
@@ -120,5 +126,15 @@ public final class BigtableSinkConfig<T> implements Serializable {
     @Nullable
     public TableCreateOptions getTableCreateOptions() {
         return tableCreateOptions;
+    }
+
+    /** Returns whether the client's own metrics are exported through Flink's metric system. */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
+    }
+
+    /** Returns whether the client keeps its built-in Cloud Monitoring export. */
+    public boolean isExportClientMetricsToCloudMonitoring() {
+        return exportClientMetricsToCloudMonitoring;
     }
 }

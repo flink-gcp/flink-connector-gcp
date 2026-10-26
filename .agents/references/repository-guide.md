@@ -850,8 +850,10 @@ facts); the rules a session needs:
   notes. Dependabot's monthly `maven` group does not cover this: the BOM has shipped every one to
   four weeks, about two on average. A BOM bump owes more than the property:
   `just update-notice <module>` for each shaded module, a relocation for any package root the
-  packaging ITCase reports, the org.json check its root-POM comment prescribes, and a re-read of
-  every documented claim about what a moved SDK does or lacks
+  packaging ITCase reports, the org.json check its root-POM comment prescribes, moving
+  `opentelemetry-bom.version` to the OpenTelemetry the new clients resolve (the
+  `opentelemetry-upper-bound` enforcer execution fails the build until it moves; ADR-0186), and a
+  re-read of every documented claim about what a moved SDK does or lacks
 
 ## CI architecture
 

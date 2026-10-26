@@ -51,7 +51,11 @@ so marked whose name the module *does* register fails, so the marker cannot be
 used to hide a stale row. Subgroup rows (`errorClass.CODE.errors`,
 `destination.TABLE.recordsSend`) are templated — the middle segment is an
 all-caps placeholder — and their group and leaf names are read from the
-`base.metrics` sources that register them, listed under [[subgroups]].
+sources that register them, listed under [[subgroups]]. Those are the
+`base.metrics` registrars and, since #713, a connector's own client-metrics
+adapter (`rpcMethod.METHOD.operations`): a [[subgroups]] source inside a mapped
+module registers template leaves, not inventory names, so the inventory rule
+below does not read it.
 
 Exit codes: 0 clean, 1 policy violation (undocumented, stale or mis-typed
 metric), 2 infrastructure or config authoring error (missing file, invalid
@@ -335,9 +339,27 @@ def subgroup_template(source: Path) -> Subgroup:
         method = parsed.text(name) if name is not None else ""
         if method == "addGroup" and values and values[0].type == "identifier":
             groups.add(constants.get(parsed.text(values[0])))
-        if method in ("counter", "gauge") and values and values[0].type == "identifier":
-            leaf = constants.get(parsed.text(values[0]))
-            consistent &= leaf is not None and leaves.setdefault(leaf, method) == method
+        if (
+            method in ("counter", "gauge")
+            and call.child_by_field_name("object") is not None
+        ):
+            # Every registration in a claimed source must be a leaf this
+            # function can read: the inventory rule skips the file, so a
+            # literal or computed name here would register an undocumented
+            # metric with nothing to report it (#713's independent review).
+            leaf = (
+                constants.get(parsed.text(values[0]))
+                if values and values[0].type == "identifier"
+                else None
+            )
+            if leaf is None:
+                infra(
+                    f"{source.relative_to(ROOT)}:{parsed.line(call)}: registers a "
+                    f"{method} by a name that is not one of its own string "
+                    f"constants. A [[subgroups]] source declares every leaf as a "
+                    f"constant, so the docs check can demand a row for it."
+                )
+            consistent &= leaves.setdefault(leaf, method) == method
     if len(groups) != 1 or None in groups or not leaves or not consistent:
         infra(
             f"{source.relative_to(ROOT)}: could not read one addGroup segment "
@@ -526,8 +548,16 @@ def main() -> int:
         module, page = entry["module"], ROOT / entry["page"]
         sources = parsed_sources(module)
         constants = inventory(module, sources)
+        # A [[subgroups]] source in the module registers its leaves through
+        # its own constants, by design; the template check below holds them.
         registered, used_constants, reg_problems = registrations(
-            module, sources, constants
+            module,
+            {
+                source: parsed
+                for source, parsed in sources.items()
+                if str(source.relative_to(ROOT)) not in claimed
+            },
+            constants,
         )
         problems.extend(reg_problems)
         if not registered:
