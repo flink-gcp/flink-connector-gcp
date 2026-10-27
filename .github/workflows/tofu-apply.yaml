@@ -89,7 +89,7 @@ jobs:
 
       - name: Set up tfaction
         id: setup
-        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
+        uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
         with:
           action: setup
           github_token: ${{ github.token }}
@@ -189,14 +189,14 @@ jobs:
           scripts/appengine-e2e-fixture.sh start-for-plan "$plan_json"
 
       - name: tofu init
-        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
+        uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
         with:
           action: terraform-init
           github_token: ${{ github.token }}
 
       - name: tofu apply
         id: apply
-        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
+        uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
         with:
           action: apply
           github_token: ${{ github.token }}
@@ -226,7 +226,7 @@ jobs:
 
       - name: Create the follow-up pull request
         if: failure() && steps.app-token.outcome == 'success'
-        uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
+        uses: suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10 # v2.3.3
         with:
           action: create-follow-up-pr
           github_token: ${{ steps.app-token.outputs.token }}
