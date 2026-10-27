@@ -39,9 +39,9 @@ The idle values select the Operator 1.15.0 GAR digest from the [successful publi
 The image verifier requires the Tier-3 GAR Operator repository and a SHA-256 digest, compares chart output with that reference, and compares the live Deployment with the rendered expectation.
 The [seven-day cleanup policy](../../kubernetes/images/README.md#retention-and-acceptance) still requires a fresh image-availability check before Pod admission.
 
-Helm owns fifteen rendered resources: a Deployment, ConfigMap and Operator ServiceAccount in `tier3-system`, and an Operator Role and RoleBinding in each of `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable`.
+Helm owns seventeen rendered resources: a Deployment, ConfigMap and Operator ServiceAccount in `tier3-system`, and an Operator Role and RoleBinding in each of `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable` and `tier3-spanner`.
 The release also stores its metadata in Secrets in `tier3-system`, retaining up to five revisions.
-The configuration watches only `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable`; the Role in the release namespace supports leases and FlinkStateSnapshot discovery.
+The configuration watches only `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable` and `tier3-spanner`; the Role in the release namespace supports leases and FlinkStateSnapshot discovery.
 The installer already holds these explicit permissions through bootstrap, without unrestricted bind or escalate grants.
 
 `replicas: 0`, `webhook.create: false`, `skip_crds = true` and `create_namespace = false` preserve the idle boundary.
@@ -62,9 +62,9 @@ The provider contains only the fixed context and Secret storage driver.
 Its wrapper clears inherited Kubernetes overrides and supplies that runner's verified kubeconfig, preserving ADC/WIF environment settings.
 Neither an expiring token nor the plan runner's kubeconfig path is serialized into the provider configuration.
 
-Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and the five watched application namespaces' identities/RoleBindings.
-It checks observed zero quotas and idle workload inventory in `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable`.
-It checks that the rendered chart contains precisely the fifteen owned resources, zero replicas, the pinned image, the five expected watched namespaces and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
+Before plan/apply, the helper checks the actual principal, allowed/denied operations, four Established CRDs and the six watched application namespaces' identities/RoleBindings.
+It checks observed zero quotas and idle workload inventory in `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable` and `tier3-spanner`.
+It checks that the rendered chart contains precisely the seventeen owned resources, zero replicas, the pinned image, the six expected watched namespaces and Operator RoleBinding subjects, with no hooks, extra containers or PVC mounts.
 This is a bounded idle inventory check, not an exhaustive audit of every Kubernetes controller or the [lifecycle supervisor](../../kubernetes/lifecycle/README.md).
 The helper runs through the `flink-tier3` workspace CLI and shares its SDK/PyYAML dependencies with the lifecycle commands under the root `uv.lock`.
 OpenTofu validation, formatting and TFLint run inside the selected plan job after initialization.
@@ -72,10 +72,10 @@ No OpenTofu checks or cluster access are added to general lint or a separate wor
 
 Review the PR's OpenTofu plan together with the `tier3-operator-manifest` artifact from the same CI run.
 The initial installation plan contained one Helm release addition.
-A digest update must contain only an in-place release update, with zero replicas and the same fifteen owned resources.
+A digest update must contain only an in-place release update, with zero replicas and the same seventeen owned resources.
 After merge, CI applies that saved plan using a freshly verified copy of the pinned chart.
 It reads the release status and versions through `helm get metadata`, then verifies live configuration/RBAC and zero Deployment replicas.
-It verifies zero Pods/PVCs and unchanged idle quotas in `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub` and `tier3-bigtable`.
+It verifies zero Pods/PVCs and unchanged idle quotas in `tier3-system`, `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable` and `tier3-spanner`.
 The [BigQuery foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed the namespace prerequisites before this watch-set extension.
 Its bootstrap and GCP refreshed plans were empty, and runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
 The Cloud Tasks extension brought the original seven chart objects to nine, and BigQuery added its Operator Role/RoleBinding to bring the inventory to eleven.
@@ -87,8 +87,13 @@ The runner and supervisor can select the Operator KSA through system Jobs, so th
 
 The [Bigtable bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/39139972190) imported six prerequisites and created five workload/lifecycle objects; its drift check failed on a transient credential error, and a refreshed plan by hand was empty.
 Separate reads verified the job identity, observed zero quotas, empty workload inventory and runner and supervisor reads ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)).
-This extension adds only the Bigtable Operator Role/RoleBinding, bringing the rendered inventory to fifteen ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)).
-The runner and supervisor's trusted Operator-administrator reach now includes Bigtable Secret access and Pod creation too.
+That extension added only the Bigtable Operator Role/RoleBinding, bringing the rendered inventory to fifteen ([#1864](https://github.com/flink-gcp/flink-connector-gcp/issues/1864)).
+The runner and supervisor's trusted Operator-administrator reach then came to include Bigtable Secret access and Pod creation too.
+
+The [Spanner bootstrap apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40340869524) imported six prerequisites and created five workload/lifecycle objects, and its refreshed drift check found no changes.
+Separate reads verified the job identity, observed zero quotas, empty workload inventory and runner and supervisor reads ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875#issuecomment-6419150153)).
+This extension adds only the Spanner Operator Role/RoleBinding, bringing the rendered inventory to seventeen ([#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876)).
+The runner and supervisor's trusted Operator-administrator reach now includes Spanner Secret access and Pod creation too.
 
 Application admission and paid trials remain separately approved lifecycle operations.
 Post-apply verification rechecks the runner-local archive's checksum and renders it again, without depending on another download.

@@ -195,6 +195,7 @@ def test_wrong_principal_stops_before_permission_or_inventory_checks(
         "tier3-bigquery",
         "tier3-pubsub",
         "tier3-bigtable",
+        "tier3-spanner",
     ],
 )
 @pytest.mark.parametrize("kind", ["Pod", "FlinkDeployment"])
@@ -388,7 +389,13 @@ def test_ci_access_failure_does_not_publish_a_wrapper(monkeypatch, tmp_path):
 @pytest.mark.parametrize("section", ["spec", "status"])
 @pytest.mark.parametrize(
     "namespace",
-    ["tier3-cloudtasks", "tier3-bigquery", "tier3-pubsub", "tier3-bigtable"],
+    [
+        "tier3-cloudtasks",
+        "tier3-bigquery",
+        "tier3-pubsub",
+        "tier3-bigtable",
+        "tier3-spanner",
+    ],
 )
 def test_application_quota_must_be_zero_and_observed(
     monkeypatch, tmp_path, field, section, namespace
