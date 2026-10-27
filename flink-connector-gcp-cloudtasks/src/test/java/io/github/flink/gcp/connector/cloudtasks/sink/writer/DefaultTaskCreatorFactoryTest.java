@@ -16,23 +16,37 @@
 
 package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
+import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.api.gax.rpc.ApiCallContext;
+import com.google.api.gax.rpc.UnaryCallable;
+import com.google.api.gax.tracing.OpenTelemetryMetricsFactory;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
+import com.google.cloud.tasks.v2.CreateTaskRequest;
+import com.google.cloud.tasks.v2.Task;
+import com.google.cloud.tasks.v2.stub.CloudTasksStub;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.cloudtasks.CloudTasksClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.metrics.DoubleHistogram;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,12 +106,36 @@ class DefaultTaskCreatorFactoryTest {
     }
 
     @Test
+    void theProductionArmInstallsGaxsOpenTelemetryMetricsFactoryForClientMetrics()
+            throws Exception {
+        // Through create() on the arm no emulator job reaches; the ITCase covers the emulator arm.
+        // The channels connect lazily, so nothing here talks to the service.
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
+        DefaultTaskCreatorFactory factory =
+                new DefaultTaskCreatorFactory(keyFile.toString(), null, null);
+
+        try (var exporting =
+                        (DefaultTaskCreatorFactory.CloudTasksClientAdapter)
+                                factory.create(ClientMetrics.create("rpc.method"));
+                var silent =
+                        (DefaultTaskCreatorFactory.CloudTasksClientAdapter) factory.create(null)) {
+            assertThat(tracerFactory(exporting)).isInstanceOf(OpenTelemetryMetricsFactory.class);
+            assertThat(tracerFactory(silent)).isNotInstanceOf(OpenTelemetryMetricsFactory.class);
+        }
+    }
+
+    private static Object tracerFactory(DefaultTaskCreatorFactory.CloudTasksClientAdapter adapter) {
+        return adapter.client().getSettings().getStubSettings().getTracerFactory();
+    }
+
+    @Test
     void buildsAndClosesAProductionCreatorWithConfiguredCredentials() throws Exception {
         // The pool rides along so create() and close() run once against a real multi-channel
         // client; the channels connect lazily, so nothing here talks to the service.
         Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
-        TaskCreator creator = new DefaultTaskCreatorFactory(keyFile.toString(), null, 2).create();
+        TaskCreator creator =
+                new DefaultTaskCreatorFactory(keyFile.toString(), null, 2).create(null);
 
         assertThat(creator).isNotNull();
         creator.close();
@@ -127,7 +165,7 @@ class DefaultTaskCreatorFactoryTest {
                                 null,
                                 EmulatorEndpoint.parse("localhost:8123", "emulatorEndpoint"),
                                 null)
-                        .create();
+                        .create(null);
 
         assertThat(creator).isNotNull();
         creator.close();
@@ -275,7 +313,7 @@ class DefaultTaskCreatorFactoryTest {
         var request = com.google.cloud.tasks.v2.CreateTaskRequest.getDefaultInstance();
         try (var adapter =
                 new DefaultTaskCreatorFactory.CloudTasksClientAdapter(
-                        com.google.cloud.tasks.v2.CloudTasksClient.create(stub), null)) {
+                        com.google.cloud.tasks.v2.CloudTasksClient.create(stub), null, null)) {
             var deadline = io.grpc.Deadline.after(-1, java.util.concurrent.TimeUnit.SECONDS);
             adapter.createTask(request, deadline).get();
             assertThat(
@@ -284,6 +322,37 @@ class DefaultTaskCreatorFactoryTest {
                                     .getDeadline())
                     .isSameAs(deadline);
         }
+    }
+
+    @Test
+    void theAdapterClosesItsClientMetricsOnlyAfterItsClientTerminates() throws Exception {
+        MetricListener listener = new MetricListener();
+        ClientMetrics metrics = CloudTasksClientMetrics.register(listener.getMetricGroup());
+        DoubleHistogram histogram =
+                metrics.openTelemetry()
+                        .getMeterProvider()
+                        .get("gax")
+                        .histogramBuilder("gcp.client.request.duration")
+                        .setUnit("s")
+                        .build();
+        Attributes createTask =
+                Attributes.of(
+                        AttributeKey.stringKey("rpc.method"),
+                        "google.cloud.tasks.v2.CloudTasks/CreateTask");
+
+        // A call completing while the client terminates still records; one after close does not.
+        new DefaultTaskCreatorFactory.CloudTasksClientAdapter(
+                        com.google.cloud.tasks.v2.CloudTasksClient.create(
+                                new IdleStub(() -> histogram.record(0.25, createTask))),
+                        null,
+                        metrics)
+                .close();
+        histogram.record(0.5, createTask);
+
+        assertThat(listener.getCounter("rpcMethod", "CreateTask", "operations"))
+                .hasValueSatisfying(counter -> assertThat(counter.getCount()).isEqualTo(1));
+        assertThat(listener.getCounter("rpcMethod", "CreateTask", "operationTimeMillis"))
+                .hasValueSatisfying(counter -> assertThat(counter.getCount()).isEqualTo(250));
     }
 
     @Test
@@ -306,5 +375,51 @@ class DefaultTaskCreatorFactoryTest {
         assertThat(restoredPooled.serviceAccountKeyFile())
                 .isEqualTo("/var/run/secrets/gcp/key.json");
         assertThat(restoredPooled.channelPoolSize()).isEqualTo(4);
+    }
+
+    /** A stub that serves no call and terminates at once, running a hook as it does. */
+    private static final class IdleStub extends CloudTasksStub {
+
+        private final Runnable onTermination;
+
+        private IdleStub(Runnable onTermination) {
+            this.onTermination = onTermination;
+        }
+
+        @Override
+        public UnaryCallable<CreateTaskRequest, Task> createTaskCallable() {
+            return new UnaryCallable<>() {
+                @Override
+                public ApiFuture<Task> futureCall(
+                        CreateTaskRequest request, ApiCallContext context) {
+                    throw new AssertionError("No call is expected");
+                }
+            };
+        }
+
+        @Override
+        public void close() {}
+
+        @Override
+        public void shutdown() {}
+
+        @Override
+        public void shutdownNow() {}
+
+        @Override
+        public boolean isShutdown() {
+            return true;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return true;
+        }
+
+        @Override
+        public boolean awaitTermination(long duration, TimeUnit unit) {
+            onTermination.run();
+            return true;
+        }
     }
 }

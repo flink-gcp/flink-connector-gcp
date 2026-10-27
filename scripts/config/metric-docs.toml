@@ -91,6 +91,9 @@ source = "flink-connector-gcp-base/src/main/java/io/github/flink/gcp/connector/b
 [[subgroups]]
 source = "flink-connector-gcp-bigtable/src/main/java/io/github/flink/gcp/connector/bigtable/BigtableClientMetrics.java"
 
+[[subgroups]]
+source = "flink-connector-gcp-cloudtasks/src/main/java/io/github/flink/gcp/connector/cloudtasks/CloudTasksClientMetrics.java"
+
 # SOURCE SIDE. Registered names that deliberately have no row, keyed
 # `Class.name` — the inventory class (or [[subgroups]] class) and the name
 # literal as it registers. The bar is that a reader looking the name up would

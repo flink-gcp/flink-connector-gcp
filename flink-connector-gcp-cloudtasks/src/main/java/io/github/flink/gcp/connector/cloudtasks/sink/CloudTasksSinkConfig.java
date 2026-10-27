@@ -43,6 +43,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     private final FailureHandler<? super FailedTask> failedTaskHandler;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToFlink;
 
     CloudTasksSinkConfig(
             DestinationResolver<? super T> destinationResolver,
@@ -51,7 +52,8 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
             CloudTasksWriterOptions writerOptions,
             FailureHandler<? super FailedTask> failedTaskHandler,
             @Nullable String serviceAccountKeyFile,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink) {
         this.destinationResolver = destinationResolver;
         this.serializer = serializer;
         this.taskIdExtractor = taskIdExtractor;
@@ -59,6 +61,7 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
         this.failedTaskHandler = failedTaskHandler;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
     }
 
     /** Returns the per-record destination resolver. */
@@ -97,5 +100,10 @@ public final class CloudTasksSinkConfig<T> implements Serializable {
     @Nullable
     public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
+    }
+
+    /** Returns whether the client's RPC metrics are exported through Flink's metric system. */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
     }
 }

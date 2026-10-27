@@ -35,6 +35,7 @@ import org.apache.flink.util.InstantiationUtil;
 import com.google.cloud.tasks.v2.Task;
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
+import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksDeliveryGuarantee;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
 import io.github.flink.gcp.connector.cloudtasks.sink.QueueDestination;
 import io.github.flink.gcp.connector.cloudtasks.table.CloudTasksConnectorOptions;
@@ -133,6 +134,7 @@ class CloudTasksDynamicSinkTest {
         private String serviceAccountKeyFile;
         private String emulatorEndpoint;
         private Integer parallelism;
+        private Boolean exportClientMetricsToFlink;
 
         private SinkArgs logicalTableName(String name) {
             this.logicalTableName = name;
@@ -185,6 +187,11 @@ class CloudTasksDynamicSinkTest {
             return this;
         }
 
+        private SinkArgs exportClientMetricsToFlink(Boolean exportClientMetricsToFlink) {
+            this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+            return this;
+        }
+
         private CloudTasksDynamicSink build() {
             return new CloudTasksDynamicSink(
                     logicalTableName,
@@ -194,8 +201,11 @@ class CloudTasksDynamicSinkTest {
                     target,
                     addressMetadataNotNull,
                     writerOptions,
+                    CloudTasksDeliveryGuarantee.AT_LEAST_ONCE,
+                    null,
                     serviceAccountKeyFile,
                     emulatorEndpoint,
+                    exportClientMetricsToFlink,
                     parallelism);
         }
     }
@@ -543,7 +553,8 @@ class CloudTasksDynamicSinkTest {
                                                         .build())))
                 .isNotEqualTo(variedSink(builder -> builder.serviceAccountKeyFile("/keys/sa.json")))
                 .isNotEqualTo(variedSink(builder -> builder.emulatorEndpoint("localhost:8123")))
-                .isNotEqualTo(variedSink(builder -> builder.parallelism(3)));
+                .isNotEqualTo(variedSink(builder -> builder.parallelism(3)))
+                .isNotEqualTo(variedSink(builder -> builder.exportClientMetricsToFlink(true)));
     }
 
     @Test

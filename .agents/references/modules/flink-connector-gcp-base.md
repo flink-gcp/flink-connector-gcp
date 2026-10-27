@@ -102,7 +102,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   the same default methods, which one class cannot inherit from both.
 - Adapters register every series at component open. A registration from a client thread would race
   a reporter's iteration (`Slf4jReporter` loses that report). The per-connector adapter
-  (`BigtableClientMetrics`) carries the leaf names and is a `[[subgroups]]` source of
+  (`BigtableClientMetrics`, `CloudTasksClientMetrics`) carries the leaf names and is a `[[subgroups]]` source of
   `scripts/config/metric-docs.toml`; leaf constants stay in the adapter, never in base.
 
 ## `base.catalog` (`docs/adr/0168`)

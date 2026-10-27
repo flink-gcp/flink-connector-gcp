@@ -54,7 +54,7 @@ class RecordingTaskProxyTest {
             try (var creator =
                     new DefaultTaskCreatorFactory(
                                     null, EmulatorEndpoint.parse(proxy.endpoint(), "proxy"), null)
-                            .create()) {
+                            .create(null)) {
                 var response =
                         creator.createTask(
                                 CreateTaskRequest.getDefaultInstance(),

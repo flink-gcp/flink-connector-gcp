@@ -357,6 +357,7 @@ An option left out leaves the corresponding DataStream setting at its existing d
 | `target.type` | `http` \| `app-engine` | `http` | selects the external HTTP or App Engine protobuf request arm |
 | `service-account-key-file` | String | application-default credentials | `CloudTasksSinkBuilder.serviceAccountKeyFile(...)` |
 | `emulator-endpoint` | String | production Cloud Tasks | `CloudTasksSinkBuilder.emulatorEndpoint(...)` as `host:port`; plaintext and no credentials. Parsed when the statement is planned, so a malformed value fails on the client, and the rejection names `emulator-endpoint` — the key written in the DDL |
+| `client-metrics.export-to-flink` | Boolean | off | `CloudTasksSinkBuilder.exportClientMetricsToFlink(...)`: reports the client's `CreateTask` call count and duration on the writer's metric group, or on the committer's with `sink.delivery-guarantee = 'exactly-once'`; see [Client RPC metrics]({{< relref "docs/connectors/datastream/cloudtasks" >}}#client-rpc-metrics) |
 
 `service-account-key-file` and `emulator-endpoint` are mutually exclusive.
 Service-account keys are long-lived secrets, so prefer an attached service account or Workload

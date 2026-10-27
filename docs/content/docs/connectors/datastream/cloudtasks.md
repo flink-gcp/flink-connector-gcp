@@ -783,7 +783,9 @@ Because the registry entries cannot be removed, a queue seen again resumes its o
 
 `currentSendTime` is deliberately **not** set: a creation may sit parked through several backoffs,
 so the interval this writer could measure would describe its own retry budget rather than the
-service's response time. The at-least-once writer has no committer, so Flink committer metrics apply only to the staged mode below.
+service's response time.
+The client's duration of each call, from the request to its result, is what [Client RPC metrics](#client-rpc-metrics) report when exported.
+The at-least-once writer has no committer, so Flink committer metrics apply only to the staged mode below.
 
 ### Checkpointed creation metrics
 
@@ -841,6 +843,28 @@ Flink supplies `pendingCommittables`, `totalCommittables`, `successfulCommittabl
 The connector throws on terminal failure and owns retrying internally, so Flink's failed/retried committable counters do not measure the RPC failures or attempts.
 Use the exception and job status to diagnose terminal failures and alert on pending committable growth.
 See [heap and checkpoint sizing](#heap-and-checkpoint-sizing) for the backlog these gauges do not cover.
+
+### Client RPC metrics
+
+The Cloud Tasks client library records no metrics of its own, and exports nothing to Cloud Monitoring.
+With `exportClientMetricsToFlink(true)` (`client-metrics.export-to-flink` in SQL), the connector installs the gax client framework's OpenTelemetry metrics factory on the client, and the component that owns the client reports what it measures on its own metric group: the at-least-once writer, or the committer under `EXACTLY_ONCE`.
+gax records into an OpenTelemetry instance the connector supplies, which adds each value straight into a Flink counter, so every configured Flink metric reporter sees them and nothing is sent to any other service on their behalf.
+
+The creation client calls one RPC, `CreateTask`, so the component registers one `rpcMethod.CreateTask` subgroup when it opens.
+The queue-retention check that the `EXACTLY_ONCE` committer makes when it starts, one `GetQueue` call through a separate client, is not measured.
+A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees the method as a tag on one metric name, as it sees `CODE` under `errorClass`.
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `rpcMethod.METHOD.operations` | counter | calls the client completed, successful, failed or cancelled |
+| `rpcMethod.METHOD.operationTimeMillis` | counter | their total duration in milliseconds, from the call to its result, as the client measured it |
+
+A call is what gax calls an operation, and would span its retries, but the client retries `CreateTask` on nothing (the sink owns retrying), so each call is one attempt.
+A retry the sink makes is a call of its own, so in the at-least-once writer `operations` can exceed `numRecordsSend`, which counts each record once; the committer's `operations` also counts the calls a restored envelope makes again.
+The duration arrives as a sum beside the count, so a backend divides the rate of the sum by the rate of the count for the mean latency over any window; no percentile is kept.
+The counters move as each call completes, and both the count and the sum include failed calls: the status gax attaches is aggregated out, because `errorClass.CODE.errors` already counts failures by status.
+A count and its sum are added separately, so a report taken while a call completes can see it in one and not yet in the other; over a rate window the difference vanishes.
+Against the emulator the client records the same way.
 
 ## Tuning
 

@@ -18,6 +18,10 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.io.Serializable;
 
@@ -25,7 +29,7 @@ import java.io.Serializable;
  * Creates the writer's {@link TaskCreator}.
  *
  * <p>Serializable because the factory is shipped in the job graph; implementations must create all
- * client state at {@link #create()} time, not at construction time.
+ * client state at {@link #create(ClientMetrics)} time, not at construction time.
  */
 @Internal
 public interface TaskCreatorFactory extends Serializable {
@@ -33,8 +37,11 @@ public interface TaskCreatorFactory extends Serializable {
     /**
      * Creates the task creator.
      *
+     * @param clientMetrics the client metrics the creator's client records into, or {@code null} to
+     *     export nothing to Flink. A creator that is returned owns them and closes them after its
+     *     client; they hold no resource, so a failed creation leaves nothing of theirs to release.
      * @return the creator
      * @throws IOException if the client cannot be created
      */
-    TaskCreator create() throws IOException;
+    TaskCreator create(@Nullable ClientMetrics clientMetrics) throws IOException;
 }

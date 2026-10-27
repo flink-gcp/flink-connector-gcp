@@ -30,6 +30,8 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.cloudtasks.CloudTasksClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.CloudTasksWriter;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.DefaultTaskCreatorFactory;
 import io.github.flink.gcp.connector.cloudtasks.sink.writer.TaskCreator;
@@ -137,7 +139,14 @@ public class CloudTasksCreateTaskSink<T> implements CrossVersionSink<T>, Lineage
         config.getFailedTaskHandler().open(DefaultFailureHandlerContext.of(context));
         TaskCreator creator = null;
         try {
-            creator = factory.create();
+            // Registered as the writer opens, before any reporter reads its group; the creator
+            // owns them once it exists and closes them after its client. They hold no resource,
+            // so a failed creation leaves nothing of theirs to release.
+            ClientMetrics clientMetrics =
+                    config.isExportClientMetricsToFlink()
+                            ? CloudTasksClientMetrics.register(context.metricGroup())
+                            : null;
+            creator = factory.create(clientMetrics);
             return createWriter(creator, context.getMailboxExecutor(), context.metricGroup());
         } catch (Throwable e) {
             // Nothing downstream will ever release these: no writer exists to do it, and the

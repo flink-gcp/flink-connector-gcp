@@ -137,7 +137,7 @@ abstract class AbstractCloudTasksEmulatorITCase {
                                 null,
                                 EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"),
                                 null)
-                        .create(),
+                        .create(null),
                 new FakeMailboxExecutor(),
                 TestSinkWriterMetricGroup.create());
     }

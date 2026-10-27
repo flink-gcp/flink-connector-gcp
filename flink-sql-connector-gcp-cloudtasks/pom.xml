@@ -253,6 +253,12 @@
                                     <pattern>io.opencensus</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.opencensus</shadedPattern>
                                 </relocation>
+                                <!-- The OpenTelemetry API that base.metrics implements and gax's
+                                     OpenTelemetryMetricsFactory records into (ADR-0186). -->
+                                <relocation>
+                                    <pattern>io.opentelemetry</pattern>
+                                    <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.opentelemetry</shadedPattern>
+                                </relocation>
                                 <relocation>
                                     <pattern>io.perfmark</pattern>
                                     <shadedPattern>io.github.flink.gcp.connector.cloudtasks.shaded.io.perfmark</shadedPattern>

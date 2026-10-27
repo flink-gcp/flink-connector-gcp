@@ -18,10 +18,12 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-10-25
+- Updated: 2026-10-27 (Cloud Tasks adopts it through gax's tracer factory, refined by [#715])
 - Issues: [#713], [#1902], [#1903], [#712], [#715], [#714], [#1815]
-- Modules: base, bigtable, `scripts/`, root POM
+- Modules: base, bigtable, cloudtasks, `scripts/`, root POM
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Client-library
-  metrics; `docs/content/docs/reference/bigtable.md` § `BigtableSink.builder()`
+  metrics; `docs/content/docs/reference/bigtable.md` § `BigtableSink.builder()`;
+  `docs/content/docs/connectors/datastream/cloudtasks.md` § Client RPC metrics
 
 ## Decision
 
@@ -103,7 +105,7 @@ divergence rests on. Pub/Sub has no adapter and no issue.
 - **What the clients record through is small.** Bigtable 2.85.0's user recorder
   (`MetricRegistry.RecorderRegistry`) creates six `histogramBuilder` and two `counterBuilder`
   instruments and sends the rest to a no-op meter. gax 2.87.0 has two paths. Its public
-  `OpenTelemetryMetricsFactory`, which [#715] plans for Cloud Tasks, records one double histogram in
+  `OpenTelemetryMetricsFactory`, which Cloud Tasks adopts ([#715]), records one double histogram in
   `s` keyed by `rpc.method`. Its internal `MetricsTracerFactory` recorder, which Spanner 6.124.0
   builds on, records two double histograms in `ms` and two long counters keyed by `method`, and
   Spanner adds two histograms and two counters of the same kinds. None casts the instance to an SDK
@@ -155,6 +157,36 @@ divergence rests on. Pub/Sub has no adapter and no issue.
   naming `opentelemetry-api` and `opentelemetry-sdk-metrics` and the 1.62.0 the clients asked for;
   the pinned version passes the whole reactor. The plugin's `includes` matched neither a bare group
   nor `group:*` (measured), so it names the two artifacts.
+
+## Refinement (2026-10-27): Cloud Tasks adopts it through gax's tracer factory
+
+[#715] adopted `ClientMetrics` in the Cloud Tasks sink. Its client has no metrics of its own, so
+`DefaultTaskCreatorFactory` sets gax's public `OpenTelemetryMetricsFactory` as the client's tracer
+factory, over the `ClientMetrics` instance, on the production and emulator arms alike. gax records
+one histogram per call, which `CloudTasksClientMetrics` maps to `operations` and
+`operationTimeMillis` under `rpcMethod.CreateTask`; the leaves take Bigtable's words for the same
+quantity rather than the issue's `requests` (owner, 2026-10-27). Every component that owns a Cloud
+Tasks client registers them when it opens: the at-least-once writer, and the committer under
+`EXACTLY_ONCE`, which owns the client in that mode. The task creator owns the `ClientMetrics` and
+closes them after its client. The v2beta3 queue-retention readback, one `GetQueue` per committer
+start, is not instrumented. There is no Cloud Monitoring exporter to switch, so only the first
+option exists.
+
+- **What gax records, and when.** In gax 2.87.0, `OpenTelemetryMetricsFactory` creates
+  `gcp.client.request.duration` (a double histogram in `s`) only when the client's stub settings
+  declare library metadata with an artifact name; without it the factory falls back to a no-op
+  tracer and records nothing, silently. `google-cloud-tasks` 2.99.0 declares
+  `com.google.cloud:google-cloud-tasks`. The tracer records once per call, on success, failure and
+  cancellation, with `rpc.method` set to the gRPC full method name
+  (`google.cloud.tasks.v2.CloudTasks/CreateTask`) and the response status beside it. The client's
+  `CreateTask` retry codes are empty, so a call is one attempt. `setTracerFactory` is `@BetaApi`.
+- **The emulator test is the tripwire.** The library-metadata condition and the annotation are
+  re-read on a `libraries-bom` bump that moves gax or `google-cloud-tasks`, and
+  `CloudTasksClientMetricsITCase` fails if the series stop moving: with the factory's installation
+  removed from the client settings, both of its export cases failed (2026-10-27).
+- **The SQL jar gains the API alone.** gax declares `opentelemetry-api` optional, so nothing
+  brought it before; the connector now declares it, and the jar bundles `opentelemetry-api`,
+  `-context` and `-common` 1.62.0 (about 230 KB as jars), relocated under its shaded prefix.
 
 ## Alternatives declined
 
