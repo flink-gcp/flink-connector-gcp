@@ -34,9 +34,12 @@ import org.apache.flink.streaming.api.lineage.SourceLineageVertex;
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
+import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
+import io.github.flink.gcp.connector.bigtable.EnumeratorClientMetrics;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -67,8 +70,20 @@ public final class BigtableChangeStreamSource<T>
                 LineageVertexProvider {
 
     private static final long serialVersionUID = 1L;
+
+    /** The one RPC a reader's data client calls. */
+    private static final String READ_CHANGE_STREAM = "ReadChangeStream";
+
+    /** The one RPC the enumerator's data client calls, to discover the stream's partitions. */
+    private static final String GENERATE_INITIAL_CHANGE_STREAM_PARTITIONS =
+            "GenerateInitialChangeStreamPartitions";
+
     private final BigtableChangeStreamSourceConfig<T> config;
     private final LineageMetadata lineage;
+
+    /** Shared by every enumerator this object builds; see {@link EnumeratorClientMetrics}. */
+    private final EnumeratorClientMetrics enumeratorClientMetrics =
+            new EnumeratorClientMetrics(GENERATE_INITIAL_CHANGE_STREAM_PARTITIONS);
 
     BigtableChangeStreamSource(BigtableChangeStreamSourceConfig<T> config) {
         this(config, null);
@@ -102,9 +117,15 @@ public final class BigtableChangeStreamSource<T>
         return new BigtableChangeStreamSourceBuilder<>();
     }
 
-    /** Returns the source configuration for tests. */
+    /**
+     * Returns the source configuration, so the table layer's tests can see what reaches the
+     * runtime.
+     *
+     * @return the configuration
+     */
+    @Internal
     @VisibleForTesting
-    BigtableChangeStreamSourceConfig<T> getConfig() {
+    public BigtableChangeStreamSourceConfig<T> getConfig() {
         return config;
     }
 
@@ -125,6 +146,13 @@ public final class BigtableChangeStreamSource<T>
                 BigtableCredentials.loadDataAndTableAdmin(config.getServiceAccountKeyFile());
         config.getOpener().useCredentials(credentials);
         config.getRestoreResolver().useCredentials(credentials);
+        // Registered as the reader opens, before any reporter reads its group. Not closed: the
+        // group ends with the reader (docs/adr/0186).
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? BigtableClientMetrics.register(context.metricGroup(), READ_CHANGE_STREAM)
+                        : null;
+        config.getOpener().useClientMetrics(clientMetrics);
         config.getDeserializer().open(new ReaderInitializationContext(context));
         return new BigtableChangeStreamReader<>(context, config);
     }
@@ -164,6 +192,9 @@ public final class BigtableChangeStreamSource<T>
         // retention, instance admin for the app profile.
         ChangeStreamCoordinatorClient client = config.getCoordinatorClientFactory().create();
         try {
+            if (config.isExportClientMetricsToFlink()) {
+                client.useClientMetrics(enumeratorClientMetrics.get(context.metricGroup()));
+            }
             return new BigtableChangeStreamSplitEnumerator(
                     context,
                     client,

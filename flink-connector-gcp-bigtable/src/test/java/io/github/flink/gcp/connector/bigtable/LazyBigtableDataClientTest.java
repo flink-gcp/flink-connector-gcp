@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -187,7 +188,7 @@ class LazyBigtableDataClientTest {
 
     @Test
     void closeClearsCredentialsAndRefusesAWaitingInjection() throws Exception {
-        LazyBigtableDataClient holder = new LazyBigtableDataClient("test holder", null, null);
+        LazyBigtableDataClient holder = new LazyBigtableDataClient("test holder", null, null, true);
         NoCredentialsProvider credentials = NoCredentialsProvider.create();
         holder.useCredentials(credentials);
         assertThat(holder.settings(TABLE).getStubSettings().getCredentialsProvider())
@@ -228,9 +229,55 @@ class LazyBigtableDataClientTest {
         }
     }
 
+    @Test
+    void leavesTheClientsMetricsAsItShipsThemByDefault() throws Exception {
+        ClientMetricsSettings.assertAsShipped(productionHolder(true).settings(TABLE));
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsItIsHanded() throws Exception {
+        LazyBigtableDataClient holder = productionHolder(true);
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        holder.useClientMetrics(metrics);
+
+        ClientMetricsSettings.assertRecordsInto(holder.settings(TABLE), metrics);
+    }
+
+    @Test
+    void stoppingTheCloudMonitoringExportDisablesTheClientsInternalMetrics() throws Exception {
+        ClientMetricsSettings.assertExportsNothing(productionHolder(false).settings(TABLE));
+    }
+
+    @Test
+    void closeClearsTheClientMetricsAndRefusesLaterOnes() throws Exception {
+        LazyBigtableDataClient holder = productionHolder(true);
+        holder.useClientMetrics(ClientMetrics.create("method"));
+
+        holder.close();
+
+        ClientMetricsSettings.assertAsShipped(holder.settings(TABLE));
+        assertThatThrownBy(() -> holder.useClientMetrics(ClientMetrics.create("method")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(
+                        "The Bigtable test holder was closed before client metrics were"
+                                + " supplied.");
+    }
+
+    /**
+     * A holder whose settings are the production ones, which the client-metrics tests read: the
+     * emulator builder installs its own metrics choices first. Only its settings are built.
+     */
+    private static LazyBigtableDataClient productionHolder(boolean exportToCloudMonitoring) {
+        return new LazyBigtableDataClient("test holder", null, null, exportToCloudMonitoring);
+    }
+
     private static LazyBigtableDataClient holder() {
         return new LazyBigtableDataClient(
-                "test holder", null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
+                "test holder",
+                null,
+                EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"),
+                true);
     }
 
     private static void await(CountDownLatch latch) {

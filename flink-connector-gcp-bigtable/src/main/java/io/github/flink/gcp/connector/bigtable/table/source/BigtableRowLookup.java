@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.metrics.MetricGroup;
 
 import com.google.api.core.ApiFuture;
 import com.google.cloud.bigtable.data.v2.models.Row;
@@ -37,8 +38,13 @@ import java.io.Serializable;
 @Internal
 interface BigtableRowLookup extends Serializable, AutoCloseable {
 
-    /** Opens the client resources used by the point reads. */
-    void open() throws Exception;
+    /**
+     * Opens the client resources used by the point reads.
+     *
+     * @param metricGroup the lookup function's metric group, which the client's own metrics are
+     *     registered on when they are exported to Flink
+     */
+    void open(MetricGroup metricGroup) throws Exception;
 
     /** Reads one row synchronously, returning {@code null} when there is no such row to read. */
     @Nullable

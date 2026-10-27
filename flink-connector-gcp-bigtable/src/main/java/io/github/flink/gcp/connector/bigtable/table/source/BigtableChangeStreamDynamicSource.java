@@ -72,6 +72,14 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final String lineageTableName;
     private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
+
+    /**
+     * The two client-metrics options as the DDL set them, {@code null} where it did not: an unset
+     * option calls no builder setter, so the builder's own default applies (ADR-0139).
+     */
+    @Nullable private final Boolean exportClientMetricsToFlink;
+
+    @Nullable private final Boolean exportClientMetricsToCloudMonitoring;
     @Nullable private final StartPosition startPosition;
     @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant boundedTimestamp;
@@ -99,6 +107,8 @@ public final class BigtableChangeStreamDynamicSource
         this.appProfileId =
                 Preconditions.checkNotNull(builder.appProfileId, "appProfileId must not be null");
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
+        this.exportClientMetricsToFlink = builder.exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = builder.exportClientMetricsToCloudMonitoring;
         this.startPosition = builder.startPosition;
         this.resumeFallback = builder.resumeFallback;
         this.boundedTimestamp = builder.boundedTimestamp;
@@ -233,6 +243,14 @@ public final class BigtableChangeStreamDynamicSource
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
+        OptionSetters.accept(
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK.key(),
+                exportClientMetricsToFlink,
+                builder::exportClientMetricsToFlink);
+        OptionSetters.accept(
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING.key(),
+                exportClientMetricsToCloudMonitoring,
+                builder::exportClientMetricsToCloudMonitoring);
         if (startPosition != null) {
             builder.startPosition(startPosition);
         }
@@ -261,6 +279,8 @@ public final class BigtableChangeStreamDynamicSource
                         .lineageTableName(lineageTableName)
                         .appProfileId(appProfileId)
                         .serviceAccountKeyFile(serviceAccountKeyFile)
+                        .exportClientMetricsToFlink(exportClientMetricsToFlink)
+                        .exportClientMetricsToCloudMonitoring(exportClientMetricsToCloudMonitoring)
                         .startPosition(startPosition)
                         .resumeFallback(resumeFallback)
                         .boundedTimestamp(boundedTimestamp)
@@ -302,6 +322,10 @@ public final class BigtableChangeStreamDynamicSource
                 && Objects.equals(lineageTableName, that.lineageTableName)
                 && appProfileId.equals(that.appProfileId)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
+                && Objects.equals(exportClientMetricsToFlink, that.exportClientMetricsToFlink)
+                && Objects.equals(
+                        exportClientMetricsToCloudMonitoring,
+                        that.exportClientMetricsToCloudMonitoring)
                 && Objects.equals(startPosition, that.startPosition)
                 && Objects.equals(resumeFallback, that.resumeFallback)
                 && Objects.equals(boundedTimestamp, that.boundedTimestamp)
@@ -327,6 +351,8 @@ public final class BigtableChangeStreamDynamicSource
                 lineageTableName,
                 appProfileId,
                 serviceAccountKeyFile,
+                exportClientMetricsToFlink,
+                exportClientMetricsToCloudMonitoring,
                 startPosition,
                 resumeFallback,
                 boundedTimestamp,
@@ -356,6 +382,8 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private TableDestination destination;
         @Nullable private String appProfileId;
         @Nullable private String serviceAccountKeyFile;
+        @Nullable private Boolean exportClientMetricsToFlink;
+        @Nullable private Boolean exportClientMetricsToCloudMonitoring;
         @Nullable private StartPosition startPosition;
         @Nullable private StartPosition resumeFallback;
         @Nullable private Instant boundedTimestamp;
@@ -412,6 +440,27 @@ public final class BigtableChangeStreamDynamicSource
          */
         public Builder serviceAccountKeyFile(@Nullable String serviceAccountKeyFile) {
             this.serviceAccountKeyFile = serviceAccountKeyFile;
+            return this;
+        }
+
+        /**
+         * @param exportClientMetricsToFlink whether the client's own metrics are exported through
+         *     Flink's metric system, or {@code null} to leave the builder's default
+         * @return this builder
+         */
+        public Builder exportClientMetricsToFlink(@Nullable Boolean exportClientMetricsToFlink) {
+            this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+            return this;
+        }
+
+        /**
+         * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+         *     Monitoring export, or {@code null} to leave the builder's default
+         * @return this builder
+         */
+        public Builder exportClientMetricsToCloudMonitoring(
+                @Nullable Boolean exportClientMetricsToCloudMonitoring) {
+            this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
             return this;
         }
 

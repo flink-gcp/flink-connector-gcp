@@ -20,7 +20,9 @@ import org.apache.flink.util.InstantiationUtil;
 
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import org.junit.jupiter.api.Test;
@@ -50,13 +52,26 @@ class DataClientRowKeySamplerTest {
         BigtableDataSettings settings =
                 new DataClientRowKeySampler(
                                 "boost-profile",
-                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"))
+                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"),
+                                true)
                         .settings(TABLE);
 
         assertThat(settings.getProjectId()).isEqualTo("p");
         assertThat(settings.getInstanceId()).isEqualTo("i");
         assertThat(settings.getAppProfileId()).isEqualTo("boost-profile");
         assertThat(settings.getStubSettings().getEndpoint()).isEqualTo("bigtable.example:9035");
+    }
+
+    @Test
+    void theFactoryCarriesTheClientMetricsChoicesToEverySamplersClient() throws Exception {
+        DataClientRowKeySampler sampler =
+                (DataClientRowKeySampler)
+                        new DefaultRowKeySamplerFactory(null, null, false).create();
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertExportsNothing(sampler.settings(TABLE));
+        sampler.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsOnlyInto(sampler.settings(TABLE), metrics);
     }
 
     /**
@@ -72,7 +87,8 @@ class DataClientRowKeySamplerTest {
         DefaultRowKeySamplerFactory factory =
                 new DefaultRowKeySamplerFactory(
                         "boost-profile",
-                        EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"));
+                        EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"),
+                        true);
 
         DefaultRowKeySamplerFactory back =
                 InstantiationUtil.deserializeObject(
@@ -83,6 +99,38 @@ class DataClientRowKeySamplerTest {
         assertThat(java.io.Serializable.class.isAssignableFrom(RowKeySampler.class))
                 .as("a serializable sampler could be parked on the configuration again")
                 .isFalse();
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsBesideTheCloudMonitoringExport() throws Exception {
+        var seam =
+                (DataClientRowKeySampler)
+                        new DefaultRowKeySamplerFactory(null, null, true).create();
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertAsShipped(seam.settings(TABLE));
+        seam.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsInto(seam.settings(TABLE), metrics);
+    }
+
+    @Test
+    void theBuilderCarriesTheCloudMonitoringChoiceIntoThisSeam() throws Exception {
+        // Production settings: the emulator builder would disable the export whatever the choice.
+        ClientMetricsSettings.assertExportsNothing(
+                ((DataClientRowKeySampler)
+                                TestSources.scanWithoutEmulator(
+                                                b -> b.exportClientMetricsToCloudMonitoring(false))
+                                        .getConfig()
+                                        .getSamplerFactory()
+                                        .create())
+                        .settings(TABLE));
+        ClientMetricsSettings.assertAsShipped(
+                ((DataClientRowKeySampler)
+                                TestSources.scanWithoutEmulator(b -> b)
+                                        .getConfig()
+                                        .getSamplerFactory()
+                                        .create())
+                        .settings(TABLE));
     }
 
     @Test
@@ -101,7 +149,7 @@ class DataClientRowKeySamplerTest {
 
     @Test
     void injectsTheRuntimeCredentialProvider() throws Exception {
-        DataClientRowKeySampler sampler = new DataClientRowKeySampler(null, null);
+        DataClientRowKeySampler sampler = new DataClientRowKeySampler(null, null, true);
         NoCredentialsProvider provider = NoCredentialsProvider.create();
         sampler.useCredentials(provider);
 
@@ -111,7 +159,7 @@ class DataClientRowKeySamplerTest {
 
     @Test
     void closingWithoutHavingSampledReleasesNothingAndFailsNothing() {
-        assertThatCode(() -> new DataClientRowKeySampler(null, null).close())
+        assertThatCode(() -> new DataClientRowKeySampler(null, null, true).close())
                 .doesNotThrowAnyException();
     }
 
@@ -119,7 +167,7 @@ class DataClientRowKeySamplerTest {
     void refusesToBuildAClientAfterItHasBeenClosed() throws IOException {
         DataClientRowKeySampler sampler =
                 new DataClientRowKeySampler(
-                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
+                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"), true);
         sampler.close();
 
         assertThatThrownBy(() -> sampler.sample(TABLE))

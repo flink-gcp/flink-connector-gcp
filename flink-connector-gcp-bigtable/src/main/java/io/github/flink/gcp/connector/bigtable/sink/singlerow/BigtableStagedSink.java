@@ -38,7 +38,9 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.options.ResourceNames;
+import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
@@ -66,6 +68,7 @@ public final class BigtableStagedSink<T>
                 SupportsCommitter<BigtableCommittable>,
                 SupportsPreCommitTopology<BigtableCommittable, BigtableCommittable> {
     private static final long serialVersionUID = 1L;
+
     private final BigtableSinkConfig<T> config;
     private final BigtableStagedOptions options;
     private final Map<String, ColumnFamilyType> expectedFamilies;
@@ -158,15 +161,38 @@ public final class BigtableStagedSink<T>
         validate();
         CredentialsProvider credentials =
                 BigtableCredentials.loadAll(config.getServiceAccountKeyFile());
+        // One set for the committer, registered as it opens, and shared by the client factories it
+        // mints per application profile; a set per factory would collide on the committer's group.
+        // Not closed: the group ends with the committer (docs/adr/0186).
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? BigtableClientMetrics.register(
+                                context.metricGroup(),
+                                // The committer's clients' one RPC; the writer has no client.
+                                RowOperation.CHECK_AND_MUTATE_ROW.getRpcName())
+                        : null;
         return createCommitter(
                 context,
                 new BigtableStagedTableAdmin(config.getEmulatorEndpoint(), credentials),
-                profile ->
-                        new DefaultSingleRowClientFactory(
-                                profile,
-                                options.getRequestOptions(),
-                                config.getEmulatorEndpoint(),
-                                credentials));
+                clientFactories(credentials, clientMetrics));
+    }
+
+    /**
+     * The committer's production client factories, one per application profile, every one recording
+     * into the same client metrics. Separate so that a test can see the sharing and both
+     * client-metrics choices reach each factory's settings.
+     */
+    @VisibleForTesting
+    BigtableStagedCommitter.ClientFactories clientFactories(
+            @Nullable CredentialsProvider credentials, @Nullable ClientMetrics clientMetrics) {
+        return profile ->
+                new DefaultSingleRowClientFactory(
+                        profile,
+                        options.getRequestOptions(),
+                        config.getEmulatorEndpoint(),
+                        credentials,
+                        config.isExportClientMetricsToCloudMonitoring(),
+                        clientMetrics);
     }
 
     /** Creates the same committer with observable metadata and client transports for tests. */

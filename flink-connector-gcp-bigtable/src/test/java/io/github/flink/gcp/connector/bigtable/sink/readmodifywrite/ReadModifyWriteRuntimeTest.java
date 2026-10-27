@@ -153,7 +153,9 @@ class ReadModifyWriteRuntimeTest {
                         null,
                         BigtableRequestOptions.builder().build(),
                         null,
-                        null);
+                        null,
+                        false,
+                        true);
         ReadModifyWriteFunction<String> function = open(config);
         try (AutoCloseable closing = function::close) {
             Answer<Tuple2<String, ReadModifyWriteResult>> first = new Answer<>();
@@ -266,7 +268,9 @@ class ReadModifyWriteRuntimeTest {
                         config.requestOptions,
                         FailureHandler.logAndDrop(),
                         null,
-                        null),
+                        null,
+                        false,
+                        true),
                 client,
                 mailbox,
                 writerMetrics);
@@ -303,7 +307,9 @@ class ReadModifyWriteRuntimeTest {
                 null,
                 BigtableRequestOptions.builder().build(),
                 null,
-                null);
+                null,
+                false,
+                true);
     }
 
     private static ReadModifyWriteRequest request(String key) {

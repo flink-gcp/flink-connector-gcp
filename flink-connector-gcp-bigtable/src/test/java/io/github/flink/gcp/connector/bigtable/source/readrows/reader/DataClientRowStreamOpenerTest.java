@@ -21,7 +21,9 @@ import org.apache.flink.util.InstantiationUtil;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import org.junit.jupiter.api.Test;
@@ -50,7 +52,8 @@ class DataClientRowStreamOpenerTest {
         BigtableDataSettings settings =
                 new DataClientRowStreamOpener(
                                 "boost-profile",
-                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"))
+                                EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"),
+                                true)
                         .settings(TABLE);
 
         assertThat(settings.getProjectId()).isEqualTo("p");
@@ -60,17 +63,54 @@ class DataClientRowStreamOpenerTest {
     }
 
     @Test
+    void carriesTheClientMetricsChoicesToTheClient() throws Exception {
+        DataClientRowStreamOpener opener = new DataClientRowStreamOpener(null, null, false);
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertExportsNothing(opener.settings(TABLE));
+        opener.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsOnlyInto(opener.settings(TABLE), metrics);
+    }
+
+    @Test
     void travelsInTheJobGraph() throws Exception {
         DataClientRowStreamOpener opener =
                 new DataClientRowStreamOpener(
                         "boost-profile",
-                        EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"));
+                        EmulatorEndpoint.parse("bigtable.example:9035", "emulatorEndpoint"),
+                        true);
 
         DataClientRowStreamOpener back =
                 InstantiationUtil.deserializeObject(
                         InstantiationUtil.serializeObject(opener), getClass().getClassLoader());
 
         assertThat(back.settings(TABLE).getAppProfileId()).isEqualTo("boost-profile");
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsBesideTheCloudMonitoringExport() throws Exception {
+        var seam = new DataClientRowStreamOpener(null, null, true);
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertAsShipped(seam.settings(TABLE));
+        seam.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsInto(seam.settings(TABLE), metrics);
+    }
+
+    @Test
+    void theBuilderCarriesTheCloudMonitoringChoiceIntoThisSeam() throws Exception {
+        // Production settings: the emulator builder would disable the export whatever the choice.
+        ClientMetricsSettings.assertExportsNothing(
+                ((DataClientRowStreamOpener)
+                                TestSources.scanWithoutEmulator(
+                                                b -> b.exportClientMetricsToCloudMonitoring(false))
+                                        .getConfig()
+                                        .getOpener())
+                        .settings(TABLE));
+        ClientMetricsSettings.assertAsShipped(
+                ((DataClientRowStreamOpener)
+                                TestSources.scanWithoutEmulator(b -> b).getConfig().getOpener())
+                        .settings(TABLE));
     }
 
     @Test
@@ -88,7 +128,7 @@ class DataClientRowStreamOpenerTest {
 
     @Test
     void injectsTheRuntimeCredentialProvider() throws Exception {
-        DataClientRowStreamOpener opener = new DataClientRowStreamOpener(null, null);
+        DataClientRowStreamOpener opener = new DataClientRowStreamOpener(null, null, true);
         NoCredentialsProvider provider = NoCredentialsProvider.create();
         opener.useCredentials(provider);
 
@@ -98,7 +138,7 @@ class DataClientRowStreamOpenerTest {
 
     @Test
     void closingWithoutHavingOpenedReleasesNothingAndFailsNothing() {
-        assertThatCode(() -> new DataClientRowStreamOpener(null, null).close())
+        assertThatCode(() -> new DataClientRowStreamOpener(null, null, true).close())
                 .doesNotThrowAnyException();
     }
 
@@ -106,7 +146,7 @@ class DataClientRowStreamOpenerTest {
     void refusesToBuildAClientAfterItHasBeenClosed() throws IOException {
         DataClientRowStreamOpener opener =
                 new DataClientRowStreamOpener(
-                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"));
+                        null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"), true);
         opener.close();
 
         assertThatThrownBy(() -> opener.open(TABLE, ByteStringRange.unbounded(), null))

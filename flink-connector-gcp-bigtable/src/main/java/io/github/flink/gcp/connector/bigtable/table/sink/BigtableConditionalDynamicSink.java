@@ -97,6 +97,14 @@ public final class BigtableConditionalDynamicSink implements DynamicTableSink {
                 config,
                 BigtableConnectorOptions.SINK_CONDITIONAL_EMPTY_BRANCH_POLICY,
                 builder::emptyBranchPolicy);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
+                builder::exportClientMetricsToFlink);
+        OptionSetters.apply(
+                config,
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING,
+                builder::exportClientMetricsToCloudMonitoring);
         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT)
                 .ifPresent(
                         endpoint ->

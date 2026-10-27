@@ -24,6 +24,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -75,10 +76,19 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      *     instance's default
      * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
      *     for production Bigtable
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
      */
     public DataClientRowKeySampler(
-            @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this.client = new LazyBigtableDataClient("row key sampler", appProfileId, emulatorEndpoint);
+            @Nullable String appProfileId,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.client =
+                new LazyBigtableDataClient(
+                        "row key sampler",
+                        appProfileId,
+                        emulatorEndpoint,
+                        exportClientMetricsToCloudMonitoring);
     }
 
     @Override
@@ -104,12 +114,17 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      * client looks exactly like one that does.
      */
     @VisibleForTesting
-    BigtableDataSettings settings(TableDestination table) throws IOException {
+    public BigtableDataSettings settings(TableDestination table) throws IOException {
         return client.settings(table);
     }
 
     @Override
     public void useCredentials(@Nullable CredentialsProvider credentials) {
         client.useCredentials(credentials);
+    }
+
+    @Override
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+        client.useClientMetrics(clientMetrics);
     }
 }

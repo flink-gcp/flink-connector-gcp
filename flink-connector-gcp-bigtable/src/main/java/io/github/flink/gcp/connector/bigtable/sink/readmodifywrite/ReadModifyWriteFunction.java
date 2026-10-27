@@ -25,6 +25,7 @@ import org.apache.flink.util.UserCodeClassLoader;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.BigtableRequestFunction;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.RowRequest;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowClientFactory;
@@ -41,7 +42,10 @@ final class ReadModifyWriteFunction<T>
                 config.appProfileId,
                 config.requestOptions,
                 config.serviceAccountKeyFile,
-                config.emulatorEndpoint);
+                config.emulatorEndpoint,
+                config.exportClientMetricsToFlink,
+                config.exportClientMetricsToCloudMonitoring,
+                RowOperation.READ_MODIFY_WRITE_ROW);
         this.config = config;
     }
 

@@ -46,6 +46,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSource;
@@ -111,6 +112,14 @@ public final class BigtableDynamicSource
     @Nullable private final ByteString rangeEndOpen;
     private final List<ByteStringRange> rowRanges;
     @Nullable private final String emulatorEndpoint;
+
+    /**
+     * The two client-metrics options as the DDL set them, {@code null} where it did not: an unset
+     * option calls no builder setter, so the builder's own default applies (ADR-0139).
+     */
+    @Nullable private final Boolean exportClientMetricsToFlink;
+
+    @Nullable private final Boolean exportClientMetricsToCloudMonitoring;
     @Nullable private final Integer parallelism;
     private final BigtableLookupConfig lookupOptions;
 
@@ -138,6 +147,8 @@ public final class BigtableDynamicSource
         this.rangeEndOpen = builder.rangeEndOpen;
         this.rowRanges = builder.rowRanges;
         this.emulatorEndpoint = builder.emulatorEndpoint;
+        this.exportClientMetricsToFlink = builder.exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = builder.exportClientMetricsToCloudMonitoring;
         this.parallelism = builder.parallelism;
         this.lookupOptions =
                 Preconditions.checkNotNull(builder.lookupOptions, "lookupOptions must not be null");
@@ -230,6 +241,14 @@ public final class BigtableDynamicSource
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
+        OptionSetters.accept(
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK.key(),
+                exportClientMetricsToFlink,
+                builder::exportClientMetricsToFlink);
+        OptionSetters.accept(
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING.key(),
+                exportClientMetricsToCloudMonitoring,
+                builder::exportClientMetricsToCloudMonitoring);
         BigtableScanSource<RowData> source = (BigtableScanSource<RowData>) builder.build();
         if (lineageTableName != null) {
             source = source.withTableLineage(lineageTableName);
@@ -260,7 +279,8 @@ public final class BigtableDynamicSource
                                     appProfileId,
                                     serviceAccountKeyFile,
                                     emulatorEndpoint,
-                                    null),
+                                    null,
+                                    lookupExportsToCloudMonitoring()),
                             1),
                     lookupOptions.createFullReloadTrigger());
         }
@@ -278,6 +298,8 @@ public final class BigtableDynamicSource
                                     appProfileId,
                                     serviceAccountKeyFile,
                                     emulatorEndpoint,
+                                    lookupExportsToFlink(),
+                                    lookupExportsToCloudMonitoring(),
                                     lookupOptions.getMaxRetries()));
             return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
                     ? PartialCachingAsyncLookupProvider.of(
@@ -297,11 +319,30 @@ public final class BigtableDynamicSource
                                 appProfileId,
                                 serviceAccountKeyFile,
                                 emulatorEndpoint,
+                                lookupExportsToFlink(),
+                                lookupExportsToCloudMonitoring(),
                                 lookupOptions.getMaxRetries()));
         return lookupOptions.getCacheType() == LookupCacheType.PARTIAL
                 ? PartialCachingLookupProvider.of(
                         function, equalityKeys.wrap(lookupOptions.createPartialCache()))
                 : LookupFunctionProvider.of(function);
+    }
+
+    /**
+     * The Flink choice for a lookup, which has no builder of its own to hold the default: an unset
+     * option resolves to the one the builders start from.
+     */
+    private boolean lookupExportsToFlink() {
+        return exportClientMetricsToFlink != null
+                ? exportClientMetricsToFlink
+                : BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    }
+
+    /** The Cloud Monitoring choice for a lookup, resolved as {@link #lookupExportsToFlink()} is. */
+    private boolean lookupExportsToCloudMonitoring() {
+        return exportClientMetricsToCloudMonitoring != null
+                ? exportClientMetricsToCloudMonitoring
+                : BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
     }
 
     private LookupKeyFilter lookupKeys(LookupContext context) {
@@ -400,6 +441,8 @@ public final class BigtableDynamicSource
                 .rangeEndOpen(rangeEndOpen)
                 .rowRanges(rowRanges)
                 .emulatorEndpoint(emulatorEndpoint)
+                .exportClientMetricsToFlink(exportClientMetricsToFlink)
+                .exportClientMetricsToCloudMonitoring(exportClientMetricsToCloudMonitoring)
                 .parallelism(parallelism)
                 .lookupOptions(lookupOptions)
                 .producedDataType(producedDataType)
@@ -436,6 +479,10 @@ public final class BigtableDynamicSource
                 && Objects.equals(rangeEndOpen, that.rangeEndOpen)
                 && rowRanges.equals(that.rowRanges)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
+                && Objects.equals(exportClientMetricsToFlink, that.exportClientMetricsToFlink)
+                && Objects.equals(
+                        exportClientMetricsToCloudMonitoring,
+                        that.exportClientMetricsToCloudMonitoring)
                 && Objects.equals(parallelism, that.parallelism)
                 && lookupOptions.equals(that.lookupOptions)
                 && producedDataType.equals(that.producedDataType)
@@ -460,6 +507,8 @@ public final class BigtableDynamicSource
                 rangeEndOpen,
                 rowRanges,
                 emulatorEndpoint,
+                exportClientMetricsToFlink,
+                exportClientMetricsToCloudMonitoring,
                 parallelism,
                 lookupOptions,
                 producedDataType,
@@ -483,6 +532,8 @@ public final class BigtableDynamicSource
         @Nullable private ByteString rangeEndOpen;
         private List<ByteStringRange> rowRanges = Collections.emptyList();
         @Nullable private String emulatorEndpoint;
+        @Nullable private Boolean exportClientMetricsToFlink;
+        @Nullable private Boolean exportClientMetricsToCloudMonitoring;
         @Nullable private Integer parallelism;
         private BigtableLookupConfig lookupOptions;
         private DataType producedDataType;
@@ -618,6 +669,27 @@ public final class BigtableDynamicSource
          */
         public Builder emulatorEndpoint(@Nullable String emulatorEndpoint) {
             this.emulatorEndpoint = emulatorEndpoint;
+            return this;
+        }
+
+        /**
+         * @param exportClientMetricsToFlink whether the client's own metrics are exported through
+         *     Flink's metric system, or {@code null} to leave the builder's default
+         * @return this builder
+         */
+        public Builder exportClientMetricsToFlink(@Nullable Boolean exportClientMetricsToFlink) {
+            this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+            return this;
+        }
+
+        /**
+         * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+         *     Monitoring export, or {@code null} to leave the builder's default
+         * @return this builder
+         */
+        public Builder exportClientMetricsToCloudMonitoring(
+                @Nullable Boolean exportClientMetricsToCloudMonitoring) {
+            this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
             return this;
         }
 

@@ -16,13 +16,17 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.api.common.JobInfo;
 import org.apache.flink.api.common.RuntimeExecutionMode;
+import org.apache.flink.api.common.TaskInfo;
 import org.apache.flink.api.common.serialization.SerializationSchema;
+import org.apache.flink.api.connector.sink2.CommitterInitContext;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.SupportsCommitter;
 import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.CheckpointingMode;
+import org.apache.flink.metrics.groups.SinkCommitterMetricGroup;
 import org.apache.flink.streaming.api.connector.sink2.SupportsPreCommitTopology;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.util.InstantiationUtil;
@@ -37,12 +41,14 @@ import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializat
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableCommittable;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
+import io.github.flink.gcp.connector.testutils.TestSinkCommitterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -263,15 +269,53 @@ class BigtableStagedSinkTest {
     }
 
     @Test
-    void refusesTheClientMetricsChoicesItDoesNotApplyYet() {
-        assertThatThrownBy(() -> builder().exportClientMetricsToFlink(true).build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("exportClientMetricsToFlink");
-        assertThatThrownBy(() -> builder().exportClientMetricsToCloudMonitoring(false).build())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("exportClientMetricsToCloudMonitoring");
-        assertThat(builder().exportClientMetricsToFlink(false).build())
-                .isInstanceOf(BigtableStagedSink.class);
+    void carriesTheClientMetricsChoicesToTheCommitter() {
+        BigtableStagedSink<?> sink =
+                (BigtableStagedSink<?>)
+                        builder()
+                                .exportClientMetricsToFlink(true)
+                                .exportClientMetricsToCloudMonitoring(false)
+                                .build();
+
+        assertThat(sink.getConfig().isExportClientMetricsToFlink()).isTrue();
+        assertThat(sink.getConfig().isExportClientMetricsToCloudMonitoring()).isFalse();
+    }
+
+    @Test
+    void theCommitterRegistersCheckAndMutateRowOnItsGroup() throws Exception {
+        TestSinkCommitterMetricGroup group = TestSinkCommitterMetricGroup.create();
+        BigtableStagedSink<String> sink =
+                (BigtableStagedSink<String>) builder().exportClientMetricsToFlink(true).build();
+
+        // Against an endpoint nothing listens on: the committer builds its clients on the first
+        // commit only.
+        sink.createCommitter(committerContext(group)).close();
+
+        assertThat(group.hasMetric("rpcMethod", "CheckAndMutateRow", "operations")).isTrue();
+    }
+
+    private static CommitterInitContext committerContext(TestSinkCommitterMetricGroup group) {
+        return new CommitterInitContext() {
+            @Override
+            public SinkCommitterMetricGroup metricGroup() {
+                return group;
+            }
+
+            @Override
+            public OptionalLong getRestoredCheckpointId() {
+                return OptionalLong.empty();
+            }
+
+            @Override
+            public JobInfo getJobInfo() {
+                throw new AssertionError("Unused job info");
+            }
+
+            @Override
+            public TaskInfo getTaskInfo() {
+                throw new AssertionError("Unused task info");
+            }
+        };
     }
 
     private static BigtableSinkBuilder<String> builder() {

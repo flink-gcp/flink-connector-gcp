@@ -1187,6 +1187,7 @@ wholesale fails the job at that bound. It counts records rather than batches: a 
 
 These metrics apply to the experimental checkpoint-owned mode.
 Writer gauges exclude the committer's pending checkpoint collections.
+The committer's client reports its own `CheckAndMutateRow` metrics as [client-library metrics](#client-library-metrics) when they are exported to Flink.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -1284,11 +1285,23 @@ either (the sink is single-phase), so Flink's committer metrics do not apply.
 ### Client-library metrics
 
 The Bigtable client measures its own RPCs, and by default it exports those measurements only to Cloud Monitoring.
-With `exportClientMetricsToFlink(true)` (`client-metrics.export-to-flink` in SQL), the writer also reports them on its own metric group, so every configured Flink metric reporter sees them.
+With `exportClientMetricsToFlink(true)` (`client-metrics.export-to-flink` in SQL), the component that owns the client also reports them on its own metric group, so every configured Flink metric reporter sees them.
 The client records them into an OpenTelemetry instance the connector supplies, which adds each value straight into a Flink counter; the connector sends nothing to Cloud Monitoring or any other service on their behalf.
 
 Each RPC method gets a `rpcMethod.METHOD` subgroup, where `METHOD` is the method name without its `Bigtable.` prefix.
-The writer registers `MutateRows`, the one method its batchers send, when it opens.
+A component registers the methods its client calls when it opens:
+
+| Component | Metric group | `METHOD` |
+|---|---|---|
+| At-least-once sink writer | the writer's | `MutateRows` |
+| `EXACTLY_ONCE` sink | the committer's; the writer stages without a client | `CheckAndMutateRow` |
+| Conditional sink, async helper, SQL `BigtableCheckAndMutateFunction` | the writer's, the async operator's, or the function's `bigtableSql.<name>` group | `CheckAndMutateRow` |
+| Read-modify-write sink, async helper, SQL `BigtableReadModifyWriteFunction` | the same three | `ReadModifyWriteRow` |
+| Scan source | each reader's; the enumerator's, which samples row keys to plan its splits | `ReadRows`; `SampleRowKeys` |
+| Change Streams source | each reader's; the enumerator's, which discovers the partitions | `ReadChangeStream`; `GenerateInitialChangeStreamPartitions` |
+| SQL lookup, `NONE` or `PARTIAL` cache | the lookup function's | `ReadRow` |
+| SQL lookup, `FULL` cache | none: Flink gives the cache's loader no metric group, so its `ReadRows` reach Cloud Monitoring only | — |
+
 A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees the method as a tag on one metric name, as it sees `CODE` under `errorClass`.
 
 | Metric | Type | Meaning |
@@ -1301,21 +1314,26 @@ A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees t
 | `rpcMethod.METHOD.connectivityErrors` | counter | attempts that never reached a Google data center, judged by the absence of Google's response headers |
 | `rpcMethod.METHOD.attemptsWithServerTiming` | counter | attempts whose response carried the Google front end's server timing; the denominator of `serverTimeMillis` |
 | `rpcMethod.METHOD.serverTimeMillis` | counter | their total time from entering the Google data center to completion, in milliseconds |
-| `rpcMethod.METHOD.firstResponseTimeMillis` | counter | total time from an operation's start to its first response, in milliseconds; divide by `operations`. The client records it for `ReadRows`, so it stays zero under `MutateRows` |
+| `rpcMethod.METHOD.firstResponseTimeMillis` | counter | total time from an operation's start to its first response, in milliseconds, summed over the operations the client records it for: a streamed `ReadRows`, and every operation it serves on the session path (single-row reads, recorded as `ReadRow`, described below). A single-row-key `ReadRows` and a `ReadRow` on the classic path add nothing, so dividing by `operations` gives the mean only where every operation is of the recorded kind; under any other method it stays zero |
 | `rpcMethod.METHOD.applicationTimeMillis` | counter | total time per operation that its attempts did not spend on the server, in milliseconds, which the client attributes to the application consuming responses; divide by `operations` |
 
 Latencies arrive as a count and a millisecond sum, so a backend divides the rate of the sum by the rate of the count for the mean over any window.
 Only those two are kept, not percentiles, buckets or extremes, which keeps every series a monotonic counter that any reporter can rate.
-Two histograms report only their sum, because the client records them once per operation and their counts would repeat `operations`.
+Two histograms report only their sum, because the client records them at most once per operation: application time for every operation, so its count would repeat `operations`, and first-response time for the operations named in its row.
 The client's `throttling_latencies` is not reported at all: the client adds a batch's flow-control wait to it in milliseconds but records the total as nanoseconds, and carries the total across attempts, so it measures neither a duration nor one attempt.
 
-Every attribute the client attaches other than the method (status, table, application profile, cluster, zone, client id) is ignored, so a writer reports ten series per method whatever it writes to.
-Failures by status are what `errorClass.CODE.errors` already counts.
-A writer whose clients reach several instances reports their RPCs together.
+Every attribute the client attaches other than the method (status, table, application profile, cluster, zone, client id) is ignored, so a component reports ten series per method whatever it reads or writes.
+Failures by status are what a sink's `errorClass.CODE.errors` already counts.
+A component whose clients reach several instances or application profiles reports their RPCs together.
+
+An operation ends when the RPC's last response arrives, so its series move then: a `ReadRows` operation is one stream a reader opens over a range (a reader reopens one after each wake-up), and a `ReadChangeStream` operation is one partition's stream, which can stay open for as long as the partition does.
+An enumerator's series belong to the source rather than to one enumerator: Flink keeps one enumerator metric group for a job's life and drops a second registration of a name in it, so every enumerator a coordinator reset builds after a failover records into the series the first one registered.
+That holds under the default scheduler, which keeps the source object across resets.
+The adaptive scheduler builds a new source object at each restart or rescale, so there the enumerator's series stop moving after the first restart, as the connector's other enumerator metrics do ([#1908]({{< param BookRepo >}}/issues/1908)).
 
 The client adds to the counters as it records, so a report reads the totals up to that moment: the attempt series move as each RPC attempt ends, and the operation series as each operation ends, retries included. Until then they read zero.
 A count and its sum are added separately, so a report taken while the client records can see one value more in one of them; over a rate window the difference vanishes.
-A method the client reports and the writer did not register is logged once, at `WARN`, and is not reported.
+A method the client reports and the component did not register is logged once, at `WARN`, and is not reported.
 Against the emulator the client records too, with one deviation: the emulator sends none of the Google front end's headers, so every attempt counts under `connectivityErrors` and `attemptsWithServerTiming` stays zero.
 
 **Exporting to Flink does not stop the export to Cloud Monitoring.**
@@ -1323,7 +1341,16 @@ The client keeps its built-in exporter beside the second recorder this option ad
 `exportClientMetricsToCloudMonitoring(false)` (`client-metrics.export-to-cloud-monitoring = 'false'`) removes that exporter, whether or not anything is exported to Flink.
 Off Google Cloud it also removes a stall: when a client closes, the exporter detects the platform by connecting to the metadata server's address with no timeout, and where nothing answers there, a close can wait for the operating system's connect timeout (75 seconds, measured on [#1815]({{< param BookRepo >}}/issues/1815) and again on [#1902]({{< param BookRepo >}}/issues/1902), where a client without the exporter closed in under a millisecond).
 
-Both options apply to the at-least-once writer for now; `EXACTLY_ONCE` refuses them, and the single-row writers, the sources and the lookups do not take them yet.
+**Single-row reads can take another path, and with the Cloud Monitoring export off, report nothing.**
+The Bigtable client can serve single-row reads and `MutateRow` over a newer, session-based path, which the service enables per client through its client configuration and which is off by default.
+A lookup's `ReadRow` can take it, and so can a scan whose only range is one row key (a SQL `WHERE` on one row key), which the client then records as `ReadRow` rather than `ReadRows`.
+On that path the client hands the connector's recorder nothing when its built-in exporter is absent (`MetricsImpl.newTableTracer`), so `exportClientMetricsToCloudMonitoring(false)` leaves those reads unreported.
+With the exporter on, a scan reader's single-key reads arrive under `ReadRow`, which the reader does not register, and are logged once and dropped.
+No component calls `MutateRow`.
+The connector does not work around the client here; keep the Cloud Monitoring export on where these series must be complete.
+
+Every component that owns a Bigtable data client takes both options: the sink in either delivery guarantee, the single-row sinks and async helpers, the SQL async functions (as `client-metrics.export-to-flink` and `client-metrics.export-to-cloud-monitoring` in their settings), both sources, and the lookups.
+The `FULL` lookup cache takes only the Cloud Monitoring one in effect, for the reason in the table above.
 
 ### Single-row request metrics
 
@@ -1371,7 +1398,8 @@ call, not an outage that outlasted a backoff budget as it does in the table abov
 
 ### Source metrics
 
-Registered on the source reader's and the split enumerator's metric groups:
+Registered on the source reader's and the split enumerator's metric groups.
+The clients' own per-method RPC metrics are the [client-library metrics](#client-library-metrics), registered on the same groups when they are exported to Flink.
 
 | Metric | Type | Meaning |
 |---|---|---|

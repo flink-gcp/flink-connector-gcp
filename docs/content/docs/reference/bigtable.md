@@ -53,8 +53,8 @@ resumes a broken `ReadRows` stream from the last key it saw.
 | `writerOptions` | [defaults](#bigtablewriteroptions) | The batch thresholds and the in-flight bounds |
 | `failedMutationHandler` | `FailureHandler.failJob()` | What happens to a mutation that terminally fails. Only the two data-shaped failures reach it — see [Error handling]({{< relref "docs/connectors/datastream/bigtable" >}}#error-handling). The queue behind `sendToDeadLetterQueue(...)` has [options of its own]({{< relref "docs/reference/pubsub" >}}#pubsubdeadletterqueuebuilder) |
 | `emulatorEndpoint` | — | Points the sink at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
-| `exportClientMetricsToFlink` | `false` | Reports the client's own per-method RPC metrics on the writer's metric group as `rpcMethod.METHOD.*`, so Flink's metric reporters see them; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export. Rejected with `EXACTLY_ONCE` for now |
-| `exportClientMetricsToCloudMonitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring. Off removes the exporter, and with it the platform detection that stalls each client close off Google Cloud. `false` is rejected with `EXACTLY_ONCE` for now |
+| `exportClientMetricsToFlink` | `false` | Reports the client's own per-method RPC metrics as `rpcMethod.METHOD.*`, so Flink's metric reporters see them: `MutateRows` on the writer's metric group, or under `EXACTLY_ONCE` `CheckAndMutateRow` on the committer's; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring. Off removes the exporter, and with it the platform detection that stalls each client close off Google Cloud |
 | `createDisposition` | `CREATE_NEVER` | Whether a missing table or column family is created (`CREATE_IF_NEEDED`) or fails the job. `CREATE_IF_NEEDED` requires `tableCreateOptions` |
 | `tableCreateOptions` | — | The [column families and rules](#tablecreateoptions) for the table the sink creates. Required with `CREATE_IF_NEEDED`, rejected with `CREATE_NEVER` |
 
@@ -158,6 +158,8 @@ The Table API's `insert-if-absent` and [DDL-defined conditional commands]({{< re
 | `emptyBranchPolicy` | `IGNORE` | Whether a successful response selecting an empty list is accepted or fails the job |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Key-file path readable by each TaskManager |
 | `emulatorEndpoint` | unset | Emulator endpoint; uses plaintext and no credentials |
+| `exportClientMetricsToFlink` | `false` | Reports the client's own `CheckAndMutateRow` metrics on the writer's metric group as `rpcMethod.CheckAndMutateRow.*`; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring |
 | `failedRequestHandler` | `FailureHandler.failJob()` | Handles serialization and row-level RPC failures; ambiguous failures and empty-branch policy failures bypass it |
 
 ## `BigtableConditionalAsync.builder()`
@@ -173,6 +175,8 @@ A key file and an emulator endpoint cannot be combined; `build()` rejects that c
 | `emptyBranchPolicy` | `IGNORE` | Whether a successful response selecting an empty list is accepted or fails the job |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Key-file path readable by each TaskManager |
 | `emulatorEndpoint` | unset | Emulator endpoint; uses plaintext and no credentials |
+| `exportClientMetricsToFlink` | `false` | Reports the client's own `CheckAndMutateRow` metrics on the async operator's metric group as `rpcMethod.CheckAndMutateRow.*`; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring |
 
 `orderedWait(input, timeout)` and `unorderedWait(input, timeout)` require an explicit Flink timeout no larger than `Duration.ofNanos(Long.MAX_VALUE)`.
 After Flink truncates that value to milliseconds, it must remain greater than `requestTimeout`.
@@ -190,6 +194,8 @@ A key file and an emulator endpoint cannot be combined; `build()` rejects that c
 | `requestOptions` | `BigtableRequestOptions.builder().build()` | RPC deadline, request capacity and client lifecycle |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Key-file path readable by each TaskManager |
 | `emulatorEndpoint` | unset | Emulator endpoint; uses plaintext and no credentials |
+| `exportClientMetricsToFlink` | `false` | Reports the client's own `ReadModifyWriteRow` metrics on the writer's metric group as `rpcMethod.ReadModifyWriteRow.*`; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring |
 | `failedRequestHandler` | `FailureHandler.failJob()` | Handles serialization and row-level RPC failures; ambiguous outcomes bypass it |
 
 ## `BigtableReadModifyWriteAsync.builder()`
@@ -204,6 +210,8 @@ A key file and an emulator endpoint cannot be combined; `build()` rejects that c
 | `requestOptions` | `BigtableRequestOptions.builder().build()` | RPC deadline, request capacity and client lifecycle |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Key-file path readable by each TaskManager |
 | `emulatorEndpoint` | unset | Emulator endpoint; uses plaintext and no credentials |
+| `exportClientMetricsToFlink` | `false` | Reports the client's own `ReadModifyWriteRow` metrics on the async operator's metric group as `rpcMethod.ReadModifyWriteRow.*`; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring |
 
 `orderedWait(input, timeout)` and `unorderedWait(input, timeout)` emit input/result pairs.
 The timeout must be representable in nanoseconds and greater than `requestTimeout` after Flink truncates it to milliseconds.
@@ -274,6 +282,8 @@ Bigtable, whose rejection names what it refused.
 | `maxBytesPerFetch` | `8 MiB` | Target maximum decoded input bytes one fetch hands to Flink's element queue. One row larger than the target is handed over alone |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's enumerator or a TaskManager's reader starts. Every eligible process must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/bigtable" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. Never production. Given as `host:port`, and rejected at the setter if it is not |
+| `exportClientMetricsToFlink` | `false` | Reports the client's own metrics as `rpcMethod.METHOD.*`: `ReadRows` on each reader's metric group, `SampleRowKeys` on the enumerator's; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the readers' and the enumerator's clients keep their built-in export of client-side metrics to Cloud Monitoring |
 
 **The fetch bounds are memory hand-off controls, not a query row limit.**
 A `Query.limit()` is global to a query, so it cannot be partitioned across splits without coordination — the client library refuses to shard a query that carries one.
@@ -302,6 +312,8 @@ notes.
 | `resumeFallback` | — | Explicitly restarts an expired checkpointed partition at this position, discarding any stale token it held. Without it, an expired restore fails |
 | `boundedTimestamp` | — | Stops at this instant and makes the source bounded. Without it, the source is continuous |
 | `maxConcurrentStreamsPerSubtask` | `2` | Bounds open `ReadChangeStream` RPCs in each source subtask. Source parallelism multiplied by this value is configured job-wide read capacity, not a Bigtable quota |
+| `exportClientMetricsToFlink` | `false` | Reports the data clients' own metrics as `rpcMethod.METHOD.*`: `ReadChangeStream` on each reader's metric group, `GenerateInitialChangeStreamPartitions` on the enumerator's; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). Does not stop the Cloud Monitoring export |
+| `exportClientMetricsToCloudMonitoring` | `true` | Whether the data clients keep their built-in export of client-side metrics to Cloud Monitoring; the admin clients have no such export |
 | `familyIncludeList` | empty | Retains mutation entries whose family name fully matches at least one Java regular expression. Mutually exclusive with `familyExcludeList` |
 | `familyExcludeList` | empty | Removes mutation entries whose family name fully matches any Java regular expression. Mutually exclusive with `familyIncludeList` |
 | `qualifierIncludeList` | empty | Retains qualified mutation entries whose `family:qualifierBase64` identifier fully matches at least one Java regular expression. The qualifier uses canonical padded RFC 4648 standard Base64. Mutually exclusive with `qualifierExcludeList` |

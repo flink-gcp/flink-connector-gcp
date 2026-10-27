@@ -171,7 +171,9 @@ class ConditionalCommandRuntimeTest {
                             config.getRequestOptions(),
                             FailureHandler.logAndDrop(),
                             config.getServiceAccountKeyFile(),
-                            config.getEmulatorEndpoint());
+                            config.getEmulatorEndpoint(),
+                            false,
+                            true);
         }
         return new SingleRowRequestWriter<>(config, client, mailbox, metrics);
     }

@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.core.io.GenericInputSplit;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
@@ -194,7 +195,8 @@ class BigtableLookupCacheTest {
                         null,
                         null,
                         null,
-                        rowStreams);
+                        rowStreams,
+                        true);
         ScriptedCacheLoader loader = new ScriptedCacheLoader(inputFormat);
         ControllableReloadTrigger trigger = new ControllableReloadTrigger();
         LookupFullCache cache = new LookupFullCache(loader, trigger);
@@ -282,7 +284,7 @@ class BigtableLookupCacheTest {
         }
 
         @Override
-        public void open() {}
+        public void open(MetricGroup metricGroup) {}
 
         @Override
         @Nullable

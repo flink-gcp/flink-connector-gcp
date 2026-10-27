@@ -19,6 +19,9 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.enumerator;
 import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+
+import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.List;
@@ -53,6 +56,18 @@ public interface ChangeStreamCoordinatorClient extends AutoCloseable {
      * @throws Exception if the partitions cannot be discovered
      */
     List<ByteStringRange> generateInitialPartitions() throws Exception;
+
+    /**
+     * Receives the client metrics the owning enumerator registered, before the first call, or
+     * {@code null} when nothing is exported to Flink.
+     *
+     * <p>Defaulted: an implementation that builds no Bigtable data client has nothing to record.
+     * The owner keeps the client metrics; an implementation records into them and does not close
+     * them.
+     *
+     * @param clientMetrics the client metrics to record into, or {@code null}
+     */
+    default void useClientMetrics(@Nullable ClientMetrics clientMetrics) {}
 
     @Override
     void close() throws Exception;

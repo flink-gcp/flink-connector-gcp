@@ -233,11 +233,13 @@ class SingleRowRequestWriterEmulatorITCase extends AbstractBigtableEmulatorITCas
         BigtableRequestOptions options = BigtableRequestOptions.builder().build();
         return new SingleRowRequestWriter<>(
                 new SingleRowRequestConfig<>(
-                        resolver, serializer, null, options, handler, null, null),
+                        resolver, serializer, null, options, handler, null, null, false, true),
                 new DefaultSingleRowClientFactory(
                         null,
                         options,
                         EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"),
+                        null,
+                        true,
                         null),
                 mailbox,
                 metricGroup);

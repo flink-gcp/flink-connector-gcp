@@ -27,6 +27,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanEnumeratorState;
@@ -73,6 +74,10 @@ public class BigtableSourceBuilder<T> {
     private @Nullable RowStreamOpener opener;
     private int maxRowsPerFetch = DEFAULT_MAX_ROWS_PER_FETCH;
     private long maxBytesPerFetch = DEFAULT_MAX_BYTES_PER_FETCH;
+    private boolean exportClientMetricsToFlink =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    private boolean exportClientMetricsToCloudMonitoring =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
 
     BigtableSourceBuilder() {}
 
@@ -264,6 +269,46 @@ public class BigtableSourceBuilder<T> {
     }
 
     /**
+     * Exports the Bigtable client's own metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>Each reader registers them under its metric group as {@code rpcMethod.ReadRows.*}, and the
+     * enumerator, which samples row keys to plan its splits, as {@code rpcMethod.SampleRowKeys.*}:
+     * the client's operation and attempt counts and latencies, its retries, its connectivity
+     * errors, and its server, first-response and application time. Latencies are reported as a
+     * count and a millisecond sum; no percentile is reported.
+     *
+     * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
+     * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public BigtableSourceBuilder<T> exportClientMetricsToFlink(boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
+     * Sets whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
+     * Monitoring. Optional; on by default.
+     *
+     * <p>Off, the client creates no Cloud Monitoring exporter at all. Besides the export, that
+     * removes the exporter's platform detection when a client closes: off Google Cloud, where
+     * nothing answers on the metadata server's address, each close otherwise waits for that
+     * connection attempt to time out. It is independent of {@link
+     * #exportClientMetricsToFlink(boolean)}, which neither needs nor stops this export.
+     *
+     * @param exportClientMetricsToCloudMonitoring whether the client exports to Cloud Monitoring
+     * @return this builder
+     */
+    public BigtableSourceBuilder<T> exportClientMetricsToCloudMonitoring(
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        return this;
+    }
+
+    /**
      * Replaces the factory the source mints the enumerator's sampler from. For tests that must not
      * reach a service.
      */
@@ -349,12 +394,19 @@ public class BigtableSourceBuilder<T> {
                         serviceAccountKeyFile,
                         samplerFactory != null
                                 ? samplerFactory
-                                : new DefaultRowKeySamplerFactory(appProfileId, emulatorEndpoint),
+                                : new DefaultRowKeySamplerFactory(
+                                        appProfileId,
+                                        emulatorEndpoint,
+                                        exportClientMetricsToCloudMonitoring),
                         opener != null
                                 ? opener
-                                : new DataClientRowStreamOpener(appProfileId, emulatorEndpoint),
+                                : new DataClientRowStreamOpener(
+                                        appProfileId,
+                                        emulatorEndpoint,
+                                        exportClientMetricsToCloudMonitoring),
                         maxRowsPerFetch,
-                        maxBytesPerFetch));
+                        maxBytesPerFetch,
+                        exportClientMetricsToFlink));
     }
 
     /**

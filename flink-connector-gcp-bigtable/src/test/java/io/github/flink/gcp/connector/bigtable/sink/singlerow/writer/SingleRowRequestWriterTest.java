@@ -727,7 +727,7 @@ class SingleRowRequestWriterTest {
             DestinationResolver<String> resolver) {
         return new SingleRowRequestWriter<>(
                 new SingleRowRequestConfig<>(
-                        resolver, serializer, null, options, handler, null, null),
+                        resolver, serializer, null, options, handler, null, null, false, true),
                 factory,
                 mailbox,
                 metricGroup,

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.io.GenericInputFormat;
 import org.apache.flink.core.io.GenericInputSplit;
 import org.apache.flink.table.data.RowData;
@@ -46,7 +47,13 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
-/** The single-split bounded scan Flink's full lookup cache uses to load all projected rows. */
+/**
+ * The single-split bounded scan Flink's full lookup cache uses to load all projected rows.
+ *
+ * <p>Its client keeps or drops the built-in Cloud Monitoring export as configured, but exports
+ * nothing to Flink: Flink's full cache configures and opens its copy of this format with no runtime
+ * context, so no metric group reaches it (Flink 2.2.1, {@code InputFormatCacheLoader}).
+ */
 @Internal
 final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
 
@@ -60,6 +67,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     @Nullable private final String emulatorEndpoint;
     private final RowToRowDataConverter converter;
     @Nullable private final RowStreamOpener rowStreamOpener;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     @Nullable private transient BigtableDataClient client;
     private transient Iterator<ByteStringRange> remainingRanges = Collections.emptyIterator();
@@ -76,7 +84,8 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             @Nullable String appProfileId,
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
-            @Nullable RowStreamOpener rowStreamOpener) {
+            @Nullable RowStreamOpener rowStreamOpener,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.destination = destination;
         this.filter = filter;
         this.ranges = ranges;
@@ -87,6 +96,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
                 new RowToRowDataConverter(
                         schema, projectedFields, nullStringLiteral, trailingBytes);
         this.rowStreamOpener = rowStreamOpener;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     Filters.Filter getFilter() {
@@ -118,18 +128,26 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
         }
     }
 
-    private BigtableDataSettings settings() throws IOException {
+    /**
+     * Builds the client settings. Visible to the module's tests, which see the Cloud Monitoring
+     * choice reach them.
+     */
+    @VisibleForTesting
+    BigtableDataSettings settings() throws IOException {
         EmulatorEndpoint endpoint =
                 emulatorEndpoint == null
                         ? null
                         : EmulatorEndpoint.parse(
                                 emulatorEndpoint, BigtableConnectorOptions.EMULATOR_ENDPOINT.key());
-        return BigtableDataClients.settings(
+        BigtableDataSettings.Builder settings =
+                BigtableDataClients.settings(
                         destination,
                         appProfileId,
                         endpoint,
-                        BigtableCredentials.loadData(serviceAccountKeyFile))
-                .build();
+                        BigtableCredentials.loadData(serviceAccountKeyFile));
+        BigtableDataClients.applyClientMetrics(
+                settings, null, exportClientMetricsToCloudMonitoring);
+        return settings.build();
     }
 
     @Override

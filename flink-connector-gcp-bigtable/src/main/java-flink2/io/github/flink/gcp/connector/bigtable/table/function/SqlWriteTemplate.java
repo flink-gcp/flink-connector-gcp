@@ -30,6 +30,7 @@ import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalMutation;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.ConditionalRequest;
@@ -39,6 +40,7 @@ import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.ReadModifyWri
 import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.ReadModifyWriteRule;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.RowRequest;
 import io.github.flink.gcp.connector.bigtable.table.CellValueCodec;
 
@@ -61,6 +63,8 @@ final class SqlWriteTemplate implements Serializable {
     final String keyFile;
     final EmulatorEndpoint emulator;
     final BigtableRequestOptions options;
+    final boolean exportClientMetricsToFlink;
+    final boolean exportClientMetricsToCloudMonitoring;
     private final CellValueCodec.FieldEncoder keyEncoder;
     private final SqlFilterTemplate predicate;
     private final List<SqlMutationTemplate> then;
@@ -75,6 +79,8 @@ final class SqlWriteTemplate implements Serializable {
             String keyFile,
             EmulatorEndpoint emulator,
             BigtableRequestOptions options,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring,
             CellValueCodec.FieldEncoder keyEncoder,
             SqlFilterTemplate predicate,
             List<SqlMutationTemplate> then,
@@ -86,6 +92,8 @@ final class SqlWriteTemplate implements Serializable {
         this.keyFile = keyFile;
         this.emulator = emulator;
         this.options = options;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
         this.keyEncoder = keyEncoder;
         this.predicate = predicate;
         this.then = List.copyOf(then);
@@ -159,6 +167,16 @@ final class SqlWriteTemplate implements Serializable {
                     settings.key("request-timeout"), duration, builder::requestTimeout);
         }
         BigtableRequestOptions options = builder.build();
+        boolean exportClientMetricsToFlink =
+                flag(
+                        settings,
+                        "client-metrics.export-to-flink",
+                        BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK);
+        boolean exportClientMetricsToCloudMonitoring =
+                flag(
+                        settings,
+                        "client-metrics.export-to-cloud-monitoring",
+                        BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
         try {
             long outerMillis =
                     config.get(ExecutionConfigOptions.TABLE_EXEC_ASYNC_SCALAR_TIMEOUT).toMillis();
@@ -203,6 +221,8 @@ final class SqlWriteTemplate implements Serializable {
                 keyFile,
                 emulator,
                 options,
+                exportClientMetricsToFlink,
+                exportClientMetricsToCloudMonitoring,
                 CellValueCodec.encoder(argumentTypes.get(1).getLogicalType()),
                 predicate,
                 then,
@@ -217,12 +237,33 @@ final class SqlWriteTemplate implements Serializable {
                 value -> ResourceNames.checkComponent(value, property));
     }
 
+    /** Reads a Boolean setting as Flink reads a Boolean option, naming the full key on failure. */
+    private static boolean flag(SqlSettingMap settings, String property, boolean defaultValue) {
+        String value = settings.optional(property);
+        if (value == null) {
+            return defaultValue;
+        }
+        return OptionSetters.convert(
+                settings.key(property),
+                value,
+                raw ->
+                        Configuration.fromMap(Map.of(property, raw))
+                                .get(ConfigOptions.key(property).booleanType().noDefaultValue()));
+    }
+
     private static List<SqlSettingMap> bounded(SqlSettingMap settings, String property) {
         List<SqlSettingMap> values = settings.numbered(property);
         if (values.size() > MAX_OPERATIONS) {
             throw settings.error(property, "exceeds the 100,000-operation limit");
         }
         return values;
+    }
+
+    /** The one RPC this function's requests call. */
+    RowOperation operation() {
+        return predicate != null
+                ? RowOperation.CHECK_AND_MUTATE_ROW
+                : RowOperation.READ_MODIFY_WRITE_ROW;
     }
 
     RowRequest<?> request(RowData input) {

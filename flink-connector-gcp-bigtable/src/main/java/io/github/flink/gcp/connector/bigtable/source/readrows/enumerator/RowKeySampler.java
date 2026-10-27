@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 import org.apache.flink.annotation.Internal;
 
 import com.google.api.gax.core.CredentialsProvider;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import javax.annotation.Nullable;
@@ -76,6 +77,19 @@ public interface RowKeySampler extends AutoCloseable {
      *     application default credentials in place
      */
     void useCredentials(@Nullable CredentialsProvider credentials);
+
+    /**
+     * Receives the client metrics the owning enumerator registered, before the first {@link
+     * #sample}, or {@code null} when nothing is exported to Flink.
+     *
+     * <p>Defaulted, unlike {@link #useCredentials(CredentialsProvider)}: an implementation that
+     * builds no Bigtable client has nothing to record, and one that skipped it would leave its
+     * series at zero rather than reach Bigtable as anyone else. The owner keeps the client metrics;
+     * an implementation records into them and does not close them.
+     *
+     * @param clientMetrics the client metrics to record into, or {@code null}
+     */
+    default void useClientMetrics(@Nullable ClientMetrics clientMetrics) {}
 
     @Override
     void close() throws IOException;

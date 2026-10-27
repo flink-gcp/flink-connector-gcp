@@ -24,6 +24,7 @@ import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.BigtableRequestFunction;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.RowRequest;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowClientFactory;
@@ -40,7 +41,10 @@ final class ConditionalFunction<T>
                 config.appProfileId,
                 config.requestOptions,
                 config.serviceAccountKeyFile,
-                config.emulatorEndpoint);
+                config.emulatorEndpoint,
+                config.exportClientMetricsToFlink,
+                config.exportClientMetricsToCloudMonitoring,
+                RowOperation.CHECK_AND_MUTATE_ROW);
         this.config = config;
     }
 

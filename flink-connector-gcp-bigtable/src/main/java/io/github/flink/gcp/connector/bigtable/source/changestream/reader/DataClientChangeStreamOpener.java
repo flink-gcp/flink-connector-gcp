@@ -24,6 +24,7 @@ import com.google.api.gax.rpc.ResponseObserver;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.ReadChangeStreamQuery;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -63,10 +64,18 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
      * Creates the opener.
      *
      * @param appProfileId the single-cluster application profile the change stream is read through
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
      */
-    public DataClientChangeStreamOpener(String appProfileId) {
+    public DataClientChangeStreamOpener(
+            String appProfileId, boolean exportClientMetricsToCloudMonitoring) {
         // The change-stream source has no emulator option, so no endpoint ever reaches this seam.
-        this.client = new LazyBigtableDataClient("change-stream opener", appProfileId, null);
+        this.client =
+                new LazyBigtableDataClient(
+                        "change-stream opener",
+                        appProfileId,
+                        null,
+                        exportClientMetricsToCloudMonitoring);
     }
 
     @Override
@@ -104,7 +113,7 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
      * client looks exactly like one that does.
      */
     @VisibleForTesting
-    BigtableDataSettings settings(TableDestination table) throws IOException {
+    public BigtableDataSettings settings(TableDestination table) throws IOException {
         return client.settings(table);
     }
 
@@ -116,5 +125,10 @@ public final class DataClientChangeStreamOpener implements ChangeStreamOpener {
     @Override
     public void useCredentials(@Nullable CredentialsProvider credentials) {
         client.useCredentials(credentials);
+    }
+
+    @Override
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+        client.useClientMetrics(clientMetrics);
     }
 }

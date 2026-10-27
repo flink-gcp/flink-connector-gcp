@@ -16,16 +16,22 @@
 
 package io.github.flink.gcp.connector.bigtable.sink.singlerow.writer;
 
+import org.apache.flink.metrics.Counter;
+
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.UnaryCallSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.TableId;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableClientReaper;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.opentelemetry.api.common.AttributeKey;
+import io.opentelemetry.api.common.Attributes;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -141,6 +147,55 @@ class DefaultSingleRowClientFactoryTest {
     }
 
     @Test
+    void leavesTheClientsMetricsAsItShipsThemByDefault() {
+        ClientMetricsSettings.assertAsShipped(
+                new DefaultSingleRowClientFactory(
+                                null,
+                                BigtableRequestOptions.builder().build(),
+                                null,
+                                null,
+                                true,
+                                null)
+                        .settings(TABLE));
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsItIsGivenAndKeepsThemOpen() throws Exception {
+        ClientMetrics metrics = ClientMetrics.create("method");
+        Counter retries = metrics.counterSum("retry_count", "Bigtable.CheckAndMutateRow");
+        DefaultSingleRowClientFactory factory =
+                new DefaultSingleRowClientFactory(
+                        null, BigtableRequestOptions.builder().build(), null, null, true, metrics);
+
+        ClientMetricsSettings.assertRecordsInto(factory.settings(TABLE), metrics);
+        // Not its to close: the staged committer shares one set between its factories.
+        factory.close();
+        metrics.openTelemetry()
+                .getMeterProvider()
+                .get("bigtable")
+                .counterBuilder("retry_count")
+                .build()
+                .add(
+                        2,
+                        Attributes.of(
+                                AttributeKey.stringKey("method"), "Bigtable.CheckAndMutateRow"));
+        assertThat(retries.getCount()).isEqualTo(2);
+    }
+
+    @Test
+    void stoppingTheCloudMonitoringExportDisablesTheClientsInternalMetrics() {
+        ClientMetricsSettings.assertExportsNothing(
+                new DefaultSingleRowClientFactory(
+                                null,
+                                BigtableRequestOptions.builder().build(),
+                                null,
+                                null,
+                                false,
+                                null)
+                        .settings(TABLE));
+    }
+
+    @Test
     void pointsTheClientAtTheEmulatorEndpoint() {
         BigtableDataSettings settings =
                 factory(null, BigtableRequestOptions.builder().build(), "bigtable.example:9035")
@@ -156,7 +211,7 @@ class DefaultSingleRowClientFactoryTest {
         NoCredentialsProvider provider = NoCredentialsProvider.create();
         DefaultSingleRowClientFactory factory =
                 new DefaultSingleRowClientFactory(
-                        null, BigtableRequestOptions.builder().build(), null, provider);
+                        null, BigtableRequestOptions.builder().build(), null, provider, true, null);
 
         assertThat(factory.settings(TABLE).getStubSettings().getCredentialsProvider())
                 .isSameAs(provider);
@@ -293,7 +348,9 @@ class DefaultSingleRowClientFactoryTest {
                         () -> {
                             throw new IOException(
                                     "credentials attempt " + attempts.incrementAndGet());
-                        });
+                        },
+                        true,
+                        null);
 
         assertThatThrownBy(() -> factory.create(TABLE))
                 .isInstanceOf(IOException.class)
@@ -376,6 +433,8 @@ class DefaultSingleRowClientFactoryTest {
                 appProfileId,
                 options,
                 EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint"),
+                null,
+                true,
                 null);
     }
 }

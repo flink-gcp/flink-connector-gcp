@@ -23,9 +23,13 @@ import com.google.cloud.bigtable.data.v2.models.Mutation;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import org.junit.jupiter.api.Test;
 
@@ -86,7 +90,9 @@ class SingleRowRequestSinksTest {
                         corrupted(BigtableRequestOptions.builder().build()),
                         handler,
                         null,
-                        null);
+                        null,
+                        false,
+                        true);
 
         assertThatThrownBy(
                         () ->
@@ -183,17 +189,96 @@ class SingleRowRequestSinksTest {
                         BigtableRequestOptions.builder().build(),
                         handler,
                         "/missing/mounted-bigtable-key.json",
-                        null);
+                        null,
+                        false,
+                        true);
 
         // The credential is loaded before the factory and before anything is opened, so a
         // missing key file fails with nothing to release and the context is never touched.
-        assertThatThrownBy(() -> SingleRowRequestSinks.createWriter(config, null))
+        assertThatThrownBy(
+                        () ->
+                                SingleRowRequestSinks.createWriter(
+                                        config, null, RowOperation.CHECK_AND_MUTATE_ROW))
                 .isInstanceOf(IOException.class)
                 .hasMessage("Failed to load the configured Bigtable service-account key file.")
                 .hasNoCause();
 
         assertThat(serializer.opens).isZero();
         assertThat(handler.opens).isZero();
+    }
+
+    @Test
+    void theProductionWriterRegistersItsRpcMethodOnItsGroup() throws Exception {
+        StubWriterInitContext context = new StubWriterInitContext(0);
+
+        // Against an endpoint nothing listens on: the factory builds a client on the first record
+        // only, so creating and closing the writer connects nowhere.
+        SingleRowRequestSinks.createWriter(
+                        metricsConfig(true, true), context, RowOperation.CHECK_AND_MUTATE_ROW)
+                .close();
+
+        assertThat(
+                        context.getSinkWriterMetricGroup()
+                                .hasMetric("rpcMethod", "CheckAndMutateRow", "operations"))
+                .isTrue();
+    }
+
+    @Test
+    void theProductionWriterRegistersNothingWhenTheExportIsOff() throws Exception {
+        StubWriterInitContext context = new StubWriterInitContext(0);
+
+        SingleRowRequestSinks.createWriter(
+                        metricsConfig(false, true), context, RowOperation.CHECK_AND_MUTATE_ROW)
+                .close();
+
+        assertThat(
+                        context.getSinkWriterMetricGroup()
+                                .hasMetric("rpcMethod", "CheckAndMutateRow", "operations"))
+                .isFalse();
+    }
+
+    @Test
+    void theClientFactoryCarriesBothClientMetricsChoices() {
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertRecordsInto(
+                SingleRowRequestSinks.clientFactory(
+                                productionConfig(metricsConfig(true, true)), null, metrics)
+                        .settings(TABLE),
+                metrics);
+        ClientMetricsSettings.assertExportsNothing(
+                SingleRowRequestSinks.clientFactory(
+                                productionConfig(metricsConfig(false, false)), null, null)
+                        .settings(TABLE));
+    }
+
+    /** The same configuration without the emulator, whose builder installs its own choices. */
+    private static SingleRowRequestConfig<String> productionConfig(
+            SingleRowRequestConfig<String> config) {
+        return new SingleRowRequestConfig<>(
+                config.getDestinationResolver(),
+                SERIALIZER,
+                null,
+                config.getRequestOptions(),
+                config.getFailedRequestHandler(),
+                null,
+                null,
+                config.isExportClientMetricsToFlink(),
+                config.isExportClientMetricsToCloudMonitoring());
+    }
+
+    private static SingleRowRequestConfig<String> metricsConfig(
+            boolean exportToFlink, boolean exportToCloudMonitoring) {
+        return new SingleRowRequestConfig<>(
+                (element, context) -> TABLE,
+                SERIALIZER,
+                null,
+                BigtableRequestOptions.builder().build(),
+                new LifecycleRecordingHandler(),
+                null,
+                EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"),
+                exportToFlink,
+                exportToCloudMonitoring);
     }
 
     private static SingleRowRequestConfig<String> config(
@@ -206,7 +291,9 @@ class SingleRowRequestSinksTest {
                 BigtableRequestOptions.builder().build(),
                 handler,
                 null,
-                null);
+                null,
+                false,
+                true);
     }
 
     /** Forges what a hand-edited or version-skewed serialized form could carry past the builder. */

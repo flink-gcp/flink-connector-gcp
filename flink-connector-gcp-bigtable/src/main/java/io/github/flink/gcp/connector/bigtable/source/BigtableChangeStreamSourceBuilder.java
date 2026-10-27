@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClientFactory;
@@ -68,6 +69,10 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private ChangeStreamOpener opener;
     @Nullable private ChangeStreamRestoreResolver restoreResolver;
     @Nullable private ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
+    private boolean exportClientMetricsToFlink =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    private boolean exportClientMetricsToCloudMonitoring =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
 
     BigtableChangeStreamSourceBuilder() {}
 
@@ -129,6 +134,49 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         serviceAccountKeyFile, "serviceAccountKeyFile must not be null");
         Preconditions.checkArgument(!checked.isBlank(), "serviceAccountKeyFile must not be blank");
         this.serviceAccountKeyFile = checked;
+        return this;
+    }
+
+    /**
+     * Exports the Bigtable client's own metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>Each reader registers them under its metric group as {@code rpcMethod.ReadChangeStream.*},
+     * and the enumerator, which discovers the stream's partitions, as {@code
+     * rpcMethod.GenerateInitialChangeStreamPartitions.*}: the client's operation and attempt counts
+     * and latencies, its retries, its connectivity errors, and its server, first-response and
+     * application time. Latencies are reported as a count and a millisecond sum; no percentile is
+     * reported. A {@code ReadChangeStream} operation is one partition's stream, so it ends, and
+     * counts, only when that stream closes.
+     *
+     * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
+     * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> exportClientMetricsToFlink(
+            boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
+     * Sets whether the Bigtable data client keeps exporting its built-in client-side metrics to
+     * Cloud Monitoring. Optional; on by default.
+     *
+     * <p>Off, the client creates no Cloud Monitoring exporter at all. Besides the export, that
+     * removes the exporter's platform detection when a client closes: off Google Cloud, where
+     * nothing answers on the metadata server's address, each close otherwise waits for that
+     * connection attempt to time out. It is independent of {@link
+     * #exportClientMetricsToFlink(boolean)}, which neither needs nor stops this export.
+     *
+     * @param exportClientMetricsToCloudMonitoring whether the client exports to Cloud Monitoring
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> exportClientMetricsToCloudMonitoring(
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
         return this;
     }
 
@@ -326,14 +374,21 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                                 qualifierIncludeList,
                                 qualifierExcludeList,
                                 skipMessagesWithoutChange),
-                        opener != null ? opener : new DataClientChangeStreamOpener(appProfileId),
+                        opener != null
+                                ? opener
+                                : new DataClientChangeStreamOpener(
+                                        appProfileId, exportClientMetricsToCloudMonitoring),
                         restoreResolver != null
                                 ? restoreResolver
                                 : new DefaultChangeStreamRestoreResolver(table, appProfileId),
                         coordinatorClientFactory != null
                                 ? coordinatorClientFactory
                                 : new DefaultChangeStreamCoordinatorClientFactory(
-                                        table, appProfileId, serviceAccountKeyFile)));
+                                        table,
+                                        appProfileId,
+                                        serviceAccountKeyFile,
+                                        exportClientMetricsToCloudMonitoring),
+                        exportClientMetricsToFlink));
     }
 
     private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {

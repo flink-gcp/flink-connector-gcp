@@ -22,9 +22,13 @@ import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
+import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.types.RowKind;
 
+import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSink;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -43,6 +47,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigtableConditionalCommandFactoryTest {
+    @Test
+    void carriesBothClientMetricsChoicesToTheConditionalSink() {
+        Map<String, String> options = options();
+        options.put("client-metrics.export-to-flink", "true");
+        options.put("client-metrics.export-to-cloud-monitoring", "false");
+
+        SingleRowRequestConfig<?> config =
+                ((BigtableConditionalSink<?>)
+                                ((SinkV2Provider)
+                                                FactoryMocks.createTableSink(SCHEMA, options)
+                                                        .getSinkRuntimeProvider(
+                                                                new SinkRuntimeProviderContext(
+                                                                        false)))
+                                        .createSink())
+                        .getConfig();
+
+        assertThat(config.isExportClientMetricsToFlink()).isTrue();
+        assertThat(config.isExportClientMetricsToCloudMonitoring()).isFalse();
+    }
+
     @Test
     void usesADedicatedSinkWithUnusedComplexColumnsAndStableCopies() {
         DynamicTableSink sink = FactoryMocks.createTableSink(SCHEMA, options());

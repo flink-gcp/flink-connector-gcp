@@ -35,9 +35,12 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
+import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
+import io.github.flink.gcp.connector.bigtable.EnumeratorClientMetrics;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
@@ -70,8 +73,18 @@ public final class BigtableScanSource<T>
 
     private static final long serialVersionUID = 1L;
 
+    /** The one RPC a reader's client calls. */
+    private static final String READ_ROWS = "ReadRows";
+
+    /** The one RPC the enumerator's client calls, to plan its splits. */
+    private static final String SAMPLE_ROW_KEYS = "SampleRowKeys";
+
     private final BigtableSourceConfig<T> config;
     private final LineageMetadata lineage;
+
+    /** Shared by every enumerator this object builds; see {@link EnumeratorClientMetrics}. */
+    private final EnumeratorClientMetrics enumeratorClientMetrics =
+            new EnumeratorClientMetrics(SAMPLE_ROW_KEYS);
 
     /**
      * Creates the source.
@@ -114,6 +127,13 @@ public final class BigtableScanSource<T>
             throws Exception {
         RowStreamOpener opener = config.getOpener();
         opener.useCredentials(dataCredentials());
+        // Registered as the reader opens, before any reporter reads its group. Not closed: the
+        // group ends with the reader (docs/adr/0186).
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? BigtableClientMetrics.register(context.metricGroup(), READ_ROWS)
+                        : null;
+        opener.useClientMetrics(clientMetrics);
         BigtableRowDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
@@ -173,6 +193,9 @@ public final class BigtableScanSource<T>
         RowKeySampler sampler = config.getSamplerFactory().create();
         try {
             sampler.useCredentials(credentials);
+            if (config.isExportClientMetricsToFlink()) {
+                sampler.useClientMetrics(enumeratorClientMetrics.get(context.metricGroup()));
+            }
             return new BigtableScanSplitEnumerator(context, config, sampler, checkpoint);
         } catch (Throwable e) {
             // The enumerator never took ownership, so nothing else will close what was just minted.

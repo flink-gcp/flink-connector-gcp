@@ -16,10 +16,12 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.api.core.ApiFuture;
@@ -100,7 +102,7 @@ class BigtableRowDataLookupFunctionTest {
     void synchronousLookupEncodesTheKeyAndConvertsAHit() throws Exception {
         FakeRowLookup lookup = new FakeRowLookup().answer(row("k1", "value"));
         BigtableRowDataLookupFunction function = sync(lookup, 3);
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         Collection<RowData> result = function.lookup(key("k1"));
 
@@ -119,7 +121,7 @@ class BigtableRowDataLookupFunctionTest {
     void asynchronousLookupBridgesTheApiFutureAndConvertsAHit() throws Exception {
         FakeRowLookup lookup = new FakeRowLookup().answer(row("k1", "value"));
         BigtableRowDataAsyncLookupFunction function = async(lookup, 3);
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         assertThat(function.asyncLookup(key("k1")).join())
                 .containsExactly(
@@ -136,7 +138,7 @@ class BigtableRowDataLookupFunctionTest {
         SettableApiFuture<Row> pending = SettableApiFuture.create();
         FakeRowLookup lookup = new FakeRowLookup().answer(pending);
         BigtableRowDataAsyncLookupFunction function = async(lookup, 3);
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         CompletableFuture<Collection<RowData>> result = function.asyncLookup(key("k1"));
         assertThat(result).isNotDone();
@@ -148,7 +150,7 @@ class BigtableRowDataLookupFunctionTest {
     void anAbsentRowAndANullJoinKeyAreMisses() throws Exception {
         FakeRowLookup syncLookup = new FakeRowLookup().miss();
         BigtableRowDataLookupFunction sync = sync(syncLookup, 3);
-        sync.open(null);
+        sync.open(new FunctionContext(null));
 
         assertThat(sync.lookup(key("missing"))).isEmpty();
         assertThat(sync.lookup(key(null))).isEmpty();
@@ -156,7 +158,7 @@ class BigtableRowDataLookupFunctionTest {
 
         FakeRowLookup asyncLookup = new FakeRowLookup().miss();
         BigtableRowDataAsyncLookupFunction async = async(asyncLookup, 3);
-        async.open(null);
+        async.open(new FunctionContext(null));
         assertThat(async.asyncLookup(key("missing")).join()).isEmpty();
         assertThat(async.asyncLookup(key(null)).join()).isEmpty();
         assertThat(asyncLookup.keys).containsExactly(ByteString.copyFromUtf8("missing"));
@@ -173,7 +175,7 @@ class BigtableRowDataLookupFunctionTest {
                         .answer(failure(code))
                         .answer(row("k", "v"));
         BigtableRowDataLookupFunction sync = sync(syncLookup, 2);
-        sync.open(null);
+        sync.open(new FunctionContext(null));
         assertThat(sync.lookup(key("k"))).hasSize(1);
         assertThat(syncLookup.keys).hasSize(3);
 
@@ -183,7 +185,7 @@ class BigtableRowDataLookupFunctionTest {
                         .answer(failure(code))
                         .answer(row("k", "v"));
         BigtableRowDataAsyncLookupFunction async = async(asyncLookup, 2);
-        async.open(null);
+        async.open(new FunctionContext(null));
         assertThat(async.asyncLookup(key("k")).join()).hasSize(1);
         assertThat(asyncLookup.keys).hasSize(3);
     }
@@ -197,7 +199,7 @@ class BigtableRowDataLookupFunctionTest {
                         .answer(transientFailure)
                         .answer(row("never", "read"));
         BigtableRowDataLookupFunction sync = sync(syncLookup, 1);
-        sync.open(null);
+        sync.open(new FunctionContext(null));
         assertThatThrownBy(() -> sync.lookup(key("k"))).isSameAs(transientFailure);
         assertThat(syncLookup.keys).hasSize(2);
 
@@ -207,7 +209,7 @@ class BigtableRowDataLookupFunctionTest {
                         .answer(transientFailure)
                         .answer(row("never", "read"));
         BigtableRowDataAsyncLookupFunction exhaustedAsync = async(exhaustedAsyncLookup, 1);
-        exhaustedAsync.open(null);
+        exhaustedAsync.open(new FunctionContext(null));
         assertThatThrownBy(() -> exhaustedAsync.asyncLookup(key("k")).join())
                 .isInstanceOf(CompletionException.class)
                 .hasCause(transientFailure);
@@ -217,7 +219,7 @@ class BigtableRowDataLookupFunctionTest {
         FakeRowLookup asyncLookup =
                 new FakeRowLookup().answer(permanentFailure).answer(row("never", "read"));
         BigtableRowDataAsyncLookupFunction async = async(asyncLookup, 3);
-        async.open(null);
+        async.open(new FunctionContext(null));
         assertThatThrownBy(() -> async.asyncLookup(key("k")).join())
                 .isInstanceOf(CompletionException.class)
                 .hasCause(permanentFailure);
@@ -241,7 +243,7 @@ class BigtableRowDataLookupFunctionTest {
         BigtableRowDataLookupFunction function =
                 new BigtableRowDataLookupFunction(
                         schema, null, "null", TrailingBytes.IGNORE, 0, lookup);
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         assertThat(function.lookup(GenericRowData.of(7L))).isEmpty();
         assertThat(lookup.keys)
@@ -321,12 +323,27 @@ class BigtableRowDataLookupFunctionTest {
                         TrailingBytes.REJECT,
                         0,
                         new FakeRowLookup().answer(overlong));
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         assertThatThrownBy(() -> function.lookup(key("k")))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("9 byte(s)")
                 .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void bothFunctionsOpenTheirLookupOnTheirOwnMetricGroup() throws Exception {
+        // The lookup registers its client metrics on the group it is handed, so a function that
+        // handed it any other group would report them nowhere a reporter looks.
+        FunctionContext context = new FunctionContext(null);
+        FakeRowLookup syncLookup = new FakeRowLookup();
+        FakeRowLookup asyncLookup = new FakeRowLookup();
+
+        sync(syncLookup, 0).open(context);
+        async(asyncLookup, 0).open(context);
+
+        assertThat(syncLookup.metricGroup).isSameAs(context.getMetricGroup());
+        assertThat(asyncLookup.metricGroup).isSameAs(context.getMetricGroup());
     }
 
     private static final class FakeRowLookup implements BigtableRowLookup {
@@ -337,6 +354,7 @@ class BigtableRowDataLookupFunctionTest {
         private final java.util.List<ByteString> keys = new java.util.ArrayList<>();
         private boolean opened;
         private boolean closed;
+        @Nullable private MetricGroup metricGroup;
 
         private FakeRowLookup answer(Row answer) {
             answers.add(answer);
@@ -359,8 +377,9 @@ class BigtableRowDataLookupFunctionTest {
         }
 
         @Override
-        public void open() {
+        public void open(MetricGroup metricGroup) {
             opened = true;
+            this.metricGroup = metricGroup;
         }
 
         @Override

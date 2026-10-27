@@ -44,6 +44,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
@@ -52,6 +53,10 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalSink;
+import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteSink;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestConfig;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
@@ -368,30 +373,99 @@ class BigtableDynamicTableFactoryTest {
 
     @Test
     void leavesTheClientMetricsAtTheBuildersDefaults() {
+        // ADR-0139: an unset option calls no setter, so the builder's default applies, whatever
+        // it is; the table layer keeps no copy of it.
         BigtableSinkConfig<?> config = built(SCHEMA, minimalOptions()).getConfig();
 
-        assertThat(config.isExportClientMetricsToFlink()).isFalse();
-        assertThat(config.isExportClientMetricsToCloudMonitoring()).isTrue();
+        assertThat(config.isExportClientMetricsToFlink())
+                .isEqualTo(BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK);
+        assertThat(config.isExportClientMetricsToCloudMonitoring())
+                .isEqualTo(BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+        // Unset is its own value, not a copy of the default: a DDL that sets the default
+        // explicitly builds a sink that is not equal to one that leaves it unset.
+        assertThat(sink(minimalOptions())).isEqualTo(sink(minimalOptions()));
+        for (String key :
+                List.of(
+                        "client-metrics.export-to-flink",
+                        "client-metrics.export-to-cloud-monitoring")) {
+            for (String value : List.of("false", "true")) {
+                Map<String, String> explicit = minimalOptions();
+                explicit.put(key, value);
+                assertThat(sink(minimalOptions()))
+                        .as(key + "=" + value)
+                        .isNotEqualTo(sink(explicit));
+            }
+        }
+        // The single-row write modes too: unset reaches their builders as their own default.
+        ResolvedSchema counters =
+                ResolvedSchema.of(
+                        Column.physical("rowkey", DataTypes.STRING()),
+                        Column.physical(
+                                "cf1", DataTypes.ROW(DataTypes.FIELD("n", DataTypes.BIGINT()))));
+        for (String mode : List.of("increment", "insert-if-absent")) {
+            Map<String, String> requests = minimalOptions();
+            requests.put("sink.write-mode", mode);
+            Sink<?> runtime =
+                    ((SinkV2Provider)
+                                    sink(mode.equals("increment") ? counters : SCHEMA, requests)
+                                            .getSinkRuntimeProvider(
+                                                    new SinkRuntimeProviderContext(false)))
+                            .createSink();
+            SingleRowRequestConfig<?> requestConfig =
+                    runtime instanceof BigtableReadModifyWriteSink
+                            ? ((BigtableReadModifyWriteSink<?>) runtime).getConfig()
+                            : ((BigtableConditionalSink<?>) runtime).getConfig();
+            assertThat(requestConfig.isExportClientMetricsToFlink())
+                    .as(mode)
+                    .isEqualTo(BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK);
+            assertThat(requestConfig.isExportClientMetricsToCloudMonitoring())
+                    .as(mode)
+                    .isEqualTo(
+                            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+        }
     }
 
     @Test
-    void refusesTheClientMetricsOptionsWhereTheyAreNotAppliedYet() {
-        // Only the MutateRows writer applies them so far (#713); a single-row write mode or
-        // staged delivery refuses them rather than ignoring them.
-        for (String key :
-                new String[] {
-                    "client-metrics.export-to-flink", "client-metrics.export-to-cloud-monitoring"
-                }) {
-            Map<String, String> append = minimalOptions();
-            append.put("sink.write-mode", "append");
-            append.put(key, "true");
-            assertThatThrownBy(() -> sink(append))
-                    .hasStackTraceContaining("Option '" + key + "' cannot be used with");
+    void carriesTheClientMetricsChoicesToEverySinkPath() {
+        // Part 1 of #713 refused both here; each sink path now applies them.
+        Map<String, String> staged = stagedOptions();
+        staged.put("client-metrics.export-to-flink", "true");
+        staged.put("client-metrics.export-to-cloud-monitoring", "false");
+        BigtableSinkConfig<?> stagedConfig =
+                ((BigtableStagedSink<?>)
+                                ((SinkV2Provider)
+                                                sink(staged)
+                                                        .getSinkRuntimeProvider(
+                                                                new SinkRuntimeProviderContext(
+                                                                        false)))
+                                        .createSink())
+                        .getConfig();
+        assertThat(stagedConfig.isExportClientMetricsToFlink()).isTrue();
+        assertThat(stagedConfig.isExportClientMetricsToCloudMonitoring()).isFalse();
 
-            Map<String, String> staged = stagedOptions();
-            staged.put(key, "true");
-            assertThatThrownBy(() -> sink(staged))
-                    .hasStackTraceContaining("Option '" + key + "' cannot be used with");
+        // An increment needs 64-bit cells, which SCHEMA's q1 is not.
+        ResolvedSchema counters =
+                ResolvedSchema.of(
+                        Column.physical("rowkey", DataTypes.STRING()),
+                        Column.physical(
+                                "cf1", DataTypes.ROW(DataTypes.FIELD("n", DataTypes.BIGINT()))));
+        for (String mode : List.of("increment", "insert-if-absent")) {
+            Map<String, String> requests = minimalOptions();
+            requests.put("sink.write-mode", mode);
+            requests.put("client-metrics.export-to-flink", "true");
+            requests.put("client-metrics.export-to-cloud-monitoring", "false");
+            Sink<?> runtime =
+                    ((SinkV2Provider)
+                                    sink(mode.equals("increment") ? counters : SCHEMA, requests)
+                                            .getSinkRuntimeProvider(
+                                                    new SinkRuntimeProviderContext(false)))
+                            .createSink();
+            SingleRowRequestConfig<?> config =
+                    runtime instanceof BigtableReadModifyWriteSink
+                            ? ((BigtableReadModifyWriteSink<?>) runtime).getConfig()
+                            : ((BigtableConditionalSink<?>) runtime).getConfig();
+            assertThat(config.isExportClientMetricsToFlink()).as(mode).isTrue();
+            assertThat(config.isExportClientMetricsToCloudMonitoring()).as(mode).isFalse();
         }
     }
 
@@ -956,6 +1030,57 @@ class BigtableDynamicTableFactoryTest {
                 .isInstanceOf(BigtableDynamicSource.class)
                 .extracting(DynamicTableSource::asSummaryString)
                 .isEqualTo("Bigtable table source");
+    }
+
+    @Test
+    void carriesTheClientMetricsChoicesToEverySourcePath() {
+        Map<String, String> scan = minimalOptions();
+        scan.put("client-metrics.export-to-flink", "true");
+        scan.put("client-metrics.export-to-cloud-monitoring", "false");
+        BigtableDynamicSource chosen = (BigtableDynamicSource) source(scan);
+        assertThat(
+                        ((BigtableScanSource<?>)
+                                        ((SourceProvider)
+                                                        chosen.getScanRuntimeProvider(
+                                                                ScanRuntimeProviderContext
+                                                                        .INSTANCE))
+                                                .createSource())
+                                .getConfig()
+                                .isExportClientMetricsToFlink())
+                .isTrue();
+        // The lookups take the same two fields; BigtableDynamicSourceTest follows them there.
+        scan.remove("client-metrics.export-to-cloud-monitoring");
+        assertThat(chosen).isNotEqualTo(source(scan));
+
+        Map<String, String> changeStream = minimalChangeStreamOptions();
+        changeStream.put("client-metrics.export-to-flink", "true");
+        changeStream.put("client-metrics.export-to-cloud-monitoring", "false");
+        assertThat(source(CHANGE_STREAM_SCHEMA, changeStream))
+                .isEqualTo(
+                        expectedEnvelopeSource()
+                                .exportClientMetricsToFlink(true)
+                                .exportClientMetricsToCloudMonitoring(false)
+                                .build());
+
+        // Unset stays unset, so the builder's default applies. The selected-cell path is not
+        // compared: its sources hold distinct decoding formats and never compare equal.
+        for (String key :
+                List.of(
+                        "client-metrics.export-to-flink",
+                        "client-metrics.export-to-cloud-monitoring")) {
+            for (String value : List.of("false", "true")) {
+                Map<String, String> explicitEnvelope = minimalChangeStreamOptions();
+                explicitEnvelope.put(key, value);
+                assertThat(source(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions()))
+                        .as(key + "=" + value)
+                        .isNotEqualTo(source(CHANGE_STREAM_SCHEMA, explicitEnvelope));
+                Map<String, String> explicitScan = minimalOptions();
+                explicitScan.put(key, value);
+                assertThat(source(minimalOptions()))
+                        .as(key + "=" + value)
+                        .isNotEqualTo(source(explicitScan));
+            }
+        }
     }
 
     @Test

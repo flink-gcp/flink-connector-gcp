@@ -28,7 +28,10 @@ import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.grpc.Status;
 import org.junit.jupiter.api.Test;
@@ -79,6 +82,39 @@ class DefaultChangeStreamCoordinatorClientTest {
         assertThatThrownBy(client::retention).hasMessageContaining("was closed before it was used");
         assertThatThrownBy(client::validateSingleClusterAppProfile)
                 .hasMessageContaining("was closed before it was used");
+    }
+
+    @Test
+    void theFactoryCarriesTheClientMetricsChoicesToTheDataClient() throws Exception {
+        DefaultChangeStreamCoordinatorClient client =
+                (DefaultChangeStreamCoordinatorClient)
+                        new DefaultChangeStreamCoordinatorClientFactory(
+                                        DESTINATION, "single-cluster", null, false)
+                                .create();
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertExportsNothing(client.dataSettings());
+        client.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsOnlyInto(client.dataSettings(), metrics);
+        client.close();
+    }
+
+    @Test
+    void theBuilderCarriesTheCloudMonitoringChoiceIntoTheCoordinatorsDataClient() throws Exception {
+        try (DefaultChangeStreamCoordinatorClient off =
+                        (DefaultChangeStreamCoordinatorClient)
+                                TestSources.changeStreamConfig(
+                                                b -> b.exportClientMetricsToCloudMonitoring(false))
+                                        .getCoordinatorClientFactory()
+                                        .create();
+                DefaultChangeStreamCoordinatorClient on =
+                        (DefaultChangeStreamCoordinatorClient)
+                                TestSources.changeStreamConfig(b -> b)
+                                        .getCoordinatorClientFactory()
+                                        .create()) {
+            ClientMetricsSettings.assertExportsNothing(off.dataSettings());
+            ClientMetricsSettings.assertAsShipped(on.dataSettings());
+        }
     }
 
     @Test

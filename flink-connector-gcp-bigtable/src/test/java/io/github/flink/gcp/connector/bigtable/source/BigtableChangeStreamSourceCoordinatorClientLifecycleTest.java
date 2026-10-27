@@ -119,7 +119,8 @@ class BigtableChangeStreamSourceCoordinatorClientLifecycleTest {
                 new DefaultChangeStreamCoordinatorClientFactory(
                         TableDestination.of("project", "instance", "table"),
                         "single-cluster",
-                        null);
+                        null,
+                        true);
 
         DefaultChangeStreamCoordinatorClientFactory back =
                 InstantiationUtil.deserializeObject(

@@ -78,6 +78,24 @@ public final class TestSources {
     }
 
     /**
+     * Returns a scan source built without the emulator, so the seams' settings are the production
+     * ones; a test may read those settings but must not open a client through it.
+     *
+     * @param customizer adjusts the builder before it builds
+     * @return the source
+     */
+    public static BigtableScanSource<String> scanWithoutEmulator(
+            UnaryOperator<BigtableSourceBuilder<String>> customizer) {
+        return (BigtableScanSource<String>)
+                customizer
+                        .apply(
+                                BigtableSource.<String>builder()
+                                        .table(TABLE)
+                                        .deserializer(new RowKeyDeserializer()))
+                        .build();
+    }
+
+    /**
      * Returns the configuration of a Change Streams source built with the given knobs applied on
      * top of the fixture's table, a single-cluster application profile and the mutation
      * deserializer. No client is created and nothing connects: the builder only assembles the

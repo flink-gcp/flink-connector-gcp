@@ -388,6 +388,15 @@ public class BigtableDynamicTableFactory
                     .destination(destination)
                     .appProfileId(appProfileId)
                     .serviceAccountKeyFile(serviceAccountKeyFile)
+                    .exportClientMetricsToFlink(
+                            config.getOptional(
+                                            BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK)
+                                    .orElse(null))
+                    .exportClientMetricsToCloudMonitoring(
+                            config.getOptional(
+                                            BigtableConnectorOptions
+                                                    .CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING)
+                                    .orElse(null))
                     .startPosition(startPosition)
                     .resumeFallback(resumeFallback)
                     .boundedTimestamp(boundedTimestamp)
@@ -424,6 +433,14 @@ public class BigtableDynamicTableFactory
                 .destination(destination)
                 .appProfileId(appProfileId)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
+                .exportClientMetricsToFlink(
+                        config.getOptional(BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK)
+                                .orElse(null))
+                .exportClientMetricsToCloudMonitoring(
+                        config.getOptional(
+                                        BigtableConnectorOptions
+                                                .CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING)
+                                .orElse(null))
                 .startPosition(startPosition)
                 .resumeFallback(resumeFallback)
                 .boundedTimestamp(boundedTimestamp)
@@ -782,6 +799,14 @@ public class BigtableDynamicTableFactory
                 .rowRanges(rowRanges)
                 .emulatorEndpoint(
                         config.getOptional(BigtableConnectorOptions.EMULATOR_ENDPOINT).orElse(null))
+                .exportClientMetricsToFlink(
+                        config.getOptional(BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK)
+                                .orElse(null))
+                .exportClientMetricsToCloudMonitoring(
+                        config.getOptional(
+                                        BigtableConnectorOptions
+                                                .CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING)
+                                .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
                 .lookupOptions(BigtableLookupConfig.from(config))
                 .producedDataType(physicalDataType)

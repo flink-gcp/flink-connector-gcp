@@ -23,6 +23,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 
 import javax.annotation.Nullable;
@@ -62,6 +63,9 @@ import java.io.Serializable;
  * trip. Each owner therefore supplies the operation lifecycle: the scan reader stops its fetchers
  * before closing the opener, the change-stream reader cancels its active reads first, and an
  * enumerator ignores a sampling completion that arrives after teardown.
+ *
+ * <p>The client metrics the owner pushes in, through {@link #useClientMetrics(ClientMetrics)}, are
+ * the owner's: this holder records into them and does not close them ({@code docs/adr/0186}).
  */
 @Internal
 public final class LazyBigtableDataClient implements Serializable {
@@ -71,6 +75,7 @@ public final class LazyBigtableDataClient implements Serializable {
     private final String owner;
     @Nullable private final String appProfileId;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     @Nullable private transient volatile BigtableDataClient client;
 
@@ -83,6 +88,9 @@ public final class LazyBigtableDataClient implements Serializable {
      */
     @Nullable private transient volatile CredentialsProvider credentials;
 
+    /** What the owning component registered and pushed in, under the same monitor as above. */
+    @Nullable private transient volatile ClientMetrics clientMetrics;
+
     private transient volatile boolean closed;
 
     /**
@@ -94,14 +102,18 @@ public final class LazyBigtableDataClient implements Serializable {
      *     instance's default
      * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
      *     for production Bigtable
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
      */
     public LazyBigtableDataClient(
             String owner,
             @Nullable String appProfileId,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.owner = Preconditions.checkNotNull(owner, "owner must not be null");
         this.appProfileId = appProfileId;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     /** Returns the client, building it on first use. */
@@ -148,8 +160,11 @@ public final class LazyBigtableDataClient implements Serializable {
      */
     @VisibleForTesting
     public BigtableDataSettings settings(TableDestination table) throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials)
-                .build();
+        BigtableDataSettings.Builder settings =
+                BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials);
+        BigtableDataClients.applyClientMetrics(
+                settings, clientMetrics, exportClientMetricsToCloudMonitoring);
+        return settings.build();
     }
 
     /**
@@ -166,6 +181,19 @@ public final class LazyBigtableDataClient implements Serializable {
         this.credentials = credentials;
     }
 
+    /**
+     * Takes the client metrics the owning component registered, or {@code null} to export nothing
+     * to Flink. The owner supplies them before first use, and keeps them: this holder does not
+     * close them.
+     *
+     * @throws IllegalStateException if the holder is already closed
+     */
+    public synchronized void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+        Preconditions.checkState(
+                !closed, "The Bigtable %s was closed before client metrics were supplied.", owner);
+        this.clientMetrics = clientMetrics;
+    }
+
     /** Closes the client if one was built, clears credentials, and refuses later use. */
     public void close() throws IOException {
         BigtableDataClient toClose;
@@ -174,6 +202,7 @@ public final class LazyBigtableDataClient implements Serializable {
             toClose = client;
             client = null;
             credentials = null;
+            clientMetrics = null;
         }
         if (toClose != null) {
             toClose.close();

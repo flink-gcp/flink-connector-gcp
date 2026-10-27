@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
@@ -38,6 +39,10 @@ public final class BigtableReadModifyWriteAsyncBuilder<T> {
     private BigtableRequestOptions requestOptions = BigtableRequestOptions.builder().build();
     private String serviceAccountKeyFile;
     private EmulatorEndpoint emulatorEndpoint;
+    private boolean exportClientMetricsToFlink =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    private boolean exportClientMetricsToCloudMonitoring =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
 
     BigtableReadModifyWriteAsyncBuilder() {}
 
@@ -137,6 +142,46 @@ public final class BigtableReadModifyWriteAsyncBuilder<T> {
     }
 
     /**
+     * Exports the Bigtable client's own metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>The function, on its operator's metric group, registers them as {@code
+     * rpcMethod.ReadModifyWriteRow.*}: the client's operation and attempt counts and latencies, its
+     * retries, its connectivity errors, and its server and application time. Latencies are reported
+     * as a count and a millisecond sum; no percentile is reported.
+     *
+     * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
+     * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public BigtableReadModifyWriteAsyncBuilder<T> exportClientMetricsToFlink(
+            boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
+     * Sets whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
+     * Monitoring. Optional; on by default.
+     *
+     * <p>Off, the client creates no Cloud Monitoring exporter at all. Besides the export, that
+     * removes the exporter's platform detection when a client closes: off Google Cloud, where
+     * nothing answers on the metadata server's address, each close otherwise waits for that
+     * connection attempt to time out. It is independent of {@link
+     * #exportClientMetricsToFlink(boolean)}, which neither needs nor stops this export.
+     *
+     * @param exportClientMetricsToCloudMonitoring whether the client exports to Cloud Monitoring
+     * @return this builder
+     */
+    public BigtableReadModifyWriteAsyncBuilder<T> exportClientMetricsToCloudMonitoring(
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        return this;
+    }
+
+    /**
      * Builds the configured async.
      *
      * @return the async
@@ -149,6 +194,8 @@ public final class BigtableReadModifyWriteAsyncBuilder<T> {
                         appProfileId,
                         requestOptions,
                         serviceAccountKeyFile,
-                        emulatorEndpoint));
+                        emulatorEndpoint,
+                        exportClientMetricsToFlink,
+                        exportClientMetricsToCloudMonitoring));
     }
 }

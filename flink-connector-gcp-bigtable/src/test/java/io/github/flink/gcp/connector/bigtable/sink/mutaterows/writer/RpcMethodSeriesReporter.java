@@ -85,7 +85,7 @@ public final class RpcMethodSeriesReporter
                         REPORTED.get(series).accumulateAndGet(counter.getCount(), Math::max));
     }
 
-    static void reset() {
+    public static void reset() {
         SERIES_BY_COUNTER.clear();
         REPORTED.clear();
         REGISTERED.clear();
@@ -94,14 +94,14 @@ public final class RpcMethodSeriesReporter
     /**
      * Every series ever registered, read now: after the job, the values the client metrics kept.
      */
-    static Map<String, Long> current() {
+    public static Map<String, Long> current() {
         Map<String, Long> current = new TreeMap<>();
         REGISTERED.forEach((series, counter) -> current.put(series, counter.getCount()));
         return current;
     }
 
     /** Every series ever registered, with the largest value a report read from it. */
-    static Map<String, Long> reported() {
+    public static Map<String, Long> reported() {
         Map<String, Long> reported = new TreeMap<>();
         REPORTED.forEach((series, value) -> reported.put(series, value.get()));
         return reported;
