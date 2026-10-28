@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.firestore.sink.FirestoreSinkBuilder;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSinkConfig;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
+import io.github.flink.gcp.connector.firestore.sink.OrderingMode;
 import io.github.flink.gcp.connector.firestore.sink.PreconditionFailurePolicy;
 import io.github.flink.gcp.connector.firestore.sink.serializer.FirestoreWriteSerializationSchema;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
@@ -912,5 +913,224 @@ class FirestoreWriterTest {
                 .hasMessageContaining("maxInFlightWrites");
         assertThat(FirestoreWriterOptions.defaults().getMaxInFlightWrites())
                 .isEqualTo(FirestoreWriterOptions.DEFAULT_MAX_IN_FLIGHT_WRITES);
+    }
+
+    // ------------------------------------------------------------------------
+    //  Per-document order
+    // ------------------------------------------------------------------------
+
+    private static FirestoreWrite set(String id, long value) {
+        return FirestoreWrite.set("c/" + id, Map.of("v", value));
+    }
+
+    private FirestoreWriter<FirestoreWrite> perKeyWriter(FirestoreWriterOptions.Builder options)
+            throws IOException {
+        return writer(b -> b.writerOptions(options.orderingMode(OrderingMode.PER_KEY).build()));
+    }
+
+    @Test
+    void withoutOrderingASecondWriteToADocumentIsHandedOverBeforeTheFirstIsAnswered()
+            throws Exception {
+        access.holdAnswers();
+        FirestoreWriter<FirestoreWrite> writer = writer(b -> {});
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(set("b", 1), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+
+        // The library sends the open batch before a second write to one of its documents, and
+        // nothing waits for that batch's answer: both writes to a are in the library at once.
+        assertThat(access.sentBatches()).containsExactly(List.of(set("a", 1), set("b", 1)));
+        assertThat(access.queuedWrites()).isEqualTo(1);
+        assertThat(writer.getBufferedWrites()).isZero();
+    }
+
+    @Test
+    void perKeyOrderHoldsAWriteUntilItsDocumentsEarlierWriteIsAnswered() throws Exception {
+        FirestoreWriter<FirestoreWrite> writer = perKeyWriter(FirestoreWriterOptions.builder());
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(set("b", 1), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+
+        // The second write to a stays in the writer; b is not held back by it.
+        assertThat(access.sentBatches()).isEmpty();
+        assertThat(access.queuedWrites()).isEqualTo(2);
+        assertThat(metrics.<Integer>gaugeValue(FirestoreMetricNames.BUFFERED_WRITES)).isEqualTo(1);
+        assertThat(writer.getBufferedBytes()).isPositive();
+        assertThat(metrics.counterValue(NUM_RECORDS_SEND)).isEqualTo(2);
+
+        writer.flush(false);
+
+        assertThat(access.sentBatches())
+                .containsExactly(List.of(set("a", 1), set("b", 1)), List.of(set("a", 2)));
+        assertThat(metrics.counterValue(NUM_RECORDS_SEND)).isEqualTo(3);
+        assertThat(metrics.<Integer>gaugeValue(FirestoreMetricNames.BUFFERED_WRITES)).isZero();
+        assertThat(writer.getBufferedBytes()).isZero();
+        assertThat(writer.getInFlightWrites()).isZero();
+        assertThat(writer.getInFlightBytes()).isZero();
+    }
+
+    @Test
+    void aWriteParkedForASoloResendKeepsItsDocumentsTurn() throws Exception {
+        // The request-level refusal parks both writes of the first request while a's second write
+        // waits for room, so that write arrives with a's first one parked rather than in flight:
+        // it must wait for the solo verdict, not overtake it.
+        access.respondWith(
+                (write, batch) -> batch.size() > 1 ? failure(Status.INVALID_ARGUMENT) : null);
+        FirestoreWriter<FirestoreWrite> writer =
+                perKeyWriter(FirestoreWriterOptions.builder().maxInFlightWrites(2));
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(set("b", 1), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+        // The first refusal's mail made the room; b's is still in the mailbox.
+        assertThat(writer.getParkedWrites()).isEqualTo(1);
+        assertThat(writer.getBufferedWrites()).isEqualTo(1);
+
+        writer.flush(false);
+
+        assertThat(access.sentBatches())
+                .containsExactly(
+                        List.of(set("a", 1), set("b", 1)),
+                        List.of(set("a", 1)),
+                        List.of(set("b", 1)),
+                        List.of(set("a", 2)));
+        assertThat(routed).isEmpty();
+        assertThat(metrics.counterValue(FirestoreMetricNames.WRITES_CONFIRMED_ALONE)).isEqualTo(2);
+        assertThat(writer.getBufferedWrites()).isZero();
+    }
+
+    @Test
+    void aRoutedWriteEndsItsDocumentsTurn() throws Exception {
+        access.respondWith(
+                (write, batch) ->
+                        write.getOperation() == FirestoreWrite.Operation.CREATE
+                                ? failure(Status.ALREADY_EXISTS)
+                                : null);
+        FirestoreWriter<FirestoreWrite> writer = perKeyWriter(FirestoreWriterOptions.builder());
+
+        writer.write(create("a"), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+        writer.flush(false);
+
+        assertThat(routed).extracting(FailedWrite::getWrite).containsExactly(create("a"));
+        assertThat(access.sentBatches())
+                .containsExactly(List.of(create("a")), List.of(set("a", 2)));
+    }
+
+    @Test
+    void bufferedWritesCountAgainstTheInFlightWriteCap() throws Exception {
+        FirestoreWriter<FirestoreWrite> writer =
+                perKeyWriter(FirestoreWriterOptions.builder().maxInFlightWrites(2));
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+        // One write in flight and one buffered fill the cap, so b waits: the wait sends a's first
+        // write, whose answer readies the second, and b is admitted beside it.
+        writer.write(set("b", 1), TestContexts.NO_OP);
+
+        assertThat(access.sentBatches()).containsExactly(List.of(set("a", 1)));
+        assertThat(access.queuedWrites()).isEqualTo(2);
+        assertThat(writer.getBufferedWrites()).isZero();
+    }
+
+    @Test
+    void bufferedWritesCountAgainstTheInFlightByteCap() throws Exception {
+        long size = new DocumentSizeEstimator(DATABASE).estimate(set("a", 1));
+        FirestoreWriter<FirestoreWrite> writer =
+                perKeyWriter(FirestoreWriterOptions.builder().maxInFlightBytes(2 * size));
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+        writer.write(set("b", 1), TestContexts.NO_OP);
+
+        assertThat(access.sentBatches()).containsExactly(List.of(set("a", 1)));
+        assertThat(access.queuedWrites()).isEqualTo(2);
+        assertThat(writer.getBufferedBytes()).isZero();
+    }
+
+    /**
+     * A write to c/a large enough to fill, alone, a byte bound that one small write leaves open.
+     */
+    private static FirestoreWrite large(String id) {
+        return FirestoreWrite.set("c/" + id, Map.of("v", "x".repeat(1_000)));
+    }
+
+    @Test
+    void aWaitSendsAReadiedWriteThatAloneHoldsTheByteCap() throws Exception {
+        long small = new DocumentSizeEstimator(DATABASE).estimate(set("a", 1));
+        FirestoreWriter<FirestoreWrite> writer =
+                perKeyWriter(FirestoreWriterOptions.builder().maxInFlightBytes(small + 1));
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(large("a"), TestContexts.NO_OP);
+        // Once a's first write is answered, its readied second still fills the bound with nothing
+        // in flight: the wait must send it, since no mail would ever free the bound otherwise.
+        writer.write(set("b", 1), TestContexts.NO_OP);
+
+        assertThat(access.sentBatches()).containsExactly(List.of(set("a", 1)), List.of(large("a")));
+        assertThat(access.queuedWrites()).isEqualTo(1);
+        assertThat(writer.getBufferedWrites()).isZero();
+        assertThat(writer.getBufferedBytes()).isZero();
+    }
+
+    @Test
+    void aWaitConfirmsTheParkedWriteThatBufferedWritesHoldingTheByteCapWaitFor() throws Exception {
+        long small = new DocumentSizeEstimator(DATABASE).estimate(set("a", 1));
+        Set<FirestoreWrite> refused = new HashSet<>();
+        access.respondWith(
+                (write, batch) ->
+                        write.equals(set("a", 1)) && refused.add(write)
+                                ? failure(Status.INVALID_ARGUMENT)
+                                : null);
+        FirestoreWriter<FirestoreWrite> writer =
+                perKeyWriter(FirestoreWriterOptions.builder().maxInFlightBytes(small + 1));
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(large("a"), TestContexts.NO_OP);
+        // a's first write is parked while b waits, leaving only the buffered write on the bound
+        // and nothing in flight: the wait confirms the park itself rather than wait forever.
+        writer.write(set("b", 1), TestContexts.NO_OP);
+
+        assertThat(access.sentBatches())
+                .containsExactly(List.of(set("a", 1)), List.of(set("a", 1)), List.of(large("a")));
+        assertThat(metrics.counterValue(FirestoreMetricNames.WRITES_CONFIRMED_ALONE)).isEqualTo(1);
+        assertThat(access.queuedWrites()).isEqualTo(1);
+        assertThat(routed).isEmpty();
+    }
+
+    @Test
+    void aDrawnIdCreateNeverTakesItsDocumentsTurn() throws Exception {
+        FirestoreWrite taken = add();
+        FirestoreWrite sameDocument = FirestoreWrite.set(taken.getDocumentPath(), Map.of("v", 2L));
+        access.respondWith(takenOnce(Set.of(taken.getDocumentPath())));
+        FirestoreWriter<FirestoreWrite> writer = perKeyWriter(FirestoreWriterOptions.builder());
+
+        writer.write(taken, TestContexts.NO_OP);
+        // A set of the drawn path is not held behind the create: the create never entered the
+        // sequencer, and its redraw under a new id does not end a turn either.
+        writer.write(sameDocument, TestContexts.NO_OP);
+        assertThat(writer.getBufferedWrites()).isZero();
+        writer.flush(false);
+
+        assertThat(metrics.counterValue(FirestoreMetricNames.IDS_REDRAWN)).isEqualTo(1);
+        List<FirestoreWrite> sent = new ArrayList<>();
+        access.sentBatches().forEach(sent::addAll);
+        assertThat(sent).contains(sameDocument);
+        assertThat(routed).isEmpty();
+        assertThat(writer.getBufferedWrites()).isZero();
+    }
+
+    @Test
+    void closeDropsTheBufferedWrites() throws Exception {
+        FirestoreWriter<FirestoreWrite> writer = perKeyWriter(FirestoreWriterOptions.builder());
+
+        writer.write(set("a", 1), TestContexts.NO_OP);
+        writer.write(set("a", 2), TestContexts.NO_OP);
+        writer.close();
+
+        assertThat(metrics.<Integer>gaugeValue(FirestoreMetricNames.BUFFERED_WRITES)).isZero();
+        assertThat(access.sentBatches()).isEmpty();
     }
 }

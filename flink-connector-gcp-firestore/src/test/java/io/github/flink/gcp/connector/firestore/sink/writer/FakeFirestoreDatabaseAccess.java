@@ -31,10 +31,11 @@ import java.util.List;
 /**
  * A scripted {@link FirestoreDatabaseAccess} modelling what the writer relies on in the library's
  * {@code BulkWriter}: writes queue until {@link #sendOutstanding()} or a batch of {@value
- * #BATCH_SIZE}, every write of a sent batch is answered by the {@link Responder}, and a write
- * answered with a failure keeps its pending-operation slot until {@link #replaceBulkWriter()} —
- * past {@value FirestoreWriter#PENDING_OPERATION_LIMIT} occupied slots a submitted write is
- * stranded and never answered, as the library strands it.
+ * #BATCH_SIZE}, a write to a document the open batch already holds sends that batch first, as
+ * {@code BulkWriter.sendOperationLocked} does, every write of a sent batch is answered by the
+ * {@link Responder}, and a write answered with a failure keeps its pending-operation slot until
+ * {@link #replaceBulkWriter()} — past {@value FirestoreWriter#PENDING_OPERATION_LIMIT} occupied
+ * slots a submitted write is stranded and never answered, as the library strands it.
  *
  * <p>Synchronized, because a test may drive the writer on one thread while answering held writes on
  * another.
@@ -95,6 +96,10 @@ final class FakeFirestoreDatabaseAccess implements FirestoreDatabaseAccess {
             // The library queues it behind slots that are never released: nothing sends it.
             stranded++;
             return future;
+        }
+        if (queued.stream()
+                .anyMatch(other -> other.getDocumentPath().equals(write.getDocumentPath()))) {
+            send();
         }
         unanswered++;
         queued.add(write);

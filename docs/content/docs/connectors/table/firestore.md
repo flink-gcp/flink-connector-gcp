@@ -202,10 +202,16 @@ Flink's not-null enforcer checks those columns and fails the job when the table 
 A projection between the source and the sink also evaluates its expressions over those columns, which can fail the job when the source declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
 Declare the non-key columns nullable, in this table and in the source table, when the input's deletes carry the key alone.
 
-The sink does not keep the order of two writes to one document.
+By default the sink does not keep the order of two writes to one document.
 It sends writes through the client library's `BulkWriter`, which sends several requests at once and applies the writes of one request in no guaranteed order, so a later change of a key can be applied before an earlier one.
 That is harmless when every key changes at most once in a job, as when the input is a table's rows written once, but an input that updates a key repeatedly, such as an aggregation, can leave an older value in the document.
-The Spanner and Bigtable Table sinks share the limitation, and an opt-in mode that keeps each document's order is [#1556]({{< param BookRepo >}}/issues/1556).
+
+`'sink.ordering-mode' = 'per-key'` keeps that order: a change waits until the key's earlier change has been answered, so the document ends at the key's last change.
+It costs one round trip per change that waits, and changes held back count against `sink.in-flight.max-writes` and `sink.in-flight.max-bytes`, so a key that changes faster than a round trip slows the sink subtask's other keys too.
+The order kept is the order the sink subtask receives, so it is the changelog's order for a key only when every change of the key reaches one sink subtask.
+They do when Flink shuffles the input by the PRIMARY KEY, which it does for an upsert changelog it materializes and when the sink's parallelism differs from the input's; an insert-only input carrying several rows per key at the same parallelism is not shuffled unless `table.exec.sink.keyed-shuffle` is `FORCE`, so its rows of one key can reach different subtasks, where no mode orders them.
+A table without a PRIMARY KEY creates every row under a new id, so the mode has nothing to order there.
+The Spanner and Bigtable Table sinks do not keep this order yet ([#1618]({{< param BookRepo >}}/issues/1618)).
 
 ### Flink 2.3 may demand ON CONFLICT
 
@@ -261,6 +267,7 @@ No table write carries a precondition.
 | `sink.retry.max-attempts` | *unset ⇒ the library's 5* | Maps to `retryMaxAttempts` |
 | `sink.in-flight.max-writes` | `250` | Maps to `maxInFlightWrites`, at most `500` |
 | `sink.in-flight.max-bytes` | `64 mb` | Maps to `maxInFlightBytes` |
+| `sink.ordering-mode` | `none` | Maps to `orderingMode`: `per-key` applies changes to one document in the order the sink subtask received them, `none` does not order them |
 | `sink.parallelism` | *unset ⇒ the input's parallelism* | Flink's standard sink parallelism override |
 
 The [configuration reference]({{< relref "docs/reference/firestore" >}}#firestorewriteroptions) explains each writer option, and a refusal of a `scan.*`, `lookup.*` or `sink.*` value names the option key the `WITH` clause spells.

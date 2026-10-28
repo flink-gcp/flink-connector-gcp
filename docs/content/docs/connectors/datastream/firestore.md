@@ -255,8 +255,18 @@ The same holds for conditional writes, with `preconditionFailurePolicy(ROUTE_TO_
 
 This per-write property is not an ordering guarantee.
 The library sends several requests at once, `BatchWrite` applies the writes of one request in no guaranteed order, and a failed write is retried in a later request.
-Two writes to the same document can therefore be applied in either order, even within one subtask; a `set` followed by a `delete` can leave the document in place.
-An opt-in mode that keeps submission order per document is tracked on [#1556]({{< param BookRepo >}}/issues/1556).
+By default, two writes to the same document can therefore be applied in either order, even within one subtask; a `set` followed by a `delete` can leave the document in place.
+
+`FirestoreWriterOptions.builder().orderingMode(OrderingMode.PER_KEY)`, passed to the sink builder's `writerOptions`, makes each subtask apply writes to one document in the order it received them.
+The writer then holds a write back while an earlier write to the same document is unanswered, and sends it once that write is applied or routed to the failure handler; a write parked to be [confirmed alone](#invalid-writes-are-confirmed-alone) keeps its place until the solo re-send is answered.
+Writes to other documents are not held back, and an `add` is never held, because its drawn id names a document no other write addresses.
+The order is only as good as the input's: it is the order one subtask received, so the stream must already be ordered per document and keyed by document path before the sink.
+
+The mode costs a round trip per held write.
+A document written n times in a row takes n round trips, one after another, where the default would send them together.
+Measured against the service from one writer outside Google Cloud (2026-10-27), 100 writes to one document took about 44 seconds in `per-key`, against about 3 seconds without it, where the document ended at an earlier write in each of four runs; 2,000 writes to distinct documents took the same time in both modes, and 200 documents changed five times each took about 1.3 times as long on average.
+Held writes count against `maxInFlightWrites` and `maxInFlightBytes`, so a document written faster than one write per round trip fills the bounds, and the subtask's other documents then wait behind it; `bufferedWrites` shows how many writes are held.
+Firestore itself [limits how fast one document can be updated](https://cloud.google.com/firestore/native/docs/best-practices#updates_to_a_single_document), by a rate that depends on the workload, so a stream that writes one document at a high rate meets contention with or without the mode.
 
 There is no exactly-once mode.
 Firestore offers a primitive that could support one (a transaction that binds a ledger document to its writes with an update-time precondition), and the design comment on [#355]({{< param BookRepo >}}/issues/355) records it, but [ADR-0104]({{< param BookRepo >}}/blob/main/docs/adr/0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md) requires a concrete requirement that idempotent writes cannot meet, and correctness and performance gates, before one is built.
@@ -386,6 +396,7 @@ Registered on the sink writer's metric group.
 | `inFlightWrites` | gauge | Writes handed to the client library and not yet answered |
 | `inFlightBytes` | gauge | Their size in the request |
 | `parkedWrites` | gauge | Writes waiting to be re-sent alone to confirm an `INVALID_ARGUMENT` |
+| `bufferedWrites` | gauge | Writes held back under `OrderingMode.PER_KEY` and not yet handed to the client library, because an earlier write to their document was unanswered when they arrived; always `0` under the default |
 | `errorClass.CODE.errors` | counter | Failed writes by status code, `CODE` being a gRPC status name or `UNCLASSIFIED`, counted once a write's verdict is final |
 
 There is no `batchesSent`: the library batches internally and exposes no hook for a request it sends.

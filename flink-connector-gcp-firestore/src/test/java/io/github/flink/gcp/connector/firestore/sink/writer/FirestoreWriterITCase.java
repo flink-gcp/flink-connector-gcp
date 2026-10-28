@@ -31,6 +31,8 @@ import io.github.flink.gcp.connector.firestore.sink.FirestoreBulkWriterSink;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreDocumentReference;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSink;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
+import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
+import io.github.flink.gcp.connector.firestore.sink.OrderingMode;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.BeforeEach;
@@ -276,7 +278,45 @@ class FirestoreWriterITCase extends AbstractFirestoreEmulatorITCase {
                 .isEqualTo(1);
     }
 
+    @Test
+    void perKeyOrderAppliesEachDocumentsWritesInTheOrderReceived() throws Exception {
+        // Interleaved across documents, so each request carries several documents while each
+        // document's writes, deletes among them, wait for one another.
+        int documents = 20;
+        int rounds = 10;
+        try (SinkWriter<FirestoreWrite> writer = writer(OrderingMode.PER_KEY)) {
+            for (int round = 0; round < rounds; round++) {
+                for (int d = 0; d < documents; d++) {
+                    write(writer, roundWrite(path("d" + d), round, d));
+                }
+            }
+            writer.flush(false);
+        }
+
+        for (int d = 0; d < documents; d++) {
+            FirestoreWrite last = roundWrite(path("d" + d), rounds - 1, d);
+            DocumentSnapshot stored = read(path("d" + d));
+            if (last.getOperation() == FirestoreWrite.Operation.DELETE) {
+                assertThat(stored.exists()).as("d%s", d).isFalse();
+            } else {
+                assertThat(stored.getData()).as("d%s", d).isEqualTo(last.getFields());
+            }
+        }
+        assertThat(routed).isEmpty();
+    }
+
+    /** A document's write in one round: every third one a delete, the others a numbered set. */
+    private static FirestoreWrite roundWrite(String path, int round, int document) {
+        return (round + document) % 3 == 2
+                ? FirestoreWrite.delete(path)
+                : FirestoreWrite.set(path, Map.of("round", (long) round));
+    }
+
     private SinkWriter<FirestoreWrite> writer() throws Exception {
+        return writer(OrderingMode.NONE);
+    }
+
+    private SinkWriter<FirestoreWrite> writer(OrderingMode orderingMode) throws Exception {
         FailureHandler<FailedWrite> collecting = routed::add;
         FirestoreBulkWriterSink<FirestoreWrite> sink =
                 (FirestoreBulkWriterSink<FirestoreWrite>)
@@ -285,6 +325,10 @@ class FirestoreWriterITCase extends AbstractFirestoreEmulatorITCase {
                                 .serializer((write, c) -> write)
                                 .failedWriteHandler(collecting)
                                 .emulatorEndpoint(emulatorEndpoint())
+                                .writerOptions(
+                                        FirestoreWriterOptions.builder()
+                                                .orderingMode(orderingMode)
+                                                .build())
                                 .build();
         return sink.createWriter(context);
     }

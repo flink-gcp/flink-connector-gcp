@@ -43,8 +43,8 @@ Deleting a missing document succeeds, so a replayed delete is harmless.
 
 {{< java-snippet file="FirestoreExamplesDeletingDocuments.java" tag="firestore-examples-deleting-documents" >}}
 
-Writes to the same document are not ordered: a `set` and a later `delete` of one document may be applied in either order.
-A stream that deletes and rewrites the same documents in quick succession needs an order the sink does not keep yet ([#1556]({{< param BookRepo >}}/issues/1556)).
+By default, writes to the same document are not ordered: a `set` and a later `delete` of one document may be applied in either order.
+A stream that deletes and rewrites the same documents in quick succession needs `.writerOptions(FirestoreWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build())` on the sink builder, with the stream keyed by document path before the sink; the [sink page]({{< relref "docs/connectors/datastream/firestore" >}}#delivery-guarantee) describes what the mode costs.
 
 ### Updating a document only if it has not changed
 

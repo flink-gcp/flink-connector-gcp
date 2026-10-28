@@ -21,6 +21,8 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.MemorySize;
 
+import io.github.flink.gcp.connector.firestore.sink.OrderingMode;
+
 import java.time.Duration;
 import java.util.List;
 
@@ -300,4 +302,19 @@ public final class FirestoreConnectorOptions {
                     .withDescription(
                             "The cap on the bytes of writes submitted and not yet answered per"
                                     + " sink subtask.");
+
+    /**
+     * Whether writes to one document are applied in the order the sink subtask received them.
+     * 'per-key' holds a write until the document's earlier write is answered, at one round trip per
+     * held write; 'none' does not order them.
+     */
+    public static final ConfigOption<OrderingMode> SINK_ORDERING_MODE =
+            ConfigOptions.key("sink.ordering-mode")
+                    .enumType(OrderingMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether writes to one document are applied in the order the sink"
+                                    + " subtask received them. 'per-key' holds a write until the"
+                                    + " document's earlier write is answered, at one round trip"
+                                    + " per held write; 'none' does not order them.");
 }

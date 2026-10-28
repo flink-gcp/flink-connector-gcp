@@ -49,9 +49,10 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
  *       FirestoreSinkBuilder#preconditionFailurePolicy(PreconditionFailurePolicy)} decides.
  * </ul>
  *
- * <p>This per-write property is not a same-document ordering guarantee: the sink sends several
- * requests at once and retries a failed write in a later one, so two writes to one document may be
- * applied in either order.
+ * <p>This per-write property is not a same-document ordering guarantee: by default the sink sends
+ * several requests at once and retries a failed write in a later one, so two writes to one document
+ * may be applied in either order. {@link OrderingMode#PER_KEY} applies them in the order a subtask
+ * received them.
  *
  * <p>That at-least-once statement assumes the default {@code FailureHandler.failJob()} policy.
  * Under a dropping policy configured through {@link

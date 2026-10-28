@@ -104,6 +104,7 @@ public final class FirestoreDynamicTableFactory
                         FirestoreConnectorOptions.SINK_RETRY_MAX_ATTEMPTS,
                         FirestoreConnectorOptions.SINK_IN_FLIGHT_MAX_WRITES,
                         FirestoreConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
+                        FirestoreConnectorOptions.SINK_ORDERING_MODE,
                         FactoryUtil.SINK_PARALLELISM,
                         FactoryUtil.SOURCE_PARALLELISM));
     }

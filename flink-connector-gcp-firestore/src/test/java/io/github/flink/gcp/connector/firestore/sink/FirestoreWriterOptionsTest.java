@@ -50,6 +50,14 @@ class FirestoreWriterOptionsTest {
         assertThat(defaults.getMaxInFlightWrites()).isEqualTo(250);
         assertThat(defaults.getMaxInFlightBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(defaults.getMaxConsecutiveRejections()).isEqualTo(100);
+        assertThat(defaults.getOrderingMode()).isEqualTo(OrderingMode.NONE);
+    }
+
+    @Test
+    void aNullOrderingModeIsRefused() {
+        assertThatThrownBy(() -> FirestoreWriterOptions.builder().orderingMode(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("orderingMode must not be null");
     }
 
     @Test
@@ -70,6 +78,7 @@ class FirestoreWriterOptionsTest {
                         .maxInFlightWrites(7)
                         .maxInFlightBytes(1024)
                         .maxConsecutiveRejections(FirestoreWriterOptions.UNBOUNDED)
+                        .orderingMode(OrderingMode.PER_KEY)
                         .build();
         FirestoreWriterOptions unthrottled =
                 FirestoreWriterOptions.builder().throttlingEnabled(false).build();

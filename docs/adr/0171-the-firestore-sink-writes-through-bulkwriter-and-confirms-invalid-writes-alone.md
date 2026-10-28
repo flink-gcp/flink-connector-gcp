@@ -24,7 +24,7 @@ limitations under the License.
   upstream as issues, without fix pull requests) and by [#1747] (a value the library encodes is
   no longer refused for the synchronous-refusal defect's sake), and 2026-10-17 by [#1819] (a
   Standard-edition database refuses nested arrays), and 2026-10-24 by [#1895] (it stores them
-  again)
+  again), and 2026-10-27 by [#1556] (same-document order on opt-in, [ADR-0187])
 - Issues: [#1540], [#355], [#1556], [#1561], [#1606], [#1680], [#1706], [#1747], [#1819], [#1895]
 - Modules: firestore (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Sink, § Error handling
@@ -107,7 +107,7 @@ On the same date, before the reports recorded under Consequences were filed, the
 
 - **No destination resolver and no create disposition.** A write names its own document path, collections are implicit, and creating a database is provisioning (ADR-0138's structural-difference rule).
 - **No `batchesSent` metric.** The library exposes no hook for a request it sends.
-- **No same-document ordering.** The library sends several requests at once and retries in later requests, and `BatchWrite` applies a request's writes in no guaranteed order. This matches the Spanner and Bigtable sinks, and an opt-in per-document order is [#1556].
+- **No same-document ordering by default.** The library sends several requests at once and retries in later requests, and `BatchWrite` applies a request's writes in no guaranteed order. This matches the Spanner and Bigtable sinks. The opt-in per-document order of [#1556] holds a write until its document's earlier write is answered ([ADR-0187], revised 2026-10-27).
 - **No flush or progress timeout.** Every attempt is bounded by the transport's total timeout (60 seconds by default) and the attempt budget, and the one stall the options could cause is refused; a wait silent for three minutes, a minute past the longest gap between two answers to a write the library keeps retrying, logs a warning instead. The library can still stall on a defect of its own (its rate limiter throws, unobserved, if the wall clock steps backwards); a streaming job's checkpoint timeout ends that, and a bounded job relies on the warning.
 
 The public types enter at `@PublicEvolving` (ADR-0170).
@@ -154,3 +154,4 @@ The public types enter at `@PublicEvolving` (ADR-0170).
 [googleapis/google-cloud-java#14636]: https://github.com/googleapis/google-cloud-java/issues/14636
 [ADR-0137]: 0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md
 [ADR-0175]: 0175-the-datastore-sink-commits-batches-and-confirms-a-refusal-one-write-at-a-time.md
+[ADR-0187]: 0187-the-firestore-sink-keeps-per-document-order-on-opt-in.md

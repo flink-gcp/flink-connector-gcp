@@ -101,6 +101,12 @@ It also refuses values that add up exactly to gax's own defaults, because the li
 | `maxInFlightBytes` | `64 MiB` | Caps their size in the request. This is the bound that actually bounds memory, since a document may be up to 1 MiB |
 | `maxConsecutiveRejections` | `100` | How many confirmed refusals in a row, with no write applied between them, fail the job after being routed. `-1` removes the bound. `ALREADY_EXISTS` for a create and a routed `FAILED_PRECONDITION` for a conditional write do not count. Matters only beside a dropping `failedWriteHandler` |
 
+### Order per document
+
+| Option | Default | What it does |
+|---|---|---|
+| `orderingMode` | `NONE` | `PER_KEY` applies writes to one document in the order the subtask received them, holding a write until the document's earlier write is answered. Held writes count against both in-flight bounds; an `add` is never held. See [Delivery guarantee]({{< relref "docs/connectors/datastream/firestore" >}}#delivery-guarantee) |
+
 ## `DatastoreSource.builder()`
 
 | Option | Default | What it does |
