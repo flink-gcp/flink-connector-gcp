@@ -30,6 +30,7 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
@@ -56,6 +57,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
 
     private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * The client, built on first use.
@@ -75,6 +77,13 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      */
     @Nullable private transient volatile GoogleCredentials credentials;
 
+    /**
+     * The client metrics the reader registered and handed over, or {@code null} when nothing is
+     * exported to Flink. Transient and {@code volatile} for the reasons {@code credentials} is;
+     * closed by {@link #close()} after the client.
+     */
+    @Nullable private transient volatile ClientMetrics clientMetrics;
+
     private transient volatile boolean closed;
 
     /**
@@ -86,8 +95,28 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      */
     public BatchClientStructStreamOpener(
             DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(
+                database,
+                emulatorEndpoint,
+                SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+    }
+
+    /**
+     * Creates the opener with the Cloud Monitoring choice.
+     *
+     * @param database the database to read
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for the real service
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
+     */
+    public BatchClientStructStreamOpener(
+            DatabaseDestination database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
@@ -115,13 +144,24 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
     @Override
     public void close() throws IOException {
         Spanner toClose;
+        ClientMetrics metrics;
         synchronized (this) {
             closed = true;
             toClose = spanner;
             spanner = null;
+            metrics = clientMetrics;
+            clientMetrics = null;
         }
-        if (toClose != null) {
-            toClose.close();
+        try {
+            if (toClose != null) {
+                toClose.close();
+            }
+        } finally {
+            // After the client, whatever its close did: closed client metrics drop what they are
+            // given, and a client still closing would lose whatever it recorded meanwhile.
+            if (metrics != null) {
+                metrics.close();
+            }
         }
     }
 
@@ -155,10 +195,23 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
         this.credentials = credentials;
     }
 
-    /** Builds settings exposed for verifying that the reader injects runtime credentials. */
+    @Override
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+        this.clientMetrics = clientMetrics;
+    }
+
+    /**
+     * Builds settings exposed for verifying that the reader injects its runtime credentials and
+     * client-metrics choices.
+     */
     @VisibleForTesting
     SpannerOptions settings() throws IOException {
-        return SpannerClients.settings(database, emulatorEndpoint, credentials);
+        return SpannerClients.settings(
+                database,
+                emulatorEndpoint,
+                credentials,
+                clientMetrics,
+                exportClientMetricsToCloudMonitoring);
     }
 
     /**

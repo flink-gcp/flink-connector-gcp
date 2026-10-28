@@ -18,15 +18,20 @@ package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
 
 import com.google.api.gax.core.ExecutorProvider;
 import com.google.cloud.spanner.BatchClient;
+import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
 import com.google.cloud.spanner.DatabaseAdminClient;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.InstanceAdminClient;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
+import io.github.flink.gcp.connector.spanner.ClosedEmulator;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -113,5 +118,58 @@ class DefaultSpannerChangeStreamCoordinatorClientFactoryTest {
         public ExecutorProvider getAsyncExecutorProvider() {
             throw new UnsupportedOperationException();
         }
+    }
+
+    @Test
+    void carriesTheClientMetricsChoicesIntoTheClientSettings() throws Exception {
+        // No emulator: its branch turns the Cloud Monitoring export off by itself, which would
+        // hide whether the factory's own choice reaches the settings.
+        ClientMetrics metrics = ClientMetricsProbe.create();
+
+        SpannerOptions off = factory(false).settings(metrics);
+        SpannerOptions on = factory(true).settings(null);
+
+        assertThat(off.getClientMetricsProvider())
+                .isInstanceOfSatisfying(
+                        CustomOpenTelemetryMetricsProvider.class,
+                        provider ->
+                                assertThat(provider.getOpenTelemetry())
+                                        .isSameAs(metrics.openTelemetry()));
+        assertThat(off.isEnableBuiltInMetrics()).isFalse();
+        assertThat(on.getClientMetricsProvider())
+                .isNotInstanceOf(CustomOpenTelemetryMetricsProvider.class);
+    }
+
+    @Test
+    void aFailedOpenLeavesTheSourcesClientMetricsOpen() {
+        // They belong to the source and are shared by every enumerator it builds; the client
+        // takes no ownership of them, so not even a failed open may close them.
+        ClientMetrics metrics = ClientMetricsProbe.create();
+
+        assertThatThrownBy(
+                        () ->
+                                new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                                                DatabaseDestination.of(
+                                                        "project", "instance", "database"),
+                                                "orders",
+                                                Duration.ofDays(7),
+                                                ClosedEmulator.endpoint(),
+                                                null,
+                                                true)
+                                        .create(metrics))
+                .isInstanceOf(IOException.class);
+
+        assertThat(ClientMetricsProbe.isOpen(metrics)).isTrue();
+    }
+
+    private static DefaultSpannerChangeStreamCoordinatorClientFactory factory(
+            boolean exportToCloudMonitoring) {
+        return new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                DatabaseDestination.of("project", "instance", "database"),
+                "orders",
+                Duration.ofDays(7),
+                null,
+                null,
+                exportToCloudMonitoring);
     }
 }

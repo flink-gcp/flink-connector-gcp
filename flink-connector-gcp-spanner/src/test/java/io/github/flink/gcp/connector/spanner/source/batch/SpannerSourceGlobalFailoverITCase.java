@@ -30,6 +30,7 @@ import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 
@@ -38,9 +39,12 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.EmulatorModeBypass;
+import io.github.flink.gcp.connector.spanner.RpcMethodSeriesReporter;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.TestSources;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -147,13 +151,90 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
                 .containsExactlyInAnyOrderElementsOf(expectedIds());
     }
 
+    /**
+     * The client metrics of the enumerators keep counting across the global restore: the restore
+     * builds the next enumerator from the same source object on the same metric group, so the
+     * source registers its enumerators' set once and hands it to both.
+     *
+     * <p>Registering per enumerator, the second registration would be refused by the group with a
+     * {@code Name collision} warning for every leaf (logged under Flink's {@code MetricGroup}, not
+     * the class that refuses it), and the reporter would keep the first enumerator's set, which
+     * nothing records into after the restore. The connector's own enumerator counters still collide
+     * that way (issue #1908), so the warnings are filtered to the client-metrics leaves.
+     */
+    @Test
+    void theEnumeratorsClientMetricsAreRegisteredOnceAcrossTheGlobalRestore() throws Exception {
+        assertThat(System.getenv("SPANNER_EMULATOR_HOST"))
+                .as(
+                        "SPANNER_EMULATOR_HOST puts the client back in its emulator mode, where it"
+                                + " records no client metrics; unset it to run this test")
+                .isNull();
+        String runId = "metrics-" + System.nanoTime();
+        DatabaseDestination database = seededDatabase();
+        RpcMethodSeriesReporter.reset();
+        EmulatorModeBypass.set(true);
+        try (LogCapture collisions = LogCapture.of(MetricGroup.class)) {
+            Configuration configuration = new Configuration();
+            configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "fixed-delay");
+            configuration.set(RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_ATTEMPTS, 1);
+            configuration.set(
+                    RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY, Duration.ZERO);
+            configuration.setString(
+                    "metrics.reporter.rpc.factory.class", RpcMethodSeriesReporter.class.getName());
+            configuration.setString("metrics.reporter.rpc.interval", "100 ms");
+            StreamExecutionEnvironment env =
+                    StreamExecutionEnvironment.getExecutionEnvironment(configuration);
+            env.setParallelism(2);
+            env.fromSource(
+                            new FailOnceCoordinatorSource(runId, source(database, true)),
+                            WatermarkStrategy.noWatermarks(),
+                            "spanner")
+                    .map(new RecordingMap(runId))
+                    .sinkTo(new DiscardingSink<>());
+            env.execute();
+
+            assertThat(ENUMERATORS.get(runId).get())
+                    .as("one enumerator before the failure and one the global restore rebuilt")
+                    .isEqualTo(2);
+            // The series were registered and recorded into. This alone cannot tell a shared set
+            // from a per-enumerator one, whose first set also counts the first plan; the
+            // collision check below is what does.
+            assertThat(
+                            RpcMethodSeriesReporter.current()
+                                    .get("coordinator/PartitionQuery.operations"))
+                    .as("the enumerators' series were registered and recorded into")
+                    .isPositive();
+            assertThat(collisions.getMessages())
+                    .as("no client-metrics leaf was registered twice on the enumerator group")
+                    .noneMatch(
+                            message ->
+                                    message.contains("Name collision")
+                                            && CLIENT_METRICS_LEAF.matcher(message).find());
+        } finally {
+            EmulatorModeBypass.set(false);
+            RpcMethodSeriesReporter.reset();
+        }
+    }
+
+    private static final java.util.regex.Pattern CLIENT_METRICS_LEAF =
+            java.util.regex.Pattern.compile(
+                    "'(operations|operationTimeMillis|attempts|attemptTimeMillis"
+                            + "|attemptsWithGfeTiming|gfeTimeMillis|gfeConnectivityErrors"
+                            + "|attemptsWithAfeTiming|afeTimeMillis|afeConnectivityErrors)'");
+
     private static Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source(
             DatabaseDestination database) {
+        return source(database, false);
+    }
+
+    private static Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source(
+            DatabaseDestination database, boolean exportClientMetricsToFlink) {
         return SpannerSource.<Long>builder()
                 .database(database)
                 .readOperation(SpannerReadOperation.query(Statement.of("SELECT id FROM singers")))
                 .deserializer(new TestSources.IdDeserializer())
                 .emulatorEndpoint(emulatorEndpoint())
+                .exportClientMetricsToFlink(exportClientMetricsToFlink)
                 .build();
     }
 

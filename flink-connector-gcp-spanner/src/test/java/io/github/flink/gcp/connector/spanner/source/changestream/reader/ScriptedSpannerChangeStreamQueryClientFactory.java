@@ -16,10 +16,13 @@
 
 package io.github.flink.gcp.connector.spanner.source.changestream.reader;
 
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
+
+import javax.annotation.Nullable;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -43,7 +46,7 @@ public final class ScriptedSpannerChangeStreamQueryClientFactory
     }
 
     @Override
-    public SpannerChangeStreamQueryClient create() {
+    public SpannerChangeStreamQueryClient create(@Nullable ClientMetrics clientMetrics) {
         return new ScriptedClient(partitionCount);
     }
 

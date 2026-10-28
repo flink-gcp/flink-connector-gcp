@@ -20,11 +20,13 @@ limitations under the License.
 - Date: 2026-10-25
 - Updated: 2026-10-27 (Cloud Tasks adopts it through gax's tracer factory, refined by [#715])
 - Updated: 2026-10-27 (every component that owns a Bigtable data client takes both options, refined by [#1903])
+- Updated: 2026-10-28 (every component that builds a Spanner client takes both options, [#712])
 - Issues: [#713], [#1902], [#1903], [#1908], [#712], [#715], [#714], [#1815]
-- Modules: base, bigtable, cloudtasks, `scripts/`, root POM
-- Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Client-library
-  metrics; `docs/content/docs/reference/bigtable.md` § `BigtableSink.builder()`;
-  `docs/content/docs/connectors/datastream/cloudtasks.md` § Client RPC metrics
+- Modules: base, bigtable, cloudtasks, spanner, `scripts/`, root POM
+- Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` and
+  `docs/content/docs/connectors/datastream/spanner.md` § Client-library metrics;
+  `docs/content/docs/connectors/datastream/cloudtasks.md` § Client RPC metrics;
+  `docs/content/docs/reference/bigtable.md` and `docs/content/docs/reference/spanner.md`
 
 ## Decision
 
@@ -84,6 +86,34 @@ records. What `ClientMetrics` and its first adopter are:
   at-least-once writer was the first component: its batch factory owns the `ClientMetrics` and closes it
   after its clients. Every other component that owns a data client followed in [#1903]; see the
   refinement below.
+- **Spanner maps ten leaves per method, on every component that builds a client** ([#712],
+  2026-10-27): the sink writer, both enumerators and both readers, and the Table lookups. Of the
+  eight instruments `google-cloud-spanner` 6.124.0 records into a `CustomOpenTelemetryMetricsProvider`
+  (all under `spanner/client/`), the operation and attempt counts come from gax's two counters,
+  and the four histograms in `ms` (operation, attempt, Google front end, Spanner API front end)
+  keep their millisecond sums; the two front-end histograms keep their counts too, beside the two
+  counters of attempts that arrived without the front end's timing. The operation and attempt
+  histograms' counts are not reported, because gax records each latency where it counts the
+  operation or attempt. Each component registers the methods its client calls, measured by the
+  emulator ITCase below. The enumerators' set belongs to the source object, as Bigtable's does
+  (`SpannerEnumeratorClientMetrics`; see the [#1903] refinement below): registered once and never
+  closed. Every other component's seam that owns the `Spanner` handle owns its `ClientMetrics` and
+  closes it after the handle: the database access, the opener, the Change Streams reader's client
+  and the lookup. That close is not needed, since those groups end with their components, and it
+  does no harm, because the handle closes first; it is kept because each of those seams owns its
+  handle and the client metrics that handle records into, and releasing both costs nothing. The
+  planner and the opener take the set through an abstract `useClientMetrics`, as they take
+  credentials. Bigtable made its equivalent defaulted, judging a series left at zero harmless;
+  Spanner judges the same zero a defect that no dashboard flags, so only the compiler can catch a
+  seam that skips it; the two Change Streams factories take it as the argument of `create`, which
+  [ADR-0128] allows for runtime state of the caller; the sink's factory, built on the TaskManager,
+  takes it in its constructor. Measured on 2026-10-28 in `SpannerSourceGlobalFailoverITCase`:
+  through a global restore the batch source's second enumerator registered nothing, and no
+  client-metrics leaf logged a `Name collision`, while a per-enumerator registration logged one for
+  each leaf and failed the test. The Table layer keeps no copy of either default ([ADR-0139]):
+  `SpannerClientMetricsConfig` holds the two options as `@Nullable Boolean` and calls a builder's
+  setter only for an option the DDL set, and the lookups, which have no builder, resolve an unset
+  option to the two `SpannerClients` constants every builder starts from.
 - **Dependencies: `opentelemetry-api` only.** Base declares it optional, because base is bundled
   into every SQL jar, and the adopter declares it itself. Its version comes from an
   `opentelemetry-bom` import in the root POM, pinned to what `libraries-bom` resolves through the
@@ -147,8 +177,36 @@ divergence rests on. Pub/Sub has no adapter and no issue.
   writes forty records through the public builder and a scheduled test reporter reads
   `rpcMethod.MutateRows.*` while the job runs; no unregistered method was reported. The emulator
   sends no Google front-end headers, so every attempt counts as a connectivity error and no server
-  time is recorded, which the IT pins and the docs state. Spanner differs: its custom provider
-  records nothing against the emulator, so [#712] needs another way to observe it.
+  time is recorded, which the IT pins and the docs state.
+- **Spanner's client records nothing in its emulator mode, so its ITCase leaves the mode.** In
+  6.124.0 `SpannerOptions.createApiTracerFactory` installs no metrics tracer when
+  `isEmulatorEnabled()`, which `setEmulatorHost` turns on and the connector's emulator path uses.
+  `SpannerClients` therefore has a package-private test switch: the emulator branch then rebuilds
+  the settings without the emulator host, keeping the plaintext host and no credentials that
+  `build()` derived from it. The emulator branch also turns the Cloud Monitoring export off,
+  always: `enablegRPCMetrics` has no credentials guard, so a client outside the emulator mode
+  starts the process-wide exporter against an emulator otherwise. Measured on 2026-10-27: a client
+  built that way created `BuiltInMetricsProvider.INSTANCE`'s exporter (a 60-second
+  `PeriodicMetricReader` over `SpannerCloudMonitoringExporter`), and one built with the export off
+  left it unset. `SpannerClientMetricsITCase` runs
+  a writer, a query read, a table read, an index scan, a bounded Change Streams read and both
+  lookups through the public builders and the Table API with a scheduled test reporter, keyed by
+  coordinator or task. Each job recorded every method its components are expected to call there,
+  the client reported no method a component had not registered, and with the switch off every test
+  that expects a recording failed (measured with the first seven tests on 2026-10-27). The emulator
+  sends neither front end's timing header, so both connectivity-error leaves equal the attempts.
+- **Against the service both front ends' timing arrives.** On 2026-10-27 the gated
+  `SpannerSourceRealGcpITCase` read its seeded table with the Flink export on: every attempt of the
+  enumerator's `CreateSession` (two, one per database handle), `BeginTransaction` and
+  `PartitionQuery` and of the reader's `ExecuteStreamingSql` carried both timings, and no
+  connectivity error was counted. The reader's one query attempt took 921 ms, of which the Google
+  front end reported 810 ms and the Spanner API front end 103 ms.
+- **Spanner's Cloud Monitoring export is independent of the provider and process-wide.**
+  `setBuiltInMetricsEnabled(false)` removes only the Cloud Monitoring tracer; a custom provider adds
+  its own beside it (`CompositeTracerFactory`). The export goes through
+  `BuiltInMetricsProvider.INSTANCE`, one per class loader, which registers a JVM shutdown hook when
+  the first client takes part and which no client's close removes. The connector only ever turns the
+  export off, so `SPANNER_DISABLE_BUILTIN_METRICS` keeps working when the option is left alone.
 - **The checker needed one change.** Its inventory rule demands a `*MetricNames` constant for every
   `.counter(`/`.gauge(` in a mapped module, so an adapter inside a connector module failed it; the
   2026-08-15 design's "zero checker changes" held only for a registrar in base. Claimed
@@ -270,6 +328,11 @@ default identity, while one that skips client metrics only leaves its series at 
   directly. The cost accepted is owning the API interfaces `ClientMetrics` implements: OpenTelemetry adds
   methods to them as defaults, and a client upgrade that records through a new instrument kind is
   dropped with a `WARN` until `ClientMetrics` maps it.
+- **Recording against the emulator in production** (#712). Building the emulator connection by hand
+  outside the emulator mode would let an emulator job report the series, as Bigtable's does, and
+  needs no test switch. The owner kept the vendor's choice and the test-only switch on 2026-10-27:
+  it would bypass the client's emulator handling for every user and lose its connection check,
+  whose error names a missing emulator.
 - **Register on first sight.** It reports only methods that occur and needs no method list, and it
   races a reporter's iteration as measured above.
 - **One option that replaces the built-in export with the Flink export.** The client offers no such
@@ -295,5 +358,6 @@ default identity, while one that skips client metrics only leaves its series at 
 [#1903]: https://github.com/flink-gcp/flink-connector-gcp/issues/1903
 [#1908]: https://github.com/flink-gcp/flink-connector-gcp/issues/1908
 [ADR-0010]: 0010-pubsub-sink-metric-placements.md
+[ADR-0128]: 0128-an-enumerators-closeable-seam-is-minted-per-enumerator.md
 [ADR-0038]: 0038-metric-names-are-per-connector-inventories-in-one-shape-without-flinks-num-prefix.md
 [ADR-0139]: 0139-an-option-description-never-restates-a-default.md

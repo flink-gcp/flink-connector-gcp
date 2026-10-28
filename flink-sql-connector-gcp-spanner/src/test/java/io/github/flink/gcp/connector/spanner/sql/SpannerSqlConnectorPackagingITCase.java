@@ -16,10 +16,14 @@
 
 package io.github.flink.gcp.connector.spanner.sql;
 
+import org.apache.flink.metrics.Counter;
+
 import io.github.flink.gcp.connector.testutils.sql.AbstractSqlConnectorPackagingITCase;
 import io.github.flink.gcp.connector.testutils.sql.ShadedJar;
 import org.junit.jupiter.api.Test;
 
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.jar.JarFile;
@@ -74,6 +78,92 @@ class SpannerSqlConnectorPackagingITCase extends AbstractSqlConnectorPackagingIT
                     .contains(
                             "io.github.flink.gcp.connector.spanner.table.catalog.SpannerCatalogFactory");
         }
+    }
+
+    /**
+     * The client metrics work inside the relocated artifact: base and OpenTelemetry are relocated
+     * together, so the relocated {@code ClientMetrics} hands the relocated client's metrics
+     * provider an {@code OpenTelemetry} of the type it takes, and a recording through that instance
+     * reaches the Flink counter. Nothing here touches an unrelocated or global OpenTelemetry.
+     */
+    @Test
+    void theRelocatedClientMetricsFeedTheRelocatedClientsMetricsProvider() throws Exception {
+        String shaded = "io.github.flink.gcp.connector.spanner.shaded.";
+        try (URLClassLoader loader = shadedFirst(shaded)) {
+            Class<?> clientMetrics =
+                    loader.loadClass(
+                            shaded + "io.github.flink.gcp.connector.base.metrics.ClientMetrics");
+            Object metrics = clientMetrics.getMethod("create", String.class).invoke(null, "method");
+            Object openTelemetry = clientMetrics.getMethod("openTelemetry").invoke(metrics);
+            Class<?> openTelemetryType =
+                    loader.loadClass(shaded + "io.opentelemetry.api.OpenTelemetry");
+            assertThat(openTelemetryType.getClassLoader()).isSameAs(loader);
+
+            Class<?> provider =
+                    loader.loadClass(
+                            shaded + "com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider");
+            Object created =
+                    provider.getMethod("create", openTelemetryType).invoke(null, openTelemetry);
+            assertThat(provider.getMethod("getOpenTelemetry").invoke(created))
+                    .isSameAs(openTelemetry);
+
+            Counter counter =
+                    (Counter)
+                            clientMetrics
+                                    .getMethod("counterSum", String.class, String.class)
+                                    .invoke(metrics, "spanner/client/operation_count", "Spanner.X");
+            Class<?> attributes =
+                    loader.loadClass(shaded + "io.opentelemetry.api.common.Attributes");
+            Class<?> attributeKey =
+                    loader.loadClass(shaded + "io.opentelemetry.api.common.AttributeKey");
+            Object key = attributeKey.getMethod("stringKey", String.class).invoke(null, "method");
+            Object labels =
+                    attributes
+                            .getMethod("of", attributeKey, Object.class)
+                            .invoke(null, key, "Spanner.X");
+            Object meterProvider =
+                    openTelemetryType.getMethod("getMeterProvider").invoke(openTelemetry);
+            Object meter =
+                    loader.loadClass(shaded + "io.opentelemetry.api.metrics.MeterProvider")
+                            .getMethod("get", String.class)
+                            .invoke(meterProvider, "gax-java");
+            Object counterBuilder =
+                    loader.loadClass(shaded + "io.opentelemetry.api.metrics.Meter")
+                            .getMethod("counterBuilder", String.class)
+                            .invoke(meter, "spanner/client/operation_count");
+            Object longCounter =
+                    loader.loadClass(shaded + "io.opentelemetry.api.metrics.LongCounterBuilder")
+                            .getMethod("build")
+                            .invoke(counterBuilder);
+            loader.loadClass(shaded + "io.opentelemetry.api.metrics.LongCounter")
+                    .getMethod("add", long.class, attributes)
+                    .invoke(longCounter, 3L, labels);
+
+            assertThat(counter.getCount()).isEqualTo(3);
+        }
+    }
+
+    /** Loads the relocated packages from the artifact alone, and everything else as Flink would. */
+    private static URLClassLoader shadedFirst(String shaded) throws Exception {
+        return new URLClassLoader(
+                new URL[] {UberJar.SHADED.path().toUri().toURL()},
+                SpannerSqlConnectorPackagingITCase.class.getClassLoader()) {
+            @Override
+            protected synchronized Class<?> loadClass(String name, boolean resolve)
+                    throws ClassNotFoundException {
+                if (!name.startsWith(shaded)) {
+                    return super.loadClass(name, resolve);
+                }
+                Class<?> loaded = findLoadedClass(name);
+                if (loaded == null) {
+                    loaded = findClass(name);
+                }
+                if (resolve) {
+                    resolveClass(loaded);
+                }
+                return loaded;
+            }
+        };
     }
 
     @Override

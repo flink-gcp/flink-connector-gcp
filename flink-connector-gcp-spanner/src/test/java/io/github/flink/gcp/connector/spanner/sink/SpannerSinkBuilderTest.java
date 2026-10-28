@@ -22,8 +22,11 @@ import org.apache.flink.util.InstantiationUtil;
 import com.google.cloud.spanner.Mutation;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
+import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -186,5 +189,46 @@ class SpannerSinkBuilderTest {
     private static SpannerMutationSerializationSchema<String> serializer() {
         return (element, context) ->
                 Mutation.newInsertOrUpdateBuilder("Orders").set("Id").to(element).build();
+    }
+
+    @Test
+    void exportsClientMetricsOnlyToCloudMonitoringByDefault() {
+        SpannerSinkConfig<String> config =
+                ((SpannerMutationsSink<String>)
+                                SpannerSink.<String>builder()
+                                        .database(DATABASE)
+                                        .serializer(serializer())
+                                        .build())
+                        .getConfig();
+
+        assertThat(config.isExportClientMetricsToFlink()).isFalse();
+        assertThat(config.isExportClientMetricsToCloudMonitoring()).isTrue();
+    }
+
+    @Test
+    void carriesBothClientMetricsChoicesToTheWritersClient() {
+        SpannerSinkConfig<String> config =
+                ((SpannerMutationsSink<String>)
+                                SpannerSink.<String>builder()
+                                        .database(DATABASE)
+                                        .serializer(serializer())
+                                        .emulatorEndpoint("localhost:9010")
+                                        .exportClientMetricsToFlink(true)
+                                        .exportClientMetricsToCloudMonitoring(false)
+                                        .build())
+                        .getConfig();
+        ClientMetrics metrics = ClientMetricsProbe.create();
+
+        assertThat(config.isExportClientMetricsToFlink()).isTrue();
+        assertThat(SpannerMutationsSink.databaseAccessFactory(config, null, metrics))
+                .usingRecursiveComparison()
+                .isEqualTo(
+                        new DefaultSpannerDatabaseAccessFactory(
+                                DATABASE,
+                                SpannerWriterOptions.defaults(),
+                                config.getEmulatorEndpoint(),
+                                null,
+                                false,
+                                metrics));
     }
 }

@@ -52,6 +52,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
     @Nullable private final Instant endTimestamp;
     private final SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     private final SpannerChangeStreamQueryClientFactory queryClientFactory;
+    private final boolean exportClientMetricsToFlink;
 
     SpannerChangeStreamSourceConfig(
             DatabaseDestination database,
@@ -67,7 +68,8 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
             SpannerChangeStreamRecordFilter recordFilter,
             @Nullable Instant endTimestamp,
             SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory,
-            SpannerChangeStreamQueryClientFactory queryClientFactory) {
+            SpannerChangeStreamQueryClientFactory queryClientFactory,
+            boolean exportClientMetricsToFlink) {
         this.database = database;
         this.changeStreamName = changeStreamName;
         this.deserializer = deserializer;
@@ -82,6 +84,7 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         this.endTimestamp = endTimestamp;
         this.coordinatorClientFactory = coordinatorClientFactory;
         this.queryClientFactory = queryClientFactory;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
     }
 
     public DatabaseDestination getDatabase() {
@@ -141,5 +144,14 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
 
     public SpannerChangeStreamCoordinatorClientFactory getCoordinatorClientFactory() {
         return coordinatorClientFactory;
+    }
+
+    /**
+     * Returns whether the coordinator and the readers export their clients' own metrics through
+     * Flink's metric system. The Cloud Monitoring choice is the client factories', which build the
+     * clients.
+     */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
     }
 }

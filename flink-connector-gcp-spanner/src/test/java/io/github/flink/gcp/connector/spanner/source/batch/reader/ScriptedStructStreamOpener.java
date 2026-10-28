@@ -20,6 +20,7 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.TestStructs;
 
 import javax.annotation.Nullable;
@@ -103,6 +104,9 @@ public final class ScriptedStructStreamOpener implements StructStreamOpener {
     /** Ignores them: nothing here reaches the service, so there is no client to scope. */
     @Override
     public void useCredentials(@Nullable GoogleCredentials credentials) {}
+
+    @Override
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {}
 
     @Override
     public StructStream open(BatchTransactionId batchTransactionId, Partition partition) {

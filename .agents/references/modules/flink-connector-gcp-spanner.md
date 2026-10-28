@@ -421,6 +421,36 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - The emulator is not the service: `SpannerCatalogRealGcpITCase` (gated) holds the spellings, the
   system schemas and the read-API refusal against Spanner itself (ADR-0176's Evidence).
 
+## Client-library metrics (`docs/adr/0186`)
+
+- `SpannerClientMetrics` is the adapter and a `[[subgroups]]` source, so a new leaf owes a
+  templated row on the DataStream page. Every client-owning component registers the RPC methods
+  its client calls when it opens, before the client exists; a method missing from that list is
+  dropped with a single `WARN`, so a new call site adds its method there and to the page's
+  component table. `SpannerClientMetricsITCase` fails on such a `WARN`.
+- The enumerators' `ClientMetrics` belong to the source object (`SpannerEnumeratorClientMetrics`,
+  one per source, registered by the first enumerator and never closed): their metric group outlives
+  every enumerator, and a second registration there would be refused. The planner and the
+  coordinator's client record into them and never close them. Every other seam that owns the
+  `Spanner` handle owns its `ClientMetrics` and closes it after the handle.
+  `PartitionPlanner` and `StructStreamOpener` take it through abstract `useClientMetrics`; the two
+  Change Streams factories through `create(ClientMetrics)` (a refinement of `docs/adr/0128`);
+  the sink's factory and the lookup through their constructors and `open(MetricGroup)`.
+- The two client-metrics defaults live once, in `SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_*`:
+  every builder starts from them and the Table lookup resolves an unset option to them (ADR-0139).
+- `SpannerClients.applyClientMetrics` is the one place both choices reach the settings. The Cloud
+  Monitoring export is only ever turned off, never on, so `SPANNER_DISABLE_BUILTIN_METRICS` keeps
+  working; it is process-wide (`BuiltInMetricsProvider.INSTANCE`, one per class loader, with a
+  JVM shutdown hook), so off keeps a client out of it and never stops it.
+- The client records nothing into a provider in its emulator mode, which `setEmulatorHost` turns
+  on. The package-private `SpannerClients.bypassEmulatorModeForTesting` is test-only; the emulator
+  branch turns the Cloud Monitoring export off unconditionally, because `enablegRPCMetrics` has no
+  credentials guard and would start the process-wide exporter once the mode is left. An ITCase
+  using the switch restores it after the job and needs `SPANNER_EMULATOR_HOST` unset.
+- Re-read on a client upgrade: the eight `spanner/client/` instruments and their units, the
+  `method` attribute's `Spanner.` prefix, which RPCs retry (`attempts` equals `operations` only for
+  the unretried ones), and the emulator-mode test in `createApiTracerFactory`.
+
 ## Testing
 
 - Emulator ITs pin `gcr.io/cloud-spanner-emulator/emulator`, **not** the `google-cloud-cli` bundle

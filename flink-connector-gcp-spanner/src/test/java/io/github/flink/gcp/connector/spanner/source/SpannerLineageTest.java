@@ -39,6 +39,7 @@ import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
@@ -56,6 +57,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.reader.SpannerC
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerStructDeserializationSchema;
 import org.junit.jupiter.api.Test;
+
+import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.time.Instant;
@@ -306,6 +309,11 @@ public class SpannerLineageTest {
         }
 
         @Override
+        public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+            throw new AssertionError("client metrics used");
+        }
+
+        @Override
         public void close() {
             throw new AssertionError("opener closed");
         }
@@ -316,7 +324,7 @@ public class SpannerLineageTest {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public SpannerChangeStreamCoordinatorClient create() {
+        public SpannerChangeStreamCoordinatorClient create(@Nullable ClientMetrics clientMetrics) {
             throw new AssertionError("coordinator client opened");
         }
     }
@@ -326,7 +334,7 @@ public class SpannerLineageTest {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public SpannerChangeStreamQueryClient create() {
+        public SpannerChangeStreamQueryClient create(@Nullable ClientMetrics clientMetrics) {
             throw new AssertionError("query client opened");
         }
     }

@@ -17,6 +17,9 @@
 package io.github.flink.gcp.connector.spanner.table.source;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
+import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.LookupTableSource.LookupContext;
@@ -35,6 +38,7 @@ import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
@@ -46,18 +50,23 @@ import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.ByteArray;
 import com.google.cloud.Date;
 import com.google.cloud.Timestamp;
+import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.SpannerExceptionFactory;
+import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Value;
+import io.github.flink.gcp.connector.spanner.ClosedEmulator;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import javax.annotation.Nullable;
 
@@ -227,7 +236,7 @@ class SpannerLookupSourceTest {
                         null,
                         path);
 
-        assertThatThrownBy(lookup::open)
+        assertThatThrownBy(() -> lookup.open(new UnregisteredMetricsGroup()))
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessage("Failed to load the configured Spanner service-account key file.")
                 .hasNoCause();
@@ -249,9 +258,92 @@ class SpannerLookupSourceTest {
 
         // Through open() rather than settings(), so this also pins that the parse runs before the
         // client is built — the reason the case needs no emulator and no credentials.
-        assertThatThrownBy(lookup::open)
+        assertThatThrownBy(() -> lookup.open(new UnregisteredMetricsGroup()))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulator-endpoint must be host:port, was 'localhost'");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void registersAndHandsTheClientMetricsWhenTheLookupOpens(boolean async) throws Exception {
+        LookupRuntimeProvider provider =
+                provider(
+                        config(
+                                "emulator-endpoint",
+                                ClosedEmulator.target(),
+                                "lookup.async",
+                                String.valueOf(async),
+                                "client-metrics.export-to-flink",
+                                "true",
+                                "client-metrics.export-to-cloud-monitoring",
+                                "false"),
+                        new int[][] {{0}, {1}});
+        SpannerRowLookup rowLookup =
+                async
+                        ? ((SpannerRowDataAsyncLookupFunction)
+                                        ((AsyncLookupFunctionProvider) provider)
+                                                .createAsyncLookupFunction())
+                                .rowLookup()
+                        : ((SpannerRowDataLookupFunction)
+                                        ((LookupFunctionProvider) provider).createLookupFunction())
+                                .rowLookup();
+        SpannerDatabaseRowLookup lookup = (SpannerDatabaseRowLookup) rowLookup;
+        MetricListener listener = new MetricListener();
+
+        // Nothing listens on the emulator endpoint, so the client's own emulator check fails the
+        // open, after the series were registered: they come before the client.
+        assertThatThrownBy(() -> lookup.open(listener.getMetricGroup()))
+                .isInstanceOf(java.io.IOException.class);
+        try {
+            assertThat(listener.getCounter("rpcMethod", "CreateSession", "operations")).isPresent();
+            assertThat(listener.getCounter("rpcMethod", "StreamingRead", "operations")).isPresent();
+            SpannerOptions settings = lookup.settings();
+            assertThat(settings.getClientMetricsProvider())
+                    .isInstanceOf(CustomOpenTelemetryMetricsProvider.class);
+            assertThat(settings.isEnableBuiltInMetrics()).isFalse();
+        } finally {
+            lookup.close();
+        }
+    }
+
+    @Test
+    void carriesTheCloudMonitoringChoiceIntoTheClientSettings() throws Exception {
+        // No emulator: its branch turns the export off by itself, which would hide the choice.
+        // settings() is read before open(), so no client is built.
+        SpannerDatabaseRowLookup lookup =
+                (SpannerDatabaseRowLookup)
+                        ((SpannerRowDataLookupFunction)
+                                        ((LookupFunctionProvider)
+                                                        provider(
+                                                                config(
+                                                                        "client-metrics.export-to-cloud-monitoring",
+                                                                        "false"),
+                                                                new int[][] {{0}, {1}}))
+                                                .createLookupFunction())
+                                .rowLookup();
+
+        assertThat(lookup.settings().isEnableBuiltInMetrics()).isFalse();
+    }
+
+    @Test
+    void registersNothingWhenTheLookupDoesNotExportToFlink() throws Exception {
+        SpannerDatabaseRowLookup lookup =
+                new SpannerDatabaseRowLookup(
+                        DatabaseDestination.of("p", "i", "d"),
+                        "people",
+                        Collections.singletonList("id"),
+                        ClosedEmulator.target());
+        MetricListener listener = new MetricListener();
+
+        assertThatThrownBy(() -> lookup.open(listener.getMetricGroup()))
+                .isInstanceOf(java.io.IOException.class);
+        try {
+            assertThat(listener.getCounter("rpcMethod", "StreamingRead", "operations")).isEmpty();
+            assertThat(lookup.settings().getClientMetricsProvider())
+                    .isNotInstanceOf(CustomOpenTelemetryMetricsProvider.class);
+        } finally {
+            lookup.close();
+        }
     }
 
     @Test
@@ -354,7 +446,7 @@ class SpannerLookupSourceTest {
                 new SpannerRowDataLookupFunction(
                         schema, new int[] {4}, new int[] {0, 1, 2, 3}, 0, lookup);
         Instant instant = Instant.parse("2026-08-11T01:02:03.123456789Z");
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         function.lookup(
                 GenericRowData.of(
@@ -418,7 +510,7 @@ class SpannerLookupSourceTest {
         SpannerRowDataLookupFunction function =
                 new SpannerRowDataLookupFunction(
                         SCHEMA, new int[] {2}, new int[] {1, 0}, 0, lookup);
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         Collection<RowData> rows =
                 function.lookup(GenericRowData.of(7L, StringData.fromString("eu")));
@@ -438,7 +530,7 @@ class SpannerLookupSourceTest {
         SpannerRowDataLookupFunction function =
                 new SpannerRowDataLookupFunction(
                         UUID_SCHEMA, new int[] {2}, new int[] {1, 0}, 0, lookup);
-        function.open(null);
+        function.open(new FunctionContext(null));
 
         function.lookup(
                 GenericRowData.of(
@@ -725,7 +817,7 @@ class SpannerLookupSourceTest {
         }
 
         @Override
-        public void open() {}
+        public void open(MetricGroup metricGroup) {}
 
         @Override
         public Struct read(Key key) {
@@ -756,7 +848,7 @@ class SpannerLookupSourceTest {
         }
 
         @Override
-        public void open() {}
+        public void open(MetricGroup metricGroup) {}
 
         @Override
         public Struct read(Key key) {

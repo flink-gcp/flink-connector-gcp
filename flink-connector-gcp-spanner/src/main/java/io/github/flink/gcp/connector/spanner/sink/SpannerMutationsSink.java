@@ -28,12 +28,16 @@ import com.google.auth.oauth2.GoogleCredentials;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccess;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerWriter;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.List;
@@ -73,13 +77,41 @@ public class SpannerMutationsSink<T> implements CrossVersionSink<T>, LineageVert
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
         GoogleCredentials credentials = SpannerCredentials.load(config.getServiceAccountKeyFile());
-        return createWriter(
-                context,
-                new DefaultSpannerDatabaseAccessFactory(
-                        config.getDatabase(),
-                        config.getWriterOptions(),
-                        config.getEmulatorEndpoint(),
-                        credentials));
+        // Registered here, as the writer opens and before its client exists. The factory hands the
+        // client metrics to the database access it creates, which closes them after its client,
+        // and a failed creation closes them. Closing only stops the recording, so a failure before
+        // the client exists leaves nothing to release.
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? SpannerClientMetrics.register(
+                                context.metricGroup(),
+                                SpannerClientMetrics.CREATE_SESSION,
+                                SpannerClientMetrics.EXECUTE_STREAMING_SQL,
+                                SpannerClientMetrics.BATCH_WRITE)
+                        : null;
+        return createWriter(context, databaseAccessFactory(config, credentials, clientMetrics));
+    }
+
+    /**
+     * Builds the production database access factory from the sink configuration. Separate so that a
+     * test can see each client-metrics choice reach the client's settings.
+     *
+     * <p>The writer's client calls three RPCs: {@code CreateSession} for the database handle's
+     * multiplexed session, {@code ExecuteStreamingSql} for the dialect and the schema the cell
+     * weights read, and {@code BatchWrite} for every batch.
+     */
+    @VisibleForTesting
+    static DefaultSpannerDatabaseAccessFactory databaseAccessFactory(
+            SpannerSinkConfig<?> config,
+            @Nullable GoogleCredentials credentials,
+            @Nullable ClientMetrics clientMetrics) {
+        return new DefaultSpannerDatabaseAccessFactory(
+                config.getDatabase(),
+                config.getWriterOptions(),
+                config.getEmulatorEndpoint(),
+                credentials,
+                config.isExportClientMetricsToCloudMonitoring(),
+                clientMetrics);
     }
 
     /**

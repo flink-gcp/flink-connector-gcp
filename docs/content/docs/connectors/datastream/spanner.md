@@ -757,6 +757,65 @@ Changing source parallelism requires a restart from a checkpoint or savepoint so
 TaskManager slots supply resources for that parallelism but do not redistribute queries themselves.
 The connector exposes these capacity signals but does not change operator parallelism automatically.
 
+### Client-library metrics
+
+The Spanner client measures its own RPCs, and by default it exports those measurements only to Cloud Monitoring.
+With `exportClientMetricsToFlink(true)` on any of the three builders (`client-metrics.export-to-flink` in SQL), each component that builds a client also reports them on its own metric group, so every configured Flink metric reporter sees them.
+The client records them into an OpenTelemetry instance the connector supplies, which adds each value straight into a Flink counter; the connector sends nothing to Cloud Monitoring or any other service on their behalf.
+
+Each RPC method gets a `rpcMethod.METHOD` subgroup, where `METHOD` is the method name without its `Spanner.` prefix.
+A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees the method as a tag on one metric name, as it sees `CODE` under `errorClass`.
+Each component registers the methods its client calls when it opens, so a method it has not used yet reads zero; the enumerators register once per source, as the paragraph after the tables explains:
+
+| Component | Methods |
+|---|---|
+| Sink writer | `CreateSession` (the database handle's session), `ExecuteStreamingSql` (the dialect and the schema the cell weights read), `BatchWrite` |
+| Batch source split enumerator, on the coordinator | `CreateSession`, `BeginTransaction` (the snapshot), `ExecuteStreamingSql` (the index and key columns a Table index scan resolves), `PartitionQuery`, `PartitionRead` |
+| Batch source reader, on each subtask | `ExecuteStreamingSql` (a query partition), `StreamingRead` (a table-read partition) |
+| Change Streams split enumerator, on the coordinator | `CreateSession`, `ExecuteStreamingSql` (the dialect and the stream's metadata) |
+| Change Streams reader, on each subtask | `CreateSession`, `ExecuteStreamingSql` (the dialect and each partition query) |
+| Table lookup, synchronous or asynchronous | `CreateSession`, `StreamingRead` (each key) |
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `rpcMethod.METHOD.operations` | counter | RPC calls the client completed, successful or not; a call spans the retries the client makes within it, and a stream the client resumes is a new call |
+| `rpcMethod.METHOD.operationTimeMillis` | counter | their total duration in milliseconds, the retries and backoff within a call included |
+| `rpcMethod.METHOD.attempts` | counter | RPC attempts the client sent, retries included |
+| `rpcMethod.METHOD.attemptTimeMillis` | counter | their total duration in milliseconds, as the client observed it |
+| `rpcMethod.METHOD.attemptsWithGfeTiming` | counter | attempts whose response carried the Google front end's server timing; the denominator of `gfeTimeMillis` |
+| `rpcMethod.METHOD.gfeTimeMillis` | counter | their total time from the Google front end receiving the RPC to reading the first byte of the response, in milliseconds |
+| `rpcMethod.METHOD.gfeConnectivityErrors` | counter | attempts whose response carried no Google front end timing, which the client counts as not having reached the Google network. Not recorded on a DirectPath connection |
+| `rpcMethod.METHOD.attemptsWithAfeTiming` | counter | attempts whose response carried the Spanner API front end's server timing; the denominator of `afeTimeMillis` |
+| `rpcMethod.METHOD.afeTimeMillis` | counter | their total time from the Spanner API front end receiving the RPC to starting its response, in milliseconds |
+| `rpcMethod.METHOD.afeConnectivityErrors` | counter | attempts whose response carried no Spanner API front end timing. The client records neither AFE series when `SPANNER_DISABLE_AFE_SERVER_TIMING` is `true` |
+
+Latencies arrive as a count and a millisecond sum, so a backend divides the rate of the sum by the rate of the count for the mean over any window.
+Only those two are kept, not percentiles, buckets or extremes, which keeps every series a monotonic counter that any reporter can rate.
+The operation and attempt counts are the client's own counters; the client records each operation and attempt latency at the same point, so those histograms' counts are not reported again.
+
+Every attribute the client attaches other than the method (status, client id, DirectPath use) is ignored, so a component reports ten series per method whatever it reads or writes.
+Failures by status are what `errorClass.CODE.errors` already counts on the sink.
+The client makes no retry within a `BatchWrite`, `ExecuteStreamingSql` or `StreamingRead` call, so their `attempts` equal their `operations`.
+That does not mean nothing is retried: a batch the sink re-sends is a new operation, and when one of the two streaming reads fails with a retryable status at a point it can safely resume from, the client waits and resumes the stream, from the last resume token it received if there is one, as a new operation, so the wait is in no series.
+A Change Streams partition query is therefore one operation per stream it opens, and adds to `operationTimeMillis` only when that stream ends.
+
+The client adds to the counters as it records, so a report reads the totals up to that moment: the attempt series move as each RPC attempt ends, and the operation series as each operation ends.
+A count and its sum are added separately, so a report taken while the client records can see one value more in one of them; over a rate window the difference vanishes.
+A method the client reports and the component did not register is logged once by that component, at `WARN`, and is not reported.
+An enumerator's metric group outlives the enumerator: a global failover resets the source coordinator and builds the next enumerator on the same group, where a second registration of a name would be refused.
+So each source registers its enumerators' series once and every enumerator it builds records into them, and they keep counting across such a reset.
+Under the adaptive scheduler a restart builds a new source object on the same group, so the series stop at the first enumerator's totals, as this connector's other enumerator metrics do after any reset; [#1908]({{< param BookRepo >}}/issues/1908) tracks both.
+The client's gRPC-layer metrics record only into an OpenTelemetry SDK instance, so they go to Cloud Monitoring alone.
+
+**Against the emulator the client records nothing**, whatever its metrics provider: the emulator endpoint puts it in its emulator mode, so the series are registered and stay at zero.
+
+**Exporting to Flink does not stop the export to Cloud Monitoring.**
+The client keeps its built-in Cloud Monitoring tracer beside the one this option adds.
+`exportClientMetricsToCloudMonitoring(false)` (`client-metrics.export-to-cloud-monitoring = 'false'`) removes it from the components' clients, whether or not anything is exported to Flink.
+The export runs through one exporter per class loader that loads the client, which the first client taking part starts and which stays until the JVM exits; turning the option off keeps the components' clients from starting it or recording into it, but does not stop one another client started.
+The exporter registers a JVM shutdown hook that holds it, so where the client is loaded by a job's user-code class loader, as in a session cluster, that hook can keep the class loader reachable after the job ends.
+The option only ever turns the export off, so the client's own `SPANNER_DISABLE_BUILTIN_METRICS` environment variable still applies when the option is left alone.
+
 ## Testing
 
 Coordinator-event unit tests reject null child entries at construction, accept immutable child lists, and verify that defensive copying preserves child order and duplicates.
@@ -781,6 +840,7 @@ disagree, the service decides. Known deviations, and what covers them instead:
 | No IAM | Neither `PERMISSION_DENIED` nor the `spanner.databases.select` requirement of the schema read is exercised. The gated real-GCP suite ([#224]({{< param BookRepo >}}/issues/224)) reads the schema over real credentials, but holds `roles/spanner.editor`, so a refusal is still not exercised anywhere |
 | Rejection statuses are the emulator's | The table above was measured against the emulator, and **every row of it is now confirmed against the service** (2026-08-10) — same status, same per-group reporting. The gated suite asserts each row, so a change on either side has to be declared |
 | `FLOAT64` / PostgreSQL `FLOAT8` keys accept `NaN` in the emulator | The real service rejects these values in primary and secondary key columns. The float-key emulator test records acceptance in both dialects; the gated float-key read suite checks rejection separately from its numeric-range matrix. PostgreSQL's [type contract](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) states the restriction explicitly |
+| The client records no client metrics in its emulator mode | An emulator job reports every `rpcMethod` series at zero. `SpannerClientMetricsITCase` reaches the emulator outside that mode through a test-only switch, so a reporter observes the real client's series for every component; the emulator sends no front-end timing, so both connectivity-error series equal the attempts there. The gated suite observes the front-end timing the service sends |
 | Change Stream timing and topology are local approximations | Emulator tests prove both dialect adapters and deterministic failover, but do not establish the service's retention boundary, stream-creation boundary, partition topology, or heartbeat timing. The gated suite verifies those boundaries and restore behavior in both dialects; it observed two service-created child partitions at its 5,000-row scale, which is evidence for that run rather than a guaranteed partition count |
 
 ### The gated real-GCP suite

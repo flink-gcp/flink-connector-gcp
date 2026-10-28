@@ -45,6 +45,8 @@ public final class SpannerSinkConfig<T> implements Serializable {
     private final ConstraintViolationPolicy constraintViolationPolicy;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToFlink;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * Creates the configuration. The only caller is {@link SpannerSinkBuilder#build()}, which has
@@ -57,7 +59,9 @@ public final class SpannerSinkConfig<T> implements Serializable {
             FailureHandler<? super FailedMutation> failedMutationHandler,
             ConstraintViolationPolicy constraintViolationPolicy,
             @Nullable String serviceAccountKeyFile,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.database = database;
         this.serializer = serializer;
         this.writerOptions = writerOptions;
@@ -65,6 +69,8 @@ public final class SpannerSinkConfig<T> implements Serializable {
         this.constraintViolationPolicy = constraintViolationPolicy;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     /** Returns the database to write to. */
@@ -104,5 +110,15 @@ public final class SpannerSinkConfig<T> implements Serializable {
     @Nullable
     public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
+    }
+
+    /** Returns whether the client's own metrics are exported through Flink's metric system. */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
+    }
+
+    /** Returns whether the client keeps its built-in Cloud Monitoring export. */
+    public boolean isExportClientMetricsToCloudMonitoring() {
+        return exportClientMetricsToCloudMonitoring;
     }
 }

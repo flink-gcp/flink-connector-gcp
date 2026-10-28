@@ -34,12 +34,13 @@ class SpannerChangeStreamSourceCredentialsTest {
 
     @Test
     void coordinatorFactoryLoadsCredentialsOnTheJobManager() {
-        assertCredentialFailure(() -> source().getConfig().getCoordinatorClientFactory().create());
+        assertCredentialFailure(
+                () -> source().getConfig().getCoordinatorClientFactory().create(null));
     }
 
     @Test
     void queryFactoryLoadsCredentialsOnTheTaskManager() {
-        assertCredentialFailure(() -> source().getConfig().getQueryClientFactory().create());
+        assertCredentialFailure(() -> source().getConfig().getQueryClientFactory().create(null));
     }
 
     private static SpannerChangeStreamSource<Long> source() {

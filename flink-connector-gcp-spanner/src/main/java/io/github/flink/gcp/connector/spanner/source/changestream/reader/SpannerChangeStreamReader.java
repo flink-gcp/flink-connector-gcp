@@ -29,7 +29,9 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitState;
@@ -38,6 +40,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeSt
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -134,7 +138,25 @@ public final class SpannerChangeStreamReader<T>
                 config.getDeserializer(),
                 config.getRecordFilter(),
                 config.getMaxConcurrentQueriesPerSubtask(),
-                config.getQueryClientFactory().create());
+                config.getQueryClientFactory().create(clientMetrics(context, config)));
+    }
+
+    /**
+     * Registers the client metrics on the reader's group, before the client exists: its factory
+     * reads the dialect while it builds it.
+     *
+     * <p>The reader's client creates a session for its database handle and sends every dialect read
+     * and Change Streams query as a streaming query.
+     */
+    @Nullable
+    private static ClientMetrics clientMetrics(
+            SourceReaderContext context, SpannerChangeStreamSourceConfig<?> config) {
+        return config.isExportClientMetricsToFlink() && context.metricGroup() != null
+                ? SpannerClientMetrics.register(
+                        context.metricGroup(),
+                        SpannerClientMetrics.CREATE_SESSION,
+                        SpannerClientMetrics.EXECUTE_STREAMING_SQL)
+                : null;
     }
 
     @VisibleForTesting

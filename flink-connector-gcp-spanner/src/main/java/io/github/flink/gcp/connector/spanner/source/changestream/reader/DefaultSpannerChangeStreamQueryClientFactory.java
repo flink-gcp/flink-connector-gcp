@@ -30,9 +30,11 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.ReadOnlyTransaction;
 import com.google.cloud.spanner.Spanner;
+import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
@@ -42,6 +44,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPar
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -68,6 +71,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
     private final int maxConcurrentQueries;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     public DefaultSpannerChangeStreamQueryClientFactory(
             DatabaseDestination database,
@@ -85,6 +89,24 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
             int maxConcurrentQueries,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable String serviceAccountKeyFile) {
+        this(
+                database,
+                changeStreamName,
+                rpcPriority,
+                maxConcurrentQueries,
+                emulatorEndpoint,
+                serviceAccountKeyFile,
+                SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+    }
+
+    public DefaultSpannerChangeStreamQueryClientFactory(
+            DatabaseDestination database,
+            String changeStreamName,
+            SpannerRpcPriority rpcPriority,
+            int maxConcurrentQueries,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.changeStreamName =
                 Preconditions.checkNotNull(changeStreamName, "changeStreamName must not be null");
@@ -94,13 +116,13 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
         this.maxConcurrentQueries = maxConcurrentQueries;
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
-    public SpannerChangeStreamQueryClient create() throws Exception {
-        Spanner spanner =
-                SpannerClients.open(
-                        database, emulatorEndpoint, SpannerCredentials.load(serviceAccountKeyFile));
+    public SpannerChangeStreamQueryClient create(@Nullable ClientMetrics clientMetrics)
+            throws Exception {
+        Spanner spanner = SpannerClients.open(database, settings(clientMetrics), clientMetrics);
         try {
             DatabaseClient client =
                     spanner.getDatabaseClient(
@@ -114,11 +136,23 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
                     client.getDialect(),
                     changeStreamName,
                     rpcPriority,
-                    maxConcurrentQueries);
+                    maxConcurrentQueries,
+                    clientMetrics);
         } catch (Throwable error) {
-            Closers.closeAllSuppressing(error, spanner::close);
+            Closers.closeAllSuppressing(error, spanner::close, clientMetrics);
             throw error;
         }
+    }
+
+    /** Builds the reader's client settings, exposed for verifying its runtime choices. */
+    @VisibleForTesting
+    SpannerOptions settings(@Nullable ClientMetrics clientMetrics) throws IOException {
+        return SpannerClients.settings(
+                database,
+                emulatorEndpoint,
+                SpannerCredentials.load(serviceAccountKeyFile),
+                clientMetrics,
+                exportClientMetricsToCloudMonitoring);
     }
 
     private static final class DefaultClient implements SpannerChangeStreamQueryClient {
@@ -129,6 +163,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
         private final String changeStreamName;
         private final SpannerRpcPriority rpcPriority;
         private final ExecutorService callbacks;
+        @Nullable private final ClientMetrics clientMetrics;
         private final Set<DefaultHandle> queries = new LinkedHashSet<>();
         private boolean closed;
 
@@ -138,8 +173,10 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
                 Dialect dialect,
                 String changeStreamName,
                 SpannerRpcPriority rpcPriority,
-                int maxConcurrentQueries) {
+                int maxConcurrentQueries,
+                @Nullable ClientMetrics clientMetrics) {
             this.spanner = spanner;
+            this.clientMetrics = clientMetrics;
             this.client = client;
             this.dialect = dialect;
             this.changeStreamName = changeStreamName;
@@ -194,6 +231,9 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
             ArrayList<AutoCloseable> resources = new ArrayList<>(closing);
             resources.add(callbacks::shutdownNow);
             resources.add(spanner::close);
+            // Last: closed client metrics drop what they are given, and a handle still closing
+            // would lose whatever it recorded meanwhile.
+            resources.add(clientMetrics);
             Closers.closeAll(resources);
         }
     }

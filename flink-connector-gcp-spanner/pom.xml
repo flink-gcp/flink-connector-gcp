@@ -78,6 +78,14 @@ limitations under the License.
             <artifactId>google-cloud-spanner</artifactId>
         </dependency>
         <dependency>
+            <!-- base.metrics's OpenTelemetry API, which base declares optional so that only an
+                 adopting connector carries it (ADR-0186), and the type SpannerClients hands to the
+                 client's metrics provider. Version managed by the root opentelemetry-bom import;
+                 the client brings it already. -->
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+        <dependency>
             <!-- Direct dependency: Change Streams returns JSON in PostgreSQL and JSON-valued
                  fields in GoogleSQL. The record SPI preserves those values and type descriptors
                  without mapping them through the client library's current type enum. Version

@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.DefaultSpannerChangeStreamCoordinatorClientFactory;
@@ -95,6 +96,10 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     @Nullable private EmulatorEndpoint emulatorEndpoint;
     @Nullable private SpannerChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     @Nullable private SpannerChangeStreamQueryClientFactory queryClientFactory;
+    private boolean exportClientMetricsToFlink =
+            SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    private boolean exportClientMetricsToCloudMonitoring =
+            SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
 
     SpannerChangeStreamSourceBuilder() {}
 
@@ -401,6 +406,51 @@ public final class SpannerChangeStreamSourceBuilder<T> {
         return this;
     }
 
+    /**
+     * Exports the Spanner client's own metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>The coordinator (the split enumerator) and each reader register them under their own
+     * metric group as {@code rpcMethod.METHOD.leaf}, for the RPC methods their clients call: per
+     * method, the client's operation and attempt counts and latencies, and per attempt the Google
+     * front end's and the Spanner API front end's timing and the attempts that arrived without it.
+     * Latencies are reported as a count and a millisecond sum, so a backend divides their rates for
+     * the mean over any window; no percentile is reported. A Change Streams query is one operation
+     * per stream it opens, counted when the stream ends; a stream the client resumes is a new one.
+     * Against an emulator the client records nothing, so the series stay at zero.
+     *
+     * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
+     * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public SpannerChangeStreamSourceBuilder<T> exportClientMetricsToFlink(
+            boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
+     * Sets whether the Spanner clients of the coordinator and the readers take part in the client's
+     * built-in export of client-side metrics to Cloud Monitoring. Optional; on by default, unless
+     * the {@code SPANNER_DISABLE_BUILTIN_METRICS} environment variable turns the export off.
+     *
+     * <p>The client exports through one exporter per class loader, which the first client that
+     * takes part starts and which stays until the JVM exits. Off, this source's clients neither
+     * start it nor record into it; an exporter another client started keeps running. It is
+     * independent of {@link #exportClientMetricsToFlink(boolean)}, which neither needs nor stops
+     * this export.
+     *
+     * @param exportClientMetricsToCloudMonitoring whether the clients export to Cloud Monitoring
+     * @return this builder
+     */
+    public SpannerChangeStreamSourceBuilder<T> exportClientMetricsToCloudMonitoring(
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        return this;
+    }
+
     @VisibleForTesting
     SpannerChangeStreamSourceBuilder<T> coordinatorClientFactory(
             SpannerChangeStreamCoordinatorClientFactory factory) {
@@ -449,7 +499,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                                 changeStreamName,
                                 absentRetentionFallback,
                                 emulatorEndpoint,
-                                serviceAccountKeyFile);
+                                serviceAccountKeyFile,
+                                exportClientMetricsToCloudMonitoring);
         SpannerChangeStreamQueryClientFactory readerFactory =
                 queryClientFactory != null
                         ? queryClientFactory
@@ -459,7 +510,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                                 rpcPriority,
                                 maxConcurrentQueriesPerSubtask,
                                 emulatorEndpoint,
-                                serviceAccountKeyFile);
+                                serviceAccountKeyFile,
+                                exportClientMetricsToCloudMonitoring);
         return new SpannerChangeStreamSource<>(
                 new SpannerChangeStreamSourceConfig<>(
                         database,
@@ -480,7 +532,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                                 skipMessagesWithoutChange),
                         boundedTimestamp,
                         coordinatorFactory,
-                        readerFactory));
+                        readerFactory,
+                        exportClientMetricsToFlink));
     }
 
     private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {

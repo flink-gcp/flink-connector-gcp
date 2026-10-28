@@ -47,6 +47,7 @@ import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerRealGcpITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.RpcMethodSeriesReporter;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamTestSourceFactory;
@@ -330,6 +331,50 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         assertThat(run(builder -> builder)).containsExactlyInAnyOrderElementsOf(allIds());
     }
 
+    /**
+     * The client-library metrics against the service, which the emulator cannot show: it sends
+     * neither front end's timing header, so every attempt there counts as a connectivity error.
+     *
+     * <p>The Google front end's timing is recorded only for an attempt that does not use
+     * DirectPath, and the Spanner API front end's only while {@code
+     * SPANNER_DISABLE_AFE_SERVER_TIMING} is not {@code true}, so each assertion is conditional on
+     * its own prerequisite. A positive count of timed attempts is the evidence; a millisecond sum
+     * may round to zero.
+     */
+    @Test
+    void reportsTheFrontEndTimingTheServiceSendsThroughAFlinkReporter() throws Exception {
+        RpcMethodSeriesReporter.reset();
+        try {
+            assertThat(run(builder -> builder.exportClientMetricsToFlink(true)))
+                    .containsExactlyInAnyOrderElementsOf(allIds());
+
+            Map<String, Long> current = RpcMethodSeriesReporter.current();
+            LOG.info("Client-metrics series of the production read: {}", current);
+            assertThat(current)
+                    .containsKeys(
+                            "coordinator/PartitionQuery.operations",
+                            "coordinator/BeginTransaction.operations",
+                            "task/ExecuteStreamingSql.attempts");
+            assertThat(current.get("coordinator/PartitionQuery.operations")).isPositive();
+            assertThat(current.get("coordinator/BeginTransaction.operations")).isPositive();
+            String reads = "task/ExecuteStreamingSql.";
+            long attempts = current.get(reads + "attempts");
+            assertThat(attempts).isPositive();
+            if (!Boolean.parseBoolean(System.getenv("GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS"))) {
+                assertThat(current.get(reads + "attemptsWithGfeTiming"))
+                        .isPositive()
+                        .isEqualTo(attempts - current.get(reads + "gfeConnectivityErrors"));
+            }
+            if (!Boolean.parseBoolean(System.getenv("SPANNER_DISABLE_AFE_SERVER_TIMING"))) {
+                assertThat(current.get(reads + "attemptsWithAfeTiming"))
+                        .isPositive()
+                        .isEqualTo(attempts - current.get(reads + "afeConnectivityErrors"));
+            }
+        } finally {
+            RpcMethodSeriesReporter.reset();
+        }
+    }
+
     @Test
     void readsEveryRowWithDataBoostThroughTheSource() throws Exception {
         assertThat(run(builder -> builder.dataBoostEnabled(true)))
@@ -381,11 +426,11 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
                 SpannerChangeStreamCoordinatorClient all =
                         new DefaultSpannerChangeStreamCoordinatorClientFactory(
                                         changeStreamDatabase, ALL_CHANGES, null)
-                                .create();
+                                .create(null);
                 SpannerChangeStreamCoordinatorClient explicit =
                         new DefaultSpannerChangeStreamCoordinatorClientFactory(
                                         changeStreamDatabase, EXPLICIT_CHANGES, null)
-                                .create()) {
+                                .create(null)) {
             assertThat(all.initialize()).isEqualTo(Duration.ofDays(1));
             assertThat(explicit.initialize()).isEqualTo(Duration.ofDays(7));
 
@@ -748,6 +793,10 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         // A retry would hide a read failure behind a green job, which is the one outcome these
         // tests must not produce.
         configuration.set(RestartStrategyOptions.RESTART_STRATEGY, "none");
+        // Observes the client metrics of a run that exports them; registers nothing otherwise.
+        configuration.setString(
+                "metrics.reporter.rpc.factory.class", RpcMethodSeriesReporter.class.getName());
+        configuration.setString("metrics.reporter.rpc.interval", "100 ms");
         StreamExecutionEnvironment env =
                 StreamExecutionEnvironment.getExecutionEnvironment(configuration);
         env.setParallelism(2);

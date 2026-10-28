@@ -1116,7 +1116,8 @@ connector gets its own module file rather than a section here.
   `Provider`, and `SourceCoordinatorProvider` holds one `Source` — so a closeable seam on the
   source configuration is shared by every enumerator a global restore builds, and the first
   teardown refuses every later one. The configuration carries a serializable factory with a no-arg
-  `create()`, the source mints in both `createEnumerator` and `restoreEnumerator` and closes what
+  `create()` (an argument may only be runtime state the caller hands over, such as client
+  metrics), the source mints in both `createEnumerator` and `restoreEnumerator` and closes what
   it could not hand over, and the seam interface is **not** `Serializable`, so a field of that type
   on a configuration fails to serialize the job graph rather than merely being absent — which is
   why each connector's tripwire asserts the property of the *interface*, the type the field would

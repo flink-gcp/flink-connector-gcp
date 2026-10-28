@@ -18,6 +18,10 @@ package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
 
 import org.apache.flink.annotation.Internal;
 
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+
+import javax.annotation.Nullable;
+
 import java.io.Serializable;
 
 /** Serializable job-graph seam that opens the coordinator's runtime metadata client. */
@@ -25,5 +29,18 @@ import java.io.Serializable;
 @FunctionalInterface
 public interface SpannerChangeStreamCoordinatorClientFactory extends Serializable {
 
-    SpannerChangeStreamCoordinatorClient create() throws Exception;
+    /**
+     * Opens one client.
+     *
+     * <p>The client metrics are a parameter rather than state of this factory, because the factory
+     * travels in the job graph and the client metrics are runtime state of the source. The client
+     * records into them and never closes them: every enumerator the source builds shares them.
+     *
+     * @param clientMetrics the source's client metrics for its enumerators, or {@code null} to
+     *     export nothing to Flink
+     * @return the client, owned by the caller
+     * @throws Exception if the client cannot be opened
+     */
+    SpannerChangeStreamCoordinatorClient create(@Nullable ClientMetrics clientMetrics)
+            throws Exception;
 }

@@ -20,7 +20,9 @@ import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.util.FlinkRuntimeException;
 
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
+import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
@@ -106,12 +108,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
         SpannerChangeStreamSplitEnumerator enumerator =
                 new SpannerChangeStreamSplitEnumerator(
                         context,
-                        () -> client,
+                        clientMetrics -> client,
                         StartPosition.at(Instant.now().plus(Duration.ofDays(1))),
                         null,
                         null,
                         2_000,
-                        restored);
+                        restored,
+                        null);
 
         enumerator.start();
         context.runAsyncCalls();
@@ -373,12 +376,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
         SpannerChangeStreamSplitEnumerator enumerator =
                 new SpannerChangeStreamSplitEnumerator(
                         context,
-                        ScriptedClient::new,
+                        clientMetrics -> new ScriptedClient(),
                         StartPosition.latest(),
                         null,
                         null,
                         2_000,
                         restored,
+                        null,
                         now::get);
 
         enumerator.start();
@@ -762,12 +766,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
         SpannerChangeStreamSplitEnumerator enumerator =
                 new SpannerChangeStreamSplitEnumerator(
                         context,
-                        () -> new ScriptedClient(),
+                        clientMetrics -> new ScriptedClient(),
                         StartPosition.latest(),
                         StartPosition.at(fallback),
                         null,
                         2_000,
-                        restored);
+                        restored,
+                        null);
 
         try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
             enumerator.start();
@@ -1208,7 +1213,62 @@ class SpannerChangeStreamSplitEnumeratorTest {
             @Nullable Instant bound,
             @Nullable SpannerChangeStreamEnumeratorState restored) {
         return new SpannerChangeStreamSplitEnumerator(
-                context, ScriptedClient::new, start, resumeFallback, bound, 2_000, restored);
+                context,
+                clientMetrics -> new ScriptedClient(),
+                start,
+                resumeFallback,
+                bound,
+                2_000,
+                restored,
+                null);
+    }
+
+    @Test
+    void theCoordinatorsClientReceivesNoClientMetricsUnlessTheyAreExported() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        List<ClientMetrics> received = new java.util.ArrayList<>();
+
+        runEnumerator(context, null, received);
+
+        assertThat(received).containsExactly((ClientMetrics) null);
+    }
+
+    @Test
+    void theCoordinatorsClientRecordsIntoTheSourcesSetAndNeverClosesIt() throws Exception {
+        // The source registers the set once for all its enumerators (SpannerChangeStreamSource,
+        // pinned through it in SpannerChangeStreamSourceBuilderTest); a coordinator only passes it
+        // on.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ClientMetrics shared = ClientMetricsProbe.create();
+        List<ClientMetrics> received = new java.util.ArrayList<>();
+
+        runEnumerator(context, shared, received);
+
+        assertThat(received).containsExactly(shared);
+        assertThat(ClientMetricsProbe.isOpen(shared)).isTrue();
+    }
+
+    private static void runEnumerator(
+            FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context,
+            @Nullable ClientMetrics clientMetrics,
+            List<ClientMetrics> received)
+            throws Exception {
+        SpannerChangeStreamSplitEnumerator enumerator =
+                new SpannerChangeStreamSplitEnumerator(
+                        context,
+                        metrics -> {
+                            received.add(metrics);
+                            return new ScriptedClient();
+                        },
+                        StartPosition.latest(),
+                        null,
+                        null,
+                        2_000,
+                        null,
+                        clientMetrics);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.close();
     }
 
     private static FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context(int parallelism) {
@@ -1225,7 +1285,14 @@ class SpannerChangeStreamSplitEnumeratorTest {
             ScriptedClient client,
             SpannerChangeStreamEnumeratorState restored) {
         return new SpannerChangeStreamSplitEnumerator(
-                context, () -> client, StartPosition.latest(), null, null, 2_000, restored);
+                context,
+                clientMetrics -> client,
+                StartPosition.latest(),
+                null,
+                null,
+                2_000,
+                restored,
+                null);
     }
 
     private static ChildPartitionsEvent children(
