@@ -54,6 +54,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
+import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
@@ -91,6 +92,7 @@ public final class SpannerDynamicSource
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
     private final SpannerLookupConfig lookupConfig;
+    private final SpannerClientMetricsConfig clientMetrics;
     @Nullable private final SpannerTableLineage lineage;
     private DataType producedDataType;
     @Nullable private int[] projectedFields;
@@ -135,6 +137,7 @@ public final class SpannerDynamicSource
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
                 SpannerLookupConfig.from(config),
+                SpannerClientMetricsConfig.from(config),
                 lineage);
     }
 
@@ -169,6 +172,7 @@ public final class SpannerDynamicSource
             @Nullable String serviceAccountKeyFile,
             @Nullable Integer parallelism,
             SpannerLookupConfig lookupConfig,
+            SpannerClientMetricsConfig clientMetrics,
             @Nullable SpannerTableLineage lineage) {
         this.schema = schema;
         this.database = database;
@@ -187,6 +191,7 @@ public final class SpannerDynamicSource
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
         this.lookupConfig = lookupConfig;
+        this.clientMetrics = clientMetrics;
         this.lineage = lineage;
     }
 
@@ -283,6 +288,8 @@ public final class SpannerDynamicSource
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
+        clientMetrics.applyTo(
+                builder::exportClientMetricsToFlink, builder::exportClientMetricsToCloudMonitoring);
         Source<RowData, ?, ?> source = builder.build();
         return SourceProvider.of(
                 lineage == null ? source : lineage.source(source, producedType), parallelism);
@@ -362,6 +369,7 @@ public final class SpannerDynamicSource
                                     keyPositions,
                                     emulatorEndpoint,
                                     serviceAccountKeyFile,
+                                    clientMetrics,
                                     lookupConfig.getMaxRetries(),
                                     filterState.runtime()));
             return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
@@ -380,6 +388,7 @@ public final class SpannerDynamicSource
                                 keyPositions,
                                 emulatorEndpoint,
                                 serviceAccountKeyFile,
+                                clientMetrics,
                                 lookupConfig.getMaxRetries(),
                                 filterState.runtime()));
         return lookupConfig.getCacheType() == LookupCacheType.PARTIAL
@@ -424,6 +433,7 @@ public final class SpannerDynamicSource
                         serviceAccountKeyFile,
                         parallelism,
                         lookupConfig,
+                        clientMetrics,
                         lineage);
         copy.projectedFields = projectedFields == null ? null : projectedFields.clone();
         copy.filterState = filterState;
@@ -462,6 +472,7 @@ public final class SpannerDynamicSource
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(parallelism, that.parallelism)
                 && lookupConfig.equals(that.lookupConfig)
+                && clientMetrics.equals(that.clientMetrics)
                 && Arrays.equals(projectedFields, that.projectedFields)
                 && filterState.equals(that.filterState);
     }
@@ -487,6 +498,7 @@ public final class SpannerDynamicSource
                 parallelism,
                 lineage,
                 lookupConfig,
+                clientMetrics,
                 filterState,
                 Arrays.hashCode(projectedFields));
     }

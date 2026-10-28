@@ -23,7 +23,9 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Spanner;
+import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
@@ -31,6 +33,7 @@ import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.time.Duration;
 
 /** Opens the Spanner service handle used for change-stream metadata discovery. */
@@ -46,6 +49,7 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
     private final Duration absentRetentionFallback;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     public DefaultSpannerChangeStreamCoordinatorClientFactory(
             DatabaseDestination database,
@@ -68,6 +72,22 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
             Duration absentRetentionFallback,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable String serviceAccountKeyFile) {
+        this(
+                database,
+                changeStreamName,
+                absentRetentionFallback,
+                emulatorEndpoint,
+                serviceAccountKeyFile,
+                SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+    }
+
+    public DefaultSpannerChangeStreamCoordinatorClientFactory(
+            DatabaseDestination database,
+            String changeStreamName,
+            Duration absentRetentionFallback,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.changeStreamName =
                 Preconditions.checkNotNull(changeStreamName, "changeStreamName must not be null");
@@ -82,15 +102,25 @@ public final class DefaultSpannerChangeStreamCoordinatorClientFactory
                 absentRetentionFallback);
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
-    public SpannerChangeStreamCoordinatorClient create() throws Exception {
-        return create(
-                SpannerClients.open(
-                        database,
-                        emulatorEndpoint,
-                        SpannerCredentials.load(serviceAccountKeyFile)));
+    public SpannerChangeStreamCoordinatorClient create(@Nullable ClientMetrics clientMetrics)
+            throws Exception {
+        // The client records into the source's client metrics and never closes them.
+        return create(SpannerClients.open(database, settings(clientMetrics)));
+    }
+
+    /** Builds the coordinator's client settings, exposed for verifying its runtime choices. */
+    @VisibleForTesting
+    SpannerOptions settings(@Nullable ClientMetrics clientMetrics) throws IOException {
+        return SpannerClients.settings(
+                database,
+                emulatorEndpoint,
+                SpannerCredentials.load(serviceAccountKeyFile),
+                clientMetrics,
+                exportClientMetricsToCloudMonitoring);
     }
 
     @VisibleForTesting

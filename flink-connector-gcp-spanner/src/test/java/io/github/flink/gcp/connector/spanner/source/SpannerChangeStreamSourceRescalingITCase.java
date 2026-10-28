@@ -153,7 +153,7 @@ class SpannerChangeStreamSourceRescalingITCase {
                 .deserializer(new SequenceDeserializer())
                 .startPosition(StartPosition.latest())
                 .maxConcurrentQueriesPerSubtask(maximumQueries)
-                .coordinatorClientFactory(NoOpCoordinatorClient::new)
+                .coordinatorClientFactory(clientMetrics -> new NoOpCoordinatorClient())
                 .queryClientFactory(new ScriptedSpannerChangeStreamQueryClientFactory(PARTITIONS))
                 .build();
     }

@@ -36,6 +36,8 @@ import org.apache.flink.util.UserCodeClassLoader;
 import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
+import io.github.flink.gcp.connector.spanner.SpannerEnumeratorClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
@@ -66,6 +68,16 @@ public final class SpannerChangeStreamSource<T>
     private static final long serialVersionUID = 1L;
 
     private final SpannerChangeStreamSourceConfig<T> config;
+
+    /**
+     * The coordinator's client metrics, shared by every enumerator this source object builds: their
+     * metric group outlives each of them. Its database handle creates a session, and every dialect
+     * and metadata read is a query.
+     */
+    private final SpannerEnumeratorClientMetrics enumeratorClientMetrics =
+            new SpannerEnumeratorClientMetrics(
+                    SpannerClientMetrics.CREATE_SESSION,
+                    SpannerClientMetrics.EXECUTE_STREAMING_SQL);
 
     SpannerChangeStreamSource(SpannerChangeStreamSourceConfig<T> config) {
         this.config = config;
@@ -137,7 +149,10 @@ public final class SpannerChangeStreamSource<T>
                 config.getResumeFallback(),
                 config.getEndTimestamp(),
                 config.getHeartbeatMillis(),
-                restored);
+                restored,
+                config.isExportClientMetricsToFlink()
+                        ? enumeratorClientMetrics.get(context.metricGroup())
+                        : null);
     }
 
     @Override

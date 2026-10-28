@@ -281,4 +281,34 @@ class SpannerSourceBuilderTest {
     private static SpannerSourceConfig<Long> configOf(SpannerSourceBuilder<Long> builder) {
         return ((SpannerBatchReadSource<Long>) builder.build()).getConfig();
     }
+
+    @Test
+    void exportsClientMetricsOnlyToCloudMonitoringByDefault() {
+        SpannerSourceConfig<Long> config = configOf(builder());
+
+        assertThat(config.isExportClientMetricsToFlink()).isFalse();
+        assertThat(config.getPlannerFactory())
+                .usingRecursiveComparison()
+                .isEqualTo(new DefaultPartitionPlannerFactory(DATABASE, null, true));
+        assertThat(config.getOpener())
+                .usingRecursiveComparison()
+                .isEqualTo(new BatchClientStructStreamOpener(DATABASE, null, true));
+    }
+
+    @Test
+    void carriesBothClientMetricsChoicesToTheEnumeratorAndTheReaders() {
+        SpannerSourceConfig<Long> config =
+                configOf(
+                        builder()
+                                .exportClientMetricsToFlink(true)
+                                .exportClientMetricsToCloudMonitoring(false));
+
+        assertThat(config.isExportClientMetricsToFlink()).isTrue();
+        assertThat(config.getPlannerFactory())
+                .usingRecursiveComparison()
+                .isEqualTo(new DefaultPartitionPlannerFactory(DATABASE, null, false));
+        assertThat(config.getOpener())
+                .usingRecursiveComparison()
+                .isEqualTo(new BatchClientStructStreamOpener(DATABASE, null, false));
+    }
 }

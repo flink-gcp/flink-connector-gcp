@@ -45,6 +45,7 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
+import io.github.flink.gcp.connector.spanner.sink.SpannerSinkConfig;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
@@ -388,6 +389,68 @@ class SpannerDynamicTableFactoryTest {
                 .isEqualTo("/var/run/secrets/spanner.json");
         assertThat(builtSource(SCHEMA, options).getServiceAccountKeyFile())
                 .isEqualTo("/var/run/secrets/spanner.json");
+    }
+
+    @Test
+    void mapsBothClientMetricsOptionsToTheSinkAndTheScans() {
+        Map<String, String> options = options();
+        options.put("client-metrics.export-to-flink", "true");
+        options.put("client-metrics.export-to-cloud-monitoring", "false");
+        Map<String, String> changeStream = changeStreamOptions("full");
+        changeStream.put("client-metrics.export-to-flink", "true");
+        changeStream.put("client-metrics.export-to-cloud-monitoring", "false");
+
+        SpannerSinkConfig<?> sink = built(SCHEMA, options).getConfig();
+        assertThat(sink.isExportClientMetricsToFlink()).isTrue();
+        assertThat(sink.isExportClientMetricsToCloudMonitoring()).isFalse();
+        SpannerSourceConfig<?> scan = builtSource(SCHEMA, options);
+        assertThat(scan.isExportClientMetricsToFlink()).isTrue();
+        assertThat(scan.getPlannerFactory())
+                .extracting("exportClientMetricsToCloudMonitoring")
+                .isEqualTo(false);
+        assertThat(scan.getOpener())
+                .extracting("exportClientMetricsToCloudMonitoring")
+                .isEqualTo(false);
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source(SCHEMA, changeStream))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        SpannerChangeStreamSourceConfig<?> changes =
+                TestSources.changeStreamConfig(runtimeSource(provider.createSource()));
+        assertThat(changes.isExportClientMetricsToFlink()).isTrue();
+        assertThat(changes.getCoordinatorClientFactory())
+                .extracting("exportClientMetricsToCloudMonitoring")
+                .isEqualTo(false);
+        assertThat(changes.getQueryClientFactory())
+                .extracting("exportClientMetricsToCloudMonitoring")
+                .isEqualTo(false);
+    }
+
+    @Test
+    void copiesAndComparesTheClientMetricsOptions() {
+        Map<String, String> options = options();
+        options.put("client-metrics.export-to-flink", "true");
+        Map<String, String> changeStream = changeStreamOptions("full");
+        changeStream.put("client-metrics.export-to-cloud-monitoring", "false");
+
+        DynamicTableSink sink = sink(SCHEMA, options);
+        DynamicTableSource scan = source(SCHEMA, options);
+        DynamicTableSource changes = source(SCHEMA, changeStream);
+
+        assertThat(sink.copy()).isEqualTo(sink).isNotEqualTo(sink(SCHEMA, options()));
+        assertThat(scan.copy()).isEqualTo(scan).isNotEqualTo(source(SCHEMA, options()));
+        assertThat(changes.copy())
+                .isEqualTo(changes)
+                .isNotEqualTo(source(SCHEMA, changeStreamOptions("full")));
+    }
+
+    @Test
+    void leavesTheClientMetricsAtTheirDefaultsWhenTheTableIsSilent() {
+        SpannerSinkConfig<?> sink = built(SCHEMA, options()).getConfig();
+
+        assertThat(sink.isExportClientMetricsToFlink()).isFalse();
+        assertThat(sink.isExportClientMetricsToCloudMonitoring()).isTrue();
+        assertThat(builtSource(SCHEMA, options()).isExportClientMetricsToFlink()).isFalse();
     }
 
     @Test

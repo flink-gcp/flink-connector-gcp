@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamStartPositionMapper;
+import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
@@ -77,6 +78,7 @@ public final class SpannerChangeStreamDynamicSource
     private final int maxConcurrentQueriesPerSubtask;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
+    private final SpannerClientMetricsConfig clientMetrics;
     @Nullable private final Integer parallelism;
 
     private DataType producedDataType;
@@ -119,6 +121,7 @@ public final class SpannerChangeStreamDynamicSource
                 config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
+                SpannerClientMetricsConfig.from(config),
                 lineage);
     }
 
@@ -140,6 +143,7 @@ public final class SpannerChangeStreamDynamicSource
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile,
             @Nullable Integer parallelism,
+            SpannerClientMetricsConfig clientMetrics,
             @Nullable SpannerTableLineage lineage) {
         this.schema = schema;
         this.database = database;
@@ -162,6 +166,7 @@ public final class SpannerChangeStreamDynamicSource
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
+        this.clientMetrics = clientMetrics;
         this.lineage = lineage;
     }
 
@@ -247,6 +252,8 @@ public final class SpannerChangeStreamDynamicSource
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
+        clientMetrics.applyTo(
+                builder::exportClientMetricsToFlink, builder::exportClientMetricsToCloudMonitoring);
         Source<RowData, ?, ?> source = builder.build();
         return SourceProvider.of(
                 lineage == null ? source : lineage.source(source, producedType), parallelism);
@@ -272,6 +279,7 @@ public final class SpannerChangeStreamDynamicSource
                 emulatorEndpoint,
                 serviceAccountKeyFile,
                 parallelism,
+                clientMetrics,
                 lineage);
     }
 
@@ -306,7 +314,8 @@ public final class SpannerChangeStreamDynamicSource
                 && rpcPriority == that.rpcPriority
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
-                && Objects.equals(parallelism, that.parallelism);
+                && Objects.equals(parallelism, that.parallelism)
+                && clientMetrics.equals(that.clientMetrics);
     }
 
     @Override
@@ -329,6 +338,7 @@ public final class SpannerChangeStreamDynamicSource
                 emulatorEndpoint,
                 serviceAccountKeyFile,
                 parallelism,
+                clientMetrics,
                 lineage);
     }
 }

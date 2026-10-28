@@ -455,7 +455,7 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
         SpannerChangeStreamSplitEnumerator enumerator =
                 new SpannerChangeStreamSplitEnumerator(
                         context,
-                        () ->
+                        clientMetrics ->
                                 new SpannerChangeStreamCoordinatorClient() {
                                     @Override
                                     public Duration initialize() {
@@ -469,7 +469,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                         null,
                         start.plusSeconds(10),
                         2_000,
-                        restored);
+                        restored,
+                        null);
         enumerator.start();
         enumerator.handleSplitRequest(0, "localhost");
         context.runAsyncCalls();

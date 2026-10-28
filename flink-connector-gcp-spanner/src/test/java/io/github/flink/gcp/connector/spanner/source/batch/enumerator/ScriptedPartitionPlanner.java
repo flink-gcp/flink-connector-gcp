@@ -22,6 +22,7 @@ import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TestPartitions;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 
@@ -89,6 +90,9 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
     /** Ignores them: nothing here reaches the service, so there is no client to scope. */
     @Override
     public void useCredentials(@Nullable GoogleCredentials credentials) {}
+
+    @Override
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {}
 
     @Override
     public PartitionPlan plan(

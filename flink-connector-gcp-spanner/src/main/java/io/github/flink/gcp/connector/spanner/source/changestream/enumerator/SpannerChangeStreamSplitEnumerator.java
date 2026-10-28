@@ -30,6 +30,7 @@ import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.metrics.MetricValues;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
@@ -140,6 +141,14 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private final SplitEnumeratorContext<ChangeStreamPartitionSplit> context;
     private final SpannerChangeStreamCoordinatorClientFactory clientFactory;
+
+    /**
+     * The source's client metrics for the client {@link #initialize()} builds, or {@code null} when
+     * nothing is exported to Flink. The source registers them once for all its enumerators; the
+     * client records into them and never closes them.
+     */
+    @Nullable private final ClientMetrics clientMetrics;
+
     private final StartPosition startPosition;
     @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant endTimestamp;
@@ -178,7 +187,8 @@ public final class SpannerChangeStreamSplitEnumerator
             @Nullable StartPosition resumeFallback,
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
-            @Nullable SpannerChangeStreamEnumeratorState restoredState) {
+            @Nullable SpannerChangeStreamEnumeratorState restoredState,
+            @Nullable ClientMetrics clientMetrics) {
         this(
                 context,
                 clientFactory,
@@ -187,6 +197,7 @@ public final class SpannerChangeStreamSplitEnumerator
                 endTimestamp,
                 heartbeatMillis,
                 restoredState,
+                clientMetrics,
                 System::currentTimeMillis);
     }
 
@@ -199,6 +210,7 @@ public final class SpannerChangeStreamSplitEnumerator
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
             @Nullable SpannerChangeStreamEnumeratorState restoredState,
+            @Nullable ClientMetrics clientMetrics,
             LongSupplier currentTimeMillis) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.clientFactory =
@@ -213,6 +225,7 @@ public final class SpannerChangeStreamSplitEnumerator
                 heartbeatMillis);
         this.heartbeatMillis = heartbeatMillis;
         this.restoredState = restoredState;
+        this.clientMetrics = clientMetrics;
         this.currentTimeMillis =
                 Preconditions.checkNotNull(currentTimeMillis, "currentTimeMillis must not be null");
     }
@@ -224,7 +237,7 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     private Initialization initialize() throws Exception {
-        SpannerChangeStreamCoordinatorClient created = clientFactory.create();
+        SpannerChangeStreamCoordinatorClient created = clientFactory.create(clientMetrics);
         if (!installClient(created)) {
             throw new IllegalStateException(
                     "Spanner Change Streams enumerator was already closed.");

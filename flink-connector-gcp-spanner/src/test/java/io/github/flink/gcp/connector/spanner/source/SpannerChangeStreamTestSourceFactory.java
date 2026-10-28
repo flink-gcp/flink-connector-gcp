@@ -42,7 +42,7 @@ public final class SpannerChangeStreamTestSourceFactory {
                 .deserializer(new SequenceDeserializer())
                 .startPosition(StartPosition.at(startTimestamp))
                 .maxConcurrentQueriesPerSubtask(2)
-                .coordinatorClientFactory(NoOpCoordinatorClient::new)
+                .coordinatorClientFactory(clientMetrics -> new NoOpCoordinatorClient())
                 .queryClientFactory(new ScriptedSpannerChangeStreamQueryClientFactory(partitions))
                 .build();
     }

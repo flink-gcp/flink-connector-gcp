@@ -23,6 +23,7 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 
 import javax.annotation.Nullable;
@@ -46,6 +47,10 @@ public class SpannerSinkBuilder<T> {
             ConstraintViolationPolicy.FAIL_JOB;
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
+    private boolean exportClientMetricsToFlink =
+            SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    private boolean exportClientMetricsToCloudMonitoring =
+            SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
 
     SpannerSinkBuilder() {}
 
@@ -159,6 +164,47 @@ public class SpannerSinkBuilder<T> {
     }
 
     /**
+     * Exports the Spanner client's own metrics through Flink's metric system, so that every
+     * configured Flink metric reporter sees them. Optional; off by default.
+     *
+     * <p>The writer registers them under its metric group as {@code rpcMethod.METHOD.leaf}, for the
+     * RPC methods its client calls: per method, the client's operation and attempt counts and
+     * latencies, and per attempt the Google front end's and the Spanner API front end's timing and
+     * the attempts that arrived without it. Latencies are reported as a count and a millisecond
+     * sum, so a backend divides their rates for the mean over any window; no percentile is
+     * reported. Against an emulator the client records nothing, so the series stay at zero.
+     *
+     * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
+     * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
+     *
+     * @param exportClientMetricsToFlink whether to export the client's metrics to Flink
+     * @return this builder
+     */
+    public SpannerSinkBuilder<T> exportClientMetricsToFlink(boolean exportClientMetricsToFlink) {
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        return this;
+    }
+
+    /**
+     * Sets whether the Spanner client takes part in its built-in export of client-side metrics to
+     * Cloud Monitoring. Optional; on by default, unless the {@code SPANNER_DISABLE_BUILTIN_METRICS}
+     * environment variable turns the export off.
+     *
+     * <p>The client exports through one exporter per class loader, which the first client that
+     * takes part starts and which stays until the JVM exits. Off, this sink's client neither starts
+     * it nor records into it; an exporter another client started keeps running. It is independent
+     * of {@link #exportClientMetricsToFlink(boolean)}, which neither needs nor stops this export.
+     *
+     * @param exportClientMetricsToCloudMonitoring whether the client exports to Cloud Monitoring
+     * @return this builder
+     */
+    public SpannerSinkBuilder<T> exportClientMetricsToCloudMonitoring(
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        return this;
+    }
+
+    /**
      * Builds the sink.
      *
      * @return the sink
@@ -182,6 +228,8 @@ public class SpannerSinkBuilder<T> {
                         failedMutationHandler,
                         constraintViolationPolicy,
                         serviceAccountKeyFile,
-                        emulatorEndpoint));
+                        emulatorEndpoint,
+                        exportClientMetricsToFlink,
+                        exportClientMetricsToCloudMonitoring));
     }
 }

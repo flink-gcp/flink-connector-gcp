@@ -83,7 +83,11 @@ The shape is the same in each connector.
 
 - The configuration carries a `Serializable` factory with one no-arg `create()`, not the seam. This
   follows `SpannerChangeStreamCoordinatorClientFactory` and `SpannerDatabaseAccessFactory`, which
-  already had it.
+  already had it. An argument that is runtime state the caller hands over keeps the rule, because
+  the factory still holds nothing between calls: the two Spanner Change Streams factories take
+  client metrics (#712), the reader's registered on its own group, and the coordinator's
+  registered once by the source for all its enumerators, because the enumerator group outlives
+  each of them (ADR-0186).
 - The shipped implementation is a named class holding the values the seam's own final fields held,
   so what a job graph carries is unchanged. A lambda would not do: `docs/adr/0125` keeps
   connector-minted serializable lambdas out of the job graph.

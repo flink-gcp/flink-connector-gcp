@@ -107,6 +107,33 @@ public final class SpannerConnectorOptions {
                     .withDescription(
                             "The service-account JSON key-file path available to each runtime process.");
 
+    /**
+     * Whether the Spanner client's own metrics, per RPC method, are exported through Flink's metric
+     * system as rpcMethod.METHOD.* series of the sink writer, the scan's enumerator and readers, or
+     * the lookup function.
+     */
+    public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_FLINK =
+            ConfigOptions.key("client-metrics.export-to-flink")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the Spanner client's own metrics, per RPC method, are exported"
+                                    + " through Flink's metric system as rpcMethod.METHOD.* series"
+                                    + " of the sink writer, the scan's enumerator and readers, or"
+                                    + " the lookup function.");
+
+    /**
+     * Whether the Spanner client takes part in its built-in export of client-side metrics to Cloud
+     * Monitoring.
+     */
+    public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING =
+            ConfigOptions.key("client-metrics.export-to-cloud-monitoring")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the Spanner client takes part in its built-in export of"
+                                    + " client-side metrics to Cloud Monitoring.");
+
     /** Field paths whose STRING values use Spanner JSON. */
     public static final ConfigOption<List<String>> JSON_FIELD_PATHS =
             ConfigOptions.key("json-field-paths")

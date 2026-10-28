@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner.table.source;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.metrics.MetricGroup;
 
 import com.google.api.core.ApiFuture;
 import com.google.cloud.spanner.DatabaseClient;
@@ -26,10 +27,13 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
+import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 
 import javax.annotation.Nullable;
@@ -46,7 +50,9 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     private final List<String> columns;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
+    private final SpannerClientMetricsConfig clientMetricsConfig;
     @Nullable private transient Spanner spanner;
+    @Nullable private transient ClientMetrics clientMetrics;
     @Nullable private transient DatabaseClient client;
 
     SpannerDatabaseRowLookup(
@@ -63,11 +69,28 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
             List<String> columns,
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile) {
+        this(
+                database,
+                table,
+                columns,
+                emulatorEndpoint,
+                serviceAccountKeyFile,
+                SpannerClientMetricsConfig.unset());
+    }
+
+    SpannerDatabaseRowLookup(
+            DatabaseDestination database,
+            String table,
+            List<String> columns,
+            @Nullable String emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
+            SpannerClientMetricsConfig clientMetricsConfig) {
         this.database = database;
         this.table = table;
         this.columns = columns;
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
+        this.clientMetricsConfig = clientMetricsConfig;
     }
 
     /** Returns the exact table passed to the Spanner point-read APIs. */
@@ -84,7 +107,16 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     }
 
     @Override
-    public void open() throws Exception {
+    public void open(MetricGroup metricGroup) throws Exception {
+        // Before the client exists. A lookup's client creates a session for its database handle
+        // and reads each key with a streaming read, synchronous or not.
+        if (clientMetricsConfig.exportToFlink()) {
+            clientMetrics =
+                    SpannerClientMetrics.register(
+                            metricGroup,
+                            SpannerClientMetrics.CREATE_SESSION,
+                            SpannerClientMetrics.STREAMING_READ);
+        }
         spanner = SpannerClients.open(database, settings());
         client =
                 spanner.getDatabaseClient(
@@ -109,7 +141,11 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
                         : EmulatorEndpoint.parse(
                                 emulatorEndpoint, SpannerConnectorOptions.EMULATOR_ENDPOINT.key());
         return SpannerClients.settings(
-                database, endpoint, SpannerCredentials.load(serviceAccountKeyFile));
+                database,
+                endpoint,
+                SpannerCredentials.load(serviceAccountKeyFile),
+                clientMetrics,
+                clientMetricsConfig.exportToCloudMonitoring());
     }
 
     @Override
@@ -124,10 +160,19 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
 
     @Override
     public void close() {
-        if (spanner != null) {
-            spanner.close();
-            spanner = null;
-            client = null;
+        try {
+            if (spanner != null) {
+                spanner.close();
+                spanner = null;
+                client = null;
+            }
+        } finally {
+            // After the client, whatever its close did: closed client metrics drop what they are
+            // given, and a client still closing would lose whatever it recorded meanwhile.
+            if (clientMetrics != null) {
+                clientMetrics.close();
+                clientMetrics = null;
+            }
         }
     }
 

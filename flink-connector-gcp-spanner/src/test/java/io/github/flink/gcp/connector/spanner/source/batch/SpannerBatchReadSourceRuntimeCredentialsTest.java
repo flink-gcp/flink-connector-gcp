@@ -25,6 +25,7 @@ import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
@@ -130,6 +131,50 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
         assertThat(opener.credentials).isNotSameAs(planners.only().credentials);
     }
 
+    @Test
+    void eachComponentHandsItsSeamItsOwnClientMetricsWhenTheyAreExported() throws Exception {
+        CapturingOpener opener = new CapturingOpener();
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
+        SpannerBatchReadSource<Long> source = source(opener, planners, true);
+
+        source.createReader(readerContext()).close();
+        source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
+
+        assertThat(opener.clientMetrics).isNotNull();
+        assertThat(planners.only().clientMetrics).isNotNull().isNotSameAs(opener.clientMetrics);
+    }
+
+    @Test
+    void everyEnumeratorOfTheSourceSharesOneSetOfClientMetrics() throws Exception {
+        // A coordinator reset builds the next enumerator from the same source on the same group;
+        // a second registration there would be dropped, so the set is the source's, made once.
+        CapturingOpener opener = new CapturingOpener();
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
+        SpannerBatchReadSource<Long> source = source(opener, planners, true);
+        FakeSplitEnumeratorContext<BatchReadSplit> context = new FakeSplitEnumeratorContext<>(1);
+
+        source.createEnumerator(context).close();
+        source.restoreEnumerator(context, null).close();
+
+        assertThat(planners.minted()).hasSize(2);
+        assertThat(planners.minted().get(0).clientMetrics).isNotNull();
+        assertThat(planners.minted().get(1).clientMetrics)
+                .isSameAs(planners.minted().get(0).clientMetrics);
+    }
+
+    @Test
+    void noComponentHandsItsSeamClientMetricsByDefault() throws Exception {
+        CapturingOpener opener = new CapturingOpener();
+        CapturingPlannerFactory planners = new CapturingPlannerFactory();
+        SpannerBatchReadSource<Long> source = source(opener, planners);
+
+        source.createReader(readerContext()).close();
+        source.createEnumerator(new FakeSplitEnumeratorContext<>(1)).close();
+
+        assertThat(opener.clientMetrics).isNull();
+        assertThat(planners.only().clientMetrics).isNull();
+    }
+
     /**
      * Asserts the credentials came from the configured key file rather than from anywhere else.
      *
@@ -157,12 +202,19 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
      */
     private SpannerBatchReadSource<Long> source(
             CapturingOpener opener, CapturingPlannerFactory planners) throws Exception {
+        return source(opener, planners, false);
+    }
+
+    private SpannerBatchReadSource<Long> source(
+            CapturingOpener opener, CapturingPlannerFactory planners, boolean exportToFlink)
+            throws Exception {
         SpannerSourceBuilder<Long> builder =
                 SpannerSource.<Long>builder()
                         .database(DatabaseDestination.of("p", "i", "d"))
                         .readOperation(TestSources.OPERATION)
                         .deserializer(new TestSources.IdDeserializer())
-                        .serviceAccountKeyFile(ServiceAccountKeyFiles.create(tempDir).toString());
+                        .serviceAccountKeyFile(ServiceAccountKeyFiles.create(tempDir).toString())
+                        .exportClientMetricsToFlink(exportToFlink);
         TestSources.withOpener(builder, opener);
         return (SpannerBatchReadSource<Long>)
                 TestSources.withPlannerFactory(builder, planners).build();
@@ -179,6 +231,7 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
         private static final long serialVersionUID = 1L;
 
         @Nullable private GoogleCredentials credentials;
+        @Nullable private ClientMetrics clientMetrics;
         private int pushes;
 
         @Override
@@ -190,6 +243,11 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
         public void useCredentials(@Nullable GoogleCredentials credentials) {
             this.credentials = credentials;
             pushes++;
+        }
+
+        @Override
+        public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+            this.clientMetrics = clientMetrics;
         }
 
         @Override
@@ -233,6 +291,7 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
     private static final class CapturingPlanner implements PartitionPlanner {
 
         @Nullable private GoogleCredentials credentials;
+        @Nullable private ClientMetrics clientMetrics;
         private int pushes;
 
         @Override
@@ -249,6 +308,11 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
         public void useCredentials(@Nullable GoogleCredentials credentials) {
             this.credentials = credentials;
             pushes++;
+        }
+
+        @Override
+        public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+            this.clientMetrics = clientMetrics;
         }
 
         @Override

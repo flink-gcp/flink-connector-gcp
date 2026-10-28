@@ -26,6 +26,7 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.table.AsyncLookupRetries;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
@@ -64,6 +65,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
                 keyPositions,
                 emulatorEndpoint,
                 null,
+                SpannerClientMetricsConfig.unset(),
                 maxRetries,
                 SpannerFilterPushDown.State.empty().runtime());
     }
@@ -77,6 +79,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
             int[] keyPositions,
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile,
+            SpannerClientMetricsConfig clientMetrics,
             int maxRetries,
             SpannerFilterPushDown.RuntimeState filters) {
         this(
@@ -85,7 +88,12 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
                 keyPositions,
                 maxRetries,
                 new SpannerDatabaseRowLookup(
-                        database, table, columns, emulatorEndpoint, serviceAccountKeyFile),
+                        database,
+                        table,
+                        columns,
+                        emulatorEndpoint,
+                        serviceAccountKeyFile,
+                        clientMetrics),
                 filters);
     }
 
@@ -127,7 +135,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
 
     @Override
     public void open(FunctionContext context) throws Exception {
-        lookup.open();
+        lookup.open(context.getMetricGroup());
     }
 
     @Override

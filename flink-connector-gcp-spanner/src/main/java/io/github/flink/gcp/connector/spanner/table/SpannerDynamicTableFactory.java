@@ -84,6 +84,8 @@ public final class SpannerDynamicTableFactory
                 Arrays.asList(
                         SpannerConnectorOptions.EMULATOR_ENDPOINT,
                         SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE,
+                        SpannerConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK,
+                        SpannerConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING,
                         SpannerConnectorOptions.DIALECT,
                         SpannerConnectorOptions.NAMED_SCHEMA,
                         SpannerConnectorOptions.JSON_FIELD_PATHS,
@@ -163,6 +165,7 @@ public final class SpannerDynamicTableFactory
                         config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
+                .clientMetrics(SpannerClientMetricsConfig.from(config))
                 .build(
                         SpannerTableLineage.from(
                                 context.getObjectIdentifier().asSummaryString(), config));

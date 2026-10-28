@@ -17,8 +17,19 @@
 package io.github.flink.gcp.connector.spanner.source.changestream.reader;
 
 import com.google.cloud.spanner.AsyncResultSet;
+import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
+import com.google.cloud.spanner.SpannerOptions;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
+import io.github.flink.gcp.connector.spanner.ClosedEmulator;
+import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import org.junit.jupiter.api.Test;
 
+import javax.annotation.Nullable;
+
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,6 +38,7 @@ import java.util.List;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DefaultSpannerChangeStreamQueryClientFactoryTest {
 
@@ -58,5 +70,44 @@ class DefaultSpannerChangeStreamQueryClientFactoryTest {
         assertThat(order)
                 .containsExactlyElementsOf(
                         Arrays.asList("callback", "callback-returned", "mailbox-visible"));
+    }
+
+    @Test
+    void carriesTheClientMetricsChoicesIntoTheClientSettings() throws Exception {
+        // No emulator: its branch turns the Cloud Monitoring export off by itself, which would
+        // hide whether the factory's own choice reaches the settings.
+        ClientMetrics metrics = ClientMetricsProbe.create();
+
+        SpannerOptions off = factory(null, false).settings(metrics);
+
+        assertThat(off.getClientMetricsProvider())
+                .isInstanceOfSatisfying(
+                        CustomOpenTelemetryMetricsProvider.class,
+                        provider ->
+                                assertThat(provider.getOpenTelemetry())
+                                        .isSameAs(metrics.openTelemetry()));
+        assertThat(off.isEnableBuiltInMetrics()).isFalse();
+    }
+
+    @Test
+    void closesTheClientMetricsWhenTheServiceHandleCannotBeOpened() {
+        ClientMetrics metrics = ClientMetricsProbe.create();
+
+        assertThatThrownBy(() -> factory(ClosedEmulator.endpoint(), true).create(metrics))
+                .isInstanceOf(IOException.class);
+
+        assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
+    }
+
+    private static DefaultSpannerChangeStreamQueryClientFactory factory(
+            @Nullable EmulatorEndpoint emulatorEndpoint, boolean exportToCloudMonitoring) {
+        return new DefaultSpannerChangeStreamQueryClientFactory(
+                DatabaseDestination.of("project", "instance", "database"),
+                "orders",
+                SpannerRpcPriority.HIGH,
+                1,
+                emulatorEndpoint,
+                null,
+                exportToCloudMonitoring);
     }
 }

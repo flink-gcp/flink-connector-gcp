@@ -19,10 +19,15 @@ package io.github.flink.gcp.connector.spanner.sink.writer;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
+import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.v1.stub.SpannerStubSettings;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
+import io.github.flink.gcp.connector.spanner.ClosedEmulator;
+import io.github.flink.gcp.connector.spanner.ClosingSpanner;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
@@ -31,6 +36,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Arrays;
@@ -198,5 +204,96 @@ class DefaultSpannerDatabaseAccessFactoryTest {
                 DATABASE,
                 SpannerWriterOptions.defaults(),
                 EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint"));
+    }
+
+    @Test
+    void carriesTheClientMetricsChoicesIntoTheClientSettings() {
+        // No emulator: its branch turns the Cloud Monitoring export off by itself, which would
+        // hide whether the factory's own choice reaches the settings.
+        ClientMetrics metrics = ClientMetricsProbe.create();
+        GoogleCredentials credentials =
+                GoogleCredentials.create(new AccessToken("token", new Date(Long.MAX_VALUE)));
+
+        SpannerOptions off =
+                new DefaultSpannerDatabaseAccessFactory(
+                                DATABASE,
+                                SpannerWriterOptions.defaults(),
+                                null,
+                                credentials,
+                                false,
+                                metrics)
+                        .settings();
+        SpannerOptions on =
+                new DefaultSpannerDatabaseAccessFactory(
+                                DATABASE, SpannerWriterOptions.defaults(), null, credentials)
+                        .settings();
+
+        assertThat(off.getClientMetricsProvider())
+                .isInstanceOfSatisfying(
+                        CustomOpenTelemetryMetricsProvider.class,
+                        provider ->
+                                assertThat(provider.getOpenTelemetry())
+                                        .isSameAs(metrics.openTelemetry()));
+        assertThat(off.isEnableBuiltInMetrics()).isFalse();
+        assertThat(on.isEnableBuiltInMetrics())
+                .isEqualTo(clientDefault(credentials).isEnableBuiltInMetrics());
+    }
+
+    @Test
+    void theDatabaseAccessClosesTheClientMetricsAfterTheServiceHandle() {
+        ClientMetrics metrics = ClientMetricsProbe.create();
+        ClosingSpanner spanner = new ClosingSpanner(metrics);
+
+        factoryWith(metrics).create(spanner.spanner()).close();
+
+        assertThat(spanner.closes()).isOne();
+        assertThat(spanner.metricsOpenAtClose()).isTrue();
+        assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
+    }
+
+    @Test
+    void closesTheClientMetricsWithTheServiceHandleWhenCreationFails() {
+        ClientMetrics metrics = ClientMetricsProbe.create();
+        FakeSpanner spanner = new FakeSpanner(new IllegalStateException("no such database"));
+
+        assertThatThrownBy(() -> factoryWith(metrics).create(spanner))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(spanner.closes()).isEqualTo(1);
+        assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
+    }
+
+    @Test
+    void closesTheClientMetricsWhenTheServiceHandleCannotBeOpened() {
+        ClientMetrics metrics = ClientMetricsProbe.create();
+        DefaultSpannerDatabaseAccessFactory factory =
+                new DefaultSpannerDatabaseAccessFactory(
+                        DATABASE,
+                        SpannerWriterOptions.defaults(),
+                        ClosedEmulator.endpoint(),
+                        null,
+                        true,
+                        metrics);
+
+        assertThatThrownBy(factory::create).isInstanceOf(IOException.class);
+
+        assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
+    }
+
+    private static DefaultSpannerDatabaseAccessFactory factoryWith(ClientMetrics metrics) {
+        return new DefaultSpannerDatabaseAccessFactory(
+                DATABASE,
+                SpannerWriterOptions.defaults(),
+                EmulatorEndpoint.parse("localhost:9010", "emulatorEndpoint"),
+                null,
+                true,
+                metrics);
+    }
+
+    private static SpannerOptions clientDefault(GoogleCredentials credentials) {
+        return SpannerOptions.newBuilder()
+                .setProjectId(DATABASE.getProject())
+                .setCredentials(credentials)
+                .build();
     }
 }

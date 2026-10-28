@@ -58,6 +58,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
     private final StructStreamOpener opener;
     private final int maxRowsPerFetch;
     private final long maxBytesPerFetch;
+    private final boolean exportClientMetricsToFlink;
 
     SpannerSourceConfig(
             DatabaseDestination database,
@@ -71,7 +72,8 @@ public final class SpannerSourceConfig<T> implements Serializable {
             PartitionPlannerFactory plannerFactory,
             StructStreamOpener opener,
             int maxRowsPerFetch,
-            long maxBytesPerFetch) {
+            long maxBytesPerFetch,
+            boolean exportClientMetricsToFlink) {
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         this.readOperation =
                 Preconditions.checkNotNull(readOperation, "readOperation must not be null");
@@ -97,6 +99,7 @@ public final class SpannerSourceConfig<T> implements Serializable {
                 "maxBytesPerFetch must be positive, but was %s",
                 maxBytesPerFetch);
         this.maxBytesPerFetch = maxBytesPerFetch;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
     }
 
     /**
@@ -209,5 +212,16 @@ public final class SpannerSourceConfig<T> implements Serializable {
      */
     public long getMaxBytesPerFetch() {
         return maxBytesPerFetch;
+    }
+
+    /**
+     * Returns whether the enumerator and the readers export their clients' own metrics through
+     * Flink's metric system. The Cloud Monitoring choice is the planner factory's and the opener's,
+     * which build the clients.
+     *
+     * @return whether the client metrics are exported to Flink
+     */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
     }
 }

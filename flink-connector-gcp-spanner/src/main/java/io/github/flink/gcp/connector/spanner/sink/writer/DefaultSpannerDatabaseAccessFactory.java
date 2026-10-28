@@ -28,6 +28,7 @@ import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
@@ -40,7 +41,14 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Opens a real Spanner service handle and wraps it in a {@link SpannerServiceAdapter}. */
+/**
+ * Opens a real Spanner service handle and wraps it in a {@link SpannerServiceAdapter}.
+ *
+ * <p>The client metrics it was given, if any, are the database access's from {@link #create()} on:
+ * its close releases them after the service handle, because closed client metrics drop what they
+ * are given and a handle still closing would lose whatever it recorded meanwhile. A creation that
+ * fails releases them too.
+ */
 @Internal
 public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabaseAccessFactory {
 
@@ -50,6 +58,13 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
     private final SpannerWriterOptions writerOptions;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final Credentials credentialsOverride;
+    private final boolean exportClientMetricsToCloudMonitoring;
+
+    /**
+     * The client metrics the client records into, or {@code null} when nothing is exported to
+     * Flink. Transient: they are runtime state the writer creates on its own metric group.
+     */
+    @Nullable private final transient ClientMetrics clientMetrics;
 
     /**
      * Creates the factory.
@@ -71,22 +86,57 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
             SpannerWriterOptions writerOptions,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable Credentials credentialsOverride) {
+        this(
+                database,
+                writerOptions,
+                emulatorEndpoint,
+                credentialsOverride,
+                SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING,
+                null);
+    }
+
+    /**
+     * Creates the factory with the client-metrics choices.
+     *
+     * @param database the database to write to
+     * @param writerOptions the writer tuning options
+     * @param emulatorEndpoint the emulator to write to, or {@code null} for the real service
+     * @param credentialsOverride credentials loaded by the writer runtime, or {@code null} for ADC
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
+     * @param clientMetrics the client metrics the client records into, which the database access
+     *     closes, or {@code null} to export nothing to Flink
+     */
+    public DefaultSpannerDatabaseAccessFactory(
+            DatabaseDestination database,
+            SpannerWriterOptions writerOptions,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Credentials credentialsOverride,
+            boolean exportClientMetricsToCloudMonitoring,
+            @Nullable ClientMetrics clientMetrics) {
         this.database = database;
         this.writerOptions = writerOptions;
         this.emulatorEndpoint = emulatorEndpoint;
         this.credentialsOverride = credentialsOverride;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        this.clientMetrics = clientMetrics;
     }
 
     @Override
     public SpannerDatabaseAccess create() throws IOException {
-        return create(SpannerClients.open(database, settings()));
+        return create(SpannerClients.open(database, settings(), clientMetrics));
     }
 
     /** Builds the writer's client settings, exposed for verifying its runtime configuration. */
     @VisibleForTesting
     SpannerOptions settings() {
         SpannerOptions.Builder settings =
-                SpannerClients.settings(database, emulatorEndpoint, credentialsOverride)
+                SpannerClients.settings(
+                        database,
+                        emulatorEndpoint,
+                        credentialsOverride,
+                        clientMetrics,
+                        exportClientMetricsToCloudMonitoring)
                         .toBuilder();
         // Re-check at the TaskManager boundary: a Java-serialized options instance can bypass the
         // public builder, and a positive sub-millisecond value becomes the SDK's zero sentinel.
@@ -113,12 +163,12 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
                     client::getDialect,
                     sql -> client.singleUse().executeQuery(Statement.of(sql)),
                     groups -> client.batchWriteAtLeastOnce(groups, transactionOptions),
-                    spanner::close);
+                    () -> SpannerClients.close(spanner, clientMetrics));
         } catch (Throwable e) {
             // The service handle is this factory's until the adapter takes it over; nothing else
             // would ever close it. Throwable rather than Exception for the same reason every
             // creation guard in this project uses it: a first classload can fail with an Error.
-            Closers.closeAllSuppressing(e, spanner::close);
+            Closers.closeAllSuppressing(e, spanner::close, clientMetrics);
             throw e;
         }
     }

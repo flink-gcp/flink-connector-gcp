@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 
 import javax.annotation.Nullable;
 
@@ -66,7 +67,20 @@ public interface StructStreamOpener extends Serializable, AutoCloseable {
     void useCredentials(@Nullable GoogleCredentials credentials);
 
     /**
-     * Releases the client the reads were opened on.
+     * Receives the client metrics the owning reader registered on its metric group, before the
+     * first {@link #open(BatchTransactionId, Partition)}. The opener owns them from then on and
+     * closes them after its client.
+     *
+     * <p>Abstract for the reason {@link #useCredentials} is: an implementation that quietly skipped
+     * it would report every series at zero, which nothing would flag.
+     *
+     * @param clientMetrics the client metrics to record into, or {@code null} to export nothing to
+     *     Flink
+     */
+    void useClientMetrics(@Nullable ClientMetrics clientMetrics);
+
+    /**
+     * Releases the client the reads were opened on, and then the client metrics it was given.
      *
      * <p>It does <em>not</em> release the batch read's session: that is the enumerator's, and a
      * reader releasing it would end every other reader's read.

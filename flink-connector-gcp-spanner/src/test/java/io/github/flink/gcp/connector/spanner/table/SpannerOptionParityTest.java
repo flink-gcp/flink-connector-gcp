@@ -100,7 +100,9 @@ class SpannerOptionParityTest {
                         "failedMutationHandler",
                         "constraintViolationPolicy",
                         "serviceAccountKeyFile",
-                        "emulatorEndpoint");
+                        "emulatorEndpoint",
+                        "exportClientMetricsToFlink",
+                        "exportClientMetricsToCloudMonitoring");
 
         // database is assembled from project/instance/database, serializer from the physical DDL,
         // writerOptions from the nine options above. Failure policy stays fail-job because a DDL
@@ -111,7 +113,9 @@ class SpannerOptionParityTest {
                         "instance",
                         "database",
                         "service-account-key-file",
-                        "emulator-endpoint");
+                        "emulator-endpoint",
+                        "client-metrics.export-to-flink",
+                        "client-metrics.export-to-cloud-monitoring");
     }
 
     @Test
@@ -129,7 +133,9 @@ class SpannerOptionParityTest {
                         "dataBoostEnabled",
                         "rpcPriority",
                         "serviceAccountKeyFile",
-                        "emulatorEndpoint");
+                        "emulatorEndpoint",
+                        "exportClientMetricsToFlink",
+                        "exportClientMetricsToCloudMonitoring");
 
         // The database and read operation come from destination options and the projected DDL;
         // the planner supplies the RowData deserializer. Every remaining setter has one option.
@@ -145,7 +151,9 @@ class SpannerOptionParityTest {
                         "scan.data-boost-enabled",
                         "scan.rpc-priority",
                         "service-account-key-file",
-                        "emulator-endpoint");
+                        "emulator-endpoint",
+                        "client-metrics.export-to-flink",
+                        "client-metrics.export-to-cloud-monitoring");
     }
 
     @Test
@@ -168,7 +176,9 @@ class SpannerOptionParityTest {
                         "columnExcludeList",
                         "skipMessagesWithoutChange",
                         "serviceAccountKeyFile",
-                        "emulatorEndpoint");
+                        "emulatorEndpoint",
+                        "exportClientMetricsToFlink",
+                        "exportClientMetricsToCloudMonitoring");
 
         // The table layer supplies database and RowData deserialization, and performs exact table
         // matching itself. It deliberately does not expose the builder's regex projections.
@@ -185,7 +195,9 @@ class SpannerOptionParityTest {
                         "scan.rpc-priority",
                         "scan.max-concurrent-queries-per-subtask",
                         "service-account-key-file",
-                        "emulator-endpoint");
+                        "emulator-endpoint",
+                        "client-metrics.export-to-flink",
+                        "client-metrics.export-to-cloud-monitoring");
     }
 
     @Test
@@ -200,6 +212,8 @@ class SpannerOptionParityTest {
                         "dialect",
                         "emulator-endpoint",
                         "service-account-key-file",
+                        "client-metrics.export-to-flink",
+                        "client-metrics.export-to-cloud-monitoring",
                         "json-field-paths",
                         "uuid-field-paths",
                         "generated-columns",

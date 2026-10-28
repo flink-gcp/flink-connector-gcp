@@ -18,19 +18,25 @@ package io.github.flink.gcp.connector.spanner.source;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
 import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
+import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.DefaultSpannerChangeStreamCoordinatorClientFactory;
+import io.github.flink.gcp.connector.spanner.source.changestream.enumerator.SpannerChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.spanner.source.changestream.reader.DefaultSpannerChangeStreamQueryClientFactory;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
+import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -337,6 +343,96 @@ class SpannerChangeStreamSourceBuilderTest {
         @Override
         public TypeInformation<Long> getProducedType() {
             return TypeInformation.of(Long.class);
+        }
+    }
+
+    @Test
+    void exportsClientMetricsOnlyToCloudMonitoringByDefault() {
+        SpannerChangeStreamSourceConfig<Long> config = config(builderWithoutEndpoint());
+
+        assertThat(config.isExportClientMetricsToFlink()).isFalse();
+        assertThat(config.getCoordinatorClientFactory())
+                .usingRecursiveComparison()
+                .isEqualTo(
+                        new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                                DATABASE, "changes", Duration.ofDays(7), null, null, true));
+    }
+
+    @Test
+    void carriesBothClientMetricsChoicesToTheCoordinatorAndTheReaders() {
+        SpannerChangeStreamSourceConfig<Long> config =
+                config(
+                        builderWithoutEndpoint()
+                                .exportClientMetricsToFlink(true)
+                                .exportClientMetricsToCloudMonitoring(false));
+
+        assertThat(config.isExportClientMetricsToFlink()).isTrue();
+        assertThat(config.getCoordinatorClientFactory())
+                .usingRecursiveComparison()
+                .isEqualTo(
+                        new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                                DATABASE, "changes", Duration.ofDays(7), null, null, false));
+        assertThat(config.getQueryClientFactory())
+                .usingRecursiveComparison()
+                .isEqualTo(
+                        new DefaultSpannerChangeStreamQueryClientFactory(
+                                DATABASE,
+                                "changes",
+                                config.getRpcPriority(),
+                                config.getMaxConcurrentQueriesPerSubtask(),
+                                null,
+                                null,
+                                false));
+    }
+
+    private static final List<ClientMetrics> RECEIVED_CLIENT_METRICS = new ArrayList<>();
+
+    @Test
+    void everyEnumeratorOfTheSourceRecordsIntoTheSourcesOneSetOfClientMetrics() throws Exception {
+        // A coordinator reset builds the next enumerator from the same source on the same group;
+        // a second registration there would be dropped, so the set is the source's, made once.
+        runTwoEnumerators(true);
+
+        assertThat(RECEIVED_CLIENT_METRICS).hasSize(2).doesNotContainNull();
+        assertThat(RECEIVED_CLIENT_METRICS.get(1)).isSameAs(RECEIVED_CLIENT_METRICS.get(0));
+    }
+
+    @Test
+    void noEnumeratorReceivesClientMetricsByDefault() throws Exception {
+        runTwoEnumerators(false);
+
+        assertThat(RECEIVED_CLIENT_METRICS).containsExactly(null, null);
+    }
+
+    private static void runTwoEnumerators(boolean exportToFlink) throws Exception {
+        RECEIVED_CLIENT_METRICS.clear();
+        SpannerChangeStreamSource<Long> source =
+                builderWithoutEndpoint()
+                        .exportClientMetricsToFlink(exportToFlink)
+                        .coordinatorClientFactory(
+                                clientMetrics -> {
+                                    RECEIVED_CLIENT_METRICS.add(clientMetrics);
+                                    return new SpannerChangeStreamCoordinatorClient() {
+                                        @Override
+                                        public Duration initialize() {
+                                            return Duration.ofDays(7);
+                                        }
+
+                                        @Override
+                                        public void close() {}
+                                    };
+                                })
+                        .build();
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
+        context.registerReader(0);
+
+        for (int i = 0; i < 2; i++) {
+            SplitEnumerator<ChangeStreamPartitionSplit, ?> enumerator =
+                    source.createEnumerator(context);
+            enumerator.start();
+            context.runAsyncCalls();
+            enumerator.close();
         }
     }
 }

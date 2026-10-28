@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Internal;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 
@@ -86,6 +87,20 @@ public interface PartitionPlanner extends AutoCloseable {
      *     credentials
      */
     void useCredentials(@Nullable GoogleCredentials credentials);
+
+    /**
+     * Receives the client metrics the source registered on the enumerators' metric group, before
+     * the one {@link #plan(SpannerReadOperation, TimestampBound, PartitionOptions, boolean,
+     * SpannerRpcPriority)} call. They belong to the source and outlive this planner, which records
+     * into them and never closes them.
+     *
+     * <p>Abstract for the reason {@link #useCredentials} is: an implementation that quietly skipped
+     * it would report every series at zero, which nothing would flag.
+     *
+     * @param clientMetrics the client metrics to record into, or {@code null} to export nothing to
+     *     Flink
+     */
+    void useClientMetrics(@Nullable ClientMetrics clientMetrics);
 
     /**
      * Releases the batch transaction and the client behind it.

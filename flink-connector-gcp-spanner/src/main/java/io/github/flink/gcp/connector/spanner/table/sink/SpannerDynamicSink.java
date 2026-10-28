@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableLineage;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
@@ -48,6 +49,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final Integer parallelism;
+    private final SpannerClientMetricsConfig clientMetrics;
 
     private SpannerDynamicSink(Builder builder, @Nullable SpannerTableLineage lineage) {
         this.lineage = lineage;
@@ -59,6 +61,8 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.serviceAccountKeyFile = builder.serviceAccountKeyFile;
         this.parallelism = builder.parallelism;
+        this.clientMetrics =
+                Preconditions.checkNotNull(builder.clientMetrics, "clientMetrics must not be null");
     }
 
     public static Builder builder() {
@@ -86,6 +90,8 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
+        clientMetrics.applyTo(
+                builder::exportClientMetricsToFlink, builder::exportClientMetricsToCloudMonitoring);
         Sink<RowData> sink = builder.build();
         return SinkV2Provider.of(lineage == null ? sink : lineage.sink(sink), parallelism);
     }
@@ -100,6 +106,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 .emulatorEndpoint(emulatorEndpoint)
                 .serviceAccountKeyFile(serviceAccountKeyFile)
                 .parallelism(parallelism)
+                .clientMetrics(clientMetrics)
                 .build(lineage);
     }
 
@@ -124,7 +131,8 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 && writerOptions.equals(that.writerOptions)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
-                && Objects.equals(parallelism, that.parallelism);
+                && Objects.equals(parallelism, that.parallelism)
+                && clientMetrics.equals(that.clientMetrics);
     }
 
     @Override
@@ -137,6 +145,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
                 emulatorEndpoint,
                 serviceAccountKeyFile,
                 parallelism,
+                clientMetrics,
                 lineage);
     }
 
@@ -149,6 +158,7 @@ public final class SpannerDynamicSink implements DynamicTableSink {
         @Nullable private String emulatorEndpoint;
         @Nullable private String serviceAccountKeyFile;
         @Nullable private Integer parallelism;
+        private SpannerClientMetricsConfig clientMetrics = SpannerClientMetricsConfig.unset();
 
         private Builder() {}
 
@@ -184,6 +194,11 @@ public final class SpannerDynamicSink implements DynamicTableSink {
 
         public Builder parallelism(@Nullable Integer parallelism) {
             this.parallelism = parallelism;
+            return this;
+        }
+
+        public Builder clientMetrics(SpannerClientMetricsConfig clientMetrics) {
+            this.clientMetrics = clientMetrics;
             return this;
         }
 

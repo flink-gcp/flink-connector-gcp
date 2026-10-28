@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.spanner.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.metrics.MetricGroup;
 
 import com.google.api.core.ApiFuture;
 import com.google.cloud.spanner.Key;
@@ -27,7 +28,14 @@ import java.io.Serializable;
 /** Point-read seam shared by synchronous and asynchronous lookup functions. */
 @Internal
 interface SpannerRowLookup extends Serializable, AutoCloseable {
-    void open() throws Exception;
+    /**
+     * Opens the client.
+     *
+     * @param metricGroup the lookup function's metric group, which the client metrics are
+     *     registered on when they are exported to Flink
+     * @throws Exception if the client cannot be opened
+     */
+    void open(MetricGroup metricGroup) throws Exception;
 
     Struct read(Key key);
 

@@ -24,6 +24,7 @@ import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.TestPartitions;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
 import io.github.flink.gcp.connector.spanner.source.batch.BatchReadSplit;
@@ -140,6 +141,9 @@ final class SpannerSplitReaderMemoryProbe {
 
         @Override
         public void useCredentials(@Nullable GoogleCredentials credentials) {}
+
+        @Override
+        public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {}
 
         @Override
         public void close() {}

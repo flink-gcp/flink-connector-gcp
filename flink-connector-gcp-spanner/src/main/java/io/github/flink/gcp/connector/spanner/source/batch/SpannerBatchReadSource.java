@@ -40,8 +40,11 @@ import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
+import io.github.flink.gcp.connector.spanner.SpannerEnumeratorClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerBatchReadSplitEnumerator;
@@ -76,6 +79,20 @@ public class SpannerBatchReadSource<T>
     private static final long serialVersionUID = 1L;
 
     private final SpannerSourceConfig<T> config;
+
+    /**
+     * The enumerators' client metrics, shared by every enumerator this source object builds: their
+     * metric group outlives each of them. The planner's database handle creates a session, the
+     * batch transaction begins on the service, and a Table index scan resolves its index and key
+     * columns with a query before it partitions the read.
+     */
+    private final SpannerEnumeratorClientMetrics enumeratorClientMetrics =
+            new SpannerEnumeratorClientMetrics(
+                    SpannerClientMetrics.CREATE_SESSION,
+                    SpannerClientMetrics.BEGIN_TRANSACTION,
+                    SpannerClientMetrics.EXECUTE_STREAMING_SQL,
+                    SpannerClientMetrics.PARTITION_QUERY,
+                    SpannerClientMetrics.PARTITION_READ);
 
     /**
      * Creates the source.
@@ -125,6 +142,13 @@ public class SpannerBatchReadSource<T>
             throws Exception {
         StructStreamOpener opener = config.getOpener();
         opener.useCredentials(credentials());
+        // A reader's client rejoins the snapshot by id, with no session or transaction RPC of its
+        // own: it only reads partitions, by query or by table read.
+        opener.useClientMetrics(
+                clientMetrics(
+                        context.metricGroup(),
+                        SpannerClientMetrics.EXECUTE_STREAMING_SQL,
+                        SpannerClientMetrics.STREAMING_READ));
         SpannerStructDeserializationSchema<T> deserializer = config.getDeserializer();
         deserializer.open(new ReaderInitializationContext(context));
 
@@ -183,12 +207,32 @@ public class SpannerBatchReadSource<T>
         PartitionPlanner planner = config.getPlannerFactory().create();
         try {
             planner.useCredentials(credentials);
+            planner.useClientMetrics(
+                    config.isExportClientMetricsToFlink()
+                            ? enumeratorClientMetrics.get(context.metricGroup())
+                            : null);
             return new SpannerBatchReadSplitEnumerator(context, config, planner, checkpoint);
         } catch (Throwable e) {
             // The enumerator never took ownership, so nothing else will close what was just minted.
             Closers.closeAllSuppressing(e, planner);
             throw e;
         }
+    }
+
+    /**
+     * Registers the client metrics of one runtime component on its metric group, when they are
+     * exported to Flink. A context without a metric group, as some test contexts are, registers
+     * nothing.
+     *
+     * @param group the component's metric group, or {@code null}
+     * @param methods the RPC methods the component's client calls
+     * @return the client metrics, or {@code null} when nothing is exported to Flink
+     */
+    @Nullable
+    private ClientMetrics clientMetrics(@Nullable MetricGroup group, String... methods) {
+        return config.isExportClientMetricsToFlink() && group != null
+                ? SpannerClientMetrics.register(group, methods)
+                : null;
     }
 
     /**

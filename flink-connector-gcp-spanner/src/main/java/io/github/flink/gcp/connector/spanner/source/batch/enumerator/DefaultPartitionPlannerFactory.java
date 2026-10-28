@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerClients;
 
 import javax.annotation.Nullable;
 
@@ -39,6 +40,7 @@ public final class DefaultPartitionPlannerFactory implements PartitionPlannerFac
 
     private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * Creates the factory.
@@ -49,12 +51,33 @@ public final class DefaultPartitionPlannerFactory implements PartitionPlannerFac
      */
     public DefaultPartitionPlannerFactory(
             DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(
+                database,
+                emulatorEndpoint,
+                SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+    }
+
+    /**
+     * Creates the factory with the Cloud Monitoring choice.
+     *
+     * @param database the database to read
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for the real service
+     * @param exportClientMetricsToCloudMonitoring whether each planner's client keeps its built-in
+     *     Cloud Monitoring export
+     */
+    public DefaultPartitionPlannerFactory(
+            DatabaseDestination database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
     public PartitionPlanner create() {
-        return new BatchClientPartitionPlanner(database, emulatorEndpoint);
+        return new BatchClientPartitionPlanner(
+                database, emulatorEndpoint, exportClientMetricsToCloudMonitoring);
     }
 }

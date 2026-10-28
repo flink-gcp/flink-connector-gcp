@@ -34,6 +34,7 @@ import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
@@ -79,6 +80,7 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
 
     private final DatabaseDestination database;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * The service handle and the batch transaction on it, both built by {@link #plan}.
@@ -98,6 +100,13 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      */
     @Nullable private volatile GoogleCredentials credentials;
 
+    /**
+     * The source's client metrics for its enumerators, or {@code null} when nothing is exported to
+     * Flink. {@code volatile} for the reason {@code credentials} is; never closed here, because
+     * they outlive this planner.
+     */
+    @Nullable private volatile ClientMetrics clientMetrics;
+
     @Nullable private volatile BatchReadOnlyTransaction transaction;
 
     private volatile boolean closed;
@@ -111,8 +120,28 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      */
     public BatchClientPartitionPlanner(
             DatabaseDestination database, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this(
+                database,
+                emulatorEndpoint,
+                SpannerClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING);
+    }
+
+    /**
+     * Creates the planner with the Cloud Monitoring choice.
+     *
+     * @param database the database to read
+     * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
+     *     for the real service
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
+     */
+    public BatchClientPartitionPlanner(
+            DatabaseDestination database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.database = database;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
@@ -257,10 +286,23 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
         this.credentials = credentials;
     }
 
-    /** Builds settings exposed for verifying that the enumerator injects runtime credentials. */
+    @Override
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+        this.clientMetrics = clientMetrics;
+    }
+
+    /**
+     * Builds settings exposed for verifying that the enumerator injects its runtime credentials and
+     * client-metrics choices.
+     */
     @VisibleForTesting
     SpannerOptions settings() throws IOException {
-        return SpannerClients.settings(database, emulatorEndpoint, credentials);
+        return SpannerClients.settings(
+                database,
+                emulatorEndpoint,
+                credentials,
+                clientMetrics,
+                exportClientMetricsToCloudMonitoring);
     }
 
     private DatabaseClient databaseClient() throws IOException {
