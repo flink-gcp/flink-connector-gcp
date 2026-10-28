@@ -32,11 +32,13 @@ from .pubsub.exercise import PubSubExercise
 from .pubsub.guard import PubSubGuard, admission_deadline
 from .pubsub.handoff import runner_released
 from .resource import RESOURCE_SCENARIOS
+from .spanner.exercise import SpannerExercise
 
 # The exercise of each scenario whose runner creates one resource.
 RESOURCE_EXERCISES = {
     "cloudtasks-recovery": CloudTasksExercise,
     "bigtable-recovery": BigtableExercise,
+    "spanner-recovery": SpannerExercise,
 }
 
 
@@ -383,7 +385,9 @@ class Supervisor:
                             self.exercise.verify_rows(self)
                         if isinstance(self.exercise, CloudTasksExercise):
                             self.exercise.verify_tasks()
-                        if isinstance(self.exercise, BigtableExercise):
+                        if isinstance(
+                            self.exercise, (BigtableExercise, SpannerExercise)
+                        ):
                             self.exercise.verify_tables()
                         success, reason = True, "recovery exercise finished"
                         break

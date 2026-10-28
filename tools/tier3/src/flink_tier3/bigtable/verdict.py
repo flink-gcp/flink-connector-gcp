@@ -17,11 +17,10 @@
 from ..common import INCONCLUSIVE, USABLE
 from ..metrics import (
     WINDOWS,
-    checkpoint_read,
     coverage_reasons,
+    families_read,
     fold_coverage,
-    memory_read,
-    returned,
+    observed_families,
     window_of,
 )
 from .observe import COMPONENTS, FAMILIES
@@ -32,40 +31,17 @@ from .observe import COMPONENTS, FAMILIES
 COMPLETE_STAGE = "complete"
 COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "bigtable-measurement"
-MEMORY = "memory"
-CHECKPOINT = "checkpoint"
 # Every component's families and checkpoint share, and the job's memory. The
 # verdict says whether each was read, never what it read.
-OBSERVED = (
-    *(
-        f"{component}-{family}"
-        for component in COMPONENTS
-        for family in (*sorted(FAMILIES[component]), CHECKPOINT)
-    ),
-    MEMORY,
-)
+OBSERVED = observed_families(FAMILIES)
 SAMPLED_STAGES = WINDOWS
-
-
-def _read(reading):
-    """Which families one poll actually returned a value for."""
-    observed = set()
-    for component in COMPONENTS:
-        families = FAMILIES[component]
-        names = returned(reading, component, frozenset().union(*families.values()))
-        observed.update(
-            f"{component}-{family}" for family, ids in families.items() if names & ids
-        )
-        if checkpoint_read(reading, (component,)):
-            observed.add(f"{component}-{CHECKPOINT}")
-    if memory_read(reading):
-        observed.add(MEMORY)
-    return observed
 
 
 def summarize(previous, stage, reading):
     """Fold one sample into its window's coverage, keeping what it ever read."""
-    return fold_coverage(previous, window_of(reading, stage), _read(reading))
+    return fold_coverage(
+        previous, window_of(reading, stage), families_read(reading, FAMILIES)
+    )
 
 
 def verdict(recovery):

@@ -25,8 +25,7 @@ from ..metrics import (
     SOURCE_METRICS,
     TASK_METRICS,
     checkpoint_statistics,
-    discover,
-    sample,
+    named_vertices,
     subtask_metrics,
     taskmanagers,
     unavailable,
@@ -98,38 +97,11 @@ def vertices(rest, known=None):
     """Each role's vertex id, and each component's discovered metric ids.
 
     The job is four vertices, two of them sources, so each is found by its
-    name rather than by being the one source. Metric ids are unioned across
-    calls, as `metrics.job_vertices` does, because an operator registers its
-    metrics only once it opens.
+    name rather than by being the one source.
     """
-    plan = sample(lambda: rest.job(""))
-    if unavailable(plan):
-        return known if known and not unavailable(known) else plan
-    listed = [v for v in (plan.get("vertices") or []) if v.get("id")]
-    found = {}
-    for role, prefix in VERTICES.items():
-        matches = [v for v in listed if str(v.get("name", "")).startswith(prefix)]
-        if len(matches) != 1:
-            break
-        found[role] = matches[0]["id"]
-    if len(found) != len(VERTICES) or len(listed) != len(VERTICES):
-        return {
-            "unavailable": f"expected the input and three components, found {len(listed)}"
-        }
-    previous = known if known and not unavailable(known) else {}
-    metrics = {}
-    for component in COMPONENTS:
-        ids = previous.get("metrics", {}).get(component, [])
-        listing = sample(
-            lambda vertex=found[component]: rest.job(
-                f"/vertices/{vertex}/subtasks/metrics"
-            )
-        )
-        names = frozenset().union(*FAMILIES[component].values())
-        metrics[component] = (
-            ids if unavailable(listing) else discover(listing, names, ids)
-        )
-    return {"vertices": found, "metrics": metrics}
+    return named_vertices(
+        rest, known, VERTICES, FAMILIES, "the input and three components"
+    )
 
 
 def observation(rest, state):

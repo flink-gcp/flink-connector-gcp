@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: 'Normal completion, or one BigQuery, Pub/Sub, Cloud Tasks or Bigtable recovery trial'
+        description: 'Normal completion, or one BigQuery, Pub/Sub, Cloud Tasks, Bigtable or Spanner recovery trial'
         required: true
         type: choice
         default: smoke
@@ -17,6 +17,7 @@ on:
           - pubsub-recovery
           - cloudtasks-recovery
           - bigtable-recovery
+          - spanner-recovery
       run_id:
         description: 'Unique lowercase run ID (at most 40 characters)'
         required: true
@@ -76,8 +77,19 @@ on:
           - 'tm-replacement'
           - 'rescale-out'
           - 'rescale-in'
+      spanner_trial:
+        description: 'Spanner only: the trial kind, which names the Pod deleted after the savepoint upgrade or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'jm-replacement'
+          - 'tm-replacement'
+          - 'rescale-out'
+          - 'rescale-in'
       campaign:
-        description: 'Cloud Tasks or Bigtable only: kinds to run after this attempt, comma-separated; the run ID is <prefix>-<jm|tm|ro|ri>-a<attempt>, and each next attempt is dispatched once this one is idle'
+        description: 'Cloud Tasks, Bigtable or Spanner only: kinds to run after this attempt, comma-separated; the run ID is <prefix>-<jm|tm|ro|ri>-a<attempt>, and each next attempt is dispatched once this one is idle'
         required: false
         type: string
         default: ''
@@ -98,7 +110,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # The window plus room for dispatch, cleanup and the empty-plan proof.
-    timeout-minutes: ${{ (inputs.scenario == 'bigquery-recovery' || inputs.scenario == 'cloudtasks-recovery' || inputs.scenario == 'bigtable-recovery') && 120 || 85 }}
+    timeout-minutes: ${{ (inputs.scenario == 'bigquery-recovery' || inputs.scenario == 'cloudtasks-recovery' || inputs.scenario == 'bigtable-recovery' || inputs.scenario == 'spanner-recovery') && 120 || 85 }}
     permissions:
       contents: read
       actions: read
@@ -156,6 +168,7 @@ jobs:
           PUBSUB_TRIAL: ${{ inputs.pubsub_trial }}
           CLOUDTASKS_TRIAL: ${{ inputs.cloudtasks_trial }}
           BIGTABLE_TRIAL: ${{ inputs.bigtable_trial }}
+          SPANNER_TRIAL: ${{ inputs.spanner_trial }}
           CAMPAIGN: ${{ inputs.campaign }}
           REPEATS: ${{ inputs.repeats }}
           RIG_SHA: ${{ inputs.rig_sha }}
@@ -176,6 +189,8 @@ jobs:
             start+=(--cloudtasks-trial "$CLOUDTASKS_TRIAL" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = bigtable-recovery ]; then
             start+=(--bigtable-trial "$BIGTABLE_TRIAL" --application-digest "$APPLICATION_DIGEST")
+          elif [ "$SCENARIO" = spanner-recovery ]; then
+            start+=(--spanner-trial "$SPANNER_TRIAL" --application-digest "$APPLICATION_DIGEST")
           fi
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle \
             --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" "${start[@]}"

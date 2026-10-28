@@ -46,6 +46,8 @@ from .policy import (
     POLL,
     PUBSUB,
     PUBSUB_STATE,
+    SPANNER,
+    SPANNER_STATE,
     STATE,
     STATE_OBJECTS,
     SYSTEM,
@@ -141,6 +143,7 @@ class Cleanup:
             "bigquery-recovery": BIGQUERY_STATE,
             "cloudtasks-recovery": CLOUDTASKS_STATE,
             "bigtable-recovery": BIGTABLE_STATE,
+            "spanner-recovery": SPANNER_STATE,
         }.get(self.env.approval.scenario)
         if bucket is not None:
             # Flink's GCS writer stages uploads under .inprogress/<bucket>/.
@@ -173,7 +176,7 @@ class Cleanup:
                 pods, resources = 1, POD_RESOURCES["supervisor"]
             elif namespace == PUBSUB:
                 pods, resources = 4, sum_resources([POD_RESOURCES["smoke"]] * 4)
-            elif namespace in (BIGQUERY, CLOUDTASKS, BIGTABLE):
+            elif namespace in (BIGQUERY, CLOUDTASKS, BIGTABLE, SPANNER):
                 # One JobManager and two TaskManagers.
                 pods, resources = 3, sum_resources([POD_RESOURCES["smoke"]] * 3)
             elif namespace == SYSTEM:

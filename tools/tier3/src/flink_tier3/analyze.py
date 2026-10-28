@@ -16,10 +16,10 @@
 
 The analyzer reads a local mirror of ``gs://flink-gcp-tier3-evidence/runs/``
 (one run directory or a directory of them) and recomputes each deployed
-BigQuery, Pub/Sub, Cloud Tasks and Bigtable recovery run's assessment from its exported
-evidence. It never contacts a cluster or a bucket, keeps every ratio a
-``Fraction`` until rendering, and writes byte-identical reports for identical
-input. Single-host Cloud Tasks campaigns have their own analyzer,
+BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner recovery run's assessment
+from its exported evidence. It never contacts a cluster or a bucket, keeps
+every ratio a ``Fraction`` until rendering, and writes byte-identical reports
+for identical input. Single-host Cloud Tasks campaigns have their own analyzer,
 ``cloudtasks.vmanalyze``.
 """
 
@@ -38,6 +38,7 @@ from .common import Failure
 from .pubsub import analyze as pubsub_analyze
 from .recovery_analysis import counts as run_counts
 from .runs import discover_runs
+from .spanner import analyze as spanner_analyze
 
 
 def plain(value):
@@ -66,6 +67,7 @@ def render_markdown(report):
         + pubsub_analyze.render(report.get("pubsub") or [])
         + cloudtasks_analyze.render(report.get("cloudtasks") or [])
         + bigtable_analyze.render(report.get("bigtable") or [])
+        + spanner_analyze.render(report.get("spanner") or [])
     )
 
 
@@ -89,6 +91,7 @@ def analyze(evidence):
         "pubsub": pubsub_analyze.assess_runs(runs),
         "cloudtasks": cloudtasks_analyze.assess_runs(runs),
         "bigtable": bigtable_analyze.assess_runs(runs),
+        "spanner": spanner_analyze.assess_runs(runs),
     }
 
 
@@ -123,6 +126,11 @@ def summary_line(report, out):
         + (
             f"; bigtable runs: {bigtable}"
             if (bigtable := run_counts(report.get("bigtable") or []))
+            else ""
+        )
+        + (
+            f"; spanner runs: {spanner}"
+            if (spanner := run_counts(report.get("spanner") or []))
             else ""
         )
         + f"; reports in {out}"

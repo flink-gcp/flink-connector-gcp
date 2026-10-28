@@ -111,4 +111,124 @@ The deployment runs as the `tier3-spanner/spanner` KSA, which selects the `tier3
 Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-spanner/runs/<run-id>/`, deleted one day after creation.
 One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
 Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
-The `tier3-spanner` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)), and the shared preflight and the Operator's watch set include it ([#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876)); the rig scenario that creates the instance and its database, seeds it and judges the trial follows in [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877).
+The `tier3-spanner` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)), and the shared preflight and the Operator's watch set include it ([#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876)); the [recovery trial](#recovery-trial) below creates the instance and its database, seeds it and judges the trial.
+
+## Recovery trial
+
+The `spanner-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-spanner` against an instance it creates for the run, measures the job before and after each recovery, and judges each of the three components on its own table.
+It is the trial set of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-trial) records its design ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
+It follows the [Bigtable recovery trial](../bigtable/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
+
+### Trial and estimate
+
+Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and the same seed, 120,000 rows copied at 50 rows per second per reading subtask.
+It runs a savepoint upgrade and then deletes a Pod, and its kind names the fault that makes it a trial of its own:
+
+| Kind | Upgrade | Pod deleted | Subtasks of every vertex but the input, initial then upgrade |
+| --- | --- | --- | --- |
+| `jm-replacement` | Keeps its sizes | The JobManager | 2, 2 |
+| `tm-replacement` | Keeps its sizes | The TaskManager that reported the latest input | 2, 2 |
+| `rescale-out` | Rescales the job | The JobManager | 1, 2 |
+| `rescale-in` | Rescales the job | The JobManager | 2, 1 |
+
+The change-stream end is 3,900 seconds after the window's start, as for the Bigtable trial, so dispatch derives it from the window and the trial carries it.
+Two reading subtasks copy the seed in about 20 minutes and one in about 40, so the copy is still reading through both recoveries and done long before the end.
+The job finishes at the end, which leaves the table reads 540 seconds, up to a minute before the cleanup start.
+Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
+
+```sh
+mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
+  --scenario spanner-recovery \
+  --run-id example-1360 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --started-at 2026-10-28T00:00:00Z --expires-at 2026-10-28T01:30:00Z \
+  --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
+  --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/spanner-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --spanner-trial tm-replacement > /tmp/spanner-proposal.json
+```
+
+A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
+The estimate is the same for every kind, about USD 2.24: the Pods for the window as the Bigtable estimate prices them, two hours of the 100-processing-unit instance at USD 0.09 an hour, and a USD 1.00 reserve for storage, state, evidence and telemetry.
+The two hours round the 90-minute window up on the assumption, not measured, that the instance is billed for at least an hour.
+
+### Dispatch
+
+The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `spanner-recovery` with two inputs beyond the common ones: `spanner_trial`, the kind, which the dispatch refuses when it is left at `none`; and `application_digest`, the published `spanner-recovery` GAR digest, verified live at dispatch and never pinned.
+The owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios.
+The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
+Any run ID fits, because the run's instance is `sp1360-<run-id>`, at most 47 of the 64 characters an instance ID takes.
+One dispatch can carry a campaign of the remaining kinds and a repeat budget, as the [Bigtable dispatch section](../bigtable/README.md#dispatch) describes; for example, `spanner_trial=jm-replacement`, `run_id=sp1878-jm-a1`, `campaign=tm-replacement,rescale-out,rescale-in` and `repeats=2` run the four trials from one dispatch, for at most six attempts.
+
+### Instance lifecycle
+
+After the supervisor heartbeats and the Operator is ready, the runner records the instance's intent, reads that the name is free, and records the creation intent and a call marker in one control write.
+It then creates a Standard-edition instance of 100 processing units in `regional-us-central1` and reads it until it is `READY`, polling the instance rather than the create's long-running operation.
+It creates the `recovery` database with one `CreateDatabase` call, whose extra statements create the four tables, the change stream and the two-hour version retention atomically with it, reads the database until it is `READY`, and reads it and its DDL back.
+The readback compares the names of the tables and the change stream and the retention; a database that differs emits `spanner-database-deviation` and fails admission, and cleanup deletes the instance.
+A database create that failed transiently, timed out or answered 409 is read back, and repeated while the database is absent, until the startup deadline, as a Bigtable table create is.
+
+The runner then writes the seed on one multiplexed session, 120,000 rows in 12 single-use commits of 10,000 rows, each 20,000 of the 80,000 mutations a commit takes.
+Each commit is an `insertOrUpdate` of fixed values, so one that failed transiently, or aborted and was answered 409, is repeated until the startup deadline.
+It splits `seed` at `4`, `8` and `c`, one split point per request and 65 seconds apart: at 100 processing units the service adds one split point a minute and refuses a request over that whole with 429, which the runner retries until the startup deadline.
+[#1877's measurement](https://github.com/flink-gcp/flink-connector-gcp/issues/1877#issuecomment-6472333184) planned the seed's batch read as one partition without them and seven at once with them.
+The split points take about two minutes of the 600 seconds admission allows.
+The runner's role cannot read rows or split points, so the receipt records the seed rows and the split points the service accepted rather than reading them back.
+Only then does the runner open the namespace quota for three Pods and create the FlinkDeployment.
+An instance that already carries the name, and a create the service refuses although the name read free, refuse the run and the instance is not deleted; the marker stays until the instance first reads back, as for the Bigtable instance.
+
+Only the supervisor deletes the instance, and only one whose creation intent the record holds.
+It waits for the runner's release and for the namespace to hold no Pod, deletes the instance, which takes the database and its split points with it, and reads it back until it is gone; #1877 measured a deletion with live split points accepted at the first call.
+A deletion refused with status 400 or 409, or a call that failed transiently, emits `spanner-delete-pending` and is left to cleanup's next pass.
+Shared cleanup then removes the run's state under `runs/<run-id>/` and `.inprogress/flink-gcp-tier3-spanner/runs/<run-id>/` in the `flink-gcp-tier3-spanner` state bucket.
+
+A run whose cleanup never confirms the deletion, or whose create kept its marker, gets no idle receipt and keeps the environment lock, and the completed-execution recovery of the [lifecycle runbook](../../lifecycle/README.md#cleanup-and-recovery) repeats the cleanup but never clears a marker.
+Then an operator verifies the instance by hand and deletes it:
+
+1. Read `spanner-delete-pending` or the receipt's reason in the run's evidence, so a refusal that names a cause is resolved first.
+2. Run `gcloud spanner instances describe sp1360-<run-id> --project=flink-gcp` and confirm that the instance is the run's: display name `sp1360 <run-id>` (or, for a run ID over 23 characters, `sp1360` with the run ID's first 14 characters and an eight-character hash), configuration `regional-us-central1` and 100 processing units, created within the run's window.
+   For a kept marker that reads `NOT_FOUND`, the create's outcome is unknown, and no documented bound settles it.
+   Spanner makes an instance readable, `CREATING`, as soon as its create request completes, but the runner's 20-second request timeout is the client's, not the service's.
+   Describe it again at least ten minutes later and list `gcloud spanner instances list --project=flink-gcp --filter='name:sp1360-'`.
+   One that appears is the run's to delete.
+   If none appears, record the run ID with the incident, and list `sp1360-` instances again before the next Spanner dispatch, so a late landing is still found and deleted.
+3. Run `gcloud spanner instances delete sp1360-<run-id> --project=flink-gcp` and describe it again until it is `NOT_FOUND`.
+
+The control record still holds the marker or the unconfirmed deletion, so releasing the lock afterwards is incident recovery outside the rig, as for a BigQuery table create.
+
+### Exercise and oracles
+
+The supervisor runs the shared recovery exercise on the application's `spanner-progress` lines, with the faults and the three measurement windows of the Bigtable trial.
+A reading is a `spanner-measurement` evidence event; the exercise finds the four vertices by the names [the graph](#graph-and-what-each-table-records) chains them under, because three of them are sources.
+Its families are each component vertex's task, network and connector metrics and its subtasks' shares of the latest completed checkpoint, and each TaskManager's memory metrics, as for the Bigtable trial.
+The change-stream vertex's connector family also takes Flink's `currentOutputWatermark`, which every operator of its chain registers; the source operator's is the source's watermark.
+The Change Streams coordinator's `changeStreamPartitionsDiscovered` is read from the vertex's JobManager operator metrics for the report only; a failed read is recorded as a named absence.
+A lost TaskManager restarts the input's failover region and the relay and copy subtasks it held, which share no edge with any other, so the exercise accepts up to three restores for it.
+
+Before the baseline window opens, once a strong single-use query `SELECT 1 FROM batch_out LIMIT 1` returns a row, the supervisor writes the 16 late seed rows, numbered 120,000 to 120,015, in one single-use `insertOrUpdate` commit on its own multiplexed session.
+A copied row exists only after the batch read planned its snapshot, so the late rows are committed after the snapshot the copy reads.
+The record keeps `late_seed`, the commit timestamp and the row count, and the baseline window opens and the upgrade begins only after that record is written; a call that fails transiently, or a commit that aborts and is answered 409, emits `spanner-late-seed-pending` and is repeated at the next poll.
+The exercise also keeps the plan the batch read's enumerator logs on the JobManager, `Spanner planned <n> partition(s) for the … at read timestamp <t> and parallelism <p>.`, or its one-partition form, for the batch report.
+
+When the upgraded application reaches `FINISHED`, after the change stream's end, with the whole input processed, the supervisor reads `input`, `relay`, `seed` and `batch_out` with single-use queries in key order, in pages of up to 5,000 rows.
+The first page is read strongly and returns its read timestamp, at which every later page is read, so the four tables are read at one snapshot; a page of `relay` or `batch_out` resumes after both columns of its key, and a page shorter than 5,000 rows ends its table.
+A transiently failing query is repeated every 5 seconds until the read window closes, 600 seconds after the application finishes or a minute before the cleanup start, whichever is first; any other failure ends the run without a verdict.
+Each oracle reports counts and the first 20 keys of each kind of deviation:
+
+- **Sink, `input`:** every input key holds its sequence and no other key is there.
+  It reports each key's executions, counted as the key's distinct commit times in `relay`, a lower bound until [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) measures whether a write of identical values produces a change record.
+- **Change Streams, `relay`:** every input key was delivered at least once, no delivered key lies outside the input, no key's last relayed commit is later than the change stream's end, and the source's watermark advanced after each recovery.
+  The watermark is the least of its subtasks' `currentOutputWatermark`, and each window keeps its greatest reading: the baseline's must be above Flink's `Long.MIN_VALUE`, the upgraded window's above the baseline's and the finishing window's above the upgraded one's.
+  The oracle is judged only when the input's last progress line came at least 120 seconds before the change stream's end and every window read the watermark; otherwise it is unjudged, never passed.
+  It judges keys, not commits, so a lost second commit of a key whose other commit was relayed is not detected.
+  It reports replays, deliveries beyond a key's commits, the deliveries of each phase, and the coordinator's greatest discovered partition count in each window.
+- **Batch read, `batch_out`:** `seed` holds the 120,000 seed rows and the 16 late ones, each with its own value, every seed key was copied with one value, its own, and no foreign or late key was copied.
+  It reports the replayed keys and extra deliveries, the replays by the key's first character, which the split points divide the table by, the greatest `partitionsReread` in each window, the plan's partition count and read timestamp, and whether the late commit came after that read timestamp.
+
+### Verdict and analysis
+
+The run is `usable` when both recoveries are proved, all three oracles pass, the Change Streams one having been judged, and each of the three windows read every family; anything short of that is `inconclusive`.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
+
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory, with the coverage and each window's greatest watermark rebuilt from the exported readings and the recoveries' timing, as for the Bigtable trial.
+It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
+
+Before the first trial, the preregistration of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) measures what #1877 could not: every one of its measurements ran as the owner, so the runner's and the supervisor's grants in the [foundation's ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) are unmeasured, and so is whether a write of identical values produces a change record.

@@ -81,15 +81,15 @@ locals {
   # data call with PERMISSION_DENIED before any input runs, and the
   # preregistration (#1878) records which.
   #
-  # The runner and the supervisor are not written yet (#1877), so their roles
-  # are a contract their implementation must keep. Each uses one multiplexed
-  # session, writes rows with Commit in a single-use read-write transaction,
-  # which needs only databases.write, or with BatchWrite, and reads the oracles
-  # with single-use queries, which need only databases.select, never through
-  # the read API or a multi-use snapshot. Each waits for the instance and the
-  # database by reading them back rather than polling their long-running
-  # operations, as the Bigtable rig does, so no role holds instanceOperations
-  # or databaseOperations permissions.
+  # The runner and the supervisor (tools/tier3's spanner package, #1877) keep
+  # these roles as a contract. Each uses one multiplexed session, writes rows
+  # with Commit in a single-use read-write transaction, which needs only
+  # databases.write, or with BatchWrite, and reads the oracles with single-use
+  # queries, which need only databases.select, never through the read API or a
+  # multi-use snapshot. Each waits for the instance and the database by reading
+  # them back rather than polling their long-running operations, as the Bigtable
+  # rig does, so no role holds instanceOperations or databaseOperations
+  # permissions.
   tier3_spanner_roles = {
     # The production sink, Change Streams source and batch source. The sink's
     # INFORMATION_SCHEMA read of its tables' cell weights, the source's

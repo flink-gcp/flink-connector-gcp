@@ -23,7 +23,11 @@ from typing import NamedTuple
 
 from .common import ApiError, Failure, digest, transient
 from .model import Phase
-from .policy import BIGTABLE_OBSERVATIONS, CLOUDTASKS_OBSERVATIONS
+from .policy import (
+    BIGTABLE_OBSERVATIONS,
+    CLOUDTASKS_OBSERVATIONS,
+    SPANNER_OBSERVATIONS,
+)
 from .rest import Unsent
 
 # The wait between reads of a resource that is still settling.
@@ -55,6 +59,9 @@ RESOURCE_SCENARIOS = {
     ),
     "bigtable-recovery": ResourceScenario(
         "bigtable", "Bigtable", "instance", BIGTABLE_OBSERVATIONS
+    ),
+    "spanner-recovery": ResourceScenario(
+        "spanner", "Spanner", "instance", SPANNER_OBSERVATIONS
     ),
 }
 
@@ -228,14 +235,18 @@ class ResourceLifecycle:
         self.env.assert_owner()
         self.env.records._change(initialize)
 
-    def _settled(self, read, deadline):
-        """Repeat a read until it answers, retrying what says nothing."""
+    def _settled(self, read, deadline, retryable=transient):
+        """Repeat a read, or a write that may repeat, until it answers.
+
+        Only a failure that says nothing is retried, unless `retryable` names
+        others the call may safely repeat after.
+        """
         while True:
             self.env.admission_open()
             try:
                 return read()
             except Failure as error:
-                if not transient(error) or self.env.clock() >= deadline:
+                if not retryable(error) or self.env.clock() >= deadline:
                     raise
             self._pause(deadline)
 
@@ -300,11 +311,14 @@ class ResourceLifecycle:
                     raise
 
     def listing(self, deadline):
-        """The resource's reads for one pass of the supervisor's oracle.
+        """The resource's client for one pass of the supervisor's oracle.
 
-        The run's state is read here, before any of them, so a failure reading
-        it is never taken for a failure of a service call; the returned
-        client makes only those reads, bounded by `deadline`.
+        The run's state is read here, before any call, so a failure reading
+        it is never taken for a failure of a service call. The returned client
+        makes the oracle's reads, bounded by `deadline`, and a scenario may
+        also make through it the supervisor's own writes its role allows:
+        Spanner's supervisor creates its session and commits the late seed
+        rows through it.
         """
         self._role("supervisor")
         self._read()
@@ -362,3 +376,58 @@ class ResourceLifecycle:
     def delete(self, deadline):
         """Delete the resource; whether its absence is confirmed."""
         raise NotImplementedError
+
+
+class InstanceLifecycle(ResourceLifecycle):
+    """A run's instance, whose create answers with a long-running operation.
+
+    Admission waits for the instance and what the runner creates in it by
+    reading them back rather than by polling an operation. Deleting the
+    instance deletes what it contains, so the instance is the one resource
+    the intent names.
+    """
+
+    def _landed(self, api, deadline):
+        """Read the instance until it exists in any state.
+
+        The create answers with a long-running operation, so an instance not
+        yet readable could still appear after cleanup found it absent, and a
+        run stopped before it reads keeps its marker for an operator.
+        """
+        while self._settled(api.get, deadline) is None:
+            if not self._pause(deadline):
+                raise Failure(self.subject + " create did not become readable")
+
+    def _created(self, create, read, deadline):
+        """Create one resource in the instance, whatever its create answered.
+
+        A create runs on in the service after a request that timed out, and
+        a Bigtable table with initial splits and a change stream can outlast
+        the transport's timeout, so a create that failed without saying why,
+        or that answered 409 because an earlier attempt landed, is read back,
+        and repeated while the resource is still absent, until `deadline`.
+        """
+        while True:
+            # A stop requested while the last attempt waited sends no other.
+            self.env.admission_open()
+            try:
+                create()
+                return
+            except Failure as error:
+                exists = isinstance(error, ApiError) and error.status == 409
+                if not (exists or transient(error)):
+                    raise
+                self.env.emit(self.field + "-create-uncertain", {"cause": str(error)})
+            if self._settled(read, deadline) is not None:
+                return
+            if not self._pause(deadline):
+                raise Failure(self.subject + " contents were not created in time")
+
+    def _ready(self, read, deadline, subject=None):
+        """Wait for what `read` returns, by default the instance, to read READY."""
+        while True:
+            readback = self._settled(read, deadline)
+            if isinstance(readback, dict) and readback.get("state") == "READY":
+                return
+            if not self._pause(deadline):
+                raise Failure((subject or self.subject) + " did not become ready")

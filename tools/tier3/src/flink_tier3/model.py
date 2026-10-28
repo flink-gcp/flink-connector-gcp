@@ -36,6 +36,7 @@ from .policy import (
     RUN_ID,
     SHA,
     SMOKE,
+    SPANNER,
     SYSTEM,
     WINDOWS,
 )
@@ -82,6 +83,7 @@ APPLICATION_NAMESPACES = {
     "bigquery-recovery": BIGQUERY,
     "cloudtasks-recovery": CLOUDTASKS,
     "bigtable-recovery": BIGTABLE,
+    "spanner-recovery": SPANNER,
 }
 
 
@@ -260,6 +262,7 @@ class Approval:
     pubsub_trial: dict = field(default_factory=dict)
     cloudtasks_trial: dict = field(default_factory=dict)
     bigtable_trial: dict = field(default_factory=dict)
+    spanner_trial: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value):
@@ -316,6 +319,15 @@ class Approval:
             raise Failure("Approval does not describe a Bigtable trial")
         return Trial(self.run_id, **self.bigtable_trial)
 
+    @property
+    def spanner_plan(self):
+        """Derive the trial's input and instance from a Spanner approval."""
+        from .spanner.trial import Trial
+
+        if self.scenario != "spanner-recovery":
+            raise Failure("Approval does not describe a Spanner trial")
+        return Trial(self.run_id, **self.spanner_trial)
+
     def to_dict(self):
         value = asdict(self)
         if self.scenario != "pubsub-recovery":
@@ -326,6 +338,8 @@ class Approval:
             value.pop("cloudtasks_trial")
         if self.scenario != "bigtable-recovery":
             value.pop("bigtable_trial")
+        if self.scenario != "spanner-recovery":
+            value.pop("spanner_trial")
         return value
 
 
@@ -400,6 +414,7 @@ class RunRecord:
     pubsub: dict | None = None
     cloudtasks: dict | None = None
     bigtable: dict | None = None
+    spanner: dict | None = None
 
     @classmethod
     def from_dict(cls, value):

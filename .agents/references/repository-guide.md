@@ -630,8 +630,9 @@ its dispatch names one of four fault kinds (#1777). Read
 queue lifecycle, oracle, fault kinds or measurement windows. The Bigtable recovery trials
 (#1316, #1317) have their `bigtable-recovery` CUE delivery, GCP grants, namespace (#1860) and
 rig scenario (#1854). The Spanner recovery trials (#1360, #1872) have their
-`spanner-recovery` CUE delivery, GCP grants (#1874) and namespace (#1875), which the shared
-preflight and the Operator's watch set include (#1876); the rig scenario follows (#1877).
+`spanner-recovery` CUE delivery, GCP grants (#1874), namespace (#1875), which the shared
+preflight and the Operator's watch set include (#1876), and rig scenario (#1877); read
+`kubernetes/apps/spanner/README.md#recovery-trial` before changing its oracles or timings.
 The `pubsub-recovery` dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`; read the [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials)
 and `kubernetes/apps/pubsub/README.md` before adding one. Create the directory with its first
 reviewed trial, and keep it TOML so it carries the licence

@@ -64,9 +64,11 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
 | `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
 | `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
-| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub and Cloud Tasks exercises share: recorded operation intents, the owned savepoint upgrade (a rescale when the trial approves one), the measurement windows of the scenarios that sample the job (a baseline, one after the upgrade and one after the deletion), JobManager or TaskManager deletion, and scheduling evidence |
-| `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery, Pub/Sub and Cloud Tasks runs |
+| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner exercises share, with the finite-input exercise all but Pub/Sub's build on: recorded operation intents, the owned savepoint upgrade (a rescale when the trial approves one), the measurement windows of the scenarios that sample the job (a baseline, one after the upgrade and one after the deletion), JobManager or TaskManager deletion, and scheduling evidence |
+| `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner runs |
 | `flink_tier3/cloudtasks/` | The recovery trial of #1362 (trial, plan, queue, lifecycle, actors, exercise, oracle, verdict and analysis), and the single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
+| `flink_tier3/bigtable/` | The recovery trials of #1316 and #1317 (trial, plan, instance, lifecycle, exercise, observation, oracle, verdict and analysis) |
+| `flink_tier3/spanner/` | The recovery trials of #1360 and #1872 (trial, plan, instance, lifecycle, exercise, observation, oracle, verdict and analysis) |
 | `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
 | `flink_tier3/bigquery/plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
 | `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after the quiescence barrier |
@@ -124,7 +126,8 @@ Every run's inventory lists `tier3-bigtable`.
 
 The [`spanner-recovery`](spanner.cue) delivery of the Spanner recovery trials of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) renders its initial and upgrade phases in `tier3-spanner` from the optional `spanner_records` and `spanner_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, the optional `spanner_seed_rows_per_second` tag, the seed copy's pace per reading subtask, 50 unless given and at most 1,000, and the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops.
 Its `spanner_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `sp1360-<run-id>`, which a run ID of the full 40 characters keeps within Spanner's 64-character instance IDs.
-Dispatch does not offer it yet: [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877) adds the rig scenario that creates the instance and its database, admits the delivery and judges the trial.
+Dispatch renders it at the dispatched kind, the input and seed pace every kind shares and a change-stream end 3,900 seconds into the run's window, and the [recovery trial runbook](../apps/spanner/README.md#recovery-trial) describes the instance and its database, the exercise and the verdict ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
+Every run's inventory lists `tier3-spanner`.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -374,12 +377,14 @@ The offline `bigquery-recovery` proposal is described in the [BigQuery proposal 
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
 The offline `cloudtasks-recovery` proposal is described in the [Cloud Tasks trial runbook](../apps/cloudtasks/README.md#trial-and-estimate).
 The offline `bigtable-recovery` proposal is described in the [Bigtable trial runbook](../apps/bigtable/README.md#trial-and-estimate).
+The offline `spanner-recovery` proposal is described in the [Spanner trial runbook](../apps/spanner/README.md#trial-and-estimate).
 The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, or an `eo-10` or `fl-10` fault trial) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
 A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
 A Bigtable trial takes its kind and the published application digest, as [Dispatch](../apps/bigtable/README.md#dispatch) describes.
-A Cloud Tasks or Bigtable dispatch can also carry a campaign, the kinds to run after its own and a repeat budget, which dispatches each next attempt once the last is idle, as the [Bigtable dispatch section](../apps/bigtable/README.md#dispatch) describes for both.
+A Spanner trial takes its kind and the published application digest, as [Dispatch](../apps/spanner/README.md#dispatch) describes.
+A Cloud Tasks, Bigtable or Spanner dispatch can also carry a campaign, the kinds to run after its own and a repeat budget, which dispatches each next attempt once the last is idle, as the [Bigtable dispatch section](../apps/bigtable/README.md#dispatch) describes, which applies to all three.
 
 ## Reviewed Pub/Sub trials
 
