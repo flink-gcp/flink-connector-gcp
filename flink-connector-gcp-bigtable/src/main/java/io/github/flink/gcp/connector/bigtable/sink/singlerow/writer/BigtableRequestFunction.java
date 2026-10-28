@@ -28,10 +28,14 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
+import com.google.api.gax.core.CredentialsProvider;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -118,6 +122,14 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
     private final BigtableRequestOptions options;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToFlink;
+    private final boolean exportClientMetricsToCloudMonitoring;
+
+    /**
+     * The one RPC the requests call, whose client metrics are registered on open; {@code null} only
+     * for a function over an injected factory, which registers nothing.
+     */
+    @Nullable private final RowOperation operation;
 
     /** An injected factory, or {@code null} for the production one built in {@link #open}. */
     @Nullable private final SingleRowClientFactory injectedFactory;
@@ -158,13 +170,29 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
      * @param serviceAccountKeyFile the service-account key file, or {@code null} for
      *     application-default credentials
      * @param emulatorEndpoint the emulator endpoint, or {@code null} for production Bigtable
+     * @param exportClientMetricsToFlink whether the function exports its client's own metrics
+     *     through Flink's metric system
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
+     * @param operation the one RPC the requests call
      */
     protected BigtableRequestFunction(
             @Nullable String appProfileId,
             BigtableRequestOptions options,
             @Nullable String serviceAccountKeyFile,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this(appProfileId, options, serviceAccountKeyFile, emulatorEndpoint, null);
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring,
+            RowOperation operation) {
+        this(
+                appProfileId,
+                options,
+                serviceAccountKeyFile,
+                emulatorEndpoint,
+                exportClientMetricsToFlink,
+                exportClientMetricsToCloudMonitoring,
+                Preconditions.checkNotNull(operation, "operation must not be null"),
+                null);
     }
 
     /**
@@ -176,7 +204,15 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
     @VisibleForTesting
     protected BigtableRequestFunction(
             SingleRowClientFactory clientFactory, BigtableRequestOptions options) {
-        this(null, options, null, null, Preconditions.checkNotNull(clientFactory));
+        this(
+                null,
+                options,
+                null,
+                null,
+                false,
+                true,
+                null,
+                Preconditions.checkNotNull(clientFactory));
     }
 
     /**
@@ -201,11 +237,17 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
             BigtableRequestOptions options,
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring,
+            @Nullable RowOperation operation,
             @Nullable SingleRowClientFactory injectedFactory) {
         this.appProfileId = appProfileId;
         this.options = Preconditions.checkNotNull(options, "options must not be null");
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        this.operation = operation;
         this.injectedFactory = injectedFactory;
     }
 
@@ -259,14 +301,7 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         // run the builder, and a non-positive cap would refuse every input.
         Preconditions.checkArgument(
                 options.getMaxActiveInstances() > 0, "maxActiveInstances must be positive");
-        clientFactory =
-                injectedFactory != null
-                        ? injectedFactory
-                        : new DefaultSingleRowClientFactory(
-                                appProfileId,
-                                options,
-                                emulatorEndpoint,
-                                BigtableCredentials.loadData(serviceAccountKeyFile));
+        clientFactory = injectedFactory != null ? injectedFactory : clientFactory(metricGroup);
         // Thread-safe counters: answers count from client threads, concurrently.
         metrics =
                 SingleRowRequestMetrics.forOperator(
@@ -280,6 +315,29 @@ public abstract class BigtableRequestFunction<IN, R, OUT> extends RichAsyncFunct
         lastIdleSweepNanos = nanoClock.getAsLong();
         closed = false;
         metrics.bindState(inFlight::get, clients::activeClients);
+    }
+
+    /**
+     * Builds the production client factory, registering the client metrics on the given group first
+     * when they are exported to Flink. They are not closed: the group ends with the operator or the
+     * SQL function ({@code docs/adr/0186}).
+     */
+    @VisibleForTesting
+    DefaultSingleRowClientFactory clientFactory(MetricGroup metricGroup) throws IOException {
+        CredentialsProvider credentials = BigtableCredentials.loadData(serviceAccountKeyFile);
+        ClientMetrics clientMetrics =
+                exportClientMetricsToFlink
+                        ? BigtableClientMetrics.register(
+                                metricGroup,
+                                Preconditions.checkNotNull(operation, "operation").getRpcName())
+                        : null;
+        return new DefaultSingleRowClientFactory(
+                appProfileId,
+                options,
+                emulatorEndpoint,
+                credentials,
+                exportClientMetricsToCloudMonitoring,
+                clientMetrics);
     }
 
     @Override

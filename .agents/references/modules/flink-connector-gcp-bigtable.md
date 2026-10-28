@@ -315,15 +315,34 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   `activeClients` gauges the bounded instance set; `capacityEvictions` and `idleEvictions`
   count logical client removals, not table-batcher removals.
 - Client-library metrics (`docs/adr/0186`): `BigtableClientMetrics` is the adapter and a
-  `[[subgroups]]` source, so a new leaf owes a templated docs row. A component registers the RPC
-  methods its client calls when it opens; a method missing from that list is dropped with a single
-  `WARN`, so a new call site adds its method there. The Flink export and the Cloud Monitoring export are
-  independent in the client: only `disableInternalMetrics()` removes the built-in exporter, and
-  `NoopMetricsProvider` does not. `BigtableDataClients.applyClientMetrics` is the one place both
-  are applied. On the session (vRPC) path of 2.85.0, `MetricsImpl.newTableTracer` returns a no-op
-  tracer when internal metrics are disabled, so turning the Cloud Monitoring export off also hides
-  session RPCs (`ReadRow`, `MutateRow`) from the Flink export; the MutateRows batcher is not on that
-  path. Re-read both facts on a client upgrade.
+  `[[subgroups]]` source, so a new leaf owes a templated docs row. Every component that owns a data
+  client takes both options and registers the one RPC method its client calls when it opens; a
+  method missing from that list is dropped with a single `WARN`, so a new call site adds its method
+  there and to the docs' component table. The emulator ITs (`BigtableClientMetricsComponentsITCase`,
+  `BigtableLookupClientMetricsITCase`) hold the names against the real client; Change Streams has no
+  emulator, so its two names rest on the client's span names.
+- The Flink export and the Cloud Monitoring export are independent in the client: only
+  `disableInternalMetrics()` removes the built-in exporter, and `NoopMetricsProvider` does not.
+  `BigtableDataClients.applyClientMetrics` is the one place both are applied, and the emulator builder
+  has already disabled the exporter, so a settings test reads production settings. On the session
+  (vRPC) path of 2.85.0, `MetricsImpl.newTableTracer` returns a no-op tracer when internal metrics are
+  disabled, so turning the Cloud Monitoring export off also hides session `ReadRow` from the Flink
+  export: the lookups' reads, and a scan's single-row-key reads, which the client records as
+  `ReadRow` (unregistered on the reader, so dropped with one `WARN` even with the export on). The
+  owner declined a workaround. Re-read both facts on a client upgrade.
+- Only the at-least-once batch factory closes its client metrics. The other components leave theirs
+  open, because their group ends with them; the single-row client factory must not close them,
+  since the staged committer shares one set between its per-profile factories. An enumerator's
+  group outlives the enumerator, so enumerators take theirs from the source's
+  `EnumeratorClientMetrics` (one registration per source object); registering per enumerator freezes
+  the series after a coordinator reset (#1908). The adaptive scheduler deserializes a new source
+  object per restart, so the series still freeze there; #1908 owns that.
+- The `FULL` lookup cache's input format gets no metric group from Flink, so it applies only the
+  Cloud Monitoring option.
+- The Table layer holds both options as `@Nullable Boolean` and calls a builder setter only for a
+  set option (ADR-0139); a component with no builder (the lookups, the SQL functions) resolves an
+  unset one through `BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_*`, which the builders
+  start from too. Never write a literal `true`/`false` default for either. The seams' `useClientMetrics` is defaulted, unlike `useCredentials`.
 
 ## Scan source (`docs/adr/0080`, `0083`)
 

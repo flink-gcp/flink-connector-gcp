@@ -47,6 +47,8 @@ public final class SingleRowRequestConfig<T> implements Serializable {
     private final FailureHandler<? super FailedRequest> failedRequestHandler;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToFlink;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * Creates the configuration.
@@ -59,6 +61,10 @@ public final class SingleRowRequestConfig<T> implements Serializable {
      * @param serviceAccountKeyFile the service-account key file, or {@code null} for
      *     application-default credentials
      * @param emulatorEndpoint the emulator endpoint, or {@code null} for production Bigtable
+     * @param exportClientMetricsToFlink whether the writer exports its client's own metrics through
+     *     Flink's metric system
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
      */
     public SingleRowRequestConfig(
             DestinationResolver<? super T> destinationResolver,
@@ -67,7 +73,9 @@ public final class SingleRowRequestConfig<T> implements Serializable {
             BigtableRequestOptions requestOptions,
             FailureHandler<? super FailedRequest> failedRequestHandler,
             @Nullable String serviceAccountKeyFile,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.destinationResolver =
                 Preconditions.checkNotNull(
                         destinationResolver, "destinationResolver must not be null");
@@ -80,6 +88,8 @@ public final class SingleRowRequestConfig<T> implements Serializable {
                         failedRequestHandler, "failedRequestHandler must not be null");
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     /** Returns the resolver naming the table each record is sent to. */
@@ -120,5 +130,15 @@ public final class SingleRowRequestConfig<T> implements Serializable {
     @Nullable
     public EmulatorEndpoint getEmulatorEndpoint() {
         return emulatorEndpoint;
+    }
+
+    /** Returns whether the client's own metrics are exported through Flink's metric system. */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
+    }
+
+    /** Returns whether the client keeps its built-in Cloud Monitoring export. */
+    public boolean isExportClientMetricsToCloudMonitoring() {
+        return exportClientMetricsToCloudMonitoring;
     }
 }

@@ -91,6 +91,8 @@ Project, instance and table are fixed for each function call site, as are its fa
 | `service-account-key-file` | *unset ⇒ application-default credentials* | Key file available on task managers. |
 | `emulator-endpoint` | *unset ⇒ real service* | Emulator `host:port`; cannot be combined with a key file. |
 | `request-timeout` | `20 s` | Positive SDK deadline, expressible as signed 64-bit nanoseconds; must be shorter than the Flink async timeout after millisecond conversion. |
+| `client-metrics.export-to-flink` | `false` | Reports the client's own metrics for the function's one RPC, `CheckAndMutateRow` or `ReadModifyWriteRow`, as `rpcMethod.METHOD.*` under the function's `bigtableSql.<name>` metric group; see [Client-library metrics]({{< relref "docs/connectors/datastream/bigtable" >}}#client-library-metrics). |
+| `client-metrics.export-to-cloud-monitoring` | `true` | Whether the client keeps its built-in export of client-side metrics to Cloud Monitoring. |
 
 Row keys and ordinary value arguments use the existing [SQL cell type mapping]({{< relref "docs/connectors/table/bigtable" >}}#type-mapping).
 The row-key expression and every supplied operand must have a `NOT NULL` SQL type, including operands unused by the template or referenced only by an unselected conditional branch.

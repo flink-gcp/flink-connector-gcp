@@ -309,6 +309,8 @@ class BigtableStagedSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
                         LocalStagedHarness.PROFILE,
                         BigtableRequestOptions.builder().build(),
                         null,
+                        null,
+                        true,
                         null)) {
             LOG.info("Native data client at {}: creating", java.time.Instant.now());
             var client = factory.create(absent);

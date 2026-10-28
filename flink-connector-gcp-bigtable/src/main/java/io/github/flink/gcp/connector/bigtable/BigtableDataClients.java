@@ -22,8 +22,8 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.stub.metrics.CustomOpenTelemetryMetricsProvider;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.opentelemetry.api.OpenTelemetry;
 
 import javax.annotation.Nullable;
 
@@ -109,6 +109,19 @@ public final class BigtableDataClients {
     }
 
     /**
+     * Whether a component exports its client's own metrics to Flink when nothing chooses: every
+     * builder starts from it, and a Table component without a builder resolves an unset option to
+     * it, so the default lives in one place (ADR-0139).
+     */
+    public static final boolean DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK = false;
+
+    /**
+     * Whether a client keeps its built-in Cloud Monitoring export when nothing chooses; one place,
+     * as {@link #DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK} is.
+     */
+    public static final boolean DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING = true;
+
+    /**
      * Applies the two client-metrics choices to settings built by {@link #settings}.
      *
      * <p>On the classic stub path they are independent in the client (2.85.0, {@code
@@ -127,16 +140,17 @@ public final class BigtableDataClients {
      * series. The emulator builder has already disabled the Cloud Monitoring export.
      *
      * @param settings the settings to apply them to
-     * @param openTelemetry the instance {@code ClientMetrics.openTelemetry()} returns to record
-     *     into, or {@code null} to export nothing to Flink
+     * @param clientMetrics the client metrics to record into, or {@code null} to export nothing to
+     *     Flink
      * @param exportToCloudMonitoring whether the client keeps its built-in Cloud Monitoring export
      */
     public static void applyClientMetrics(
             BigtableDataSettings.Builder settings,
-            @Nullable OpenTelemetry openTelemetry,
+            @Nullable ClientMetrics clientMetrics,
             boolean exportToCloudMonitoring) {
-        if (openTelemetry != null) {
-            settings.setMetricsProvider(CustomOpenTelemetryMetricsProvider.create(openTelemetry));
+        if (clientMetrics != null) {
+            settings.setMetricsProvider(
+                    CustomOpenTelemetryMetricsProvider.create(clientMetrics.openTelemetry()));
         }
         if (!exportToCloudMonitoring) {
             settings.disableInternalMetrics();

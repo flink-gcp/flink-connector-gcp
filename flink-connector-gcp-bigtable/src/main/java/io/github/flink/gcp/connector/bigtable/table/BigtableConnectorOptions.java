@@ -162,8 +162,9 @@ public final class BigtableConnectorOptions {
 
     /**
      * Whether the Bigtable client's own metrics, per RPC method, are exported through Flink's
-     * metric system as rpcMethod.METHOD.* series of the writer. Applies to the upsert, keep-latest
-     * and aggregate write modes.
+     * metric system as rpcMethod.METHOD.* series of the component that owns the client: the writer
+     * or committer, the scan and Change Streams readers and enumerators, and a NONE or PARTIAL
+     * lookup. A FULL lookup cache exports nothing to Flink, which gives its loader no metric group.
      */
     public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_FLINK =
             ConfigOptions.key("client-metrics.export-to-flink")
@@ -172,13 +173,16 @@ public final class BigtableConnectorOptions {
                     .withDescription(
                             "Whether the Bigtable client's own metrics, per RPC method, are"
                                     + " exported through Flink's metric system as"
-                                    + " rpcMethod.METHOD.* series of the writer. Applies to the"
-                                    + " upsert, keep-latest and aggregate write modes.");
+                                    + " rpcMethod.METHOD.* series of the component that owns the"
+                                    + " client: the writer or committer, the scan and Change"
+                                    + " Streams readers and enumerators, and a NONE or PARTIAL"
+                                    + " lookup. A FULL lookup cache exports nothing to Flink,"
+                                    + " which gives its loader no metric group.");
 
     /**
      * Whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
      * Monitoring. Turning it off also removes the exporter's platform detection when a client
-     * closes. Applies to the upsert, keep-latest and aggregate write modes.
+     * closes. Applies to every client the table's source, sink and lookups build.
      */
     public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING =
             ConfigOptions.key("client-metrics.export-to-cloud-monitoring")
@@ -188,8 +192,8 @@ public final class BigtableConnectorOptions {
                             "Whether the Bigtable client keeps exporting its built-in client-side"
                                     + " metrics to Cloud Monitoring. Turning it off also removes"
                                     + " the exporter's platform detection when a client closes."
-                                    + " Applies to the upsert, keep-latest and aggregate write"
-                                    + " modes.");
+                                    + " Applies to every client the table's source, sink and"
+                                    + " lookups build.");
 
     // ------------------------------------------------------------------------
     //  Cell encoding

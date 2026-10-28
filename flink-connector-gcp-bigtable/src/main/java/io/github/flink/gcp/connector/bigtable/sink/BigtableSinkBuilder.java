@@ -22,6 +22,7 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 
@@ -58,8 +59,10 @@ public class BigtableSinkBuilder<T> {
     @Nullable private TableCreateOptions tableCreateOptions;
     private BigtableDeliveryGuarantee deliveryGuarantee = BigtableDeliveryGuarantee.AT_LEAST_ONCE;
     @Nullable private BigtableStagedOptions stagedOptions;
-    private boolean exportClientMetricsToFlink;
-    private boolean exportClientMetricsToCloudMonitoring = true;
+    private boolean exportClientMetricsToFlink =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK;
+    private boolean exportClientMetricsToCloudMonitoring =
+            BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_CLOUD_MONITORING;
 
     BigtableSinkBuilder() {}
 
@@ -222,13 +225,15 @@ public class BigtableSinkBuilder<T> {
      * Exports the Bigtable client's own metrics through Flink's metric system, so that every
      * configured Flink metric reporter sees them. Optional; off by default.
      *
-     * <p>The writer registers them under its metric group as {@code rpcMethod.METHOD.leaf}: per RPC
-     * method, the client's operation and attempt counts and latencies, its retries, its
-     * connectivity errors, and its server, first-response and application time. The client's
-     * throttling time is not reported: the pinned client records it in the wrong unit. Latencies
-     * are reported as a count and a millisecond sum, so a backend divides their rates for the mean
-     * over any window; no percentile is reported. Each series moves when the client records into
-     * it: the attempt series as each RPC attempt ends, the operation series as each operation ends.
+     * <p>They are registered as {@code rpcMethod.METHOD.leaf}: by the writer on its metric group,
+     * for {@code MutateRows}, or under {@code EXACTLY_ONCE} by the committer on its own, for {@code
+     * CheckAndMutateRow}, since the staging writer has no client. Per RPC method they are the
+     * client's operation and attempt counts and latencies, its retries, its connectivity errors,
+     * and its server, first-response and application time. The client's throttling time is not
+     * reported: the pinned client records it in the wrong unit. Latencies are reported as a count
+     * and a millisecond sum, so a backend divides their rates for the mean over any window; no
+     * percentile is reported. Each series moves when the client records into it: the attempt series
+     * as each RPC attempt ends, the operation series as each operation ends.
      *
      * <p>This does not stop the client's built-in export of the same metrics to Cloud Monitoring;
      * {@link #exportClientMetricsToCloudMonitoring(boolean)} does.
@@ -342,11 +347,6 @@ public class BigtableSinkBuilder<T> {
                         exportClientMetricsToFlink,
                         exportClientMetricsToCloudMonitoring);
         if (deliveryGuarantee == BigtableDeliveryGuarantee.EXACTLY_ONCE) {
-            Preconditions.checkState(
-                    !exportClientMetricsToFlink && exportClientMetricsToCloudMonitoring,
-                    "EXACTLY_ONCE does not apply the client-metrics settings yet: leave"
-                            + " exportClientMetricsToFlink and exportClientMetricsToCloudMonitoring"
-                            + " at their defaults.");
             Preconditions.checkState(
                     !writerOptionsExplicit,
                     "EXACTLY_ONCE uses stagedOptions.requestOptions, not writerOptions");

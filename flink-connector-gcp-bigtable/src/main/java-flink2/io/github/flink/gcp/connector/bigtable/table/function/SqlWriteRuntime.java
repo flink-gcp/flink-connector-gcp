@@ -31,7 +31,14 @@ final class SqlWriteRuntime extends BigtableRequestFunction<GenericRowData, Obje
     private final SqlWriteTemplate template;
 
     SqlWriteRuntime(SqlWriteTemplate template) {
-        super(template.appProfileId, template.options, template.keyFile, template.emulator);
+        super(
+                template.appProfileId,
+                template.options,
+                template.keyFile,
+                template.emulator,
+                template.exportClientMetricsToFlink,
+                template.exportClientMetricsToCloudMonitoring,
+                template.operation());
         this.template = template;
     }
 

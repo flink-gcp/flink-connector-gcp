@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.core.io.GenericInputSplit;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.bigtable.data.v2.models.Filters;
@@ -68,9 +69,11 @@ class BigtableRuntimeCredentialsTest {
                         null,
                         MISSING_KEY,
                         null,
+                        false,
+                        true,
                         0);
 
-        assertSanitized(() -> function.open(null));
+        assertSanitized(() -> function.open(new FunctionContext(null)));
     }
 
     @Test
@@ -87,9 +90,11 @@ class BigtableRuntimeCredentialsTest {
                         null,
                         MISSING_KEY,
                         null,
+                        false,
+                        true,
                         0);
 
-        assertSanitized(() -> function.open(null));
+        assertSanitized(() -> function.open(new FunctionContext(null)));
     }
 
     @Test
@@ -106,7 +111,8 @@ class BigtableRuntimeCredentialsTest {
                         null,
                         MISSING_KEY,
                         null,
-                        null);
+                        null,
+                        true);
 
         assertSanitized(() -> input.open(new GenericInputSplit(0, 1)));
     }
@@ -129,9 +135,11 @@ class BigtableRuntimeCredentialsTest {
                         null,
                         null,
                         "localhost",
+                        false,
+                        true,
                         0);
 
-        assertThatThrownBy(() -> function.open(null))
+        assertThatThrownBy(() -> function.open(new FunctionContext(null)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("emulator-endpoint must be host:port, was 'localhost'");
     }
@@ -150,7 +158,8 @@ class BigtableRuntimeCredentialsTest {
                         null,
                         null,
                         "localhost",
-                        null);
+                        null,
+                        true);
 
         assertThatThrownBy(() -> input.open(new GenericInputSplit(0, 1)))
                 .isInstanceOf(IllegalArgumentException.class)

@@ -133,7 +133,9 @@ class ConditionalRuntimeTest {
                         BigtableRequestOptions.builder().build(),
                         EmptyBranchPolicy.IGNORE,
                         null,
-                        null);
+                        null,
+                        false,
+                        true);
         ConditionalFunction<String> function = open(config);
         try (AutoCloseable closing = function::close) {
             Answer<Tuple2<String, ConditionalResult>> first = new Answer<>();
@@ -198,7 +200,9 @@ class ConditionalRuntimeTest {
                         config.requestOptions,
                         FailureHandler.logAndDrop(),
                         null,
-                        null),
+                        null,
+                        false,
+                        true),
                 client,
                 mailbox,
                 metrics);
@@ -235,7 +239,9 @@ class ConditionalRuntimeTest {
                 BigtableRequestOptions.builder().build(),
                 policy,
                 null,
-                null);
+                null,
+                false,
+                true);
     }
 
     private static ConditionalRequest request(String key) {

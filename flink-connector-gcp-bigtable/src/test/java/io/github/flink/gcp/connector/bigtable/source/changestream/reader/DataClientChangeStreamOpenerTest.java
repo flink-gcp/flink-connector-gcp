@@ -27,6 +27,8 @@ import com.google.cloud.bigtable.data.v2.internal.RequestContext;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -57,7 +59,7 @@ class DataClientChangeStreamOpenerTest {
 
     @Test
     void injectsTheRuntimeCredentialProvider() throws Exception {
-        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile");
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile", true);
         NoCredentialsProvider provider = NoCredentialsProvider.create();
         opener.useCredentials(provider);
 
@@ -67,7 +69,8 @@ class DataClientChangeStreamOpenerTest {
 
     @Test
     void carriesTheApplicationProfileToTheClient() throws Exception {
-        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("single-cluster");
+        DataClientChangeStreamOpener opener =
+                new DataClientChangeStreamOpener("single-cluster", true);
 
         assertThat(opener.settings(TABLE).getProjectId()).isEqualTo("project");
         assertThat(opener.settings(TABLE).getInstanceId()).isEqualTo("instance");
@@ -75,14 +78,49 @@ class DataClientChangeStreamOpenerTest {
     }
 
     @Test
+    void carriesTheClientMetricsChoicesToTheClient() throws Exception {
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile", false);
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertExportsNothing(opener.settings(TABLE));
+        opener.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsOnlyInto(opener.settings(TABLE), metrics);
+    }
+
+    @Test
     void travelsInTheJobGraph() throws Exception {
-        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("single-cluster");
+        DataClientChangeStreamOpener opener =
+                new DataClientChangeStreamOpener("single-cluster", true);
 
         DataClientChangeStreamOpener back =
                 InstantiationUtil.deserializeObject(
                         InstantiationUtil.serializeObject(opener), getClass().getClassLoader());
 
         assertThat(back.settings(TABLE).getAppProfileId()).isEqualTo("single-cluster");
+    }
+
+    @Test
+    void recordsIntoTheClientMetricsBesideTheCloudMonitoringExport() throws Exception {
+        var seam = new DataClientChangeStreamOpener("profile", true);
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        ClientMetricsSettings.assertAsShipped(seam.settings(TABLE));
+        seam.useClientMetrics(metrics);
+        ClientMetricsSettings.assertRecordsInto(seam.settings(TABLE), metrics);
+    }
+
+    @Test
+    void theBuilderCarriesTheCloudMonitoringChoiceIntoThisSeam() throws Exception {
+        // Production settings: the emulator builder would disable the export whatever the choice.
+        ClientMetricsSettings.assertExportsNothing(
+                ((DataClientChangeStreamOpener)
+                                TestSources.changeStreamConfig(
+                                                b -> b.exportClientMetricsToCloudMonitoring(false))
+                                        .getOpener())
+                        .settings(TABLE));
+        ClientMetricsSettings.assertAsShipped(
+                ((DataClientChangeStreamOpener) TestSources.changeStreamConfig(b -> b).getOpener())
+                        .settings(TABLE));
     }
 
     @Test
@@ -101,13 +139,13 @@ class DataClientChangeStreamOpenerTest {
 
     @Test
     void closingWithoutHavingOpenedReleasesNothingAndFailsNothing() {
-        assertThatCode(() -> new DataClientChangeStreamOpener("profile").close())
+        assertThatCode(() -> new DataClientChangeStreamOpener("profile", true).close())
                 .doesNotThrowAnyException();
     }
 
     @Test
     void refusesToBuildAClientAfterItHasBeenClosed() throws IOException {
-        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile");
+        DataClientChangeStreamOpener opener = new DataClientChangeStreamOpener("profile", true);
         opener.close();
 
         assertThatThrownBy(() -> opener.open(TABLE, wholeKeyspace(), null, new DroppingObserver()))

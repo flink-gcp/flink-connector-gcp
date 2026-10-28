@@ -43,6 +43,7 @@ import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.ReadModifyWriteRowRequest.Rule;
 import org.junit.jupiter.api.Test;
 
@@ -231,7 +232,10 @@ class BigtableRequestFunctionJobITCase extends AbstractBigtableEmulatorITCase {
                     null,
                     BigtableRequestOptions.builder().build(),
                     null,
-                    EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint"));
+                    EmulatorEndpoint.parse(emulatorEndpoint, "emulatorEndpoint"),
+                    false,
+                    true,
+                    RowOperation.READ_MODIFY_WRITE_ROW);
             this.table = table;
         }
 

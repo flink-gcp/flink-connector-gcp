@@ -29,9 +29,11 @@ import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
  * <p>The instruments are the public block {@code google-cloud-bigtable} records into an injected
  * {@code OpenTelemetry} (2.85.0, {@code MetricRegistry.newUserRecorderRegistry}). The client
  * records its other instruments, the per-connection and channel-pool ones, only into its built-in
- * Cloud Monitoring exporter. A histogram maps to its count and its millisecond sum, except where
- * its count repeats another one: the client records application and first-response latency once per
- * operation, so only their sums are kept, to be divided by {@code operations}.
+ * Cloud Monitoring exporter. A histogram maps to its count and its millisecond sum, except for the
+ * two the client records at most once per operation, which keep only their sums: application
+ * latency, recorded for every operation, so its count would repeat {@code operations}, and
+ * first-response latency, recorded only for a streamed {@code ReadRows} and for operations served
+ * on the session path ({@code BuiltinMetricsTracer} and {@code VRpcTracerImpl}).
  *
  * <p>{@code throttling_latencies} is not mapped. In 2.85.0 the client adds a batch's flow-control
  * wait to that total in milliseconds and then records the total as nanoseconds, and it never resets
@@ -85,8 +87,9 @@ public final class BigtableClientMetrics {
      * @param owner the component's metric group
      * @param methods the RPC methods the component's client calls, without the {@code Bigtable.}
      *     prefix, such as {@code MutateRows}
-     * @return the client metrics, whose {@link ClientMetrics#openTelemetry()} goes to the client
-     *     and which the caller closes after the client
+     * @return the client metrics, whose {@link ClientMetrics#openTelemetry()} goes to the client;
+     *     closing them, after the client, only freezes the counters, which a component whose metric
+     *     group ends with it need not do
      */
     public static ClientMetrics register(MetricGroup owner, String... methods) {
         Preconditions.checkNotNull(owner, "owner");

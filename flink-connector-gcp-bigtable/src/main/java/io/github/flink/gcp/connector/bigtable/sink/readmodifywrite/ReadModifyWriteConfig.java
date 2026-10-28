@@ -41,6 +41,8 @@ final class ReadModifyWriteConfig<T> implements Serializable {
     final BigtableRequestOptions requestOptions;
     final String serviceAccountKeyFile;
     final EmulatorEndpoint emulatorEndpoint;
+    final boolean exportClientMetricsToFlink;
+    final boolean exportClientMetricsToCloudMonitoring;
 
     ReadModifyWriteConfig(
             DestinationResolver<? super T> resolver,
@@ -48,7 +50,9 @@ final class ReadModifyWriteConfig<T> implements Serializable {
             String appProfileId,
             BigtableRequestOptions requestOptions,
             String serviceAccountKeyFile,
-            EmulatorEndpoint emulatorEndpoint) {
+            EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring) {
         Preconditions.checkState(
                 serviceAccountKeyFile == null || emulatorEndpoint == null,
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
@@ -63,6 +67,8 @@ final class ReadModifyWriteConfig<T> implements Serializable {
         this.requestOptions = requestOptions;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     RowRequestSerializer<T> sinkSerializer() {

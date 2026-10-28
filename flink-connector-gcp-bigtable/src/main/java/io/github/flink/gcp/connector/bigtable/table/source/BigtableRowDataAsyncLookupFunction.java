@@ -57,6 +57,8 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
             @Nullable String appProfileId,
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring,
             int maxRetries) {
         this.lookup =
                 new BigtableRowDataLookup(
@@ -69,7 +71,9 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
                         ranges,
                         appProfileId,
                         serviceAccountKeyFile,
-                        emulatorEndpoint);
+                        emulatorEndpoint,
+                        exportClientMetricsToFlink,
+                        exportClientMetricsToCloudMonitoring);
         this.maxRetries = maxRetries;
     }
 
@@ -87,9 +91,15 @@ public final class BigtableRowDataAsyncLookupFunction extends AsyncLookupFunctio
         this.maxRetries = maxRetries;
     }
 
+    /** Returns the lookup support, for the module's tests. */
+    @VisibleForTesting
+    BigtableRowDataLookup support() {
+        return lookup;
+    }
+
     @Override
     public void open(FunctionContext context) throws Exception {
-        lookup.open();
+        lookup.open(context.getMetricGroup());
     }
 
     @Override

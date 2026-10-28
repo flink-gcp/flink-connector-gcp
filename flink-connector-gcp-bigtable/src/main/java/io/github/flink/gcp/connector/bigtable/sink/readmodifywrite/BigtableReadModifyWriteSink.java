@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.sink.readmodifywrite;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 import org.apache.flink.streaming.api.lineage.LineageVertex;
@@ -28,6 +29,7 @@ import io.github.flink.gcp.connector.base.lineage.internal.LineageMetadata;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
 import io.github.flink.gcp.connector.bigtable.sink.CrossVersionSink;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestConfig;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestSinks;
 
@@ -53,6 +55,7 @@ import java.util.Objects;
 public final class BigtableReadModifyWriteSink<T>
         implements CrossVersionSink<T>, LineageVertexProvider {
     private static final long serialVersionUID = 1L;
+
     private final SingleRowRequestConfig<T> config;
     private final LineageMetadata lineage;
 
@@ -66,7 +69,9 @@ public final class BigtableReadModifyWriteSink<T>
                         config.requestOptions,
                         handler,
                         config.serviceAccountKeyFile,
-                        config.emulatorEndpoint),
+                        config.emulatorEndpoint,
+                        config.exportClientMetricsToFlink,
+                        config.exportClientMetricsToCloudMonitoring),
                 null);
     }
 
@@ -81,6 +86,16 @@ public final class BigtableReadModifyWriteSink<T>
     public BigtableReadModifyWriteSink<T> withTableLineage(String logicalName) {
         return new BigtableReadModifyWriteSink<>(
                 config, Objects.requireNonNull(logicalName, "logicalName"));
+    }
+
+    /**
+     * Returns the request configuration, so the table layer's tests can see what reaches the
+     * runtime.
+     */
+    @Internal
+    @VisibleForTesting
+    public SingleRowRequestConfig<T> getConfig() {
+        return config;
     }
 
     @Override
@@ -100,6 +115,7 @@ public final class BigtableReadModifyWriteSink<T>
 
     @Override
     public SinkWriter<T> createWriter(WriterInitContext context) throws IOException {
-        return SingleRowRequestSinks.createWriter(config, context);
+        return SingleRowRequestSinks.createWriter(
+                config, context, RowOperation.READ_MODIFY_WRITE_ROW);
     }
 }

@@ -237,6 +237,8 @@ class LocalStagedHarness implements AutoCloseable {
                 PROFILE,
                 BigtableRequestOptions.builder().build(),
                 EmulatorEndpoint.parse(endpoint, "endpoint"),
+                null,
+                true,
                 null);
     }
 

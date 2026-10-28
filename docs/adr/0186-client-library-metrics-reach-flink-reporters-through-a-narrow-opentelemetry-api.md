@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-10-25
 - Updated: 2026-10-27 (Cloud Tasks adopts it through gax's tracer factory, refined by [#715])
-- Issues: [#713], [#1902], [#1903], [#712], [#715], [#714], [#1815]
+- Updated: 2026-10-27 (every component that owns a Bigtable data client takes both options, refined by [#1903])
+- Issues: [#713], [#1902], [#1903], [#1908], [#712], [#715], [#714], [#1815]
 - Modules: base, bigtable, cloudtasks, `scripts/`, root POM
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` § Client-library
   metrics; `docs/content/docs/reference/bigtable.md` § `BigtableSink.builder()`;
@@ -73,14 +74,16 @@ records. What `ClientMetrics` and its first adopter are:
 - **Bigtable maps ten leaves per method** from the public block `google-cloud-bigtable` 2.85.0
   records into an injected `OpenTelemetry`: five of its six double histograms in `ms` (operation,
   attempt, server, first-response and application latencies) and both long counters (retries,
-  connectivity errors). Two histograms keep only their sum, because the client records them once
-  per operation and their counts would repeat `operations`. `throttling_latencies` is not mapped:
+  connectivity errors). Two histograms keep only their sum, because the client records them at most
+  once per operation: application latency for every operation, so its count would repeat
+  `operations`, and first-response latency only for a streamed `ReadRows` and for operations served
+  on the session path (`BuiltinMetricsTracer`, `VRpcTracerImpl`; corrected in [#1903]). `throttling_latencies` is not mapped:
   `BuiltinMetricsTracer` adds a batch's flow-control wait to its total in milliseconds, records the
   total as nanoseconds, and never resets it between attempts, so the value is wrong in both unit
   and scope until a client release fixes it. The
-  at-least-once writer is the first component: its batch factory owns the `ClientMetrics` and closes it
-  after its clients. `EXACTLY_ONCE` refuses the options, and the single-row writers, sources and
-  lookups take them in [#1903].
+  at-least-once writer was the first component: its batch factory owns the `ClientMetrics` and closes it
+  after its clients. Every other component that owns a data client followed in [#1903]; see the
+  refinement below.
 - **Dependencies: `opentelemetry-api` only.** Base declares it optional, because base is bundled
   into every SQL jar, and the adopter declares it itself. Its version comes from an
   `opentelemetry-bom` import in the root POM, pinned to what `libraries-bom` resolves through the
@@ -130,7 +133,7 @@ divergence rests on. Pub/Sub has no adapter and no issue.
   option exists. The two are independent on the classic stub path that `MutateRows` takes. The
   session (vRPC) path that serves `ReadRow` and `MutateRow` is not: `MetricsImpl.newTableTracer`
   returns a no-op tracer when internal metrics are off, so the user recorder sees none of those
-  RPCs then. [#1903] owes that measurement. [#1815]'s first note named `NoopMetricsProvider` as the
+  RPCs then; the refinement below records how far that reaches. [#1815]'s first note named `NoopMetricsProvider` as the
   switch; the issue carries the correction.
 - **Turning the export off removes the close stall; the Flink export alone does not.** On 2026-10-25, on a
   host where `metadata.google.internal` resolves to an address nothing answers, a client built
@@ -188,6 +191,75 @@ option exists.
   brought it before; the connector now declares it, and the jar bundles `opentelemetry-api`,
   `-context` and `-common` 1.62.0 (about 230 KB as jars), relocated under its shaded prefix.
 
+## Refinement (2026-10-27): every component that owns a data client takes both options
+
+[#1903] applied the two options to every Bigtable component that owns a data client, and removed
+part 1's refusals: the `EXACTLY_ONCE` committer, the single-row sinks and async helpers, the SQL
+async functions (as `client-metrics.*` keys in their settings), the scan and Change Streams readers
+and enumerators, and the lookups. Each registers the one method its client calls, on its own
+metric group. Four findings shaped it.
+
+- **The client metrics are closed only where the component's group outlives a client.** Closing
+  freezes the counters, which matters where a reporter can still read them after the component
+  ends. A writer's, reader's, committer's or function's group ends with the component, so those
+  components leave their client metrics open, and a client still closing records into them without
+  harm. The batch factory of part 1 still closes its own. The single-row client factory cannot: the
+  staged committer mints one factory per application profile and gives them one shared set, because
+  a set per factory would register the same names twice on the committer's group.
+- **An enumerator's group outlives the enumerator, so its set belongs to the source.** In Flink
+  2.2.1, `SourceCoordinatorContext.metricGroup()` returns a proxy over the holder's one
+  `enumerator` subgroup, which a coordinator reset after a global failover reuses, and
+  `AbstractMetricGroup.addMetric` drops a second registration of a name while the first stays
+  reported (read from source). A set per enumerator would therefore report the first enumerator's
+  totals after a reset, with nothing recording into them. `EnumeratorClientMetrics` registers once
+  per source object, which the default scheduler keeps across resets, and hands every later
+  enumerator the same set. The adaptive scheduler does not: it builds a new execution graph at each
+  restart or rescale, and `OperatorCoordinatorHolder.create` deserializes a new source object, while
+  `JobManagerJobMetricGroup.getOrAddOperator` returns the same operator group; there the series
+  stop after the first graph, which [#1908] carries. Measured on 2026-10-27 in the same MiniCluster
+  scan job with `jobmanager.scheduler: adaptive`: one task failure logged a `Name collision` for
+  each of the ten `rpcMethod.SampleRowKeys` leaves, beside the connector's enumerator counters and
+  Flink's own `unassignedSplits`; under the default scheduler the same failure reset no coordinator
+  and logged none. The connector's own enumerator counters (`splitsAssigned` and the rest) register per
+  enumerator and freeze the same way, which predates this change and is [#1908]: measured on
+  2026-10-27 through a global failover in a MiniCluster job, `rowKeySamplesTaken` reported 1 while
+  the shared `rpcMethod.SampleRowKeys.operations` reported both enumerators' 2.
+- **The `FULL` lookup cache has no metric group to register on.** Flink 2.2.1's
+  `InputFormatCacheLoader` clones the input format per reload and calls only `configure(...)` and
+  `open(split)` on it, with no runtime context. The format applies the Cloud Monitoring option and
+  exports nothing to Flink. The owner chose to accept and document the option there rather than
+  refuse it, because one `CREATE TABLE` serves the scan and the lookup alike.
+- **The session path is the client's to fix, not the connector's.** Single-row reads can take the
+  session path that ignores the user recorder when the built-in exporter is off: the lookups'
+  `ReadRow`, and a scan whose range is one row key, because `readRowsCallable` hands a single-point
+  query to `createPointReadCallable`, which the session shim decorates and records as `ReadRow`.
+  The scan reader registers only `ReadRows`, so with the exporter on such reads are dropped with
+  one `WARN`; registering ten series per reader for a path that is off by default was not worth
+  it. Nothing calls `MutateRow`. The client takes that path only when the
+  service's client configuration sets a non-zero `session_load`, and the configuration the client
+  ships sets 0. Forcing the classic path would take the `@InternalApi` `setSessionsEnabled(false)`;
+  the owner declined a workaround on 2026-10-27 because the defect is the client's, and the docs
+  state the effect instead. It was not measured against the service.
+
+The registered names are held against the real client: emulator tests run the scan source, the
+conditional sink, the read-modify-write helper and a point lookup with the export on, and assert
+that `ReadRows`, `SampleRowKeys`, `CheckAndMutateRow`, `ReadModifyWriteRow` and `ReadRow` move and
+that no recording is dropped as an unregistered method. Renaming the lookup's method made its test
+fail. The emulator implements neither Change Streams RPC, so `ReadChangeStream` and
+`GenerateInitialChangeStreamPartitions` rest on the client's span names in 2.85.0
+(`EnhancedBigtableStub.getSpanName`).
+
+The Table layer keeps no copy of either default ([ADR-0139]): the dynamic sink and sources hold
+the two options as `@Nullable Boolean` and call a builder's setter only for an option the DDL set,
+so a builder's default reaches SQL unchanged. The lookups and the SQL async functions have no
+builder; they resolve an unset option to `BigtableDataClients`'s two default constants, which every
+builder also starts from. The sink side carried the copied defaults since [#1902] and is corrected
+here too.
+
+The seams take the client metrics through a defaulted `useClientMetrics`, unlike the abstract
+`useCredentials`: an implementation that skipped credentials would reach Bigtable as the process's
+default identity, while one that skips client metrics only leaves its series at zero.
+
 ## Alternatives declined
 
 - **The OpenTelemetry SDK with a pull reader**, this change's first implementation. It gives
@@ -221,5 +293,7 @@ option exists.
 [#1815]: https://github.com/flink-gcp/flink-connector-gcp/issues/1815
 [#1902]: https://github.com/flink-gcp/flink-connector-gcp/issues/1902
 [#1903]: https://github.com/flink-gcp/flink-connector-gcp/issues/1903
+[#1908]: https://github.com/flink-gcp/flink-connector-gcp/issues/1908
 [ADR-0010]: 0010-pubsub-sink-metric-placements.md
 [ADR-0038]: 0038-metric-names-are-per-connector-inventories-in-one-shape-without-flinks-num-prefix.md
+[ADR-0139]: 0139-an-option-description-never-restates-a-default.md

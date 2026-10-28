@@ -26,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.ConditionalRowMutation;
 import com.google.cloud.bigtable.data.v2.models.ReadModifyWriteRow;
 import com.google.cloud.bigtable.data.v2.models.Row;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableClientReaper;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
@@ -65,6 +66,11 @@ import java.util.Map;
  * ambiguous failure could apply an increment twice (ADR-0148). The runtime adds no timer of its own
  * either — the client's deadline is the only timeout, and a request past it fails with the {@code
  * DEADLINE_EXCEEDED} the runtime reads as ambiguous.
+ *
+ * <p>The settings also carry the two client-metrics choices, through {@link BigtableDataClients}.
+ * Every client records into the one {@link ClientMetrics} the factory was given, if any; unlike the
+ * batching sink's factory, this one does not close them, because the staged committer shares one
+ * set between the factories it mints per application profile ({@code docs/adr/0186}).
  */
 @Internal
 public class DefaultSingleRowClientFactory implements SingleRowClientFactory {
@@ -75,6 +81,13 @@ public class DefaultSingleRowClientFactory implements SingleRowClientFactory {
     private final BigtableRequestOptions options;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final CredentialsProvider credentialsOverride;
+    private final boolean exportClientMetricsToCloudMonitoring;
+
+    /**
+     * The client metrics every client records into, or {@code null} when nothing is exported to
+     * Flink. Transient: they are runtime state the owning component registers on its own group.
+     */
+    @Nullable private transient ClientMetrics clientMetrics;
 
     /**
      * The clients built so far, one per (project, instance), in creation order so a close reports
@@ -98,16 +111,24 @@ public class DefaultSingleRowClientFactory implements SingleRowClientFactory {
      *     for production Bigtable
      * @param credentialsOverride the runtime-loaded service-account provider, or {@code null} to
      *     preserve application-default credentials
+     * @param exportClientMetricsToCloudMonitoring whether each client keeps its built-in Cloud
+     *     Monitoring export
+     * @param clientMetrics the client metrics every client records into, which the caller owns, or
+     *     {@code null} to export nothing to Flink
      */
     public DefaultSingleRowClientFactory(
             @Nullable String appProfileId,
             BigtableRequestOptions options,
             @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable CredentialsProvider credentialsOverride) {
+            @Nullable CredentialsProvider credentialsOverride,
+            boolean exportClientMetricsToCloudMonitoring,
+            @Nullable ClientMetrics clientMetrics) {
         this.appProfileId = appProfileId;
         this.options = options;
         this.emulatorEndpoint = emulatorEndpoint;
         this.credentialsOverride = credentialsOverride;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
+        this.clientMetrics = clientMetrics;
     }
 
     @Override
@@ -224,7 +245,7 @@ public class DefaultSingleRowClientFactory implements SingleRowClientFactory {
      * one that does, until a request hangs for the client's default instead.
      */
     @VisibleForTesting
-    BigtableDataSettings settings(TableDestination destination) {
+    public BigtableDataSettings settings(TableDestination destination) {
         BigtableDataSettings.Builder settings =
                 BigtableDataClients.settings(
                         destination, appProfileId, emulatorEndpoint, credentialsOverride);
@@ -238,6 +259,8 @@ public class DefaultSingleRowClientFactory implements SingleRowClientFactory {
         settings.stubSettings()
                 .readModifyWriteRowSettings()
                 .setSimpleTimeoutNoRetriesDuration(requestTimeout);
+        BigtableDataClients.applyClientMetrics(
+                settings, clientMetrics, exportClientMetricsToCloudMonitoring);
         return settings.build();
     }
 

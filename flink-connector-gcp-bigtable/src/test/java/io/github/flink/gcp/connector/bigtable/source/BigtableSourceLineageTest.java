@@ -25,6 +25,7 @@ import com.google.api.gax.rpc.ResponseObserver;
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamRecord;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -127,6 +128,10 @@ class BigtableSourceLineageTest {
 
     private static final class FakeAccess
             implements RowStreamOpener, ChangeStreamOpener, ChangeStreamRestoreResolver {
+        // Both seams default this; a class implementing both must pick one.
+        @Override
+        public void useClientMetrics(ClientMetrics clientMetrics) {}
+
         @Override
         public RowStream open(
                 TableDestination table, ByteStringRange range, Filters.Filter filter) {

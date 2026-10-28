@@ -36,6 +36,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -85,6 +86,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     private final TableDestination table;
     private final String appProfileId;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     private volatile boolean closed;
 
@@ -92,6 +94,9 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
     @Nullable private volatile BigtableTableAdminClient tableAdminClient;
     @Nullable private volatile BigtableInstanceAdminClient instanceAdminClient;
     @Nullable private volatile CredentialsProvider credentials;
+
+    /** The enumerator's client metrics; only the data client records into them. */
+    @Nullable private volatile ClientMetrics clientMetrics;
 
     public DefaultChangeStreamCoordinatorClient(TableDestination table, String appProfileId) {
         this(table, appProfileId, null);
@@ -109,6 +114,25 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
             TableDestination table,
             String appProfileId,
             @Nullable CredentialsProvider credentials) {
+        this(table, appProfileId, credentials, true);
+    }
+
+    /**
+     * Creates the client with the provider its owner loaded and the Cloud Monitoring choice.
+     *
+     * @param table the table whose change stream is coordinated
+     * @param appProfileId the single-cluster application profile to route through
+     * @param credentials the provider to build all three client families with, or {@code null} to
+     *     leave application default credentials in place
+     * @param exportClientMetricsToCloudMonitoring whether the data client keeps its built-in Cloud
+     *     Monitoring export; the admin clients have no such export
+     */
+    public DefaultChangeStreamCoordinatorClient(
+            TableDestination table,
+            String appProfileId,
+            @Nullable CredentialsProvider credentials,
+            boolean exportClientMetricsToCloudMonitoring) {
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.appProfileId =
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
@@ -263,8 +287,19 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         }
     }
 
-    BigtableDataSettings dataSettings() throws IOException {
-        return BigtableDataClients.settings(table, appProfileId, null, credentials).build();
+    /** Builds the data client's settings; public so the source's tests can read them. */
+    @VisibleForTesting
+    public BigtableDataSettings dataSettings() throws IOException {
+        BigtableDataSettings.Builder settings =
+                BigtableDataClients.settings(table, appProfileId, null, credentials);
+        BigtableDataClients.applyClientMetrics(
+                settings, clientMetrics, exportClientMetricsToCloudMonitoring);
+        return settings.build();
+    }
+
+    @Override
+    public synchronized void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+        this.clientMetrics = clientMetrics;
     }
 
     BigtableTableAdminSettings tableAdminSettings() throws IOException {
@@ -301,6 +336,7 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
             tableAdminClient = null;
             instanceAdminClient = null;
             credentials = null;
+            clientMetrics = null;
         }
         // Released outside the monitor: a lazy build in flight holds it, and the flag above has
         // already stopped anything new, so waiting here would only delay a teardown.

@@ -67,6 +67,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     private final ChangeStreamOpener opener;
     private final ChangeStreamRestoreResolver restoreResolver;
     private final ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
+    private final boolean exportClientMetricsToFlink;
 
     BigtableChangeStreamSourceConfig(
             TableDestination table,
@@ -80,7 +81,8 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             BigtableChangeStreamMutationFilter mutationFilter,
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
-            ChangeStreamCoordinatorClientFactory coordinatorClientFactory) {
+            ChangeStreamCoordinatorClientFactory coordinatorClientFactory,
+            boolean exportClientMetricsToFlink) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
@@ -104,6 +106,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.coordinatorClientFactory =
                 Preconditions.checkNotNull(
                         coordinatorClientFactory, "coordinatorClientFactory must not be null");
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
     }
 
     /** Returns the table whose change stream is read. */
@@ -177,5 +180,14 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
      */
     public ChangeStreamCoordinatorClientFactory getCoordinatorClientFactory() {
         return coordinatorClientFactory;
+    }
+
+    /**
+     * Returns whether the readers and the enumerator export their clients' own metrics through
+     * Flink's metric system. The Cloud Monitoring choice is not here: the default opener and
+     * coordinator client factory carry it to the clients they build.
+     */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
     }
 }

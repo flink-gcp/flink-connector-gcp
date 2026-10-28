@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.table.data.RowData;
 
 import com.google.api.core.ApiFuture;
@@ -66,7 +68,9 @@ final class BigtableRowDataLookup implements Serializable {
             List<ByteStringRange> ranges,
             @Nullable String appProfileId,
             @Nullable String serviceAccountKeyFile,
-            @Nullable String emulatorEndpoint) {
+            @Nullable String emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring) {
         this(
                 schema,
                 projectedFields,
@@ -78,7 +82,9 @@ final class BigtableRowDataLookup implements Serializable {
                         ranges,
                         appProfileId,
                         serviceAccountKeyFile,
-                        emulatorEndpoint));
+                        emulatorEndpoint,
+                        exportClientMetricsToFlink,
+                        exportClientMetricsToCloudMonitoring));
     }
 
     /** Creates the support around a given seam, which is how the module's tests reach it. */
@@ -95,9 +101,15 @@ final class BigtableRowDataLookup implements Serializable {
         this.lookup = lookup;
     }
 
-    /** Opens the client resources the reads use. */
-    void open() throws Exception {
-        lookup.open();
+    /** Returns the seam the reads go through, for the module's tests. */
+    @VisibleForTesting
+    BigtableRowLookup seam() {
+        return lookup;
+    }
+
+    /** Opens the client resources the reads use, on the lookup function's metric group. */
+    void open(MetricGroup metricGroup) throws Exception {
+        lookup.open(metricGroup);
     }
 
     /** Encodes the lookup key row's single field into a Bigtable row key. */

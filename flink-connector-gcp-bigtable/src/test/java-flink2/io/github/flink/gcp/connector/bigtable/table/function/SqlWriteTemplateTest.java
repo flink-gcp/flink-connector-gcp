@@ -32,6 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.ReadModifyWriteRow;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRow;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowClient;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowClientFactory;
 import org.junit.jupiter.api.Test;
@@ -297,6 +298,8 @@ class SqlWriteTemplateTest {
         "rules.0.unknown,x",
         "request-timeout,0 ms",
         "request-timeout,3 min",
+        "client-metrics.export-to-flink,yes",
+        "client-metrics.export-to-cloud-monitoring,1",
         "project,p/i"
     })
     void invalidConfigurationNamesTheSuppliedKey(String key, String value) {
@@ -304,6 +307,21 @@ class SqlWriteTemplateTest {
         setting(config, key, value);
         assertThatThrownBy(() -> compile(config, false, DataTypes.BIGINT()))
                 .hasMessageContaining("bigtable.functions.test." + key);
+    }
+
+    @Test
+    void readsTheClientMetricsChoicesWithTheConnectorsDefaults() {
+        SqlWriteTemplate defaults = compile(increment(), false, DataTypes.BIGINT());
+        assertThat(defaults.exportClientMetricsToFlink).isFalse();
+        assertThat(defaults.exportClientMetricsToCloudMonitoring).isTrue();
+        assertThat(defaults.operation()).isEqualTo(RowOperation.READ_MODIFY_WRITE_ROW);
+
+        Configuration config = increment();
+        setting(config, "client-metrics.export-to-flink", "TRUE");
+        setting(config, "client-metrics.export-to-cloud-monitoring", "false");
+        SqlWriteTemplate chosen = compile(config, false, DataTypes.BIGINT());
+        assertThat(chosen.exportClientMetricsToFlink).isTrue();
+        assertThat(chosen.exportClientMetricsToCloudMonitoring).isFalse();
     }
 
     @ParameterizedTest
@@ -356,6 +374,7 @@ class SqlWriteTemplateTest {
                         "otherwise.0.value-argument",
                         "0");
         SqlWriteTemplate template = compile(config, true, DataTypes.STRING());
+        assertThat(template.operation()).isEqualTo(RowOperation.CHECK_AND_MUTATE_ROW);
         assertThatThrownBy(() -> template.request(input((Object) null)))
                 .hasMessageContaining("otherwise.0.value-argument")
                 .hasMessageContaining("NULL");

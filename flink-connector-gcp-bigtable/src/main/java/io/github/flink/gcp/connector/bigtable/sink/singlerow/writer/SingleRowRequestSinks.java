@@ -21,9 +21,15 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
 
+import com.google.api.gax.core.CredentialsProvider;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
+import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 
@@ -47,21 +53,45 @@ public final class SingleRowRequestSinks {
      *
      * @param config the sink configuration
      * @param context the writer's initialization context
+     * @param operation the one RPC the sink's requests call, whose client metrics the writer
+     *     registers when exporting them to Flink
      * @param <T> type of the records written by the sink
      * @return the writer
      * @throws IOException if the credentials cannot be loaded or the serializer or handler cannot
      *     be opened
      */
     public static <T> SinkWriter<T> createWriter(
-            SingleRowRequestConfig<T> config, WriterInitContext context) throws IOException {
-        return createWriter(
-                config,
-                context,
-                new DefaultSingleRowClientFactory(
-                        config.getAppProfileId(),
-                        config.getRequestOptions(),
-                        config.getEmulatorEndpoint(),
-                        BigtableCredentials.loadData(config.getServiceAccountKeyFile())));
+            SingleRowRequestConfig<T> config, WriterInitContext context, RowOperation operation)
+            throws IOException {
+        // The credential first, so a key file that cannot be read fails with the context untouched.
+        CredentialsProvider credentials =
+                BigtableCredentials.loadData(config.getServiceAccountKeyFile());
+        // Registered as the writer opens, before any reporter reads its group. Not closed: the
+        // group ends with the writer (docs/adr/0186).
+        ClientMetrics clientMetrics =
+                config.isExportClientMetricsToFlink()
+                        ? BigtableClientMetrics.register(
+                                context.metricGroup(), operation.getRpcName())
+                        : null;
+        return createWriter(config, context, clientFactory(config, credentials, clientMetrics));
+    }
+
+    /**
+     * Builds the production client factory from the sink configuration. Separate so that a test can
+     * see each client-metrics choice reach the client's settings.
+     */
+    @VisibleForTesting
+    static DefaultSingleRowClientFactory clientFactory(
+            SingleRowRequestConfig<?> config,
+            @Nullable CredentialsProvider credentials,
+            @Nullable ClientMetrics clientMetrics) {
+        return new DefaultSingleRowClientFactory(
+                config.getAppProfileId(),
+                config.getRequestOptions(),
+                config.getEmulatorEndpoint(),
+                credentials,
+                config.isExportClientMetricsToCloudMonitoring(),
+                clientMetrics);
     }
 
     /**

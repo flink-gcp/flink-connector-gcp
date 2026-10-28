@@ -385,9 +385,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
                         destination, appProfileId, emulatorEndpoint, credentialsOverride);
         applyBatchThresholds(settings);
         BigtableDataClients.applyClientMetrics(
-                settings,
-                clientMetrics == null ? null : clientMetrics.openTelemetry(),
-                exportClientMetricsToCloudMonitoring);
+                settings, clientMetrics, exportClientMetricsToCloudMonitoring);
         return settings.build();
     }
 

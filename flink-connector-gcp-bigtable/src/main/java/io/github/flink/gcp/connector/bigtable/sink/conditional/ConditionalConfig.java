@@ -41,6 +41,8 @@ final class ConditionalConfig<T> implements Serializable {
     final EmptyBranchPolicy emptyBranchPolicy;
     final String serviceAccountKeyFile;
     final EmulatorEndpoint emulatorEndpoint;
+    final boolean exportClientMetricsToFlink;
+    final boolean exportClientMetricsToCloudMonitoring;
 
     ConditionalConfig(
             DestinationResolver<? super T> resolver,
@@ -49,7 +51,9 @@ final class ConditionalConfig<T> implements Serializable {
             BigtableRequestOptions requestOptions,
             EmptyBranchPolicy emptyBranchPolicy,
             String serviceAccountKeyFile,
-            EmulatorEndpoint emulatorEndpoint) {
+            EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToFlink,
+            boolean exportClientMetricsToCloudMonitoring) {
         Preconditions.checkState(
                 serviceAccountKeyFile == null || emulatorEndpoint == null,
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
@@ -65,6 +69,8 @@ final class ConditionalConfig<T> implements Serializable {
         this.emptyBranchPolicy = emptyBranchPolicy;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     RowRequestSerializer<T> sinkSerializer() {

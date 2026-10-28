@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable.table.source;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.io.GenericInputSplit;
+import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.DynamicTableSource;
@@ -36,18 +37,24 @@ import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.NestedFieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
+import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.BuiltInFunctionDefinition;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
+import io.github.flink.gcp.connector.bigtable.source.readrows.reader.DataClientRowStreamOpener;
 import io.github.flink.gcp.connector.bigtable.table.BigtableLookupConfig;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
@@ -84,6 +91,8 @@ class BigtableDynamicSourceTest {
 
     private static final BigtableTableSchema SCHEMA =
             BigtableTableSchema.of((RowType) PHYSICAL.getLogicalType());
+
+    private static final TableDestination TABLE = TableDestination.of("p", "i", "t");
 
     private static BigtableDynamicSource.Builder minimal() {
         return BigtableDynamicSource.builder()
@@ -662,6 +671,166 @@ class BigtableDynamicSourceTest {
                         TrailingBytes.REJECT);
         assertThat(varState.result().getAcceptedFilters()).hasSize(1);
         assertThat(varState.result().getRemainingFilters()).isEmpty();
+    }
+
+    @Test
+    void carriesBothClientMetricsChoicesToEveryRuntimePath() throws Exception {
+        // Without the emulator, whose builder installs its own choices; only settings are built.
+        BigtableDynamicSource.Builder chosen =
+                minimal()
+                        .emulatorEndpoint(null)
+                        .exportClientMetricsToFlink(true)
+                        .exportClientMetricsToCloudMonitoring(false);
+        ClientMetrics metrics = ClientMetrics.create("method");
+
+        BigtableSourceConfig<?> scan = configOf(chosen.build());
+        assertThat(scan.isExportClientMetricsToFlink()).isTrue();
+        ClientMetricsSettings.assertExportsNothing(
+                ((DataClientRowStreamOpener) scan.getOpener()).settings(TABLE));
+
+        LookupFunction sync =
+                ((LookupFunctionProvider) lookupProvider(chosen.build(), 0)).createLookupFunction();
+        ClientMetricsSettings.assertRecordsOnlyInto(
+                pointLookupOf(((BigtableRowDataLookupFunction) sync).support()).settings(metrics),
+                metrics);
+        AsyncLookupFunction async =
+                ((AsyncLookupFunctionProvider)
+                                lookupProvider(
+                                        chosen.lookupOptions(lookupOptions("lookup.async", "true"))
+                                                .build(),
+                                        0))
+                        .createAsyncLookupFunction();
+        ClientMetricsSettings.assertRecordsOnlyInto(
+                pointLookupOf(((BigtableRowDataAsyncLookupFunction) async).support())
+                        .settings(metrics),
+                metrics);
+        // The Flink choice reaches the point lookup too: it registers when the function opens.
+        // Against an endpoint nothing listens on, as minimal() sets, so the open connects nowhere.
+        MetricListener listener = new MetricListener();
+        BigtableDataClientRowLookup opened =
+                pointLookupOf(
+                        ((BigtableRowDataLookupFunction)
+                                        ((LookupFunctionProvider)
+                                                        lookupProvider(
+                                                                minimal()
+                                                                        .exportClientMetricsToFlink(
+                                                                                true)
+                                                                        .build(),
+                                                                0))
+                                                .createLookupFunction())
+                                .support());
+        opened.open(listener.getMetricGroup());
+        opened.close();
+        assertThat(listener.getCounter("rpcMethod", "ReadRow", "operations")).isPresent();
+
+        FullCachingLookupProvider full =
+                (FullCachingLookupProvider)
+                        lookupProvider(
+                                chosen.lookupOptions(
+                                                lookupOptions(
+                                                        "lookup.cache",
+                                                        "full",
+                                                        "lookup.full-cache.periodic-reload.interval",
+                                                        "1 min"))
+                                        .build(),
+                                0);
+        ClientMetricsSettings.assertExportsNothing(
+                ((BigtableFullCacheInputFormat)
+                                ((InputFormatProvider) full.getScanRuntimeProvider())
+                                        .createInputFormat())
+                        .settings());
+    }
+
+    @Test
+    void copiesAndComparesBothClientMetricsChoices() {
+        BigtableDynamicSource chosen =
+                minimal()
+                        .exportClientMetricsToFlink(true)
+                        .exportClientMetricsToCloudMonitoring(false)
+                        .build();
+
+        assertThat(chosen.copy()).isEqualTo(chosen).hasSameHashCodeAs(chosen);
+        assertThat(configOf((BigtableDynamicSource) chosen.copy()).isExportClientMetricsToFlink())
+                .isTrue();
+        assertThat(chosen)
+                .isNotEqualTo(minimal().exportClientMetricsToCloudMonitoring(false).build())
+                .isNotEqualTo(minimal().exportClientMetricsToFlink(true).build());
+    }
+
+    @Test
+    void anUnsetChoiceIsLeftToTheBuilderAndResolvedForTheLookups() throws Exception {
+        // ADR-0139: the scan's builder applies its own default; the lookups, which have no
+        // builder, resolve an unset choice to the same shared default.
+        BigtableDynamicSource unset = minimal().emulatorEndpoint(null).build();
+
+        assertThat(configOf(unset).isExportClientMetricsToFlink())
+                .isEqualTo(BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK);
+        ClientMetricsSettings.assertAsShipped(
+                ((DataClientRowStreamOpener) configOf(unset).getOpener()).settings(TABLE));
+        ClientMetricsSettings.assertAsShipped(
+                pointLookupOf(
+                                ((BigtableRowDataLookupFunction)
+                                                ((LookupFunctionProvider) lookupProvider(unset, 0))
+                                                        .createLookupFunction())
+                                        .support())
+                        .settings(null));
+        // Unset, the lookup registers only if the default exports to Flink. Against an endpoint
+        // nothing listens on, as minimal() sets, so opening it connects nowhere.
+        MetricListener listener = new MetricListener();
+        BigtableDataClientRowLookup opened =
+                pointLookupOf(
+                        ((BigtableRowDataLookupFunction)
+                                        ((LookupFunctionProvider)
+                                                        lookupProvider(minimal().build(), 0))
+                                                .createLookupFunction())
+                                .support());
+        opened.open(listener.getMetricGroup());
+        opened.close();
+        assertThat(listener.getCounter("rpcMethod", "ReadRow", "operations").isPresent())
+                .isEqualTo(BigtableDataClients.DEFAULT_EXPORT_CLIENT_METRICS_TO_FLINK);
+        AsyncLookupFunction async =
+                ((AsyncLookupFunctionProvider)
+                                lookupProvider(
+                                        minimal()
+                                                .emulatorEndpoint(null)
+                                                .lookupOptions(
+                                                        lookupOptions("lookup.async", "true"))
+                                                .build(),
+                                        0))
+                        .createAsyncLookupFunction();
+        ClientMetricsSettings.assertAsShipped(
+                pointLookupOf(((BigtableRowDataAsyncLookupFunction) async).support())
+                        .settings(null));
+        FullCachingLookupProvider full =
+                (FullCachingLookupProvider)
+                        lookupProvider(
+                                minimal()
+                                        .emulatorEndpoint(null)
+                                        .lookupOptions(
+                                                lookupOptions(
+                                                        "lookup.cache",
+                                                        "full",
+                                                        "lookup.full-cache.periodic-reload.interval",
+                                                        "1 min"))
+                                        .build(),
+                                0);
+        ClientMetricsSettings.assertAsShipped(
+                ((BigtableFullCacheInputFormat)
+                                ((InputFormatProvider) full.getScanRuntimeProvider())
+                                        .createInputFormat())
+                        .settings());
+        assertThat(unset)
+                .isNotEqualTo(
+                        minimal().emulatorEndpoint(null).exportClientMetricsToFlink(false).build())
+                .isNotEqualTo(
+                        minimal()
+                                .emulatorEndpoint(null)
+                                .exportClientMetricsToCloudMonitoring(true)
+                                .build());
+    }
+
+    private static BigtableDataClientRowLookup pointLookupOf(BigtableRowDataLookup support) {
+        return (BigtableDataClientRowLookup) support.seam();
     }
 
     @Test

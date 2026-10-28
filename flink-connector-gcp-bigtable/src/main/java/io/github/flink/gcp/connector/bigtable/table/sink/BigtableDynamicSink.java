@@ -28,6 +28,7 @@ import org.apache.flink.types.RowKind;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
@@ -45,6 +46,7 @@ import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadM
 import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteSinkBuilder;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
+import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.InsertOnlyInputMode;
 import io.github.flink.gcp.connector.bigtable.table.MapFamilyUpdateMode;
@@ -57,6 +59,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * The {@code bigtable} table sink.
@@ -99,8 +102,14 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
     private final InsertOnlyInputMode insertOnlyInputMode;
     private final boolean truncateCellTimestampToMillis;
     private final MapFamilyUpdateMode mapFamilyUpdateMode;
-    private final boolean exportClientMetricsToFlink;
-    private final boolean exportClientMetricsToCloudMonitoring;
+
+    /**
+     * The two client-metrics options as the DDL set them, {@code null} where it did not: an unset
+     * option calls no builder setter, so the builder's own default applies (ADR-0139).
+     */
+    @Nullable private final Boolean exportClientMetricsToFlink;
+
+    @Nullable private final Boolean exportClientMetricsToCloudMonitoring;
 
     /** Metadata keys the planner selected, in {@link WritableMetadata#listAll()} order. */
     private List<String> metadataKeys;
@@ -235,6 +244,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 requests.emulatorEndpoint(
                         EmulatorEndpoint.parse(emulatorEndpoint, "emulator-endpoint"));
             }
+            applyClientMetrics(
+                    requests::exportClientMetricsToFlink,
+                    requests::exportClientMetricsToCloudMonitoring);
             BigtableReadModifyWriteSink<RowData> sink = requests.build();
             return SinkV2Provider.of(
                     lineageTableName == null ? sink : sink.withTableLineage(lineageTableName),
@@ -264,6 +276,9 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
             if (emptyBranchPolicy != null) {
                 conditional.emptyBranchPolicy(emptyBranchPolicy);
             }
+            applyClientMetrics(
+                    conditional::exportClientMetricsToFlink,
+                    conditional::exportClientMetricsToCloudMonitoring);
             BigtableConditionalSink<RowData> sink = conditional.build();
             return SinkV2Provider.of(
                     lineageTableName == null ? sink : sink.withTableLineage(lineageTableName),
@@ -288,10 +303,10 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         if (staged) {
             builder.deliveryGuarantee(deliveryGuarantee).stagedOptions(stagedOptions);
         } else {
-            builder.writerOptions(writerOptions)
-                    .exportClientMetricsToFlink(exportClientMetricsToFlink)
-                    .exportClientMetricsToCloudMonitoring(exportClientMetricsToCloudMonitoring);
+            builder.writerOptions(writerOptions);
         }
+        applyClientMetrics(
+                builder::exportClientMetricsToFlink, builder::exportClientMetricsToCloudMonitoring);
         if (appProfileId != null) {
             builder.appProfileId(appProfileId);
         }
@@ -329,6 +344,22 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         return SinkV2Provider.of(
                 lineageTableName == null ? sink : sink.withTableLineage(lineageTableName),
                 parallelism);
+    }
+
+    /**
+     * Hands the two client-metrics options to one runtime builder, calling a setter only for an
+     * option the DDL set, so the builder's own default applies otherwise (ADR-0139).
+     */
+    private void applyClientMetrics(
+            Consumer<Boolean> exportToFlink, Consumer<Boolean> exportToCloudMonitoring) {
+        OptionSetters.accept(
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK.key(),
+                exportClientMetricsToFlink,
+                exportToFlink);
+        OptionSetters.accept(
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING.key(),
+                exportClientMetricsToCloudMonitoring,
+                exportToCloudMonitoring);
     }
 
     @Override
@@ -396,8 +427,10 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
                 && insertOnlyInputMode == that.insertOnlyInputMode
                 && truncateCellTimestampToMillis == that.truncateCellTimestampToMillis
                 && mapFamilyUpdateMode == that.mapFamilyUpdateMode
-                && exportClientMetricsToFlink == that.exportClientMetricsToFlink
-                && exportClientMetricsToCloudMonitoring == that.exportClientMetricsToCloudMonitoring
+                && Objects.equals(exportClientMetricsToFlink, that.exportClientMetricsToFlink)
+                && Objects.equals(
+                        exportClientMetricsToCloudMonitoring,
+                        that.exportClientMetricsToCloudMonitoring)
                 && metadataKeys.equals(that.metadataKeys);
     }
 
@@ -454,8 +487,8 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
         private InsertOnlyInputMode insertOnlyInputMode;
         private boolean truncateCellTimestampToMillis;
         private MapFamilyUpdateMode mapFamilyUpdateMode = MapFamilyUpdateMode.MERGE;
-        private boolean exportClientMetricsToFlink;
-        private boolean exportClientMetricsToCloudMonitoring = true;
+        @Nullable private Boolean exportClientMetricsToFlink;
+        @Nullable private Boolean exportClientMetricsToCloudMonitoring;
         private List<String> metadataKeys = Collections.emptyList();
 
         @Nullable private String lineageTableName;
@@ -590,21 +623,21 @@ public final class BigtableDynamicSink implements DynamicTableSink, SupportsWrit
 
         /**
          * @param exportClientMetricsToFlink whether the client's own metrics are exported through
-         *     Flink's metric system
+         *     Flink's metric system, or {@code null} to leave the builder's default
          * @return this builder
          */
-        public Builder exportClientMetricsToFlink(boolean exportClientMetricsToFlink) {
+        public Builder exportClientMetricsToFlink(@Nullable Boolean exportClientMetricsToFlink) {
             this.exportClientMetricsToFlink = exportClientMetricsToFlink;
             return this;
         }
 
         /**
          * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
-         *     Monitoring export
+         *     Monitoring export, or {@code null} to leave the builder's default
          * @return this builder
          */
         public Builder exportClientMetricsToCloudMonitoring(
-                boolean exportClientMetricsToCloudMonitoring) {
+                @Nullable Boolean exportClientMetricsToCloudMonitoring) {
             this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
             return this;
         }

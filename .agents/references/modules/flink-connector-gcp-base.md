@@ -104,6 +104,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   a reporter's iteration (`Slf4jReporter` loses that report). The per-connector adapter
   (`BigtableClientMetrics`, `CloudTasksClientMetrics`) carries the leaf names and is a `[[subgroups]]` source of
   `scripts/config/metric-docs.toml`; leaf constants stay in the adapter, never in base.
+- A group that outlives the component gets one registration, not one per component: Flink keeps one
+  enumerator metric group per source for the job's life and drops a second registration of a name
+  (`AbstractMetricGroup.addMetric`), so an enumerator's `ClientMetrics` belongs to the source object
+  (Bigtable's `EnumeratorClientMetrics`). `ClientMetrics.close()` only freezes the counters; a
+  component whose group ends with it need not call it.
 
 ## `base.catalog` (`docs/adr/0168`)
 

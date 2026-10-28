@@ -38,6 +38,7 @@ public final class DefaultRowKeySamplerFactory implements RowKeySamplerFactory {
 
     @Nullable private final String appProfileId;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * Creates the factory.
@@ -46,15 +47,21 @@ public final class DefaultRowKeySamplerFactory implements RowKeySamplerFactory {
      *     instance's default
      * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
      *     for production Bigtable
+     * @param exportClientMetricsToCloudMonitoring whether each sampler's client keeps its built-in
+     *     Cloud Monitoring export
      */
     public DefaultRowKeySamplerFactory(
-            @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable String appProfileId,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            boolean exportClientMetricsToCloudMonitoring) {
         this.appProfileId = appProfileId;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
     public RowKeySampler create() {
-        return new DataClientRowKeySampler(appProfileId, emulatorEndpoint);
+        return new DataClientRowKeySampler(
+                appProfileId, emulatorEndpoint, exportClientMetricsToCloudMonitoring);
     }
 }

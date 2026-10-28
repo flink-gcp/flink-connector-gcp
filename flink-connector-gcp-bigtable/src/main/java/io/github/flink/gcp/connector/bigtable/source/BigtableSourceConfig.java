@@ -67,6 +67,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
     private final RowStreamOpener opener;
     private final int maxRowsPerFetch;
     private final long maxBytesPerFetch;
+    private final boolean exportClientMetricsToFlink;
 
     BigtableSourceConfig(
             TableDestination table,
@@ -78,7 +79,8 @@ public final class BigtableSourceConfig<T> implements Serializable {
             RowKeySamplerFactory samplerFactory,
             RowStreamOpener opener,
             int maxRowsPerFetch,
-            long maxBytesPerFetch) {
+            long maxBytesPerFetch,
+            boolean exportClientMetricsToFlink) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
@@ -100,6 +102,7 @@ public final class BigtableSourceConfig<T> implements Serializable {
         Preconditions.checkArgument(
                 maxBytesPerFetch > 0, "maxBytesPerFetch must be positive: %s", maxBytesPerFetch);
         this.maxBytesPerFetch = maxBytesPerFetch;
+        this.exportClientMetricsToFlink = exportClientMetricsToFlink;
     }
 
     /** Returns the table being read. */
@@ -164,5 +167,14 @@ public final class BigtableSourceConfig<T> implements Serializable {
     /** Returns the target maximum estimated bytes one fetch hands to the task thread. */
     public long getMaxBytesPerFetch() {
         return maxBytesPerFetch;
+    }
+
+    /**
+     * Returns whether the readers and the enumerator export their clients' own metrics through
+     * Flink's metric system. The Cloud Monitoring choice is not here: the default opener and
+     * sampler factory carry it to the clients they build.
+     */
+    public boolean isExportClientMetricsToFlink() {
+        return exportClientMetricsToFlink;
     }
 }

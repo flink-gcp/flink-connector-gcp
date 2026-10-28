@@ -273,6 +273,8 @@ final class Stage2ProductionSink
                                                     .EmulatorEndpoint.parse(
                                                     run.endpoint, "endpoint")
                                             : null,
+                                    null,
+                                    true,
                                     null)
                             : null;
         }

@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink.readmodifywrite;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
@@ -43,6 +44,12 @@ public final class BigtableReadModifyWriteAsync<T> {
 
     BigtableReadModifyWriteAsync(ReadModifyWriteConfig<T> config) {
         this.config = config;
+    }
+
+    /** Returns the configuration, for the package's tests. */
+    @VisibleForTesting
+    ReadModifyWriteConfig<T> config() {
+        return config;
     }
 
     /**

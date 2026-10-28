@@ -158,6 +158,12 @@ class BigtableOptionParityTest {
         map.put("maxBytesPerFetch", BigtableConnectorOptions.SCAN_MAX_BYTES_PER_FETCH);
         map.put("serviceAccountKeyFile", BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE);
         map.put("emulatorEndpoint", BigtableConnectorOptions.EMULATOR_ENDPOINT);
+        map.put(
+                "exportClientMetricsToFlink",
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK);
+        map.put(
+                "exportClientMetricsToCloudMonitoring",
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING);
         return Collections.unmodifiableMap(map);
     }
 
@@ -195,6 +201,12 @@ class BigtableOptionParityTest {
         map.put(
                 "maxConcurrentStreamsPerSubtask",
                 BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK);
+        map.put(
+                "exportClientMetricsToFlink",
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK);
+        map.put(
+                "exportClientMetricsToCloudMonitoring",
+                BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING);
         return Collections.unmodifiableMap(map);
     }
 
@@ -476,7 +488,7 @@ class BigtableOptionParityTest {
     }
 
     @Test
-    void sourceModesShareExactlyTableProfileAndCredentials() {
+    void sourceModesShareExactlyTableProfileCredentialsAndClientMetrics() {
         Set<String> bounded =
                 SOURCE_BUILDER.values().stream().map(ConfigOption::key).collect(Collectors.toSet());
         Set<String> shared =
@@ -489,12 +501,14 @@ class BigtableOptionParityTest {
                 .containsExactlyInAnyOrder(
                         BigtableConnectorOptions.TABLE.key(),
                         BigtableConnectorOptions.SCAN_APP_PROFILE_ID.key(),
-                        BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key());
+                        BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
+                        BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK.key(),
+                        BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING.key());
     }
 
     @Test
-    void theDirectionsShareExactlyDestinationCredentialsAndEmulator() {
-        // These three shared keys feed a setter on each direction's builder, and nothing else may:
+    void theDirectionsShareExactlyDestinationConnectionAndClientMetrics() {
+        // These shared keys feed a setter on each direction's builder, and nothing else may:
         // a sink.* key reaching the source builder — or the reverse — is a wiring slip.
         Set<String> sinkKeys = new HashSet<>();
         WRITER_OPTIONS.values().forEach(o -> sinkKeys.add(o.key()));
@@ -509,7 +523,9 @@ class BigtableOptionParityTest {
                 .containsExactlyInAnyOrder(
                         BigtableConnectorOptions.TABLE.key(),
                         BigtableConnectorOptions.SERVICE_ACCOUNT_KEY_FILE.key(),
-                        BigtableConnectorOptions.EMULATOR_ENDPOINT.key());
+                        BigtableConnectorOptions.EMULATOR_ENDPOINT.key(),
+                        BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK.key(),
+                        BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING.key());
     }
 
     @Test
