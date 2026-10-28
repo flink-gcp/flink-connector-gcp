@@ -21,6 +21,7 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.description.HtmlFormatter;
 
+import io.github.flink.gcp.connector.firestore.sink.OrderingMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -83,6 +84,19 @@ class FirestoreConnectorOptionsTest {
         assertThat(List.of(WriteMode.values()))
                 .extracting(WriteMode::toString)
                 .containsExactly("merge", "replace", "update");
+    }
+
+    @Test
+    void everyOrderingModeParsesFromItsDdlSpelling() {
+        ConfigOption<OrderingMode> option =
+                ConfigOptions.key("k").enumType(OrderingMode.class).noDefaultValue();
+        for (OrderingMode mode : OrderingMode.values()) {
+            assertThat(Configuration.fromMap(Map.of("k", mode.toString())).get(option))
+                    .isEqualTo(mode);
+        }
+        assertThat(List.of(OrderingMode.values()))
+                .extracting(OrderingMode::toString)
+                .containsExactly("none", "per-key");
     }
 
     @Test

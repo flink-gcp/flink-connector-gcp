@@ -40,6 +40,7 @@ public final class FirestoreMetricNames {
     public static final String IN_FLIGHT_WRITES = "inFlightWrites";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_WRITES = "parkedWrites";
+    public static final String BUFFERED_WRITES = "bufferedWrites";
     public static final String RECORDS_SKIPPED = "recordsSkipped";
     public static final String WRITES_RETRIED = "writesRetried";
     public static final String BULK_WRITERS_REPLACED = "bulkWritersReplaced";

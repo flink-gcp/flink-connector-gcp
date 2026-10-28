@@ -30,7 +30,7 @@ import java.util.Objects;
 
 /**
  * Tuning options for the sink's writer: the client library's throttling, its two layers of retries,
- * and the writer's own bounds on unacknowledged writes.
+ * the writer's own bounds on unacknowledged writes, and the order of writes to one document.
  *
  * <p>Set via {@link FirestoreSinkBuilder#writerOptions(FirestoreWriterOptions)}; optional — every
  * knob is defaulted, so {@link #defaults()} is equivalent to not setting options at all. An unset
@@ -69,6 +69,12 @@ import java.util.Objects;
  * <p>The writer bounds the writes it has handed to the client and not yet seen answered, by count
  * and by estimated size, and yields to the Flink mailbox at either bound. The client offers no
  * backpressure of its own: past 500 pending writes it queues further ones without limit.
+ *
+ * <h2>Order per document</h2>
+ *
+ * <p>By default writes to one document are applied in no guaranteed order. {@link
+ * Builder#orderingMode(OrderingMode)} with {@link OrderingMode#PER_KEY} holds a write in the writer
+ * until the document's earlier write is answered; held writes count against the in-flight bounds.
  *
  * <p>Instances are immutable and serializable.
  */
@@ -138,6 +144,7 @@ public final class FirestoreWriterOptions implements Serializable {
     private final int maxInFlightWrites;
     private final long maxInFlightBytes;
     private final int maxConsecutiveRejections;
+    private final OrderingMode orderingMode;
 
     private FirestoreWriterOptions(Builder builder) {
         this.throttlingEnabled = builder.throttlingEnabled;
@@ -155,6 +162,7 @@ public final class FirestoreWriterOptions implements Serializable {
         this.maxInFlightWrites = builder.maxInFlightWrites;
         this.maxInFlightBytes = builder.maxInFlightBytes;
         this.maxConsecutiveRejections = builder.maxConsecutiveRejections;
+        this.orderingMode = builder.orderingMode;
     }
 
     /**
@@ -171,7 +179,7 @@ public final class FirestoreWriterOptions implements Serializable {
      * budgets and transport settings, at most {@value #DEFAULT_MAX_IN_FLIGHT_WRITES} unacknowledged
      * writes and 64 MiB of them, and a job failure after {@value
      * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
-     * policy.
+     * policy, and no order between writes to one document.
      *
      * @return the default options
      */
@@ -269,6 +277,11 @@ public final class FirestoreWriterOptions implements Serializable {
         return maxConsecutiveRejections;
     }
 
+    /** Returns the order kept between writes to one document. */
+    public OrderingMode getOrderingMode() {
+        return orderingMode;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -283,6 +296,7 @@ public final class FirestoreWriterOptions implements Serializable {
                 && maxInFlightWrites == that.maxInFlightWrites
                 && maxInFlightBytes == that.maxInFlightBytes
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
+                && orderingMode == that.orderingMode
                 && Objects.equals(initialOpsPerSecond, that.initialOpsPerSecond)
                 && Objects.equals(maxOpsPerSecond, that.maxOpsPerSecond)
                 && Objects.equals(retryTotalTimeout, that.retryTotalTimeout)
@@ -312,7 +326,8 @@ public final class FirestoreWriterOptions implements Serializable {
                 retryMaxAttempts,
                 maxInFlightWrites,
                 maxInFlightBytes,
-                maxConsecutiveRejections);
+                maxConsecutiveRejections,
+                orderingMode);
     }
 
     @Override
@@ -347,6 +362,8 @@ public final class FirestoreWriterOptions implements Serializable {
                 + maxInFlightBytes
                 + ", maxConsecutiveRejections="
                 + maxConsecutiveRejections
+                + ", orderingMode="
+                + orderingMode
                 + "}";
     }
 
@@ -369,6 +386,7 @@ public final class FirestoreWriterOptions implements Serializable {
         private int maxInFlightWrites = DEFAULT_MAX_IN_FLIGHT_WRITES;
         private long maxInFlightBytes = DEFAULT_MAX_IN_FLIGHT_BYTES;
         private int maxConsecutiveRejections = DEFAULT_MAX_CONSECUTIVE_REJECTIONS;
+        private OrderingMode orderingMode = OrderingMode.NONE;
 
         private Builder() {}
 
@@ -651,6 +669,25 @@ public final class FirestoreWriterOptions implements Serializable {
                     "maxConsecutiveRejections must be positive or -1 (unbounded), was %s",
                     maxConsecutiveRejections);
             this.maxConsecutiveRejections = maxConsecutiveRejections;
+            return this;
+        }
+
+        /**
+         * Sets whether writes to one document are applied in the order the subtask received them.
+         * Defaults to {@link OrderingMode#NONE}.
+         *
+         * <p>{@link OrderingMode#PER_KEY} holds a write whose document has an earlier write still
+         * unanswered, and sends it once that write is applied or handed to the failure handler. It
+         * costs one round trip per held write, and held writes count against {@link
+         * #maxInFlightWrites(int)} and {@link #maxInFlightBytes(long)}. The order is the order one
+         * subtask received, so the input must send every write for a document to the same subtask.
+         *
+         * @param orderingMode the ordering mode
+         * @return this builder
+         */
+        public Builder orderingMode(OrderingMode orderingMode) {
+            this.orderingMode =
+                    Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
             return this;
         }
 

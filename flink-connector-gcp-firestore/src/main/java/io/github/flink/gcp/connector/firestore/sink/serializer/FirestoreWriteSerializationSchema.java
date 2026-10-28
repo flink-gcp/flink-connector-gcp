@@ -55,9 +55,10 @@ import java.io.Serializable;
  *       update time, so a replay is refused with {@code FAILED_PRECONDITION}.
  * </ul>
  *
- * <p>Writes to the same document are not ordered: the sink sends several requests at once and
- * retries a failed write in a later one, so two records for one document may be applied in either
- * order.
+ * <p>By default, writes to the same document are not ordered: the sink sends several requests at
+ * once and retries a failed write in a later one, so two records for one document may be applied in
+ * either order. {@link io.github.flink.gcp.connector.firestore.sink.OrderingMode#PER_KEY} applies
+ * them in the order the sink subtask received them.
  *
  * <p>Returning {@code null} <b>skips</b> the record: it is written nowhere, is not a failure, never
  * reaches the failure handler, and is counted by the {@code recordsSkipped} metric. Throwing —

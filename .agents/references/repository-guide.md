@@ -1059,8 +1059,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   sends through the client's RPC object (#1729), the flush before a repeated key, the sink-owned retry loop, solo confirmation with a lookup
   before `NOT_FOUND` is routed, and ramp-up throttling. Also the Native-mode Table API sink and
   the SQL uber-jar (#1607): one collection keyed by document id, the type mapping and its two
-  markers, the cross-checks restated in option keys, and the unkept same-document order.
-  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`, `0175`, `0179`)
+  markers, the cross-checks restated in option keys, and the opt-in same-document order.
+  Recorded in ADRs (`docs/adr/0170`, `0171`, `0173`, `0175`, `0179`, `0187`)
 - `.agents/references/modules/flink-connector-gcp-test-utils.md` — the shared test-utils module (#27): test-support
   code only (main-code sharing belongs in `flink-connector-gcp-base`), all-provided dependencies,
   no forced unification of emulator container fixtures, and the justfile install-list coupling its

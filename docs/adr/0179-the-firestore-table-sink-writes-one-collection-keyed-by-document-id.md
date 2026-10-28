@@ -20,7 +20,7 @@ limitations under the License.
 - Date: 2026-10-04 (client library facts read in google-cloud-firestore 3.49.0 through
   libraries-bom 26.90.0; emulator behavior measured 2026-10-04 against the pinned
   `google-cloud-cli` emulators image, one run); revised 2026-10-04 by [#1608] (the scan) and [#1643] (lookup equality keys), and 2026-10-10 by [#1680] (rows of a table without a PRIMARY KEY) and [#1706] (an array
-  directly inside an array), and 2026-10-11 by [#1729] (`merge` the default write mode, `set` renamed `replace`), and 2026-10-17 by [#1819] (a Standard-edition database refuses an array directly inside an array), and 2026-10-24 by [#1895] (it stores one again)
+  directly inside an array), and 2026-10-11 by [#1729] (`merge` the default write mode, `set` renamed `replace`), and 2026-10-17 by [#1819] (a Standard-edition database refuses an array directly inside an array), and 2026-10-24 by [#1895] (it stores one again), and 2026-10-27 by [#1556] (`sink.ordering-mode`, [ADR-0187])
 - Issues: [#1607], [#1608], [#1544], [#355], [#1556], [#1643], [#1680], [#1706], [#1729], [#1819], [#1895]
 - Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`, `table.source`); base (`lineage.internal`, `table`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/firestore.md`
@@ -46,7 +46,7 @@ limitations under the License.
 - **The type mapping is closed and checked when the statement is planned** (`FirestoreTableSchema`): `STRING`/`VARCHAR`/`CHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY`/`BINARY` as a `Blob`, `TIMESTAMP_LTZ` as a `Timestamp`, `ARRAY` (including one directly inside another; see below), `ROW` and `MAP<STRING, …>` as maps. Every other type is refused naming the field. A SQL `NULL` is written as a Firestore null. Column and ROW field names are literal field names, as `FirestoreWrite` makes them; a name starting and ending with `__`, which Firestore reserves, is refused at planning, because the service would refuse every document (ADR-0127's per-record class). A MAP's keys are data and stay the service's.
 - **Two markers name the values that share a Flink type with an ordinary one**: `geo-point-field-paths` for a `ROW<latitude DOUBLE, longitude DOUBLE>` written as a `GeoPoint`, and `reference-field-paths` for a `STRING` written as a `FirestoreDocumentReference`. The keys carry no prefix because they describe the schema in both directions once the scan reads them ([#1608]); Spanner's `schema.` prefix was declined for the reason in the Evidence, which would lose a marker from a persisting catalog and, Firestore being schemaless, write a point as a plain map and a reference as a plain string without an error. `FirestoreConnectorOptionsTest` uses the shared `CatalogOptionAssertions` to hold that every option the factory registers survives the persisting round trip on the Flink version under test. The path grammar is BigQuery's, with an `ARRAY` passed through so a path names its elements. A marker on an unknown path, on a field of the wrong type, on the key, on a path two fields share (a literal `a.b` column beside a ROW `a` with a field `b`), or both markers on one path, is refused.
 - **Every writer knob maps through `OptionSetters`, and the cross-checks are restated in option keys**: the two throttling checks in `WriterOptionsMapper`, and the retry pair check through a `retrySettings` overload that takes the names to report, as the Pub/Sub table sink calls its pair check. A `WITH` clause cannot name a serializable failure handler, so the sink keeps the DataStream default of failing the job, and `maxConsecutiveRejections`, which only bounds a dropping handler, has no option. No table write carries a precondition.
-- **Same-document order is not kept**, as in the DataStream sink and the Spanner and Bigtable table sinks; the docs say when it matters (an input that changes a key more than once). Keeping it is the opt-in mode of [#1556], left in v1.3.0 (owner's decision, 2026-10-04).
+- **Same-document order is not kept by default**, as in the DataStream sink and the Spanner and Bigtable table sinks; the docs say when it matters (an input that changes a key more than once). Keeping it is the opt-in mode of [#1556], left in v1.3.0 (owner's decision, 2026-10-04), and since 2026-10-27 `'sink.ordering-mode' = 'per-key'` maps to it ([ADR-0187]).
 - **The sink reports a `firestore-collection` lineage resource**, named by the collection path relative to the database, through `Lineage.tableSink` under the table's catalog identifier (ADR-0160).
 - **`flink-sql-connector-gcp-firestore` bundles the whole module, both package roots unrelocated** (ADR-0170, ADR-0015). Beyond the Cloud Tasks module's relocations it relocates `io.opentelemetry` and `com.fasterxml.jackson`, and it excludes `slf4j-api` (ADR-0035) and `javax.annotation-api` (ADR-0015); `org.checkerframework` stays unrelocated as annotation-only, as in the Bigtable jar.
 
@@ -76,7 +76,7 @@ limitations under the License.
 
 ## Consequences
 
-- An aggregation or any input that updates one key repeatedly can leave an older value in the document until [#1556] lands; the table docs carry the warning beside the changelog section.
+- An aggregation or any input that updates one key repeatedly can leave an older value in the document unless `sink.ordering-mode` is `per-key`; the table docs carry the warning beside the changelog section.
 - A refused write, including an `update` of a missing document, fails the job: the table layer has no dead-letter path.
 - A table without a key can leave duplicate documents after a restart, or after the client library retries a create whose answer was lost; `idsRedrawn` counts the second kind.
 - The release publishes six SQL uber jars rather than five; `collect-release-jars.sh` and the lineage class-loading measurement count six.
@@ -137,3 +137,4 @@ A `NULL` column writes a null under every mode, as before.
 [#1729]: https://github.com/flink-gcp/flink-connector-gcp/issues/1729
 [#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
 [#1895]: https://github.com/flink-gcp/flink-connector-gcp/issues/1895
+[ADR-0187]: 0187-the-firestore-sink-keeps-per-document-order-on-opt-in.md

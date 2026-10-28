@@ -36,10 +36,13 @@ import io.github.flink.gcp.connector.firestore.sink.FailedWrite;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSinkConfig;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
+import io.github.flink.gcp.connector.firestore.sink.OrderingMode;
 import io.github.flink.gcp.connector.firestore.sink.PreconditionFailurePolicy;
 import io.github.flink.gcp.connector.firestore.sink.serializer.FirestoreWriteSerializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -96,6 +99,26 @@ import java.util.function.LongSupplier;
  * case leaves the document twice. The writer parks such a write and sends it again before the next
  * record, as it does a write it confirms alone; {@value #MAX_ID_DRAWS} drawn ids refused in a row
  * for one record fail the job, since chance does not explain that.
+ *
+ * <h2>Order per document</h2>
+ *
+ * <p>Under {@link OrderingMode#PER_KEY} a {@link PerKeyWriteSequencer} keyed by document path
+ * admits one write per document at a time. A write whose document has an earlier one in flight,
+ * parked or about to be sent is <b>buffered</b> in the writer rather than handed to the library,
+ * and it stays the document's turn until the library answers it: applied, routed, or failing the
+ * job. A write parked for a solo re-send keeps its turn until that re-send is answered, so a
+ * refusal that turns out to be the request's does not let the next write overtake it. A drawn-id
+ * create never enters the sequencer, since its id names a document no other write addresses, and
+ * its redraw keeps that exemption.
+ *
+ * <p>The completion mail that ends a turn only moves the next buffered write to a ready queue; the
+ * writer submits ready writes at the end of each admission wait and in each flush pass, never
+ * inside a mail. A submission inside a mail could run while an isolation pass waits for a solo
+ * re-send, and would then share its request. Buffered writes count against both in-flight bounds,
+ * which is what bounds the buffer: a document written faster than one write per round trip fills
+ * the bounds, and the admission wait then holds back every document of the subtask. When nothing is
+ * in flight and only buffered writes hold the bounds, the admission wait confirms the parked writes
+ * they wait behind itself rather than wait for a record that cannot be admitted.
  *
  * <h2>Two defects of the client library this writer works around</h2>
  *
@@ -200,6 +223,27 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
     private final int maxConsecutiveRejections;
     private final FirestoreDatabaseAccess access;
 
+    /**
+     * Orders writes per document path under {@link OrderingMode#PER_KEY}, {@code null} otherwise;
+     * task thread only.
+     */
+    @Nullable private final PerKeyWriteSequencer<String, ParkedWrite> documentSequencer;
+
+    /**
+     * Buffered writes whose turn has come, in the order their turns came; task thread only. A
+     * completion mail adds to it, and only the writer's own code submits from it.
+     */
+    private final Deque<ParkedWrite> readyWrites = new ArrayDeque<>();
+
+    /**
+     * Writes the sequencer holds plus the ready ones: accepted from the serializer and not yet
+     * handed to the library; task thread only.
+     */
+    private int bufferedWrites;
+
+    /** Their estimated size; task thread only. */
+    private long bufferedBytes;
+
     /** Writes handed to the library and not yet answered; task thread only. */
     private int inFlightWrites;
 
@@ -292,12 +336,17 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
                     "maxInFlightBytes must be positive, was " + maxInFlightBytes);
         }
         this.maxConsecutiveRejections = options.getMaxConsecutiveRejections();
+        this.documentSequencer =
+                options.getOrderingMode() == OrderingMode.PER_KEY
+                        ? new PerKeyWriteSequencer<>()
+                        : null;
         this.sizeEstimator = new DocumentSizeEstimator(database);
         this.metrics = new FirestoreWriterMetrics(metricGroup);
         this.metrics.bindWriterState(
                 (Gauge<Integer>) this::getInFlightWrites,
                 (Gauge<Long>) this::getInFlightBytes,
-                (Gauge<Integer>) this::getParkedWrites);
+                (Gauge<Integer>) this::getParkedWrites,
+                (Gauge<Integer>) this::getBufferedWrites);
         this.lastCompletionNanos = nanoClock.getAsLong();
         this.lastStallWarnNanos = lastCompletionNanos - stallWarnAfterNanos;
         // Last, so that nothing after it can throw and strand the client it opens.
@@ -349,6 +398,13 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         }
         int estimatedSize = sizeEstimator.estimate(write);
         awaitCapacity();
+        if (isSequenced(write) && !documentSequencer.tryAdmit(write.getDocumentPath())) {
+            documentSequencer.hold(
+                    write.getDocumentPath(), new ParkedWrite(write, estimatedSize, 1));
+            bufferedWrites++;
+            bufferedBytes += estimatedSize;
+            return;
+        }
         submit(write, estimatedSize, true, false, 1);
     }
 
@@ -358,17 +414,23 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         // A pass's solo re-sends confirm or route every parked write, so one iteration normally
         // ends with nothing parked; the loop is what makes "a completed checkpoint leaves nothing
         // parked" true regardless. A redraw parks again only when its new id is refused too, and a
-        // solo re-send of a drawn-id create can park one, so both parks are looped on.
+        // solo re-send of a drawn-id create can park one, so both parks are looped on. Under
+        // per-key order each pass also sends the writes whose turn the last one brought, so a
+        // document with n buffered writes takes n passes, one round trip each.
         do {
             if (!pendingRedraws.isEmpty()) {
                 sendRedraws();
+            }
+            if (!readyWrites.isEmpty()) {
+                submitReady();
             }
             sendOutstanding();
             drainInFlight();
             if (!pendingIsolation.isEmpty()) {
                 runIsolationPass();
             }
-        } while (!pendingIsolation.isEmpty() || !pendingRedraws.isEmpty());
+            checkBufferedWritesCanProgress();
+        } while (!pendingIsolation.isEmpty() || !pendingRedraws.isEmpty() || bufferedWrites > 0);
         // After the loop, never inside it: the drain is what discovers this checkpoint's failures,
         // and the pass is what turns the batched ones among them into dead letters.
         failedWriteHandler.flush();
@@ -383,8 +445,14 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         // and no mail will decrement them again, so they are zeroed first.
         inFlightWrites = 0;
         inFlightBytes = 0;
+        bufferedWrites = 0;
+        bufferedBytes = 0;
         pendingIsolation.clear();
         pendingRedraws.clear();
+        readyWrites.clear();
+        if (documentSequencer != null) {
+            documentSequencer.clear();
+        }
         Closers.closeAll(access, failedWriteHandler::close);
     }
 
@@ -527,14 +595,91 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
 
     /**
      * Admission gate for {@link #write}: runs mailbox mails until both in-flight caps have room.
+     *
+     * <p>Buffered writes count toward the caps, so a wait must also be able to free their share. It
+     * sends those whose turn has come, and when nothing is in flight, so that only buffered writes
+     * hold the caps, it confirms the parked writes they wait behind instead of waiting for the next
+     * record to: no mail would ever arrive. Neither branch can run without per-key order, since
+     * nothing is buffered then.
      */
     private void awaitCapacity() throws IOException, InterruptedException {
         long start = nanoClock.getAsLong();
-        while (inFlightWrites >= maxInFlightWrites || inFlightBytes >= maxInFlightBytes) {
+        while (inFlightWrites + bufferedWrites >= maxInFlightWrites
+                || inFlightBytes + bufferedBytes >= maxInFlightBytes) {
             checkAsyncError();
+            if (!readyWrites.isEmpty()) {
+                submitReady();
+                continue;
+            }
+            if (inFlightWrites == 0) {
+                if (!pendingIsolation.isEmpty()) {
+                    runIsolationPass();
+                    continue;
+                }
+                checkBufferedWritesCanProgress();
+            }
             warnIfStalled(awaitProgress(start, "admitting a record"), "admitting a record");
         }
         checkAsyncError();
+        // The wait, or the mailbox between records, may have readied writes; they go now rather
+        // than with a later record.
+        if (!readyWrites.isEmpty()) {
+            submitReady();
+        }
+    }
+
+    /** Whether the write is ordered behind its document's earlier writes. */
+    private boolean isSequenced(FirestoreWrite write) {
+        return documentSequencer != null && !write.hasDrawnId();
+    }
+
+    /**
+     * Submits every buffered write whose turn has come. Each was counted against the caps when it
+     * was accepted, so none waits for room here; a submission's own drain may make further writes
+     * ready, which the loop picks up.
+     */
+    private void submitReady() throws IOException, InterruptedException {
+        ParkedWrite ready;
+        while ((ready = readyWrites.poll()) != null) {
+            bufferedWrites--;
+            bufferedBytes -= ready.estimatedSize;
+            submit(ready.write, ready.estimatedSize, true, false, 1);
+        }
+    }
+
+    /**
+     * Raises, rather than waits forever, if buffered writes remain with no write that could end a
+     * turn: nothing in flight, ready or parked for a solo re-send. Every buffered write sits behind
+     * its document's current write, which is in one of those places until it is answered, so this
+     * cannot happen unless a turn was never released.
+     */
+    private void checkBufferedWritesCanProgress() {
+        if (bufferedWrites > 0
+                && inFlightWrites == 0
+                && readyWrites.isEmpty()
+                && pendingIsolation.isEmpty()) {
+            throw new IllegalStateException(
+                    bufferedWrites
+                            + " write(s) to Firestore database "
+                            + database
+                            + " are buffered behind writes that are no longer in flight, which"
+                            + " cannot happen unless the per-document order has lost a turn; they"
+                            + " would never be sent.");
+        }
+    }
+
+    /**
+     * Ends a write's turn on its document once the library has answered it, readying the document's
+     * next buffered write.
+     */
+    private void endTurn(FirestoreWrite write) {
+        if (!isSequenced(write)) {
+            return;
+        }
+        ParkedWrite next = documentSequencer.release(write.getDocumentPath());
+        if (next != null) {
+            readyWrites.add(next);
+        }
     }
 
     /** Runs mailbox mails until no write is in flight, surfacing any captured failure. */
@@ -623,8 +768,9 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
     }
 
     /** Task-thread handler for an applied write, run as a mailbox mail. */
-    private void onWriteApplied(int estimatedSize) {
+    private void onWriteApplied(FirestoreWrite write, int estimatedSize) {
         releaseInFlight(estimatedSize);
+        endTurn(write);
         // An applied write is evidence the stream is not wholly broken, a solo re-send included.
         consecutiveRejections = 0;
     }
@@ -644,9 +790,13 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
             // The status may answer the request rather than this write. Park it for the isolation
             // pass; routing here would drop a whole request for one bad write (ADR-0045). Not
             // counted yet, or one request-level status would be counted once per write it carried.
+            // It keeps its document's turn until the solo re-send is answered.
             pendingIsolation.add(new ParkedWrite(write, estimatedSize, idDraws));
             return;
         }
+        // Every other outcome is the write's last: routed, fatal, or, for a drawn-id create, a
+        // redraw, which the sequencer never held.
+        endTurn(write);
         if (kind == FirestoreErrorClassifier.Kind.ID_TAKEN) {
             // Not the record's failure: the create left the existing document in place. Neither
             // errorClass nor numRecordsSendErrors counts it; idsRedrawn does, when it is re-sent.
@@ -799,7 +949,17 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         return pendingIsolation.size();
     }
 
-    /** A write awaiting a solo re-send, or a re-send under a new id. */
+    @VisibleForTesting
+    int getBufferedWrites() {
+        return bufferedWrites;
+    }
+
+    @VisibleForTesting
+    long getBufferedBytes() {
+        return bufferedBytes;
+    }
+
+    /** A write awaiting a solo re-send, a re-send under a new id, or its turn on its document. */
     private static final class ParkedWrite {
 
         private final FirestoreWrite write;
@@ -835,7 +995,7 @@ public class FirestoreWriter<T> implements SinkWriter<T> {
         /** The success mail: runs on the task thread. */
         @Override
         public void run() {
-            onWriteApplied(estimatedSize);
+            onWriteApplied(write, estimatedSize);
         }
 
         // Both stamp before dispatching: what a wait measures is whether the library is still

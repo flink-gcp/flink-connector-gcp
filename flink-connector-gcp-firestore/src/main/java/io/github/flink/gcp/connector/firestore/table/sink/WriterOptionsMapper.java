@@ -109,6 +109,8 @@ public final class WriterOptionsMapper {
                 config,
                 FirestoreConnectorOptions.SINK_IN_FLIGHT_MAX_BYTES,
                 size -> builder.maxInFlightBytes(size.getBytes()));
+        OptionSetters.apply(
+                config, FirestoreConnectorOptions.SINK_ORDERING_MODE, builder::orderingMode);
         FirestoreWriterOptions options = builder.build();
         rejectRetryOverridesTheLibraryRefuses(options);
         return options;

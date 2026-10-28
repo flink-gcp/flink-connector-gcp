@@ -52,7 +52,8 @@ class FirestoreOptionParityTest {
                         "retryMaxAttempts",
                         "maxInFlightWrites",
                         "maxInFlightBytes",
-                        "maxConsecutiveRejections");
+                        "maxConsecutiveRejections",
+                        "orderingMode");
 
         // maxConsecutiveRejections bounds rejections under a dropping failure handler, and the
         // table sink has none: no DDL can name a serializable handler, so the first routed
@@ -72,7 +73,8 @@ class FirestoreOptionParityTest {
                         "sink.retry.max-rpc-timeout",
                         "sink.retry.max-attempts",
                         "sink.in-flight.max-writes",
-                        "sink.in-flight.max-bytes")
+                        "sink.in-flight.max-bytes",
+                        "sink.ordering-mode")
                 .doesNotContain("sink.max-consecutive-rejections");
     }
 
@@ -130,6 +132,7 @@ class FirestoreOptionParityTest {
                         "sink.retry.max-attempts",
                         "sink.in-flight.max-writes",
                         "sink.in-flight.max-bytes",
+                        "sink.ordering-mode",
                         "type-mismatch-policy",
                         "scan.collection-group",
                         "scan.partition.max-partitions",

@@ -69,8 +69,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   it, at any depth, with a `DocumentReference` of its own client. The library would encode an
   unreplaced one as a bean map without an error, so any new path that hands fields to the library
   must replace it too; `FirestoreWriterITCase` reads each operation's reference back.
-- **Same-document order is not kept** — documented, and #1556 is the opt-in mode. Do not add a
-  gate outside that issue.
+- **Same-document order is opt-in (`docs/adr/0187`)**: `OrderingMode.PER_KEY` /
+  `sink.ordering-mode = per-key` orders by document path in `PerKeyWriteSequencer`. A write keeps its
+  document's turn until the library answers it, a write parked for a solo re-send included;
+  a completion mail only readies the next write, never submits it (a submission inside a mail
+  would share an isolation pass's solo request). Buffered writes count against both in-flight
+  bounds, and drawn-id creates bypass the sequencer. `PerKeyWriteSequencer` moves to base when Spanner or
+  Bigtable adopts it (#1619, #1620), which take the same spelling.
 - The emulator endpoint reaches the client only through the builder; the library also reads
   `FIRESTORE_EMULATOR_HOST` itself, and `FirestoreClients` warns when it is set without an
   endpoint.
@@ -136,8 +141,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `WriterOptionsMapper` (throttling) or called with the keys as names (`retrySettings` overload).
   Assert a phrase only the connector's message carries: `FactoryUtil` echoes every option.
 - **The failure handler stays `failJob`**, so `maxConsecutiveRejections` has no option; the parity
-  test records why. Same-document order is not kept (#1556 is the opt-in, v1.3.0 by owner
-  decision 2026-10-04); a test must not write one key twice and expect order.
+  test records why. Same-document order is kept only under `sink.ordering-mode = per-key`
+  (ADR-0187); a test that writes one key twice and expects order must set it.
 - **Run module tests with `-am`** (or install base first): another session's install can replace
   the base SNAPSHOT in `~/.m2`, and `LineageIdentifiers.firestoreCollection` then fails with
   `NoSuchMethodError`. In `flink-sql-connector-gcp-firestore`, never pass an ITCase to `-Dtest`:

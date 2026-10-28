@@ -22,6 +22,7 @@ import org.apache.flink.table.api.ValidationException;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.cloud.ServiceOptions;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWriterOptions;
+import io.github.flink.gcp.connector.firestore.sink.OrderingMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -64,7 +65,8 @@ class WriterOptionsMapperTest {
                                 Map.entry("sink.retry.max-rpc-timeout", "40 s"),
                                 Map.entry("sink.retry.max-attempts", "4"),
                                 Map.entry("sink.in-flight.max-writes", "120"),
-                                Map.entry("sink.in-flight.max-bytes", "4 mb")));
+                                Map.entry("sink.in-flight.max-bytes", "4 mb"),
+                                Map.entry("sink.ordering-mode", "per-key")));
 
         assertThat(options)
                 .isEqualTo(
@@ -82,6 +84,7 @@ class WriterOptionsMapperTest {
                                 .retryMaxAttempts(4)
                                 .maxInFlightWrites(120)
                                 .maxInFlightBytes(4L * 1024 * 1024)
+                                .orderingMode(OrderingMode.PER_KEY)
                                 .build());
         assertThat(map(Map.of("sink.throttling.enabled", "false")).isThrottlingEnabled()).isFalse();
     }
@@ -91,6 +94,13 @@ class WriterOptionsMapperTest {
         assertThatThrownBy(() -> map(Map.of("sink.write.max-attempts", "0")))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageStartingWith("Option 'sink.write.max-attempts' is invalid:");
+    }
+
+    @Test
+    void anUnknownOrderingModeIsRefusedUnderItsKey() {
+        assertThatThrownBy(() -> map(Map.of("sink.ordering-mode", "per-document")))
+                .hasStackTraceContaining("sink.ordering-mode")
+                .hasStackTraceContaining("per-document");
     }
 
     @Test

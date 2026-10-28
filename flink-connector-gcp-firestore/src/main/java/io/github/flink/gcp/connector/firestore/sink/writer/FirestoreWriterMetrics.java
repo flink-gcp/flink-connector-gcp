@@ -86,12 +86,17 @@ final class FirestoreWriterMetrics {
      * @param inFlightWrites writes handed to the client and not yet answered
      * @param inFlightBytes their estimated size
      * @param parkedWrites writes waiting to be re-sent alone
+     * @param bufferedWrites writes accepted from the serializer and not yet handed to the client
      */
     void bindWriterState(
-            Gauge<Integer> inFlightWrites, Gauge<Long> inFlightBytes, Gauge<Integer> parkedWrites) {
+            Gauge<Integer> inFlightWrites,
+            Gauge<Long> inFlightBytes,
+            Gauge<Integer> parkedWrites,
+            Gauge<Integer> bufferedWrites) {
         metricGroup.gauge(FirestoreMetricNames.IN_FLIGHT_WRITES, inFlightWrites);
         metricGroup.gauge(FirestoreMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
         metricGroup.gauge(FirestoreMetricNames.PARKED_WRITES, parkedWrites);
+        metricGroup.gauge(FirestoreMetricNames.BUFFERED_WRITES, bufferedWrites);
     }
 
     /**
