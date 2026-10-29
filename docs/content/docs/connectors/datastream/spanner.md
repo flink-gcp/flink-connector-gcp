@@ -439,9 +439,41 @@ Which mutation operation the serializer builds is what decides whether that matt
 | `update` | Idempotent — but if the row was deleted in between, Spanner answers `NOT_FOUND`, which **fails the job**. See below |
 
 This per-mutation idempotence is not a latest-value ordering guarantee.
-The writer sends records as separate `BatchWrite` mutation groups, and Spanner may apply independent
-groups in an unspecified order.
-Successive records for the same key can therefore finish out of input order even without a replay.
+The writer sends records as separate `BatchWrite` mutation groups, and the client library documents that Spanner applies the groups of one request "in an unspecified order and thus, they must be independent of each other".
+By default, two records for the same row in one request can therefore finish out of input order even without a replay.
+Requests themselves keep their order, because the writer sends one at a time and retries a request's undecided mutations before it sends the next.
+
+### Order per row
+
+`SpannerWriterOptions.builder().orderingMode(OrderingMode.PER_KEY)`, passed to the sink builder's `writerOptions`, makes each subtask apply mutations of one row in the order it received them.
+`OrderingMode` is experimental.
+The writer then sends its batch before a mutation whose row the batch already holds, so no request carries a row twice.
+Mutations of other rows still share requests.
+The order is only as good as the input's: it is the order one subtask received, so the stream must already be ordered per row and keyed by primary key before the sink.
+
+A row is a table and its primary-key values.
+A `Mutation` names its columns but not which of them form the key, so the writer reads every table's primary key, with each key column's type, from the database's `INFORMATION_SCHEMA` when it opens, in this mode only; the sink's identity needs `SELECT` on that view in both modes already, for the [cell weights](#batching).
+A key value is compared as its column's type reads it, in the client library's representation of that type: `Key.of(7L)` in a delete matches `Value.int64(7)` in a write, and a `NUMERIC` compares by value whatever its scale.
+A mutation whose row the writer cannot name is ordered against every mutation of its table instead, which costs an earlier flush but never the order:
+
+- a delete of a key range or of `KeySet.all()`;
+- a write without a value for every key column, such as an insert into a table whose key column is generated, which Spanner computes from the row's other columns;
+- a key value in another representation than its column's type, such as a `UUID` key given as a string, or a value with no type at all.
+
+A mutation of a table the schema did not list when the writer opened is ordered against every mutation of the batch, whatever its table: the name may belong to a table created since, or be a synonym, which addresses another table's rows under a second name.
+The same holds for a table whose primary key is empty, which lists no key column.
+
+Table names compare without case in both dialects, so two PostgreSQL tables whose names differ only by case are each ordered as a whole.
+Rows related by an interleaved parent's `ON DELETE CASCADE`, by a foreign key or by a `UNIQUE` index are different rows, so the mode does not order a mutation of one against a mutation of the other.
+Two orders are out of the writer's reach.
+An attempt that timed out on the client can still be applied by the service after the writer has moved on.
+And the primary keys are read once, so a table dropped and created again with another key while the job runs is compared by its old key until the writer is created again, as a restart does.
+
+The mode costs a request per repeated row.
+A row written n times in a row takes n requests, one after another, where the default would send them in one; `batchesSent` rises against `numRecordsSend` by that much.
+Measured against the service from one writer outside Google Cloud, on a 100-processing-unit instance (2026-10-29), 100 writes to one row took 20 to 23 seconds in `per-key` against 0.3 to 2.9 seconds without it, while 2,000 writes to distinct rows and 200 rows changed five times each took times within the run-to-run spread of the default.
+Those runs did not show a reordering without the mode either: the row written 100 times in one request ended at its last write in four of four runs.
+That is evidence about one small table, not a promise, which is why the mode follows the client library's contract rather than the measurement.
 
 ## Error handling
 

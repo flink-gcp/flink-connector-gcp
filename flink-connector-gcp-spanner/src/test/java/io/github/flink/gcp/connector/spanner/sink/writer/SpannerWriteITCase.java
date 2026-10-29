@@ -28,7 +28,9 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
+import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkBuilder;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
@@ -64,6 +66,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
 
     private final List<SinkWriter<String>> writers = new ArrayList<>();
+
+    /** The context the last writer was created with, whose metrics a test can read back. */
+    private StubWriterInitContext lastContext;
 
     @AfterEach
     void closeWriters() throws Exception {
@@ -182,7 +187,105 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
         assertThat(weights.weigh(insert("a"))).isEqualTo(3);
     }
 
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void perKeyOrderAppliesEachRowsMutationsInTheOrderReceived(Dialect dialect) throws Exception {
+        DatabaseDestination database = ordersDatabase(dialect);
+        // One batch could hold every mutation below, so only the per-key flush separates them.
+        SinkWriter<String> writer =
+                writer(
+                        database,
+                        SpannerWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build(),
+                        null,
+                        SpannerWriteITCase::roundMutation);
+
+        List<String> expected = writeRounds(writer);
+        writer.flush(false);
+
+        assertThat(names(database)).containsExactlyElementsOf(expected);
+        // One request per round: every round repeats each row once. The emulator applies one
+        // request's groups in order, so this count, not the rows, is what fails when the primary
+        // keys read at open do not reach the writer (each mutation would then be its own request).
+        assertThat(
+                        lastContext
+                                .getSinkWriterMetricGroup()
+                                .counterValue(SpannerMetricNames.BATCHES_SENT))
+                .isEqualTo((long) ROUNDS);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void readsThePrimaryKeysOutOfTheRealSchema(Dialect dialect) throws Exception {
+        DatabaseDestination database = ordersDatabase(dialect);
+
+        PrimaryKeys keys;
+        try (SpannerDatabaseAccess access =
+                new DefaultSpannerDatabaseAccessFactory(
+                                database,
+                                SpannerWriterOptions.defaults(),
+                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
+                        .create()) {
+            keys = access.readPrimaryKeys();
+        }
+
+        // The secondary index on name is not the key: a write names its row by id alone.
+        Mutation write =
+                Mutation.newInsertOrUpdateBuilder("orders")
+                        .set("id")
+                        .to("a")
+                        .set("name")
+                        .to("z")
+                        .build();
+        assertThat(keys.footprintOf(write).isWholeTable()).isFalse();
+        BatchedRows batch = new BatchedRows();
+        batch.add(keys.footprintOf(write));
+        assertThat(batch.overlaps(keys.footprintOf(Mutation.delete("orders", Key.of("a")))))
+                .isTrue();
+        assertThat(batch.overlaps(keys.footprintOf(Mutation.delete("orders", Key.of("z")))))
+                .isFalse();
+    }
+
     // ---------------------------------------------------------------- helpers
+
+    private static final int ROWS = 20;
+    private static final int ROUNDS = 10;
+
+    /**
+     * Writes {@value #ROUNDS} rounds over {@value #ROWS} rows, each round touching every row once,
+     * with a third of the changes deletes. Returns the names the rows end with, in id order.
+     */
+    private static List<String> writeRounds(SinkWriter<String> writer) throws Exception {
+        List<String> expected = new ArrayList<>();
+        for (int round = 0; round < ROUNDS; round++) {
+            for (int row = 0; row < ROWS; row++) {
+                boolean delete = (row + round) % 3 == 0;
+                writer.write(
+                        String.format("r%02d:%d:%s", row, round, delete ? "delete" : "upsert"),
+                        TestContexts.NO_OP);
+            }
+        }
+        for (int row = 0; row < ROWS; row++) {
+            int last = ROUNDS - 1;
+            if ((row + last) % 3 != 0) {
+                expected.add(String.format("r%02d:%d", row, last));
+            }
+        }
+        return expected;
+    }
+
+    /** Turns {@code id:round:op} into an upsert naming the round, or a delete of the row. */
+    private static Mutation roundMutation(String element, SinkWriter.Context context) {
+        String[] parts = element.split(":");
+        if (parts[2].equals("delete")) {
+            return Mutation.delete("orders", Key.of(parts[0]));
+        }
+        return Mutation.newInsertOrUpdateBuilder("orders")
+                .set("id")
+                .to(parts[0])
+                .set("name")
+                .to(parts[0] + ":" + parts[1])
+                .build();
+    }
 
     private static DatabaseDestination ordersDatabase(Dialect dialect) throws Exception {
         if (dialect == Dialect.POSTGRESQL) {
@@ -221,7 +324,8 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
             builder.failedMutationHandler(handler);
         }
         Sink<String> sink = builder.build();
-        SinkWriter<String> writer = sink.createWriter(new StubWriterInitContext(0));
+        lastContext = new StubWriterInitContext(0);
+        SinkWriter<String> writer = sink.createWriter(lastContext);
         writers.add(writer);
         return writer;
     }

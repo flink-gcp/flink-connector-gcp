@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
+import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkConfig;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
@@ -96,6 +97,16 @@ import java.util.List;
  * unaffected; anything else fails the job. A failure of the request as a whole is never routed —
  * see that class for why.
  *
+ * <h2>Order per row</h2>
+ *
+ * <p>Spanner applies the groups of one request in an unspecified order, and the requests one at a
+ * time: a batch's undecided mutations are retried before the next batch is sent. So mutations of
+ * one row keep their order exactly when no request carries the row twice. Under {@link
+ * OrderingMode#PER_KEY} the writer sends its batch before a mutation whose row the batch already
+ * holds, naming rows through {@link PrimaryKeys}. A mutation it cannot name a row for is ordered
+ * against its whole table. The one order this cannot keep is against an attempt that timed out on
+ * the client and is applied by the service after the writer moved on.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -115,8 +126,14 @@ public class SpannerWriter<T> implements SinkWriter<T> {
     private final int maxBatchCells;
     private final long maxBatchBytes;
 
+    /** The primary keys rows are named by; {@code null} unless the order per row is kept. */
+    @Nullable private final PrimaryKeys primaryKeys;
+
     /** The batch being accumulated. Task-thread only. */
     private final List<PendingMutation> buffer = new ArrayList<>();
+
+    /** The rows {@code buffer} addresses; {@code null} unless the order per row is kept. */
+    @Nullable private final BatchedRows batchedRows;
 
     private int bufferedCells;
     private long bufferedBytes;
@@ -127,12 +144,15 @@ public class SpannerWriter<T> implements SinkWriter<T> {
      * @param config the sink configuration
      * @param access the database access, owned by this writer from here on
      * @param cellWeights the mutation-cell weights read from the database
+     * @param primaryKeys the primary keys read from the database, required under {@link
+     *     OrderingMode#PER_KEY} and {@code null} otherwise
      * @param metricGroup the writer's metric group
      */
     public SpannerWriter(
             SpannerSinkConfig<T> config,
             SpannerDatabaseAccess access,
             CellWeights cellWeights,
+            @Nullable PrimaryKeys primaryKeys,
             SinkWriterMetricGroup metricGroup) {
         this.database = config.getDatabase();
         this.serializer = config.getSerializer();
@@ -159,13 +179,26 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         this.maxBatchMutations = options.getMaxBatchMutations();
         this.maxBatchCells = options.getMaxBatchCells();
         this.maxBatchBytes = options.getMaxBatchBytes();
+        if (options.getOrderingMode() == OrderingMode.PER_KEY) {
+            this.primaryKeys =
+                    Preconditions.checkNotNull(primaryKeys, "primaryKeys must not be null");
+            this.batchedRows = new BatchedRows();
+        } else {
+            this.primaryKeys = null;
+            this.batchedRows = null;
+        }
 
         metrics.bindWriterState(buffer::size, () -> bufferedCells, () -> bufferedBytes);
         LOG.info(
                 "Spanner sink writer opened for {} with mutation-cell weights for {} indexed"
-                        + " table(s).",
+                        + " table(s){}.",
                 database,
-                cellWeights.indexedTableCount());
+                cellWeights.indexedTableCount(),
+                this.primaryKeys == null
+                        ? ""
+                        : ", keeping the order per row by the primary keys of "
+                                + this.primaryKeys.tableCount()
+                                + " table(s)");
     }
 
     @Override
@@ -203,8 +236,23 @@ public class SpannerWriter<T> implements SinkWriter<T> {
             route(mutation, "Failed to weigh the mutation against the batch limits.", e);
             return;
         }
-        if (!buffer.isEmpty() && wouldOverflow(pending)) {
+        PrimaryKeys.Footprint footprint = null;
+        if (primaryKeys != null) {
+            try {
+                footprint = primaryKeys.footprintOf(mutation);
+            } catch (RuntimeException e) {
+                // Insurance, as above: naming the rows reads user-supplied values too.
+                route(mutation, "Failed to name the rows the mutation addresses.", e);
+                return;
+            }
+        }
+        if (!buffer.isEmpty()
+                && (wouldOverflow(pending)
+                        || (footprint != null && batchedRows.overlaps(footprint)))) {
             flushBatch();
+        }
+        if (footprint != null) {
+            batchedRows.add(footprint);
         }
         buffer.add(pending);
         bufferedCells += pending.cells;
@@ -243,6 +291,9 @@ public class SpannerWriter<T> implements SinkWriter<T> {
     private void flushBatch() throws IOException, InterruptedException {
         List<PendingMutation> batch = new ArrayList<>(buffer);
         buffer.clear();
+        if (batchedRows != null) {
+            batchedRows.clear();
+        }
         bufferedCells = 0;
         bufferedBytes = 0;
         send(batch);
@@ -407,6 +458,9 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         // already coming down would be a write nobody asked for. Whatever is buffered was never
         // acknowledged to a checkpoint, so it is replayed from the source.
         buffer.clear();
+        if (batchedRows != null) {
+            batchedRows.clear();
+        }
         bufferedCells = 0;
         bufferedBytes = 0;
         Closers.closeAll(access, failedMutationHandler::close);

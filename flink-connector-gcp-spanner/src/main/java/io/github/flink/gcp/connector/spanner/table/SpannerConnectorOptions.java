@@ -23,6 +23,7 @@ import org.apache.flink.configuration.MemorySize;
 
 import com.google.cloud.spanner.Dialect;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 
 import java.time.Duration;
@@ -409,6 +410,22 @@ public final class SpannerConnectorOptions {
                     .intType()
                     .noDefaultValue()
                     .withDescription("The maximum BatchWrite attempts before the job fails.");
+
+    /**
+     * Whether mutations of one row are applied in the order the sink subtask received them.
+     * 'per-key' sends the batch before a mutation whose row it already holds, at one request per
+     * mutation of a row written many times in a row; 'none' does not order them within a request.
+     */
+    public static final ConfigOption<OrderingMode> SINK_ORDERING_MODE =
+            ConfigOptions.key("sink.ordering-mode")
+                    .enumType(OrderingMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether mutations of one row are applied in the order the sink"
+                                    + " subtask received them. 'per-key' sends the batch before a"
+                                    + " mutation whose row it already holds, at one request per"
+                                    + " mutation of a row written many times in a row; 'none' does"
+                                    + " not order them within a request.");
 
     private SpannerConnectorOptions() {}
 }

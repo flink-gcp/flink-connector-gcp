@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.spanner.table.catalog;
+package io.github.flink.gcp.connector.spanner;
 
 import com.google.cloud.spanner.Dialect;
-import io.github.flink.gcp.connector.spanner.table.catalog.SpannerTypeSpelling.Kind;
+import io.github.flink.gcp.connector.spanner.SpannerTypeSpelling.Kind;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

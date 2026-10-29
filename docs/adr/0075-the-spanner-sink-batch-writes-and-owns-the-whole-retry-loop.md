@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.120.0; emulator behaviour
   measured 2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`); naming revised by
-  [#1053] (2026-08-23); per-attempt timeout revised by [#1134] (2026-08-29)
-- Issues: [#220], [#36], [#1053], [#1134]
+  [#1053] (2026-08-23); per-attempt timeout revised by [#1134] (2026-08-29); per-row order added by
+  [#1619] (2026-10-29)
+- Issues: [#220], [#36], [#1053], [#1134], [#1619]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § How the sink writes
 
@@ -113,6 +114,10 @@ serializer's to supply.
   the evidence supports no relative regression against the concurrent control, not an absolute
   throughput claim. A preceding serial comparison varied by more than 10% within each arm and was
   treated as inconclusive. Both temporary instances and their databases were deleted.
+- One mutation per group leaves the order of two mutations of one row in the same request to the
+  service, which applies a request's groups in an unspecified order. Requests keep their order,
+  because the writer sends one at a time; [ADR-0189] adds the opt-in mode that keeps a row out of a
+  request twice.
 - Because the writer sees its own retries, `mutationsRetried` and the transient half of
   `errorClass.*.errors` mean something here that they cannot mean on the sibling sinks, where the
   SDK absorbs the same work. ADR-0076 and the metrics section of the docs page say so where a
@@ -136,3 +141,5 @@ serializer's to supply.
 [#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
 [#1134]: https://github.com/flink-gcp/flink-connector-gcp/issues/1134
+[#1619]: https://github.com/flink-gcp/flink-connector-gcp/issues/1619
+[ADR-0189]: 0189-the-spanner-sink-keeps-per-row-order-on-opt-in.md

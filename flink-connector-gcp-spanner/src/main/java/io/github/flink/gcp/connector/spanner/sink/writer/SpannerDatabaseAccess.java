@@ -48,6 +48,15 @@ public interface SpannerDatabaseAccess extends AutoCloseable {
     CellWeights readCellWeights() throws IOException;
 
     /**
+     * Reads every table's primary-key columns. Called once, when the writer opens, and only when it
+     * keeps the order of mutations per row.
+     *
+     * @return the primary keys
+     * @throws IOException if the schema cannot be read
+     */
+    PrimaryKeys readPrimaryKeys() throws IOException;
+
+    /**
      * Applies the groups through {@code batchWriteAtLeastOnce}, reporting each group's outcome to
      * {@code outcomes} as the service reports it.
      *

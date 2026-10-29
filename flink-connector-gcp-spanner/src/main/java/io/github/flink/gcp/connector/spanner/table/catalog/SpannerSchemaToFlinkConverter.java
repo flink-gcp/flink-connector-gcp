@@ -22,6 +22,7 @@ import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.spanner.Dialect;
+import io.github.flink.gcp.connector.spanner.SpannerTypeSpelling;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.catalog.SpannerCatalogClient.ColumnMetadata;
 import io.github.flink.gcp.connector.spanner.table.catalog.SpannerCatalogClient.NamedTypeKind;

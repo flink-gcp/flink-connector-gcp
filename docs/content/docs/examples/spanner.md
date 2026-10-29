@@ -235,7 +235,7 @@ A delete of a key the job never saw, such as a row committed before the job star
 The same operator keeps out of this job the two Flink 2.2 and 2.3 bugs that affect a delete carrying the key alone ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)); a query that reads only physical columns hands such deletes to the sink, as [Change Streams scan behavior]({{< relref "docs/connectors/table/spanner" >}}#change-streams-scan-behavior) describes.
 
 This is a replica-shaped materialization pattern, not a strict replica guarantee.
-The sink is at-least-once, and `BatchWrite` does not guarantee the application order of successive writes to one key, so the destination is not guaranteed to retain the latest source value.
+The sink is at-least-once, and by default `BatchWrite` does not guarantee the application order of successive writes to one key in one request, so the destination is not guaranteed to retain the latest source value; `'sink.ordering-mode' = 'per-key'` on the sink table keeps that order per sink subtask, as the [Table page]({{< relref "docs/connectors/table/spanner" >}}#delivery-guarantee) describes.
 
 Use `TIMESTAMP_LTZ(3)` plus `WATERMARK FOR source_commit_timestamp AS SOURCE_WATERMARK()` when event-time operations matter more than retaining nanoseconds.
 

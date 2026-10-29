@@ -11,6 +11,7 @@ Both dialects, GoogleSQL and PostgreSQL.
 | SinkV2 at-least-once sink over `batchWriteAtLeastOnce`; `Mutation` serialization SPI | Implemented ([#220](https://github.com/flink-gcp/flink-connector-gcp/issues/220)) |
 | Per-mutation failure policy (the shared `FailureHandler` SPI) | Implemented ([#220](https://github.com/flink-gcp/flink-connector-gcp/issues/220)) |
 | Index-aware mutation-cell batching, read from `INFORMATION_SCHEMA` | Implemented ([#220](https://github.com/flink-gcp/flink-connector-gcp/issues/220)) |
+| Opt-in per-row submission order (`orderingMode` / `sink.ordering-mode`) | Implemented ([#1619](https://github.com/flink-gcp/flink-connector-gcp/issues/1619)) |
 | Emulator integration tests, both dialects | Implemented ([#220](https://github.com/flink-gcp/flink-connector-gcp/issues/220)) |
 | DataStream bounded batch source (`PartitionQuery`, Data Boost) | Implemented ([#221](https://github.com/flink-gcp/flink-connector-gcp/issues/221)) |
 | DataStream Change Streams source, both dialects, including real-GCP recovery acceptance | Implemented ([#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534), [#536](https://github.com/flink-gcp/flink-connector-gcp/issues/536), [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535)) |

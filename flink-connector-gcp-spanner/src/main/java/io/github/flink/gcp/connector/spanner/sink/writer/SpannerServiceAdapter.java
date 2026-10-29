@@ -100,6 +100,28 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
     }
 
     @Override
+    public PrimaryKeys readPrimaryKeys() throws IOException {
+        Dialect databaseDialect;
+        String sql;
+        try {
+            databaseDialect = dialect.get();
+            sql = PrimaryKeys.query(databaseDialect);
+        } catch (SpannerException e) {
+            throw new IOException("Failed to read the dialect of " + description + ".", e);
+        }
+        try (ResultSet resultSet = executeQuery.apply(sql)) {
+            return PrimaryKeys.read(resultSet, databaseDialect);
+        } catch (SpannerException e) {
+            throw new IOException(
+                    "Failed to read the primary keys of "
+                            + description
+                            + " from INFORMATION_SCHEMA. The sink needs them to keep the order of"
+                            + " mutations per row under the per-key ordering mode.",
+                    e);
+        }
+    }
+
+    @Override
     public void batchWrite(List<MutationGroup> groups, GroupOutcomes outcomes) {
         for (BatchWriteResponse response : batchWrite.apply(groups)) {
             // One response may decide several groups, and reports them by their index in the

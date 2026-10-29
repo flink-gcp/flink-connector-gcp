@@ -43,6 +43,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   faking `DatabaseClient` itself is the thing this exists to avoid.
 - `null` from the serializer is skip, and the check sits immediately after the serializer's
   `catch`, ahead of the buffer, the weights and every metric that counts a send (`docs/adr/0001`).
+- **Per-row order is a flush, not a sequencer** (`docs/adr/0189`). Under `OrderingMode.PER_KEY`
+  the writer sends its batch before a mutation whose row the batch holds; the synchronous writer
+  already keeps order between requests. Do not port Firestore's `PerKeyWriteSequencer` here.
+  `PrimaryKeys` names a row from the primary keys and their column types read at open (this mode
+  only, so `NONE` opens as before). A key value compares only in its column type's client-library
+  representation; any other representation, and every other doubt, resolves to the whole table.
+  Do not reintroduce wire-form or string normalization: review found ways it could split a row.
+  Table names fold in both dialects. `OrderingMode` is an `@Experimental` closure stop on the
+  `@Public` options (ADR-0124's revision), unlike Firestore's `@PublicEvolving` namesake. The emulator does not reorder a request's groups and neither did the service in
+  the 2026-10-29 measurement, so the unit tests are the firing control, not an IT.
 
 ## Error handling (`docs/adr/0076`)
 
@@ -409,7 +419,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - A default-schema table carries `table` alone, in the native spelling; a named-schema table
   carries `named-schema` and `table` in canonical quoting. Mixing the two forms targets a different
   table for a mixed-case PostgreSQL name.
-- `SPANNER_TYPE` is parsed by `SpannerTypeSpelling` from the spellings measured on the service and the
+- `SPANNER_TYPE` is parsed by `SpannerTypeSpelling` (module root, shared with the sink's
+  per-row order) from the spellings measured on the service and the
   emulator, which differ: the service reports `PROTO<fqn>`/`ENUM<fqn>`, the emulator a backticked
   FQN alone, which is classified from `GetDatabaseDdl`'s proto descriptors, never from the name.
 - Marker values pass through `SpannerMarkerValues`, which quotes as Flink's own option serializer

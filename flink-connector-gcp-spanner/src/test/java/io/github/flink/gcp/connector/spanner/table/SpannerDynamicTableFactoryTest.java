@@ -44,6 +44,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkConfig;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
@@ -357,6 +358,7 @@ class SpannerDynamicTableFactoryTest {
         options.put("sink.recovery.initial-backoff", "2 s");
         options.put("sink.recovery.max-backoff", "8 s");
         options.put("sink.recovery.max-attempts", "4");
+        options.put("sink.ordering-mode", "per-key");
         options.put("emulator-endpoint", "localhost:9010");
 
         SpannerMutationsSink<?> sink = built(withPrimaryKey(), options);
@@ -376,6 +378,8 @@ class SpannerDynamicTableFactoryTest {
         assertThat(sink.getConfig().getWriterOptions().getRecoveryMaxBackoff())
                 .isEqualTo(Duration.ofSeconds(8));
         assertThat(sink.getConfig().getWriterOptions().getRecoveryMaxAttempts()).isEqualTo(4);
+        assertThat(sink.getConfig().getWriterOptions().getOrderingMode())
+                .isEqualTo(OrderingMode.PER_KEY);
         assertThat(sink.getConfig().getEmulatorEndpoint())
                 .isEqualTo(EmulatorEndpoint.parse("localhost:9010", "emulatorEndpoint"));
     }
@@ -1089,6 +1093,12 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(SCHEMA, options))
                 .hasStackTraceContaining("Option 'sink.buffer-flush.max-cells' is invalid")
                 .hasStackTraceContaining("maxBatchCells must be positive");
+
+        Map<String, String> ordering = options();
+        ordering.put("sink.ordering-mode", "per-row");
+        assertThatThrownBy(() -> sink(SCHEMA, ordering))
+                .hasStackTraceContaining("sink.ordering-mode")
+                .hasStackTraceContaining("per-row");
 
         Map<String, String> recovery = options();
         recovery.put("sink.recovery.max-attempts", "0");
