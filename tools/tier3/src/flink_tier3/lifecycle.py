@@ -46,6 +46,7 @@ from .pubsub import actors as pubsub_actors
 from .pubsub import plan as pubsub_plan
 from .render import RESOURCE_PLANS
 from .resource import RESOURCE_SCENARIOS
+from .spanner import trial as spanner_trial
 
 PUBSUB_TRIALS = Path("kubernetes/lifecycle/pubsub-trials")
 
@@ -429,8 +430,9 @@ def start_resource(args, store, scenario):
         RESOURCE_SCENARIOS[scenario].service,
         RESOURCE_SCENARIOS[scenario].field,
     )
-    # Checked here rather than left to the plan, because a Bigtable trial is
-    # built from the window, which is read only after the run's evidence is.
+    # Checked here rather than left to the plan, because a Bigtable or Spanner
+    # trial is built from the window, which is read only after the run's
+    # evidence is.
     kind = getattr(args, field + "_trial", None)
     if kind not in plan.KINDS:
         raise rt.Failure(
@@ -584,7 +586,9 @@ def start(args, store):
         campaign.requested(getattr(args, "campaign", ""), getattr(args, "repeats", "0"))
         and scenario not in RESOURCE_SCENARIOS
     ):
-        raise rt.Failure("Only a Cloud Tasks or Bigtable trial runs a campaign")
+        raise rt.Failure(
+            "Only a Cloud Tasks, Bigtable or Spanner trial runs a campaign"
+        )
     if scenario == "bigquery-recovery":
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
@@ -947,6 +951,10 @@ def main(argv=None):
     run.add_argument(
         "--bigtable-trial",
         help="Bigtable trial: " + ", ".join(bigtable_trial.KINDS),
+    )
+    run.add_argument(
+        "--spanner-trial",
+        help="Spanner trial: " + ", ".join(spanner_trial.KINDS),
     )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)

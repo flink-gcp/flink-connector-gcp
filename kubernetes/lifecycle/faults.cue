@@ -17,8 +17,8 @@ package tier3
 // The fault kinds every recovery trial names, as `flink_tier3/exercise.py` declares them in its
 // `FAULTS` table, which a test holds this to: the direction a rescale moves the writers, or null,
 // and the writers' parallelism of each phase, one per single-slot TaskManager. A rescale moves it
-// between one and two, inside the three-Pod quota of the BigQuery, Cloud Tasks and Bigtable
-// namespaces, which the Spanner one is to share, and every other kind keeps two.
+// between one and two, inside the three-Pod quota of the BigQuery, Cloud Tasks, Bigtable and
+// Spanner namespaces, and every other kind keeps two.
 // A scenario indexes its sizes by kind rather than choosing them by comparing it: compared, a
 // kind outside the four rendered some fixed size instead of failing.
 faultKinds: {

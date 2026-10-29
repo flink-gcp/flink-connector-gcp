@@ -28,12 +28,15 @@ from .common import Failure
 from .model import SCENARIOS
 from .pubsub import plan as pubsub_plan
 from .resource import RESOURCE_SCENARIOS
+from .spanner import plan as spanner_plan
+from .spanner import trial as spanner_trial
 from .workflow import render
 
 # The plan of each scenario whose runner creates one resource.
 RESOURCE_PLANS = {
     "cloudtasks-recovery": cloudtasks_plan,
     "bigtable-recovery": bigtable_plan,
+    "spanner-recovery": spanner_plan,
 }
 
 
@@ -59,6 +62,9 @@ def main(argv=None):
     )
     parser.add_argument(
         "--bigtable-trial", choices=bigtable_trial.KINDS, help="Bigtable trial"
+    )
+    parser.add_argument(
+        "--spanner-trial", choices=spanner_trial.KINDS, help="Spanner trial"
     )
     parser.add_argument("--started-at", help="trial proposal's absolute start time")
     parser.add_argument(

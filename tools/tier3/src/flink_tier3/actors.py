@@ -25,12 +25,15 @@ from .google import actor_session
 from .quiesce import namespace_writers, poll_writers
 from .resource import RESOURCE_SCENARIOS
 from .runner import Runner
+from .spanner.instance import Instance as SpannerInstance
+from .spanner.lifecycle import SpannerLifecycle
 from .supervisor import Supervisor
 
 # Each scenario's REST client and lifecycle controller.
 CONTROLLERS = {
     "cloudtasks-recovery": (Queue, CloudTasksLifecycle),
     "bigtable-recovery": (Instance, BigtableLifecycle),
+    "spanner-recovery": (SpannerInstance, SpannerLifecycle),
 }
 
 
@@ -61,10 +64,11 @@ def barrier(env):
     What it proves, from a fresh listing on every call: no object that could
     run or restore a writer remains in the application namespace, whoever
     owns it. The workload's grants reach every resource of its kind, Cloud
-    Tasks queues project-wide and Bigtable's `bt1316-` instances, and any Pod
-    running as the namespace's service account holds them, so the whole
-    namespace is what must be empty, as for Pub/Sub. Deletes on this path are
-    graceful, so a Pod leaving the API means its containers terminated.
+    Tasks queues project-wide, Bigtable's `bt1316-` instances and Spanner's
+    `sp1360-` instances, and any Pod running as the namespace's service
+    account holds them, so the whole namespace is what must be empty, as for
+    Pub/Sub. Deletes on this path are graceful, so a Pod leaving the API
+    means its containers terminated.
 
     What it does not prove: that no write a terminated Pod sent is still
     executing at the service. One that lands after the resource's deletion is

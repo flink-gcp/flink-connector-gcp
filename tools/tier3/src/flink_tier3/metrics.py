@@ -202,6 +202,44 @@ def job_vertices(
     return state
 
 
+def named_vertices(rest, known, names, families, shape):
+    """Each role's vertex id, and each component's discovered metric ids.
+
+    `names` maps each role to the start of the name Flink chains its vertex
+    under, and `families` each component role among them to its families'
+    metric names. A job of several sources has no one source to find, so each
+    vertex is found by its name; a job whose vertices are not exactly those is
+    not ``shape``. Metric ids are unioned across calls, as `job_vertices` does,
+    because an operator registers its metrics only once it opens.
+    """
+    plan = sample(lambda: rest.job(""))
+    if unavailable(plan):
+        return known if known and not unavailable(known) else plan
+    listed = [v for v in (plan.get("vertices") or []) if v.get("id")]
+    found = {}
+    for role, prefix in names.items():
+        matches = [v for v in listed if str(v.get("name", "")).startswith(prefix)]
+        if len(matches) != 1:
+            break
+        found[role] = matches[0]["id"]
+    if len(found) != len(names) or len(listed) != len(names):
+        return {"unavailable": f"expected {shape}, found {len(listed)}"}
+    previous = known if known and not unavailable(known) else {}
+    metrics = {}
+    for component, component_families in families.items():
+        ids = previous.get("metrics", {}).get(component, [])
+        listing = sample(
+            lambda vertex=found[component]: rest.job(
+                f"/vertices/{vertex}/subtasks/metrics"
+            )
+        )
+        wanted = frozenset().union(*component_families.values())
+        metrics[component] = (
+            ids if unavailable(listing) else discover(listing, wanted, ids)
+        )
+    return {"vertices": found, "metrics": metrics}
+
+
 def subtask_metrics(rest, vertex, ids):
     """The named metrics of one vertex, aggregated over its subtasks."""
     if not ids:
@@ -288,6 +326,43 @@ def checkpoint_statistics(rest, roles):
             ]
         )
     return result
+
+
+# The families a reading of named components covers beside their own: each
+# component's checkpoint share, and the job's TaskManager memory.
+CHECKPOINT = "checkpoint"
+MEMORY = "memory"
+
+
+def observed_families(families):
+    """Every family a reading of `families`' components can cover, by its name."""
+    return (
+        *(
+            f"{component}-{family}"
+            for component in families
+            for family in (*sorted(families[component]), CHECKPOINT)
+        ),
+        MEMORY,
+    )
+
+
+def families_read(reading, families):
+    """Which of `families`' families one poll actually returned a value for."""
+    observed = set()
+    for component, component_families in families.items():
+        names = returned(
+            reading, component, frozenset().union(*component_families.values())
+        )
+        observed.update(
+            f"{component}-{family}"
+            for family, ids in component_families.items()
+            if names & ids
+        )
+        if checkpoint_read(reading, (component,)):
+            observed.add(f"{component}-{CHECKPOINT}")
+    if memory_read(reading):
+        observed.add(MEMORY)
+    return observed
 
 
 def fold_coverage(previous, window, observed):

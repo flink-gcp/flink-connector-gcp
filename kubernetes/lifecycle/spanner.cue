@@ -20,8 +20,8 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// The trial's inputs, which dispatch and the offline renderer are to supply once the rig scenario
-// of #1877 exists; the package owns their defaults and bounds.
+// The trial's inputs, which dispatch and the offline renderer supply; the package owns their
+// defaults and bounds.
 spannerRecords:           int    @tag(spanner_records,type=int)
 spannerRecordsPerSecond:  int    @tag(spanner_records_per_second,type=int)
 spannerChangeStreamEnd:   string @tag(spanner_change_stream_end)

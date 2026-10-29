@@ -47,6 +47,8 @@ PUBSUB = _policy["environment"]["pubsub"]
 PUBSUB_STATE = _policy["environment"]["pubsub_state"]
 BIGTABLE = _policy["environment"]["bigtable"]
 BIGTABLE_STATE = _policy["environment"]["bigtable_state"]
+SPANNER = _policy["environment"]["spanner"]
+SPANNER_STATE = _policy["environment"]["spanner_state"]
 
 BIGQUERY_OBSERVATIONS = {
     # The measurement windows: a baseline after a warm-up, one after the
@@ -139,6 +141,25 @@ BIGTABLE_OBSERVATIONS = {
     "measure_seconds": 60,
 }
 
+SPANNER_OBSERVATIONS = {
+    # From admission to the application's creation, as for Bigtable: here the
+    # run's instance and database created and read back, the seed rows
+    # written, about forty seconds in #1877's measurement, and the seed
+    # table's three split points added one a minute.
+    "startup_seconds": 600,
+    # The rest equal Bigtable's measured timings, kept as Spanner's own so that
+    # a later Bigtable change does not move a preregistered Spanner trial.
+    "input_seconds": 1200,
+    "recovery_seconds": 600,
+    "visibility_seconds": 600,
+    "warmup_seconds": 60,
+    "baseline_seconds": 300,
+    "post_upgrade_seconds": 300,
+    "post_recovery_seconds": 300,
+    "upgrade_wait_seconds": 120,
+    "measure_seconds": 60,
+}
+
 PUBSUB_ADMISSION = {
     # From admission to the application's creation. Beyond the supervisor and
     # Operator readiness every scenario waits for, Pub/Sub admission creates
@@ -150,7 +171,7 @@ PUBSUB_ADMISSION = {
 
 
 # Application namespaces first, then the control namespace.
-NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, BIGTABLE, SYSTEM)
+NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, BIGTABLE, SPANNER, SYSTEM)
 
 
 RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\Z")
