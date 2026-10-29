@@ -14,14 +14,16 @@
 #
 # Which page must document each connector's metrics (scripts/check-metric-docs.py).
 #
-# Four tables, the same split option-docs.toml has. The first says *where* a
-# module's metrics are documented; the second names the sources whose templated
-# leaves a using connector's page owes; the last two are the exceptions,
+# Five tables, the split option-docs.toml has plus one. The first says *where*
+# a module's metrics are documented; the second names the sources whose
+# templated leaves a using connector's page owes; the third names the sources
+# that register only their callers' names; the last two are the exceptions,
 # pointing in OPPOSITE directions — which is the thing to get right when
 # adding one:
 #
 #   [[connectors]]  module -> page      what must be documented
 #   [[subgroups]]   a source registering templated subgroup leaves
+#   [[registrars]]  a source registering the names its callers pass in
 #   [exempt]        source side         a registered name with no row
 #   [extra]         page side           a row that exists with no registration
 #
@@ -96,6 +98,14 @@ source = "flink-connector-gcp-cloudtasks/src/main/java/io/github/flink/gcp/conne
 
 [[subgroups]]
 source = "flink-connector-gcp-spanner/src/main/java/io/github/flink/gcp/connector/spanner/SpannerClientMetrics.java"
+
+# The base module's pass-through registrars (#1908): every name they register
+# arrives as a parameter from a connector's call, such as
+# `metrics.counter(AMetricNames.X)`, and that call is what the inventory rule
+# reads in the connector's module. The script holds a registrar to registering
+# through a parameter only, and fails an entry whose source registers nothing.
+[[registrars]]
+source = "flink-connector-gcp-base/src/main/java/io/github/flink/gcp/connector/base/source/EnumeratorMetrics.java"
 
 # SOURCE SIDE. Registered names that deliberately have no row, keyed
 # `Class.name` — the inventory class (or [[subgroups]] class) and the name

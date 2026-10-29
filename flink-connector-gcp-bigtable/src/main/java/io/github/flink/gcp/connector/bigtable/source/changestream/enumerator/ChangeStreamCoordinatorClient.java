@@ -31,9 +31,9 @@ import java.util.List;
  *
  * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
  * ChangeStreamCoordinatorClientFactory}, and the source mints one client per enumerator from it.
- * The JobManager holds one source object for a job's whole life, so a client parked on the source
- * configuration would be shared by every enumerator a coordinator reset builds ({@code
- * docs/adr/0128}).
+ * The JobManager keeps one source object across every coordinator reset under the default
+ * scheduler, so a client parked on the source configuration would be shared by every enumerator a
+ * coordinator reset builds ({@code docs/adr/0128}).
  */
 @Internal
 public interface ChangeStreamCoordinatorClient extends AutoCloseable {

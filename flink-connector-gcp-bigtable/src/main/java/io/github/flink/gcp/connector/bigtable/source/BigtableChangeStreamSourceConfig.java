@@ -174,9 +174,9 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     /**
      * Returns the factory the source mints one coordinator client per enumerator from.
      *
-     * <p>A factory rather than a client because the JobManager holds one source object for a job's
-     * whole life, so a client here would be shared by every enumerator a coordinator reset builds
-     * ({@code docs/adr/0128}).
+     * <p>A factory rather than a client because the JobManager keeps one source object across every
+     * coordinator reset under the default scheduler, so a client here would be shared by every
+     * enumerator a coordinator reset builds ({@code docs/adr/0128}).
      */
     public ChangeStreamCoordinatorClientFactory getCoordinatorClientFactory() {
         return coordinatorClientFactory;

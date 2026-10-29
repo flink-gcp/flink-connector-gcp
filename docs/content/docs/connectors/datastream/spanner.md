@@ -721,10 +721,12 @@ mutations, so attributing it to records would say nothing an operator can act on
 
 Registered on the split enumerator's group, on the coordinator, and on the source reader's group, on
 each subtask.
+The enumerator's counters count for as long as the JobManager leads the job: an enumerator that a failover or a restart builds adds to the counters the first one registered, and the enumerator's gauges read the enumerator now running.
+A JobManager failover, or a JobManager that loses and regains leadership, starts the counters again from zero.
 
 | Metric | Type | Meaning |
 |---|---|---|
-| `readsPlanned` | counter | Planning calls that completed. One on a fresh run, zero on a restored one — which is how a restore tells itself apart at runtime |
+| `readsPlanned` | counter | Planning calls that completed: one each time an enumerator's planning call completes, none for one that restored the plan, so a restore shows as the counter not moving. A checkpoint that starts after a rise records the plan unless the job restarts first, so once such a checkpoint has completed with no restart in between, a further rise means the plan was recomputed; in a run started from a savepoint or a checkpoint that recorded the plan, any rise does. Inside a `HybridSource`, each sub-source that plans adds its own rise |
 | `splitsAssigned` | counter | Partition splits handed to a reader |
 | `splitsReturned` | counter | Partition splits a failed reader gave back, to be handed out again |
 | `unassignedSplits` | gauge (Flink standard) | Partition splits nobody holds yet |
@@ -741,13 +743,15 @@ nothing knows how many rows are left inside one.
 ### Change Streams source metrics
 
 Registered on the split enumerator's coordinator group and on each source reader's group.
+The enumerator's counters count for as long as the JobManager leads the job: an enumerator that a failover or a restart builds adds to the counters the first one registered, and the enumerator's gauges read the enumerator now running.
+A JobManager failover, or a JobManager that loses and regains leadership, starts the counters again from zero.
 
 | Metric | Type | Meaning |
 |---|---|---|
 | `splitsAssigned` | counter | Change Stream partition queries handed to readers |
 | `splitsReturned` | counter | Partitions returned by failed readers for reassignment |
 | `unassignedSplits` | gauge (Flink standard) | Scheduled partitions no reader holds yet |
-| `changeStreamPartitionsDiscovered` | counter | Child partition tokens first accepted into the coordinator ledger |
+| `changeStreamPartitionsDiscovered` | counter | Child partition tokens first accepted into the coordinator ledger; an enumerator that rebuilds its ledger after a restart, from scratch or from an older checkpoint, counts the tokens it accepts again |
 | `unassignedChangeStreamPartitionLagMillis` | gauge | Wall-clock lag of the oldest scheduled partition no reader owns, or zero when none are scheduled |
 | `changeStreamPartitionLedgerEntries` | gauge | Unfinished partition entries retained by the coordinator |
 | `changeStreamFinishedParentProofs` | gauge | Finished-parent split-id proofs still needed by created children |
@@ -797,7 +801,7 @@ The client records them into an OpenTelemetry instance the connector supplies, w
 
 Each RPC method gets a `rpcMethod.METHOD` subgroup, where `METHOD` is the method name without its `Spanner.` prefix.
 A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees the method as a tag on one metric name, as it sees `CODE` under `errorClass`.
-Each component registers the methods its client calls when it opens, so a method it has not used yet reads zero; the enumerators register once per source, as the paragraph after the tables explains:
+Each component registers the methods its client calls when it opens, so a method it has not used yet reads zero; the enumerators register once per enumerator metric group, as the paragraph after the tables explains:
 
 | Component | Methods |
 |---|---|
@@ -834,9 +838,8 @@ A Change Streams partition query is therefore one operation per stream it opens,
 The client adds to the counters as it records, so a report reads the totals up to that moment: the attempt series move as each RPC attempt ends, and the operation series as each operation ends.
 A count and its sum are added separately, so a report taken while the client records can see one value more in one of them; over a rate window the difference vanishes.
 A method the client reports and the component did not register is logged once by that component, at `WARN`, and is not reported.
-An enumerator's metric group outlives the enumerator: a global failover resets the source coordinator and builds the next enumerator on the same group, where a second registration of a name would be refused.
-So each source registers its enumerators' series once and every enumerator it builds records into them, and they keep counting across such a reset.
-Under the adaptive scheduler a restart builds a new source object on the same group, so the series stop at the first enumerator's totals, as this connector's other enumerator metrics do after any reset; [#1908]({{< param BookRepo >}}/issues/1908) tracks both.
+An enumerator's metric group outlives the enumerator: a failover or a restart builds the next enumerator on the same group, where a second registration of a name would be refused.
+So the series are registered once per group and every later enumerator records into them, and they keep counting across such a reset, under the default and the adaptive scheduler alike, as the [source's other enumerator metrics](#batch-source-metrics) do.
 The client's gRPC-layer metrics record only into an OpenTelemetry SDK instance, so they go to Cloud Monitoring alone.
 
 **Against the emulator the client records nothing**, whatever its metrics provider: the emulator endpoint puts it in its emulator mode, so the series are registered and stay at zero.

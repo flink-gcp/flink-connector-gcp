@@ -1327,9 +1327,8 @@ Failures by status are what a sink's `errorClass.CODE.errors` already counts.
 A component whose clients reach several instances or application profiles reports their RPCs together.
 
 An operation ends when the RPC's last response arrives, so its series move then: a `ReadRows` operation is one stream a reader opens over a range (a reader reopens one after each wake-up), and a `ReadChangeStream` operation is one partition's stream, which can stay open for as long as the partition does.
-An enumerator's series belong to the source rather than to one enumerator: Flink keeps one enumerator metric group for a job's life and drops a second registration of a name in it, so every enumerator a coordinator reset builds after a failover records into the series the first one registered.
-That holds under the default scheduler, which keeps the source object across resets.
-The adaptive scheduler builds a new source object at each restart or rescale, so there the enumerator's series stop moving after the first restart, as the connector's other enumerator metrics do ([#1908]({{< param BookRepo >}}/issues/1908)).
+An enumerator's series belong to the source rather than to one enumerator: Flink keeps one enumerator metric group for as long as the JobManager leads the job and drops a second registration of a name in it, so every enumerator that a failover or a restart builds records into the series the first one registered.
+That holds under the default and the adaptive scheduler alike, as it does for the [source's other enumerator metrics](#source-metrics).
 
 The client adds to the counters as it records, so a report reads the totals up to that moment: the attempt series move as each RPC attempt ends, and the operation series as each operation ends, retries included. Until then they read zero.
 A count and its sum are added separately, so a report taken while the client records can see one value more in one of them; over a rate window the difference vanishes.
@@ -1400,6 +1399,8 @@ call, not an outage that outlasted a backoff budget as it does in the table abov
 
 Registered on the source reader's and the split enumerator's metric groups.
 The clients' own per-method RPC metrics are the [client-library metrics](#client-library-metrics), registered on the same groups when they are exported to Flink.
+The enumerator's counters count for as long as the JobManager leads the job: an enumerator that a failover or a restart builds adds to the counters the first one registered, and the enumerator's gauges read the enumerator now running.
+A JobManager failover, or a JobManager that loses and regains leadership, starts the counters again from zero.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -1421,13 +1422,13 @@ The clients' own per-method RPC metrics are the [client-library metrics](#client
 | `numRecordsIn` | counter (Flink standard) | records handed downstream. With a one-to-many deserializer this is neither `rowsRead` nor `rowsRead` minus `recordsSkipped` |
 | `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
 | `splitsReturned` | counter | splits a failed reader gave back. On the enumerator |
-| `changeStreamPartitionsDiscovered` | counter | initial and successor service partitions first accepted into the coordinator ledger. On the enumerator |
+| `changeStreamPartitionsDiscovered` | counter | initial and successor service partitions first accepted into the coordinator ledger. On the enumerator; an enumerator that rebuilds its ledger after a restart, from scratch or from an older checkpoint, counts the partitions it accepts again |
 | `changeStreamPartitionSplits` | counter | successor partitions released from one parent, including a one-to-one move. On the enumerator |
 | `changeStreamPartitionMerges` | counter | successor partitions released after tokens from multiple parents cover their target. On the enumerator |
 | `unassignedChangeStreamPartitionLagMillis` | gauge | wall-clock lag of the oldest coordinator-held unassigned partition, or zero when none are unassigned. On the enumerator |
 | `changeStreamPartitionsReconciled` | counter | missing service partitions reconstructed from tokens or a tracked low watermark. On the enumerator |
 | `changeStreamTokenlessRestarts` | counter | reconciliations that had to restart without a continuation token after the long grace period. On the enumerator |
-| `rowKeySamplesTaken` | counter | `SampleRowKeys` calls, on the enumerator: `1` on a fresh start, `0` after a restore. Anything else means the plan was recomputed, which would renumber the splits the readers hold |
+| `rowKeySamplesTaken` | counter | `SampleRowKeys` calls, on the enumerator: one each time an enumerator's planning call completes, none for one that restored the plan. A checkpoint that starts after a rise records the plan unless the job restarts first, so once such a checkpoint has completed with no restart in between, a further rise means the plan was recomputed; in a run started from a savepoint or a checkpoint that recorded the plan, any rise does. Inside a `HybridSource`, each sub-source that plans adds its own rise. A recomputed plan would renumber the splits the readers hold |
 | `unassignedSplits` | gauge (Flink standard) | splits planned but not yet handed out. On the enumerator |
 
 There is deliberately **no bytes-read counter**. A row does not report its serialized size, and a

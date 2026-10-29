@@ -103,12 +103,14 @@ def write_page(root, name, body):
     return f"docs/{name}"
 
 
-def write_config(root, connectors=(), subgroups=(), exempt=(), extra=()):
+def write_config(root, connectors=(), subgroups=(), exempt=(), extra=(), registrars=()):
     lines = []
     for module, page in connectors:
         lines += ["[[connectors]]", f'module = "{module}"', f'page = "{page}"', ""]
     for source in subgroups:
         lines += ["[[subgroups]]", f'source = "{source}"', ""]
+    for source in registrars:
+        lines += ["[[registrars]]", f'source = "{source}"', ""]
     lines += ["[exempt]", *(f'"{key}" = "because."' for key in exempt), ""]
     lines += ["[extra]", *(f'"{key}" = "because."' for key in extra), ""]
     (root / "metric-docs.toml").write_text("\n".join(lines))
@@ -966,3 +968,108 @@ def test_a_dynamic_subgroup_name_is_infrastructure(root, check_metric_docs):
     )
 
     assert exit_code(check_metric_docs) == 2
+
+
+# --- [[registrars]]: a source registering only the names its callers pass ---
+
+
+def registrar_class(*registrations, constants=(), body=""):
+    """A pass-through registrar: each registration is `kind(first-argument)`."""
+    fields = "".join(
+        f'    private static final String {name} = "{camel(name)}";\n'
+        for name in constants
+    )
+    calls = "".join(
+        f"        group.{kind}({argument}, null);\n" for kind, argument in registrations
+    )
+    return (
+        "package io.github.x;\n\n"
+        "public class Registrar {\n"
+        f"{fields}"
+        '    private final String field = "f";\n'
+        "    void register(Object group, String name) {\n"
+        '        String local = "l";\n'
+        f"{calls}"
+        f"{body}"
+        "    }\n"
+        "}\n"
+    )
+
+
+def registrar_tree(root, *registrations, constants=(), in_config=True):
+    source = write_source(
+        root,
+        "base",
+        "Registrar.java",
+        registrar_class(*registrations, constants=constants),
+    )
+    connector(root)
+    page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
+    write_config(
+        root,
+        connectors=[("conn", page)],
+        registrars=[source] if in_config else [],
+    )
+    return source
+
+
+def test_a_registrar_registering_its_callers_names_passes(root, check_metric_docs):
+    registrar_tree(root, ("counter", "name"), ("gauge", "name"))
+    assert exit_code(check_metric_docs) == 0
+
+
+def test_an_unclaimed_registrar_is_an_unmapped_module(root, check_metric_docs, capsys):
+    registrar_tree(root, ("counter", "name"), in_config=False)
+    assert exit_code(check_metric_docs) == 1
+    assert "base registers metrics" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        '"rowsSent"',
+        # A constant, a field or a local of the registrar's own is a name it
+        # registers itself, with no inventory and no row to hold it.
+        "OWN_NAME",
+        "field",
+        "local",
+        'name + "s"',
+    ],
+)
+def test_a_registrar_registering_a_name_of_its_own_fails(
+    root, check_metric_docs, capsys, argument
+):
+    registrar_tree(root, ("counter", argument), constants=("OWN_NAME",))
+    assert exit_code(check_metric_docs) == 1
+    assert "registers a counter by a name of its own" in capsys.readouterr().err
+
+
+def test_a_registrar_entry_that_registers_nothing_fails(
+    root, check_metric_docs, capsys
+):
+    registrar_tree(root)
+    assert exit_code(check_metric_docs) == 1
+    assert "registers nothing, so the entry forgives nothing" in capsys.readouterr().err
+
+
+def test_a_registrar_entry_naming_a_missing_source_is_infrastructure(
+    root, check_metric_docs
+):
+    clean_tree(root, registrars=["base/src/main/java/io/github/x/Missing.java"])
+    assert exit_code(check_metric_docs) == 2
+
+
+def test_a_registrar_lambda_parameter_counts_as_a_callers_name(root, check_metric_docs):
+    source = write_source(
+        root,
+        "base",
+        "Registrar.java",
+        registrar_class(
+            body="        java.util.function.Function<String, Object> f =\n"
+            "                key -> group.counter(key, null);\n"
+        ),
+    )
+    connector(root)
+    page = write_page(root, "conn.md", metric_page(("`rowsSent`", "counter")))
+    write_config(root, connectors=[("conn", page)], registrars=[source])
+    assert exit_code(check_metric_docs) == 0

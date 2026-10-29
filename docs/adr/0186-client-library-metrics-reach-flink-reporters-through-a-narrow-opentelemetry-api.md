@@ -21,6 +21,7 @@ limitations under the License.
 - Updated: 2026-10-27 (Cloud Tasks adopts it through gax's tracer factory, refined by [#715])
 - Updated: 2026-10-27 (every component that owns a Bigtable data client takes both options, refined by [#1903])
 - Updated: 2026-10-28 (every component that builds a Spanner client takes both options, [#712])
+- Updated: 2026-10-28 (an enumerator's client metrics belong to its metric group, not its source object; [ADR-0188], [#1908])
 - Issues: [#713], [#1902], [#1903], [#1908], [#712], [#715], [#714], [#1815]
 - Modules: base, bigtable, cloudtasks, spanner, `scripts/`, root POM
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` and
@@ -349,6 +350,15 @@ default identity, while one that skips client metrics only leaves its series at 
   over a sub-switch, which they are not. The vendor word "built-in" stays in the description of the
   Cloud Monitoring option (owner's decision, 2026-10-26, after two independent consultations).
 
+## Refinement (2026-10-28): an enumerator's client metrics belong to its metric group
+
+The rule above that an enumerator's set belongs to the source object held under the default
+scheduler only. [ADR-0188] replaces it: every enumerator metric, the client's included, registers
+once per enumerator metric group, which both schedulers keep while the JobMaster leads the job, and the group is
+found again through the identity of a subgroup it holds. `EnumeratorClientMetrics` and
+`SpannerEnumeratorClientMetrics` are gone; the Bigtable and Spanner sources call their adapters'
+`registerForEnumerators`. The counters still continue across resets, as this ADR chose for them.
+
 [#712]: https://github.com/flink-gcp/flink-connector-gcp/issues/712
 [#713]: https://github.com/flink-gcp/flink-connector-gcp/issues/713
 [#714]: https://github.com/flink-gcp/flink-connector-gcp/issues/714
@@ -361,3 +371,4 @@ default identity, while one that skips client metrics only leaves its series at 
 [ADR-0128]: 0128-an-enumerators-closeable-seam-is-minted-per-enumerator.md
 [ADR-0038]: 0038-metric-names-are-per-connector-inventories-in-one-shape-without-flinks-num-prefix.md
 [ADR-0139]: 0139-an-option-description-never-restates-a-default.md
+[ADR-0188]: 0188-enumerator-metrics-register-once-per-enumerator-metric-group.md

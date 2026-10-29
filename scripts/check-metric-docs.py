@@ -57,6 +57,14 @@ adapter (`rpcMethod.METHOD.operations`): a [[subgroups]] source inside a mapped
 module registers template leaves, not inventory names, so the inventory rule
 below does not read it.
 
+A [[registrars]] source (#1908's `base.source.EnumeratorMetrics`) registers
+only the names its callers pass in. The caller's own call, such as
+`metrics.counter(AMetricNames.X)`, is the registration this script reads in the
+caller's module; the registrar itself is held to registering through a
+parameter of the method or lambda around the call, never a literal, a constant,
+a field or a local of its own, and an entry whose source registers nothing
+fails as a dead entry.
+
 Exit codes: 0 clean, 1 policy violation (undocumented, stale or mis-typed
 metric), 2 infrastructure or config authoring error (missing file, invalid
 Java, a source that parses to nothing, malformed config).
@@ -73,6 +81,7 @@ from java_ast import (
     code_named_children,
     string_literal_content,
 )
+from tree_sitter import Node
 
 try:
     import tomllib  # stdlib since 3.11
@@ -227,6 +236,38 @@ def string_constants(parsed: JavaSource) -> dict[str, str]:
     return found
 
 
+def first_argument(call: Node) -> Node | None:
+    """The first argument of a method invocation, or None for an empty list."""
+    arguments = call.child_by_field_name("arguments")
+    values = code_named_children(arguments) if arguments is not None else ()
+    return values[0] if values else None
+
+
+def enclosing_parameters(parsed: JavaSource, node: Node) -> set[str]:
+    """Names of the parameters of every method, constructor and lambda around a node."""
+    names: set[str] = set()
+    current = node.parent
+    while current is not None:
+        if current.type in (
+            "method_declaration",
+            "constructor_declaration",
+            "lambda_expression",
+        ):
+            parameters = current.child_by_field_name("parameters")
+            if parameters is not None and parameters.type == "identifier":
+                names.add(parsed.text(parameters))
+            elif parameters is not None:
+                for child in parameters.named_children:
+                    if child.type == "identifier":
+                        names.add(parsed.text(child))
+                    elif child.type == "formal_parameter":
+                        name = child.child_by_field_name("name")
+                        if name is not None:
+                            names.add(parsed.text(name))
+        current = current.parent
+    return names
+
+
 def metric_calls(parsed: JavaSource):
     """Yield counter and gauge method invocations in source order."""
     for call in parsed.nodes("method_invocation"):
@@ -283,9 +324,7 @@ def registrations(
     problems: list[str] = []
     for source, parsed in sources.items():
         for kind, call in metric_calls(parsed):
-            arguments = call.child_by_field_name("arguments")
-            values = code_named_children(arguments) if arguments is not None else ()
-            first = values[0] if values else None
+            first = first_argument(call)
             if first is None or first.type != "field_access":
                 problems.append(
                     f"{source.relative_to(ROOT)}:{parsed.line(call)}: registers a "
@@ -334,11 +373,10 @@ def subgroup_template(source: Path) -> Subgroup:
     consistent = True
     for call in parsed.nodes("method_invocation"):
         name = call.child_by_field_name("name")
-        arguments = call.child_by_field_name("arguments")
-        values = code_named_children(arguments) if arguments is not None else ()
+        first = first_argument(call)
         method = parsed.text(name) if name is not None else ""
-        if method == "addGroup" and values and values[0].type == "identifier":
-            groups.add(constants.get(parsed.text(values[0])))
+        if method == "addGroup" and first is not None and first.type == "identifier":
+            groups.add(constants.get(parsed.text(first)))
         if (
             method in ("counter", "gauge")
             and call.child_by_field_name("object") is not None
@@ -348,8 +386,8 @@ def subgroup_template(source: Path) -> Subgroup:
             # literal or computed name here would register an undocumented
             # metric with nothing to report it (#713's independent review).
             leaf = (
-                constants.get(parsed.text(values[0]))
-                if values and values[0].type == "identifier"
+                constants.get(parsed.text(first))
+                if first is not None and first.type == "identifier"
                 else None
             )
             if leaf is None:
@@ -485,10 +523,42 @@ def load_config() -> dict:
     for entry in config["connectors"]:
         if "module" not in entry or "page" not in entry:
             infra(f"a [[connectors]] entry in {CONFIG.name} lacks module or page.")
-    for entry in config.get("subgroups", []):
-        if "source" not in entry:
-            infra(f"a [[subgroups]] entry in {CONFIG.name} lacks source.")
+    for table in ("subgroups", "registrars"):
+        for entry in config.get(table, []):
+            if "source" not in entry:
+                infra(f"a [[{table}]] entry in {CONFIG.name} lacks source.")
     return config
+
+
+def registrar_problems(source: Path) -> list[str]:
+    """What a [[registrars]] source does other than register its callers' names."""
+    read(source)
+    parsed = parse_java(source)
+    problems: list[str] = []
+    calls = list(metric_calls(parsed))
+    if not calls:
+        problems.append(
+            f"{source.relative_to(ROOT)} is a [[registrars]] source in "
+            f"{CONFIG.name} but registers nothing, so the entry forgives nothing. "
+            f"Remove the entry, or the registrations moved and it should follow."
+        )
+    for kind, call in calls:
+        first = first_argument(call)
+        # A parameter of the method or lambda around the call is a name a
+        # caller passed in; a literal, a constant, a field or a local is not.
+        if (
+            first is None
+            or first.type != "identifier"
+            or parsed.text(first) not in enclosing_parameters(parsed, call)
+        ):
+            problems.append(
+                f"{source.relative_to(ROOT)}:{parsed.line(call)}: registers a "
+                f"{kind} by a name of its own. A [[registrars]] source registers "
+                f"only the names its callers pass in, which their modules' "
+                f"inventories hold; a name of its own would be registered with "
+                f"nothing to document it."
+            )
+    return problems
 
 
 def main() -> int:
@@ -506,6 +576,13 @@ def main() -> int:
         subgroup_template(ROOT / entry["source"]) for entry in subgroup_entries
     ]
     claimed = {entry["source"] for entry in subgroup_entries}
+    registrar_entries = config.get("registrars", [])
+    for entry in registrar_entries:
+        problems.extend(registrar_problems(ROOT / entry["source"]))
+    # A registrar's calls register its callers' names, which those callers'
+    # own calls already put through their inventories; reading the registrar
+    # too would report every one of them as a name outside any inventory.
+    claimed |= {entry["source"] for entry in registrar_entries}
 
     # The subgroup leaves are names this repository registers, so the #280
     # prefix rule holds for them too — checked here, once per registrar, not

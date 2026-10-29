@@ -333,10 +333,10 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
 - Only the at-least-once batch factory closes its client metrics. The other components leave theirs
   open, because their group ends with them; the single-row client factory must not close them,
   since the staged committer shares one set between its per-profile factories. An enumerator's
-  group outlives the enumerator, so enumerators take theirs from the source's
-  `EnumeratorClientMetrics` (one registration per source object); registering per enumerator freezes
-  the series after a coordinator reset (#1908). The adaptive scheduler deserializes a new source
-  object per restart, so the series still freeze there; #1908 owns that.
+  group outlives the enumerator, so enumerators take theirs from
+  `BigtableClientMetrics.registerForEnumerators`, one registration per enumerator metric group
+  (`docs/adr/0188`); registering per enumerator, or per source object, freezes the series after a
+  coordinator reset or an adaptive-scheduler restart.
 - The `FULL` lookup cache's input format gets no metric group from Flink, so it applies only the
   Cloud Monitoring option.
 - The Table layer holds both options as `@Nullable Boolean` and calls a builder setter only for a
@@ -402,7 +402,7 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   `cancelled` flag decides whether a split finished, never the stream's behaviour.
 - **A restore never re-samples**, and the `planned` flag is not `!pending.isEmpty()`: it guards
   split-id stability against tablets that moved. `rowKeySamplesTaken` reports the same fact at
-  runtime (`1` fresh, `0` restored).
+  runtime: it does not move for a restore (it counts across coordinator resets, `docs/adr/0188`).
 - **Overlapping configured ranges are merged, not rejected** — nested prefixes otherwise emit their
   shared rows twice from one green run. Prefix→range is **always** the SDK's `ByteStringRange.prefix`
   (all-`0xFF` has no successor). `RowRanges` is the one home for the range algebra, and every range

@@ -18,11 +18,10 @@ package io.github.flink.gcp.connector.bigtable.source.readrows.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.ThreadSafeSimpleCounter;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
@@ -235,14 +234,11 @@ public class BigtableScanSplitEnumerator
     }
 
     @Override
-    protected EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup) {
+    protected EnumeratorCounters registerCounters(EnumeratorMetrics metrics) {
         return new EnumeratorCounters(
-                metricGroup.counter(
-                        BigtableMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        BigtableMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        BigtableMetricNames.ROW_KEY_SAMPLES_TAKEN, new ThreadSafeSimpleCounter()));
+                metrics.counter(BigtableMetricNames.SPLITS_ASSIGNED),
+                metrics.counter(BigtableMetricNames.SPLITS_RETURNED),
+                metrics.counter(BigtableMetricNames.ROW_KEY_SAMPLES_TAKEN));
     }
 
     @Override

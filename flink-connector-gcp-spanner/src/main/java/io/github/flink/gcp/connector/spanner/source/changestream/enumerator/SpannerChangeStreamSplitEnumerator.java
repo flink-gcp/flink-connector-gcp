@@ -25,13 +25,13 @@ import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.metrics.MetricValues;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver.RestoreExpiry;
@@ -168,6 +168,11 @@ public final class SpannerChangeStreamSplitEnumerator
     private final AtomicLong oldestScheduledPositionMillis = new AtomicLong(Long.MAX_VALUE);
     private final AtomicLong ledgerEntryCount = new AtomicLong();
     private final AtomicLong finishedParentProofCount = new AtomicLong();
+
+    /**
+     * Replaced at {@link #start()}; volatile because {@link #close()} may run on another thread.
+     */
+    private volatile EnumeratorMetrics metrics = EnumeratorMetrics.unregistered();
 
     private Counter splitsAssigned = new ThreadSafeSimpleCounter();
     private Counter splitsReturned = new ThreadSafeSimpleCounter();
@@ -899,30 +904,27 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     private void registerMetrics() {
-        SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
-        if (metricGroup == null) {
-            return;
-        }
-        splitsAssigned =
-                metricGroup.counter(
-                        SpannerMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter());
-        splitsReturned =
-                metricGroup.counter(
-                        SpannerMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter());
+        metrics = EnumeratorMetrics.of(context.metricGroup());
+        splitsAssigned = metrics.counter(SpannerMetricNames.SPLITS_ASSIGNED);
+        splitsReturned = metrics.counter(SpannerMetricNames.SPLITS_RETURNED);
         partitionsDiscovered =
-                metricGroup.counter(
-                        SpannerMetricNames.CHANGE_STREAM_PARTITIONS_DISCOVERED,
-                        new ThreadSafeSimpleCounter());
-        metricGroup.setUnassignedSplitsGauge(scheduledCount::get);
-        metricGroup.gauge(
+                metrics.counter(SpannerMetricNames.CHANGE_STREAM_PARTITIONS_DISCOVERED);
+        metrics.unassignedSplitsGauge(scheduledCount::get);
+        metrics.gauge(
                 SpannerMetricNames.UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS,
                 (Gauge<Long>) this::unassignedPartitionLagMillis);
-        metricGroup.gauge(
+        metrics.gauge(
                 SpannerMetricNames.CHANGE_STREAM_PARTITION_LEDGER_ENTRIES,
                 (Gauge<Long>) ledgerEntryCount::get);
-        metricGroup.gauge(
+        metrics.gauge(
                 SpannerMetricNames.CHANGE_STREAM_FINISHED_PARENT_PROOFS,
                 (Gauge<Long>) finishedParentProofCount::get);
+        if (closed) {
+            // close() ran first, on Flink's closer thread, and closed the view this replaced: let
+            // go
+            // of what was just bound rather than leave it reading a closed enumerator.
+            metrics.close();
+        }
     }
 
     private void refreshLineageMetricCounts() {
@@ -967,6 +969,8 @@ public final class SpannerChangeStreamSplitEnumerator
             closing = client;
             client = null;
         }
+        // After the flag: a start() still registering sees it and lets go of what it bound.
+        metrics.close();
         try {
             Closers.closeAll(closing);
         } catch (Exception e) {

@@ -30,9 +30,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Pins that one planner belongs to one enumerator ({@code docs/adr/0128}): the JobManager keeps one
- * source object for a job's whole life, and a coordinator reset builds the next enumerator from it,
- * so a planner carried on the configuration would already be closed. Two enumerators over one
- * source object, with a teardown between them.
+ * source object across every coordinator reset under the default scheduler, and a coordinator reset
+ * builds the next enumerator from it, so a planner carried on the configuration would already be
+ * closed. Two enumerators over one source object, with a teardown between them.
  */
 class DatastoreBatchSourcePlannerLifecycleTest {
 

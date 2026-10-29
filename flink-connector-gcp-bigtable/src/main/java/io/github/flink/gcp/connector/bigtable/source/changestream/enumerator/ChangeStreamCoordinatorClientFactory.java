@@ -25,11 +25,11 @@ import java.io.Serializable;
  * Mints the {@link ChangeStreamCoordinatorClient} one enumerator coordinates through.
  *
  * <p>Serializable because the source carries it there; the client it mints is not, which is the
- * whole reason for the indirection. The JobManager holds one source object for a job's whole life,
- * so a client on the source configuration would be shared by every enumerator a coordinator reset
- * builds ({@code docs/adr/0128}). This source already minted per enumerator on the path where no
- * client was configured; the factory is what removes the other path rather than leaving it to a
- * caller to avoid.
+ * whole reason for the indirection. The JobManager keeps one source object across every coordinator
+ * reset under the default scheduler, so a client on the source configuration would be shared by
+ * every enumerator a coordinator reset builds ({@code docs/adr/0128}). This source already minted
+ * per enumerator on the path where no client was configured; the factory is what removes the other
+ * path rather than leaving it to a caller to avoid.
  *
  * <p>An implementation holds only values that may travel in a job graph. It opens no client: the
  * one it answers with builds its three client families on first use, so a restore that adopts a

@@ -37,7 +37,6 @@ import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.lineage.internal.LineageIdentifiers;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
-import io.github.flink.gcp.connector.spanner.SpannerEnumeratorClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
@@ -70,14 +69,12 @@ public final class SpannerChangeStreamSource<T>
     private final SpannerChangeStreamSourceConfig<T> config;
 
     /**
-     * The coordinator's client metrics, shared by every enumerator this source object builds: their
-     * metric group outlives each of them. Its database handle creates a session, and every dialect
-     * and metadata read is a query.
+     * The RPC methods the coordinator's client calls: its database handle creates a session, and
+     * every dialect and metadata read is a query.
      */
-    private final SpannerEnumeratorClientMetrics enumeratorClientMetrics =
-            new SpannerEnumeratorClientMetrics(
-                    SpannerClientMetrics.CREATE_SESSION,
-                    SpannerClientMetrics.EXECUTE_STREAMING_SQL);
+    private static final String[] ENUMERATOR_METHODS = {
+        SpannerClientMetrics.CREATE_SESSION, SpannerClientMetrics.EXECUTE_STREAMING_SQL
+    };
 
     SpannerChangeStreamSource(SpannerChangeStreamSourceConfig<T> config) {
         this.config = config;
@@ -151,7 +148,8 @@ public final class SpannerChangeStreamSource<T>
                 config.getHeartbeatMillis(),
                 restored,
                 config.isExportClientMetricsToFlink()
-                        ? enumeratorClientMetrics.get(context.metricGroup())
+                        ? SpannerClientMetrics.registerForEnumerators(
+                                context.metricGroup(), ENUMERATOR_METHODS)
                         : null);
     }
 

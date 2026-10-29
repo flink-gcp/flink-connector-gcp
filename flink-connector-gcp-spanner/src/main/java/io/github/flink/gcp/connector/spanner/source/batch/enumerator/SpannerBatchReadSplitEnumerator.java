@@ -18,12 +18,11 @@ package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.ThreadSafeSimpleCounter;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.spanner.Partition;
 import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
@@ -206,14 +205,11 @@ public class SpannerBatchReadSplitEnumerator
     }
 
     @Override
-    protected EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup) {
+    protected EnumeratorCounters registerCounters(EnumeratorMetrics metrics) {
         return new EnumeratorCounters(
-                metricGroup.counter(
-                        SpannerMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        SpannerMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        SpannerMetricNames.READS_PLANNED, new ThreadSafeSimpleCounter()));
+                metrics.counter(SpannerMetricNames.SPLITS_ASSIGNED),
+                metrics.counter(SpannerMetricNames.SPLITS_RETURNED),
+                metrics.counter(SpannerMetricNames.READS_PLANNED));
     }
 
     @Override

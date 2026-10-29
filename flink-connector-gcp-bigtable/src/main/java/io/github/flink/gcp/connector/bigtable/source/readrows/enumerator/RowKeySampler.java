@@ -37,13 +37,13 @@ import java.util.List;
  *
  * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
  * RowKeySamplerFactory}, and the source mints one sampler per enumerator from it. The JobManager
- * holds one source object for a job's whole life, so a sampler parked on the source configuration
- * would be shared by every enumerator a coordinator reset builds, and the first teardown would
- * refuse every later one (issue #990, {@code docs/adr/0128}). An implementation still creates its
- * client on first use rather than in its constructor, so that minting one needs no credentials and
- * a restore that re-uses a checkpointed plan opens nothing. It carries no service-account key-file
- * path either: the enumerator that owns it loads one provider and hands it over through {@link
- * #useCredentials(CredentialsProvider)}.
+ * keeps one source object across every coordinator reset under the default scheduler, so a sampler
+ * parked on the source configuration would be shared by every enumerator a coordinator reset
+ * builds, and the first teardown would refuse every later one (issue #990, {@code docs/adr/0128}).
+ * An implementation still creates its client on first use rather than in its constructor, so that
+ * minting one needs no credentials and a restore that re-uses a checkpointed plan opens nothing. It
+ * carries no service-account key-file path either: the enumerator that owns it loads one provider
+ * and hands it over through {@link #useCredentials(CredentialsProvider)}.
  *
  * <p>{@code close()} releases whatever the implementation built. The enumerator owns the sampler
  * and closes it once, so nothing here has to tolerate being closed twice by different owners.

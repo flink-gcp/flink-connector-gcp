@@ -81,17 +81,19 @@ public final class BigQueryMetricNames {
 
     // Registered by the source's split enumerator. Counters rather than an assigned-splits gauge:
     // a gauge would need a ledger of which subtask holds what, and not keeping one is the whole
-    // design of that enumerator. readSessionsCreated is 1 for a job that started and 0 for one that
-    // restored an existing session; any other value means the restore guard failed and the job is
-    // reading a second snapshot of the table.
+    // design of that enumerator. readSessionsCreated rises once each time an enumerator's planning
+    // call completes and not for one that restored a session; a rise after a checkpoint that
+    // recorded the session means the restore guard failed and the job is reading a second snapshot
+    // of the table (docs: Source metrics).
     public static final String SPLITS_ASSIGNED = "splitsAssigned";
     public static final String SPLITS_RETURNED = "splitsReturned";
     public static final String READ_SESSIONS_CREATED = "readSessionsCreated";
 
     // Registered by the source's split enumerator, by every source and not only one reading a
     // query, so a zero reads as "this source named a table" rather than "nothing registered it".
-    // Above 1 means what readSessionsCreated above 1 means — the guard that plans once did not
-    // hold — and here that also means the query has been billed more than once.
+    // A rise after a checkpoint that recorded the session means what such a rise of
+    // readSessionsCreated means — the guard that plans once did not hold — and here that also means
+    // the query has been billed again.
     public static final String QUERY_JOBS_SUBMITTED = "queryJobsSubmitted";
 
     // A re-plan that found a previous attempt's query job under the deterministic reuse id and

@@ -18,9 +18,13 @@ package io.github.flink.gcp.connector.bigtable;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
+
+import javax.annotation.Nullable;
 
 /**
  * The Bigtable client's own metrics, registered as {@code rpcMethod.METHOD.leaf} on a component's
@@ -48,6 +52,9 @@ public final class BigtableClientMetrics {
 
     /** Group name carrying the RPC method, so the method is a metric variable, not a name. */
     static final String RPC_METHOD_GROUP = "rpcMethod";
+
+    /** The key of the enumerators' shared client metrics; see {@link EnumeratorMetrics}. */
+    private static final String ENUMERATOR_KEY = BigtableClientMetrics.class.getName();
 
     static final String OPERATIONS = "operations";
     static final String OPERATION_TIME_MILLIS = "operationTimeMillis";
@@ -93,28 +100,74 @@ public final class BigtableClientMetrics {
      */
     public static ClientMetrics register(MetricGroup owner, String... methods) {
         Preconditions.checkNotNull(owner, "owner");
+        ClientMetrics metrics = create();
+        for (String method : methods) {
+            registerMethod(metrics, owner, method);
+        }
+        return metrics;
+    }
+
+    /** Creates the client metrics, with no series registered yet. */
+    private static ClientMetrics create() {
         ClientMetrics metrics = ClientMetrics.create(METHOD_ATTRIBUTE);
         // Recorded in the wrong unit and across attempts by 2.85.0; see the class Javadoc.
         metrics.ignore(THROTTLING_LATENCIES);
-        for (String method : methods) {
-            String rpc = METHOD_PREFIX + method;
-            MetricGroup group = owner.addGroup(RPC_METHOD_GROUP, method);
-            group.counter(OPERATIONS, metrics.histogramCount(OPERATION_LATENCIES, rpc));
-            group.counter(
-                    OPERATION_TIME_MILLIS, metrics.histogramSumMillis(OPERATION_LATENCIES, rpc));
-            group.counter(ATTEMPTS, metrics.histogramCount(ATTEMPT_LATENCIES, rpc));
-            group.counter(ATTEMPT_TIME_MILLIS, metrics.histogramSumMillis(ATTEMPT_LATENCIES, rpc));
-            group.counter(RETRIES, metrics.counterSum(RETRY_COUNT, rpc));
-            group.counter(CONNECTIVITY_ERRORS, metrics.counterSum(CONNECTIVITY_ERROR_COUNT, rpc));
-            group.counter(
-                    ATTEMPTS_WITH_SERVER_TIMING, metrics.histogramCount(SERVER_LATENCIES, rpc));
-            group.counter(SERVER_TIME_MILLIS, metrics.histogramSumMillis(SERVER_LATENCIES, rpc));
-            group.counter(
-                    FIRST_RESPONSE_TIME_MILLIS,
-                    metrics.histogramSumMillis(FIRST_RESPONSE_LATENCIES, rpc));
-            group.counter(
-                    APPLICATION_TIME_MILLIS,
-                    metrics.histogramSumMillis(APPLICATION_LATENCIES, rpc));
+        return metrics;
+    }
+
+    /** Registers every series of one method on the owner's group. */
+    private static void registerMethod(ClientMetrics metrics, MetricGroup owner, String method) {
+        String rpc = METHOD_PREFIX + method;
+        MetricGroup group = owner.addGroup(RPC_METHOD_GROUP, method);
+        group.counter(OPERATIONS, metrics.histogramCount(OPERATION_LATENCIES, rpc));
+        group.counter(OPERATION_TIME_MILLIS, metrics.histogramSumMillis(OPERATION_LATENCIES, rpc));
+        group.counter(ATTEMPTS, metrics.histogramCount(ATTEMPT_LATENCIES, rpc));
+        group.counter(ATTEMPT_TIME_MILLIS, metrics.histogramSumMillis(ATTEMPT_LATENCIES, rpc));
+        group.counter(RETRIES, metrics.counterSum(RETRY_COUNT, rpc));
+        group.counter(CONNECTIVITY_ERRORS, metrics.counterSum(CONNECTIVITY_ERROR_COUNT, rpc));
+        group.counter(ATTEMPTS_WITH_SERVER_TIMING, metrics.histogramCount(SERVER_LATENCIES, rpc));
+        group.counter(SERVER_TIME_MILLIS, metrics.histogramSumMillis(SERVER_LATENCIES, rpc));
+        group.counter(
+                FIRST_RESPONSE_TIME_MILLIS,
+                metrics.histogramSumMillis(FIRST_RESPONSE_LATENCIES, rpc));
+        group.counter(
+                APPLICATION_TIME_MILLIS, metrics.histogramSumMillis(APPLICATION_LATENCIES, rpc));
+    }
+
+    /**
+     * Returns the client metrics of a source's enumerators: created on the enumerator metric group
+     * the first time and handed to every later enumerator built on the same group, with the series
+     * of each given method registered once.
+     *
+     * <p>A coordinator reset builds the next enumerator on the group the first one registered on,
+     * where a second registration of a name would be dropped and the series would freeze; see
+     * {@link EnumeratorMetrics}. Shared, they keep counting across resets. Each method is
+     * registered on its own, so the sub-sources of a {@code HybridSource}, which share one group,
+     * each get the series of the methods they call. The client metrics are never closed: a client
+     * an enumerator is still closing may record into them, which is no error.
+     *
+     * @param group the enumerator's metric group, or {@code null} where the context offers none
+     * @param methods the RPC methods the enumerators' clients call, without the {@code Bigtable.}
+     *     prefix
+     * @return the shared client metrics, or {@code null} where there is no group
+     */
+    @Nullable
+    public static ClientMetrics registerForEnumerators(
+            @Nullable SplitEnumeratorMetricGroup group, String... methods) {
+        Preconditions.checkNotNull(methods, "methods");
+        ClientMetrics metrics = EnumeratorMetrics.shared(group, ENUMERATOR_KEY, owner -> create());
+        if (metrics != null) {
+            for (String method : methods) {
+                // One key per method: inside a HybridSource, sub-sources calling different
+                // methods share the group, and each registers the series it records.
+                EnumeratorMetrics.shared(
+                        group,
+                        ENUMERATOR_KEY + "." + method,
+                        owner -> {
+                            registerMethod(metrics, owner, method);
+                            return method;
+                        });
+            }
         }
         return metrics;
     }

@@ -46,8 +46,8 @@ public final class EnumeratorCounters {
      *
      * @param splitsAssigned counts splits handed to a reader
      * @param splitsReturned counts splits a failed reader gave back
-     * @param plansCompleted counts completed planning calls, which is one for a job that planned
-     *     and zero for one that restored a plan
+     * @param plansCompleted counts completed planning calls: one for each enumerator that planned,
+     *     none for one that restored a plan
      */
     public EnumeratorCounters(
             Counter splitsAssigned, Counter splitsReturned, Counter plansCompleted) {

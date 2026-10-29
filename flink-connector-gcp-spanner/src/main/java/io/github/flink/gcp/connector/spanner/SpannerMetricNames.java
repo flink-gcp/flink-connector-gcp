@@ -91,8 +91,8 @@ public final class SpannerMetricNames {
     // Registered by the batch source's enumerator (SpannerBatchReadSplitEnumerator).
 
     /**
-     * Reads planned into partitions. One per job at most: a restored enumerator plans nothing, so
-     * this reads {@code 1} on a fresh run and {@code 0} on a restored one.
+     * Reads planned into partitions: one each time an enumerator's planning call completes. A
+     * restored enumerator plans nothing, so a restore shows as the counter not moving.
      */
     public static final String READS_PLANNED = "readsPlanned";
 

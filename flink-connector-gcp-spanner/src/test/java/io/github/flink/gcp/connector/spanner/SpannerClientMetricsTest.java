@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.testutils.MetricListener;
+import org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGroup;
 
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -143,5 +144,30 @@ class SpannerClientMetricsTest {
         Optional<Counter> counter = listener.getCounter("rpcMethod", "BatchWrite", leaf);
         assertThat(counter).as(leaf).isPresent();
         return counter.get().getCount();
+    }
+
+    @Test
+    void enumeratorsOnOneGroupShareOneSetAndEachMethodIsRegisteredOnce() {
+        // A HybridSource's sub-sources share one enumerator group and call different methods.
+        MetricListener listener = new MetricListener();
+
+        ClientMetrics first =
+                SpannerClientMetrics.registerForEnumerators(
+                        new InternalSplitEnumeratorMetricGroup(listener.getMetricGroup()),
+                        "PartitionQuery");
+        ClientMetrics second =
+                SpannerClientMetrics.registerForEnumerators(
+                        new InternalSplitEnumeratorMetricGroup(listener.getMetricGroup()),
+                        "PartitionQuery",
+                        "ExecuteStreamingSql");
+
+        assertThat(second).isSameAs(first);
+        assertThat(listener.getCounter("enumerator", "rpcMethod", "PartitionQuery", "operations"))
+                .isPresent();
+        assertThat(
+                        listener.getCounter(
+                                "enumerator", "rpcMethod", "ExecuteStreamingSql", "operations"))
+                .isPresent();
+        assertThat(SpannerClientMetrics.registerForEnumerators(null, "PartitionQuery")).isNull();
     }
 }

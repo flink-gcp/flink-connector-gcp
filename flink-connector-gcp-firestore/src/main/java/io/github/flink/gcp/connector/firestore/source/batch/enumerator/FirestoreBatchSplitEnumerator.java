@@ -18,11 +18,10 @@ package io.github.flink.gcp.connector.firestore.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.ThreadSafeSimpleCounter;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.firestore.FirestoreMetricNames;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceConfig;
@@ -162,14 +161,11 @@ public class FirestoreBatchSplitEnumerator
     }
 
     @Override
-    protected EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup) {
+    protected EnumeratorCounters registerCounters(EnumeratorMetrics metrics) {
         return new EnumeratorCounters(
-                metricGroup.counter(
-                        FirestoreMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        FirestoreMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        FirestoreMetricNames.READS_PLANNED, new ThreadSafeSimpleCounter()));
+                metrics.counter(FirestoreMetricNames.SPLITS_ASSIGNED),
+                metrics.counter(FirestoreMetricNames.SPLITS_RETURNED),
+                metrics.counter(FirestoreMetricNames.READS_PLANNED));
     }
 
     @Override

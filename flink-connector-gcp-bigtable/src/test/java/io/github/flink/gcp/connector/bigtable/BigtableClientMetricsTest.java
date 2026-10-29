@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.bigtable;
 
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.testutils.MetricListener;
+import org.apache.flink.runtime.metrics.groups.InternalSplitEnumeratorMetricGroup;
 
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -130,5 +131,33 @@ class BigtableClientMetricsTest {
         Optional<Counter> counter = listener.getCounter("rpcMethod", "MutateRows", leaf);
         assertThat(counter).as(leaf).isPresent();
         return counter.get().getCount();
+    }
+
+    @Test
+    void enumeratorsOnOneGroupShareOneSetAndEachMethodIsRegisteredOnce() {
+        // A HybridSource's sub-sources share one enumerator group and call different methods.
+        MetricListener listener = new MetricListener();
+
+        ClientMetrics first =
+                BigtableClientMetrics.registerForEnumerators(
+                        new InternalSplitEnumeratorMetricGroup(listener.getMetricGroup()),
+                        "SampleRowKeys");
+        ClientMetrics second =
+                BigtableClientMetrics.registerForEnumerators(
+                        new InternalSplitEnumeratorMetricGroup(listener.getMetricGroup()),
+                        "SampleRowKeys",
+                        "GenerateInitialChangeStreamPartitions");
+
+        assertThat(second).isSameAs(first);
+        assertThat(listener.getCounter("enumerator", "rpcMethod", "SampleRowKeys", "operations"))
+                .isPresent();
+        assertThat(
+                        listener.getCounter(
+                                "enumerator",
+                                "rpcMethod",
+                                "GenerateInitialChangeStreamPartitions",
+                                "operations"))
+                .isPresent();
+        assertThat(BigtableClientMetrics.registerForEnumerators(null, "SampleRowKeys")).isNull();
     }
 }

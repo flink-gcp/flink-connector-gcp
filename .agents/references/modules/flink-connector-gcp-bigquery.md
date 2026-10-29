@@ -514,7 +514,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   after each successful deserializer call and its synchronous downstream emissions.** Zero, one,
   or many outputs advance it by one; a deserialization or downstream failure does not advance it.
   Split and split state are two types because two threads touch them. The read session is created
-  once, guarded by a checkpointed flag; `readSessionsCreated` above 1 means that guard failed.
+  once, guarded by a checkpointed flag; a `readSessionsCreated` rise after a checkpoint that
+  recorded the session means that guard failed (the counter spans resets, `docs/adr/0188`).
 - **The enumerator keeps no ledger** — no subtask-to-splits map. That absence is the design (the
   reference implementation's change log records a "critical data loss bug in reader split handling"
   *fixed by adding* per-reader no-more-splits signalling — so the protocol, not the ledger, is what

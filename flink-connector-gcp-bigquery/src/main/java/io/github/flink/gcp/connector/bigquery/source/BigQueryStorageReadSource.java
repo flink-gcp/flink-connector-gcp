@@ -158,9 +158,10 @@ public class BigQueryStorageReadSource<T>
      * Builds one enumerator and the one session creator it owns.
      *
      * <p>A creator per enumerator, minted here rather than carried on the configuration: this
-     * object is what the JobManager keeps for a job's whole life, and a coordinator reset builds
-     * the next enumerator from it. A shared creator would already be closed by then, and would
-     * refuse this enumerator and every retry after it ({@code docs/adr/0128}).
+     * object is what the JobManager keeps across every coordinator reset under the default
+     * scheduler, and a coordinator reset builds the next enumerator from it. A shared creator would
+     * already be closed by then, and would refuse this enumerator and every retry after it ({@code
+     * docs/adr/0128}).
      *
      * <p>The query runner is not minted alongside it. It is not {@code AutoCloseable} — the REST
      * client it wraps has nothing to release — so no teardown makes reusing it unsafe, and it stays
