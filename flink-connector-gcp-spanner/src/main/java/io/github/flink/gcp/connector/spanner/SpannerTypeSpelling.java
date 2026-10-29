@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.spanner.table.catalog;
+package io.github.flink.gcp.connector.spanner;
 
 import org.apache.flink.annotation.Internal;
 
@@ -40,10 +40,10 @@ import java.util.regex.Pattern;
  * Kind#UNSUPPORTED} rather than failing, so the refusal can name the column.
  */
 @Internal
-final class SpannerTypeSpelling {
+public final class SpannerTypeSpelling {
 
     /** The scalar kinds of the connector's type mapping, plus the two that are not mapped. */
-    enum Kind {
+    public enum Kind {
         BOOL,
         INT64,
         FLOAT32,
@@ -96,7 +96,7 @@ final class SpannerTypeSpelling {
      * @param dialect the database's dialect
      * @return the type; {@link Kind#UNSUPPORTED} for a spelling the mapping does not cover
      */
-    static SpannerTypeSpelling parse(String spannerType, Dialect dialect) {
+    public static SpannerTypeSpelling parse(String spannerType, Dialect dialect) {
         String trimmed = spannerType.trim();
         // A PostgreSQL vector column has been seen reported in the GoogleSQL spelling.
         if (dialect == Dialect.GOOGLE_STANDARD_SQL || trimmed.startsWith("ARRAY<")) {
@@ -200,11 +200,13 @@ final class SpannerTypeSpelling {
         return new SpannerTypeSpelling(kind, false, null);
     }
 
-    Kind kind() {
+    /** Returns the kind. */
+    public Kind kind() {
         return kind;
     }
 
-    boolean isArray() {
+    /** Returns whether the type is an array of the kind. */
+    public boolean isArray() {
         return array;
     }
 
@@ -213,7 +215,7 @@ final class SpannerTypeSpelling {
      * type; {@code null} for any other kind.
      */
     @Nullable
-    String typeName() {
+    public String typeName() {
         return typeName;
     }
 

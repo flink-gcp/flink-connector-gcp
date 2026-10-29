@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
+import io.github.flink.gcp.connector.spanner.sink.writer.PrimaryKeys;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccess;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
@@ -67,6 +68,35 @@ class SpannerMutationsSinkTest {
         // Read once at creation: a database whose schema the sink cannot read is a job that should
         // never start, rather than one that dies at its first record.
         assertThat(access.weightsReads.get()).isEqualTo(1);
+        // The primary keys only serve the per-key order, so without it the schema read is the one
+        // it always was.
+        assertThat(access.primaryKeyReads.get()).isZero();
+    }
+
+    @Test
+    void readsThePrimaryKeysOnceAtCreationUnderThePerKeyOrder() throws Exception {
+        CountingAccess access = new CountingAccess();
+
+        perKeySink(new RecordingHandler()).createWriter(new StubWriterInitContext(0), () -> access);
+
+        assertThat(access.weightsReads.get()).isEqualTo(1);
+        assertThat(access.primaryKeyReads.get()).isEqualTo(1);
+    }
+
+    @Test
+    void releasesTheDatabaseAccessWhenThePrimaryKeysCannotBeRead() {
+        RecordingHandler handler = new RecordingHandler();
+        CountingAccess access = new CountingAccess();
+        access.primaryKeysFailure = new IOException("no permission to read INFORMATION_SCHEMA");
+
+        assertThatThrownBy(
+                        () ->
+                                perKeySink(handler)
+                                        .createWriter(new StubWriterInitContext(0), () -> access))
+                .isInstanceOf(IOException.class);
+
+        assertThat(access.closeCalls.get()).isEqualTo(1);
+        assertThat(handler.closed).isEqualTo(1);
     }
 
     @Test
@@ -163,12 +193,28 @@ class SpannerMutationsSinkTest {
                         .build();
     }
 
+    private static SpannerMutationsSink<String> perKeySink(
+            FailureHandler<? super FailedMutation> handler) {
+        return (SpannerMutationsSink<String>)
+                SpannerSink.<String>builder()
+                        .database(DATABASE)
+                        .serializer(new RecordingSerializer())
+                        .writerOptions(
+                                SpannerWriterOptions.builder()
+                                        .orderingMode(OrderingMode.PER_KEY)
+                                        .build())
+                        .failedMutationHandler(handler)
+                        .build();
+    }
+
     /** Counts what the sink did to the access it was handed. */
     private static final class CountingAccess implements SpannerDatabaseAccess {
 
         private final AtomicInteger weightsReads = new AtomicInteger();
+        private final AtomicInteger primaryKeyReads = new AtomicInteger();
         private final AtomicInteger closeCalls = new AtomicInteger();
         @Nullable private IOException weightsFailure;
+        @Nullable private IOException primaryKeysFailure;
 
         @Override
         public CellWeights readCellWeights() throws IOException {
@@ -177,6 +223,15 @@ class SpannerMutationsSinkTest {
                 throw weightsFailure;
             }
             return CellWeights.empty();
+        }
+
+        @Override
+        public PrimaryKeys readPrimaryKeys() throws IOException {
+            primaryKeyReads.incrementAndGet();
+            if (primaryKeysFailure != null) {
+                throw primaryKeysFailure;
+            }
+            return PrimaryKeys.empty();
         }
 
         @Override

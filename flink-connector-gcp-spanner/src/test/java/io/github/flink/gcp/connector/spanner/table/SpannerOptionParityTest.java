@@ -75,7 +75,8 @@ class SpannerOptionParityTest {
                         "batchWriteTimeout",
                         "recoveryInitialBackoff",
                         "recoveryMaxBackoff",
-                        "recoveryMaxAttempts");
+                        "recoveryMaxAttempts",
+                        "orderingMode");
 
         assertThat(declaredKeys())
                 .contains(
@@ -87,7 +88,8 @@ class SpannerOptionParityTest {
                         "sink.batch-write.timeout",
                         "sink.recovery.initial-backoff",
                         "sink.recovery.max-backoff",
-                        "sink.recovery.max-attempts");
+                        "sink.recovery.max-attempts",
+                        "sink.ordering-mode");
     }
 
     @Test
@@ -248,7 +250,8 @@ class SpannerOptionParityTest {
                         "sink.batch-write.timeout",
                         "sink.recovery.initial-backoff",
                         "sink.recovery.max-backoff",
-                        "sink.recovery.max-attempts");
+                        "sink.recovery.max-attempts",
+                        "sink.ordering-mode");
     }
 
     private static Set<String> publicSettersOf(Class<?> builder) {

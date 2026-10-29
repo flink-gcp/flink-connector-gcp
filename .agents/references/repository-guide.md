@@ -1048,8 +1048,9 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   of progress, and the two option families assembled separately. Also the gated real-GCP suite
   (#224): the ephemeral 100-processing-unit `STANDARD` instance per gated class and why that
   edition, what the service turned out to answer where only the emulator had been asked, and the
-  measured 100 MiB batch-write request ceiling (#441).
-  Recorded in ADRs (`docs/adr/0075`–`0077`, `0085`, `0088`)
+  measured 100 MiB batch-write request ceiling (#441). Also the opt-in per-row order (#1619): a
+  flush before a repeated row, with the primary keys read at open.
+  Recorded in ADRs (`docs/adr/0075`–`0077`, `0085`, `0088`, `0189`)
 - `.agents/references/modules/flink-connector-gcp-firestore.md` — one module with two package roots
   for Firestore Native and Datastore modes (#355), and the Native-mode sink (#1540): the
   `BulkWriter` write path, the three client-library defects it works around, solo confirmation of

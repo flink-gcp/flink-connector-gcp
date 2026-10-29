@@ -216,6 +216,65 @@ class SpannerServiceAdapterTest {
     }
 
     @Test
+    void readsThePrimaryKeysWithTheDialectsQuery() throws Exception {
+        List<String> queries = new ArrayList<>();
+        SpannerServiceAdapter adapter =
+                new SpannerServiceAdapter(
+                        "db",
+                        () -> Dialect.GOOGLE_STANDARD_SQL,
+                        sql -> {
+                            queries.add(sql);
+                            return ResultSets.forRows(
+                                    Type.struct(
+                                            Type.StructField.of("s", Type.string()),
+                                            Type.StructField.of("t", Type.string()),
+                                            Type.StructField.of("c", Type.string()),
+                                            Type.StructField.of("p", Type.int64()),
+                                            Type.StructField.of("y", Type.string())),
+                                    List.of(
+                                            Struct.newBuilder()
+                                                    .set("s")
+                                                    .to("")
+                                                    .set("t")
+                                                    .to("Orders")
+                                                    .set("c")
+                                                    .to("Id")
+                                                    .set("p")
+                                                    .to(1L)
+                                                    .set("y")
+                                                    .to("INT64")
+                                                    .build()));
+                        },
+                        groups -> List.of(),
+                        () -> {});
+
+        PrimaryKeys keys = adapter.readPrimaryKeys();
+
+        assertThat(queries).containsExactly(PrimaryKeys.query(Dialect.GOOGLE_STANDARD_SQL));
+        assertThat(keys.tableCount()).isEqualTo(1);
+    }
+
+    @Test
+    void aFailedPrimaryKeyReadSaysWhatThePermissionIsFor() {
+        SpannerServiceAdapter adapter =
+                new SpannerServiceAdapter(
+                        "projects/p/instances/i/databases/d",
+                        () -> Dialect.GOOGLE_STANDARD_SQL,
+                        sql -> {
+                            throw SpannerExceptionFactory.newSpannerException(
+                                    ErrorCode.PERMISSION_DENIED, "no select");
+                        },
+                        groups -> List.of(),
+                        () -> {});
+
+        assertThatThrownBy(adapter::readPrimaryKeys)
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("INFORMATION_SCHEMA")
+                .hasMessageContaining("per-key ordering mode")
+                .hasMessageContaining("projects/p/instances/i/databases/d");
+    }
+
+    @Test
     void closingReleasesTheServiceHandle() {
         AtomicInteger closes = new AtomicInteger();
         SpannerServiceAdapter adapter =

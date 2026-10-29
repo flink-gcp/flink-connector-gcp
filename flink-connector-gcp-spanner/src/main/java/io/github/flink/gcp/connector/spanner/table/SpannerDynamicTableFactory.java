@@ -129,6 +129,7 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                         SpannerConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
                         SpannerConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                        SpannerConnectorOptions.SINK_ORDERING_MODE,
                         FactoryUtil.SINK_PARALLELISM,
                         FactoryUtil.SOURCE_PARALLELISM));
     }

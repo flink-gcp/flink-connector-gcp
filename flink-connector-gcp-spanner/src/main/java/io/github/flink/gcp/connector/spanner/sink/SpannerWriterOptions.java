@@ -34,7 +34,8 @@ import java.util.Objects;
 
 /**
  * Tuning options for the sink's writer: how large a batch write request grows, how Spanner should
- * schedule it, and the recovery budget the writer spends on transient failures.
+ * schedule it, the recovery budget the writer spends on transient failures, and the order of
+ * mutations of one row.
  *
  * <p>Set via {@link SpannerSinkBuilder#writerOptions(SpannerWriterOptions)}; optional — every knob
  * is defaulted, so {@link #defaults()} is equivalent to not setting options at all.
@@ -66,6 +67,13 @@ import java.util.Objects;
  * with an empty retryable-code set (checked against google-cloud-spanner 6.120.0), and the only
  * retry around it re-creates a lost session. So the sink owns the whole retry loop — the Cloud
  * Tasks shape rather than the Bigtable one — and these knobs budget it.
+ *
+ * <h2>Order per row</h2>
+ *
+ * <p>Spanner applies the mutation groups of one batch write request in an unspecified order, so by
+ * default two mutations of one row in the same request are applied in no guaranteed order. {@link
+ * Builder#orderingMode(OrderingMode)} with {@link OrderingMode#PER_KEY} sends the batch before a
+ * mutation whose row it already holds.
  *
  * <p>Instances are immutable and serializable.
  */
@@ -155,6 +163,9 @@ public final class SpannerWriterOptions implements Serializable {
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
 
+    /** {@code null} only in a form serialized before this field existed, which reads as NONE. */
+    @Nullable private final OrderingMode orderingMode;
+
     private SpannerWriterOptions(Builder builder) {
         this.maxBatchCells = builder.maxBatchCells;
         this.maxBatchMutations = builder.maxBatchMutations;
@@ -165,6 +176,7 @@ public final class SpannerWriterOptions implements Serializable {
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
         this.recoveryMaxAttempts = builder.recoveryMaxAttempts;
+        this.orderingMode = builder.orderingMode;
     }
 
     /**
@@ -180,7 +192,8 @@ public final class SpannerWriterOptions implements Serializable {
      * Returns the default options: at most {@value #DEFAULT_MAX_BATCH_CELLS} mutation cells,
      * {@value #DEFAULT_MAX_BATCH_MUTATIONS} mutations and 1 MiB per batch write request, the
      * service's own commit delay and priority, a 30 s timeout for one complete batch write attempt,
-     * and a recovery budget of 500 ms doubling to 10 s over at most 10 attempts.
+     * a recovery budget of 500 ms doubling to 10 s over at most 10 attempts, and no order between
+     * mutations of one row within a request.
      *
      * @return the default options
      */
@@ -237,6 +250,12 @@ public final class SpannerWriterOptions implements Serializable {
         return recoveryMaxAttempts;
     }
 
+    /** Returns the order kept between mutations of one row. */
+    public OrderingMode getOrderingMode() {
+        // A form serialized before this field existed restores it as null, which meant no order.
+        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+    }
+
     /**
      * Returns the retry schedule the {@code recovery*} knobs describe. Jittered: every subtask
      * writing to a database that has just become unavailable retries on the same schedule, so
@@ -268,7 +287,8 @@ public final class SpannerWriterOptions implements Serializable {
                 && rpcPriority == that.rpcPriority
                 && getBatchWriteTimeout().equals(that.getBatchWriteTimeout())
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
-                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff);
+                && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
+                && getOrderingMode() == that.getOrderingMode();
     }
 
     @Override
@@ -282,7 +302,8 @@ public final class SpannerWriterOptions implements Serializable {
                 getBatchWriteTimeout(),
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
-                recoveryMaxAttempts);
+                recoveryMaxAttempts,
+                getOrderingMode());
     }
 
     @Override
@@ -305,6 +326,8 @@ public final class SpannerWriterOptions implements Serializable {
                 + recoveryMaxBackoff
                 + ", recoveryMaxAttempts="
                 + recoveryMaxAttempts
+                + ", orderingMode="
+                + getOrderingMode()
                 + "}";
     }
 
@@ -321,6 +344,7 @@ public final class SpannerWriterOptions implements Serializable {
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
         private int recoveryMaxAttempts = 10;
+        private OrderingMode orderingMode = OrderingMode.NONE;
 
         private Builder() {}
 
@@ -489,6 +513,25 @@ public final class SpannerWriterOptions implements Serializable {
             Preconditions.checkArgument(
                     recoveryMaxAttempts > 0, "recoveryMaxAttempts must be positive");
             this.recoveryMaxAttempts = recoveryMaxAttempts;
+            return this;
+        }
+
+        /**
+         * Sets whether mutations of one row are applied in the order the subtask received them.
+         * Defaults to {@link OrderingMode#NONE}.
+         *
+         * <p>{@link OrderingMode#PER_KEY} sends the batch before a mutation whose row it already
+         * holds, so no request carries a row twice. It reads the database's primary keys when the
+         * writer opens, and costs one request per mutation of a row written many times in a row.
+         * The order is the order one subtask received, so the input must send every mutation of a
+         * row to the same subtask.
+         *
+         * @param orderingMode the ordering mode
+         * @return this builder
+         */
+        public Builder orderingMode(OrderingMode orderingMode) {
+            this.orderingMode =
+                    Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
             return this;
         }
 

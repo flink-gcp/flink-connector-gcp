@@ -20,6 +20,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 
+import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -41,6 +42,9 @@ class ConnectorEnumOptionSpellingTest {
         assertThat(ChangeStreamStartMode.EARLIEST).hasToString("earliest");
         assertThat(ChangeStreamStartMode.LATEST).hasToString("latest");
         assertThat(ChangeStreamStartMode.TIMESTAMP).hasToString("timestamp");
+
+        assertThat(OrderingMode.NONE).hasToString("none");
+        assertThat(OrderingMode.PER_KEY).hasToString("per-key");
     }
 
     @Test
@@ -48,6 +52,7 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(ScanMode.class);
         assertRoundTrips(ChangeStreamChangelogMode.class);
         assertRoundTrips(ChangeStreamStartMode.class);
+        assertRoundTrips(OrderingMode.class);
     }
 
     private static <E extends Enum<E>> void assertRoundTrips(Class<E> enumClass) {

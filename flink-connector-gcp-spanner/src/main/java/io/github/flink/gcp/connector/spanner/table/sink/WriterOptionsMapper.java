@@ -65,6 +65,8 @@ public final class WriterOptionsMapper {
                 config,
                 SpannerConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
                 builder::recoveryMaxAttempts);
+        OptionSetters.apply(
+                config, SpannerConnectorOptions.SINK_ORDERING_MODE, builder::orderingMode);
         return builder.build();
     }
 }

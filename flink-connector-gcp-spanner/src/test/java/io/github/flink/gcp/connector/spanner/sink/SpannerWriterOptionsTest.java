@@ -43,6 +43,7 @@ class SpannerWriterOptionsTest {
         assertThat(options.getMaxCommitDelay()).isNull();
         assertThat(options.getRpcPriority()).isNull();
         assertThat(options.getBatchWriteTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.NONE);
     }
 
     @Test
@@ -295,6 +296,21 @@ class SpannerWriterOptionsTest {
     }
 
     @Test
+    void anOlderSerializedFormWithoutTheOrderingModeKeepsNoOrder() throws Exception {
+        SpannerWriterOptions options = SpannerWriterOptions.builder().build();
+        Field mode = SpannerWriterOptions.class.getDeclaredField("orderingMode");
+        mode.setAccessible(true);
+        mode.set(options, null);
+
+        SpannerWriterOptions restored = InstantiationUtil.clone(options);
+
+        assertThat(restored.getOrderingMode()).isEqualTo(OrderingMode.NONE);
+        assertThat(restored)
+                .isEqualTo(SpannerWriterOptions.defaults())
+                .hasSameHashCodeAs(SpannerWriterOptions.defaults());
+    }
+
+    @Test
     void rejectsABackoffCapBelowTheFirstBackoff() {
         assertThatThrownBy(
                         () ->
@@ -321,6 +337,9 @@ class SpannerWriterOptionsTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerWriterOptions.builder().batchWriteTimeout(null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().orderingMode(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("orderingMode must not be null");
     }
 
     @Test
@@ -336,9 +355,12 @@ class SpannerWriterOptionsTest {
                         .recoveryInitialBackoff(Duration.ofMillis(55))
                         .recoveryMaxBackoff(Duration.ofMillis(66))
                         .recoveryMaxAttempts(7)
+                        .orderingMode(OrderingMode.PER_KEY)
                         .build();
 
         assertThat(options).isNotEqualTo(SpannerWriterOptions.defaults());
+        assertThat(SpannerWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build())
+                .isNotEqualTo(SpannerWriterOptions.defaults());
         assertThat(options.toString())
                 .contains("maxBatchCells=11")
                 .contains("maxBatchMutations=22")
@@ -348,6 +370,7 @@ class SpannerWriterOptionsTest {
                 .contains("batchWriteTimeout=PT0.077S")
                 .contains("recoveryInitialBackoff=PT0.055S")
                 .contains("recoveryMaxBackoff=PT0.066S")
-                .contains("recoveryMaxAttempts=7");
+                .contains("recoveryMaxAttempts=7")
+                .contains("orderingMode=per-key");
     }
 }

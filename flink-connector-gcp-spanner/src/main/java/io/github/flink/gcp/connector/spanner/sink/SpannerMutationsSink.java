@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
+import io.github.flink.gcp.connector.spanner.sink.writer.PrimaryKeys;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccess;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.spanner.sink.writer.SpannerWriter;
@@ -140,7 +141,14 @@ public class SpannerMutationsSink<T> implements CrossVersionSink<T>, LineageVert
             // Read once, here rather than lazily in the writer: a database the sink cannot read the
             // schema of is a misconfiguration, and failing at writer creation makes it a job that
             // never starts instead of one that dies at the first record.
-            return createWriter(access, access.readCellWeights(), context.metricGroup());
+            CellWeights cellWeights = access.readCellWeights();
+            // Read only when used, so a sink that keeps no order per row reads the schema exactly
+            // as it did before the mode existed.
+            PrimaryKeys primaryKeys =
+                    config.getWriterOptions().getOrderingMode() == OrderingMode.PER_KEY
+                            ? access.readPrimaryKeys()
+                            : null;
+            return createWriter(access, cellWeights, primaryKeys, context.metricGroup());
         } catch (Throwable e) {
             // Nothing downstream will ever close these: no writer exists to do it, and the failure
             // handler's contract promises a close on the failure path too — a restart would
@@ -163,7 +171,8 @@ public class SpannerMutationsSink<T> implements CrossVersionSink<T>, LineageVert
     public SinkWriter<T> createWriter(
             SpannerDatabaseAccess access,
             CellWeights cellWeights,
+            @Nullable PrimaryKeys primaryKeys,
             SinkWriterMetricGroup metricGroup) {
-        return new SpannerWriter<>(config, access, cellWeights, metricGroup);
+        return new SpannerWriter<>(config, access, cellWeights, primaryKeys, metricGroup);
     }
 }

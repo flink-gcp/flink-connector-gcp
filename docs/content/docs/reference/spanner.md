@@ -106,6 +106,12 @@ decides how large a request grows**. The reasoning is under
 | `maxCommitDelay` | *unset ⇒ the service's own handling* | How long Spanner may delay a commit to group it with others, trading latency for throughput. Between zero and 500 ms, which is what the service accepts. Not rounded to milliseconds — the client forwards seconds and nanoseconds unchanged |
 | `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it. `LOW` is what a backfill that must not disturb serving traffic wants |
 
+### Order per row
+
+| Option | Default | What it does |
+|---|---|---|
+| `orderingMode` | `NONE` | Experimental. `PER_KEY` applies mutations of one row in the order the subtask received them, sending the batch before a mutation whose row it already holds. Reads every table's primary key from `INFORMATION_SCHEMA` when the writer opens. A mutation whose row cannot be named, such as a key-range delete, is ordered against its whole table. See [Order per row]({{< relref "docs/connectors/datastream/spanner" >}}#order-per-row) |
+
 ### Retry budget
 
 Spent on transient failures only, and on the mutations that are still undecided rather than on the

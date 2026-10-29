@@ -20,7 +20,9 @@ import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 
 import com.google.api.gax.rpc.StatusCode;
+import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ErrorCode;
+import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerExceptionFactory;
@@ -30,6 +32,7 @@ import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.sink.ConstraintViolationPolicy;
 import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
+import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
@@ -191,6 +194,98 @@ class SpannerWriterTest {
         assertThat(access.requests()).isEmpty();
     }
 
+    // ---------------------------------------------------------------- order per row
+
+    @Test
+    void withoutTheModeOneRequestCarriesARowTwice() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SinkWriter<String> writer =
+                writer(keyed(), SpannerWriterOptions.defaults(), new RecordingHandler());
+
+        write(writer, "1:a", "2:a", "1:b", "3:a");
+        writer.flush(false);
+
+        assertThat(sentNames()).containsExactly(List.of("1:a", "2:a", "1:b", "3:a"));
+    }
+
+    @Test
+    void perKeySendsTheBatchBeforeARowItAlreadyHolds() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SinkWriter<String> writer = writer(keyed(), perKey(), new RecordingHandler());
+
+        write(writer, "1:a", "2:a", "1:b", "3:a", "2:b", "1:c");
+        writer.flush(false);
+
+        // Other rows still share a request; only the repeat of a row starts a new one.
+        assertThat(sentNames())
+                .containsExactly(
+                        List.of("1:a", "2:a"), List.of("1:b", "3:a", "2:b"), List.of("1:c"));
+    }
+
+    @Test
+    void perKeyOrdersAMutationItCannotNameARowForAgainstItsWholeTable() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SpannerMutationSerializationSchema<String> serializer =
+                (element, context) ->
+                        element.equals("purge")
+                                ? Mutation.delete("Orders", KeySet.all())
+                                : keyed().serialize(element, context);
+        SinkWriter<String> writer = writer(serializer, perKey(), new RecordingHandler());
+
+        write(writer, "1:a", "2:a", "purge", "3:a");
+        writer.flush(false);
+
+        assertThat(sentOperations())
+                .containsExactly(
+                        List.of(Mutation.Op.INSERT_OR_UPDATE, Mutation.Op.INSERT_OR_UPDATE),
+                        List.of(Mutation.Op.DELETE),
+                        List.of(Mutation.Op.INSERT_OR_UPDATE));
+    }
+
+    @Test
+    void perKeyForgetsTheRowsOfABatchTheSizeLimitSent() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SinkWriter<String> writer =
+                writer(
+                        keyed(),
+                        perKey(SpannerWriterOptions.builder().maxBatchMutations(2)),
+                        new RecordingHandler());
+
+        // The limit sends 1:a and 2:a; 1:b then starts a batch rather than finding 1 still held.
+        write(writer, "1:a", "2:a", "3:a", "1:b");
+        writer.flush(false);
+
+        assertThat(sentNames()).containsExactly(List.of("1:a", "2:a"), List.of("3:a", "1:b"));
+    }
+
+    @Test
+    void perKeyRetriesABatchsUndecidedMutationsBeforeTheRowsNextMutation() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        // The first request applies 1:a and leaves 2:a undecided, as a stream failing part-way
+        // through does.
+        access.script(FakeSpannerDatabaseAccess.Response.nothingReported().applied(0));
+        SinkWriter<String> writer = writer(keyed(), perKey(fastRetries()), new RecordingHandler());
+
+        write(writer, "1:a", "2:a", "2:b");
+        writer.flush(false);
+
+        assertThat(sentNames())
+                .containsExactly(List.of("1:a", "2:a"), List.of("2:a"), List.of("2:b"));
+    }
+
+    @Test
+    void perKeyStartsAFreshBatchAfterTheBarrier() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SinkWriter<String> writer = writer(keyed(), perKey(), new RecordingHandler());
+
+        write(writer, "1:a");
+        writer.flush(false);
+        write(writer, "1:b", "2:a");
+        writer.flush(false);
+
+        assertThat(sentNames()).containsExactly(List.of("1:a"), List.of("1:b", "2:a"));
+    }
+
     // ---------------------------------------------------------------- per-mutation failures
 
     @Test
@@ -334,7 +429,8 @@ class SpannerWriterTest {
                                 ConstraintViolationPolicy.ROUTE_TO_FAILURE_HANDLER)
                         .build();
         SinkWriter<String> writer =
-                ((SpannerMutationsSink<String>) sink).createWriter(access, weights(), metrics);
+                ((SpannerMutationsSink<String>) sink)
+                        .createWriter(access, weights(), access.readPrimaryKeys(), metrics);
 
         writer.write("a", TestContexts.NO_OP);
         writer.flush(false);
@@ -555,6 +651,62 @@ class SpannerWriterTest {
 
     // ---------------------------------------------------------------- helpers
 
+    private static final PrimaryKeys ORDERS_KEY =
+            PrimaryKeys.builder(Dialect.GOOGLE_STANDARD_SQL)
+                    .keyColumn("Orders", "Id", 1, "INT64")
+                    .build();
+
+    /** Writes {@code id:name} records as upserts of the row {@code id}. */
+    private static SpannerMutationSerializationSchema<String> keyed() {
+        return (element, context) ->
+                Mutation.newInsertOrUpdateBuilder("Orders")
+                        .set("Id")
+                        .to(Long.parseLong(element.substring(0, element.indexOf(':'))))
+                        .set("Name")
+                        .to(element)
+                        .build();
+    }
+
+    private static SpannerWriterOptions perKey() {
+        return perKey(SpannerWriterOptions.builder());
+    }
+
+    private static SpannerWriterOptions perKey(SpannerWriterOptions.Builder options) {
+        return options.orderingMode(OrderingMode.PER_KEY).build();
+    }
+
+    private static void write(SinkWriter<String> writer, String... elements) throws Exception {
+        for (String element : elements) {
+            writer.write(element, TestContexts.NO_OP);
+        }
+    }
+
+    /** The operation of every mutation, request by request. */
+    private List<List<Mutation.Op>> sentOperations() {
+        List<List<Mutation.Op>> operations = new ArrayList<>();
+        for (List<Mutation> request : access.requests()) {
+            List<Mutation.Op> sent = new ArrayList<>();
+            for (Mutation mutation : request) {
+                sent.add(mutation.getOperation());
+            }
+            operations.add(sent);
+        }
+        return operations;
+    }
+
+    /** The {@code Name} of every mutation, request by request. */
+    private List<List<String>> sentNames() {
+        List<List<String>> names = new ArrayList<>();
+        for (List<Mutation> request : access.requests()) {
+            List<String> sent = new ArrayList<>();
+            for (Mutation mutation : request) {
+                sent.add(mutation.asMap().get("Name").getString());
+            }
+            names.add(sent);
+        }
+        return names;
+    }
+
     private SinkWriter<String> writer(SpannerWriterOptions options) {
         return writer(serializer(), options, new RecordingHandler());
     }
@@ -570,7 +722,8 @@ class SpannerWriterTest {
                         .writerOptions(options)
                         .failedMutationHandler(handler)
                         .build();
-        return ((SpannerMutationsSink<String>) sink).createWriter(access, weights(), metrics);
+        return ((SpannerMutationsSink<String>) sink)
+                .createWriter(access, weights(), access.readPrimaryKeys(), metrics);
     }
 
     private CellWeights weights() {

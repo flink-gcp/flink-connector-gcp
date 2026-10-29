@@ -47,6 +47,7 @@ final class FakeSpannerDatabaseAccess implements SpannerDatabaseAccess {
     private final List<List<Mutation>> requests = new ArrayList<>();
 
     private CellWeights cellWeights = CellWeights.empty();
+    private PrimaryKeys primaryKeys = PrimaryKeys.empty();
     private int closeCalls;
 
     /** Scripts the next requests, in order. Anything beyond the script is applied in full. */
@@ -62,6 +63,11 @@ final class FakeSpannerDatabaseAccess implements SpannerDatabaseAccess {
         return this;
     }
 
+    FakeSpannerDatabaseAccess withPrimaryKeys(PrimaryKeys primaryKeys) {
+        this.primaryKeys = primaryKeys;
+        return this;
+    }
+
     /** The mutations of every request, in the order they were sent. */
     List<List<Mutation>> requests() {
         return requests;
@@ -74,6 +80,11 @@ final class FakeSpannerDatabaseAccess implements SpannerDatabaseAccess {
     @Override
     public CellWeights readCellWeights() {
         return cellWeights;
+    }
+
+    @Override
+    public PrimaryKeys readPrimaryKeys() {
+        return primaryKeys;
     }
 
     @Override

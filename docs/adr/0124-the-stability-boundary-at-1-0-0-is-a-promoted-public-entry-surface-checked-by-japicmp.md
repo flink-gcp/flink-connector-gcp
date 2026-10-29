@@ -233,3 +233,10 @@ reference with no warning and compared all six connector jars against it, and a 
 ADR-0166 adds `BigtableDeliveryGuarantee`, `BigtableStagedOptions` and its builder as `@Experimental` closure stops reachable from `BigtableSinkBuilder`.
 The final performance and service-recovery acceptance may still constrain this unreleased mode's configuration.
 The existing public builder retains its at-least-once default; no existing public type is demoted.
+
+## Spanner per-row order revision (2026-10-29)
+
+ADR-0189 adds `io.github.flink.gcp.connector.spanner.sink.OrderingMode` as an `@Experimental` closure stop on the existing `@Public SpannerWriterOptions.getOrderingMode()` and `SpannerWriterOptions.Builder.orderingMode` signatures.
+Its Firestore namesake is `@PublicEvolving` because `FirestoreWriterOptions` is, so it has no frozen referrer; copying that tier here would have put an unfrozen type in a frozen signature.
+The enum may still grow an ordering by a version carried in the data, which ADR-0187 leaves room for.
+The type is newly introduced after 1.0.0, so this is not a demotion of a released API.
