@@ -39,7 +39,6 @@ import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
-import io.github.flink.gcp.connector.bigtable.EnumeratorClientMetrics;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
@@ -80,10 +79,6 @@ public final class BigtableChangeStreamSource<T>
 
     private final BigtableChangeStreamSourceConfig<T> config;
     private final LineageMetadata lineage;
-
-    /** Shared by every enumerator this object builds; see {@link EnumeratorClientMetrics}. */
-    private final EnumeratorClientMetrics enumeratorClientMetrics =
-            new EnumeratorClientMetrics(GENERATE_INITIAL_CHANGE_STREAM_PARTITIONS);
 
     BigtableChangeStreamSource(BigtableChangeStreamSourceConfig<T> config) {
         this(config, null);
@@ -186,14 +181,17 @@ public final class BigtableChangeStreamSource<T>
             @Nullable BigtableChangeStreamEnumeratorState restored)
             throws Exception {
         // A client per enumerator, minted here rather than carried on the configuration: this
-        // object is what the JobManager keeps for a job's whole life, and a coordinator reset
-        // builds the next enumerator from it (docs/adr/0128). The factory loads one provider for
+        // object is what the JobManager keeps across every coordinator reset under the default
+        // scheduler, and a coordinator reset builds the next enumerator from it (docs/adr/0128).
+        // The factory loads one provider for
         // the coordinator's three client families: data for partition discovery, table admin for
         // retention, instance admin for the app profile.
         ChangeStreamCoordinatorClient client = config.getCoordinatorClientFactory().create();
         try {
             if (config.isExportClientMetricsToFlink()) {
-                client.useClientMetrics(enumeratorClientMetrics.get(context.metricGroup()));
+                client.useClientMetrics(
+                        BigtableClientMetrics.registerForEnumerators(
+                                context.metricGroup(), GENERATE_INITIAL_CHANGE_STREAM_PARTITIONS));
             }
             return new BigtableChangeStreamSplitEnumerator(
                     context,

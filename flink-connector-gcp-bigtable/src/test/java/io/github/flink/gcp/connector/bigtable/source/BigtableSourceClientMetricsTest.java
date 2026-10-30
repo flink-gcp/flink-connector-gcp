@@ -61,8 +61,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Pins where each source component registers its client's metrics and what it hands its seam: the
- * readers on their own group, the enumerators on the first enumerator's group, shared by every
- * enumerator one source object builds after it.
+ * readers on their own group, the enumerators on the enumerator group, shared by every enumerator
+ * built on that group after the first.
  */
 class BigtableSourceClientMetricsTest {
 
@@ -91,28 +91,38 @@ class BigtableSourceClientMetricsTest {
     }
 
     @Test
-    void scanEnumeratorsOfOneSourceShareOneSetOfClientMetrics() throws Exception {
-        // A coordinator reset builds the next enumerator from the same source object on the same
-        // group, where a second registration of a name would be dropped (EnumeratorClientMetrics).
+    void scanEnumeratorsOnOneGroupShareOneSetOfClientMetrics() throws Exception {
+        // A coordinator reset builds the next enumerator on the group the first one registered on,
+        // where a second registration of a name would be dropped. The adaptive scheduler builds it
+        // from a new source object too, so the sharing must not hang on the source (#1908).
+        FakeSplitEnumeratorContext<RowRangeSplit> context = new FakeSplitEnumeratorContext<>(1);
         CapturingRowKeySamplerFactory samplers = new CapturingRowKeySamplerFactory();
-        BigtableScanSource<String> source =
-                (BigtableScanSource<String>)
-                        TestSources.withSamplerFactory(
-                                        BigtableSource.<String>builder()
-                                                .table(TestSources.TABLE)
-                                                .deserializer(new TestSources.RowKeyDeserializer())
-                                                .opener(new CapturingRowStreamOpener())
-                                                .exportClientMetricsToFlink(true),
-                                        samplers)
-                                .build();
 
-        source.createEnumerator(new FakeSplitEnumeratorContext<RowRangeSplit>(1)).close();
-        source.createEnumerator(new FakeSplitEnumeratorContext<RowRangeSplit>(1)).close();
+        scanSource(samplers).createEnumerator(context).close();
+        scanSource(samplers).createEnumerator(context).close();
+        scanSource(samplers)
+                .createEnumerator(new FakeSplitEnumeratorContext<RowRangeSplit>(1))
+                .close();
 
-        assertThat(samplers.minted).hasSize(2);
+        assertThat(samplers.minted).hasSize(3);
         assertThat(samplers.minted.get(0).clientMetrics).isNotNull();
         assertThat(samplers.minted.get(1).clientMetrics)
                 .isSameAs(samplers.minted.get(0).clientMetrics);
+        assertThat(samplers.minted.get(2).clientMetrics)
+                .isNotNull()
+                .isNotSameAs(samplers.minted.get(0).clientMetrics);
+    }
+
+    private static BigtableScanSource<String> scanSource(CapturingRowKeySamplerFactory samplers) {
+        return (BigtableScanSource<String>)
+                TestSources.withSamplerFactory(
+                                BigtableSource.<String>builder()
+                                        .table(TestSources.TABLE)
+                                        .deserializer(new TestSources.RowKeyDeserializer())
+                                        .opener(new CapturingRowStreamOpener())
+                                        .exportClientMetricsToFlink(true),
+                                samplers)
+                        .build();
     }
 
     @Test
@@ -229,14 +239,16 @@ class BigtableSourceClientMetricsTest {
     }
 
     @Test
-    void changeStreamEnumeratorsOfOneSourceShareOneSetOfClientMetrics() throws Exception {
+    void changeStreamEnumeratorsOnOneGroupShareOneSetOfClientMetrics() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
+                new FakeSplitEnumeratorContext<>(1);
         CapturingCoordinatorClientFactory clients = new CapturingCoordinatorClientFactory();
-        BigtableChangeStreamSource<BigtableChangeStreamMutation> source =
-                changeStreamSource(new CapturingChangeStreamOpener(), clients, true);
 
-        source.createEnumerator(new FakeSplitEnumeratorContext<ChangeStreamPartitionSplit>(1))
+        changeStreamSource(new CapturingChangeStreamOpener(), clients, true)
+                .createEnumerator(context)
                 .close();
-        source.createEnumerator(new FakeSplitEnumeratorContext<ChangeStreamPartitionSplit>(1))
+        changeStreamSource(new CapturingChangeStreamOpener(), clients, true)
+                .createEnumerator(context)
                 .close();
 
         assertThat(clients.minted).hasSize(2);

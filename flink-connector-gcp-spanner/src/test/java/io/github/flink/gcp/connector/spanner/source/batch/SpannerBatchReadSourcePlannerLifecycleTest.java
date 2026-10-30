@@ -33,11 +33,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Pins that one planner belongs to one enumerator.
  *
- * <p>The JobManager keeps one source object for a job's whole life, and a coordinator reset builds
- * the next enumerator from it — so a planner carried on the source configuration would already have
- * been closed by the enumerator before it. Issue #990 was that, and it was invisible because every
- * other test builds a fresh source per enumerator and because the scripted planner used to keep
- * answering after {@code close()}.
+ * <p>The JobManager keeps one source object across every coordinator reset under the default
+ * scheduler, and a coordinator reset builds the next enumerator from it — so a planner carried on
+ * the source configuration would already have been closed by the enumerator before it. Issue #990
+ * was that, and it was invisible because every other test builds a fresh source per enumerator and
+ * because the scripted planner used to keep answering after {@code close()}.
  *
  * <p>These tests therefore do the one thing nothing else does: two enumerators over <em>one</em>
  * source object, with a teardown between them.

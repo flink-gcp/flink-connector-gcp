@@ -44,7 +44,6 @@ import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
-import io.github.flink.gcp.connector.spanner.SpannerEnumeratorClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlanner;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.SpannerBatchReadSplitEnumerator;
@@ -81,18 +80,17 @@ public class SpannerBatchReadSource<T>
     private final SpannerSourceConfig<T> config;
 
     /**
-     * The enumerators' client metrics, shared by every enumerator this source object builds: their
-     * metric group outlives each of them. The planner's database handle creates a session, the
-     * batch transaction begins on the service, and a Table index scan resolves its index and key
-     * columns with a query before it partitions the read.
+     * The RPC methods the enumerators' client calls: the planner's database handle creates a
+     * session, the batch transaction begins on the service, and a Table index scan resolves its
+     * index and key columns with a query before it partitions the read.
      */
-    private final SpannerEnumeratorClientMetrics enumeratorClientMetrics =
-            new SpannerEnumeratorClientMetrics(
-                    SpannerClientMetrics.CREATE_SESSION,
-                    SpannerClientMetrics.BEGIN_TRANSACTION,
-                    SpannerClientMetrics.EXECUTE_STREAMING_SQL,
-                    SpannerClientMetrics.PARTITION_QUERY,
-                    SpannerClientMetrics.PARTITION_READ);
+    private static final String[] ENUMERATOR_METHODS = {
+        SpannerClientMetrics.CREATE_SESSION,
+        SpannerClientMetrics.BEGIN_TRANSACTION,
+        SpannerClientMetrics.EXECUTE_STREAMING_SQL,
+        SpannerClientMetrics.PARTITION_QUERY,
+        SpannerClientMetrics.PARTITION_READ
+    };
 
     /**
      * Creates the source.
@@ -187,9 +185,10 @@ public class SpannerBatchReadSource<T>
      * Builds one enumerator and the one planner it owns.
      *
      * <p>A planner per enumerator, minted here rather than carried on the configuration: this
-     * object is what the JobManager keeps for a job's whole life, and a coordinator reset builds
-     * the next enumerator from it. A shared planner would already be closed by then, and would
-     * refuse this enumerator and every retry after it ({@code docs/adr/0128}).
+     * object is what the JobManager keeps across every coordinator reset under the default
+     * scheduler, and a coordinator reset builds the next enumerator from it. A shared planner would
+     * already be closed by then, and would refuse this enumerator and every retry after it ({@code
+     * docs/adr/0128}).
      *
      * <p>The credentials are loaded <em>before</em> the planner is minted, so a key file that
      * cannot be read still fails here with nothing built to release.
@@ -209,7 +208,8 @@ public class SpannerBatchReadSource<T>
             planner.useCredentials(credentials);
             planner.useClientMetrics(
                     config.isExportClientMetricsToFlink()
-                            ? enumeratorClientMetrics.get(context.metricGroup())
+                            ? SpannerClientMetrics.registerForEnumerators(
+                                    context.metricGroup(), ENUMERATOR_METHODS)
                             : null);
             return new SpannerBatchReadSplitEnumerator(context, config, planner, checkpoint);
         } catch (Throwable e) {

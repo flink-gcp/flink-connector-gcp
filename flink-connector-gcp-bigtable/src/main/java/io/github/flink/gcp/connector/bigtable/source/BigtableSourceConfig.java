@@ -146,9 +146,10 @@ public final class BigtableSourceConfig<T> implements Serializable {
     /**
      * Returns the factory the source mints one sampler per enumerator from.
      *
-     * <p>A factory rather than a sampler because the JobManager holds one source object for a job's
-     * whole life, so a sampler here would be shared by every enumerator a coordinator reset builds
-     * and the first teardown would refuse every later one ({@code docs/adr/0128}).
+     * <p>A factory rather than a sampler because the JobManager keeps one source object across
+     * every coordinator reset under the default scheduler, so a sampler here would be shared by
+     * every enumerator a coordinator reset builds and the first teardown would refuse every later
+     * one ({@code docs/adr/0128}).
      */
     public RowKeySamplerFactory getSamplerFactory() {
         return samplerFactory;

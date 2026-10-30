@@ -1,6 +1,6 @@
 ---
 name: curate-metric-docs
-description: Decide how to respond when `just check-metric-docs` / `scripts/check-metric-docs.py` fails. Use on "but no `Metric`-headed table names it", "names X, which MODULE does not register", "documented as a counter/gauge but ... registers it as a", "marked (Flink standard) but ... registers it", "registers a counter/gauge by a name outside the module's *MetricNames.java inventory", "takes Flink's `num` prefix", "uses CLASS but no `Metric`-headed table documents", "registers metrics but no [[connectors]] entry maps it", or when adding a connector, a metric, or a metrics table. Covers where a row goes, what its Type and Meaning columns may say, and the opposite directions [exempt] and [extra] point in.
+description: Decide how to respond when `just check-metric-docs` / `scripts/check-metric-docs.py` fails. Use on "but no `Metric`-headed table names it", "names X, which MODULE does not register", "documented as a counter/gauge but ... registers it as a", "marked (Flink standard) but ... registers it", "registers a counter/gauge by a name outside the module's *MetricNames.java inventory", "takes Flink's `num` prefix", "uses CLASS but no `Metric`-headed table documents", "registers metrics but no [[connectors]] entry maps it", "registers a counter/gauge by a name of its own" or "registers nothing, so the entry forgives nothing" from a [[registrars]] source, or when adding a connector, a metric, or a metrics table. Covers where a row goes, what its Type and Meaning columns may say, and the opposite directions [exempt] and [extra] point in.
 ---
 
 # Curate a metrics-table decision
@@ -16,12 +16,13 @@ registration site, or a DataStream page's metrics section. It is offline and tak
 
 ## The config file, in one paragraph
 
-`scripts/config/metric-docs.toml` has four tables and they do different jobs:
+`scripts/config/metric-docs.toml` has five tables and they do different jobs:
 
 | Table | Direction | Answers |
 |---|---|---|
 | `[[connectors]]` | module → page | Which DataStream page must document this module's metrics |
 | `[[subgroups]]` | source file | Which `base.metrics` sources register templated subgroup leaves (`errorClass.CODE.errors`) on a connector's behalf |
+| `[[registrars]]` | source file | Which base sources register only the names their callers pass in (`EnumeratorMetrics`); the caller's `metrics.counter(<Product>MetricNames.X)` is the registration the inventory rule reads |
 | `[exempt]` | **source side** | A registered name that deliberately has *no* row. Keyed `Class.name` (`BigQueryMetricNames.inFlightAppends`, `ErrorClassCounters.errors`) |
 | `[extra]` | **page side** | A row that exists and has *no* registration behind it. Keyed by the name as the table writes it |
 
@@ -120,6 +121,14 @@ walks into. Not an allowlist decision:
    table, in the register the existing pages set.
 2. Add the `[[connectors]]` entry.
 3. Run the check and write rows until it passes.
+
+## Failure: a `[[registrars]]` source "registers a counter/gauge by a name of its own" or "registers nothing"
+
+A registrar exists so a shared class can register a connector's names without owning any. A literal,
+a constant of its own, or a computed name breaks that: the name would be registered with no
+inventory and no row. Pass the name in from the connector, whose call the inventory rule then reads.
+"Registers nothing" means the entry is dead: the registrations moved or the class no longer
+registers; move or remove the entry rather than leaving it to forgive nothing.
 
 ## Exit code 2 — infrastructure, not policy
 

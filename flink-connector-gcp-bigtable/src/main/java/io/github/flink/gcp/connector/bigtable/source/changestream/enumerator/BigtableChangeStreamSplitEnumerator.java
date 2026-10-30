@@ -25,7 +25,6 @@ import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
@@ -33,6 +32,7 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.MetricValues;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
@@ -120,6 +120,11 @@ public final class BigtableChangeStreamSplitEnumerator
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicInteger unassignedMetricCount = new AtomicInteger();
     private final AtomicLong oldestUnassignedPositionMillis = new AtomicLong(Long.MAX_VALUE);
+
+    /**
+     * Replaced at {@link #start()}; volatile because {@link #close()} may run on another thread.
+     */
+    private volatile EnumeratorMetrics metrics = EnumeratorMetrics.unregistered();
 
     private Counter splitsAssigned = new ThreadSafeSimpleCounter();
     private Counter splitsReturned = new ThreadSafeSimpleCounter();
@@ -773,40 +778,26 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private void registerMetrics() {
-        SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
-        if (metricGroup == null) {
-            return;
-        }
-        splitsAssigned =
-                metricGroup.counter(
-                        BigtableMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter());
-        splitsReturned =
-                metricGroup.counter(
-                        BigtableMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter());
+        metrics = EnumeratorMetrics.of(context.metricGroup());
+        splitsAssigned = metrics.counter(BigtableMetricNames.SPLITS_ASSIGNED);
+        splitsReturned = metrics.counter(BigtableMetricNames.SPLITS_RETURNED);
         partitionsReconciled =
-                metricGroup.counter(
-                        BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED,
-                        new ThreadSafeSimpleCounter());
-        tokenlessRestarts =
-                metricGroup.counter(
-                        BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS,
-                        new ThreadSafeSimpleCounter());
+                metrics.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_RECONCILED);
+        tokenlessRestarts = metrics.counter(BigtableMetricNames.CHANGE_STREAM_TOKENLESS_RESTARTS);
         partitionsDiscovered =
-                metricGroup.counter(
-                        BigtableMetricNames.CHANGE_STREAM_PARTITIONS_DISCOVERED,
-                        new ThreadSafeSimpleCounter());
-        partitionSplits =
-                metricGroup.counter(
-                        BigtableMetricNames.CHANGE_STREAM_PARTITION_SPLITS,
-                        new ThreadSafeSimpleCounter());
-        partitionMerges =
-                metricGroup.counter(
-                        BigtableMetricNames.CHANGE_STREAM_PARTITION_MERGES,
-                        new ThreadSafeSimpleCounter());
-        metricGroup.gauge(
+                metrics.counter(BigtableMetricNames.CHANGE_STREAM_PARTITIONS_DISCOVERED);
+        partitionSplits = metrics.counter(BigtableMetricNames.CHANGE_STREAM_PARTITION_SPLITS);
+        partitionMerges = metrics.counter(BigtableMetricNames.CHANGE_STREAM_PARTITION_MERGES);
+        metrics.gauge(
                 BigtableMetricNames.UNASSIGNED_CHANGE_STREAM_PARTITION_LAG_MILLIS,
                 (Gauge<Long>) this::unassignedLagMillis);
-        metricGroup.setUnassignedSplitsGauge(() -> (long) unassignedMetricCount.get());
+        metrics.unassignedSplitsGauge(() -> (long) unassignedMetricCount.get());
+        if (closed) {
+            // close() ran first, on Flink's closer thread, and closed the view this replaced: let
+            // go
+            // of what was just bound rather than leave it reading a closed enumerator.
+            metrics.close();
+        }
     }
 
     private long unassignedLagMillis() {
@@ -825,7 +816,9 @@ public final class BigtableChangeStreamSplitEnumerator
 
     @Override
     public void close() throws IOException {
+        // The flag first: a start() still registering sees it and lets go of what it bound.
         closed = true;
+        metrics.close();
         try {
             Closers.closeAll(client);
         } catch (Exception e) {

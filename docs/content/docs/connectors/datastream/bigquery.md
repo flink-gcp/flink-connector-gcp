@@ -403,7 +403,8 @@ JobManager failover before the first checkpoint re-plans the source and runs the
 Against the anonymous dataset a completed first query makes that a free cache hit; a first query
 still *running* is the expensive case, since the cache serves only completed results and the two
 scans run — and bill — concurrently. Against a named dataset every re-run writes a second result
-table. `queryJobsSubmitted` is what reports a repeat.
+table. `queryJobsSubmitted` reports a repeat while one JobManager leads the job; a JobManager
+failover starts it again from zero, so there the repeated query is the new series' first count.
 
 `reuseQueryResultWithin(...)` closes that window ([#477]({{< param BookRepo >}}/issues/477),
 recorded in ADR-0089). With it, the job id is derived from the **Flink job name**, a digest of the
@@ -2787,8 +2788,12 @@ routing cannot grow metric cardinality.
 
 ### Source metrics
 
-Registered on the reader's metric group, one set per subtask, plus four on the enumerator's — which
-is one set for the job, since there is one enumerator.
+Registered on the reader's metric group, one set per subtask, plus six on the enumerator's — which
+is one set for the job, since there is one enumerator at a time.
+The enumerator's counters count for as long as the JobManager leads the job: an enumerator that a
+failover or a restart builds adds to the counters the first one registered, and the
+`unassignedSplits` gauge reads the enumerator now running. A JobManager failover, or a JobManager
+that loses and regains leadership, starts the counters again from zero.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -2804,11 +2809,18 @@ is one set for the job, since there is one enumerator.
 | `queryJobsReattached` | counter | re-plans that reused a previous attempt's query job under [`reuseQueryResultWithin`]({{< relref "docs/reference/bigquery" >}}) instead of submitting a new one — each is a query that was not billed again |
 | `unassignedSplits` | gauge (Flink standard) | read streams not currently held by a reader |
 
-**`readSessionsCreated` is the one to alert on.** It is `1` for a job that started and `0` for one
-that restored an existing session; any other value means the restore guard failed and the job is
-reading a second snapshot of the table. `queryJobsSubmitted` above `1` is the same failure seen from
-the other side, and on a [query source](#reading-a-query-or-a-view) it also means the query has been
-billed more than once.
+**`readSessionsCreated` is the one to alert on.** It rises by one each time an enumerator's
+planning call completes, and not for an enumerator that restored a session. A checkpoint that starts
+after a rise records the session unless the job restarts first, so once such a checkpoint has
+completed with no restart in between, a further rise means the restore guard failed and the job is
+reading a second snapshot of the table; in a run started from a savepoint or a checkpoint that
+recorded the session, any rise does. A rise in `queryJobsSubmitted` at that point is the same failure
+seen from the other side, and on a [query source](#reading-a-query-or-a-view) it also means the query
+has been billed again. Read `queryJobsSubmitted` only beside a `readSessionsCreated` rise: it counts
+a query when its result returns, inside the planning call and before the read session is created, so
+a planning call cut short by a restart may count in `queryJobsSubmitted` alone, or, while its query
+was still running, in neither, even where BigQuery had already accepted, and bills, that query.
+Inside a `HybridSource`, each BigQuery sub-source adds its own rise.
 
 Counters rather than an assigned-splits gauge, on the enumerator: a gauge would need a ledger of
 which subtask holds what, and not keeping one is the whole design of that enumerator (see

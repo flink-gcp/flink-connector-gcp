@@ -40,7 +40,6 @@ import io.github.flink.gcp.connector.base.source.ReaderInitializationContext;
 import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableLineage;
-import io.github.flink.gcp.connector.bigtable.EnumeratorClientMetrics;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.BigtableScanSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.readrows.enumerator.RowKeySampler;
@@ -81,10 +80,6 @@ public final class BigtableScanSource<T>
 
     private final BigtableSourceConfig<T> config;
     private final LineageMetadata lineage;
-
-    /** Shared by every enumerator this object builds; see {@link EnumeratorClientMetrics}. */
-    private final EnumeratorClientMetrics enumeratorClientMetrics =
-            new EnumeratorClientMetrics(SAMPLE_ROW_KEYS);
 
     /**
      * Creates the source.
@@ -173,9 +168,10 @@ public final class BigtableScanSource<T>
      * Builds one enumerator and the one sampler it owns.
      *
      * <p>A sampler per enumerator, minted here rather than carried on the configuration: this
-     * object is what the JobManager keeps for a job's whole life, and a coordinator reset builds
-     * the next enumerator from it. A shared sampler would already be closed by then, and would
-     * refuse this enumerator and every retry after it ({@code docs/adr/0128}).
+     * object is what the JobManager keeps across every coordinator reset under the default
+     * scheduler, and a coordinator reset builds the next enumerator from it. A shared sampler would
+     * already be closed by then, and would refuse this enumerator and every retry after it ({@code
+     * docs/adr/0128}).
      *
      * <p>The provider is loaded <em>before</em> the sampler is minted, so a key file that cannot be
      * read still fails here with nothing built to release.
@@ -194,7 +190,9 @@ public final class BigtableScanSource<T>
         try {
             sampler.useCredentials(credentials);
             if (config.isExportClientMetricsToFlink()) {
-                sampler.useClientMetrics(enumeratorClientMetrics.get(context.metricGroup()));
+                sampler.useClientMetrics(
+                        BigtableClientMetrics.registerForEnumerators(
+                                context.metricGroup(), SAMPLE_ROW_KEYS));
             }
             return new BigtableScanSplitEnumerator(context, config, sampler, checkpoint);
         } catch (Throwable e) {

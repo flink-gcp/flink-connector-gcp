@@ -23,9 +23,9 @@ import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
 import org.apache.flink.metrics.Gauge;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.pubsub.PubSubMetricNames;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
@@ -119,6 +119,11 @@ public class PubSubSplitEnumerator
 
     /** Written by {@code close()} on the scheduler thread, read by the completion handler. */
     private volatile boolean closed;
+
+    /**
+     * Replaced when the metrics register; volatile because {@link #close()} runs on another thread.
+     */
+    private volatile EnumeratorMetrics metrics = EnumeratorMetrics.unregistered();
 
     /**
      * Creates the enumerator.
@@ -366,16 +371,17 @@ public class PubSubSplitEnumerator
      * failovers; a value that stays below the plan's split count means a subtask never came back.
      */
     private void registerMetrics() {
-        SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
-        if (metricGroup == null) {
-            return;
-        }
-        metricGroup.gauge(
-                PubSubMetricNames.ASSIGNED_SPLITS, (Gauge<Integer>) this::assignedSplitCount);
-        metricGroup.gauge(
+        metrics = EnumeratorMetrics.of(context.metricGroup());
+        metrics.gauge(PubSubMetricNames.ASSIGNED_SPLITS, (Gauge<Integer>) this::assignedSplitCount);
+        metrics.gauge(
                 PubSubMetricNames.UNASSIGNED_READERS, (Gauge<Integer>) subtasksWithoutSplits::size);
-        metricGroup.setUnassignedSplitsGauge(
-                () -> (long) (plan.splitCount() - assignedSplitCount()));
+        metrics.unassignedSplitsGauge(() -> (long) (plan.splitCount() - assignedSplitCount()));
+        if (closed) {
+            // close() ran first, on Flink's closer thread, and closed the view this replaced: let
+            // go
+            // of what was just bound rather than leave it reading a closed enumerator.
+            metrics.close();
+        }
     }
 
     /** Counts the splits currently held by registered subtasks. */
@@ -485,6 +491,7 @@ public class PubSubSplitEnumerator
         // Runs on the scheduler thread, possibly while the check is still in flight; the flag is
         // volatile so the completion handler sees it and stays quiet.
         closed = true;
+        metrics.close();
         try {
             admin.close();
         } catch (Exception e) {

@@ -18,12 +18,11 @@ package io.github.flink.gcp.connector.datastore.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
-import org.apache.flink.metrics.ThreadSafeSimpleCounter;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.Preconditions;
 
 import com.google.datastore.v1.Query;
 import io.github.flink.gcp.connector.base.source.EnumeratorCounters;
+import io.github.flink.gcp.connector.base.source.EnumeratorMetrics;
 import io.github.flink.gcp.connector.base.source.PullAssignmentSplitEnumerator;
 import io.github.flink.gcp.connector.datastore.DatastoreMetricNames;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceConfig;
@@ -177,14 +176,11 @@ public class DatastoreBatchSplitEnumerator
     }
 
     @Override
-    protected EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup) {
+    protected EnumeratorCounters registerCounters(EnumeratorMetrics metrics) {
         return new EnumeratorCounters(
-                metricGroup.counter(
-                        DatastoreMetricNames.SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        DatastoreMetricNames.SPLITS_RETURNED, new ThreadSafeSimpleCounter()),
-                metricGroup.counter(
-                        DatastoreMetricNames.READS_PLANNED, new ThreadSafeSimpleCounter()));
+                metrics.counter(DatastoreMetricNames.SPLITS_ASSIGNED),
+                metrics.counter(DatastoreMetricNames.SPLITS_RETURNED),
+                metrics.counter(DatastoreMetricNames.READS_PLANNED));
     }
 
     @Override

@@ -137,6 +137,8 @@ A deserializer that throws fails the job, and the document is read again after t
 ### Source metrics
 
 Registered on the Native-mode source reader's and split enumerator's metric groups.
+The enumerator's counters count for as long as the JobManager leads the job: an enumerator that a failover or a restart builds adds to the counters the first one registered.
+A JobManager failover, or a JobManager that loses and regains leadership, starts them again from zero.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -145,7 +147,7 @@ Registered on the Native-mode source reader's and split enumerator's metric grou
 | `recordsSkipped` | counter | Documents the deserializer produced no record for |
 | `splitsAssigned` | counter | Splits the enumerator handed to a reader |
 | `splitsReturned` | counter | Splits a failed reader gave back to the enumerator |
-| `readsPlanned` | counter | Planning calls that completed: one on a fresh run, zero on one restored from a checkpoint that recorded the plan |
+| `readsPlanned` | counter | Planning calls that completed: one each time an enumerator's planning call completes, none for one restored from a checkpoint that recorded the plan. A checkpoint that starts after a rise records the plan unless the job restarts first, so once such a checkpoint has completed with no restart in between, a further rise means the plan was recomputed; in a run started from a savepoint or a checkpoint that recorded the plan, any rise does. Inside a `HybridSource`, each sub-source that plans adds its own rise |
 
 ### Not here yet
 
@@ -665,6 +667,8 @@ An entity that produces no record is skipped, counted in `recordsSkipped`, and s
 ### Datastore source metrics
 
 Registered on the Datastore source reader's and split enumerator's metric groups.
+The enumerator's counters count for as long as the JobManager leads the job: an enumerator that a failover or a restart builds adds to the counters the first one registered.
+A JobManager failover, or a JobManager that loses and regains leadership, starts them again from zero.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -673,7 +677,7 @@ Registered on the Datastore source reader's and split enumerator's metric groups
 | `recordsSkipped` | counter | Entities the deserializer produced no record for |
 | `splitsAssigned` | counter | Splits the enumerator handed to a reader |
 | `splitsReturned` | counter | Splits a failed reader gave back to the enumerator |
-| `readsPlanned` | counter | Planning calls that completed: one on a fresh run, zero on one restored from a checkpoint that recorded the plan |
+| `readsPlanned` | counter | Planning calls that completed: one each time an enumerator's planning call completes, none for one restored from a checkpoint that recorded the plan. A checkpoint that starts after a rise records the plan unless the job restarts first, so once such a checkpoint has completed with no restart in between, a further rise means the plan was recomputed; in a run started from a savepoint or a checkpoint that recorded the plan, any rise does. Inside a `HybridSource`, each sub-source that plans adds its own rise |
 
 ## Testing
 

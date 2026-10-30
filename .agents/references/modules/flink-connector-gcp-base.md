@@ -105,12 +105,33 @@ record — context, evidence, declined alternatives — is the named ADR under `
   (`BigtableClientMetrics`, `CloudTasksClientMetrics`, `SpannerClientMetrics`) carries the leaf
   names and is a `[[subgroups]]` source of `scripts/config/metric-docs.toml`; leaf constants stay in
   the adapter, never in base.
-- A group that outlives the component gets one registration, not one per component: Flink keeps one
-  enumerator metric group per source for the job's life and drops a second registration of a name
-  (`AbstractMetricGroup.addMetric`), so an enumerator's `ClientMetrics` belongs to the source object
-  (Bigtable's `EnumeratorClientMetrics`, Spanner's `SpannerEnumeratorClientMetrics`).
-  `ClientMetrics.close()` only freezes the counters; a component whose group ends with it need not
-  call it.
+- A group that outlives the component gets one registration, not one per component. An
+  enumerator's `ClientMetrics` is a `shared` value of `EnumeratorMetrics` (the adapters'
+  `registerForEnumerators`); see `base.source` below. `ClientMetrics.close()`
+  only freezes the counters; a component whose group ends with it need not call it.
+
+## `base.source` enumerator metrics (`docs/adr/0188`)
+
+- **Every enumerator registers its metrics through `EnumeratorMetrics`, never on
+  `context.metricGroup()` directly.** Flink keeps one enumerator metric group per source operator
+  for as long as the JobMaster leads the job, under both schedulers, and drops a second
+  registration of a name; the enumerator a
+  failover or restart builds would count into series nobody reports. Open the view with
+  `EnumeratorMetrics.of(context.metricGroup())` where the enumerator registers (initialise the field
+  with `unregistered()`), close it in the enumerator's `close()` after setting the closed flag, and
+  hold it in a `volatile` field: Flink may close an enumerator on its closer thread before the
+  queued `start()` runs, so the registration closes its new view again when it finds the flag set.
+- Counters are shared and continue across resets (owner's choice); gauges re-bind to the current
+  enumerator and freeze at close; `unassignedSplitsGauge` replaces `setUnassignedSplitsGauge`.
+  Registrations are keyed weakly by the identity of the `sharedRegistrations` subgroup, never by
+  the source object (the adaptive scheduler deserializes a new one per restart) or a scope string
+  (it outlives a closed group).
+- A shared value's key names what it registers, never only who asks: a `HybridSource`'s
+  sub-sources share one enumerator group, so the client adapters key the client metrics and each RPC
+  method's series separately.
+- `PullAssignmentSplitEnumerator#registerCounters(EnumeratorMetrics)` hands the view to the
+  subclass; take counters from `metrics.counter(<Product>MetricNames.X)`, which is also the shape
+  `check-metric-docs` reads.
 
 ## `base.catalog` (`docs/adr/0168`)
 
@@ -158,8 +179,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
 
 - The one `AutoCloseable` `PullAssignmentSplitEnumerator` takes is the enumerator's for its
   lifetime, and `close()` ends it. A source therefore mints one per `createEnumerator` and
-  `restoreEnumerator` rather than carrying one on its serialized configuration, because the
-  JobManager reuses one `Source` object for a job's whole life (`docs/adr/0128`). Do not add a
+  `restoreEnumerator` rather than carrying one on its serialized configuration, because under the
+  default scheduler the JobManager reuses one `Source` object across every coordinator reset
+  (`docs/adr/0128`; the adaptive scheduler deserializes a new one per restart). Do not add a
   `protected` accessor for it here: a subclass that also plans through the seam keeps its own typed
   field, which is what all three subclasses do.
 - `SynchronousDeserializationCollector.deserialize` is the one direct adapter for all collector-
@@ -188,8 +210,8 @@ record — context, evidence, declined alternatives — is the named ADR under `
 - **The counters are registered by the connector, in `registerCounters`, and that is not style**:
   `scripts/check-metric-docs.py` reads a literal `.counter(<Product>MetricNames.X)` out of the
   module's own sources to decide a documented metric is registered, so a name passed in here as a
-  string would report as unregistered. Keep the registration call where the name lives;
-  `EnumeratorCounters.unregistered()` is what stands in when a context offers no metric group.
+  string would report as unregistered. Keep the registration call where the name lives; a context
+  that offers no metric group gets unreported counters from `EnumeratorMetrics.unregistered()`.
 - Logging goes through `LoggerFactory.getLogger(getClass())` — the concrete connector's category,
   so a connector-scoped log configuration keeps matching. **Deliberately the opposite of
   `BoundedShutdown`**, which logs under its own name (`docs/adr/0007`): there the shared class is

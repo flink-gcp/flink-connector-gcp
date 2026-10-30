@@ -62,6 +62,30 @@ class BigtableChangeStreamSplitEnumeratorTest {
     private static final ByteStringRange THIRD = ByteStringRange.unbounded().startClosed("s");
 
     @Test
+    void anEnumeratorBuiltOnTheSameGroupKeepsReportingThroughTheFirstRegistrations()
+            throws Exception {
+        // A coordinator reset builds the next enumerator on the group the first one registered
+        // on, where Flink drops a second registration of a name (#1908).
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator first =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        first.start();
+        first.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+        context.runAsyncCalls();
+        first.close();
+
+        BigtableChangeStreamSplitEnumerator second =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        second.start();
+        second.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+        context.runAsyncCalls();
+
+        assertThat(context.counter(BigtableMetricNames.SPLITS_ASSIGNED)).isEqualTo(2);
+        assertThat(context.counter("changeStreamPartitionsDiscovered")).isEqualTo(2);
+        second.close();
+    }
+
+    @Test
     void fillsOnlyFreeSlotsUntilEveryReaderHasReported() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
         BigtableChangeStreamSplitEnumerator enumerator =

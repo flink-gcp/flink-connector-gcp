@@ -21,7 +21,6 @@ import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
-import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 
@@ -346,6 +345,54 @@ class PullAssignmentSplitEnumeratorTest {
     }
 
     @Test
+    void anEnumeratorBuiltOnTheSameGroupKeepsReportingThroughTheFirstRegistrations()
+            throws Exception {
+        // A coordinator reset builds the next enumerator on the group the first one registered
+        // on, where Flink drops a second registration of a name (#1908).
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        context.registerReader(0);
+        try (TestEnumerator first = started(context, 2)) {
+            first.handleSplitRequest(0, "localhost");
+        }
+
+        try (TestEnumerator second = started(context, 3)) {
+            second.handleSplitRequest(0, "localhost");
+
+            assertThat(context.counter(SPLITS_ASSIGNED)).isEqualTo(2);
+            assertThat(context.counter(PLANS_COMPLETED)).isEqualTo(2);
+            assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(2L);
+        }
+    }
+
+    @Test
+    void aClosedEnumeratorsGaugeStopsReadingIt() throws Exception {
+        // The group outlives the enumerator, so the gauge must let go of it at close.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        context.registerReader(0);
+        TestEnumerator enumerator = started(context, 2);
+        enumerator.handleSplitRequest(0, "localhost");
+
+        enumerator.close();
+        enumerator.addSplitsBack(context.assignedSplits(0), 0);
+
+        assertThat(context.<Long>gauge("unassignedSplits")).isEqualTo(1L);
+    }
+
+    @Test
+    void anEnumeratorClosedBeforeItStartsLeavesNoGaugeReadingIt() throws Exception {
+        // Flink queues start() on the coordinator thread and runs close() on its closer thread, so
+        // a reset arriving at once can close an enumerator whose start() has not run yet.
+        FakeSplitEnumeratorContext<TestSplit> context = new FakeSplitEnumeratorContext<>(1);
+        TestEnumerator enumerator = enumerator(context, ScriptedPlanner.planning(2));
+
+        enumerator.close();
+        enumerator.start();
+        enumerator.addSplitsBack(Collections.singletonList(new TestSplit("returned")), 0);
+
+        assertThat(context.<Long>gauge("unassignedSplits")).isZero();
+    }
+
+    @Test
     void runsWithoutAMetricGroup() throws Exception {
         // Defensive, and cheap to hold: SplitEnumeratorContext#metricGroup() carries no nullability
         // annotation, and a context answering with nothing must not fail the job at startup.
@@ -515,11 +562,11 @@ class PullAssignmentSplitEnumeratorTest {
         }
 
         @Override
-        protected EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup) {
+        protected EnumeratorCounters registerCounters(EnumeratorMetrics metrics) {
             return new EnumeratorCounters(
-                    metricGroup.counter(SPLITS_ASSIGNED, new ThreadSafeSimpleCounter()),
-                    metricGroup.counter(SPLITS_RETURNED, new ThreadSafeSimpleCounter()),
-                    metricGroup.counter(PLANS_COMPLETED, new ThreadSafeSimpleCounter()));
+                    metrics.counter(SPLITS_ASSIGNED),
+                    metrics.counter(SPLITS_RETURNED),
+                    metrics.counter(PLANS_COMPLETED));
         }
 
         @Override

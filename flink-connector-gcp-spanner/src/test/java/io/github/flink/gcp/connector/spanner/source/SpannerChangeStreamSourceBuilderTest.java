@@ -388,9 +388,10 @@ class SpannerChangeStreamSourceBuilderTest {
     private static final List<ClientMetrics> RECEIVED_CLIENT_METRICS = new ArrayList<>();
 
     @Test
-    void everyEnumeratorOfTheSourceRecordsIntoTheSourcesOneSetOfClientMetrics() throws Exception {
-        // A coordinator reset builds the next enumerator from the same source on the same group;
-        // a second registration there would be dropped, so the set is the source's, made once.
+    void everyEnumeratorOnOneGroupRecordsIntoOneSetOfClientMetrics() throws Exception {
+        // A coordinator reset builds the next enumerator on the same group, where a second
+        // registration would be dropped; under the adaptive scheduler it also comes from a new
+        // source object, so each enumerator here is built from a source of its own (#1908).
         runTwoEnumerators(true);
 
         assertThat(RECEIVED_CLIENT_METRICS).hasSize(2).doesNotContainNull();
@@ -406,33 +407,35 @@ class SpannerChangeStreamSourceBuilderTest {
 
     private static void runTwoEnumerators(boolean exportToFlink) throws Exception {
         RECEIVED_CLIENT_METRICS.clear();
-        SpannerChangeStreamSource<Long> source =
-                builderWithoutEndpoint()
-                        .exportClientMetricsToFlink(exportToFlink)
-                        .coordinatorClientFactory(
-                                clientMetrics -> {
-                                    RECEIVED_CLIENT_METRICS.add(clientMetrics);
-                                    return new SpannerChangeStreamCoordinatorClient() {
-                                        @Override
-                                        public Duration initialize() {
-                                            return Duration.ofDays(7);
-                                        }
-
-                                        @Override
-                                        public void close() {}
-                                    };
-                                })
-                        .build();
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context =
                 new FakeSplitEnumeratorContext<>(1);
         context.registerReader(0);
 
         for (int i = 0; i < 2; i++) {
             SplitEnumerator<ChangeStreamPartitionSplit, ?> enumerator =
-                    source.createEnumerator(context);
+                    source(exportToFlink).createEnumerator(context);
             enumerator.start();
             context.runAsyncCalls();
             enumerator.close();
         }
+    }
+
+    private static SpannerChangeStreamSource<Long> source(boolean exportToFlink) {
+        return builderWithoutEndpoint()
+                .exportClientMetricsToFlink(exportToFlink)
+                .coordinatorClientFactory(
+                        clientMetrics -> {
+                            RECEIVED_CLIENT_METRICS.add(clientMetrics);
+                            return new SpannerChangeStreamCoordinatorClient() {
+                                @Override
+                                public Duration initialize() {
+                                    return Duration.ofDays(7);
+                                }
+
+                                @Override
+                                public void close() {}
+                            };
+                        })
+                .build();
     }
 }

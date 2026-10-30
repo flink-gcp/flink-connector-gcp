@@ -25,9 +25,10 @@ import java.io.Serializable;
  * Mints the {@link ReadSessionCreator} one enumerator plans through.
  *
  * <p>Serializable because the source carries it there; the creator it mints is not, which is the
- * whole reason for the indirection. The JobManager holds one source object for a job's whole life,
- * so a creator on the source configuration would be shared by every enumerator a coordinator reset
- * builds and the first teardown would refuse every later one ({@code docs/adr/0128}).
+ * whole reason for the indirection. The JobManager keeps one source object across every coordinator
+ * reset under the default scheduler, so a creator on the source configuration would be shared by
+ * every enumerator a coordinator reset builds and the first teardown would refuse every later one
+ * ({@code docs/adr/0128}).
  *
  * <p>An implementation holds only values that may travel in a job graph. It does not open a client:
  * the creator it answers with builds one on first use, so a restore whose checkpoint already

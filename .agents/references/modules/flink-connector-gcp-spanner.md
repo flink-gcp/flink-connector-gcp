@@ -439,9 +439,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   its client calls when it opens, before the client exists; a method missing from that list is
   dropped with a single `WARN`, so a new call site adds its method there and to the page's
   component table. `SpannerClientMetricsITCase` fails on such a `WARN`.
-- The enumerators' `ClientMetrics` belong to the source object (`SpannerEnumeratorClientMetrics`,
-  one per source, registered by the first enumerator and never closed): their metric group outlives
-  every enumerator, and a second registration there would be refused. The planner and the
+- The enumerators' `ClientMetrics` come from `SpannerClientMetrics.registerForEnumerators`, one
+  registration per enumerator metric group, never closed (`docs/adr/0188`): the group outlives every
+  enumerator, and a second registration there would be refused. The planner and the
   coordinator's client record into them and never close them. Every other seam that owns the
   `Spanner` handle owns its `ClientMetrics` and closes it after the handle.
   `PartitionPlanner` and `StructStreamOpener` take it through abstract `useClientMetrics`; the two

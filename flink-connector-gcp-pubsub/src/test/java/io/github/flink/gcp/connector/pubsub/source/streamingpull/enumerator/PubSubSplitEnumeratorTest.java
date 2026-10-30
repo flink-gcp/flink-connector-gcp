@@ -707,6 +707,21 @@ class PubSubSplitEnumeratorTest {
     }
 
     @Test
+    void anEnumeratorBuiltOnTheSameGroupTakesOverTheGauges() throws Exception {
+        // A coordinator reset builds the next enumerator on the group the first one registered
+        // on, where Flink drops a second registration of a name (#1908).
+        FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(3);
+        startedOrdered(context, SUB_A, SUB_B).close();
+
+        PubSubSplitEnumerator second = startedOrdered(context, SUB_A, SUB_B);
+        registerAll(context, second, 3);
+
+        assertThat(context.<Integer>gauge("assignedSplits")).isEqualTo(2);
+        assertThat(context.<Integer>gauge("unassignedReaders")).isEqualTo(1);
+        assertThat(context.<Long>gauge("unassignedSplits")).isZero();
+    }
+
+    @Test
     void returnedSplitsAreCountedBackAsUnassigned() {
         FakeSplitEnumeratorContext context = new FakeSplitEnumeratorContext(1);
         PubSubSplitEnumerator enumerator = started(context, OrderingMode.NONE, SUB_A);

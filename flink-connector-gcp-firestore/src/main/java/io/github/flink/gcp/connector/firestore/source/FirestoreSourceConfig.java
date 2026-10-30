@@ -151,9 +151,10 @@ public final class FirestoreSourceConfig<T> implements Serializable {
     /**
      * Returns the factory the source mints one planner per enumerator from.
      *
-     * <p>A factory rather than a planner because the JobManager holds one source object for a job's
-     * whole life, so a planner here would be shared by every enumerator a coordinator reset builds
-     * and the first teardown would refuse every later one ({@code docs/adr/0128}).
+     * <p>A factory rather than a planner because the JobManager keeps one source object across
+     * every coordinator reset under the default scheduler, so a planner here would be shared by
+     * every enumerator a coordinator reset builds and the first teardown would refuse every later
+     * one ({@code docs/adr/0128}).
      */
     public QueryPlannerFactory getPlannerFactory() {
         return plannerFactory;

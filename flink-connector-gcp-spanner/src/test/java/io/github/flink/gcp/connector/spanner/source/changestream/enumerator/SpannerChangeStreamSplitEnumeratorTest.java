@@ -56,6 +56,27 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 class SpannerChangeStreamSplitEnumeratorTest {
 
     @Test
+    void anEnumeratorBuiltOnTheSameGroupKeepsReportingThroughTheFirstRegistrations()
+            throws Exception {
+        // A coordinator reset builds the next enumerator on the group the first one registered
+        // on, where Flink drops a second registration of a name (#1908).
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        SpannerChangeStreamSplitEnumerator first = enumerator(context, new ScriptedClient(), null);
+        first.start();
+        first.handleSplitRequest(0, "localhost");
+        context.runAsyncCalls();
+        first.close();
+
+        SpannerChangeStreamSplitEnumerator second = enumerator(context, new ScriptedClient(), null);
+        second.start();
+        second.handleSplitRequest(0, "localhost");
+        context.runAsyncCalls();
+
+        assertThat(context.counter(SpannerMetricNames.SPLITS_ASSIGNED)).isEqualTo(2);
+        second.close();
+    }
+
+    @Test
     void freshLatestSeedsOneNullTokenAfterInspectingStreamMetadata() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         ScriptedClient client = new ScriptedClient();

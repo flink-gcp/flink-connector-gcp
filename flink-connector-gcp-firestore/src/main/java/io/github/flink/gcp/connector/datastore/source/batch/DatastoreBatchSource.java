@@ -142,10 +142,10 @@ public final class DatastoreBatchSource<T>
 
     /**
      * Builds one enumerator and the one planner it owns — minted here rather than carried on the
-     * configuration, because a coordinator reset builds the next enumerator from this same object
-     * and a shared planner would already be closed ({@code docs/adr/0128}). The credentials are
-     * loaded before the planner is minted, so a key file that cannot be read fails with nothing
-     * built to release.
+     * configuration, because under the default scheduler a coordinator reset builds the next
+     * enumerator from this same object and a shared planner would already be closed ({@code
+     * docs/adr/0128}). The credentials are loaded before the planner is minted, so a key file that
+     * cannot be read fails with nothing built to release.
      */
     private DatastoreBatchSplitEnumerator enumerator(
             SplitEnumeratorContext<QuerySplit> context,

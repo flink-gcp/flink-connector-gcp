@@ -21,7 +21,6 @@ import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.api.connector.source.SplitsAssignment;
-import org.apache.flink.metrics.groups.SplitEnumeratorMetricGroup;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 
@@ -68,11 +67,13 @@ import java.util.Set;
  * <p>The metrics follow the same rule. Counting assignments and returns needs no reconciliation,
  * while a gauge of currently-assigned splits would need the ledger this class exists without; the
  * unassigned side is Flink's own gauge, reading the queue directly — a best-effort read, since the
- * reporter thread samples a queue the coordinator thread mutates.
+ * reporter thread samples a queue the coordinator thread mutates. Every enumerator built on the
+ * source's metric group shares one registration of each, through {@link EnumeratorMetrics}, so the
+ * counters keep counting and the gauge follows the current enumerator across coordinator resets.
  *
  * <p><b>What a connector supplies</b> is the planning step and the words for it: {@link #restore()}
  * (a checkpointed plan is never recomputed), {@link #onPlanningStarted()}, {@link #plan()}, {@link
- * #onPlanned(Object)}, {@link #registerCounters(SplitEnumeratorMetricGroup)} and {@link
+ * #onPlanned(Object)}, {@link #registerCounters(EnumeratorMetrics)} and {@link
  * #snapshotState(long)}. Everything else here is {@code final}: the queue, the parking, the
  * assignment protocol, the guard that keeps a completion arriving after teardown quiet, and the
  * close of the one seam the enumerator owns.
@@ -114,6 +115,9 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
     private volatile boolean closed;
 
     private EnumeratorCounters counters = EnumeratorCounters.unregistered();
+
+    /** Replaced at {@link #start()}; volatile because {@link #close()} runs on another thread. */
+    private volatile EnumeratorMetrics metrics = EnumeratorMetrics.unregistered();
 
     /**
      * Creates the enumerator.
@@ -197,14 +201,15 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
     /**
      * Registers this connector's three enumerator counters on the group Flink supplied.
      *
-     * <p>Called once, from {@link #start()}, and only when the context offered a metric group.
-     * Registering here rather than in this class keeps every metric name in the connector that owns
-     * it; see {@link EnumeratorCounters}.
+     * <p>Called once, from {@link #start()}. Registering here rather than in this class keeps every
+     * metric name in the connector that owns it; see {@link EnumeratorCounters}. A counter taken
+     * from {@link EnumeratorMetrics#counter(String)} is the one every enumerator of the source
+     * shares, which is what keeps it reported after a coordinator reset.
      *
-     * @param metricGroup the enumerator's metric group
+     * @param metrics this enumerator's view of the source's enumerator metrics
      * @return the registered counters
      */
-    protected abstract EnumeratorCounters registerCounters(SplitEnumeratorMetricGroup metricGroup);
+    protected abstract EnumeratorCounters registerCounters(EnumeratorMetrics metrics);
 
     /**
      * Adds splits to the unassigned queue, in assignment order.
@@ -272,19 +277,23 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
     /**
      * Registers the enumerator's metrics.
      *
-     * <p>The null check is defensive: {@code SplitEnumeratorContext#metricGroup()} carries no
-     * nullability annotation, and a context that answered with nothing would otherwise fail the job
-     * at startup over its metrics. Flink's own contexts always provide one.
+     * <p>{@code SplitEnumeratorContext#metricGroup()} carries no nullability annotation, and a
+     * context that answered with nothing would otherwise fail the job at startup over its metrics;
+     * {@link EnumeratorMetrics} hands such an enumerator unreported counters instead. Flink's own
+     * contexts always provide a group.
      */
     private void registerMetrics() {
-        SplitEnumeratorMetricGroup metricGroup = context.metricGroup();
-        if (metricGroup == null) {
-            return;
-        }
+        metrics = EnumeratorMetrics.of(context.metricGroup());
         counters =
                 Preconditions.checkNotNull(
-                        registerCounters(metricGroup), "registerCounters must not answer null");
-        metricGroup.setUnassignedSplitsGauge(() -> (long) pending.size());
+                        registerCounters(metrics), "registerCounters must not answer null");
+        metrics.unassignedSplitsGauge(() -> (long) pending.size());
+        if (closed) {
+            // close() ran first, on Flink's closer thread, and closed the view this replaced: let
+            // go
+            // of what was just bound rather than leave it reading a closed enumerator.
+            metrics.close();
+        }
     }
 
     @Override
@@ -346,6 +355,7 @@ public abstract class PullAssignmentSplitEnumerator<SplitT extends SourceSplit, 
         // Runs on the scheduler thread, possibly while the planning call is still in flight; the
         // flag is volatile so the completion handler sees it and stays quiet.
         closed = true;
+        metrics.close();
         try {
             Closers.closeAll(planner);
         } catch (Exception e) {

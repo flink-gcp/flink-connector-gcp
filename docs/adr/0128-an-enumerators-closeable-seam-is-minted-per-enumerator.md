@@ -18,6 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-22 (measured 2026-08-22)
+- Updated: 2026-10-30 (the one-source-object premise holds under the default scheduler only; [ADR-0188])
 - Issues: [#990](https://github.com/flink-gcp/flink-connector-gcp/issues/990)
 - Modules: spanner, bigtable, bigquery (rule applies to all)
 - Current behavior: a global restore no longer fails the job with a closed-seam error
@@ -187,3 +188,16 @@ the seam's javadoc says why it has no teardown.
 Each of the three scripted doubles now refuses after its own `close()`. Without that they cannot
 tell a shared seam from a fresh one, and a regression test written against them would pass on the
 defect it was written for.
+
+## Refinement (2026-10-30): the premise holds under the default scheduler
+
+The context above was read from the default scheduler's path, and the Javadoc that cited it said
+the JobManager keeps one source object "for a job's whole life". The adaptive scheduler does not:
+at every restart or rescale it builds a new execution graph and `OperatorCoordinatorHolder.create`
+deserializes a new coordinator provider, and with it a new source object (read from `flink-runtime`
+1.20.4, 2.2.1 and 2.3.0, and measured on #1908; [ADR-0188]). The decision is unchanged: under the
+adaptive scheduler no seam is shared because no source object is, so minting per enumerator is
+right under both. The Javadoc and the agent references now name the default scheduler as where one
+source object outlives a coordinator reset.
+
+[ADR-0188]: 0188-enumerator-metrics-register-once-per-enumerator-metric-group.md

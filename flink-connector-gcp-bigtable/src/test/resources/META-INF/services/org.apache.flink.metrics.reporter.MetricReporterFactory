@@ -14,3 +14,4 @@
 
 io.github.flink.gcp.connector.bigtable.source.ActiveChangeStreamReadsReporter
 io.github.flink.gcp.connector.bigtable.sink.mutaterows.writer.RpcMethodSeriesReporter
+io.github.flink.gcp.connector.bigtable.source.BigtableEnumeratorMetricsRestartITCase$EnumeratorSeriesReporter

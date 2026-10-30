@@ -145,21 +145,26 @@ class SpannerBatchReadSourceRuntimeCredentialsTest {
     }
 
     @Test
-    void everyEnumeratorOfTheSourceSharesOneSetOfClientMetrics() throws Exception {
-        // A coordinator reset builds the next enumerator from the same source on the same group;
-        // a second registration there would be dropped, so the set is the source's, made once.
-        CapturingOpener opener = new CapturingOpener();
+    void everyEnumeratorOnOneGroupSharesOneSetOfClientMetrics() throws Exception {
+        // A coordinator reset builds the next enumerator on the group the first one registered on,
+        // where a second registration would be dropped; under the adaptive scheduler it also comes
+        // from a new source object, so the set must hang on the group, not the source (#1908).
         CapturingPlannerFactory planners = new CapturingPlannerFactory();
-        SpannerBatchReadSource<Long> source = source(opener, planners, true);
         FakeSplitEnumeratorContext<BatchReadSplit> context = new FakeSplitEnumeratorContext<>(1);
 
-        source.createEnumerator(context).close();
-        source.restoreEnumerator(context, null).close();
+        source(new CapturingOpener(), planners, true).createEnumerator(context).close();
+        source(new CapturingOpener(), planners, true).restoreEnumerator(context, null).close();
+        source(new CapturingOpener(), planners, true)
+                .createEnumerator(new FakeSplitEnumeratorContext<>(1))
+                .close();
 
-        assertThat(planners.minted()).hasSize(2);
+        assertThat(planners.minted()).hasSize(3);
         assertThat(planners.minted().get(0).clientMetrics).isNotNull();
         assertThat(planners.minted().get(1).clientMetrics)
                 .isSameAs(planners.minted().get(0).clientMetrics);
+        assertThat(planners.minted().get(2).clientMetrics)
+                .isNotNull()
+                .isNotSameAs(planners.minted().get(0).clientMetrics);
     }
 
     @Test

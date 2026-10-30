@@ -32,10 +32,11 @@ import java.io.IOException;
  *
  * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
  * ReadSessionCreatorFactory}, and the source mints one creator per enumerator from it. The
- * JobManager holds one source object for a job's whole life, so a creator parked on the source
- * configuration would be shared by every enumerator a coordinator reset builds, and the first
- * teardown would refuse every later one (issue #990, {@code docs/adr/0128}). Implementations still
- * create their client state on first use, not in their constructor, so minting one opens nothing.
+ * JobManager keeps one source object across every coordinator reset under the default scheduler, so
+ * a creator parked on the source configuration would be shared by every enumerator a coordinator
+ * reset builds, and the first teardown would refuse every later one (issue #990, {@code
+ * docs/adr/0128}). Implementations still create their client state on first use, not in their
+ * constructor, so minting one opens nothing.
  */
 @Internal
 public interface ReadSessionCreator extends AutoCloseable {

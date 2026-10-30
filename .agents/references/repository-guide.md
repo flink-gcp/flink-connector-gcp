@@ -1113,10 +1113,11 @@ connector gets its own module file rather than a section here.
   are in the ADR.
 
 - **A seam the enumerator closes is minted per enumerator; a seam with no teardown may stay on the
-  configuration** (#990; `docs/adr/0128`): the JobManager holds one `Source` object for a job's
-  whole life — `RecreateOnResetOperatorCoordinator` rebuilds the coordinator from the same
-  `Provider`, and `SourceCoordinatorProvider` holds one `Source` — so a closeable seam on the
-  source configuration is shared by every enumerator a global restore builds, and the first
+  configuration** (#990; `docs/adr/0128`): under the default scheduler the JobManager holds one
+  `Source` object across every coordinator reset (the adaptive scheduler deserializes a new one per
+  restart, `docs/adr/0188`) — `RecreateOnResetOperatorCoordinator` rebuilds the coordinator from
+  the same `Provider`, and `SourceCoordinatorProvider` holds one `Source` — so a closeable seam on
+  the source configuration is shared by every enumerator a global restore builds, and the first
   teardown refuses every later one. The configuration carries a serializable factory with a no-arg
   `create()` (an argument may only be runtime state the caller hands over, such as client
   metrics), the source mints in both `createEnumerator` and `restoreEnumerator` and closes what

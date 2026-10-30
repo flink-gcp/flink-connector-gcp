@@ -70,10 +70,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The connector-side half of that defect — two enumerators over one source object must not share
  * a seam — is pinned deterministically by {@code SpannerBatchReadSourcePlannerLifecycleTest}. The
- * Flink-side half — a global restore builds the next enumerator from {@code
- * Source#createEnumerator} on the <em>same</em> object — is measured by {@code
- * BigQueryQueryJobIdentityITCase} on every supported version. This class is the composition: a real
- * job, a real coordinator reset, and the real planner.
+ * Flink-side half — under the default scheduler, which this class runs, a global restore builds the
+ * next enumerator from {@code Source#createEnumerator} on the <em>same</em> object — is measured by
+ * {@code BigQueryQueryJobIdentityITCase} on every supported version. This class is the composition:
+ * a real job, a real coordinator reset, and the real planner.
  *
  * <p><b>Which failure, and why not a simpler one.</b> A task failure does not rebuild the
  * enumerator, under the default {@code region} failover strategy or under {@code full} alike; only
@@ -152,18 +152,18 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
     }
 
     /**
-     * The client metrics of the enumerators keep counting across the global restore: the restore
-     * builds the next enumerator from the same source object on the same metric group, so the
-     * source registers its enumerators' set once and hands it to both.
+     * The enumerators' metrics keep counting across the global restore: the restore builds the next
+     * enumerator on the same metric group, where every metric, the client's and the connector's
+     * own, is registered once and handed to both (issue #1908).
      *
      * <p>Registering per enumerator, the second registration would be refused by the group with a
-     * {@code Name collision} warning for every leaf (logged under Flink's {@code MetricGroup}, not
-     * the class that refuses it), and the reporter would keep the first enumerator's set, which
-     * nothing records into after the restore. The connector's own enumerator counters still collide
-     * that way (issue #1908), so the warnings are filtered to the client-metrics leaves.
+     * {@code Name collision} warning for every name (logged under Flink's {@code MetricGroup}, not
+     * the class that refuses it), and the reporter would keep the first enumerator's series, which
+     * nothing records into after the restore. So any such warning on the enumerator group fails the
+     * test.
      */
     @Test
-    void theEnumeratorsClientMetricsAreRegisteredOnceAcrossTheGlobalRestore() throws Exception {
+    void theEnumeratorsMetricsAreRegisteredOnceAcrossTheGlobalRestore() throws Exception {
         assertThat(System.getenv("SPANNER_EMULATOR_HOST"))
                 .as(
                         "SPANNER_EMULATOR_HOST puts the client back in its emulator mode, where it"
@@ -204,23 +204,19 @@ class SpannerSourceGlobalFailoverITCase extends AbstractSpannerEmulatorITCase {
                                     .get("coordinator/PartitionQuery.operations"))
                     .as("the enumerators' series were registered and recorded into")
                     .isPositive();
+            // Every enumerator metric, the client's and the connector's own (#1908): the second
+            // enumerator takes the first one's registrations instead of colliding with them.
             assertThat(collisions.getMessages())
-                    .as("no client-metrics leaf was registered twice on the enumerator group")
+                    .as("no enumerator metric was registered twice on the enumerator group")
                     .noneMatch(
                             message ->
                                     message.contains("Name collision")
-                                            && CLIENT_METRICS_LEAF.matcher(message).find());
+                                            && message.contains("coordinator, enumerator"));
         } finally {
             EmulatorModeBypass.set(false);
             RpcMethodSeriesReporter.reset();
         }
     }
-
-    private static final java.util.regex.Pattern CLIENT_METRICS_LEAF =
-            java.util.regex.Pattern.compile(
-                    "'(operations|operationTimeMillis|attempts|attemptTimeMillis"
-                            + "|attemptsWithGfeTiming|gfeTimeMillis|gfeConnectivityErrors"
-                            + "|attemptsWithAfeTiming|afeTimeMillis|afeConnectivityErrors)'");
 
     private static Source<Long, BatchReadSplit, SpannerBatchReadEnumeratorState> source(
             DatabaseDestination database) {

@@ -33,10 +33,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Pins that one sampler belongs to one enumerator.
  *
- * <p>The JobManager keeps one source object for a job's whole life, and a coordinator reset builds
- * the next enumerator from it — so a sampler carried on the source configuration would already have
- * been closed by the enumerator before it. Issue #990 was that in the Spanner batch source, and the
- * scan source had the same shape, held one level down in {@code LazyBigtableDataClient}.
+ * <p>The JobManager keeps one source object across every coordinator reset under the default
+ * scheduler, and a coordinator reset builds the next enumerator from it — so a sampler carried on
+ * the source configuration would already have been closed by the enumerator before it. Issue #990
+ * was that in the Spanner batch source, and the scan source had the same shape, held one level down
+ * in {@code LazyBigtableDataClient}.
  *
  * <p>These tests therefore do the one thing nothing else does: two enumerators over <em>one</em>
  * source object, with a teardown between them.

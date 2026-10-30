@@ -218,9 +218,10 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     /**
      * Returns the factory the source mints one session creator per enumerator from.
      *
-     * <p>A factory rather than a creator because the JobManager holds one source object for a job's
-     * whole life, so a creator here would be shared by every enumerator a coordinator reset builds
-     * and the first teardown would refuse every later one ({@code docs/adr/0128}).
+     * <p>A factory rather than a creator because the JobManager keeps one source object across
+     * every coordinator reset under the default scheduler, so a creator here would be shared by
+     * every enumerator a coordinator reset builds and the first teardown would refuse every later
+     * one ({@code docs/adr/0128}).
      */
     public ReadSessionCreatorFactory getSessionCreatorFactory() {
         return sessionCreatorFactory;

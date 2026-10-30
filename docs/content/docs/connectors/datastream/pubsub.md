@@ -639,7 +639,8 @@ cannot be seen. Those messages are covered by the nack the reader performs when 
 
 ### Metrics
 
-Registered on the reader and enumerator metric groups:
+Registered on the reader and enumerator metric groups. The enumerator's gauges read the enumerator
+now running, including one that a failover or a restart builds:
 
 | Metric | Type | Meaning |
 |---|---|---|

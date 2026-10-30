@@ -38,10 +38,10 @@ import java.io.IOException;
  *
  * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
  * PartitionPlannerFactory}, and the source mints one planner per enumerator from it. The JobManager
- * holds one source object for a job's whole life, so a planner parked on the source configuration
- * would be shared by every enumerator a coordinator reset builds, and the first teardown would
- * refuse every later one. Leaving this interface unserializable is what stops that being
- * expressible (issue #990, {@code docs/adr/0128}).
+ * keeps one source object across every coordinator reset under the default scheduler, so a planner
+ * parked on the source configuration would be shared by every enumerator a coordinator reset
+ * builds, and the first teardown would refuse every later one. Leaving this interface
+ * unserializable is what stops that being expressible (issue #990, {@code docs/adr/0128}).
  *
  * <p>It carries no service-account key-file path: the enumerator that owns it loads one set of
  * credentials and hands them over through {@link #useCredentials}, so an implementation neither
