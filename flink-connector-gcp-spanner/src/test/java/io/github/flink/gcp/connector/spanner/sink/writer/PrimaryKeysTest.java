@@ -431,27 +431,42 @@ class PrimaryKeysTest {
 
     @Test
     void readsOnlyThePrimaryKeyOfEveryGoogleSqlUserSchema() {
+        // From TABLES, with outer joins: a table with no key column has no row in INDEX_COLUMNS,
+        // nor on the service in INDEXES, and must still be listed.
         assertThat(PrimaryKeys.query(Dialect.GOOGLE_STANDARD_SQL))
-                .contains("INFORMATION_SCHEMA.INDEX_COLUMNS AS k")
-                .contains("JOIN INFORMATION_SCHEMA.COLUMNS AS c")
+                .contains("FROM INFORMATION_SCHEMA.TABLES AS t")
+                .contains("LEFT JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS k")
+                .contains("LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS c")
                 .contains("k.ORDINAL_POSITION, c.SPANNER_TYPE")
-                .contains("k.TABLE_CATALOG = ''")
-                .contains("k.TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')")
+                .contains("t.TABLE_CATALOG = ''")
+                .contains("t.TABLE_TYPE = 'BASE TABLE'")
+                .contains("t.TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')")
                 .contains("k.INDEX_NAME = 'PRIMARY_KEY'")
                 .contains("k.INDEX_TYPE = 'PRIMARY_KEY'");
+        assertFiltersOnlyTheTableRow(PrimaryKeys.query(Dialect.GOOGLE_STANDARD_SQL));
     }
 
     @Test
     void readsOnlyThePrimaryKeyOfEveryPostgresUserSchema() {
         assertThat(PrimaryKeys.query(Dialect.POSTGRESQL))
-                .contains("information_schema.index_columns AS k")
-                .contains("JOIN information_schema.columns AS c")
+                .contains("FROM information_schema.tables AS t")
+                .contains("LEFT JOIN information_schema.index_columns AS k")
+                .contains("LEFT JOIN information_schema.columns AS c")
                 .contains("k.ordinal_position, c.spanner_type")
+                .contains("t.table_type = 'BASE TABLE'")
                 .contains(
-                        "k.table_schema NOT IN"
+                        "t.table_schema NOT IN"
                                 + " ('pg_catalog', 'information_schema', 'spanner_sys')")
                 .contains("k.index_name = 'PRIMARY_KEY'")
                 .contains("k.index_type = 'PRIMARY_KEY'");
+        assertFiltersOnlyTheTableRow(PrimaryKeys.query(Dialect.POSTGRESQL));
+    }
+
+    private static void assertFiltersOnlyTheTableRow(String sql) {
+        // A condition on a joined view would drop the rows the outer joins return with nulls, and
+        // with them every table that has no key column.
+        String where = sql.substring(sql.indexOf(" WHERE "));
+        assertThat(where).doesNotContain("k.").doesNotContain("c.");
     }
 
     @Test
@@ -533,6 +548,34 @@ class PrimaryKeysTest {
                         Mutation.newInsertOrUpdateBuilder("Notes").set("Id").to(1L).build());
         assertThat(notes.isWholeTable()).isTrue();
         assertThat(notes.isWholeDatabase()).isFalse();
+    }
+
+    @Test
+    void aTableWithNoKeyColumnIsListedAndOrderedAgainstItself() {
+        // PRIMARY KEY (): the outer joins return the table once, with no column, position or type.
+        PrimaryKeys keys =
+                PrimaryKeys.read(
+                        rows(
+                                row("", "Singleton", null, null, null),
+                                row("", "Orders", "Id", 1L, "INT64")),
+                        Dialect.GOOGLE_STANDARD_SQL);
+
+        Mutation write = Mutation.newInsertOrUpdateBuilder("Singleton").set("V").to("x").build();
+        PrimaryKeys.Footprint footprint = keys.footprintOf(write);
+        assertThat(footprint.isWholeTable()).isTrue();
+        assertThat(footprint.isWholeDatabase()).isFalse();
+        BatchedRows batch = new BatchedRows();
+        batch.add(footprint);
+        assertThat(batch.overlaps(keys.footprintOf(Mutation.delete("Singleton", Key.of()))))
+                .isTrue();
+        assertThat(
+                        batch.overlaps(
+                                keys.footprintOf(
+                                        Mutation.newInsertOrUpdateBuilder("Orders")
+                                                .set("Id")
+                                                .to(1L)
+                                                .build())))
+                .isFalse();
     }
 
     private static ResultSet rows(Struct... structs) {
