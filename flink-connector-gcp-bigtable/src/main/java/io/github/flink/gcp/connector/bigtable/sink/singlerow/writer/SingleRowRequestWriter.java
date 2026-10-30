@@ -26,19 +26,27 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
+import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.sink.PerKeyWriteSequencer;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
+import io.github.flink.gcp.connector.bigtable.sink.TableRowKey;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
@@ -114,6 +122,18 @@ import java.util.function.LongSupplier;
  * mail is enqueued and dropped when the mailbox closes after the operators. The close cancels what
  * is outstanding and lets the restart replay it.
  *
+ * <h2>Order per row</h2>
+ *
+ * <p>Under {@link OrderingMode#PER_KEY} a {@link PerKeyWriteSequencer} keyed by {@link TableRowKey}
+ * — a row key in one table — admits one request per row at a time. A request whose row has an
+ * earlier one unanswered or about to start is <b>buffered</b> in the writer, and that earlier
+ * request keeps the row's turn until it is answered: applied, routed, or failing the job. The
+ * completion mail only moves the next buffered request to a ready queue, which the writer starts
+ * from at the end of each admission wait and in each flush pass, as {@code BigtableWriter} does.
+ * Buffered requests count against {@code maxInFlightRequests}, which is what bounds the buffer: a
+ * row written faster than one request per round trip fills it, and the admission wait then holds
+ * back every row of the subtask.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -165,6 +185,24 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
      */
     private final Set<RequestHandle> outstanding =
             Collections.newSetFromMap(new IdentityHashMap<>());
+
+    /**
+     * Orders requests per row under {@link OrderingMode#PER_KEY}, {@code null} otherwise; touched
+     * only on the task thread.
+     */
+    @Nullable private final PerKeyWriteSequencer<TableRowKey, BufferedRequest> rowSequencer;
+
+    /**
+     * Buffered requests whose turn has come, in the order their turns came; touched only on the
+     * task thread.
+     */
+    private final Deque<BufferedRequest> readyRequests = new ArrayDeque<>();
+
+    /**
+     * Requests the sequencer holds plus the ready ones: accepted from the serializer and not yet
+     * started. Counted against {@code maxInFlightRequests}; touched only on the task thread.
+     */
+    private int bufferedRequests;
 
     /**
      * When the client last answered a request, successfully or not — the clock a wait measures its
@@ -252,10 +290,15 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
         this.lastCompletionNanos = nanoClock.getAsLong();
         this.lastStallWarnNanos = this.lastCompletionNanos - stallWarnAfterNanos;
         this.failedRequestHandler = config.getFailedRequestHandler();
+        this.rowSequencer =
+                options.getOrderingMode() == OrderingMode.PER_KEY
+                        ? new PerKeyWriteSequencer<>()
+                        : null;
         this.metrics =
                 SingleRowRequestMetrics.forSink(metricGroup, options.isPerDestinationMetrics());
         this.clients = new DestinationClients(clientFactory, metrics, nanoClock);
         this.metrics.bindState(this::getInFlight, clients::activeClients);
+        this.metrics.bindBufferedRequests(this::getBufferedRequests);
     }
 
     @Override
@@ -290,9 +333,20 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
             metrics.recordSkipped();
             return;
         }
+        awaitCapacity();
+        if (rowSequencer != null) {
+            TableRowKey row = new TableRowKey(destination, request.rowKey());
+            if (!rowSequencer.tryAdmit(row)) {
+                rowSequencer.hold(row, new BufferedRequest(destination, request));
+                bufferedRequests++;
+                return;
+            }
+        }
+        // After the wait, not before it: the wait starts ready requests, and resolving their
+        // destinations may evict an instance, so a state taken before it could name a returned
+        // lease.
         DestinationState state = stateFor(destination);
         state.lastAccessNanos = nanoClock.getAsLong();
-        awaitCapacity();
         submit(state, request);
     }
 
@@ -342,6 +396,8 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
             // the caller directly, and the count says "routed".
             metrics.requestFailed(e);
             metrics.requestRouted(state.counters);
+            // Its last outcome: the request never started, so its row's turn ends here.
+            endTurn(state.destination, request.rowKey());
             failedRequestHandler.handle(
                     FailedRequest.of(
                             state.destination,
@@ -372,7 +428,15 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
     @Override
     public void flush(boolean endOfInput) throws IOException, InterruptedException {
         checkAsyncError();
-        drainInFlight();
+        // Under per-row order each pass starts the requests whose turn the last one brought, so a
+        // row with n buffered requests takes n passes, one round trip each.
+        do {
+            if (!readyRequests.isEmpty()) {
+                submitReady();
+            }
+            drainInFlight();
+            checkBufferedRequestsCanProgress();
+        } while (bufferedRequests > 0);
         // The handler's flush comes after the drain, which is what discovers this checkpoint's
         // row-level failures; flushing earlier would checkpoint past a dead letter the drain was
         // about to produce.
@@ -427,6 +491,11 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
         // decrements it afterwards: the mails that would are rejected by a quiesced mailbox or
         // never run (see the class comment).
         inFlight = 0;
+        bufferedRequests = 0;
+        readyRequests.clear();
+        if (rowSequencer != null) {
+            rowSequencer.clear();
+        }
         closed = true;
         // A cancellation's callback runs synchronously inside cancel(), on this thread; it finds
         // the mailbox quiesced (rejection swallowed at debug) or enqueues a mail that the closed
@@ -447,14 +516,71 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
     /**
      * Admission gate for {@link #write}: runs mailbox mails until the in-flight count is under the
      * cap, surfacing any captured failure before the caller starts another request.
+     *
+     * <p>Buffered requests count toward the cap, so the wait also starts those whose turn has come;
+     * neither branch can run without per-row order, since nothing is buffered then.
      */
     private void awaitCapacity() throws IOException, InterruptedException {
         long start = nanoClock.getAsLong();
-        while (inFlight >= maxInFlightRequests) {
+        while (inFlight + bufferedRequests >= maxInFlightRequests) {
             checkAsyncError();
+            if (!readyRequests.isEmpty()) {
+                submitReady();
+                continue;
+            }
+            if (inFlight == 0) {
+                checkBufferedRequestsCanProgress();
+            }
             warnIfStalled(awaitRequestProgress(start, "admitting a record"), "admitting a record");
         }
         checkAsyncError();
+        // The wait, or the mailbox between records, may have readied requests; they start now
+        // rather than with a later record.
+        if (!readyRequests.isEmpty()) {
+            submitReady();
+        }
+    }
+
+    /**
+     * Starts every buffered request whose turn has come. Each was counted against the cap when it
+     * was accepted, so none waits for room here. Resolving a destination may drain the writer to
+     * evict an instance, and that drain may ready further requests, which the loop picks up.
+     */
+    private void submitReady() throws IOException, InterruptedException {
+        BufferedRequest ready;
+        while ((ready = readyRequests.poll()) != null) {
+            bufferedRequests--;
+            DestinationState state = stateFor(ready.destination);
+            state.lastAccessNanos = nanoClock.getAsLong();
+            submit(state, ready.request);
+        }
+    }
+
+    /**
+     * Raises, rather than waits forever, if buffered requests remain with nothing in flight or
+     * ready to end a turn. Every buffered request sits behind its row's current request, which is
+     * in flight or ready until it is answered, so this cannot happen unless a turn was never
+     * released.
+     */
+    private void checkBufferedRequestsCanProgress() {
+        if (bufferedRequests > 0 && inFlight == 0 && readyRequests.isEmpty()) {
+            throw new IllegalStateException(
+                    bufferedRequests
+                            + " Bigtable single-row requests are buffered behind requests that are"
+                            + " no longer in flight, which cannot happen unless the per-row order"
+                            + " has lost a turn; they would never be started.");
+        }
+    }
+
+    /** Ends a request's turn on its row, readying the row's next buffered request. */
+    private void endTurn(TableDestination destination, ByteString rowKey) {
+        if (rowSequencer == null) {
+            return;
+        }
+        BufferedRequest next = rowSequencer.release(new TableRowKey(destination, rowKey));
+        if (next != null) {
+            readyRequests.add(next);
+        }
     }
 
     /**
@@ -543,6 +669,7 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
             return;
         }
         release(handle);
+        endTurn(handle.state.destination, handle.rowKey);
         metrics.requestCompleted();
         try {
             request.onSuccess(answer, metrics);
@@ -563,6 +690,8 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
             return;
         }
         release(handle);
+        // Every outcome is the request's last: routed, or failing the job.
+        endTurn(handle.state.destination, handle.rowKey);
         // Every failure is counted, ambiguous and fatal ones included and fatal ones after the
         // first: with no retry anywhere, each is a distinct give-up.
         metrics.requestFailed(throwable);
@@ -619,6 +748,23 @@ public class SingleRowRequestWriter<T> implements SinkWriter<T> {
     @VisibleForTesting
     int getActiveClients() {
         return clients.activeClients();
+    }
+
+    @VisibleForTesting
+    int getBufferedRequests() {
+        return bufferedRequests;
+    }
+
+    /** A request accepted from the serializer, with the table it was resolved to. */
+    private static final class BufferedRequest {
+
+        private final TableDestination destination;
+        private final RowRequest<?> request;
+
+        private BufferedRequest(TableDestination destination, RowRequest<?> request) {
+            this.destination = destination;
+            this.request = request;
+        }
     }
 
     /**

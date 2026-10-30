@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FixedDestinationResolver;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 
 /**
@@ -103,13 +104,23 @@ public final class BigtableReadModifyWriteAsyncBuilder<T> {
     /**
      * Sets deadlines and bounded request/client capacity.
      *
-     * @param requestOptions the options
+     * <p>The async operator keeps no order between requests to one row: it starts each request as
+     * its input arrives and never waits for an earlier one, so options asking for {@link
+     * OrderingMode#PER_KEY} are refused rather than ignored.
+     *
+     * @param requestOptions the options, with {@link OrderingMode#NONE}
      * @return this builder
+     * @throws IllegalArgumentException if the options ask for {@link OrderingMode#PER_KEY}
      */
     public BigtableReadModifyWriteAsyncBuilder<T> requestOptions(
             BigtableRequestOptions requestOptions) {
-        this.requestOptions =
-                Preconditions.checkNotNull(requestOptions, "requestOptions must not be null");
+        Preconditions.checkNotNull(requestOptions, "requestOptions must not be null");
+        Preconditions.checkArgument(
+                requestOptions.getOrderingMode() == OrderingMode.NONE,
+                "requestOptions.orderingMode PER_KEY is not supported by the async operator, which"
+                        + " never waits for an earlier request; use the sink to order requests"
+                        + " per row.");
+        this.requestOptions = requestOptions;
         return this;
     }
 

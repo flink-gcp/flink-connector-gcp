@@ -76,6 +76,12 @@ public final class BigtableStagedOptions implements Serializable {
         Preconditions.checkArgument(maxStagedEntries > 0, "maxStagedEntries must be positive");
         Preconditions.checkArgument(maxStagedBytes > 0, "maxStagedBytes must be positive");
         Preconditions.checkNotNull(requestOptions, "requestOptions");
+        // Refused rather than ignored: the committer sends its conditional writes under its own
+        // in-flight bound and keeps no per-row order, so accepting PER_KEY would promise one.
+        Preconditions.checkArgument(
+                requestOptions.getOrderingMode() == OrderingMode.NONE,
+                "requestOptions.orderingMode PER_KEY is not supported by the staged EXACTLY_ONCE"
+                        + " sink; per-row order needs the at-least-once sink.");
         BigtableRequestOptions.builder()
                 .maxInFlightRequests(requestOptions.getMaxInFlightRequests())
                 .requestTimeout(requestOptions.getRequestTimeout())

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.table.sink;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -48,7 +49,9 @@ class RequestOptionsMapperTest {
                                         "sink.max-active-instances",
                                         "2",
                                         "sink.metrics.per-destination",
-                                        "true")));
+                                        "true",
+                                        "sink.ordering-mode",
+                                        "per-key")));
         assertThat(mapped)
                 .isEqualTo(
                         BigtableRequestOptions.builder()
@@ -57,6 +60,7 @@ class RequestOptionsMapperTest {
                                 .destinationIdleTimeout(Duration.ofMinutes(5))
                                 .maxActiveInstances(2)
                                 .perDestinationMetrics(true)
+                                .orderingMode(OrderingMode.PER_KEY)
                                 .build());
     }
 

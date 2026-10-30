@@ -1039,7 +1039,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   ordering rules, the schema-not-flag opt-in and the add-only ensure. Also the E2E enablement
   (#218): the ephemeral per-class instance and its sweep, what real Bigtable
   answers each rejection with, and the emulator deviation table those measurements produced.
-  Migrated to ADRs (`docs/adr/0041`–`0047`, `0073`)
+  Also the opt-in per-row order in both write families (#1620).
+  Migrated to ADRs (`docs/adr/0041`–`0047`, `0073`, `0093`, `0190`)
 - `.agents/references/modules/flink-connector-gcp-spanner.md` — the Mutation-based at-least-once sink (#220): why
   `batchWriteAtLeastOnce` rather than a commit, the retry loop the connector owns because the
   client library retries this RPC not at all, index-aware mutation-cell weights read from
@@ -1074,7 +1075,8 @@ are the trigger; they are not a summary, and none of them is safe to answer from
   executor is recorded there), the pull-assignment split enumerator every bounded source extends —
   including why its counters are registered by the connector rather than named to it
   (`docs/adr/0083`) — compile-scope consumers, and the shading/install-list consequences
-  that scope carries. Migrated to ADRs (`docs/adr/0036`–`0040`, `0083`)
+  that scope carries, and the per-key write sequencer two connectors' sinks share (`base.sink`, #1620).
+  Migrated to ADRs (`docs/adr/0036`–`0040`, `0083`, `0190`)
 
 Decisions that span connectors stay here as rules — the package layout convention, the version
 policy, the CI architecture, the workflow and the infrastructure — with their records in

@@ -200,6 +200,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
                         BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES,
                         BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION,
+                        BigtableConnectorOptions.SINK_ORDERING_MODE,
                         FactoryUtil.SINK_PARALLELISM));
     }
 

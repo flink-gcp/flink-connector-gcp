@@ -42,6 +42,7 @@ public final class BigtableMetricNames {
     public static final String IN_FLIGHT_ENTRIES = "inFlightEntries";
     public static final String IN_FLIGHT_BYTES = "inFlightBytes";
     public static final String PARKED_ENTRIES = "parkedEntries";
+    public static final String BUFFERED_ENTRIES = "bufferedEntries";
     public static final String ACTIVE_CLIENTS = "activeClients";
     public static final String CAPACITY_EVICTIONS = "capacityEvictions";
     public static final String IDLE_EVICTIONS = "idleEvictions";
@@ -65,6 +66,8 @@ public final class BigtableMetricNames {
     public static final String REQUESTS_FAILED = "requestsFailed";
     public static final String REQUESTS_TIMED_OUT = "requestsTimedOut";
     public static final String IN_FLIGHT_REQUESTS = "inFlightRequests";
+    // The sink writer's alone: the async function never holds a request back.
+    public static final String BUFFERED_REQUESTS = "bufferedRequests";
 
     // Registered by the scan source's reader (BigtableSourceReaderMetrics) or the Change Streams
     // reader (BigtableChangeStreamReaderMetrics), as named below.

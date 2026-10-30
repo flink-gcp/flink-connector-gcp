@@ -28,12 +28,14 @@ import org.apache.flink.util.function.ThrowingRunnable;
 import com.google.api.core.ApiFuture;
 import com.google.api.core.ApiFutureCallback;
 import com.google.api.core.ApiFutures;
+import com.google.bigtable.v2.MutateRowsRequest;
 import com.google.bigtable.v2.Mutation;
 import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.base.sink.PerKeyWriteSequencer;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSinkConfig;
@@ -42,7 +44,9 @@ import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
 import io.github.flink.gcp.connector.bigtable.sink.FailedMutation;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigtable.sink.TableRowKey;
 import io.github.flink.gcp.connector.bigtable.sink.tables.TableAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -216,6 +220,25 @@ import java.util.stream.Collectors;
  * calling thread instead of yielding; {@code BigtableWriterOptions} records why that is a
  * constraint on raising them rather than a knob.
  *
+ * <h2>Order per row</h2>
+ *
+ * <p>Under {@link OrderingMode#PER_KEY} a {@link PerKeyWriteSequencer} keyed by {@link TableRowKey}
+ * — a row key in one table — admits one entry per row at a time. An entry whose row has an earlier
+ * one in flight, parked or about to be sent is <b>buffered</b> in the writer rather than handed to
+ * a batcher, and that earlier entry keeps the row's turn until the client answers it: applied,
+ * routed, or failing the job. An entry parked for a solo re-submission or for the auto-creation
+ * repair keeps its turn until the re-submission is answered, so a refusal that turns out to be the
+ * request's, or a table that did not exist yet, does not let the next entry overtake it.
+ *
+ * <p>The completion mail that ends a turn only moves the next buffered entry to a ready queue; the
+ * writer submits ready entries at the end of each admission wait and in each flush pass, never
+ * inside a mail. A submission inside a mail could run while the isolation pass waits for a solo
+ * re-submission, and would then share its request. Buffered entries count against both in-flight
+ * caps, which is what bounds the buffer: a row written faster than one entry per round trip fills
+ * the caps, and the admission wait then holds back every row of the subtask. When nothing is in
+ * flight and only buffered entries hold the caps, the admission wait runs the repair and the
+ * isolation pass they wait behind itself rather than wait for a record that cannot be admitted.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -305,7 +328,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * submission travels alone across the <em>writer</em>, which is a fact about all the batchers
      * at once and not about any one of them.
      */
-    private final Deque<ParkedMutation> pendingIsolation = new ArrayDeque<>();
+    private final Deque<PendingMutation> pendingIsolation = new ArrayDeque<>();
 
     /**
      * Mutations that failed {@code NOT_FOUND} under {@code CREATE_IF_NEEDED}, awaiting the repair
@@ -315,7 +338,32 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * repairNeeded} flag exists for a repair with nothing parked (a dropped ordered message's
      * paused key), which having no ordering keys cannot produce.
      */
-    private final Deque<ParkedMutation> pendingRepair = new ArrayDeque<>();
+    private final Deque<PendingMutation> pendingRepair = new ArrayDeque<>();
+
+    /**
+     * Orders entries per row under {@link OrderingMode#PER_KEY}, {@code null} otherwise; touched
+     * only on the task thread.
+     */
+    @Nullable private final PerKeyWriteSequencer<TableRowKey, PendingMutation> rowSequencer;
+
+    /**
+     * Buffered entries whose turn has come, in the order their turns came; touched only on the task
+     * thread. A completion mail adds to it and the writer's own waits submit from it, so a mail
+     * never puts an entry into an accumulator.
+     */
+    private final Deque<PendingMutation> readyEntries = new ArrayDeque<>();
+
+    /**
+     * Entries the sequencer holds plus the ready ones: accepted from the serializer and not yet
+     * handed to a batcher. Counted against both in-flight caps; touched only on the task thread.
+     */
+    private int bufferedEntries;
+
+    /** The serialized size of the buffered entries; touched only on the task thread. */
+    private long bufferedBytes;
+
+    /** Set by {@link #close()}, after which no completion mail ends a turn; task thread only. */
+    private boolean closed;
 
     /**
      * The tables a parked {@code NOT_FOUND} said were missing (the table itself, or a family of it)
@@ -484,11 +532,16 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         this.lastCompletionNanos = nanoClock.getAsLong();
         this.lastStallWarnNanos = this.lastCompletionNanos - stallWarnAfterNanos;
         this.failedMutationHandler = config.getFailedMutationHandler();
+        this.rowSequencer =
+                options.getOrderingMode() == OrderingMode.PER_KEY
+                        ? new PerKeyWriteSequencer<>()
+                        : null;
         this.metrics = new BigtableWriterMetrics(metricGroup, options.isPerDestinationMetrics());
         this.metrics.bindWriterState(
                 this::getInFlightEntries,
                 this::getInFlightBytes,
                 this::getParkedEntries,
+                this::getBufferedEntries,
                 this::getActiveClients);
     }
 
@@ -549,15 +602,30 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             metrics.recordSkipped();
             return;
         }
+        // Not memoized by the entry, which builds a fresh proto per call, so it is taken once here
+        // and carried by the callback: its size is both the byte counter's unit and the metric's,
+        // and its row key is the per-row order's. What that construction costs, and that no local
+        // route avoids it, are measured in ADR-0041 — read those numbers before treating this line
+        // as an optimisation target.
+        MutateRowsRequest.Entry proto = entry.toProto();
+        int serializedSize = proto.getSerializedSize();
+        // Built once per entry and carried to its answer, and only under per-row order: the
+        // default path allocates nothing for it.
+        TableRowKey row =
+                rowSequencer == null ? null : new TableRowKey(destination, proto.getRowKey());
+        awaitCapacity();
+        if (row != null && !rowSequencer.tryAdmit(row)) {
+            rowSequencer.hold(row, new PendingMutation(destination, entry, serializedSize, row));
+            bufferedEntries++;
+            bufferedBytes += serializedSize;
+            return;
+        }
+        // After the wait, not before it: under per-row order the wait can run the repair and the
+        // isolation pass, whose stateFor calls may evict an instance, and a state taken before
+        // them would then name a closed batcher.
         DestinationState state = stateFor(destination);
         state.lastAccessNanos = nanoClock.getAsLong();
-        // Not memoized by the entry, which builds a fresh proto per call, so it is taken once here
-        // and carried by the callback: it is both the byte counter's unit and the metric's. What
-        // that construction costs, and that no local route avoids it, are measured in ADR-0041 —
-        // read those numbers before treating this line as an optimisation target.
-        int serializedSize = entry.toProto().getSerializedSize();
-        awaitCapacity();
-        submit(state, entry, serializedSize, true, false);
+        submit(state, entry, serializedSize, row, true, false);
     }
 
     /** Checks a fixed aggregate Table destination before the writer admits any records. */
@@ -668,6 +736,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             DestinationState state,
             RowMutationEntry entry,
             int serializedSize,
+            @Nullable TableRowKey row,
             boolean firstAttempt,
             boolean soloVerdict)
             throws IOException {
@@ -690,7 +759,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         }
         ApiFutures.addCallback(
                 future,
-                new MutationCallback(state, entry, serializedSize, soloVerdict),
+                new MutationCallback(state, entry, serializedSize, row, soloVerdict),
                 Runnable::run);
     }
 
@@ -740,9 +809,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         sendEveryBatcher();
         drainInFlight();
         for (int budget = pendingIsolation.size(); budget > 0; budget--) {
-            ParkedMutation parked = pendingIsolation.poll();
+            PendingMutation parked = pendingIsolation.poll();
             DestinationState state = stateFor(parked.destination);
-            submit(state, parked.entry, parked.serializedSize, false, true);
+            submit(state, parked.entry, parked.serializedSize, parked.row, false, true);
             state.batcher.sendOutstanding();
             drainInFlight();
         }
@@ -840,11 +909,12 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                 }
             }
             for (int budget = pendingRepair.size(); budget > 0; budget--) {
-                ParkedMutation parked = pendingRepair.poll();
+                PendingMutation parked = pendingRepair.poll();
                 submit(
                         stateFor(parked.destination),
                         parked.entry,
                         parked.serializedSize,
+                        parked.row,
                         false,
                         false);
             }
@@ -894,9 +964,16 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // ends with both queues empty unless the outside world changed between the passes (a table
         // deleted again), and each such external incident is itself bounded by a fresh recovery
         // budget.
+        //
+        // Under per-row order each pass also submits the entries whose turn the last one brought,
+        // so a row with n buffered entries takes n passes, one round trip each, and the loop runs
+        // until nothing is buffered either.
         do {
             if (!pendingRepair.isEmpty()) {
                 runRepair();
+            }
+            if (!readyEntries.isEmpty()) {
+                submitReady();
             }
             // sendOutstanding rather than a batcher's own blocking flush: waiting has to happen
             // on the mailbox, or the completion mails this writer's state is mutated by would pile
@@ -910,7 +987,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             if (!pendingIsolation.isEmpty()) {
                 runIsolationPass();
             }
-        } while (!pendingRepair.isEmpty() || !pendingIsolation.isEmpty());
+            checkBufferedEntriesCanProgress();
+        } while (!pendingRepair.isEmpty() || !pendingIsolation.isEmpty() || bufferedEntries > 0);
         failedMutationHandler.flush();
         if (!endOfInput) {
             evictIdleDestinations();
@@ -1159,11 +1237,18 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // their in-flight maps. The parks are cleared for the gauge they back and for the heap
         // they hold; the mutations in them are neither applied nor routed, which at-least-once
         // covers — no checkpoint completed with them parked, so the restart replays those records.
+        closed = true;
         inFlightEntries = 0;
         inFlightBytes = 0;
+        bufferedEntries = 0;
+        bufferedBytes = 0;
         activeClients = 0;
         pendingIsolation.clear();
         pendingRepair.clear();
+        readyEntries.clear();
+        if (rowSequencer != null) {
+            rowSequencer.clear();
+        }
         tablesMissing.clear();
         repairCause = null;
         // One list rather than a loop and then a call (#297): closeAll runs every entry before
@@ -1219,13 +1304,37 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      * still be sitting in an accumulator — and the writer, holding the task thread, cannot add the
      * entry that would trip the batcher's own element threshold instead. Without this the batcher's
      * 1-second delay threshold is a term inside every such wait. Once per wait rather than per
-     * pass: the task thread is blocked, so nothing can join a batch while it waits.
+     * pass: the task thread is blocked, so nothing can join a batch while it waits — except what
+     * the wait submits itself, after which it may send once more.
+     *
+     * <p>Buffered entries count toward the caps, so a wait must also be able to free their share.
+     * It submits those whose turn has come, and when nothing is in flight, so that only buffered
+     * entries hold the caps, it runs the repair and the isolation pass whose parked entries they
+     * wait behind instead of waiting for the next record to: no mail would ever arrive. None of
+     * those branches can run without per-row order, since nothing is buffered then.
      */
     private void awaitCapacity() throws IOException, InterruptedException {
         boolean sent = false;
         long start = nanoClock.getAsLong();
-        while (inFlightEntries >= maxInFlightEntries || inFlightBytes >= maxInFlightBytes) {
+        while (inFlightEntries + bufferedEntries >= maxInFlightEntries
+                || inFlightBytes + bufferedBytes >= maxInFlightBytes) {
             checkAsyncError();
+            if (!readyEntries.isEmpty()) {
+                submitReady();
+                sent = false;
+                continue;
+            }
+            if (inFlightEntries == 0) {
+                if (!pendingRepair.isEmpty()) {
+                    runRepair();
+                    continue;
+                }
+                if (!pendingIsolation.isEmpty()) {
+                    runIsolationPass();
+                    continue;
+                }
+                checkBufferedEntriesCanProgress();
+            }
             long idleNanos = awaitMutationProgress(start, "admitting a record");
             if (idleNanos != RAN_A_MAIL && !sent) {
                 sent = true;
@@ -1234,6 +1343,63 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             warnIfStalled(idleNanos, "admitting a record");
         }
         checkAsyncError();
+        // The wait, or the mailbox between records, may have readied entries; they go now rather
+        // than with a later record.
+        if (!readyEntries.isEmpty()) {
+            submitReady();
+        }
+    }
+
+    /**
+     * Submits every buffered entry whose turn has come. Each was counted against the caps when it
+     * was accepted, so none waits for room here. Resolving a destination may drain the writer to
+     * evict an instance, and that drain may ready further entries, which the loop picks up.
+     */
+    private void submitReady() throws IOException, InterruptedException {
+        PendingMutation ready;
+        while ((ready = readyEntries.poll()) != null) {
+            bufferedEntries--;
+            bufferedBytes -= ready.serializedSize;
+            DestinationState state = stateFor(ready.destination);
+            state.lastAccessNanos = nanoClock.getAsLong();
+            submit(state, ready.entry, ready.serializedSize, ready.row, true, false);
+        }
+    }
+
+    /**
+     * Raises, rather than waits forever, if buffered entries remain with no entry that could end a
+     * turn: nothing in flight, ready or parked. Every buffered entry sits behind its row's current
+     * entry, which is in one of those places until it is answered, so this cannot happen unless a
+     * turn was never released.
+     */
+    private void checkBufferedEntriesCanProgress() {
+        if (bufferedEntries > 0
+                && inFlightEntries == 0
+                && readyEntries.isEmpty()
+                && pendingIsolation.isEmpty()
+                && pendingRepair.isEmpty()) {
+            throw new IllegalStateException(
+                    bufferedEntries
+                            + " entries for Bigtable are buffered behind entries that are no longer"
+                            + " in flight, which cannot happen unless the per-row order has lost a"
+                            + " turn; they would never be sent.");
+        }
+    }
+
+    /**
+     * Ends an entry's turn on its row once the client has answered it for the last time, readying
+     * the row's next buffered entry.
+     */
+    private void endTurn(@Nullable TableRowKey row) {
+        // After close the sequencer has been cleared, so a mail a test harness still runs then
+        // must not ask it for a turn it no longer knows.
+        if (row == null || closed) {
+            return;
+        }
+        PendingMutation next = rowSequencer.release(row);
+        if (next != null) {
+            readyEntries.add(next);
+        }
     }
 
     /**
@@ -1354,6 +1520,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             DestinationState state,
             RowMutationEntry entry,
             int serializedSize,
+            @Nullable TableRowKey row,
             boolean soloVerdict,
             Throwable throwable) {
         releaseInFlight(serializedSize);
@@ -1367,7 +1534,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             // status against every co-batched entry, so counting them all would multiply a single
             // incident by the batch size. The pass counts the true rejections when it confirms
             // them. Pub/Sub excludes its cascades from publishFailure for the same reason.
-            pendingIsolation.add(new ParkedMutation(state.destination, entry, serializedSize));
+            //
+            // It keeps its row's turn until the solo re-submission is answered.
+            pendingIsolation.add(
+                    new PendingMutation(state.destination, entry, serializedSize, row));
             return;
         }
         // Every failure with a confirmed identity is counted, fatal ones included and fatal ones
@@ -1385,6 +1555,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                     && BigtableErrorClassifier.isMissingColumnFamily(throwable)) {
                 Set<String> missingFamilies = missingFamilies(entry, existingFamilies);
                 if (!missingFamilies.isEmpty()) {
+                    endTurn(row);
                     if (asyncError == null) {
                         asyncError =
                                 new IOException(
@@ -1401,7 +1572,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
                     return;
                 }
             }
-            pendingRepair.add(new ParkedMutation(state.destination, entry, serializedSize));
+            // It keeps its row's turn until a re-application is answered.
+            pendingRepair.add(new PendingMutation(state.destination, entry, serializedSize, row));
             // The only thing that makes the repair call the admin for this table. Re-applying the
             // parked batch is needed whatever parked it, and a repair that has not seen a NOT_FOUND
             // for a table must not issue a creation for it.
@@ -1411,6 +1583,8 @@ public class BigtableWriter<T> implements SinkWriter<T> {
             }
             return;
         }
+        // Every outcome from here is the entry's last: routed, or failing the job.
+        endTurn(row);
         if (kind == BigtableErrorClassifier.Kind.ROW_LEVEL) {
             routeFailedMutation(state, entry, throwable);
         } else if (asyncError == null) {
@@ -1570,7 +1744,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     /** The distinct destinations of a park, in the order they were parked. */
-    private static Set<TableDestination> destinationsOf(Deque<ParkedMutation> park) {
+    private static Set<TableDestination> destinationsOf(Deque<PendingMutation> park) {
         return park.stream()
                 .map(p -> p.destination)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -1605,22 +1779,40 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     }
 
     @VisibleForTesting
+    int getBufferedEntries() {
+        return bufferedEntries;
+    }
+
+    @VisibleForTesting
+    long getBufferedBytes() {
+        return bufferedBytes;
+    }
+
+    @VisibleForTesting
     int getActiveClients() {
         return activeClients;
     }
 
-    /** A mutation held for the isolation pass or the repair, with the table it belongs to. */
-    private static final class ParkedMutation {
+    /**
+     * A mutation held for the isolation pass, the repair or its row's turn, with the table it
+     * belongs to and, under per-row order, its row.
+     */
+    private static final class PendingMutation {
 
         private final TableDestination destination;
         private final RowMutationEntry entry;
         private final int serializedSize;
+        @Nullable private final TableRowKey row;
 
-        private ParkedMutation(
-                TableDestination destination, RowMutationEntry entry, int serializedSize) {
+        private PendingMutation(
+                TableDestination destination,
+                RowMutationEntry entry,
+                int serializedSize,
+                @Nullable TableRowKey row) {
             this.destination = destination;
             this.entry = entry;
             this.serializedSize = serializedSize;
+            this.row = row;
         }
     }
 
@@ -1663,10 +1855,10 @@ public class BigtableWriter<T> implements SinkWriter<T> {
      *
      * <p>One instance per submission: the callback carries the destination's state so a failure can
      * be attributed to its table, the entry so a row-level failure can be handed to the handler or
-     * parked, its serialized size so both in-flight counters can be released, and whether the
-     * submission was solo so a row-level status can be told from a request-level one fanned out
-     * over a batch. It is also its own success mail, so the success path allocates nothing beyond
-     * this object.
+     * parked, its serialized size so both in-flight counters can be released, its row so the row's
+     * turn can end under per-row order, and whether the submission was solo so a row-level status
+     * can be told from a request-level one fanned out over a batch. It is also its own success
+     * mail, so the success path allocates nothing beyond this object.
      */
     private final class MutationCallback
             implements ApiFutureCallback<Void>, ThrowingRunnable<Exception> {
@@ -1674,16 +1866,19 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         private final DestinationState state;
         private final RowMutationEntry entry;
         private final int serializedSize;
+        @Nullable private final TableRowKey row;
         private final boolean soloVerdict;
 
         private MutationCallback(
                 DestinationState state,
                 RowMutationEntry entry,
                 int serializedSize,
+                @Nullable TableRowKey row,
                 boolean soloVerdict) {
             this.state = state;
             this.entry = entry;
             this.serializedSize = serializedSize;
+            this.row = row;
             this.soloVerdict = soloVerdict;
         }
 
@@ -1691,6 +1886,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         @Override
         public void run() {
             releaseInFlight(serializedSize);
+            endTurn(row);
             // An applied mutation is evidence the stream is not wholly broken, whichever request
             // shape and whichever table carried it — a solo re-submission included — so the
             // consecutive-rejection bound resets on every success.
@@ -1712,7 +1908,9 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         public void onFailure(Throwable throwable) {
             lastCompletionNanos = nanoClock.getAsLong();
             mailboxExecutor.execute(
-                    () -> onMutationFailed(state, entry, serializedSize, soloVerdict, throwable),
+                    () ->
+                            onMutationFailed(
+                                    state, entry, serializedSize, row, soloVerdict, throwable),
                     state.failureDescription);
         }
     }

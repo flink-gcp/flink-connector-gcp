@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableMutateRowsSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableSink;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.serializer.BigtableSerializationSchema;
 import io.github.flink.gcp.connector.bigtable.sink.tables.BigtableTableAdmin;
 import io.github.flink.gcp.connector.testutils.FakeMailboxExecutor;
@@ -36,6 +37,8 @@ import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -168,6 +171,57 @@ class BigtableWriteITCase extends AbstractBigtableEmulatorITCase {
                             cell ->
                                     assertThat(cell.getValue().toStringUtf8())
                                             .isEqualTo("untouched"));
+        }
+    }
+
+    @Test
+    void perKeyOrderAppliesEachRowsWritesInTheOrderReceived() throws Exception {
+        // Ten rounds over twenty rows, interleaved, every cell at one timestamp and every third
+        // round a row delete, so a row ends at its last round only if its writes were applied in
+        // order. Two entries per request keep several requests in flight, which is where the
+        // client and the service give no order without the mode.
+        TableDestination table = createTable("per-key-order");
+        BigtableSerializationSchema<String> rounds =
+                (element, context) -> {
+                    String[] parts = element.split(":");
+                    int round = Integer.parseInt(parts[1]);
+                    RowMutationEntry entry = RowMutationEntry.create(parts[0]);
+                    return round % 3 == 2
+                            ? entry.deleteRow()
+                            : entry.setCell(FAMILY, "payload", 1_000L, "round-" + round);
+                };
+        SinkWriter<String> writer =
+                writer(
+                        table,
+                        BigtableWriterOptions.builder()
+                                .batchElementCountThreshold(2)
+                                .orderingMode(OrderingMode.PER_KEY)
+                                .build(),
+                        rounds);
+
+        try {
+            for (int round = 0; round < 10; round++) {
+                for (int row = 0; row < 20; row++) {
+                    writer.write("row-" + row + ":" + round, TestContexts.NO_OP);
+                }
+            }
+            writer.flush(false);
+
+            // One map compared against another, so a failure names each row and its value, a row
+            // a late delete removed included.
+            Map<String, String> expected = new TreeMap<>();
+            for (int row = 0; row < 20; row++) {
+                expected.put("row-" + row, "round-9");
+            }
+            Map<String, String> actual = new TreeMap<>();
+            for (Row row : readRows(table)) {
+                actual.put(
+                        row.getKey().toStringUtf8(),
+                        row.getCells(FAMILY, "payload").get(0).getValue().toStringUtf8());
+            }
+            assertThat(actual).isEqualTo(expected);
+        } finally {
+            writer.close();
         }
     }
 

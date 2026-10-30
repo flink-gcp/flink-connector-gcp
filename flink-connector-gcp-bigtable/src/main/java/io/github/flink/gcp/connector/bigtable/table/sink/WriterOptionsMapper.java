@@ -99,6 +99,8 @@ public final class WriterOptionsMapper {
                 config,
                 BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
+        OptionSetters.apply(
+                config, BigtableConnectorOptions.SINK_ORDERING_MODE, builder::orderingMode);
 
         return builder.build();
     }

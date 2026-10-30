@@ -70,7 +70,8 @@ public final class WriteModeOptionChecks {
                             BigtableConnectorOptions.SINK_MAX_CONSECUTIVE_REJECTIONS,
                             BigtableConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                             BigtableConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,
-                            BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS);
+                            BigtableConnectorOptions.SINK_RECOVERY_MAX_ATTEMPTS,
+                            BigtableConnectorOptions.SINK_ORDERING_MODE);
         } else {
             rejected =
                     !usesBatchWriter(mode)
@@ -107,6 +108,9 @@ public final class WriteModeOptionChecks {
         }
         if (mode == WriteMode.AGGREGATE) {
             rejected = new ArrayList<>(rejected);
+            // AddToCell contributions commute, so an order would cost throughput and change no
+            // result.
+            rejected.add(BigtableConnectorOptions.SINK_ORDERING_MODE);
             rejected.add(BigtableConnectorOptions.SINK_INSERT_ONLY_INPUT_MODE);
             rejected.add(BigtableConnectorOptions.SINK_MAP_FAMILY_UPDATE_MODE);
             rejected.add(BigtableConnectorOptions.NULL_STRING_LITERAL);

@@ -54,7 +54,9 @@ final class ScriptedRowRequest implements RowRequest<String> {
 
     private boolean ignoresCancellation;
 
-    int starts;
+    /** Volatile: a test may poll it from the thread that answers the request. */
+    volatile int starts;
+
     @Nullable SingleRowClient startedOn;
     @Nullable TableDestination startedFor;
 

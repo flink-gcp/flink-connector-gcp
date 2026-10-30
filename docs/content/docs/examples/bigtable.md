@@ -119,7 +119,7 @@ After this entry succeeds, `cf:status` contains the replacement version and othe
 A `maxVersions(1)` garbage-collection policy alone does not give that immediate result because garbage collection runs later.
 Other writers can subsequently add versions again.
 
-Separate entries remain unordered, including entries for the same row and entries in different concurrent requests.
+By default, separate entries remain unordered, including entries for the same row and entries in different concurrent requests; [`orderingMode(OrderingMode.PER_KEY)`]({{< relref "docs/connectors/datastream/bigtable" >}}#what-this-connector-is-for) keeps one subtask's entries for a row in the order it received them.
 An older event replayed after a newer replacement can delete that newer value, even if both carry explicit timestamps.
 This pattern keeps one version at the time it is applied; applications requiring event-order winners must separate dependent writes so each completes before the next begins, or encode versions in their row keys.
 
@@ -233,8 +233,8 @@ Flink 2.3 requires an `ON CONFLICT DO DEDUPLICATE`, `DO ERROR`, or `DO NOTHING` 
 The default `sink.insert-only-input-mode = upsert` exposes those conflict strategies for an insert-only input too.
 An updating input remains upsert-shaped under either option value.
 
-The writer does not order two entries for the same row key, including entries in concurrent requests, so a streaming aggregation that emits repeated updates for one key has no latest-input-value guarantee.
-Use this bounded form only when the aggregate emits at most one final mutation per key for the entire write, not merely per window, or separate dependent writes so one completes before the next begins.
+By default the writer does not order two entries for the same row key, including entries in concurrent requests, so a streaming aggregation that emits repeated updates for one key has no latest-input-value guarantee.
+Use this bounded form only when the aggregate emits at most one final mutation per key for the entire write, not merely per window, or set [`'sink.ordering-mode' = 'per-key'`]({{< relref "docs/connectors/table/bigtable" >}}#two-rows-for-one-key-in-one-batch-have-no-defined-winner) so each sink subtask applies a key's updates in the order it receives them.
 
 ### Keeping a plain insert portable
 
@@ -337,7 +337,7 @@ Run the next statement only after the first job has completed, then wait for thi
 `NULL ON NULL` retains the `name` field with a JSON null value.
 The JSON object still contains every non-key field, so the source can decode the complete replacement without consulting an earlier row.
 Submitting this replacement again writes another mutation and can produce another identical `UPDATE_AFTER`.
-Separate same-row entries remain unordered; these completed jobs demonstrate sequential application, not event-time arbitration or exactly-once effects.
+Separate same-row entries remain unordered under the default `sink.ordering-mode`; these completed jobs demonstrate sequential application, not event-time arbitration or exactly-once effects.
 
 Register and query the consumer in another SQL session:
 

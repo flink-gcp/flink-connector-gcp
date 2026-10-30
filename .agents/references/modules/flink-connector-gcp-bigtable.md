@@ -233,7 +233,9 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   from the isolation pass migrates to `pendingRepair` (the tripwire invariant survives verbatim);
   a repair's re-application can park entries for isolation. `flush()` loops over both passes;
   each is self-bounding. No `repairNeeded` flag — queue non-emptiness is the trigger, and since
-  `docs/adr/0074` that conclusion rests on *no ordering keys* alone, not on one fixed table.
+  `docs/adr/0074` that conclusion rests on *no ordering keys* alone, not on one fixed table. Per-row
+  order (`docs/adr/0190`) does not change it: a held row's turn sits with an entry in one of the
+  two parks or in flight, so a repair still has a non-empty queue to start from.
 - **One repair covers every table an incident left missing**, and `ensuredThisRepair` is a **set**
   — a boolean creates the first and silently skips the rest, then dies naming undeclared column
   families (`docs/adr/0074`). A failing ensure re-arms the failed table *and every one it did not
@@ -712,7 +714,8 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   because sinks in sibling packages implement it.
 - **Two rows for one key in one `MutateRows` have no defined winner** (the proto says entries may be
   applied in any order, even for the same row) and, inside a millisecond, no second cell version
-  either. An integration test that needs an order sends them from **separate jobs**; one that
+  either. An integration test that needs an order sends them from **separate jobs**, or sets
+  `OrderingMode.PER_KEY` (`docs/adr/0190`); one that
   batches them is asserting the emulator's submission order. **Separate *requests* are not enough,
   and `sink.batching.element-count-threshold` = `1` is not the escape hatch it looks like** —
   measured on #470's follow-up, one entry per request made a delete stop taking effect on the 1.20
@@ -730,8 +733,24 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   granularity by default; `sink.cell-timestamp.truncate-to-millis=true` explicitly opts into
   dropping the final three microsecond digits. **#471 measured but did not convert the
   observation into a guarantee** (ADR-0093): 86,196 same-row pairs, mirrored across request sizes
-  2 through 19,998, produced zero reversals on real Bigtable. The sink retains the bulk path and
-  the caveat; a permanent test asserting submission order would contradict the service contract.
+  2 through 19,998, produced zero reversals on real Bigtable. The default retains the bulk path and
+  the caveat; a permanent test asserting submission order without the mode would contradict the
+  service contract.
+- **Per-row order is opt-in, in both write families** (`docs/adr/0190`, #1620):
+  `OrderingMode.PER_KEY` on `BigtableWriterOptions` and on `BigtableRequestOptions`, one
+  `sink.ordering-mode` key mapped by both mappers (the parity test pins it as shared). The key is
+  `TableRowKey` — table plus row key — taken from the `toProto()` the writer already builds for the
+  size. In `BigtableWriter` both parks keep the row's turn; the turn ends on success, on a routed
+  solo verdict and on a fatal answer. Resolve the destination's state *after* `awaitCapacity`,
+  because the wait can now run the repair and the isolation pass, whose `stateFor` may evict an
+  instance. The wait's one-send-per-wait rule has an exception: after it submits ready entries
+  itself it may send again, or they sit in the accumulator until the client's 1 s timer.
+  `OrderingMode` is an `@Experimental` closure stop, because the `@Public` `BigtableWriterOptions`
+  names it (ADR-0124's revision); do not copy Firestore's `@PublicEvolving`, whose options type
+  is not frozen. `aggregate`, the staged sink and both async helpers refuse `PER_KEY`; `bufferedEntries` and
+  `bufferedRequests` (sink surface only) report the held writes. The emulator ITs fail without the
+  mode in most runs (3 of 4 and 4 of 4, measured), so they are the regression tests; `*RowOrderTest` pins each turn rule (killed by
+  mutation, 2026-10-29).
 - **Keep-latest replaces only physically written cells** (ADR-0153): append an unbounded column
   delete immediately before each SetCell in one row entry. Keep null scalar encoding, skip null
   families, preserve undeclared cells, and retain the ordinary DELETE, timestamp, changelog and

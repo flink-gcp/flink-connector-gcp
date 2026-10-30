@@ -16,9 +16,12 @@ limitations under the License.
 
 # ADR-0093: The Bigtable sink does not serialize same-row batch entries
 
-- Status: Accepted
+- Status: Accepted; refined by [ADR-0190](0190-the-bigtable-sinks-keep-per-row-order-on-opt-in.md)
+  (2026-10-29), which adds per-row order as an opt-in, keeps this decision as the default, and
+  records reversals the service produced across requests
 - Date: 2026-08-11
-- Issues: [#471](https://github.com/flink-gcp/flink-connector-gcp/issues/471)
+- Issues: [#471](https://github.com/flink-gcp/flink-connector-gcp/issues/471),
+  [#1620](https://github.com/flink-gcp/flink-connector-gcp/issues/1620)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` and
   `docs/content/docs/connectors/table/bigtable.md`

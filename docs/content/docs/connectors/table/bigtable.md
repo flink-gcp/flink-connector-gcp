@@ -295,7 +295,7 @@ The writable `timestamp` metadata, or the writer clock when it is absent, stamps
 A map contains only the qualifiers it writes, so what happens to the family's other qualifiers is a choice, made by `sink.map-family.update-mode`:
 
 - **`merge`** (the default): writes the entries and leaves every other qualifier as it is. This is how a Bigtable write behaves and how a `ROW` family treats undeclared qualifiers. It suits a family that accumulates qualifiers across writes, and it means that no SQL write removes an entry; a delete removes the whole row. An empty map writes nothing, and a row that writes nothing is rejected like a row whose families are all null.
-- **`replace`**: deletes the family, then writes the entries, in the same row mutation. Bigtable applies a row's mutations in order and atomically, so the family reads back as the written map. An empty map clears the family. Two writes of one row in the same batch still have [no defined winner](#two-rows-for-one-key-in-one-batch-have-no-defined-winner).
+- **`replace`**: deletes the family, then writes the entries, in the same row mutation. Bigtable applies a row's mutations in order and atomically, so the family reads back as the written map. An empty map clears the family. By default, two writes of one row in the same batch still have [no defined winner](#two-rows-for-one-key-in-one-batch-have-no-defined-winner).
 
 Map families are written in every write mode except `conditional`, and under checkpoint-owned delivery.
 Keep-latest deletes each written qualifier's older versions under `merge`; under `replace` the family delete already removes them.
@@ -560,7 +560,7 @@ Raw families, missing or extra family declarations, and unsupported input types 
 The mode accepts INSERT-only input, including repeated inputs for the same row key with or without a declared PRIMARY KEY.
 An updating `GROUP BY` is rejected because its running totals are replacement values, while each input here contributes again.
 The mode does not retract earlier contributions or keep per-input aggregation state.
-Explicit `sink.insert-only-input-mode`, `null-string-literal`, and conditional-write options are rejected.
+Explicit `sink.insert-only-input-mode`, `null-string-literal`, `sink.ordering-mode`, and conditional-write options are rejected.
 The ordinary batch writer still owns buffering, flow control, failure isolation, and checkpoint draining.
 
 A null family or scalar contributes nothing; an input with no non-null cells fails serialization.
@@ -704,7 +704,7 @@ The runtime uses one SDK deadline and no automatic retry.
 Delivery is at-least-once: recovery can replay an applied request whose acknowledgement was lost and select a different branch.
 With `empty-branch-policy=fail`, a successful insertion can therefore fail repeatedly on replay.
 Checkpoints drain accepted requests; they do not provide exactly-once effects or transactions across rows.
-Separate RPCs for the same row have no ordering guarantee.
+By default, separate RPCs for the same row have no ordering guarantee; [`sink.ordering-mode = per-key`](#two-rows-for-one-key-in-one-batch-have-no-defined-winner) applies them in the order the sink subtask received them, which for this command schema means the order the input already delivers to each subtask, since a table without a PRIMARY KEY gets no keyed shuffle.
 Flink ON CONFLICT does not express the Bigtable predicate.
 
 Request timeout, in-flight request count, idle timeout, instance cap, per-destination metrics, credentials, endpoint, application profile and sink parallelism use the existing conditional runtime settings.
@@ -740,7 +740,7 @@ The `sink.insert-only-input-mode` option retains its planner meaning; the exampl
 The [cell timestamp rules](#cell-timestamps) are unchanged: absent or null metadata selects the per-cell writer clock, and explicit metadata retains its value and optional truncation.
 Reapplying a record replaces the cells again, so a new writer timestamp does not accumulate another version.
 It can still change the stored timestamp, overwrite a newer event, and produce repeated Change Streams mutations.
-Keep-latest provides neither compare-and-set nor latest-event-time-wins, and it does not order separate entries for one row or change at-least-once delivery.
+Keep-latest provides neither compare-and-set nor latest-event-time-wins, and it does not order separate entries for one row (that is `sink.ordering-mode = per-key`) or change at-least-once delivery.
 Each written cell of a `ROW` family, or of a merged `MAP` family, consumes two mutations, and a replaced `MAP` family consumes one per entry plus its family delete; the SDK's mutation limits still apply, while batching and in-flight entry limits continue to count row entries.
 Age-based GC can remove a replacement carrying an old explicit timestamp.
 [ADR-0153]({{< param BookRepo >}}/blob/main/docs/adr/0153-the-table-keep-latest-mode-replaces-only-written-cells.md) records the decisions.
@@ -772,7 +772,7 @@ They wait for one `ReadModifyWriteRow` response per input and discard the return
 To consume those values, use the [DataStream async helper]({{< relref "docs/connectors/datastream/bigtable" >}}#append-and-increment-requests) or the [async SQL functions]({{< relref "docs/connectors/table/bigtable-functions" >}}) in Flink 2.x streaming mode.
 
 The table and families must exist, and the sink profile must use single-cluster routing with single-row transactions enabled.
-The request timeout, in-flight request limit and client-lifecycle options use `BigtableRequestOptions`.
+The request timeout, in-flight request limit, client-lifecycle and ordering options use `BigtableRequestOptions`.
 Explicit batch, entry/byte flow-control, creation/repair, rejection-limit, insert-only compatibility and conditional empty-branch options are rejected.
 Writable `timestamp` metadata and `sink.cell-timestamp.truncate-to-millis` are also rejected because read-modify-write uses service timestamps.
 The existing scan and lookup paths remain available.
@@ -824,7 +824,7 @@ plan carries no materializer, so `DO NOTHING` keeps no first row and `DO ERROR` 
 
 ### Two rows for one key in one batch have no defined winner
 
-With at-least-once `upsert`, `keep-latest` and `aggregate`, the writer hands entries to the client's bulk-mutation batcher, and Bigtable's own contract for
+By default, with at-least-once `upsert`, `keep-latest` and `aggregate`, the writer hands entries to the client's bulk-mutation batcher, and Bigtable's own contract for
 `MutateRows` is that its entries "may be applied in arbitrary order (even between entries for the
 same row)". So when a job produces two changelog rows for the same key close enough together to
 share a request, which one lands last is not defined — and if they share a millisecond they also
@@ -840,21 +840,28 @@ effect. What has a defined order is separate *writes*.
 A request whose response has been awaited before the next is issued is ordered, which is what
 successive jobs give you.
 
-A job that needs last-write-wins per key cannot obtain it from this sink's submission order. It can
-put the version in the row key, or separate dependent mutations into writes whose completion is
-awaited before the next begins. Upstream aggregation helps only when it emits at most one mutation
-per key for the lifetime of the write; windowed aggregation can still leave requests concurrent.
 Google's own guidance lists "multiple mutations to the same row" under when *not* to use batch
 writes.
+A real-service campaign submitted 86,196 same-row pairs in mirrored arms, across request sizes from 2 through 19,998 entries, and observed no submission-order reversals inside one request on 2026-08-11.
+That is evidence about the tested service behaviour, not a contract: the documented arbitrary-order allowance still applies, and changes of one key that travel in different requests do come back reordered.
+Measured on 2026-10-29, 200 keys changed five times each, interleaved, ended at an earlier change for 100 or more of them in three of three runs.
+ADR-0093 records the 2026-08-11 campaign and ADR-0190 the later one.
 
-The sink does not serialize same-key entries. A real-service campaign submitted 86,196 same-row
-pairs in mirrored arms, across request sizes from 2 through 19,998 entries, and observed no
-submission-order reversals on 2026-08-11. That is evidence about the tested service behaviour, not
-a contract: the documented arbitrary-order allowance still applies, and a future service or client
-change may exercise it. Enforcing one in-flight entry per key would add key-indexed pending state
-that grows with active keys and head-of-line blocking to protect a behaviour the campaign did not
-observe; ADR-0093 records why [#471]({{< param BookRepo >}}/issues/471) therefore keeps the
-existing bulk path and this explicit caveat.
+`'sink.ordering-mode' = 'per-key'` keeps that order.
+A change then waits until the earlier change of its row has been answered, so the key's changes are applied in the order the sink subtask received them, unless the service applies late an attempt the client abandoned at its per-attempt timeout and retried.
+The order decides what a read returns only as far as the cell timestamps let it: a read returns a cell's highest-timestamp version, so under `upsert`, which keeps earlier versions, a later change that carries an older explicit [`timestamp`](#cell-timestamps) than an earlier one stays hidden behind it whatever the order.
+`keep-latest` and a `MAP` family written with `replace` delete what they replace before they set it, so their later change shows, and changes at one timestamp, and deletes, take effect in the order applied in every mode.
+It costs one round trip per change that waits: the 200 keys changed five times each took about 1 second instead of 0.2, and 100 changes to one key about 17 seconds instead of 0.2, from one writer outside Google Cloud.
+Changes held back count against `sink.in-flight.max-entries` and `sink.in-flight.max-bytes`, or against `sink.in-flight.max-requests` in the single-row write modes, so a key that changes faster than a round trip slows the sink subtask's other keys too; the `bufferedEntries` and `bufferedRequests` gauges show the changes held back.
+A change whose turn comes while no record arrives is sent with the next record or at the next checkpoint, and a checkpoint's flush spends a round trip per change still held for a key.
+The order kept is the order the sink subtask receives, so it is the changelog's order for a key only when every change of the key reaches one sink subtask.
+They do when Flink shuffles the input by the PRIMARY KEY, which it does for an upsert changelog it materializes and when the sink's parallelism differs from the input's; an insert-only input carrying several rows per key at the same parallelism is not shuffled unless `table.exec.sink.keyed-shuffle` is `FORCE`, so its rows of one key can reach different subtasks, where no mode orders them.
+A table without a PRIMARY KEY, which includes every `conditional` table, gets no keyed shuffle at all, under `FORCE` too, so its rows of one key reach one subtask only if the input already sends them there, for example at the same parallelism as a source that partitions by the key.
+The option applies in the `upsert`, `keep-latest`, `insert-if-absent`, `conditional`, `append` and `increment` write modes.
+`aggregate` refuses it, because `AddToCell` contributions give the same result in any order, and so does `sink.delivery-guarantee = exactly-once`.
+
+Without the option, a job that needs last-write-wins per key can put the version in the row key, or separate dependent mutations into writes whose completion is awaited before the next begins.
+Upstream aggregation helps only when it emits at most one mutation per key for the lifetime of the write; windowed aggregation can still leave requests concurrent.
 
 ### Cell timestamps
 
@@ -1266,6 +1273,7 @@ DataStream builder.
 | `sink.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)` on the selected runtime options |
 | `sink.max-active-instances` | Integer | `maxActiveInstances(...)` on the selected runtime options. One DDL names one instance. The staged committer also counts original profile/instance combinations restored from checkpoint state |
 | `sink.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` on the selected runtime options |
+| `sink.ordering-mode` | Enum | `orderingMode(...)` on the selected runtime options: `per-key` applies writes to one row in the order the sink subtask received them, `none` does not order them. Rejected with `aggregate` and with `sink.delivery-guarantee = exactly-once`. See [Two rows for one key](#two-rows-for-one-key-in-one-batch-have-no-defined-winner) |
 | `sink.parallelism` | Integer | The sink's parallelism (Flink's own option) |
 
 ### Table creation
@@ -1309,7 +1317,7 @@ Staged delivery does not require `sink.insert-only-input-mode`; the example sets
 Provision `cf` and the reserved raw `flink_commit` family before running this example, with no GC rule on `flink_commit` and transactional single-cluster routing on `transactional`.
 Keep the marker family outside the DDL's data families.
 `CREATE_NEVER` is required; table creation and GC-rule options do not configure this mode.
-Batch thresholds, batch in-flight limits and auto-creation recovery knobs are rejected; use `sink.request-timeout` and `sink.in-flight.max-requests` instead.
+Batch thresholds, batch in-flight limits, auto-creation recovery knobs and `sink.ordering-mode` are rejected; use `sink.request-timeout` and `sink.in-flight.max-requests` instead.
 General conditional, `insert-if-absent`, `append`, `increment` and async operations cannot select staged delivery.
 
 For staged `upsert` and `keep-latest`, a DELETE removes all cells in the DDL's declared data families.

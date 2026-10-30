@@ -20,6 +20,9 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
+
+import javax.annotation.Nullable;
 
 import java.io.Serializable;
 import java.time.Duration;
@@ -27,7 +30,8 @@ import java.util.Objects;
 
 /**
  * Tuning options for the single-row request runtime: the deadline of each request, how many may be
- * outstanding at once, and how the runtime holds instance clients.
+ * outstanding at once, how the runtime holds instance clients, and the order of the sink surface's
+ * requests to one row.
  *
  * <p>Every knob is defaulted, so {@code builder().build()} is equivalent to setting nothing. There
  * is no shared default instance to reach for: build one where it is needed.
@@ -80,6 +84,7 @@ public final class BigtableRequestOptions implements Serializable {
     private final Duration destinationIdleTimeout;
     private final int maxActiveInstances;
     private final boolean perDestinationMetrics;
+    @Nullable private final OrderingMode orderingMode;
 
     private BigtableRequestOptions(Builder builder) {
         this.maxInFlightRequests = builder.maxInFlightRequests;
@@ -87,6 +92,7 @@ public final class BigtableRequestOptions implements Serializable {
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.maxActiveInstances = builder.maxActiveInstances;
         this.perDestinationMetrics = builder.perDestinationMetrics;
+        this.orderingMode = builder.orderingMode;
     }
 
     /**
@@ -144,6 +150,16 @@ public final class BigtableRequestOptions implements Serializable {
     }
 
     /**
+     * Returns the order the sink surface keeps between requests to one row. The {@code null}
+     * fallback preserves the default for options serialized before this field existed.
+     *
+     * @return the ordering mode
+     */
+    public OrderingMode getOrderingMode() {
+        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+    }
+
+    /**
      * Compares every option by value.
      *
      * @param o the object to compare with
@@ -161,6 +177,7 @@ public final class BigtableRequestOptions implements Serializable {
         return maxInFlightRequests == that.maxInFlightRequests
                 && maxActiveInstances == that.maxActiveInstances
                 && perDestinationMetrics == that.perDestinationMetrics
+                && getOrderingMode() == that.getOrderingMode()
                 && requestTimeout.equals(that.requestTimeout)
                 && destinationIdleTimeout.equals(that.destinationIdleTimeout);
     }
@@ -177,7 +194,8 @@ public final class BigtableRequestOptions implements Serializable {
                 requestTimeout,
                 destinationIdleTimeout,
                 maxActiveInstances,
-                perDestinationMetrics);
+                perDestinationMetrics,
+                getOrderingMode());
     }
 
     /**
@@ -197,6 +215,8 @@ public final class BigtableRequestOptions implements Serializable {
                 + maxActiveInstances
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
+                + ", orderingMode="
+                + getOrderingMode()
                 + "}";
     }
 
@@ -209,6 +229,7 @@ public final class BigtableRequestOptions implements Serializable {
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private int maxActiveInstances = DEFAULT_MAX_ACTIVE_INSTANCES;
         private boolean perDestinationMetrics;
+        private OrderingMode orderingMode = OrderingMode.NONE;
 
         private Builder() {}
 
@@ -319,6 +340,29 @@ public final class BigtableRequestOptions implements Serializable {
          */
         public Builder perDestinationMetrics(boolean perDestinationMetrics) {
             this.perDestinationMetrics = perDestinationMetrics;
+            return this;
+        }
+
+        /**
+         * Sets whether the sink surface applies requests to one row in the order the subtask
+         * received them. Defaults to {@link OrderingMode#NONE}.
+         *
+         * <p>{@link OrderingMode#PER_KEY} holds a request whose row, in the same table, has an
+         * earlier request still unanswered, and starts it once that request is answered: applied,
+         * or refused and handed to the failure handler. It costs one round trip per held request,
+         * and held requests count against {@link #maxInFlightRequests(int)}. The order is the order
+         * one subtask received, so the input must send every request for a row to the same subtask.
+         *
+         * <p>Only the sink surface orders requests. The async-operator helpers refuse {@code
+         * PER_KEY} in their {@code requestOptions(...)} setter, since that surface never waits for
+         * an earlier request, and so does the staged {@code EXACTLY_ONCE} sink.
+         *
+         * @param orderingMode the ordering mode
+         * @return this builder
+         */
+        public Builder orderingMode(OrderingMode orderingMode) {
+            this.orderingMode =
+                    Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
             return this;
         }
 
