@@ -579,6 +579,15 @@ update-notice module:
     {{ mvn }} -pl {{ module }} -am generate-test-resources
     scripts/check-notice.py --update {{ module }}
 
+# update-notice for every shaded module in one reactor build — what a
+# libraries-bom bump owes, since it moves every bundle at once. renovate.yaml's
+# bom_notices job runs it on the update branch, and bom_notices_push commits
+# the result (ADR-0191).
+#
+# Regenerate every shaded module's META-INF/NOTICE and META-INF/licenses/.
+update-notices:
+    scripts/update-notices.sh
+
 # Re-fetches every pinned licence-text source and requires the regenerated
 # NOTICE/licences byte-identical to the checked-in ones — the offline
 # check-notice never consults the recorded sources at all, so this is what

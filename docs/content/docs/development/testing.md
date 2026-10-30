@@ -49,7 +49,7 @@ just verify-module flink-connector-gcp-pubsub    # the module-wide build, when a
 
 ## Emulator image updates
 
-The `Renovate emulator images` workflow proposes a grouped draft pull request on the first day of each month at 03:23 UTC.
+The `Renovate` workflow's `emulator_images` job proposes a grouped draft pull request on the first day of each month at 03:23 UTC.
 It updates the image constants in test-utils; Bigtable, Pub/Sub and Firestore share a pin and move together.
 Review the Bigtable and Firestore deviation suites' verdicts and, for a Spanner bump, recheck the measurements named in the pull request before merging.
 A green emulator suite does not establish real-service behavior.
@@ -57,7 +57,7 @@ A green emulator suite does not establish real-service behavior.
 For an initial run or recovery, dispatch the workflow on `main`:
 
 ```sh
-gh workflow run renovate.yaml --repo flink-gcp/flink-connector-gcp --ref main
+gh workflow run renovate.yaml --repo flink-gcp/flink-connector-gcp --ref main -f update=emulator-images
 gh run list --repo flink-gcp/flink-connector-gcp --workflow renovate.yaml
 ```
 

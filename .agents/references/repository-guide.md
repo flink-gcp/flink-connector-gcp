@@ -143,9 +143,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `scripts/config/licence-sources.toml`. A url source is either version-templated — `{version}` filled
   from the resolved bundle, so a dependency bump re-fetches the matching tag with no edit to the
   entry — or declared `version_independent = true` (#343); the toml header carries the scheme.
-  `update-notice` regenerates after a dependency change; `check-notice` verifies offline in CI.
+  `update-notice` regenerates after a dependency change, and `just update-notices` does it for
+  every shaded module in one reactor build; `check-notice` verifies offline in CI.
   Because the offline check never consults the recorded sources, `just check-notice-sources` —
-  regenerate every shaded module with real fetches, then require no drift — runs from verify.yaml
+  `update-notices` with real fetches, then require no drift — runs from verify.yaml
   when the change touches a licence-source input (a pom, the pin file, a NOTICE; derived in
   `ci-maven-args.py`) and weekly otherwise, which is what catches an upstream moving under an
   unchanged repository. `check-notice` and `update-notice` take the module as an argument, which is what lets
@@ -845,16 +846,17 @@ facts); the rules a session needs:
   is exactly what should arrive, and #916 records what a `hadoop.version` bump costs
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
   google-cloud artifact versions
-- **Cutting a minor release starts by adopting the latest `libraries-bom`** (#1555): as the
-  release candidate's first step, bump `google-cloud-libraries-bom.version` to the newest release
-  on Maven Central, re-check on the release day, and name the adopted version in the release
-  notes. Dependabot's monthly `maven` group does not cover this: the BOM has shipped every one to
-  four weeks, about two on average. A BOM bump owes more than the property:
-  `just update-notice <module>` for each shaded module, a relocation for any package root the
-  packaging ITCase reports, the org.json check its root-POM comment prescribes, moving
-  `opentelemetry-bom.version` to the OpenTelemetry the new clients resolve (the
-  `opentelemetry-upper-bound` enforcer execution fails the build until it moves; ADR-0186), and a
-  re-read of every documented claim about what a moved SDK does or lacks
+- **`libraries-bom` is adopted on `main` as it ships** (#1836, ADR-0191; replaces #1555's
+  release-candidate bump). `renovate.yaml`'s weekly `libraries-bom` job proposes each new BOM as a
+  draft pull request on `renovate-bom/libraries-bom` and regenerates the shaded modules' NOTICE
+  files on that branch; Dependabot ignores the BOM. Review and merge that pull request rather than
+  bumping the property by hand. A minor release's candidate still starts by **confirming** that
+  `main` carries the newest BOM on Maven Central — dispatch the job if one is pending — and the
+  release notes name the adopted version. The rest of what a BOM bump owes stays with the
+  reviewer, and the update pull request's body is the list: keep it in the `libraries-bom` package
+  rule's `prBodyTemplate` in `.github/renovate.json5`, not here. Keep that file's Maven manager
+  scoped to `libraries-bom`; each Renovate job sets its own `enabledManagers` and `branchPrefix`
+  (ADR-0191 records why the prefixes must not share a start)
 
 ## CI architecture
 
@@ -993,9 +995,10 @@ superseded by `docs/adr/0140`; the unchanged package decisions remain in force).
 ## Emulators are conveniences, not authorities
 
 Emulator image updates are proposed monthly by `.github/workflows/renovate.yaml` using
-`.github/renovate.json5` (ADR-0151). Keep its manager scoped to the test-utils image declarations;
-Dependabot owns the other dependency managers. An image update still owes the deviation
-measurements named in its pull request, followed by human review and merge.
+`.github/renovate.json5` (ADR-0151). Keep its regex manager scoped to the test-utils image
+declarations; its Maven manager proposes only `libraries-bom` (Version policy), and Dependabot owns
+the other dependency managers. An image update still owes the deviation measurements named in its
+pull request, followed by human review and merge.
 
 An emulator is a convenience for fast feedback, never evidence about the service's behaviour.
 Where the two disagree, the real service decides, and the emulator gets a documented workaround

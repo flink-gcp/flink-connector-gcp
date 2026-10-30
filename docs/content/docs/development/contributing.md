@@ -116,6 +116,26 @@ files still carry the upstream `Google LLC` header; the module README's provenan
 record how such a determination is made. An undisclosed adaptation is a licensing defect the
 reviewers cannot catch, which is why the disclosure is the contributor's obligation.
 
+## Google Cloud library updates
+
+The connectors take every Google Cloud client library version from `com.google.cloud:libraries-bom`, and the BOM is adopted on `main` as it ships.
+The `Renovate` workflow's `libraries_bom` job checks Maven Central every Monday at 04:43 UTC and proposes a newer BOM as a draft pull request on the `renovate-bom/libraries-bom` branch.
+After Renovate pushes that branch, the workflow regenerates the shaded modules' `NOTICE` files and licence texts on it with `just update-notices`, so the pull request's CI checks the bundles the new BOM produces.
+Dependabot does not propose the BOM.
+
+The regeneration is the mechanical part of a BOM update; the rest needs a reviewer, and the pull request body lists it.
+Push those changes to the same branch, and run `just update-notices` again after any change that moves a bundle or a licence pin.
+If the regeneration itself fails, for example because a licence text changed under its pin, the run pushes nothing, and the branch keeps whatever NOTICE files it last had until a reviewer resolves the cause.
+Once a person has pushed to the branch, Renovate treats it as edited and stops updating it, so a BOM published meanwhile waits until the pull request is merged or closed.
+A minor release confirms that `main` carries the newest BOM before its release candidate is built.
+To check for a new BOM outside the weekly schedule, dispatch the job on `main`:
+
+```sh
+gh workflow run renovate.yaml --repo flink-gcp/flink-connector-gcp --ref main -f update=libraries-bom
+```
+
+The decision and the alternatives it declined are recorded in [ADR-0191]({{< param BookRepo >}}/blob/main/docs/adr/0191-libraries-bom-updates-are-proposed-weekly-by-renovate.md).
+
 ## Design decisions
 
 Decisions with lasting consequences are recorded as architecture decision records under

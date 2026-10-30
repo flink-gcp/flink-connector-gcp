@@ -32,9 +32,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# A shaded module is one carrying a NOTICE.template — the same convention
-# check-notice.py's dead-entry check discovers modules by. nullglob so that
-# zero matches is the explicit error below, not a literal '*/NOTICE.template'.
+# The same module discovery as update-notices.sh, which regenerates them: the
+# drift check below needs the list too. nullglob so that zero matches is the
+# explicit error below, not a literal '*/NOTICE.template'.
 shopt -s nullglob
 modules=()
 for template in */NOTICE.template; do
@@ -45,14 +45,7 @@ if [[ ${#modules[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# One reactor build for every shaded module: --update reads the THIRD-PARTY
-# report and the runtime classpath this generates.
-printf -v selection '%s,' "${modules[@]}"
-./mvnw -ntp -pl "${selection%,}" -am generate-test-resources
-
-for module in "${modules[@]}"; do
-    scripts/check-notice.py --update "$module"
-done
+scripts/update-notices.sh
 
 # git status rather than git diff alone: a regeneration that *adds* a licence
 # file leaves it untracked, which git diff does not report.
