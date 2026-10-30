@@ -44,16 +44,33 @@ Two properties of the service shape the design more than anything else. The muta
 operation. A `setCell` write also carries a **cell timestamp**: a stable explicit timestamp targets the same version after replay, while a regenerated timestamp can add a version.
 Aggregate updates have a separate [replay boundary](#delivery-guarantees-and-state).
 
-**Submission order is not a same-key last-write-wins guarantee.** The client batches entries into
-`MutateRows`, whose contract permits arbitrary application order even between entries for the same
-row; concurrent requests are unordered too. A 2026-08-11 real-service campaign observed zero
-reversals in 86,196 mirrored same-row pairs, but that bounded observation does not replace the
-contract. If dependent mutations need a defined winner, encode the version in the row key or split
-them into writes whose completion is awaited before the next begins.
+**By default, submission order is not a same-key last-write-wins guarantee.** The client batches
+entries into `MutateRows`, whose contract permits arbitrary application order even between entries
+for the same row; concurrent requests are unordered too. A 2026-08-11 real-service campaign observed
+zero reversals in 86,196 mirrored same-row pairs inside one request, but that bounded observation
+does not replace the contract, and writes to one row that travel in different requests do come back
+reordered: measured on 2026-10-29, 200 rows changed five times each ended at an earlier write for
+100 or more of them in three of three runs.
 `batchElementCountThreshold(1)` only makes concurrent one-entry requests and does not establish
 order.
 Upstream aggregation avoids this collision only when it emits at most one mutation per key for the entire write, not merely per window.
-ADR-0093 records the measurement and decision.
+ADR-0093 records the measurement behind the default.
+
+`BigtableWriterOptions.builder().orderingMode(OrderingMode.PER_KEY)`, passed to the sink builder's `writerOptions`, makes each subtask apply writes to one row in the order it received them.
+A row is a row key in one table.
+The writer then holds an entry back while an earlier entry for the same row is unanswered, and hands it to the batcher once that entry is applied or routed to the failure handler.
+An entry parked for its [solo verdict](#error-handling) or for the [auto-creation repair](#table-auto-creation) keeps its row's turn until its re-submission is answered.
+Writes to other rows are not held back.
+The order is only as good as the input's: it is the order one subtask received, so the stream must already be ordered per row and keyed by row key before the sink.
+A turn ends when the client answers, so an attempt the client abandoned at its own per-attempt timeout and then retried may in principle still be applied after the row's next write.
+The mode costs a round trip per held entry.
+Measured against the service from one writer outside Google Cloud (2026-10-29), 100 writes to one row took about 17 seconds in `per-key`, against 0.2 seconds without it; 2,000 writes to distinct rows took the same time in both modes, and 200 rows changed five times each took 1 second instead of 0.2, with every row at its last write.
+Held entries count against `maxInFlightEntries` and `maxInFlightBytes`, so a row written faster than one entry per round trip fills the bounds and the subtask's other rows wait behind it.
+`bufferedEntries` shows how many entries are held; their bytes are counted against `maxInFlightBytes` but have no gauge of their own, and no log line reports the slowdown, which shows as backpressure with a sustained non-zero `bufferedEntries`.
+The round trips are spent where the writer runs: an entry whose turn comes while no record arrives is sent with the next record or at the next checkpoint, not on a timer, so with sparse input a row's held entries advance one per record, and a checkpoint's flush spends one round trip per entry still held for a row.
+With checkpointing off and input paused, held entries wait until input resumes or the job ends.
+The [single-row sinks](#shared-request-runtime) take the same mode through `BigtableRequestOptions`.
+ADR-0190 records the measurements.
 
 ## Checkpoint-owned writes
 
@@ -110,7 +127,7 @@ Whole-row deletion and any mutation of the reserved family are rejected.
 Checkpoint completion authorizes row commits individually; it provides no simultaneous visibility, cross-row transaction, ordering between concurrent envelopes or rollback.
 Distinct inputs receive distinct identities even when their content is identical.
 An ambiguous RPC failure fails the commit; restoring its checkpoint resends the same bytes, and a retained marker suppresses another application of that envelope.
-Custom failure handlers and batch `writerOptions` cannot be used in this mode; configure single-attempt RPC deadlines and concurrency through `stagedOptions.requestOptions`.
+Custom failure handlers and batch `writerOptions` cannot be used in this mode, and neither can `OrderingMode.PER_KEY`, which needs the at-least-once sink; configure single-attempt RPC deadlines and concurrency through `stagedOptions.requestOptions`.
 
 Restore the latest completed checkpoint with all sink state, or resume a successfully finished stop-with-savepoint from that savepoint.
 Discarding committer state can lose writes.
@@ -772,7 +789,7 @@ Constructing it does not call the resolver or schema again.
 It has explicit Flink type information and a versioned field serializer; the tuple's input retains its own stream type information.
 Both helpers pass `maxInFlightRequests` to Flink as operator capacity and require a timeout representable in nanoseconds.
 Flink truncates that timeout to milliseconds; the truncated value must remain greater than `requestTimeout`.
-`orderedWait` orders emitted results; separate RPCs targeting the same row can still execute in either order.
+`orderedWait` orders emitted results; separate RPCs targeting the same row can still execute in either order, and the helpers refuse `OrderingMode.PER_KEY` (only the sink surface [orders requests per row](#shared-request-runtime)).
 No `*WithRetry` entry points are provided.
 On the async surface the resolver and schema receive a null `SinkWriter.Context`; they cannot use its timestamp or watermark.
 The schema's `open` runs once per subtask on both surfaces.
@@ -827,7 +844,7 @@ For this schema, decode the returned counter as follows:
 Both helpers resolve destinations before serialization and call the schema's `open` once per subtask.
 A null serializer result skips the record without an RPC, output or failure callback.
 The async resolver and schema receive a null `SinkWriter.Context`.
-`orderedWait` orders emitted results, not separate RPC executions against the same row.
+`orderedWait` orders emitted results, not separate RPC executions against the same row; the sink surface's `OrderingMode.PER_KEY` [does](#shared-request-runtime).
 Neither helper retries; a timeout or lost acknowledgement can leave an applied request whose replay appends or increments again.
 Checkpoint completion drains sink requests and does not deduplicate recovery.
 
@@ -872,12 +889,26 @@ when it starts, which is what lets one request shape be routed anywhere. A recor
 the function's own request step on the async one — is skipped exactly as [above](#api-notes):
 written nowhere, not a failure, counted by `recordsSkipped`, and emitting nothing.
 
-**`BigtableRequestOptions`** tunes both surfaces — five knobs, all defaulted, in the
+**`BigtableRequestOptions`** tunes both surfaces — six knobs, all defaulted, in the
 [reference]({{< relref "docs/reference/bigtable" >}}#bigtablerequestoptions):
 `maxInFlightRequests` (100), `requestTimeout` (20 s), `destinationIdleTimeout` (1 h),
-`maxActiveInstances` (16) and `perDestinationMetrics` (`false`). It is a separate type from
-`BigtableWriterOptions` on purpose: a single-row request has no batch thresholds and no in-flight
-bytes, so sharing the type would leave most of its setters inert here.
+`maxActiveInstances` (16), `perDestinationMetrics` (`false`) and `orderingMode` (`NONE`). It is a
+separate type from `BigtableWriterOptions` on purpose: a single-row request has no batch thresholds
+and no in-flight bytes, so sharing the type would leave most of its setters inert here.
+
+**By default, two requests for one row may be applied in either order.** The sink surface keeps up
+to `maxInFlightRequests` requests outstanding at once, and nothing orders them: on the emulator, ten
+interleaved appends to each of twenty rows came back out of order in every run, and on the service 100 appends to one row were out of
+order in three of three runs. `orderingMode(OrderingMode.PER_KEY)`
+makes the sink surface start a request only once the earlier request for the same row, in the same
+table, has been answered: applied, or refused and routed to the failure handler. Requests for other
+rows are not held back, and held requests count against `maxInFlightRequests`, which `bufferedRequests`
+reports. Each held request costs a round trip: the same 100 appends took about 17 seconds instead of
+0.3. As on the batch path, a held request whose turn comes while no record arrives starts with the
+next record or at the next checkpoint, and a turn ends when the client answers, so a request a
+restart cancelled may in principle still be applied after the row's next request. The async helpers refuse `PER_KEY` when `requestOptions(...)` is called, because the async
+operator starts each request as its input arrives and has no place to hold one back; the staged
+`EXACTLY_ONCE` sink refuses it too.
 
 **The client's deadline is the only timeout, and neither the client nor the runtime retries.** The
 client ships both RPCs with an empty retryable-code set and a 20 s total timeout, and this runtime
@@ -1212,9 +1243,10 @@ Registered on the sink writer's metric group, one set per subtask:
 | `numBytesSend` | counter (Flink standard) | their serialized size |
 | `numRecordsSendErrors` | counter (Flink standard) | records routed to the failed-mutation handler |
 | `recordsSkipped` | counter | records the serializer skipped by returning `null` — neither sent nor failed |
-| `inFlightEntries` | gauge | entries the service has not acknowledged, against `maxInFlightEntries` |
+| `inFlightEntries` | gauge | entries the service has not acknowledged, against `maxInFlightEntries` (together with `bufferedEntries` under `OrderingMode.PER_KEY`) |
 | `inFlightBytes` | gauge | their serialized size, against `maxInFlightBytes` |
 | `parkedEntries` | gauge | entries held for [the isolation pass](#error-handling) or the [auto-creation repair](#table-auto-creation) |
+| `bufferedEntries` | gauge | entries held back under `OrderingMode.PER_KEY` and not yet handed to a batcher, because an earlier entry for their row was unanswered when they arrived; always `0` under the default |
 | `activeClients` | gauge | active instance slots currently tracked by this writer subtask, against `maxActiveInstances` |
 | `capacityEvictions` | counter | instance slots removed from the tracked set after the active-instance capacity selected the least recently used instance |
 | `idleEvictions` | counter | instance slots removed from the tracked set after the idle sweep evicted their last live table |
@@ -1378,7 +1410,8 @@ answer it.
 | `emptyBranchesSelected` | counter | successful conditional responses whose selected mutation list was empty, before policy handling |
 | `requestsFailed` | counter | requests that did not complete — row-level, ambiguous and fatal failures alike — plus, on the sink surface, records the serializer rejected or the client's validation refused and, on the async surface, requests Flink's operator timeout ended |
 | `requestsTimedOut` | counter | those of them that ended on a deadline: the request's own (`DEADLINE_EXCEEDED`) or, on the async surface, Flink's operator timeout. Counted on top of `requestsFailed`; an operator timeout that finds no request in flight, between the attempts of Flink's retry mode, or finds the request answered as it fires, counts nothing |
-| `inFlightRequests` | gauge | requests accepted and not yet answered, against `maxInFlightRequests` on the sink surface and the operator's capacity on the async one |
+| `inFlightRequests` | gauge | requests accepted and not yet answered, against `maxInFlightRequests` on the sink surface (together with `bufferedRequests` under `OrderingMode.PER_KEY`) and the operator's capacity on the async one |
+| `bufferedRequests` | gauge | sink surface only: requests held back under `OrderingMode.PER_KEY` and not yet started, because an earlier request for their row was unanswered when they arrived; always `0` under the default |
 | `activeClients` | gauge | instance clients held by this subtask, against `maxActiveInstances` |
 | `capacityEvictions` | counter | instances evicted to make room under `maxActiveInstances` |
 | `idleEvictions` | counter | instances evicted after their last table went idle past `destinationIdleTimeout` |

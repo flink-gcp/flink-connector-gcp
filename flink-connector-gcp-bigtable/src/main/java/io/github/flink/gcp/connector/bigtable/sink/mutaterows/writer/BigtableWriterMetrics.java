@@ -99,12 +99,14 @@ final class BigtableWriterMetrics {
      * @param inFlightEntries entries the service has not acknowledged
      * @param inFlightBytes their serialized size, against {@code maxInFlightBytes}
      * @param parkedEntries entries held for the isolation pass or the auto-creation repair
+     * @param bufferedEntries entries held back under per-row order and not yet handed to a batcher
      * @param activeClients active instance slots currently tracked by the writer
      */
     void bindWriterState(
             Gauge<Integer> inFlightEntries,
             Gauge<Long> inFlightBytes,
             Gauge<Integer> parkedEntries,
+            Gauge<Integer> bufferedEntries,
             Gauge<Integer> activeClients) {
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_ENTRIES, inFlightEntries);
         metricGroup.gauge(BigtableMetricNames.IN_FLIGHT_BYTES, inFlightBytes);
@@ -115,6 +117,7 @@ final class BigtableWriterMetrics {
         // often it catches the writer mid-isolation or mid-repair, which is what the throughput
         // cost of either looks like (#239).
         metricGroup.gauge(BigtableMetricNames.PARKED_ENTRIES, parkedEntries);
+        metricGroup.gauge(BigtableMetricNames.BUFFERED_ENTRIES, bufferedEntries);
         metricGroup.gauge(BigtableMetricNames.ACTIVE_CLIENTS, activeClients);
     }
 

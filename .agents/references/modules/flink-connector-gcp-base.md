@@ -271,6 +271,19 @@ record — context, evidence, declined alternatives — is the named ADR under `
   three caller-owned `openPlaintextChannel`/`fixedProvider` sites do not. An internal call,
   tier-irrelevant under `docs/adr/0141`; reread the annotation on a gax bump.
 
+## `base.sink` (`docs/adr/0187`, `0190`)
+
+- `PerKeyWriteSequencer` is the one type here: it admits one write per key and holds the rest in
+  arrival order, and knows nothing of what a write is or when it is answered. Firestore keys it by
+  document path, Bigtable by `TableRowKey` (a row key in one table). It renders a key only in its
+  invariant failures, so a connector whose keys are user data supplies a key type whose `toString`
+  does not render them, as `TableRowKey` does.
+- The writer-side rules stay in each writer, and all three writers (Firestore's and Bigtable's
+  two) follow them: a turn ends only on a
+  write's last answer (a write parked for a re-send keeps it), a completion mail only readies the
+  next write and the writer submits it from its own waits, and held writes count against the
+  in-flight bounds.
+
 ## `base.options` (`docs/adr/0068`, `0180`)
 
 - `OptionChecks` holds `checkPositive`, `checkAtLeastOneMilli`, `checkAtLeastOneMilliOrZero` and

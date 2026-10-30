@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.firestore.sink.writer;
+package io.github.flink.gcp.connector.base.sink;
 
 import org.junit.jupiter.api.Test;
 

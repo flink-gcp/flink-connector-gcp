@@ -211,7 +211,7 @@ It costs one round trip per change that waits, and changes held back count again
 The order kept is the order the sink subtask receives, so it is the changelog's order for a key only when every change of the key reaches one sink subtask.
 They do when Flink shuffles the input by the PRIMARY KEY, which it does for an upsert changelog it materializes and when the sink's parallelism differs from the input's; an insert-only input carrying several rows per key at the same parallelism is not shuffled unless `table.exec.sink.keyed-shuffle` is `FORCE`, so its rows of one key can reach different subtasks, where no mode orders them.
 A table without a PRIMARY KEY creates every row under a new id, so the mode has nothing to order there.
-The Spanner and Bigtable Table sinks do not keep this order yet ([#1618]({{< param BookRepo >}}/issues/1618)).
+The Spanner and Bigtable Table sinks keep it with the same option ([#1618]({{< param BookRepo >}}/issues/1618)).
 
 ### Flink 2.3 may demand ON CONFLICT
 

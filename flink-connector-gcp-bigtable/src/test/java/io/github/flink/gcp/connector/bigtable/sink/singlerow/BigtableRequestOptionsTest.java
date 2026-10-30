@@ -18,6 +18,10 @@ package io.github.flink.gcp.connector.bigtable.sink.singlerow;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
+import io.github.flink.gcp.connector.bigtable.sink.conditional.BigtableConditionalAsync;
+import io.github.flink.gcp.connector.bigtable.sink.readmodifywrite.BigtableReadModifyWriteAsync;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -40,6 +44,7 @@ class BigtableRequestOptionsTest {
         assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(1));
         assertThat(options.getMaxActiveInstances()).isEqualTo(16);
         assertThat(options.isPerDestinationMetrics()).isFalse();
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.NONE);
     }
 
     @Test
@@ -51,6 +56,7 @@ class BigtableRequestOptionsTest {
                         .destinationIdleTimeout(Duration.ofMinutes(15))
                         .maxActiveInstances(3)
                         .perDestinationMetrics(true)
+                        .orderingMode(OrderingMode.PER_KEY)
                         .build();
 
         assertThat(options.getMaxInFlightRequests()).isEqualTo(7);
@@ -58,13 +64,15 @@ class BigtableRequestOptionsTest {
         assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(15));
         assertThat(options.getMaxActiveInstances()).isEqualTo(3);
         assertThat(options.isPerDestinationMetrics()).isTrue();
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.PER_KEY);
         assertThat(options.toString())
                 .contains(
                         "maxInFlightRequests=7",
                         "requestTimeout=PT3S",
                         "destinationIdleTimeout=PT15M",
                         "maxActiveInstances=3",
-                        "perDestinationMetrics=true");
+                        "perDestinationMetrics=true",
+                        "orderingMode=per-key");
     }
 
     @Test
@@ -80,8 +88,41 @@ class BigtableRequestOptionsTest {
                         BigtableRequestOptions.builder()
                                 .maxInFlightRequests(7)
                                 .perDestinationMetrics(true)
+                                .build())
+                .isNotEqualTo(
+                        BigtableRequestOptions.builder()
+                                .maxInFlightRequests(7)
+                                .orderingMode(OrderingMode.PER_KEY)
                                 .build());
         assertThat(InstantiationUtil.clone(options)).isEqualTo(options);
+    }
+
+    @Test
+    void theAsyncHelpersAndTheStagedSinkRefusePerKeyOrder() {
+        // Both async helpers start a request as its input arrives and never wait for an earlier
+        // one, and the staged committer keeps no per-row order: each refuses PER_KEY rather than
+        // accepting an order it would not keep.
+        BigtableRequestOptions perKey =
+                BigtableRequestOptions.builder().orderingMode(OrderingMode.PER_KEY).build();
+
+        assertThatThrownBy(() -> BigtableConditionalAsync.builder().requestOptions(perKey))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not supported by the async operator");
+        assertThatThrownBy(() -> BigtableReadModifyWriteAsync.builder().requestOptions(perKey))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not supported by the async operator");
+        assertThatThrownBy(
+                        () ->
+                                BigtableStagedOptions.builder()
+                                        .markerFamily("markers")
+                                        .requestOptions(perKey)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not supported by the staged EXACTLY_ONCE sink");
+        BigtableRequestOptions none =
+                BigtableRequestOptions.builder().orderingMode(OrderingMode.NONE).build();
+        BigtableConditionalAsync.builder().requestOptions(none);
+        BigtableReadModifyWriteAsync.builder().requestOptions(none);
     }
 
     @Test

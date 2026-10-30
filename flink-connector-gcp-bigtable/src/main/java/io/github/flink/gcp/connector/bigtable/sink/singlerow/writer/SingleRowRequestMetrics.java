@@ -159,6 +159,16 @@ public final class SingleRowRequestMetrics {
     }
 
     /**
+     * Registers the sink writer's gauge over the requests it holds back under per-row order. The
+     * async function registers none: it never holds a request back.
+     *
+     * @param bufferedRequests requests accepted from the serializer and not yet started
+     */
+    public void bindBufferedRequests(Gauge<Integer> bufferedRequests) {
+        metricGroup.gauge(BigtableMetricNames.BUFFERED_REQUESTS, bufferedRequests);
+    }
+
+    /**
      * Returns a table's counters, registering them on first use; a no-op when per-table counters
      * are off.
      *

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package io.github.flink.gcp.connector.firestore.sink.writer;
+package io.github.flink.gcp.connector.base.sink;
 
 import org.apache.flink.annotation.Internal;
 
@@ -33,15 +33,15 @@ import java.util.Map;
  * write, which then occupies the key in its turn. Writes for other keys are not affected.
  *
  * <p>Nothing here knows what a write is or when it is answered; the writer decides both and calls
- * this sequencer from its task thread only, so the sequencer is not thread-safe. It carries no
- * Firestore type so that a second sink can share it (#1618); it moves to {@code
- * flink-connector-gcp-base} when one does.
+ * this sequencer from its task thread only, so the sequencer is not thread-safe. The Firestore and
+ * Bigtable sinks share it (#1618); a key's {@code toString} appears in the invariant failures
+ * below, so a sink whose keys are user data supplies a key type that does not render them.
  *
  * @param <K> the key a write is ordered by
  * @param <W> the write
  */
 @Internal
-final class PerKeyWriteSequencer<K, W> {
+public final class PerKeyWriteSequencer<K, W> {
 
     /**
      * Every active key, mapped to its held writes in arrival order, or to {@code null} until one is
@@ -57,7 +57,7 @@ final class PerKeyWriteSequencer<K, W> {
      * @return {@code true} if the write may be sent now; {@code false} if its key is active, when
      *     the caller must {@link #hold(Object, Object)} it instead
      */
-    boolean tryAdmit(K key) {
+    public boolean tryAdmit(K key) {
         if (activeKeys.containsKey(key)) {
             return false;
         }
@@ -70,7 +70,7 @@ final class PerKeyWriteSequencer<K, W> {
      *
      * @throws IllegalStateException if the key is not active
      */
-    void hold(K key, W write) {
+    public void hold(K key, W write) {
         if (!activeKeys.containsKey(key)) {
             throw new IllegalStateException(
                     "Held a write for key " + key + ", which has no admitted write.");
@@ -87,7 +87,7 @@ final class PerKeyWriteSequencer<K, W> {
      *     never admitted was released
      */
     @Nullable
-    W release(K key) {
+    public W release(K key) {
         if (!activeKeys.containsKey(key)) {
             throw new IllegalStateException(
                     "Released key " + key + ", which has no admitted write.");
@@ -101,7 +101,7 @@ final class PerKeyWriteSequencer<K, W> {
     }
 
     /** Forgets every key and held write. */
-    void clear() {
+    public void clear() {
         activeKeys.clear();
     }
 }

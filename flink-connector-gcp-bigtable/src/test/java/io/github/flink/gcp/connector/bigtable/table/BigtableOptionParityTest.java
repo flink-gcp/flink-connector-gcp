@@ -87,6 +87,7 @@ class BigtableOptionParityTest {
         map.put("destinationIdleTimeout", BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT);
         map.put("maxActiveInstances", BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES);
         map.put("perDestinationMetrics", BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION);
+        map.put("orderingMode", BigtableConnectorOptions.SINK_ORDERING_MODE);
         return Collections.unmodifiableMap(map);
     }
 
@@ -142,7 +143,8 @@ class BigtableOptionParityTest {
                     "destinationIdleTimeout",
                             BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT,
                     "maxActiveInstances", BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES,
-                    "perDestinationMetrics", BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION);
+                    "perDestinationMetrics", BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION,
+                    "orderingMode", BigtableConnectorOptions.SINK_ORDERING_MODE);
 
     /** {@code BigtableSourceBuilder}: the setters a {@code WITH} clause can reach. */
     private static final Map<String, ConfigOption<?>> SOURCE_BUILDER = sourceBuilder();
@@ -471,7 +473,7 @@ class BigtableOptionParityTest {
     }
 
     @Test
-    void sinkModesShareExactlyIdleTimeoutInstanceCapAndDestinationMetrics() {
+    void sinkModesShareExactlyIdleTimeoutInstanceCapDestinationMetricsAndOrdering() {
         Set<String> bulk =
                 WRITER_OPTIONS.values().stream().map(ConfigOption::key).collect(Collectors.toSet());
         Set<String> shared =
@@ -484,7 +486,8 @@ class BigtableOptionParityTest {
                 .containsExactlyInAnyOrder(
                         BigtableConnectorOptions.SINK_DESTINATION_IDLE_TIMEOUT.key(),
                         BigtableConnectorOptions.SINK_MAX_ACTIVE_INSTANCES.key(),
-                        BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION.key());
+                        BigtableConnectorOptions.SINK_METRICS_PER_DESTINATION.key(),
+                        BigtableConnectorOptions.SINK_ORDERING_MODE.key());
     }
 
     @Test

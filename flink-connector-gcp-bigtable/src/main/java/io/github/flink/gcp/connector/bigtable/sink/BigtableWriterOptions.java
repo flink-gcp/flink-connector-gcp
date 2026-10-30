@@ -32,8 +32,8 @@ import java.time.Duration;
 import java.util.Objects;
 
 /**
- * Tuning options for the sink's writer: the batch thresholds handed to the client, and the writer's
- * own bounds on unacknowledged entries.
+ * Tuning options for the sink's writer: the batch thresholds handed to the client, the writer's own
+ * bounds on unacknowledged entries, and the order of writes to one row.
  *
  * <p>Set via {@link BigtableSinkBuilder#writerOptions(BigtableWriterOptions)}; optional — every
  * knob is defaulted, so {@link #defaults()} is equivalent to not setting options at all. An unset
@@ -85,6 +85,14 @@ import java.util.Objects;
  * instance to every batcher it creates — so the tables of one instance draw on one budget, and
  * these caps, being the writer's rather than each destination's, still bind first however many
  * tables the sink writes to.
+ *
+ * <h2>Order per row</h2>
+ *
+ * <p>By default writes to one row are applied in no guaranteed order: {@code MutateRows} may apply
+ * the entries of one request in any order, even two for the same row, and the client keeps several
+ * requests in flight. {@link Builder#orderingMode(OrderingMode)} with {@link OrderingMode#PER_KEY}
+ * holds an entry in the writer until the row's earlier entry is answered; held entries count
+ * against the in-flight bounds.
  *
  * <p>Instances are immutable and serializable.
  */
@@ -173,6 +181,7 @@ public final class BigtableWriterOptions implements Serializable {
     private final Duration destinationIdleTimeout;
     private final int maxActiveInstances;
     private final boolean perDestinationMetrics;
+    @Nullable private final OrderingMode orderingMode;
 
     private BigtableWriterOptions(Builder builder) {
         this.batchElementCountThreshold = builder.batchElementCountThreshold;
@@ -186,6 +195,7 @@ public final class BigtableWriterOptions implements Serializable {
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.maxActiveInstances = builder.maxActiveInstances;
         this.perDestinationMetrics = builder.perDestinationMetrics;
+        this.orderingMode = builder.orderingMode;
     }
 
     /**
@@ -203,8 +213,8 @@ public final class BigtableWriterOptions implements Serializable {
      * #DEFAULT_MAX_CONSECUTIVE_REJECTIONS} consecutive confirmed rejections under a dropping
      * policy, a table auto-creation recovery budget of 500 ms doubling to 10 s over at most 10
      * attempts, an idle table's batcher dropped after {@link #DEFAULT_DESTINATION_IDLE_TIMEOUT}, at
-     * most {@value #DEFAULT_MAX_ACTIVE_INSTANCES} active instance clients per subtask, and no
-     * per-table counters.
+     * most {@value #DEFAULT_MAX_ACTIVE_INSTANCES} active instance clients per subtask, no per-table
+     * counters, and no order between writes to one row.
      *
      * @return the default options
      */
@@ -277,6 +287,16 @@ public final class BigtableWriterOptions implements Serializable {
     }
 
     /**
+     * Returns the order kept between writes to one row.
+     *
+     * <p>The {@code null} fallback preserves the default for options serialized before this field
+     * existed.
+     */
+    public OrderingMode getOrderingMode() {
+        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+    }
+
+    /**
      * Returns the table auto-creation recovery schedule the {@code recovery*} knobs describe.
      * Jittered: every subtask that parked mutations for the same missing table resumes against the
      * same freshly created table, so unjittered they would re-apply in lockstep.
@@ -305,6 +325,7 @@ public final class BigtableWriterOptions implements Serializable {
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && getMaxActiveInstances() == that.getMaxActiveInstances()
                 && perDestinationMetrics == that.perDestinationMetrics
+                && getOrderingMode() == that.getOrderingMode()
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
                 && Objects.equals(batchRequestByteThreshold, that.batchRequestByteThreshold)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
@@ -325,7 +346,8 @@ public final class BigtableWriterOptions implements Serializable {
                 recoveryMaxAttempts,
                 destinationIdleTimeout,
                 getMaxActiveInstances(),
-                perDestinationMetrics);
+                perDestinationMetrics,
+                getOrderingMode());
     }
 
     @Override
@@ -352,6 +374,8 @@ public final class BigtableWriterOptions implements Serializable {
                 + getMaxActiveInstances()
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
+                + ", orderingMode="
+                + getOrderingMode()
                 + "}";
     }
 
@@ -370,6 +394,7 @@ public final class BigtableWriterOptions implements Serializable {
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private int maxActiveInstances = DEFAULT_MAX_ACTIVE_INSTANCES;
         private boolean perDestinationMetrics;
+        private OrderingMode orderingMode = OrderingMode.NONE;
 
         private Builder() {}
 
@@ -594,6 +619,27 @@ public final class BigtableWriterOptions implements Serializable {
          */
         public Builder perDestinationMetrics(boolean perDestinationMetrics) {
             this.perDestinationMetrics = perDestinationMetrics;
+            return this;
+        }
+
+        /**
+         * Sets whether writes to one row are applied in the order the subtask received them.
+         * Defaults to {@link OrderingMode#NONE}.
+         *
+         * <p>{@link OrderingMode#PER_KEY} holds an entry whose row, in the same table, has an
+         * earlier entry still unanswered, and sends it once that entry is applied or handed to the
+         * failure handler. An entry parked to be confirmed alone, or for the table auto-creation
+         * repair, keeps its row's turn until it is answered. It costs one round trip per held
+         * entry, and held entries count against {@link #maxInFlightEntries(int)} and {@link
+         * #maxInFlightBytes(long)}. The order is the order one subtask received, so the input must
+         * send every write for a row to the same subtask.
+         *
+         * @param orderingMode the ordering mode
+         * @return this builder
+         */
+        public Builder orderingMode(OrderingMode orderingMode) {
+            this.orderingMode =
+                    Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
             return this;
         }
 

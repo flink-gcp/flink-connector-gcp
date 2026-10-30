@@ -28,6 +28,7 @@ import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.DestinationResolver;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.FailedRequest;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.RowOperation;
@@ -221,6 +222,56 @@ class SingleRowRequestWriterEmulatorITCase extends AbstractBigtableEmulatorITCas
         }
     }
 
+    @Test
+    void perKeyOrderAppliesEachRowsRequestsInTheOrderReceived() throws Exception {
+        // Ten appends to each of twenty rows, interleaved and never flushed between them: without
+        // the mode up to a hundred requests are in flight at once, with it one per row. A row's
+        // value spells its rounds in order only if its appends were applied in the order
+        // received.
+        TableDestination table = createTable("per-key-appends", FAMILY);
+        SinkWriter<String> writer =
+                writer(
+                        (element, context) -> table,
+                        (element, context) -> {
+                            String[] parts = element.split(":");
+                            return new ReadModifyWriteRowRequest(
+                                    ByteString.copyFromUtf8(parts[0]),
+                                    List.of(
+                                            Rule.append(
+                                                    FAMILY,
+                                                    QUALIFIER,
+                                                    ByteString.copyFromUtf8(parts[1] + ";"))));
+                        },
+                        FailureHandler.failJob(),
+                        BigtableRequestOptions.builder()
+                                .orderingMode(OrderingMode.PER_KEY)
+                                .build());
+
+        try {
+            for (int round = 0; round < 10; round++) {
+                for (int row = 0; row < 20; row++) {
+                    writer.write("row-" + row + ":" + round, TestContexts.NO_OP);
+                }
+            }
+            writer.flush(false);
+
+            // One map compared against another, so a failure names each row and its value.
+            Map<String, String> expected = new java.util.TreeMap<>();
+            for (int row = 0; row < 20; row++) {
+                expected.put("row-" + row, "0;1;2;3;4;5;6;7;8;9;");
+            }
+            Map<String, String> actual = new java.util.TreeMap<>();
+            readRows(table)
+                    .forEach(
+                            row ->
+                                    actual.put(
+                                            row.getKey().toStringUtf8(), value(row, FAMILY, "q")));
+            assertThat(actual).isEqualTo(expected);
+        } finally {
+            writer.close();
+        }
+    }
+
     private <T> SinkWriter<T> writer(
             DestinationResolver<T> resolver, RowRequestSerializer<T> serializer) {
         return writer(resolver, serializer, FailureHandler.failJob());
@@ -230,7 +281,14 @@ class SingleRowRequestWriterEmulatorITCase extends AbstractBigtableEmulatorITCas
             DestinationResolver<T> resolver,
             RowRequestSerializer<T> serializer,
             FailureHandler<? super FailedRequest> handler) {
-        BigtableRequestOptions options = BigtableRequestOptions.builder().build();
+        return writer(resolver, serializer, handler, BigtableRequestOptions.builder().build());
+    }
+
+    private <T> SinkWriter<T> writer(
+            DestinationResolver<T> resolver,
+            RowRequestSerializer<T> serializer,
+            FailureHandler<? super FailedRequest> handler,
+            BigtableRequestOptions options) {
         return new SingleRowRequestWriter<>(
                 new SingleRowRequestConfig<>(
                         resolver, serializer, null, options, handler, null, null, false, true),

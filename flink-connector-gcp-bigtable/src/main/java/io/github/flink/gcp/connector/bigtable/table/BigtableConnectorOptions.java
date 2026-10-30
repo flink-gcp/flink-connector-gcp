@@ -23,6 +23,7 @@ import org.apache.flink.configuration.MemorySize;
 
 import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
 
 import java.time.Duration;
@@ -914,6 +915,21 @@ public final class BigtableConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Whether the writer also reports its counters per destination table.");
+
+    /**
+     * Whether writes to one row are applied in the order the sink subtask received them. 'per-key'
+     * holds a write until the row's earlier write is answered, at one round trip per held write;
+     * 'none' does not order them.
+     */
+    public static final ConfigOption<OrderingMode> SINK_ORDERING_MODE =
+            ConfigOptions.key("sink.ordering-mode")
+                    .enumType(OrderingMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether writes to one row are applied in the order the sink subtask"
+                                    + " received them. 'per-key' holds a write until the row's"
+                                    + " earlier write is answered, at one round trip per held"
+                                    + " write; 'none' does not order them.");
 
     private BigtableConnectorOptions() {}
 }

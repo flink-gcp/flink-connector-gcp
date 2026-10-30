@@ -73,7 +73,8 @@ the same option spelling.
   connector-owned concept, as [ADR-0137] asks of a new name. Spanner and Bigtable adopt it in
   [#1619] and [#1620].
 - **`PerKeyWriteSequencer` carries no Firestore type** and stays in this module until a second sink uses
-  it, when it moves to `flink-connector-gcp-base`.
+  it, when it moves to `flink-connector-gcp-base`. (Revised 2026-10-29: it moved to `base.sink` when
+  the Bigtable sinks adopted it, [ADR-0190].)
 
 ## Evidence
 
@@ -147,3 +148,4 @@ cut short by the test timeout after its first repetition.
 [ADR-0137]: 0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md
 [ADR-0171]: 0171-the-firestore-sink-writes-through-bulkwriter-and-confirms-invalid-writes-alone.md
 [ADR-0179]: 0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md
+[ADR-0190]: 0190-the-bigtable-sinks-keep-per-row-order-on-opt-in.md

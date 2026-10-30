@@ -240,3 +240,10 @@ ADR-0189 adds `io.github.flink.gcp.connector.spanner.sink.OrderingMode` as an `@
 Its Firestore namesake is `@PublicEvolving` because `FirestoreWriterOptions` is, so it has no frozen referrer; copying that tier here would have put an unfrozen type in a frozen signature.
 The enum may still grow an ordering by a version carried in the data, which ADR-0187 leaves room for.
 The type is newly introduced after 1.0.0, so this is not a demotion of a released API.
+
+## Bigtable per-row order revision (2026-10-29)
+
+ADR-0190 adds `io.github.flink.gcp.connector.bigtable.sink.OrderingMode` as an `@Experimental` closure stop on the existing `@Public BigtableWriterOptions.getOrderingMode()` and `BigtableWriterOptions.Builder.orderingMode` signatures.
+The same type is also named by the `@PublicEvolving` `BigtableRequestOptions`, which constrains nothing further.
+The enum may still grow an ordering by a version carried in the data, which ADR-0187 leaves room for.
+The type is newly introduced after 1.0.0, so this is not a demotion of a released API.

@@ -20,6 +20,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
+import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -61,7 +62,8 @@ class WriterOptionsMapperTest {
                                 "sink.recovery.max-attempts", "4",
                                 "sink.destination-idle-timeout", "30min",
                                 "sink.max-active-instances", "7",
-                                "sink.metrics.per-destination", "true"));
+                                "sink.metrics.per-destination", "true",
+                                "sink.ordering-mode", "per-key"));
 
         assertThat(options.getBatchElementCountThreshold()).isEqualTo(500L);
         assertThat(options.getBatchRequestByteThreshold()).isEqualTo(4L * 1024 * 1024);
@@ -74,6 +76,7 @@ class WriterOptionsMapperTest {
         assertThat(options.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(30));
         assertThat(options.getMaxActiveInstances()).isEqualTo(7);
         assertThat(options.isPerDestinationMetrics()).isTrue();
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.PER_KEY);
     }
 
     @Test

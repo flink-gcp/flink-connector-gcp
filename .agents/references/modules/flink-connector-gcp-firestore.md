@@ -74,8 +74,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   document's turn until the library answers it, a write parked for a solo re-send included;
   a completion mail only readies the next write, never submits it (a submission inside a mail
   would share an isolation pass's solo request). Buffered writes count against both in-flight
-  bounds, and drawn-id creates bypass the sequencer. `PerKeyWriteSequencer` moves to base when Spanner or
-  Bigtable adopts it (#1619, #1620), which take the same spelling.
+  bounds, and drawn-id creates bypass the sequencer. `PerKeyWriteSequencer` lives in `base.sink`
+  since Bigtable adopted it (#1620, `docs/adr/0190`); Spanner (#1619) takes the same spelling.
 - The emulator endpoint reaches the client only through the builder; the library also reads
   `FIRESTORE_EMULATOR_HOST` itself, and `FirestoreClients` warns when it is set without an
   endpoint.

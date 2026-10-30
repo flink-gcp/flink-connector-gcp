@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.bigtable.sink;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import com.google.api.gax.batching.FlowControlSettings;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
@@ -91,6 +93,26 @@ class BigtableWriterOptionsTest {
         assertThat(options.toString())
                 .contains("destinationIdleTimeout=PT15M", "perDestinationMetrics=true");
         assertThat(options).isNotEqualTo(BigtableWriterOptions.defaults());
+    }
+
+    @Test
+    void theOrderingModeDefaultsToNoneAndIsPartOfTheValue() throws Exception {
+        assertThat(BigtableWriterOptions.defaults().getOrderingMode()).isEqualTo(OrderingMode.NONE);
+
+        BigtableWriterOptions options =
+                BigtableWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build();
+
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.PER_KEY);
+        assertThat(options.toString()).contains("orderingMode=per-key");
+        assertThat(options)
+                .isNotEqualTo(BigtableWriterOptions.defaults())
+                .isEqualTo(
+                        BigtableWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build())
+                .hasSameHashCodeAs(
+                        BigtableWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build());
+        assertThat(InstantiationUtil.clone(options)).isEqualTo(options);
+        assertThatThrownBy(() -> BigtableWriterOptions.builder().orderingMode(null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test

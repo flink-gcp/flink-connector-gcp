@@ -31,6 +31,7 @@ import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.firestore.WriteResult;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.sink.PerKeyWriteSequencer;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.sink.FailedWrite;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreSinkConfig;
