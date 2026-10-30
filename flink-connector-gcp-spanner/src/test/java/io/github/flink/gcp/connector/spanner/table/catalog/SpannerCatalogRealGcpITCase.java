@@ -210,7 +210,7 @@ class SpannerCatalogRealGcpITCase extends AbstractSpannerRealGcpITCase {
         assertThat(catalog.databaseExists(googleSql.getDatabase())).isTrue();
     }
 
-    /** The spelling {@code InformationSchemaCellWeights} and the catalog exclude by. */
+    /** The spelling the sink's {@code CellWeights.query} and the catalog exclude by. */
     @Test
     void aPostgreSqlDatabasesSystemSchemasAreLowerCase() {
         List<String> schemas = new ArrayList<>();

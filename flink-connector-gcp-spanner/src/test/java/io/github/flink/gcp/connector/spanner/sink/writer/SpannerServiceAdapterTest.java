@@ -166,8 +166,7 @@ class SpannerServiceAdapterTest {
 
         CellWeights weights = adapter.readCellWeights();
 
-        assertThat(queries)
-                .containsExactly(InformationSchemaCellWeights.queryFor(Dialect.POSTGRESQL));
+        assertThat(queries).containsExactly(CellWeights.query(Dialect.POSTGRESQL));
         assertThat(dialectReads).hasValue(1);
         assertThat(weights.knows("orders")).isTrue();
     }

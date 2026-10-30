@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.119.0; schema read verified
   2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`, both dialects), revised by
-  [#435] (2026-08-09), [#573] (2026-08-12)
-- Issues: [#220], [#435], [#573]
+  [#435] (2026-08-09), [#573] (2026-08-12), [#1926] (2026-10-30)
+- Issues: [#220], [#435], [#573], [#1926]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Batching, and
   `docs/content/docs/reference/spanner.md`
@@ -217,6 +217,12 @@ The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the f
   It is not an error because failing a job over a table that exists and accepts its mutations would reject otherwise valid writes.
 - A dialect the client library adds later throws rather than reading nothing, since reading
   nothing would silently undercount every mutation of every table.
+- **The query lives with the model it builds**: `CellWeights.query` sits beside `CellWeights.read`,
+  the shape `PrimaryKeys` has for the key read of [ADR-0189] ([#1926]). The module's other
+  `INFORMATION_SCHEMA` statements follow the same rule. The catalog's live in
+  `SpannerInformationSchema`, the bounded scan's in `SpannerTableReadResolver` and the change stream
+  source's in `SpannerChangeStreamMetadataAdapter`, each statement behind its own exhaustive dialect
+  `switch`.
 
 ## Consequences
 
@@ -266,9 +272,23 @@ The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the f
 - **Refreshing the weights periodically.** A schema change during a job is real, but the failure it
   causes is an undercount inside a 16-fold headroom, not a wrong answer. Reopen if a measurement
   shows the undercount reaching the limit.
+- **One holder for every `INFORMATION_SCHEMA` statement in the module**, at the module root beside
+  `SpannerTableName` and `SpannerTypeSpelling` ([#1926]). The eight statements, in five places,
+  select different columns for different contracts. The cell weights read index coverage and the
+  primary keys read key columns with their types, both across the database; the catalog lists base
+  tables and reads one table's columns, non-key ones included; the bounded scan tells a missing
+  schema from a missing table or index; the change stream source reads one stream's definition,
+  tables and options. What recurs across the five places is three filters: the system-schema list
+  (in three of the eight statements), the `PRIMARY_KEY` index name (in four) and GoogleSQL's empty
+  catalog name (in all eight, under three column names). The two module-root types exist because
+  both directions compare the same values, a table name and a type spelling, whereas a holder of SQL
+  would couple five consumers through text each reads differently. The cost of the split is that a
+  fix to one of those filters has to be made in every statement that carries it.
 
 [#220]: https://github.com/flink-gcp/flink-connector-gcp/issues/220
 [#224]: https://github.com/flink-gcp/flink-connector-gcp/issues/224
 [#435]: https://github.com/flink-gcp/flink-connector-gcp/issues/435
 [#441]: https://github.com/flink-gcp/flink-connector-gcp/issues/441
 [#573]: https://github.com/flink-gcp/flink-connector-gcp/issues/573
+[#1926]: https://github.com/flink-gcp/flink-connector-gcp/issues/1926
+[ADR-0189]: 0189-the-spanner-sink-keeps-per-row-order-on-opt-in.md

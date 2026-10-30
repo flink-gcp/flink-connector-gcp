@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
+import com.google.cloud.spanner.ResultSet;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 
 import java.util.HashMap;
@@ -34,8 +35,8 @@ import java.util.Set;
  * <p>Spanner counts an insert or update "with the multiplicity of the number of columns they
  * affect", a delete as one "regardless of the number of columns affected", and — in both cases —
  * every secondary-index entry the write changes, individually. So a column costs one cell for the
- * table plus one for each index containing it, and the index part is what {@link
- * InformationSchemaCellWeights} reads out of the database.
+ * table plus one for each index containing it, and the index part is what {@link #query(Dialect)}
+ * reads out of the database's {@code INFORMATION_SCHEMA} when the writer opens.
  *
  * <p>Names use dialect semantics: GoogleSQL names are matched case-insensitively, while PostgreSQL
  * unquoted names fold to lower case and quoted names preserve case. The schema is part of a table's
@@ -90,6 +91,74 @@ public final class CellWeights {
     /** Creates a builder whose keys follow the database dialect. */
     static Builder builder(Dialect dialect) {
         return new Builder(dialect);
+    }
+
+    /**
+     * Returns the query listing (schema, table, column, index) for every visible secondary index.
+     *
+     * <p>Both dialects expose the same {@code INDEX_COLUMNS} view — a row per (index, column) pair,
+     * key columns and {@code STORING} columns alike, which is exactly the set of columns whose
+     * write rewrites an index entry. The query includes every visible user schema and retains the
+     * schema name so equally named tables remain distinct.
+     *
+     * <p>The primary-key index is excluded by name rather than by {@code INDEX_TYPE}: both dialects
+     * name it {@code PRIMARY_KEY}, that is the filter Apache Beam has shipped against both the
+     * service and the emulator for years, and its cells are already counted by the columns
+     * themselves.
+     *
+     * @param dialect the database's dialect
+     * @return the SQL to run
+     */
+    static String query(Dialect dialect) {
+        switch (dialect) {
+            case POSTGRESQL:
+                return "SELECT table_schema, table_name, column_name, index_name"
+                        + " FROM information_schema.index_columns"
+                        + " WHERE table_schema NOT IN"
+                        + " ('pg_catalog', 'information_schema', 'spanner_sys')"
+                        + " AND index_name != 'PRIMARY_KEY'";
+            case GOOGLE_STANDARD_SQL:
+                return "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, INDEX_NAME"
+                        + " FROM INFORMATION_SCHEMA.INDEX_COLUMNS"
+                        + " WHERE TABLE_CATALOG = ''"
+                        + " AND TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')"
+                        + " AND INDEX_NAME != 'PRIMARY_KEY'";
+            default:
+                // Unreachable today; a dialect added to the client library lands here rather than
+                // silently reading nothing, which would undercount every mutation.
+                throw new IllegalStateException(
+                        "Unsupported Spanner dialect: "
+                                + dialect
+                                + ". This connector reads mutation-cell weights for"
+                                + " GOOGLE_STANDARD_SQL and POSTGRESQL only.");
+        }
+    }
+
+    /**
+     * Reads the weights from the result of {@link #query(Dialect)}. Does not close the result set.
+     *
+     * @param resultSet the query result, positioned before the first row
+     * @param dialect the database's dialect
+     * @return the weights
+     */
+    static CellWeights read(ResultSet resultSet, Dialect dialect) {
+        Builder weights = builder(dialect);
+        while (resultSet.next()) {
+            // Read positionally: the two dialects' queries select the same four values under
+            // different spellings.
+            if (resultSet.isNull(0)
+                    || resultSet.isNull(1)
+                    || resultSet.isNull(2)
+                    || resultSet.isNull(3)) {
+                continue;
+            }
+            weights.indexColumn(
+                    resultSet.getString(0),
+                    resultSet.getString(1),
+                    resultSet.getString(2),
+                    resultSet.getString(3));
+        }
+        return weights.build();
     }
 
     /**
