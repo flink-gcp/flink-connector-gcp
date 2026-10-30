@@ -117,12 +117,20 @@ public final class PrimaryKeys {
 
     /**
      * Returns the query listing (schema, table, column, position in the key, type) for every
-     * primary-key column.
+     * primary-key column, and one row with a null column, position and type for a table with none.
      *
      * <p>Both dialects list a table's key columns in {@code INDEX_COLUMNS} under the index named
      * and typed {@code PRIMARY_KEY}, with {@code ORDINAL_POSITION} giving the column's place in the
-     * key, and the column's type in {@code COLUMNS.SPANNER_TYPE}; the Table catalog joins the two
-     * the same way. The query covers every visible user schema, as the cell-weight query does.
+     * key, and the column's type in {@code COLUMNS.SPANNER_TYPE}; the Table catalog reads the same
+     * two views. The query covers every visible user schema, as the cell-weight query does.
+     *
+     * <p>It starts from the base table in {@code TABLES} and outer-joins the key columns and their
+     * types to it, because a GoogleSQL table declared with {@code PRIMARY KEY ()} has no key column
+     * in {@code INDEX_COLUMNS} and, on the service, no {@code PRIMARY_KEY} row in {@code INDEXES}
+     * either. A key column whose type the join does not find arrives with a null type too, rather
+     * than dropping out of the key; {@link #read} says what such a row means. The {@code WHERE}
+     * clause filters the {@code TABLES} row alone, and the key-index conditions sit in the join,
+     * since a condition on a joined view would discard the rows the outer joins exist to keep.
      *
      * @param dialect the database's dialect
      * @return the SQL to run
@@ -130,31 +138,41 @@ public final class PrimaryKeys {
     static String query(Dialect dialect) {
         switch (dialect) {
             case POSTGRESQL:
-                return "SELECT k.table_schema, k.table_name, k.column_name,"
+                return "SELECT t.table_schema, t.table_name, k.column_name,"
                         + " k.ordinal_position, c.spanner_type"
-                        + " FROM information_schema.index_columns AS k"
-                        + " JOIN information_schema.columns AS c"
+                        + " FROM information_schema.tables AS t"
+                        + " LEFT JOIN information_schema.index_columns AS k"
+                        + " ON k.table_catalog = t.table_catalog"
+                        + " AND k.table_schema = t.table_schema"
+                        + " AND k.table_name = t.table_name"
+                        + " AND k.index_name = 'PRIMARY_KEY'"
+                        + " AND k.index_type = 'PRIMARY_KEY'"
+                        + " LEFT JOIN information_schema.columns AS c"
                         + " ON c.table_catalog = k.table_catalog"
                         + " AND c.table_schema = k.table_schema"
                         + " AND c.table_name = k.table_name"
                         + " AND c.column_name = k.column_name"
-                        + " WHERE k.table_schema NOT IN"
-                        + " ('pg_catalog', 'information_schema', 'spanner_sys')"
-                        + " AND k.index_name = 'PRIMARY_KEY'"
-                        + " AND k.index_type = 'PRIMARY_KEY'";
+                        + " WHERE t.table_type = 'BASE TABLE'"
+                        + " AND t.table_schema NOT IN"
+                        + " ('pg_catalog', 'information_schema', 'spanner_sys')";
             case GOOGLE_STANDARD_SQL:
-                return "SELECT k.TABLE_SCHEMA, k.TABLE_NAME, k.COLUMN_NAME,"
+                return "SELECT t.TABLE_SCHEMA, t.TABLE_NAME, k.COLUMN_NAME,"
                         + " k.ORDINAL_POSITION, c.SPANNER_TYPE"
-                        + " FROM INFORMATION_SCHEMA.INDEX_COLUMNS AS k"
-                        + " JOIN INFORMATION_SCHEMA.COLUMNS AS c"
+                        + " FROM INFORMATION_SCHEMA.TABLES AS t"
+                        + " LEFT JOIN INFORMATION_SCHEMA.INDEX_COLUMNS AS k"
+                        + " ON k.TABLE_CATALOG = t.TABLE_CATALOG"
+                        + " AND k.TABLE_SCHEMA = t.TABLE_SCHEMA"
+                        + " AND k.TABLE_NAME = t.TABLE_NAME"
+                        + " AND k.INDEX_NAME = 'PRIMARY_KEY'"
+                        + " AND k.INDEX_TYPE = 'PRIMARY_KEY'"
+                        + " LEFT JOIN INFORMATION_SCHEMA.COLUMNS AS c"
                         + " ON c.TABLE_CATALOG = k.TABLE_CATALOG"
                         + " AND c.TABLE_SCHEMA = k.TABLE_SCHEMA"
                         + " AND c.TABLE_NAME = k.TABLE_NAME"
                         + " AND c.COLUMN_NAME = k.COLUMN_NAME"
-                        + " WHERE k.TABLE_CATALOG = ''"
-                        + " AND k.TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')"
-                        + " AND k.INDEX_NAME = 'PRIMARY_KEY'"
-                        + " AND k.INDEX_TYPE = 'PRIMARY_KEY'";
+                        + " WHERE t.TABLE_CATALOG = ''"
+                        + " AND t.TABLE_TYPE = 'BASE TABLE'"
+                        + " AND t.TABLE_SCHEMA NOT IN ('INFORMATION_SCHEMA', 'SPANNER_SYS')";
             default:
                 // Unreachable today; a dialect added to the client library lands here rather than
                 // silently reading nothing, which would order every mutation per table.
@@ -183,8 +201,9 @@ public final class PrimaryKeys {
                 continue;
             }
             if (resultSet.isNull(2) || resultSet.isNull(3) || resultSet.isNull(4)) {
-                // A key read in part would compare fewer columns or the wrong ones, so the table's
-                // rows are not named at all.
+                // A table with no key column, which holds one row at most, or a key read in part,
+                // which would compare fewer columns or the wrong ones: either way the table is
+                // listed and its rows are not named, so its mutations are ordered against it.
                 keys.unnameable(resultSet.getString(0), resultSet.getString(1));
                 continue;
             }

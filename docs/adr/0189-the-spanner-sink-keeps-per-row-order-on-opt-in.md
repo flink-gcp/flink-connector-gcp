@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-10-29 (client library read in google-cloud-spanner 6.124.0; emulator behavior measured
   2026-10-28 against the pinned `gcr.io/cloud-spanner-emulator/emulator` image, three runs; service
   behavior measured 2026-10-29 on an ephemeral 100-processing-unit `STANDARD` instance in
-  `regional-us-central1`)
-- Issues: [#1619], [#1618], [#1556]
+  `regional-us-central1`), revised by [#1927] (2026-10-30)
+- Issues: [#1619], [#1618], [#1556], [#1927]
 - Modules: spanner (`sink`, `sink.writer`, `table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Order per row;
   `docs/content/docs/connectors/table/spanner.md` § Delivery guarantee;
@@ -52,25 +52,30 @@ risk.
   requests has no answer to wait for, so the flush alone orders a row's mutations.
 - **A row is a table and its primary-key values, with the primary key and its column types read
   from `INFORMATION_SCHEMA` when the writer opens, in this mode only.** A `Mutation` names its
-  columns but not which of them form the key. The query is `INDEX_COLUMNS` under the index named and
-  typed `PRIMARY_KEY`, ordered by `ORDINAL_POSITION` and joined to `COLUMNS.SPANNER_TYPE`, across
+  columns but not which of them form the key. The query starts from each base table in `TABLES`
+  and outer-joins its key columns from `INDEX_COLUMNS` under the index named and typed
+  `PRIMARY_KEY`, placed by `ORDINAL_POSITION`, and their types from `COLUMNS.SPANNER_TYPE`, across
   every visible user schema, as the cell weights ([ADR-0077]) and the catalog ([ADR-0176]) read
-  them. The catalog's `SpannerTypeSpelling` moved to the module root so that the sink parses the
-  spellings without reaching into the table layer. Under `NONE` the writer opens exactly as
-  before.
+  them. It starts from `TABLES` because a GoogleSQL table declared with `PRIMARY KEY ()` has no row
+  in `INDEX_COLUMNS`, and on the service none in `INDEXES` either, although the emulator lists one
+  there ([#1927]). The catalog's `SpannerTypeSpelling` moved to the module root so that the sink
+  parses the spellings without reaching into the table layer. Under `NONE` the writer opens
+  exactly as before.
 - **Doubt resolves toward the whole table.** Finding two rows the same when they are not costs an
   earlier flush; finding them different when they are the same costs the order. So a mutation whose
   row the writer cannot name is ordered against every mutation of its table: a delete of a key range
   or of every row, a write without a value for every key column (an insert into a table whose key
   column is generated, which Spanner computes from the row's other columns), a key value in another
   representation than its column's type, and an operation other than the four writes and the
-  delete.
+  delete. A GoogleSQL table declared with `PRIMARY KEY ()` is one of these too, and there the
+  answer is exact rather than cautious: it has no key column and holds one row at most, so its
+  table is its row ([#1927]).
 - **A table name the schema did not list is ordered against the whole database.** It may be a table
-  created after the writer opened, a table whose primary key is empty, or a synonym, which
-  addresses a listed table's rows under another name; only the whole database is sure to contain
-  the rows it addresses. The independent review found the synonym case: the first version ordered
-  an unlisted name against its own name only, so an upsert of `Orders` and a delete through a
-  synonym of it could share a request.
+  created after the writer opened, or a synonym, which addresses a listed table's rows under
+  another name; only the whole database is sure to contain the rows it addresses. A synonym is a
+  `TABLES` row of type `SYNONYM`, not `BASE TABLE`, so the query does not list it. The independent
+  review found the synonym case: the first version ordered an unlisted name against its own name
+  only, so an upsert of `Orders` and a delete through a synonym of it could share a request.
 - **A key value is compared as its column's type reads it, and only in the client library's
   representation of that type.** Spanner receives a mutation's values untyped and reads each by its
   column's type, so one row can be addressed in more than one spelling, such as a `UUID` key as a
@@ -121,6 +126,15 @@ primary-key read named the row correctly in both dialects. That run used the fir
 read `INDEX_COLUMNS` alone; the join to `COLUMNS.SPANNER_TYPE` added on review is the shape the
 catalog's gated suite already runs against the service ([ADR-0176]), and the emulator tests run it
 in both dialects.
+
+Measured against the service on 2026-10-30 for [#1927], on two ephemeral 100-processing-unit
+`STANDARD` instances in `regional-us-central1`, each deleted after its run. A GoogleSQL table
+declared with `PRIMARY KEY ()` is a `BASE TABLE` row in `TABLES` but has no `PRIMARY_KEY` row in
+`INDEXES`, which the emulator does list, so a query starting from `INDEXES` still missed it. The
+query as written returned that table once, with a null column, position and type; a two-column key
+in position order; and a table in a named schema. In PostgreSQL it returned both keyed tables the
+same way. A synonym and a view, which `TABLES` lists as `SYNONYM` and `VIEW` in both dialects,
+were not returned.
 
 | Workload | `NONE` | `PER_KEY` |
 |---|---|---|
@@ -179,6 +193,7 @@ in both dialects.
 [#1556]: https://github.com/flink-gcp/flink-connector-gcp/issues/1556
 [#1618]: https://github.com/flink-gcp/flink-connector-gcp/issues/1618
 [#1619]: https://github.com/flink-gcp/flink-connector-gcp/issues/1619
+[#1927]: https://github.com/flink-gcp/flink-connector-gcp/issues/1927
 [ADR-0075]: 0075-the-spanner-sink-batch-writes-and-owns-the-whole-retry-loop.md
 [ADR-0077]: 0077-batch-limits-are-counted-in-index-aware-cells-read-once-at-open.md
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md

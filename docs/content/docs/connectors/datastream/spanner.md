@@ -460,8 +460,9 @@ A mutation whose row the writer cannot name is ordered against every mutation of
 - a write without a value for every key column, such as an insert into a table whose key column is generated, which Spanner computes from the row's other columns;
 - a key value in another representation than its column's type, such as a `UUID` key given as a string, or a value with no type at all.
 
+A GoogleSQL table declared with `PRIMARY KEY ()` is ordered the same way, and for it the answer is exact rather than cautious: the table has no key column and holds one row at most, so every mutation of it addresses that row.
+
 A mutation of a table the schema did not list when the writer opened is ordered against every mutation of the batch, whatever its table: the name may belong to a table created since, or be a synonym, which addresses another table's rows under a second name.
-The same holds for a table whose primary key is empty, which lists no key column.
 
 Table names compare without case in both dialects, so two PostgreSQL tables whose names differ only by case are each ordered as a whole.
 Rows related by an interleaved parent's `ON DELETE CASCADE`, by a foreign key or by a `UNIQUE` index are different rows, so the mode does not order a mutation of one against a mutation of the other.

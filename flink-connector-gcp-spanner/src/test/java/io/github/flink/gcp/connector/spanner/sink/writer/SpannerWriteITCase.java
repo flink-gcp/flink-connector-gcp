@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSeri
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -245,6 +246,42 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                 .isFalse();
     }
 
+    @Test
+    void perKeyOrdersATableWithNoKeyColumnAgainstItselfOnly() throws Exception {
+        // GoogleSQL only: PostgreSQL databases cannot declare a table without a primary key.
+        DatabaseDestination database =
+                createDatabase(
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        "CREATE TABLE orders (id STRING(64) NOT NULL, name STRING(64))"
+                                + " PRIMARY KEY (id)",
+                        "CREATE TABLE singleton (v STRING(64)) PRIMARY KEY ()");
+        SinkWriter<String> writer =
+                writer(
+                        database,
+                        SpannerWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build(),
+                        null,
+                        SpannerWriteITCase::ordersOrSingleton);
+
+        for (String element : new String[] {"o:a", "s:x", "o:b", "s:y", "o:c"}) {
+            writer.write(element, TestContexts.NO_OP);
+        }
+        writer.flush(false);
+
+        assertThat(names(database)).containsExactly("a", "b", "c");
+        assertThat(query(database, "SELECT v FROM singleton"))
+                .singleElement()
+                .satisfies(row -> assertThat(row.getString(0)).isEqualTo("y"));
+        // The second singleton write repeats the table's one row, so the batch is sent before it,
+        // and nothing else is: two requests. A table the primary-key read does not list is ordered
+        // against the whole batch instead, which sends each singleton write alone, between two
+        // flushes: five requests.
+        assertThat(
+                        lastContext
+                                .getSinkWriterMetricGroup()
+                                .counterValue(SpannerMetricNames.BATCHES_SENT))
+                .isEqualTo(2L);
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static final int ROWS = 20;
@@ -285,6 +322,15 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                 .set("name")
                 .to(parts[0] + ":" + parts[1])
                 .build();
+    }
+
+    /** Turns {@code o:id} into an upsert of {@code orders} and {@code s:v} into the singleton. */
+    private static Mutation ordersOrSingleton(String element, SinkWriter.Context context) {
+        String[] parts = element.split(":");
+        if (parts[0].equals("s")) {
+            return Mutation.newInsertOrUpdateBuilder("singleton").set("v").to(parts[1]).build();
+        }
+        return insertOrUpdate(parts[1]);
     }
 
     private static DatabaseDestination ordersDatabase(Dialect dialect) throws Exception {
