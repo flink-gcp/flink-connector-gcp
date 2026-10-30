@@ -300,9 +300,31 @@ Before it ran, the `operator` and `flink` versions created 2026-10-14T12:17Z wer
 | `bigtable-recovery` | `sha256:ded86d4c19c7ba15e04040e912fd0ec7a508d65425160140137fe56f1e7575dd` | 2026-10-20T15:56:10Z | 2026-10-27T15:56:10Z |
 
 The digests are the ones the `sha-5b505786…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; the built digests match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
-[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests and cites this run for the recreated `flink` version; the lifecycle image's inputs are unchanged since `25260e678`.
-Nothing adopts this run's recovery application images: the Bigtable rerun keeps `f041f548…`, so all four Bigtable trials run one application image.
-Dispatch refuses an image unless the run's window ends a day before eligibility, so every run, which checks the `operator` mirror, the lifecycle-tools pin and its application or smoke image, must end before 2026-10-26T15:54:54Z, and one whose application image is older before that image's own bound: a Bigtable trial, which pulls `f041f548…`, must end before 2026-10-25T05:19:20Z.
+[pins.cue](pins.cue) adopted the lifecycle-tools and smoke digests and cited this run for the recreated `flink` version until the [Spanner recovery publication](#spanner-recovery-publication) below; the lifecycle image's inputs were unchanged since `25260e678`.
+Nothing adopts this run's recovery application images: the Bigtable rerun kept `f041f548…`, so all four Bigtable trials ran one application image.
+Dispatch refuses an image unless the run's window ends a day before eligibility, so every run, which checked the `operator` mirror, the lifecycle-tools pin and its application or smoke image, had to end before 2026-10-26T15:54:54Z, and one whose application image was older before that image's own bound: a Bigtable trial, which pulled `f041f548…`, had to end before 2026-10-25T05:19:20Z.
+
+### Spanner recovery publication
+
+The [Spanner recovery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40916550826) built main commit `34be4f08c691bfa7955b52bbc02955185271be8b` on 2026-10-29 UTC, the first after the Spanner scenario of [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877) merged, for the recovery trials of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878); its `spanner-recovery` image is the one every one of those trials names as a dispatch input.
+The seven-day cleanup had already deleted the earlier `operator`, `flink`, lifecycle-tools and smoke versions, so the run recreated the `operator` and `flink` mirrors with fresh creation times, without a manual deletion.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78` | 2026-10-29T17:24:57Z | 2026-11-05T17:24:57Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-10-29T17:25:20Z | 2026-11-05T17:25:20Z |
+| `lifecycle-tools` | `sha256:d487ae2e859d392ed7caf9d419c236e475cfaa519f0954a3da28af3badf9d362` | 2026-10-29T17:25:42Z | 2026-11-05T17:25:42Z |
+| `smoke` | `sha256:ae4abbbead79b9950552cdb43ebf5ff05d18caa656484cf7f072300289e3b706` | 2026-10-29T17:26:00Z | 2026-11-05T17:26:00Z |
+| `bigquery-recovery` | `sha256:4637f21ae99273f3bcecbc1caaca640cff5af6726d43bdf29947abb15d231754` | 2026-10-29T17:26:09Z | 2026-11-05T17:26:09Z |
+| `pubsub-recovery` | `sha256:93f5f591bff7a8ad7149f5d2898224d5a9ad68c79ca73067a2c5a3cb7b65108f` | 2026-10-29T17:26:15Z | 2026-11-05T17:26:15Z |
+| `cloudtasks-recovery` | `sha256:988c36fe7ab111a2417fa1119638028f8c41f5d5bdd7fc60b8d028abf4e24254` | 2026-10-29T17:26:22Z | 2026-11-05T17:26:22Z |
+| `bigtable-recovery` | `sha256:d2f28a0f825fabde911696686ca9936f5fbdbbdb9f4c4a38e7079bedab6bc87e` | 2026-10-29T17:26:29Z | 2026-11-05T17:26:29Z |
+| `spanner-recovery` | `sha256:75a2d78a2315c02406c3dbc5dc7576d245f68ad110a23d94628541faffcf5c1f` | 2026-10-29T17:26:36Z | 2026-11-05T17:26:36Z |
+
+The digests are the ones the `sha-34be4f08…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
+[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests and cites this run for the recreated `flink` version; the `spanner-recovery` digest stays a dispatch input verified live.
+The same run republished the BigQuery, Pub/Sub, Cloud Tasks and Bigtable application images, which nothing adopts.
+Dispatch refuses an image unless the trial's window ends a day before eligibility, so a Spanner trial, which checks the `operator` mirror, the lifecycle-tools pin and its `spanner-recovery` image, must be admitted so that its window ends before 2026-11-04T17:24:57Z.
 
 For a shell or Docker build argument, read a pin with:
 
