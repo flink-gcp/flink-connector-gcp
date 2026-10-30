@@ -23,7 +23,10 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.MutationGroup;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.SpannerException;
+import com.google.cloud.spanner.Statement;
 import com.google.spanner.v1.BatchWriteResponse;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.List;
@@ -49,7 +52,7 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
 
     private final String description;
     private final Supplier<Dialect> dialect;
-    private final Function<String, ResultSet> executeQuery;
+    private final Function<Statement, ResultSet> executeQuery;
     private final Function<List<MutationGroup>, Iterable<BatchWriteResponse>> batchWrite;
     private final Runnable closeService;
 
@@ -65,7 +68,7 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
     SpannerServiceAdapter(
             String description,
             Supplier<Dialect> dialect,
-            Function<String, ResultSet> executeQuery,
+            Function<Statement, ResultSet> executeQuery,
             Function<List<MutationGroup>, Iterable<BatchWriteResponse>> batchWrite,
             Runnable closeService) {
         this.description = Preconditions.checkNotNull(description, "description must not be null");
@@ -78,16 +81,16 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
     }
 
     @Override
-    public CellWeights readCellWeights() throws IOException {
+    public CellWeights readCellWeights(@Nullable String table) throws IOException {
         Dialect databaseDialect;
-        String sql;
+        Statement statement;
         try {
             databaseDialect = dialect.get();
-            sql = CellWeights.query(databaseDialect);
+            statement = CellWeights.query(databaseDialect, table);
         } catch (SpannerException e) {
             throw new IOException("Failed to read the dialect of " + description + ".", e);
         }
-        try (ResultSet resultSet = executeQuery.apply(sql)) {
+        try (ResultSet resultSet = executeQuery.apply(statement)) {
             return CellWeights.read(resultSet, databaseDialect);
         } catch (SpannerException e) {
             throw new IOException(
@@ -100,16 +103,16 @@ final class SpannerServiceAdapter implements SpannerDatabaseAccess {
     }
 
     @Override
-    public PrimaryKeys readPrimaryKeys() throws IOException {
+    public PrimaryKeys readPrimaryKeys(@Nullable String table) throws IOException {
         Dialect databaseDialect;
-        String sql;
+        Statement statement;
         try {
             databaseDialect = dialect.get();
-            sql = PrimaryKeys.query(databaseDialect);
+            statement = PrimaryKeys.query(databaseDialect, table);
         } catch (SpannerException e) {
             throw new IOException("Failed to read the dialect of " + description + ".", e);
         }
-        try (ResultSet resultSet = executeQuery.apply(sql)) {
+        try (ResultSet resultSet = executeQuery.apply(statement)) {
             return PrimaryKeys.read(resultSet, databaseDialect);
         } catch (SpannerException e) {
             throw new IOException(

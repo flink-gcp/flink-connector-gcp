@@ -26,7 +26,6 @@ import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.Options.TransactionOption;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
-import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
@@ -161,7 +160,7 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
             return new SpannerServiceAdapter(
                     database.toString(),
                     client::getDialect,
-                    sql -> client.singleUse().executeQuery(Statement.of(sql)),
+                    statement -> client.singleUse().executeQuery(statement),
                     groups -> client.batchWriteAtLeastOnce(groups, transactionOptions),
                     () -> SpannerClients.close(spanner, clientMetrics));
         } catch (Throwable e) {

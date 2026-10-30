@@ -47,12 +47,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the writer sends its batch before a mutation whose row the batch holds; the synchronous writer
   already keeps order between requests. Do not port Firestore's `PerKeyWriteSequencer` here.
   `PrimaryKeys` names a row from the primary keys and their column types read at open (this mode
-  only, so `NONE` opens as before). A key value compares only in its column type's client-library
-  representation; any other representation, and every other doubt, resolves to the whole table.
+  only, so `NONE` opens as before), and read again, once per name, for a table they do not list;
+  a name still unlisted stays ordered against the whole batch. Never re-read on a schedule, and a
+  failed re-read fails the job after the batch write's transient retries (ADR-0189). The Table
+  sink's serializer narrows both schema reads to its one table by implementing
+  `SingleTableSerializationSchema`, and the reads take that table name (`null` for the whole
+  database); do not add a builder setter or a scope type for it. A key value compares only
+  in its column type's client-library representation; any other representation, and every other
+  doubt, resolves to the whole table.
   Do not reintroduce wire-form or string normalization: review found ways it could split a row.
   Table names fold in both dialects. `OrderingMode` is an `@Experimental` closure stop on the
-  `@Public` options (ADR-0124's revision), unlike Firestore's `@PublicEvolving` namesake. The emulator does not reorder a request's groups and neither did the service in
-  the 2026-10-29 measurement, so the unit tests are the firing control, not an IT.
+  `@Public` options (ADR-0124's revision), unlike Firestore's `@PublicEvolving` namesake. The
+  emulator does not reorder a request's groups and neither did the service in the 2026-10-29
+  measurement, so the unit tests are the firing control, not an IT. The emulator's
+  `INFORMATION_SCHEMA` is not the service's: it lists a `PRIMARY KEY ()` table in `INDEXES`, the
+  service does not, so a schema-query change is measured on the service before it is claimed.
 
 ## Error handling (`docs/adr/0076`)
 
@@ -111,7 +120,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the one way this sink can reach the per-group 80,000 at all; with no secondary index it costs one
   however many rows it hits, and the sink's single-row estimate is then exact.
 - `maxBatchCells` counts index entries, read once from `INFORMATION_SCHEMA` when the writer opens
-  — dialect-branched across every visible user schema, primary-key index excluded by name, and
+  — dialect-branched across every visible user schema (the Table sink's one table only),
+  primary-key index excluded by name, and
   keyed by schema plus table. GoogleSQL names match case-insensitively; PostgreSQL catalog names
   preserve the distinction created by quoted identifiers. Reading it at creation is what makes an
   unreadable schema a job that never starts.

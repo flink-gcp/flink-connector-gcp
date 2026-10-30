@@ -25,6 +25,7 @@ import com.google.cloud.spanner.MutationGroup;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.PrimaryKeys;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.Test;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -81,6 +83,41 @@ class SpannerMutationsSinkTest {
 
         assertThat(access.weightsReads.get()).isEqualTo(1);
         assertThat(access.primaryKeyReads.get()).isEqualTo(1);
+    }
+
+    @Test
+    void readsTheWholeDatabaseForASerializerThatChoosesTablesPerMutation() throws Exception {
+        CountingAccess access = new CountingAccess();
+
+        perKeySink(new RecordingSerializer(), new RecordingHandler())
+                .createWriter(new StubWriterInitContext(0), () -> access);
+
+        assertThat(access.tables).containsExactly(null, null);
+    }
+
+    @Test
+    void narrowsBothReadsToTheOneTableASerializerDeclares() throws Exception {
+        CountingAccess access = new CountingAccess();
+
+        perKeySink(new OneTableSerializer("sales.Orders"), new RecordingHandler())
+                .createWriter(new StubWriterInitContext(0), () -> access);
+
+        assertThat(access.tables).containsExactly("sales.Orders", "sales.Orders");
+    }
+
+    @Test
+    void refusesASerializerThatDeclaresOneTableButNamesNone() {
+        CountingAccess access = new CountingAccess();
+
+        // Read as no declaration, null would widen the reads to the whole database unnoticed.
+        assertThatThrownBy(
+                        () ->
+                                perKeySink(new OneTableSerializer(null), new RecordingHandler())
+                                        .createWriter(new StubWriterInitContext(0), () -> access))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must name the table it writes");
+        assertThat(access.tables).isEmpty();
+        assertThat(access.closeCalls.get()).isEqualTo(1);
     }
 
     @Test
@@ -195,16 +232,45 @@ class SpannerMutationsSinkTest {
 
     private static SpannerMutationsSink<String> perKeySink(
             FailureHandler<? super FailedMutation> handler) {
+        return perKeySink(new RecordingSerializer(), handler);
+    }
+
+    private static SpannerMutationsSink<String> perKeySink(
+            SpannerMutationSerializationSchema<String> serializer,
+            FailureHandler<? super FailedMutation> handler) {
         return (SpannerMutationsSink<String>)
                 SpannerSink.<String>builder()
                         .database(DATABASE)
-                        .serializer(new RecordingSerializer())
+                        .serializer(serializer)
                         .writerOptions(
                                 SpannerWriterOptions.builder()
                                         .orderingMode(OrderingMode.PER_KEY)
                                         .build())
                         .failedMutationHandler(handler)
                         .build();
+    }
+
+    /** Writes one table and says so, as the Table sink's serializer does. */
+    private static final class OneTableSerializer
+            implements SingleTableSerializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Nullable private final String table;
+
+        OneTableSerializer(@Nullable String table) {
+            this.table = table;
+        }
+
+        @Override
+        public Mutation serialize(String element, SinkWriter.Context context) {
+            return Mutation.newInsertOrUpdateBuilder(table).set("Id").to(element).build();
+        }
+
+        @Override
+        public String table() {
+            return table;
+        }
     }
 
     /** Counts what the sink did to the access it was handed. */
@@ -215,9 +281,11 @@ class SpannerMutationsSinkTest {
         private final AtomicInteger closeCalls = new AtomicInteger();
         @Nullable private IOException weightsFailure;
         @Nullable private IOException primaryKeysFailure;
+        private final List<String> tables = new ArrayList<>();
 
         @Override
-        public CellWeights readCellWeights() throws IOException {
+        public CellWeights readCellWeights(@Nullable String table) throws IOException {
+            tables.add(table);
             weightsReads.incrementAndGet();
             if (weightsFailure != null) {
                 throw weightsFailure;
@@ -226,7 +294,8 @@ class SpannerMutationsSinkTest {
         }
 
         @Override
-        public PrimaryKeys readPrimaryKeys() throws IOException {
+        public PrimaryKeys readPrimaryKeys(@Nullable String table) throws IOException {
+            tables.add(table);
             primaryKeyReads.incrementAndGet();
             if (primaryKeysFailure != null) {
                 throw primaryKeysFailure;

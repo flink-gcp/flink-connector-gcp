@@ -22,11 +22,14 @@ import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
 import com.google.cloud.spanner.ResultSets;
 import com.google.cloud.spanner.SpannerExceptionFactory;
+import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Struct;
 import com.google.cloud.spanner.Type;
 import com.google.rpc.Status;
 import com.google.spanner.v1.BatchWriteResponse;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -55,6 +58,14 @@ class SpannerServiceAdapterTest {
                     Type.StructField.of("t", Type.string()),
                     Type.StructField.of("c", Type.string()),
                     Type.StructField.of("i", Type.string()));
+
+    private static final Type PRIMARY_KEY_ROW =
+            Type.struct(
+                    Type.StructField.of("s", Type.string()),
+                    Type.StructField.of("t", Type.string()),
+                    Type.StructField.of("c", Type.string()),
+                    Type.StructField.of("p", Type.int64()),
+                    Type.StructField.of("y", Type.string()));
 
     @Test
     void oneResponseCanDecideSeveralGroups() {
@@ -136,7 +147,7 @@ class SpannerServiceAdapterTest {
 
     @Test
     void readsTheWeightsWithTheQueryTheDialectAsksFor() throws Exception {
-        List<String> queries = new ArrayList<>();
+        List<Statement> queries = new ArrayList<>();
         AtomicInteger dialectReads = new AtomicInteger();
         SpannerServiceAdapter adapter =
                 new SpannerServiceAdapter(
@@ -164,9 +175,11 @@ class SpannerServiceAdapterTest {
                         groups -> List.of(),
                         () -> {});
 
-        CellWeights weights = adapter.readCellWeights();
+        CellWeights weights = adapter.readCellWeights(null);
 
-        assertThat(queries).containsExactly(CellWeights.query(Dialect.POSTGRESQL));
+        assertThat(queries)
+                .extracting(Statement::getSql)
+                .containsExactly(CellWeights.query(Dialect.POSTGRESQL));
         assertThat(dialectReads).hasValue(1);
         assertThat(weights.knows("orders")).isTrue();
     }
@@ -186,7 +199,7 @@ class SpannerServiceAdapterTest {
                         groups -> List.of(),
                         () -> {});
 
-        assertThatThrownBy(adapter::readCellWeights)
+        assertThatThrownBy(() -> adapter.readCellWeights(null))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("dialect")
                 .hasMessageContaining("projects/p/instances/i/databases/d");
@@ -207,7 +220,7 @@ class SpannerServiceAdapterTest {
 
         // This is the message a misconfigured user actually meets, so it is asserted where it is
         // produced rather than where a test fixture could restate it.
-        assertThatThrownBy(adapter::readCellWeights)
+        assertThatThrownBy(() -> adapter.readCellWeights(null))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("INFORMATION_SCHEMA")
                 .hasMessageContaining("secondary indexes")
@@ -216,7 +229,7 @@ class SpannerServiceAdapterTest {
 
     @Test
     void readsThePrimaryKeysWithTheDialectsQuery() throws Exception {
-        List<String> queries = new ArrayList<>();
+        List<Statement> queries = new ArrayList<>();
         SpannerServiceAdapter adapter =
                 new SpannerServiceAdapter(
                         "db",
@@ -247,10 +260,55 @@ class SpannerServiceAdapterTest {
                         groups -> List.of(),
                         () -> {});
 
-        PrimaryKeys keys = adapter.readPrimaryKeys();
+        PrimaryKeys keys = adapter.readPrimaryKeys(null);
 
-        assertThat(queries).containsExactly(PrimaryKeys.query(Dialect.GOOGLE_STANDARD_SQL));
+        assertThat(queries)
+                .extracting(Statement::getSql)
+                .containsExactly(PrimaryKeys.query(Dialect.GOOGLE_STANDARD_SQL));
         assertThat(keys.tableCount()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void readsOneTableWithItsNameBoundAndMatchedWithoutCase(Dialect dialect) throws Exception {
+        List<Statement> queries = new ArrayList<>();
+        SpannerServiceAdapter adapter =
+                new SpannerServiceAdapter(
+                        "db",
+                        () -> dialect,
+                        statement -> {
+                            queries.add(statement);
+                            return ResultSets.forRows(
+                                    queries.size() == 1 ? PRIMARY_KEY_ROW : INDEX_ROW, List.of());
+                        },
+                        groups -> List.of(),
+                        () -> {});
+
+        adapter.readPrimaryKeys("sales.Orders");
+        adapter.readCellWeights("Orders");
+
+        boolean postgres = dialect == Dialect.POSTGRESQL;
+        String bound =
+                postgres
+                        ? ") = LOWER($1) AND LOWER(%s) = LOWER($2)"
+                        : ") = LOWER(@schema_name) AND LOWER(%s) = LOWER(@table_name)";
+        String schemaParameter = postgres ? "p1" : "schema_name";
+        String tableParameter = postgres ? "p2" : "table_name";
+
+        Statement keys = queries.get(0);
+        assertThat(keys.getSql())
+                .startsWith(PrimaryKeys.query(dialect))
+                .endsWith(String.format(bound, postgres ? "t.table_name" : "t.TABLE_NAME"));
+        assertThat(keys.getParameters().get(schemaParameter).getString()).isEqualTo("sales");
+        assertThat(keys.getParameters().get(tableParameter).getString()).isEqualTo("Orders");
+
+        // An unqualified name is in the dialect's default schema.
+        Statement weights = queries.get(1);
+        assertThat(weights.getSql())
+                .startsWith(CellWeights.query(dialect))
+                .endsWith(String.format(bound, postgres ? "table_name" : "TABLE_NAME"));
+        assertThat(weights.getParameters().get(schemaParameter).getString())
+                .isEqualTo(postgres ? "public" : "");
     }
 
     @Test
@@ -266,7 +324,7 @@ class SpannerServiceAdapterTest {
                         groups -> List.of(),
                         () -> {});
 
-        assertThatThrownBy(adapter::readPrimaryKeys)
+        assertThatThrownBy(() -> adapter.readPrimaryKeys(null))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("INFORMATION_SCHEMA")
                 .hasMessageContaining("per-key ordering mode")

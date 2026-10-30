@@ -32,6 +32,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Type;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -88,6 +89,14 @@ class RowDataSerializationSchemaTest {
                                 }));
         row.setRowKind(kind);
         return row;
+    }
+
+    @Test
+    void declaresItsOneTableSoThatTheWriterReadsThatTableAlone() {
+        assertThat(
+                        SingleTableSerializationSchema.tableOf(
+                                new RowDataSerializationSchema(schema(true), "sales.people")))
+                .isEqualTo("sales.people");
     }
 
     @Test

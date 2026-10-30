@@ -366,7 +366,7 @@ class SpannerRejectionRealGcpITCase extends AbstractSpannerRealGcpITCase {
     void readsTheSecondaryIndexCoverageOutOfTheRealSchema(Dialect dialect) throws Exception {
         CellWeights weights;
         try (SpannerDatabaseAccess access = access(ordersDatabases.get(dialect))) {
-            weights = access.readCellWeights();
+            weights = access.readCellWeights(null);
         }
 
         // One secondary index covers name, and the primary-key index is excluded — so a mutation

@@ -47,12 +47,14 @@ public enum OrderingMode {
      * Mutations of other rows still share requests.
      *
      * <p>The row is the table and the primary-key values, with the primary key and its column types
-     * read from the database's {@code INFORMATION_SCHEMA} when the writer opens. A mutation whose
-     * row the writer cannot name, such as a delete of a key range, is ordered against every
-     * mutation of its table instead, and a mutation of a table the schema did not list, such as a
+     * read from the database's {@code INFORMATION_SCHEMA} when the writer opens, and read again,
+     * once per name, when a mutation names a table they do not list. A mutation whose row the
+     * writer cannot name, such as a delete of a key range, is ordered against every mutation of its
+     * table instead, and a mutation of a table the new read does not list either, such as a
      * synonym, against every mutation of the batch. A row written many times in a row costs one
      * request per mutation, and an attempt that timed out on the client can still be applied by the
-     * service after a later request.
+     * service after a later request. A primary key changed by dropping a table and creating it
+     * again is not detected; restart the job after such a change.
      */
     PER_KEY("per-key");
 

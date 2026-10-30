@@ -462,13 +462,20 @@ A mutation whose row the writer cannot name is ordered against every mutation of
 
 A GoogleSQL table declared with `PRIMARY KEY ()` is ordered the same way, and for it the answer is exact rather than cautious: the table has no key column and holds one row at most, so every mutation of it addresses that row.
 
-A mutation of a table the schema did not list when the writer opened is ordered against every mutation of the batch, whatever its table: the name may belong to a table created since, or be a synonym, which addresses another table's rows under a second name.
+A mutation of a table the primary keys do not list makes the writer send its batch and read them again, once per table name, because the table may have been created after the writer opened.
+If the new read lists the table, its rows are named from then on like any other table's.
+A name the new read does not list either is ordered against every mutation of the batch, whatever its table, and does not trigger another read: it is a synonym, which addresses another table's rows under a second name, or a table the writer's database role cannot see.
+If such a name later becomes a table the writer can read, a read made for another name, or a restart, lists it.
+A failed read is retried under the `recovery*` options when the batch write would retry its status, and fails the job otherwise or once they are spent.
 
-Table names compare without case in both dialects, so two PostgreSQL tables whose names differ only by case are each ordered as a whole.
+Table names compare without case in both dialects, so `Orders` and `orders` in two mutations name one table; Spanner does not let two tables' names differ only by case.
 Rows related by an interleaved parent's `ON DELETE CASCADE`, by a foreign key or by a `UNIQUE` index are different rows, so the mode does not order a mutation of one against a mutation of the other.
-Two orders are out of the writer's reach.
+Two things are out of the writer's reach.
 An attempt that timed out on the client can still be applied by the service after the writer has moved on.
-And the primary keys are read once, so a table dropped and created again with another key while the job runs is compared by its old key until the writer is created again, as a restart does.
+And the writer cannot detect a changed primary key: a table dropped and created again with another key while the job runs is still compared by its old key, so two mutations of one row can share a request.
+
+> **Restart a `per-key` job after changing a primary key.**
+> If a table the job writes is dropped and created again with another primary key, restart the job; the restarted writer reads the primary keys when it opens.
 
 The mode costs a request per repeated row.
 A row written n times in a row takes n requests, one after another, where the default would send them in one; `batchesSent` rises against `numRecordsSend` by that much.

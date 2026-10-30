@@ -522,9 +522,9 @@ public final class SpannerWriterOptions implements Serializable {
          *
          * <p>{@link OrderingMode#PER_KEY} sends the batch before a mutation whose row it already
          * holds, so no request carries a row twice. It reads the database's primary keys when the
-         * writer opens, and costs one request per mutation of a row written many times in a row.
-         * The order is the order one subtask received, so the input must send every mutation of a
-         * row to the same subtask.
+         * writer opens, and again for a table they do not list, and costs one request per mutation
+         * of a row written many times in a row. The order is the order one subtask received, so the
+         * input must send every mutation of a row to the same subtask.
          *
          * @param orderingMode the ordering mode
          * @return this builder

@@ -21,6 +21,8 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.spanner.MutationGroup;
 import com.google.rpc.Status;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.List;
 
@@ -39,22 +41,27 @@ import java.util.List;
 public interface SpannerDatabaseAccess extends AutoCloseable {
 
     /**
-     * Reads how many cells each column of the database costs, counted the way Spanner counts a
+     * Reads how many cells each column of the tables costs, counted the way Spanner counts a
      * mutation. Called once, when the writer opens.
      *
+     * @param table the one table to read, as its native API name, or {@code null} for every table
+     *     of the database
      * @return the weights
      * @throws IOException if the schema cannot be read
      */
-    CellWeights readCellWeights() throws IOException;
+    CellWeights readCellWeights(@Nullable String table) throws IOException;
 
     /**
-     * Reads every table's primary-key columns. Called once, when the writer opens, and only when it
-     * keeps the order of mutations per row.
+     * Reads the primary-key columns of the tables. Called only when the writer keeps the order of
+     * mutations per row: when it opens, and again when a mutation names a table the keys read so
+     * far do not list.
      *
+     * @param table the one table to read, as its native API name, or {@code null} for every table
+     *     of the database
      * @return the primary keys
      * @throws IOException if the schema cannot be read
      */
-    PrimaryKeys readPrimaryKeys() throws IOException;
+    PrimaryKeys readPrimaryKeys(@Nullable String table) throws IOException;
 
     /**
      * Applies the groups through {@code batchWriteAtLeastOnce}, reporting each group's outcome to

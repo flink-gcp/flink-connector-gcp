@@ -23,15 +23,17 @@ import org.apache.flink.types.RowKind;
 
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
-import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import java.io.IOException;
 
-/** Serializes table-runtime rows into mutations for one configured table. */
+/**
+ * Serializes table-runtime rows into mutations for one configured table, which it declares so that
+ * the writer reads that table's schema alone.
+ */
 @Internal
-public final class RowDataSerializationSchema
-        implements SpannerMutationSerializationSchema<RowData> {
+public final class RowDataSerializationSchema implements SingleTableSerializationSchema<RowData> {
 
     private static final long serialVersionUID = 1L;
 
@@ -41,6 +43,11 @@ public final class RowDataSerializationSchema
     public RowDataSerializationSchema(SpannerTableSchemaConverter schema, String table) {
         this.schema = schema;
         this.table = table;
+    }
+
+    @Override
+    public String table() {
+        return table;
     }
 
     @Override

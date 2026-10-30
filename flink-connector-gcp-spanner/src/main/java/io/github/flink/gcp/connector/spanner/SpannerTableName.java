@@ -85,6 +85,35 @@ public final class SpannerTableName implements Serializable {
                 dialect, true, schemaName, tableName, schemaName + "." + tableName);
     }
 
+    /**
+     * Parses a native data-API name, as a mutation carries it: {@code table} in the dialect's
+     * default schema, or {@code schema.table}.
+     *
+     * @param apiName the name
+     * @param dialect the database dialect
+     * @return the name
+     * @throws IllegalArgumentException if the name is blank or not one of those two shapes
+     */
+    public static SpannerTableName ofApiName(String apiName, Dialect dialect) {
+        // The shape check, shared with the key a mutation's table name is compared by.
+        nativeApiKey(apiName, dialect);
+        int separator = apiName.indexOf('.');
+        if (separator < 0) {
+            return new SpannerTableName(
+                    dialect,
+                    false,
+                    dialect == Dialect.POSTGRESQL ? "public" : "",
+                    apiName,
+                    apiName);
+        }
+        return new SpannerTableName(
+                dialect,
+                true,
+                apiName.substring(0, separator),
+                apiName.substring(separator + 1),
+                apiName);
+    }
+
     /** Returns the name passed to Spanner data APIs. */
     public String apiName() {
         return apiName;

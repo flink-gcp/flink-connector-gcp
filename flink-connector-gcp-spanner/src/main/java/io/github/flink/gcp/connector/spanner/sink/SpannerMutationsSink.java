@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.base.lineage.internal.Lineage;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.writer.CellWeights;
 import io.github.flink.gcp.connector.spanner.sink.writer.DefaultSpannerDatabaseAccessFactory;
 import io.github.flink.gcp.connector.spanner.sink.writer.PrimaryKeys;
@@ -138,15 +139,17 @@ public class SpannerMutationsSink<T> implements CrossVersionSink<T>, LineageVert
         SpannerDatabaseAccess access = null;
         try {
             access = factory.create();
-            // Read once, here rather than lazily in the writer: a database the sink cannot read the
+            // Read here rather than lazily in the writer: a database the sink cannot read the
             // schema of is a misconfiguration, and failing at writer creation makes it a job that
-            // never starts instead of one that dies at the first record.
-            CellWeights cellWeights = access.readCellWeights();
+            // never starts instead of one that dies at the first record. A serializer that writes
+            // one table, as the Table sink's does, narrows both reads to it.
+            String table = SingleTableSerializationSchema.tableOf(config.getSerializer());
+            CellWeights cellWeights = access.readCellWeights(table);
             // Read only when used, so a sink that keeps no order per row reads the schema exactly
             // as it did before the mode existed.
             PrimaryKeys primaryKeys =
                     config.getWriterOptions().getOrderingMode() == OrderingMode.PER_KEY
-                            ? access.readPrimaryKeys()
+                            ? access.readPrimaryKeys(table)
                             : null;
             return createWriter(access, cellWeights, primaryKeys, context.metricGroup());
         } catch (Throwable e) {
