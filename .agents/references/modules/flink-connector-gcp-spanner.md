@@ -115,6 +115,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   keyed by schema plus table. GoogleSQL names match case-insensitively; PostgreSQL catalog names
   preserve the distinction created by quoted identifiers. Reading it at creation is what makes an
   unreadable schema a job that never starts.
+- **Each `INFORMATION_SCHEMA` statement lives with the model it builds** (`CellWeights.query`,
+  `PrimaryKeys.query`, `SpannerInformationSchema`, `SpannerTableReadResolver.metadataQuery`,
+  `SpannerChangeStreamMetadataAdapter`), each behind its own exhaustive dialect `switch`. Do not gather them into one holder; ADR-0077 records
+  why. A fix to a filter they repeat (the system-schema list, the `PRIMARY_KEY` name, GoogleSQL's
+  empty catalog name) goes into every statement that carries it.
 - **A table the weights do not know is counted without index entries, never rejected.** The
   default's 16-fold headroom under the 80,000 ceiling is what absorbs that, so raising
   `maxBatchCells` toward it is a real trade and the docs say so.
