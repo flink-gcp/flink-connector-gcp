@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.testutils.MetricListener;
 
 import com.google.cloud.bigtable.data.v2.models.Filters;
@@ -27,8 +28,10 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Collections;
 
+import static io.github.flink.gcp.connector.testutils.Awaits.await;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -57,18 +60,27 @@ class BigtableLookupClientMetricsITCase extends AbstractBigtableEmulatorITCase {
         try (LogCapture capture = LogCapture.of(ClientMetrics.class)) {
             lookup.open(listener.getMetricGroup());
             try {
+                Counter operations =
+                        listener.getCounter("rpcMethod", "ReadRow", "operations").orElseThrow();
                 assertThat(lookup.read(ByteString.copyFromUtf8("present"))).isNotNull();
                 assertThat(lookup.read(ByteString.copyFromUtf8("absent"))).isNull();
                 assertThat(lookup.readAsync(ByteString.copyFromUtf8("present")).get()).isNotNull();
+                // The client completes a point read's future before its tracer records the
+                // operation on the gRPC thread, so a lookup can return before it is counted.
+                await(
+                        "three ReadRow operations to be recorded",
+                        Duration.ofSeconds(10),
+                        () -> operations.getCount() >= 3,
+                        () ->
+                                "operations="
+                                        + operations.getCount()
+                                        + " warnings="
+                                        + capture.getMessages());
+                assertThat(operations.getCount()).isEqualTo(3);
             } finally {
                 lookup.close();
             }
 
-            assertThat(
-                            listener.getCounter("rpcMethod", "ReadRow", "operations")
-                                    .orElseThrow()
-                                    .getCount())
-                    .isEqualTo(3);
             assertThat(capture.getMessages()).isEmpty();
         }
     }
