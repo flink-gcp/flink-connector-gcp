@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0151: Emulator image updates are proposed monthly by Renovate
 
 - Status: Accepted
-- Date: 2026-09-05
-- Issues: [#1200](https://github.com/flink-gcp/flink-connector-gcp/issues/1200), [#1232](https://github.com/flink-gcp/flink-connector-gcp/issues/1232)
+- Date: 2026-09-05; refined 2026-10-31 by [ADR-0191](0191-libraries-bom-updates-are-proposed-weekly-by-renovate.md)
+- Issues: [#1200](https://github.com/flink-gcp/flink-connector-gcp/issues/1200), [#1232](https://github.com/flink-gcp/flink-connector-gcp/issues/1232), [#1836](https://github.com/flink-gcp/flink-connector-gcp/issues/1836)
 - Modules: CI, test-utils
 - Current behavior: [Emulator image updates](../content/docs/development/testing.md#emulator-image-updates)
 
@@ -48,7 +48,8 @@ One regex manager reads the complete image literals from the `IMAGE` declaration
 Docker versioning preserves the `-emulators` compatibility suffix.
 The six declarations describe four images: Bigtable, Pub/Sub and Firestore share the Cloud SDK image and update together.
 All updates share one branch and pull request, including updates Renovate classifies as major; a monthly run need not create a new pull request if there are no updates or one is already open.
-The other managers, dependency dashboard and onboarding stay disabled.
+The emulator job enables only that manager, and the dependency dashboard and onboarding stay disabled.
+The same workflow also runs ADR-0191's weekly `libraries_bom` job; this job keeps the default `renovate/` branch prefix, for the reason ADR-0191 gives.
 The workflow supplies global log remaps for Docker package lookup failures, `Host error`, `Git error - aborting`, and missing, disabled or invalid repository configuration, so these paths produce a non-zero exit.
 Loading the remaps before repository initialization also covers a clone failure that prevents Renovate from reading the repository configuration.
 

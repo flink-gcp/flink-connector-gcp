@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0121: CI push-back runs as an org-owned GitHub App with per-use downscoped tokens
 
 - Status: Accepted
-- Date: 2026-08-16; refined 2026-09-05
-- Issues: [#177], [#1232](https://github.com/flink-gcp/flink-connector-gcp/issues/1232)
+- Date: 2026-08-16; refined 2026-09-05, 2026-10-31
+- Issues: [#177], [#1232](https://github.com/flink-gcp/flink-connector-gcp/issues/1232), [#1836](https://github.com/flink-gcp/flink-connector-gcp/issues/1836)
 - Modules: CI, opentofu
 - Current behavior: [pinact workflow](../../.github/workflows/pinact.yaml)
 
@@ -43,7 +43,7 @@ The repository is now public under `flink-gcp`, so that condition is met and thi
 
 **One App, owned by the `flink-gcp` organization and installed on this repository alone.**
 `flink-gcp-bot` holds three repository permissions and no others: contents write, pull requests write, and workflows write.
-Workflows write exists only for pinact; contents and pull requests cover the follow-up pull request, its comment and assignee, the `test` action's fix commits, and Renovate's emulator update pull requests.
+Workflows write exists only for pinact; contents and pull requests cover the follow-up pull request, its comment and assignee, the `test` action's fix commits, Renovate's emulator and `libraries-bom` update pull requests, and the NOTICE commit pushed to the latter's branch.
 Issues write is absent: the two tfaction features that would want it — drift detection's issue automation and the follow-up pull request's group labels — both stay off.
 
 **A job mints its own token at the step that needs it, downscoped below that ceiling.**
@@ -70,12 +70,13 @@ OpenTofu checks are consolidated in the plan workflow rather than general lint (
 Enrolment is opt-in under [ADR-0059](0059-ci-yaml-orchestrates-pull-request-ci-behind-one-required-check.md), and the reason not to take it is the one [ADR-0058](0058-verify-yaml-selects-what-a-pull-request-builds-instead-of-filtering-whether-it-runs.md) already settled: a required check that never reports blocks a pull request forever, and a paths-filtered workflow reports on nothing outside its paths.
 Enrolling it would mean dropping the filter and running it on every pull request to buy a guarantee the credential-less fallback already gives.
 
-**The App serves four features.**
+**The App serves five features.**
 pinact pins action references.
 tfaction opens the follow-up pull request after a failed apply, from the apply workflow's `failure()` branch.
 tfaction's `test` action runs in the plan job, after init, pushing `tofu fmt` and `tflint --fix` corrections.
 Renovate proposes monthly emulator image updates with contents/pull-requests write (2026-09-05 refinement, [ADR-0151](0151-emulator-image-updates-are-proposed-monthly-by-renovate.md)).
-Its scheduled job requires the App credentials and fails when they are missing; it has no credential-less checking mode.
+Renovate has also proposed weekly `libraries-bom` updates since 2026-10-31, and the same workflow pushes the regenerated NOTICE files to that update branch, minting its contents-write token only after checking the patch ([ADR-0191](0191-libraries-bom-updates-are-proposed-weekly-by-renovate.md)).
+Every job in that workflow that mints a token requires the App credentials and fails when they are missing; none has a credential-less checking mode.
 
 **Drift detection remains off**, now by decision rather than for want of a token.
 It wants three more workflows and apply-job changes; the infrastructure in `opentofu/flink-gcp` changes rarely enough that the detection interval it would buy is not worth that surface.

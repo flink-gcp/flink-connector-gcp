@@ -12,23 +12,45 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Renovate emulator images
+name: Renovate
 
+# Each cron starts one of the two Renovate jobs below, and so gives one manager
+# its cadence. The jobs' conditions compare against these strings, so edit
+# both together.
 on:
   schedule:
+    # Emulator images, monthly (ADR-0151).
     - cron: '23 3 1 * *'
+    # libraries-bom, weekly (ADR-0191).
+    - cron: '43 4 * * 1'
   workflow_dispatch:
+    inputs:
+      update:
+        description: Which update to propose
+        type: choice
+        options:
+          - emulator-images
+          - libraries-bom
+        required: true
 
 concurrency:
-  group: renovate-emulator-images
+  group: renovate
   cancel-in-progress: false
 
 permissions: {}
 
+env:
+  # renovate.json5's libraries-bom groupSlug under the libraries_bom job's
+  # branchPrefix.
+  BOM_BRANCH: renovate-bom/libraries-bom
+
 jobs:
-  renovate:
+  emulator_images:
+    name: Propose emulator image updates
     # The immutable ID excludes forks while surviving a rename or transfer.
-    if: github.repository_id == '1305440656' && github.ref == 'refs/heads/main'
+    if: >-
+      github.repository_id == '1305440656' && github.ref == 'refs/heads/main' &&
+      (github.event.schedule == '23 3 1 * *' || inputs.update == 'emulator-images')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -54,5 +76,199 @@ jobs:
           RENOVATE_PLATFORM_COMMIT: enabled
           # Loaded before Renovate clones the repository; a repository-only
           # remap cannot report failures that prevent reading that config.
+          # enabledManagers is set here rather than in renovate.json5 so that
+          # each job selects its own manager. This job keeps the default
+          # branchPrefix, renovate/.
           RENOVATE_CONFIG: >-
-            {"logLevelRemap":[{"matchMessage":"/^(Failed to look up docker package |Host error$|Git error - aborting$|Repository is disabled - skipping$|Repository has invalid config$)/","newLogLevel":"error"}]}
+            {"enabledManagers":["custom.regex"],
+            "logLevelRemap":[{"matchMessage":"/^(Failed to look up docker package |Host error$|Git error - aborting$|Repository is disabled - skipping$|Repository has invalid config$)/","newLogLevel":"error"}]}
+
+  libraries_bom:
+    name: Propose a libraries-bom update
+    if: >-
+      github.repository_id == '1305440656' && github.ref == 'refs/heads/main' &&
+      (github.event.schedule == '43 4 * * 1' || inputs.update == 'libraries-bom')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      head: ${{ steps.branch.outputs.head }}
+    steps:
+      - name: Mint an App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Propose a libraries-bom update
+        uses: renovatebot/github-action@6d26fcf0275dc65624cbc3d51fe78bc773f98321 # v46.3.6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_ONBOARDING: 'false'
+          RENOVATE_REQUIRE_CONFIG: required
+          RENOVATE_PLATFORM_COMMIT: enabled
+          # A run closes the pull request of every branch under its
+          # branchPrefix that it did not produce itself, so neither job's
+          # prefix may start with the other's (ADR-0191).
+          RENOVATE_CONFIG: >-
+            {"enabledManagers":["maven"],"branchPrefix":"renovate-bom/",
+            "logLevelRemap":[{"matchMessage":"/^(Failed to look up maven package |Host error$|Git error - aborting$|Repository is disabled - skipping$|Repository has invalid config$)/","newLogLevel":"error"}]}
+
+      # Whether or not this run changed it, an open update branch gets its
+      # NOTICE files checked: Renovate recreates the branch from main when it
+      # moves the version or resolves a conflict, which drops the NOTICE
+      # commit below. The branch is read from this repository's refs rather
+      # than from a pull request's head, which a fork's pull request could
+      # name the same.
+      - name: Find the update branch
+        id: branch
+        env:
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          head="$(git ls-remote "$REPOSITORY_URL" "refs/heads/$BOM_BRANCH" | cut -f1)"
+          if [[ -z "$head" ]]; then
+            echo "No $BOM_BRANCH branch: no libraries-bom update is pending."
+          fi
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+  # Regenerates the shaded modules' NOTICE files on the update branch. It holds
+  # no credential: the build runs the branch's code, so the token that pushes
+  # the result is minted in the next job, on a fresh runner.
+  bom_notices:
+    name: Regenerate the NOTICE files on the update branch
+    needs: libraries_bom
+    if: needs.libraries_bom.outputs.head != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Google's mirror of Central first, as in every Maven workflow (#1887).
+    env:
+      MAVEN_ARGS: --settings ${{ github.workspace }}/.github/maven/settings.xml
+      MVNW_REPOURL: https://maven-central.storage-download.googleapis.com/maven2
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.libraries_bom.outputs.head }}
+          persist-credentials: false
+
+      # No Maven cache: this job's cache would be saved under main's scope,
+      # where the weekly and E2E jobs restore it, with whatever the branch's
+      # build wrote into ~/.m2.
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Unpinned, and install-action rather than mise: see the note on the same
+      # step in verify.yaml.
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: just
+
+      # check-notice.py needs tomllib (Python >= 3.11).
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate the NOTICE files
+        run: just update-notices
+
+      # git add -A rather than git diff alone: a regeneration that adds a
+      # licence file leaves it untracked.
+      - name: Record the regeneration as a patch
+        id: diff
+        run: |
+          git add -A
+          git diff --cached --binary > "$RUNNER_TEMP/notices.patch"
+          if [[ -s "$RUNNER_TEMP/notices.patch" ]]; then
+            git diff --cached --stat
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The NOTICE files on $BOM_BRANCH are already current."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: notices-patch
+          path: ${{ runner.temp }}/notices.patch
+          retention-days: 7
+
+  bom_notices_push:
+    name: Push the regenerated NOTICE files
+    needs: [libraries_bom, bom_notices]
+    if: needs.bom_notices.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.libraries_bom.outputs.head }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: notices-patch
+          path: ${{ runner.temp }}
+
+      # The patch came out of a build of the branch's code, so it is checked
+      # before any credential exists: it may touch nothing but a shaded
+      # module's generated NOTICE and licence texts. --no-renames lists both
+      # sides of a rename, whose source would otherwise go unlisted. This and
+      # the next step stay inline rather than in a recipe or a script, because
+      # the checkout they would run from is the branch's.
+      - name: Apply the patch if it touches only the NOTICE files
+        run: |
+          git apply --index "$RUNNER_TEMP/notices.patch"
+          unexpected="$(git diff --cached --name-only --no-renames \
+            | grep -Ev '^flink-sql-connector-gcp-[a-z]+/src/main/resources/META-INF/(NOTICE|licenses/[^/]+)$' \
+            || true)"
+          if [[ -n "$unexpected" ]]; then
+            echo "$unexpected" >&2
+            echo "error: the regeneration changed files other than the shaded modules' NOTICE files" >&2
+            exit 1
+          fi
+          git diff --cached --stat
+
+      - name: Mint an App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      # Committed as the App's bot user, the identity Renovate commits as, so
+      # that Renovate does not read the branch as edited by hand and keeps
+      # updating it. The push is leased on the head the build used, so it
+      # fails if the branch moved or was deleted since; a plain push would
+      # recreate a deleted branch. The next run regenerates whatever branch
+      # exists then. A push with the App token starts the pull request's CI
+      # again (ADR-0121).
+      - name: Commit and push the NOTICE files
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          REPOSITORY: ${{ github.repository }}
+          BUILT_HEAD: ${{ needs.libraries_bom.outputs.head }}
+        run: |
+          bot="${APP_SLUG}[bot]"
+          bot_id="$(gh api "users/${APP_SLUG}%5Bbot%5D" --jq .id)"
+          git -c core.hooksPath=/dev/null \
+            -c user.name="$bot" \
+            -c user.email="${bot_id}+${bot}@users.noreply.github.com" \
+            commit --quiet -m "Regenerate the shaded modules' NOTICE files"
+          git -c core.hooksPath=/dev/null push \
+            --force-with-lease="refs/heads/$BOM_BRANCH:$BUILT_HEAD" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git" \
+            "HEAD:refs/heads/$BOM_BRANCH"

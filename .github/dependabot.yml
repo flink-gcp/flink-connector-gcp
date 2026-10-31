@@ -69,6 +69,13 @@ updates:
       # same pins, so both poms move together.
       - dependency-name: org.apache.commons:commons-collections4
       - dependency-name: org.apache.hadoop.thirdparty:hadoop-shaded-guava
+      # Renovate proposes libraries-bom weekly instead (.github/workflows/
+      # renovate.yaml, ADR-0191): the BOM ships about every two weeks, which
+      # this monthly group lags, and the Renovate job regenerates the shaded
+      # modules' NOTICE files on the update branch, which a pull request from
+      # here does not get. Every update type, so the two never propose the
+      # same bump.
+      - dependency-name: com.google.cloud:libraries-bom
   - package-ecosystem: github-actions
     directory: /
     schedule:
