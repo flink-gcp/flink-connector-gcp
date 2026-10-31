@@ -55,7 +55,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 import static io.github.flink.gcp.connector.testutils.Awaits.await;
@@ -69,9 +69,12 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
     private static final String APP_PROFILE = "flink-it-change-stream";
     private static final String ROTATION_APP_PROFILE = "flink-it-change-stream-rotation";
     private static final int ROWS = 100;
-    private static final AtomicBoolean CHECKPOINTED_AFTER_RECORDS = new AtomicBoolean();
+    private static final int PARALLELISM = 2;
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
-    private static final AtomicInteger SEEN = new AtomicInteger();
+
+    /** The subtasks that have armed, in any attempt; the restart trigger waits on it. */
+    private static final Set<Integer> ARMED_SUBTASKS = ConcurrentHashMap.newKeySet();
+
     private static final Map<Integer, Set<Integer>> TABLET_RANGES_BY_SUBTASK =
             new ConcurrentHashMap<>();
     private static final Map<Integer, Instant> FIRST_ARRIVAL_BY_TABLET_RANGE =
@@ -79,11 +82,11 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
 
     @Test
     void readsMutationsAndCompletesAtBoundedTimestamp() throws Exception {
-        CHECKPOINTED_AFTER_RECORDS.set(false);
         FAILED_ONCE.set(false);
-        SEEN.set(0);
         TABLET_RANGES_BY_SUBTASK.clear();
         ObserveConcurrencyAndFailAfterCheckpoint.SEEN_AT_BARRIER.clear();
+        ARMED_SUBTASKS.clear();
+        ObserveConcurrencyAndFailAfterCheckpoint.INJECTED_BY.set(null);
 
         TableDestination table =
                 createChangeStreamTableWithSplits(
@@ -149,17 +152,33 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
                 RestartStrategyOptions.RESTART_STRATEGY_FIXED_DELAY_DELAY, java.time.Duration.ZERO);
         StreamExecutionEnvironment environment =
                 StreamExecutionEnvironment.createLocalEnvironment(configuration);
-        environment.setParallelism(2);
+        environment.setParallelism(PARALLELISM);
         environment.enableCheckpointing(500L);
         List<String> keys = new ArrayList<>();
         ExecutorService triggerExecutor = Executors.newFixedThreadPool(2);
+        // The trigger row falls in one tablet range and so reaches one subtask, and only an armed
+        // subtask fails the job. Writing it once every subtask has armed is what guarantees that
+        // its mutation fails the job, whichever subtask reads it. An armed subtask can also fail
+        // the job earlier, on a late seeded row; the restarted subtasks then start unarmed and
+        // may never see another mutation, so a failure that has already happened ends the wait
+        // too, and the trigger row is then an ordinary mutation.
         Future<?> restartTrigger =
                 triggerExecutor.submit(
                         () -> {
                             await(
-                                    "a completed checkpoint after Change Streams records",
+                                    "every subtask armed by a completed checkpoint covering its"
+                                            + " own mutations, or the job already failed once",
                                     java.time.Duration.ofMinutes(3),
-                                    CHECKPOINTED_AFTER_RECORDS::get);
+                                    () -> FAILED_ONCE.get() || ARMED_SUBTASKS.size() == PARALLELISM,
+                                    () ->
+                                            String.format(
+                                                    "Armed subtasks: %s; tablet ranges by subtask:"
+                                                            + " %s; mutations at each"
+                                                            + " checkpoint/subtask barrier: %s",
+                                                    ARMED_SUBTASKS,
+                                                    TABLET_RANGES_BY_SUBTASK,
+                                                    ObserveConcurrencyAndFailAfterCheckpoint
+                                                            .SEEN_AT_BARRIER));
                             seedRows(table, "row-0100");
                             return null;
                         });
@@ -213,11 +232,20 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         }
 
         assertThat(cancelledByDeadline).as(deadlineDiagnosis()).isFalse();
-        assertThat(FAILED_ONCE).as("the gated job restarted from a completed checkpoint").isTrue();
-        assertThat(keys).contains(expected);
+        assertThat(FAILED_ONCE)
+                .as(
+                        "the gated job restarted from a completed checkpoint (armed subtasks: %s;"
+                                + " mutations at each checkpoint/subtask barrier: %s)",
+                        ARMED_SUBTASKS, ObserveConcurrencyAndFailAfterCheckpoint.SEEN_AT_BARRIER)
+                .isTrue();
+        assertThat(keys)
+                .as(
+                        "every seeded row across the restart (injected by %s)",
+                        ObserveConcurrencyAndFailAfterCheckpoint.INJECTED_BY)
+                .contains(expected);
         assertThat(TABLET_RANGES_BY_SUBTASK)
                 .as("each source subtask processed mutations from at least two tablet ranges")
-                .hasSize(2)
+                .hasSize(PARALLELISM)
                 .allSatisfy((subtask, ranges) -> assertThat(ranges).hasSizeGreaterThanOrEqualTo(2));
         assertThat(ActiveChangeStreamReadsReporter.peaks())
                 .as("the default opened at least two concurrent partition reads in each subtask")
@@ -347,26 +375,61 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
         }
     }
 
-    /** Fails on the first mutation written after a checkpoint that included earlier mutations. */
+    /**
+     * Records which tablet ranges each subtask read, and fails the job once, on the first mutation
+     * a subtask maps after a completed checkpoint covered that subtask's own mutations.
+     */
     private static final class ObserveConcurrencyAndFailAfterCheckpoint
             extends RichMapFunction<BigtableChangeStreamMutation, BigtableChangeStreamMutation>
             implements CheckpointedFunction, CheckpointListener {
 
         private static final long serialVersionUID = 1L;
-        private static final Map<Long, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
+
+        /**
+         * Each subtask's {@code seenHere} at each checkpoint's barrier until it armed, keyed {@code
+         * checkpoint/subtask}, for the failure messages. Later barriers are not recorded: the run
+         * lasts about two minutes at a 500 ms interval, and what a failure needs is how arming
+         * went.
+         */
+        static final Map<String, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
+
+        /** Which subtask injected the failure, on which row, and its first covering checkpoint. */
+        static final AtomicReference<String> INJECTED_BY = new AtomicReference<>();
+
+        /**
+         * What this subtask's map saw, not the job's: source and map are chained, so a count above
+         * zero at this subtask's barrier proves its own partitions' positions had moved. A counter
+         * shared by both subtasks could be raised by the other one between the two barriers, and
+         * would arm the failure on a checkpoint that covered no subtask's mutations (#1939).
+         */
+        private transient int seenHere;
+
+        /**
+         * The first checkpoint whose barrier found {@code seenHere} above zero; zero before one.
+         */
+        private transient long firstCoveringCheckpoint;
+
+        /** Whether a checkpoint covering this subtask's mutations has completed. */
+        private transient boolean armedHere;
 
         @Override
         public BigtableChangeStreamMutation map(BigtableChangeStreamMutation mutation)
                 throws Exception {
+            int subtask = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
             int row = Integer.parseInt(mutation.getRowKey().toStringUtf8().substring(4));
             int tabletRange = Math.min(row / 25, 3);
             TABLET_RANGES_BY_SUBTASK
-                    .computeIfAbsent(
-                            getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
-                            ignored -> ConcurrentHashMap.newKeySet())
+                    .computeIfAbsent(subtask, ignored -> ConcurrentHashMap.newKeySet())
                     .add(tabletRange);
-            SEEN.incrementAndGet();
-            if (CHECKPOINTED_AFTER_RECORDS.get() && FAILED_ONCE.compareAndSet(false, true)) {
+            seenHere++;
+            if (armedHere && FAILED_ONCE.compareAndSet(false, true)) {
+                INJECTED_BY.set(
+                        "subtask "
+                                + subtask
+                                + " on "
+                                + mutation.getRowKey().toStringUtf8()
+                                + " after checkpoint "
+                                + firstCoveringCheckpoint);
                 throw new IllegalStateException("Failing the gated Change Streams job once.");
             }
             return mutation;
@@ -374,7 +437,17 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) {
-            SEEN_AT_BARRIER.merge(context.getCheckpointId(), SEEN.get(), Math::max);
+            if (armedHere) {
+                return;
+            }
+            SEEN_AT_BARRIER.put(
+                    context.getCheckpointId()
+                            + "/"
+                            + getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
+                    seenHere);
+            if (seenHere > 0 && firstCoveringCheckpoint == 0) {
+                firstCoveringCheckpoint = context.getCheckpointId();
+            }
         }
 
         @Override
@@ -382,8 +455,12 @@ class BigtableChangeStreamSourceRealGcpITCase extends AbstractBigtableRealGcpITC
 
         @Override
         public void notifyCheckpointComplete(long checkpointId) {
-            if (SEEN_AT_BARRIER.getOrDefault(checkpointId, 0) > 0) {
-                CHECKPOINTED_AFTER_RECORDS.set(true);
+            // Checkpoint ids start at one and grow, and seenHere only grows, so completing this
+            // checkpoint or a later one means a completed checkpoint covered this subtask's
+            // mutations.
+            if (firstCoveringCheckpoint > 0 && checkpointId >= firstCoveringCheckpoint) {
+                armedHere = true;
+                ARMED_SUBTASKS.add(getRuntimeContext().getTaskInfo().getIndexOfThisSubtask());
             }
         }
     }
