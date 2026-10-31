@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted; refined by
   [ADR-0192](0192-the-bigquery-default-stream-keeps-arrival-order-per-table-on-opt-in.md)
-  (2026-10-31), which keeps on opt-in the request order a sequence-less CDC write depends on
+  (2026-10-31), which keeps on opt-in the request order of a table's appends, and by
+  [ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md) (2026-10-31), which makes a sequence metadata column required
 - Date: 2026-08-14; revised by [#629](https://github.com/flink-gcp/flink-connector-gcp/issues/629),
   [#631](https://github.com/flink-gcp/flink-connector-gcp/issues/631) and
   [#717](https://github.com/flink-gcp/flink-connector-gcp/issues/717) (2026-08-15)
@@ -66,9 +67,10 @@ upserts retain their existing required-field validation.
 **Writable CDC metadata is separate from the physical row type.**
 The sink exposes `change-sequence-number` as a nullable string, `debezium-source-properties` as a
 nullable string map, and `spanner-change-sequence` as a nullable row.
-The planner may select no sequence source or exactly one; selecting one while CDC is disabled or
-selecting more than one fails during planning.
-With no sequence, BigQuery resolves a key's mutations by ingestion time, so the writer's commit
+A CDC sink selects exactly one sequence source
+([ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md)); selecting none, selecting
+one while CDC is disabled, or selecting more than one fails during planning.
+BigQuery resolves a key's mutations with equal sequences by ingestion time, so the writer's commit
 order decides which one wins; [ADR-0192](0192-the-bigquery-default-stream-keeps-arrival-order-per-table-on-opt-in.md)
 keeps that order on opt-in.
 The physical row type remains the sole input to BigQuery schema derivation, and the selected

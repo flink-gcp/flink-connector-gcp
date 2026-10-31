@@ -31,14 +31,25 @@ class CdcOptionsTest {
     }
 
     @Test
-    void sequenceProviderIsOptionalAndRejectsNull() {
+    void requiresASequenceProvider() {
+        CdcSequenceNumberProvider<String> sequence = element -> "A";
         CdcOptions<String> options =
-                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(sequence)
+                        .build();
 
         assertThat(options.getChangeTypeProvider().getChangeType("row"))
                 .isEqualTo(CdcChangeType.UPSERT);
-        assertThat(options.hasSequenceNumberProvider()).isFalse();
-        assertThat(options.getSequenceNumberProvider()).isNull();
+        assertThat(options.getSequenceNumberProvider()).isSameAs(sequence);
+        assertThatThrownBy(
+                        () ->
+                                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requires a sequenceNumberProvider(...)")
+                .hasMessageContaining(
+                        "never repeats for one key and grows with each of its changes")
+                .hasMessageContaining("hexadecimal sections");
         assertThatThrownBy(
                         () ->
                                 CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())

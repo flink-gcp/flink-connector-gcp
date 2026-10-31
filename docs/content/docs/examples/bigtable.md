@@ -367,20 +367,25 @@ That changelog can feed a BigQuery table with the same primary key and CDC enabl
 
 {{< sql-snippet file="flink/BigtableExamples.sql" tag="selected-cell-bigquery-cdc" >}}
 
-The query reads no metadata column, so on Flink 2.x a key-only `DELETE` reaches the BigQuery sink as it is.
-On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 can fail the job on such a delete when either table declares a non-key column `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)).
-Both tables here declare `name` and `tier` nullable; the [selected-cell reference]({{< relref "docs/connectors/table/bigtable" >}}#selected-cell-upserts) describes the bugs and when a delete is completed instead.
+The query reads two metadata columns, so on every supported Flink version the planner puts a `ChangelogNormalize` operator between the source and the sink.
+That operator keeps the last row of each key in state, completes a key-only `DELETE` from that row, and drops the delete of a key it holds no row for: one the job has not seen since it started or since a restart without state, or one whose state `table.exec.state.ttl` expired.
+A completed delete carries every column, so the Flink 2.2 and 2.3 bugs the [selected-cell reference]({{< relref "docs/connectors/table/bigtable" >}}#selected-cell-upserts) describes do not apply to it.
 
 The checkpoint interval persists the Change Streams position and flushes the BigQuery default
 stream, so it must remain enabled for at-least-once recovery.
 The example selects one source cluster so multi-cluster conflict resolution cannot reorder the selected-cell changelog.
-It deliberately supplies no BigQuery [sequence metadata]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture).
-BigQuery therefore resolves colliding mutations for one primary key by arrival order, and Change Streams partitions do not supply a total application order across the pipeline.
-This is an analytics-replica pattern, not a strict replica guarantee.
+Each change carries a BigQuery [sequence]({{< relref "docs/connectors/table/bigquery" >}}#what-the-sequence-value-looks-like) built from its Bigtable commit timestamp and tie breaker, so BigQuery applies a key's change with the larger sequence even when an earlier one reaches it later, as a replay after a restart does; it keeps a delete for two days to resolve one that arrives out of order.
+The minutes since the epoch stay in a section of their own because Flink's `TIMESTAMPDIFF` returns an `INT`, which a count of seconds outgrows in 2038.
+A completed delete carries the sequence of the change it deletes, so it wins only by reaching BigQuery after that change; `'sink.ordering-mode' = 'per-table'` makes the sink commit a key's changes in the order it receives them, a delete included ([Commit order of a table's rows]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows)).
+Two cases stay outside that order, and in each a delete can lose to an earlier change and leave the row in BigQuery.
+Change Streams order a key's changes within one partition, and when the service splits or merges a partition, a change read from the parent and one read from its successor can reach `ChangelogNormalize` in the opposite order; BigQuery still keeps the later change by its sequence, but the operator then holds the earlier one, so the key's next delete, whenever it comes before the key is written again, carries the earlier sequence and loses.
+And an append attempt that timed out on the client can still be committed by the service after a later one, so the change before a delete can land after it.
 Because Change Streams startup defaults to `latest`, a fresh job materializes only mutations that
 arrive after it starts.
 A populated source needs a separate initial snapshot or backfill coordinated with a Change Streams
 handoff before the BigQuery table contains every existing key.
+A key that only the backfill wrote is not in `ChangelogNormalize` state, so its first Bigtable
+delete is dropped and the row stays in BigQuery until the key is written again.
 
 ## Local development
 

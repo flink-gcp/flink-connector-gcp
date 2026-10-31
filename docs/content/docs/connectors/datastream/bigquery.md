@@ -739,8 +739,8 @@ until it settles.
 
 The default-stream write method can apply **change data capture (CDC)** mutations to a table that
 has a BigQuery primary key.
-The sink adds BigQuery's `_CHANGE_TYPE` pseudocolumn and, when configured, the
-`_CHANGE_SEQUENCE_NUMBER` pseudocolumn to each non-skipped row.
+The sink adds BigQuery's `_CHANGE_TYPE` and `_CHANGE_SEQUENCE_NUMBER` pseudocolumns to each
+non-skipped row.
 Both are write-only: they travel with the append request and never become table columns, so no
 query reads a sequence back.
 A `CdcSequenceNumberProvider` returns that sequence as one to four `/`-separated hexadecimal
@@ -808,15 +808,32 @@ pseudocolumns never become ordinary table columns or participate in schema recon
 A physical field whose name matches either pseudocolumn case-insensitively is a configuration
 error raised before a row reaches the failure handler.
 
-The change-type provider must return `UPSERT` or `DELETE` for every row the serializer emits.
-The sequence provider is optional for the whole sink; when present, it must return a non-null value
-for every emitted row.
+Both providers are required: `CdcOptions.builder(...)` takes the change-type provider, and `build()`
+rejects options without `sequenceNumberProvider(...)`.
+The change-type provider must return `UPSERT` or `DELETE` for every row the serializer emits, and
+the sequence provider must return a non-null value for every emitted row.
 Each value contains one to four slash-separated hexadecimal sections of at most 16 digits each,
 and the connector canonicalizes hexadecimal letters to uppercase.
-BigQuery uses the sequence to order mutations for the same primary key; without one, BigQuery uses
-the system time at which it ingests each mutation.
-That time follows the order the writer's requests commit in, which a re-sent request can change
-unless `orderingMode(OrderingMode.PER_TABLE)` is set (see [Commit order](#commit-order)).
+BigQuery applies one primary key's mutations in sequence order, whatever order they commit in.
+
+The sequence is required because without one BigQuery orders a key's mutations by the time it
+ingests them, which the writer under the default ordering mode does not make follow the order it
+received them in.
+Measured against the service, the first of a key's changes won when they shared an append request,
+and in 22 of 30 keys also when they were in two requests sent back to back
+([ADR-0193]({{< param BookRepo >}}/blob/main/docs/adr/0193-bigquery-cdc-writes-require-a-change-sequence-number.md));
+`OrderingMode.PER_TABLE` orders only what one subtask has in flight, at a round trip per change of
+a key, and nothing across a restart or a rescale.
+A source without a change-log position supplies a value taken where each change is made that never
+repeats for one primary key and grows with each of its changes, such as the source's commit time in
+nanoseconds or an increasing ID.
+A clock read in the provider, such as `System.currentTimeMillis()` or `System.nanoTime()`, orders
+changes by when they reached the writer, repeats within its precision, and restarts with the JVM, so
+it is not a sequence.
+A value that repeats for one key, a constant above all, orders nothing: BigQuery applies two
+mutations of one key with equal sequences in ingestion order, which the writer keeps only per
+subtask under `orderingMode(OrderingMode.PER_TABLE)`, and not for an append that timed out on the
+client and commits late (see [Commit order](#commit-order)).
 
 The serializer runs before either CDC provider.
 Its `null` result therefore keeps the ordinary skip contract and invokes neither provider.
@@ -1773,13 +1790,13 @@ that followed them.
 The job keeps running through all three, and the re-sends show only in the writer's metrics, such
 as `appendRetries`, and its log.
 
-Two kinds of reader see the difference.
-A [CDC](#change-data-capture) write without a sequence leaves BigQuery to resolve one primary key's
-mutations by ingestion time, so an older `UPSERT` re-sent late wins over a newer one.
-An append-only table has no such overwrite, but a reader that depends on the commit order does: a
-query over `APPENDS` that keeps the row with the latest `_CHANGE_TIMESTAMP` per key, a BigQuery
-continuous query that forwards rows as they commit, or a reader that resumes after the highest value
-it has seen and never returns for a row that lands behind it.
+The difference is visible to a reader that depends on the commit order, and in a
+[CDC](#change-data-capture) table only between mutations of one key with equal sequences: BigQuery
+applies a key's mutations by sequence and falls back to ingestion time for equal ones.
+Such a reader may read any table: a query over `APPENDS` that keeps the row with the latest
+`_CHANGE_TIMESTAMP` per key, a BigQuery continuous query that forwards rows as they commit, or a
+reader that resumes after the highest value it has seen and never returns for a row that lands
+behind it.
 
 `DefaultStreamOptions.builder().orderingMode(OrderingMode.PER_TABLE)` makes each subtask commit a
 table's append requests in the order it sent them, so no row commits ahead of a row the subtask
@@ -1793,19 +1810,17 @@ The cost is throughput: a table's rate per subtask is one round trip per request
 Measured from a workstation far from the dataset's region, 50 MB into one table took about 24 s at
 the default 512 KiB cap against about 3 s without the mode, and about 6 s at an 8 MiB cap.
 
-BigQuery's CDC documentation states no order among the rows of one append request, and measured
-against the service the first of a key's changes in one request won over the later ones every
-time, so without the mode a sequence-less key changed twice in one request keeps its older value.
-Two changes of a key with equal sequences fall back to the same ingestion-time order, which the
-PostgreSQL, TiCDC and Spanner sequence providers can each produce, for example for Spanner writes
-to disjoint columns of one row at one commit timestamp.
-For a CDC sink, with or without a sequence, the mode therefore also keeps one primary key out of a
-request twice.
+For a CDC sink the mode also keeps one primary key out of a request twice.
+BigQuery falls back to ingestion time for two mutations of a key whose sequences are equal, and,
+measured without a sequence, the first of a key's changes in one request won over the later ones
+every time.
+Equal sequences can come from a source, such as Spanner writes to disjoint columns of one row at one
+commit timestamp, or from the pipeline: Flink's `ChangelogNormalize` completes a key-only delete
+from the last row it holds, so the delete carries the sequence of the change it deletes.
 The writer reads the table's primary key when it opens the table, reads each row's key from the
 bytes the serializer wrote, and sends the pending request before a row whose key it already holds.
 A key changed in quick succession therefore costs one request per change: from the same
-workstation, 200 changes of one key took about 34 s, about 0.17 s per change, where one request
-without the mode took under 0.2 s and kept the first change.
+workstation, 200 changes of one key took about 34 s, about 0.17 s per change.
 The bytes are compared as written, which is exact for a `string` field in a `STRING` column, a
 `bytes` field in a `BYTES` column, a `bool` field in a `BOOL` column, an integer field in an `INT64`,
 `DATE`, `DATETIME`, `TIMESTAMP`, `NUMERIC` or `BIGNUMERIC` column, and a `NUMERIC` or `BIGNUMERIC`

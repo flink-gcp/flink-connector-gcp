@@ -54,16 +54,13 @@ public final class CdcProtoRowFields {
                         new ChangeTypeValue<>(options),
                         "The CDC change type provider failed",
                         "The CDC change type provider returned null"));
-        CdcSequenceNumberProvider<? super T> sequenceProvider = options.getSequenceNumberProvider();
-        if (sequenceProvider != null) {
-            fields.add(
-                    ProtoRowAugmentationField.writeOnly(
-                            WriteOnlyField.CDC_SEQUENCE_NUMBER,
-                            AdditionalFieldNullPolicy.REQUIRED,
-                            new SequenceNumberValue<>(sequenceProvider),
-                            "The CDC sequence number provider failed",
-                            "The CDC sequence number provider returned null"));
-        }
+        fields.add(
+                ProtoRowAugmentationField.writeOnly(
+                        WriteOnlyField.CDC_SEQUENCE_NUMBER,
+                        AdditionalFieldNullPolicy.REQUIRED,
+                        new SequenceNumberValue<>(options.getSequenceNumberProvider()),
+                        "The CDC sequence number provider failed",
+                        "The CDC sequence number provider returned null"));
         return Collections.unmodifiableList(fields);
     }
 

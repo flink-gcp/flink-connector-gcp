@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.bigquery.table.sink;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.catalog.Column;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.SinkV2Provider;
@@ -121,9 +123,8 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         this.tiCdcClusterId = builder.tiCdcClusterId;
         // Constructed and discarded for the IllegalArgumentException their constructors throw on a
         // malformed uuid list or an empty cluster id, so the table is rejected as it is built. The
-        // encoders that do the work are built in getSinkRuntimeProvider, and only when a CDC
-        // sequence metadata column is selected — without these two, a malformed value would go
-        // unreported until then, and unreported entirely when no such column is selected.
+        // encoders that do the work are built in getSinkRuntimeProvider; without these two, a
+        // malformed value would go unreported until then.
         if (!debeziumMySqlSourceUuids.isEmpty()) {
             new DebeziumMySqlCdcSequenceNumberEncoder(debeziumMySqlSourceUuids);
         }
@@ -155,6 +156,51 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
      */
     public static Builder builder() {
         return new Builder();
+    }
+
+    /**
+     * Returns whether a sink schema declares a persisted column for one of the CDC sequence
+     * metadata keys, which a CDC sink requires (ADR-0193).
+     *
+     * @param schema the sink table's schema
+     * @return whether a sequence metadata column is declared and not {@code VIRTUAL}
+     */
+    public static boolean declaresSequenceMetadata(ResolvedSchema schema) {
+        Map<String, DataType> keys = WritableMetadata.listAll();
+        for (Column column : schema.getColumns()) {
+            if (column instanceof Column.MetadataColumn) {
+                Column.MetadataColumn metadata = (Column.MetadataColumn) column;
+                if (!metadata.isVirtual()
+                        && keys.containsKey(metadata.getMetadataKey().orElse(column.getName()))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the message that rejects a CDC sink without a sequence: what to declare, why, and
+     * what a source without a change-log position supplies.
+     *
+     * @return the rejection message
+     */
+    public static String missingSequenceMessage() {
+        // Without a sequence BigQuery orders one key's changes by ingestion time, and measured
+        // changes sent close together kept the older value (ADR-0193).
+        return "A BigQuery CDC sink ('"
+                + BigQueryConnectorOptions.SINK_CDC_ENABLED.key()
+                + "' = 'true') requires a change sequence: declare one of the writable metadata"
+                + " columns "
+                + WritableMetadata.listAll().keySet()
+                + " in the sink table, not VIRTUAL; a catalog table takes one through a table"
+                + " created LIKE it. Without one, BigQuery orders a key's changes by ingestion"
+                + " time, which the default ordering mode does not keep in arrival order. A source"
+                + " without a change-log position can supply, as 'change-sequence-number', a"
+                + " value taken where each change is made that never repeats for one primary key"
+                + " and grows with each of its changes, such as the source's commit time in"
+                + " nanoseconds or an increasing ID, never a clock read in the pipeline, written"
+                + " as one to four '/'-separated hexadecimal sections of at most 16 digits.";
     }
 
     @Override
@@ -204,20 +250,23 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         BigQuerySinkBuilder<RowData> builder =
                 BigQuerySink.<RowData>builder().table(destination).serializer(serializer);
         if (cdcEnabled) {
-            CdcOptions.Builder<RowData> cdc =
-                    CdcOptions.builder(RowDataCdcChangeTypeProvider.INSTANCE);
-            if (!metadataKeys.isEmpty()) {
-                WritableMetadata source = WritableMetadata.of(metadataKeys.get(0));
-                int position = DataType.getFieldCount(physicalDataType);
-                CdcSequenceNumberProvider<RowData> sequenceProvider =
-                        new RowDataCdcSequenceNumberProvider(
-                                source,
-                                position,
-                                new DebeziumCdcSequenceNumberResolver(
-                                        debeziumMySqlSourceUuids, tiCdcClusterId));
-                cdc.sequenceNumberProvider(sequenceProvider);
+            if (metadataKeys.isEmpty()) {
+                // The factory rejects such a table first, naming it; this holds the same rule for
+                // a sink built without the factory.
+                throw new ValidationException(missingSequenceMessage());
             }
-            builder.cdcOptions(cdc.build());
+            WritableMetadata source = WritableMetadata.of(metadataKeys.get(0));
+            int position = DataType.getFieldCount(physicalDataType);
+            CdcSequenceNumberProvider<RowData> sequenceProvider =
+                    new RowDataCdcSequenceNumberProvider(
+                            source,
+                            position,
+                            new DebeziumCdcSequenceNumberResolver(
+                                    debeziumMySqlSourceUuids, tiCdcClusterId));
+            builder.cdcOptions(
+                    CdcOptions.<RowData>builder(RowDataCdcChangeTypeProvider.INSTANCE)
+                            .sequenceNumberProvider(sequenceProvider)
+                            .build());
         }
         if (writeMethod != null) {
             builder.writeMethod(writeMethod);

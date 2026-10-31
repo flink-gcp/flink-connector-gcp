@@ -293,7 +293,7 @@ A table the catalog resolves behaves as the equivalent hand-written `CREATE TABL
   A sink-created table therefore reads back with the lossy cases that column names: an `INT` declaration as `BIGINT`, a `VARCHAR(n)` as `STRING`, and a `NOT NULL` as nullable unless `sink.derive-required-columns` made the column `REQUIRED`.
 - **Primary key**: a BigQuery primary key becomes a `PRIMARY KEY ... NOT ENFORCED` whose columns are `NOT NULL`, as a primary key in Flink DDL makes them.
   A key column that holds a `NULL` all the same breaks that declaration, as it would for a hand-written table: BigQuery does not enforce the key.
-  An upsert `INSERT INTO` then takes the [CDC](#change-data-capture) path once the statement adds `/*+ OPTIONS('sink.cdc.enabled' = 'true') */`.
+  An upsert `INSERT INTO` takes the [CDC](#change-data-capture) path through a table created `LIKE` the catalog table with a sequence column added, since the catalog table has no column to carry the sequence a CDC sink requires.
   On Flink 2.2 and 2.3 a `NOT NULL` non-key column, which a `REQUIRED` one becomes, fails an input whose deletes carry the key alone ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477), [FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)); [CDC](#change-data-capture) describes the hand-written table that avoids it.
 
 A column the connector cannot carry fails the lookup, naming the table, the column path and the BigQuery type; the table never resolves with the column missing.
@@ -430,8 +430,9 @@ without a window, a non-windowed join — is rejected when the plan is built, be
 append-only write paths cannot express a retraction and appending the `-U` and `-D` rows as ordinary
 ones would corrupt the table silently.
 
-Setting `sink.cdc.enabled` to `true` makes the sink answer an updating query with an upsert changelog
-instead, so the same query plans; an insert-only query still gets insert-only. That path augments
+Setting `sink.cdc.enabled` to `true`, with a [sequence metadata column](#change-data-capture) in the
+sink DDL, makes the sink answer an updating query with an upsert changelog instead, so the same
+query plans; an insert-only query still gets insert-only. That path augments
 each row with BigQuery's CDC pseudocolumns, and it carries its own restrictions — it runs on
 `storage-api-at-least-once` and no other write method. See
 [Change data capture](#change-data-capture).
@@ -453,23 +454,23 @@ The writer keeps several append requests in flight, and when one fails it re-sen
 The failure has to be one the writer repairs, such as a transient error or a row-level rejection whose surviving rows it re-sends.
 The job keeps running, and the re-send shows only in the writer's metrics, such as `appendRetries`, and its log.
 
-The order is visible in two ways.
-A [CDC](#change-data-capture) table without a sequence leaves BigQuery to resolve the changes of one primary key by the order they arrive, so an older `UPSERT` that is re-sent late overwrites a newer one.
-An append-only table has no such overwrite, but a reader can still depend on the commit order: a query over `APPENDS` that keeps the row with the latest `_CHANGE_TIMESTAMP` per key, or a reader that resumes after the highest value it has seen and never returns for a row that lands behind it.
+The order matters to a reader that observes commits, and to a [CDC](#change-data-capture) table only where two changes of one key carry equal [sequences](#what-the-sequence-value-looks-like).
+BigQuery applies one primary key's changes by their sequence, whatever order they commit in, and falls back to ingestion time for equal ones.
+A reader can still depend on the commit order of any table: a query over `APPENDS` that keeps the row with the latest `_CHANGE_TIMESTAMP` per key, or a reader that resumes after the highest value it has seen and never returns for a row that lands behind it.
 
 `'sink.ordering-mode' = 'per-table'` makes each sink subtask commit a table's append requests in the order it sent them, so no row commits ahead of a row the subtask received earlier and sent in an earlier request.
 The writer then sends the table's next append request only after the previous one has committed, or after its failed rows have been re-sent or handed to the failure handler, so a table has one request in flight at a time.
 That bounds a table's throughput per subtask to one round trip per request of up to `sink.default-stream.max-append-request-bytes`; raising that size is how a job with the mode on regains throughput.
 Measured from a workstation far from the dataset's region, 50 MB into one table took about 24 s at the default 512 KiB against about 3 s without the mode, roughly eight times as long, and about 6 s at 8 MiB, roughly twice; ADR-0192 records the runs.
 The order is the order one subtask received, so rows whose order matters must reach the same subtask: the changes of one key in a CDC table that Flink shuffles by its `PRIMARY KEY`, for example.
-BigQuery's CDC documentation states no order among the rows of one append request, and measured against the service the first of a key's changes in one request won over the later ones every time, so without the mode a key changed twice in one request keeps its older value.
-Two changes of a key whose [sequences](#what-the-sequence-value-looks-like) are equal fall back to the same order, which the PostgreSQL, TiCDC and Spanner profiles can produce.
-For a CDC table, with or without a sequence, the mode therefore also keeps one primary key out of a request twice: the writer reads the table's primary key when it opens the table and sends the pending request before a row whose key it already holds.
-A key changed in quick succession therefore costs one request per change; 200 changes of one key took about 34 s from the same workstation, about 0.17 s per change, where one request without the mode took under 0.2 s and kept the first change.
+For a CDC table the mode also keeps one primary key out of a request twice, because BigQuery falls back to ingestion time for two changes of a key whose [sequences](#what-the-sequence-value-looks-like) are equal, and, measured without a sequence, the first of a key's changes in one request won over the later ones every time.
+Equal sequences are not only a source's choice: Flink's `ChangelogNormalize`, which Flink 1.20 always plans after an upsert source and Flink 2.x plans when the query reads a metadata column, filters on a non-key column or aggregates, completes a key-only `DELETE` from the last row it holds, so the delete carries the sequence of the change it deletes.
+The writer reads the table's primary key when it opens the table and sends the pending request before a row whose key it already holds, so such changes commit in the order the subtask received them.
+A key changed in quick succession therefore costs one request per change; 200 changes of one key took about 34 s from the same workstation, about 0.17 s per change.
 The Table API writes every key type BigQuery accepts in an encoding the writer compares exactly, so only a repeated key ends a request early, with two exceptions.
 A `STRING` key column the table declares with a collation makes every row its own request and logs a warning when the sink opens the table.
 A `DECIMAL` key with a larger scale than an existing table's parameterized `NUMERIC` or `BIGNUMERIC` key column, such as `DECIMAL(6, 3)` into `NUMERIC(6, 2)`, is rounded by BigQuery, so a row whose value has more fractional digits than the column keeps goes in a request of its own; a table the sink creates takes the Flink type's scale and never meets this.
-An attempt that timed out on the client can still be committed by the service after a later request, and a restart re-sends the rows written since the last completed checkpoint after the ones that had already landed, in the order the replay delivers them.
+An attempt that timed out on the client can still be committed by the service after a later request, and a restart re-sends the rows written since the last completed checkpoint after the ones that had already landed, in the order the replay delivers them; in a CDC table, BigQuery applies a key's change with the larger sequence, and keeps a delete for two days to resolve one that arrives out of order.
 
 The option belongs to `storage-api-at-least-once` and is rejected with the other two write methods.
 `storage-api-exactly-once` appends with offsets, so a failed append cannot be overtaken by a later one, and `file-loads` makes rows visible one checkpoint commit at a time, the finest order it offers.
@@ -485,7 +486,8 @@ carries.
 Set `sink.cdc.enabled` to `true` to consume a Flink upsert changelog and write BigQuery `UPSERT`
 and `DELETE` mutations through the Storage Write API default stream.
 The option defaults to `false`, is rejected with `storage-api-exactly-once` or `file-loads`, and
-requires the sink DDL to declare a `PRIMARY KEY ... NOT ENFORCED`.
+requires the sink DDL to declare a `PRIMARY KEY ... NOT ENFORCED` and one
+[sequence metadata column](#what-the-sequence-value-looks-like).
 Under the default `create-if-needed`, the sink creates a missing table's schema and BigQuery
 primary key through the Tables API.
 Set `sink.cdc.max-staleness` when the sink should also manage that CDC policy, or set
@@ -549,8 +551,8 @@ key-only delete needs no value for, but a table the sink creates derives the col
 A [catalog](#catalog) table carries `REQUIRED` over to Flink as `NOT NULL`, so write such an input
 through a hand-written table that declares those columns nullable.
 
-Sequence metadata is optional.
-When selected, exactly one of these writable metadata columns may appear in the sink DDL:
+A CDC sink requires sequence metadata: exactly one of these writable metadata columns must appear
+in the sink DDL, and a CDC table without one fails during planning.
 
 | Metadata key | Data type | Meaning |
 |---|---|---|
@@ -561,9 +563,39 @@ When selected, exactly one of these writable metadata columns may appear in the 
 Writable metadata is appended to the runtime row by Flink and is not part of the physical
 BigQuery schema.
 Selecting more than one sequence source fails during planning.
-Once a sequence metadata column is selected, every emitted row must supply a non-null valid value;
-missing or invalid values enter the configured row-failure path.
-Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order, which a re-sent request can change, and in measurements it kept the first of a key's changes within one append request; `sink.ordering-mode = per-table` addresses both (see [Commit order of a table's rows](#commit-order-of-a-tables-rows)).
+Every emitted row must supply a non-null valid value; missing or invalid values enter the
+configured row-failure path.
+
+Without a sequence, BigQuery orders one primary key's changes by the time it ingests them, and its
+[CDC documentation](https://docs.cloud.google.com/bigquery/docs/change-data-capture#manage_custom_ordering)
+warns that this "might not be sufficient" for frequent upserts to one key.
+Under the default ordering mode the sink does not make that time follow the order it received the
+changes in, and measured against the service the first of a key's changes won when they shared an
+append request, and in 22 of 30 keys also when they were in two requests sent back to back
+([ADR-0193]({{< param BookRepo >}}/blob/main/docs/adr/0193-bigquery-cdc-writes-require-a-change-sequence-number.md)).
+`'sink.ordering-mode' = 'per-table'` orders only what one subtask has in flight, at a round trip
+per change of a key, and nothing across a restart or a rescale.
+
+A Debezium-format source supplies its sequence through `debezium-source-properties` (a Debezium
+Avro changelog needs the bridge described [below](#what-the-sequence-value-looks-like)).
+Any other source supplies, through `change-sequence-number`, a value taken where each change is
+made that never repeats for one primary key and grows with each of its changes, such as the
+source's commit time in nanoseconds or an increasing ID.
+A clock read in the pipeline, such as `NOW()` or `CURRENT_TIMESTAMP`, orders changes by when they
+reached it, repeats within its precision, and restarts with the job, so it is not a sequence.
+A value that repeats for one key, a constant above all, orders nothing: BigQuery applies two changes
+of one key with equal sequences in ingestion order, which the sink keeps only per subtask under
+`'sink.ordering-mode' = 'per-table'`, and not for an append that timed out on the client and
+commits late (see [Commit order of a table's rows](#commit-order-of-a-tables-rows)).
+
+A [catalog](#catalog) table has no column to carry the sequence, so a CDC write to it goes through a
+table created `LIKE` it with the sequence column added:
+
+{{< sql-snippet file="flink/BigQueryTableReference.sql" tag="catalog-cdc-sequence" >}}
+
+`LIKE` copies the catalog table's `NOT NULL` columns, which a `REQUIRED` BigQuery column becomes, so
+on Flink 2.2 and 2.3 an input whose deletes carry the key alone still needs the hand-written table
+described above.
 
 ### What the sequence value looks like
 
@@ -583,8 +615,12 @@ Each section is compared as an unsigned number rather than as text, so a shorter
 smaller value: `FFF/B` precedes `FFF/ABC`.
 The profiles pad to a fixed width anyway, which makes the strings sort identically whether a reader,
 a log search, or BigQuery compares them.
-Two rows whose sequences are equal are applied in BigQuery ingestion order, and mixing rows that
-carry a sequence with rows that do not leaves the order of that mix undefined.
+A query that builds its own sequence formats each part the same way: `LPAD(HEX(id), 16, '0')` for a
+non-negative increasing `BIGINT` ID, whose negative values would sort above every positive one, and
+for a `TIMESTAMP_LTZ(9)` commit time the four-section expression of the
+[Bigtable selected-cell example]({{< relref "docs/examples/bigtable" >}}#replicating-a-selected-cell-into-bigquery),
+which keeps minutes since the epoch in a section of their own because Flink's `TIMESTAMPDIFF`
+returns an `INT` that a count of seconds outgrows in 2038.
 
 The pseudocolumn is write-only.
 It travels with the append request and never becomes a table column, so no query reads it back;
@@ -827,7 +863,7 @@ or SDK already uses. The full list of defaults is in the
 | Option | Type | Maps to |
 |---|---|---|
 | `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below (`sink.ordering-mode` belongs to the `storage-api-at-least-once` one), and a key of a family this option does not select is rejected rather than ignored |
-| `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
+| `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once`, a declared primary key and a sequence metadata column |
 | `sink.cdc.debezium-mysql.source-uuids` | List&lt;String&gt; | Ordered MySQL GTID source UUIDs. The append-only order assigns failover epochs for the Debezium MySQL sequence profile |
 | `sink.cdc.ticdc.cluster-id` | String | The TiCDC cluster ID whose commit timestamp oracle values order this table, as the changefeed reports it in `cluster_id`. A row change reporting another cluster is rejected rather than ordered against an unrelated oracle. TiCDC defaults this identifier to `default` |
 | `sink.cdc.max-staleness` | Duration | `CdcTableOptions.maxStaleness(...)`. Absent means that the property is unmanaged |

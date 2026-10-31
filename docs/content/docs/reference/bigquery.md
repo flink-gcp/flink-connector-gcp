@@ -90,7 +90,7 @@ The destination table prerequisites, pseudocolumn behavior and configuration exa
 | Option | Default | What it does |
 |---|---|---|
 | `changeTypeProvider` | **required** by `builder(...)` | Returns `UPSERT` or `DELETE` for each non-skipped record |
-| `sequenceNumberProvider` | no sequence pseudocolumn | Returns one to four slash-separated hexadecimal sections, each at most 16 digits, for every non-skipped record |
+| `sequenceNumberProvider` | **required** | Returns one to four slash-separated hexadecimal sections, each at most 16 digits, for every non-skipped record |
 
 ## `DefaultStreamOptions`
 

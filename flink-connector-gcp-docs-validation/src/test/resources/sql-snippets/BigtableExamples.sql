@@ -241,6 +241,8 @@ CREATE TABLE current_profiles (
   profile_id STRING NOT NULL,
   name STRING,
   tier STRING,
+  commit_ts TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
+  tie_breaker INT METADATA FROM 'tie-breaker' VIRTUAL,
   PRIMARY KEY (profile_id) NOT ENFORCED
 ) WITH (
   'connector' = 'bigtable',
@@ -261,6 +263,7 @@ CREATE TABLE analytics_profiles (
   profile_id STRING NOT NULL,
   name STRING,
   tier STRING,
+  sequence STRING METADATA FROM 'change-sequence-number',
   PRIMARY KEY (profile_id) NOT ENFORCED
 ) WITH (
   'connector' = 'bigquery',
@@ -268,12 +271,24 @@ CREATE TABLE analytics_profiles (
   'dataset' = 'analytics',
   'table' = 'current_profiles',
   'sink.cdc.enabled' = 'true',
+  'sink.ordering-mode' = 'per-table',
   'sink.create-disposition' = 'create-if-needed',
   'sink.cdc.max-staleness' = '10 min'
 );
 
+-- The sequence orders a key's changes by commit time, then by tie breaker: minutes since the
+-- epoch, the second, the nanosecond, and the tie breaker shifted to be unsigned.
 INSERT INTO analytics_profiles
-SELECT profile_id, name, tier FROM current_profiles;
+SELECT
+  profile_id,
+  name,
+  tier,
+  CONCAT_WS('/',
+    LPAD(HEX(TIMESTAMPDIFF(MINUTE, TO_TIMESTAMP_LTZ(0, 0), commit_ts)), 16, '0'),
+    LPAD(HEX(EXTRACT(SECOND FROM commit_ts)), 16, '0'),
+    LPAD(HEX(EXTRACT(NANOSECOND FROM commit_ts)), 16, '0'),
+    LPAD(HEX(CAST(tie_breaker AS BIGINT) + 2147483648), 16, '0'))
+FROM current_profiles;
 -- end::selected-cell-bigquery-cdc[]
 
 -- tag::aggregate-contributions[]

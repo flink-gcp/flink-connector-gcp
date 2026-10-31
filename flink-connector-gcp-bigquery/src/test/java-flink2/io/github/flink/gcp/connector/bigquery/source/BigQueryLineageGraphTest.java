@@ -145,7 +145,9 @@ class BigQueryLineageGraphTest {
                 sinkBuilder(method, directory.resolve("missing.json").toString()).table(OUTPUT);
         if (cdc) {
             builder.cdcOptions(
-                    CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build());
+                    CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                            .sequenceNumberProvider(ignored -> "1")
+                            .build());
         }
         return graph(mode, builder.build());
     }
@@ -207,14 +209,20 @@ class BigQueryLineageGraphTest {
         }
         table.executeSql(
                 "CREATE TABLE output (id BIGINT"
-                        + (cdc ? ", PRIMARY KEY (id) NOT ENFORCED" : "")
+                        + (cdc
+                                ? ", seq STRING METADATA FROM 'change-sequence-number',"
+                                        + " PRIMARY KEY (id) NOT ENFORCED"
+                                : "")
                         + ") WITH ('connector'='bigquery', 'project'='output-project',"
                         + " 'dataset'='Output', 'table'='Result', "
                         + sinkOptions
                         + credentials
                         + ")");
         table.createStatementSet()
-                .addInsertSql("INSERT INTO output SELECT id FROM input WHERE id > 1")
+                .addInsertSql(
+                        "INSERT INTO output SELECT id"
+                                + (cdc ? ", '1'" : "")
+                                + " FROM input WHERE id > 1")
                 .attachAsDataStream();
         return env.getStreamGraph().getLineageGraph();
     }

@@ -16,7 +16,8 @@ limitations under the License.
 
 # ADR-0110: BigQuery CDC augments default-stream rows without changing the table schema
 
-- Status: Accepted
+- Status: Accepted; refined by [ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md) (2026-10-31), which makes the
+  sequence-number provider required
 - Date: 2026-08-13
 - Issues: [#65](https://github.com/flink-gcp/flink-connector-gcp/issues/65),
   [#625](https://github.com/flink-gcp/flink-connector-gcp/issues/625)
@@ -41,8 +42,8 @@ schema reconciliation.
 ## Decision
 
 **CDC is an optional serializer layer for the at-least-once default-stream writer.**
-`CdcOptions` requires a serializable change-type provider and accepts an optional serializable
-sequence-number provider.
+`CdcOptions` requires a serializable change-type provider and a serializable sequence-number
+provider ([ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md)).
 The builder rejects the options with buffered exactly-once streams and file loads because BigQuery
 accepts CDC mutations only through the default stream.
 

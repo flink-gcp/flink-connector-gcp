@@ -347,6 +347,12 @@ public class BigQueryDynamicTableFactory
                                     + " that key.",
                             BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
         }
+        // Checked here rather than only when the planner applies the metadata, so the failure
+        // names the table and arrives before the planner's own changelog checks (ADR-0193).
+        if (!BigQueryDynamicSink.declaresSequenceMetadata(
+                context.getCatalogTable().getResolvedSchema())) {
+            throw new ValidationException(BigQueryDynamicSink.missingSequenceMessage());
+        }
     }
 
     /** Rejects a sequence-profile option that only means something with CDC writes enabled. */

@@ -320,8 +320,9 @@ public final class BigQueryConnectorOptions {
 
     /**
      * Whether the default-stream sink writes the table changelog as BigQuery CDC UPSERT and DELETE
-     * mutations. Requires a declared primary key and storage-api-at-least-once. With
-     * create-if-needed, the sink creates and verifies the CDC table before writing.
+     * mutations. Requires a declared primary key, a sequence metadata column and
+     * storage-api-at-least-once. With create-if-needed, the sink creates and verifies the CDC table
+     * before writing.
      */
     public static final ConfigOption<Boolean> SINK_CDC_ENABLED =
             ConfigOptions.key("sink.cdc.enabled")
@@ -330,9 +331,9 @@ public final class BigQueryConnectorOptions {
                     .withDescription(
                             "Whether the default-stream sink writes the table changelog as"
                                     + " BigQuery CDC UPSERT and DELETE mutations. Requires a"
-                                    + " declared primary key and storage-api-at-least-once. With"
-                                    + " create-if-needed, the sink creates and verifies the CDC"
-                                    + " table before writing.");
+                                    + " declared primary key, a sequence metadata column and"
+                                    + " storage-api-at-least-once. With create-if-needed, the sink"
+                                    + " creates and verifies the CDC table before writing.");
 
     /**
      * The Debezium MySQL source UUIDs in causal order. The first UUID has epoch one; append a new

@@ -159,6 +159,23 @@ class BigQueryDynamicTableFactoryTest {
                 .createSink();
     }
 
+    /** {@link #SCHEMA} with its primary key and a formatted CDC sequence metadata column. */
+    private static final ResolvedSchema SEQUENCED =
+            withPrimaryKey(
+                    ResolvedSchema.of(
+                            Column.physical("id", DataTypes.STRING()),
+                            Column.physical("amount", DataTypes.INT()),
+                            Column.metadata(
+                                    "sequence",
+                                    DataTypes.STRING(),
+                                    "change-sequence-number",
+                                    false)));
+
+    /** A CDC sink over {@link #SEQUENCED}, which a CDC sink needs for its required sequence. */
+    private static Sink<?> builtCdc(Map<String, String> options) {
+        return builtWithMetadata(SEQUENCED, options, "change-sequence-number");
+    }
+
     private static Sink<?> builtWithMetadata(
             ResolvedSchema schema, Map<String, String> options, String... metadataKeys) {
         BigQueryDynamicSink dynamic =
@@ -910,8 +927,7 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> autoCreate = minimalOptions();
         autoCreate.put("sink.cdc.enabled", "true");
         autoCreate.put("sink.cdc.max-staleness", "10 min");
-        BigQueryDefaultStreamSink<?> sink =
-                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), autoCreate);
+        BigQueryDefaultStreamSink<?> sink = (BigQueryDefaultStreamSink<?>) builtCdc(autoCreate);
         CdcTableOptions cdcTable =
                 sink.getConfig().getCdcTableOptionsProvider().optionsFor(DESTINATION);
         assertThat(cdcTable.getPrimaryKeyColumns()).containsExactly("id");
@@ -934,8 +950,7 @@ class BigQueryDynamicTableFactoryTest {
         createNever.put("sink.create-disposition", "create-never");
         createNever.put("sink.cdc.max-staleness", "10 min");
         createNever.put("sink.cdc.table-reconciliation", "reconcile");
-        BigQueryDefaultStreamSink<?> sink =
-                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), createNever);
+        BigQueryDefaultStreamSink<?> sink = (BigQueryDefaultStreamSink<?>) builtCdc(createNever);
         assertThat(sink.getConfig().getCreateDisposition().name()).isEqualTo("CREATE_NEVER");
         assertThat(sink.getConfig().getCdcTableReconciliationPolicy())
                 .isEqualTo(CdcTableReconciliationPolicy.RECONCILE);
@@ -954,7 +969,7 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> invalid = minimalOptions();
         invalid.put("sink.cdc.enabled", "true");
         invalid.put("sink.cdc.debezium-mysql.source-uuids", "not-a-uuid");
-        assertThatThrownBy(() -> built(withPrimaryKey(SCHEMA), invalid))
+        assertThatThrownBy(() -> builtCdc(invalid))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("canonical UUID");
     }
@@ -1009,7 +1024,7 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> empty = minimalOptions();
         empty.put("sink.cdc.enabled", "true");
         empty.put("sink.cdc.ticdc.cluster-id", "");
-        assertThatThrownBy(() -> built(withPrimaryKey(SCHEMA), empty))
+        assertThatThrownBy(() -> builtCdc(empty))
                 .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("sink.cdc.ticdc.cluster-id' must name the cluster");
     }
@@ -1062,10 +1077,54 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put("sink.cdc.enabled", "true");
         options.put("sink.create-disposition", "create-never");
-        BigQueryDefaultStreamSink<?> cdc =
-                (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), options);
+        BigQueryDefaultStreamSink<?> cdc = (BigQueryDefaultStreamSink<?>) builtCdc(options);
         assertThat(cdc.getConfig().getCdcOptions()).isNotNull();
-        assertThat(cdc.getConfig().getCdcOptions().hasSequenceNumberProvider()).isFalse();
+    }
+
+    @Test
+    void cdcWithoutASequenceMetadataColumnFailsWhenTheSinkIsCreated() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.cdc.enabled", "true");
+        options.put("sink.create-disposition", "create-never");
+
+        // The factory rejects it, so FactoryUtil's wrapper names the table.
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(withPrimaryKey(SCHEMA), options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Unable to create a sink for writing table")
+                .hasStackTraceContaining("requires a change sequence")
+                .hasStackTraceContaining("grows with each of its changes")
+                .hasStackTraceContaining("never a clock read in the pipeline")
+                .hasStackTraceContaining("created LIKE it")
+                .hasStackTraceContaining("change-sequence-number")
+                .hasStackTraceContaining("debezium-source-properties")
+                .hasStackTraceContaining("spanner-change-sequence");
+
+        // A VIRTUAL column never reaches the sink, so it does not count as a sequence.
+        ResolvedSchema virtualSequence =
+                withPrimaryKey(
+                        ResolvedSchema.of(
+                                Column.physical("id", DataTypes.STRING()),
+                                Column.physical("amount", DataTypes.INT()),
+                                Column.metadata(
+                                        "sequence",
+                                        DataTypes.STRING(),
+                                        "change-sequence-number",
+                                        true)));
+        assertThatThrownBy(() -> FactoryMocks.createTableSink(virtualSequence, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("requires a change sequence");
+
+        // The same rule holds for a sink the planner hands an empty metadata list.
+        BigQueryDynamicSink declared =
+                (BigQueryDynamicSink) FactoryMocks.createTableSink(SEQUENCED, options);
+        declared.applyWritableMetadata(
+                Collections.emptyList(), withPrimaryKey(SCHEMA).toSinkRowDataType());
+        assertThatThrownBy(
+                        () ->
+                                declared.getSinkRuntimeProvider(
+                                        new SinkRuntimeProviderContext(false)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("requires a change sequence");
     }
 
     @Test
@@ -1079,10 +1138,7 @@ class BigQueryDynamicTableFactoryTest {
         cdc.put("sink.cdc.enabled", "true");
         cdc.put("sink.create-disposition", "create-never");
         cdc.put("sink.ordering-mode", "per-table");
-        assertThat(
-                        ((BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), cdc))
-                                .getOptions()
-                                .getOrderingMode())
+        assertThat(((BigQueryDefaultStreamSink<?>) builtCdc(cdc)).getOptions().getOrderingMode())
                 .isEqualTo(OrderingMode.PER_TABLE);
     }
 
@@ -1122,7 +1178,9 @@ class BigQueryDynamicTableFactoryTest {
                 (BigQueryDefaultStreamSink<?>)
                         builtWithMetadata(sequenceSchema, options, "change-sequence-number");
 
-        assertThat(cdc.getConfig().getCdcOptions().hasSequenceNumberProvider()).isTrue();
+        assertThat(cdc.getConfig().getCdcOptions().getSequenceNumberProvider())
+                .extracting(provider -> provider.getClass().getSimpleName())
+                .isEqualTo("RowDataCdcSequenceNumberProvider");
         assertThat(cdc.getConfig().getSerializer().getTableSchema(DESTINATION).getFieldsList())
                 .extracting(com.google.cloud.bigquery.storage.v1.TableFieldSchema::getName)
                 .containsExactly("id", "amount");

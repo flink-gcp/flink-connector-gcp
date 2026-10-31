@@ -79,26 +79,6 @@ class CdcProtoRowFieldsTest {
     }
 
     @Test
-    void omitsTheSequenceFieldWhenNoProviderIsConfigured() throws Exception {
-        TestSerializer serializer = new TestSerializer();
-        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
-                cdcSerializer(
-                        serializer,
-                        CdcOptions.<TestRecord>builder(record -> record.changeType).build());
-
-        Descriptors.Descriptor descriptor = cdcSerializer.getDescriptor(DESTINATION);
-        DynamicMessage row =
-                DynamicMessage.parseFrom(
-                        descriptor,
-                        cdcSerializer.serialize(
-                                new TestRecord(9, CdcChangeType.UPSERT, null), DESTINATION));
-
-        assertThat(descriptor.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD)).isNotNull();
-        assertThat(descriptor.findFieldByName(CdcProtoRowFields.SEQUENCE_NUMBER_FIELD)).isNull();
-        assertThat(row.getField(descriptor.findFieldByName("id"))).isEqualTo(9L);
-    }
-
-    @Test
     void skippedRowsDoNotInvokeEitherProvider() throws Exception {
         AtomicInteger providerCalls = new AtomicInteger();
         TestSerializer serializer = new TestSerializer();
@@ -144,7 +124,9 @@ class CdcProtoRowFieldsTest {
         ProtoRowAugmentingSerializer<TestRecord> nullChange =
                 cdcSerializer(
                         new TestSerializer(),
-                        CdcOptions.<TestRecord>builder(record -> null).build());
+                        CdcOptions.<TestRecord>builder(record -> null)
+                                .sequenceNumberProvider(ignored -> "1")
+                                .build());
         ProtoRowAugmentingSerializer<TestRecord> nullSequence =
                 cdcSerializer(new TestSerializer(), record -> null);
         ProtoRowAugmentingSerializer<TestRecord> failedProvider =

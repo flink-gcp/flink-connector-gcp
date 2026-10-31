@@ -101,14 +101,31 @@ class BigQueryCatalogPlanTest {
     }
 
     @Test
-    void anUpsertIntoAKeyedCatalogTablePlansOntoTheCdcSinkWhenAHintEnablesIt() {
+    void aHintAloneCannotMakeACatalogTableACdcSink() {
+        // A catalog table has no column to carry the change sequence a CDC sink requires.
         StreamTableEnvironment table = tableEnvironment(keyedTable());
+
+        assertThatThrownBy(
+                        () ->
+                                table.explainSql(
+                                        "INSERT INTO bq.analytics.current_rows"
+                                                + " /*+ OPTIONS('sink.cdc.enabled' = 'true') */"
+                                                + " SELECT id, amount FROM changes"))
+                .hasStackTraceContaining("requires a change sequence");
+    }
+
+    @Test
+    void aTableLikeAKeyedCatalogTablePlansOntoTheCdcSinkWithASequenceColumn() {
+        StreamTableEnvironment table = tableEnvironment(keyedTable());
+        table.executeSql(
+                "CREATE TABLE current_rows_cdc ("
+                        + " sequence STRING METADATA FROM 'change-sequence-number'"
+                        + ") WITH ('sink.cdc.enabled' = 'true')"
+                        + " LIKE bq.analytics.current_rows");
 
         String plan =
                 table.explainSql(
-                        "INSERT INTO bq.analytics.current_rows"
-                                + " /*+ OPTIONS('sink.cdc.enabled' = 'true') */"
-                                + " SELECT id, amount FROM changes",
+                        "INSERT INTO current_rows_cdc SELECT id, amount, 'A' FROM changes",
                         ExplainDetail.CHANGELOG_MODE);
 
         // The sink receives updates and deletes keyed on the catalog's primary key, with nothing
@@ -116,7 +133,7 @@ class BigQueryCatalogPlanTest {
         // Flink 2.x (partial deletes) and a ChangelogNormalize over it on 1.20 (full deletes).
         assertThat(plan)
                 .containsPattern(
-                        "Sink\\(table=\\[bq\\.analytics\\.current_rows\\].*\\n"
+                        "Sink\\(table=\\[default_catalog\\.default_database\\.current_rows_cdc\\].*\\n"
                                 + "\\+- \\w+\\(.*changelogMode=\\[I,UA,P?D\\]\\)")
                 .doesNotContain("upsertMaterialize")
                 .doesNotContain("DropUpdateBefore");
@@ -124,7 +141,8 @@ class BigQueryCatalogPlanTest {
 
     @Test
     void withoutTheHintTheSameUpsertIsRefusedAsForAHandWrittenTable() {
-        // The catalog carries no sink option: CDC stays a per-statement choice.
+        // The catalog carries no sink option, so an upsert into the catalog table itself has no
+        // CDC path at all.
         StreamTableEnvironment table = tableEnvironment(keyedTable());
 
         assertThatThrownBy(
