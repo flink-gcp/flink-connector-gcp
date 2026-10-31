@@ -1346,7 +1346,7 @@ A reporter that reads group variables as tags (Prometheus, Datadog, OTLP) sees t
 | `rpcMethod.METHOD.connectivityErrors` | counter | attempts that never reached a Google data center, judged by the absence of Google's response headers |
 | `rpcMethod.METHOD.attemptsWithServerTiming` | counter | attempts whose response carried the Google front end's server timing; the denominator of `serverTimeMillis` |
 | `rpcMethod.METHOD.serverTimeMillis` | counter | their total time from entering the Google data center to completion, in milliseconds |
-| `rpcMethod.METHOD.firstResponseTimeMillis` | counter | total time from an operation's start to its first response, in milliseconds, summed over the operations the client records it for: a streamed `ReadRows`, and every operation it serves on the session path (single-row reads, recorded as `ReadRow`, described below). A single-row-key `ReadRows` and a `ReadRow` on the classic path add nothing, so dividing by `operations` gives the mean only where every operation is of the recorded kind; under any other method it stays zero |
+| `rpcMethod.METHOD.firstResponseTimeMillis` | counter | total time from an operation's start to its first response, in milliseconds, summed over the operations the client records it for: a streamed `ReadRows`, and every operation it serves on the session path (single-row reads, recorded as `ReadRow`, and conditional and read-modify-write calls, described below). A single-row-key `ReadRows` and a `ReadRow` on the classic path add nothing, so dividing by `operations` gives the mean only where every operation is of the recorded kind; under any other method it stays zero |
 | `rpcMethod.METHOD.applicationTimeMillis` | counter | total time per operation that its attempts did not spend on the server, in milliseconds, which the client attributes to the application consuming responses; divide by `operations` |
 
 Latencies arrive as a count and a millisecond sum, so a backend divides the rate of the sum by the rate of the count for the mean over any window.
@@ -1372,10 +1372,11 @@ The client keeps its built-in exporter beside the second recorder this option ad
 `exportClientMetricsToCloudMonitoring(false)` (`client-metrics.export-to-cloud-monitoring = 'false'`) removes that exporter, whether or not anything is exported to Flink.
 Off Google Cloud it also removes a stall: when a client closes, the exporter detects the platform by connecting to the metadata server's address with no timeout, and where nothing answers there, a close can wait for the operating system's connect timeout (75 seconds, measured on [#1815]({{< param BookRepo >}}/issues/1815) and again on [#1902]({{< param BookRepo >}}/issues/1902), where a client without the exporter closed in under a millisecond).
 
-**Single-row reads can take another path, and with the Cloud Monitoring export off, report nothing.**
-The Bigtable client can serve single-row reads and `MutateRow` over a newer, session-based path, which the service enables per client through its client configuration and which is off by default.
+**Single-row operations can take another path, and with the Cloud Monitoring export off, report nothing.**
+The Bigtable client can serve single-row reads, `MutateRow`, `CheckAndMutateRow` and `ReadModifyWriteRow` over a newer, session-based path, which the service enables through its client configuration, for the whole client or per method (the last two only per method), and which is off by default.
 A lookup's `ReadRow` can take it, and so can a scan whose only range is one row key (a SQL `WHERE` on one row key), which the client then records as `ReadRow` rather than `ReadRows`.
-On that path the client hands the connector's recorder nothing when its built-in exporter is absent (`MetricsImpl.newTableTracer`), so `exportClientMetricsToCloudMonitoring(false)` leaves those reads unreported.
+So can the conditional writes of the exactly-once committer and the conditional sink, and the calls of the read-modify-write sink, async helpers and SQL functions, which keep their own method names there.
+On that path the client hands the connector's recorder nothing when its built-in exporter is absent (`MetricsImpl.newTableTracer`), so `exportClientMetricsToCloudMonitoring(false)` leaves those operations unreported.
 With the exporter on, a scan reader's single-key reads arrive under `ReadRow`, which the reader does not register, and are logged once and dropped.
 No component calls `MutateRow`.
 The connector does not work around the client here; keep the Cloud Monitoring export on where these series must be complete.
