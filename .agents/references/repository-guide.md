@@ -809,7 +809,9 @@ facts); the rules a session needs:
   (`src/main/java-flink1`/`java-flink2`), `just verify-flink 1.20.x` selects it locally, the
   weekly `lts` row verifies it, and no cross-major binary claim is made — the one-artifact
   claim spans the 2.x range only. A 1.20 patch bump is a hand edit to `FLINK_LTS` in
-  `weekly.yaml` (dependabot does not see workflow env); `release.yaml` and
+  `weekly.yaml` (dependabot does not see workflow env), announced by the weekly
+  `scripts/check-flink-release.sh` run, whose failure output is the edit and verification list
+  (ADR-0054); `release.yaml` and
   `check-flink-api-tiers` read it from there, so the audit re-tiers the imports at the new
   patch in the same PR. **A cross-major API difference goes in
   the roots** — every connector's `CrossVersionSink`, base's package-private `CrossVersionSink`

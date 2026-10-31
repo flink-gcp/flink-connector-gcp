@@ -21,8 +21,10 @@ limitations under the License.
   assumed); revised by [#404] (2026-08-09); revised by [#724] (2026-08-30, ADR-0147):
   each release also publishes the per-major LTS jar as `X.Y.Z-1.20` — support stays
   source-level and per-major, and no cross-major binary claim is added; revised by [#1635]
-  (2026-10-04): the shared Table source forwards Flink 2.x watermark declarations
-- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404], [#724], [#1635]
+  (2026-10-04): the shared Table source forwards Flink 2.x watermark declarations; revised by
+  [#1977] (2026-11-01): the weekly release check fails on a newer patch of the LTS minor
+- Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404], [#724], [#1635],
+  [#1977]
 - Modules: all connectors, base
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
   § Supported versions
@@ -64,8 +66,14 @@ an implementation type.
 `FLINK_LTS`, a jar is compiled per major, and no cross-major binary claim is made — the
 one-artifact claim of ADR-0053 spans the 2.x range only. A red `lts` row reproduces locally
 with `just verify-flink <FLINK_LTS>`, the same first-move rule `binary_compat` has. A 1.20
-patch bump is a hand edit to `FLINK_LTS` in `weekly.yaml`; dependabot does not see workflow
-env.
+patch bump is a hand edit to `FLINK_LTS` in `weekly.yaml`, and dependabot does not see workflow
+env, so the weekly `new_release_check` job (`scripts/check-flink-release.sh`) compares
+`FLINK_LTS` with the newest patch of its minor on Maven Central. It fails until the pin moves
+and prints the edit and verification list; a pin outside 1.20 is rejected. Only patches are
+watched, because 1.20 is the last 1.x minor. Every `X.Y.Z-1.20` release is compiled against
+that pin and the weekly `lts` row tests at it — Flink itself is `provided` and never shipped —
+so a stale pin publishes connectors that were never built against the current patch.
+Flink 1.20.5 stayed on Maven Central for nearly five months before anyone noticed ([#1973]).
 
 ## Evidence
 
@@ -136,3 +144,5 @@ carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1
 [#404]: https://github.com/flink-gcp/flink-connector-gcp/issues/404
 [#724]: https://github.com/flink-gcp/flink-connector-gcp/issues/724
 [#1635]: https://github.com/flink-gcp/flink-connector-gcp/issues/1635
+[#1973]: https://github.com/flink-gcp/flink-connector-gcp/issues/1973
+[#1977]: https://github.com/flink-gcp/flink-connector-gcp/issues/1977
