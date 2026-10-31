@@ -60,8 +60,9 @@ public final class TopicDestination implements Serializable {
      * @param topic the Pub/Sub topic id
      * @return the destination
      * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
-     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
-     *     address a different resource
+     *     whitespace, contains {@code '/'}, or is exactly {@code .} or {@code ..} — a separator
+     *     would make the composed resource path address a different resource, and a dot segment is
+     *     path navigation rather than a name
      */
     public static TopicDestination of(String project, String topic) {
         ResourceNames.checkComponent(project, "project");

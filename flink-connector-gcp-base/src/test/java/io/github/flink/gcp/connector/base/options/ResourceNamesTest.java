@@ -88,6 +88,21 @@ class ResourceNamesTest {
                 .hasMessage("topic must not contain '/': '" + value + "'");
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {".", ".."})
+    void checkComponentRejectsADotSegment(String value) {
+        assertThatThrownBy(() -> ResourceNames.checkComponent(value, "table"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("table must not be '.' or '..': '" + value + "'");
+    }
+
+    /** Only a whole-component dot segment is navigation; dots inside a name are the service's. */
+    @ParameterizedTest
+    @ValueSource(strings = {"...", ".a", "a.", "a.b", "a..b", "example.com:project"})
+    void checkComponentAcceptsDotsInsideAName(String value) {
+        assertThat(ResourceNames.checkComponent(value, "project")).isEqualTo(value);
+    }
+
     @Test
     void checkNotBlankReturnsTheValueItAccepted() {
         assertThat(ResourceNames.checkNotBlank("US", "location")).isEqualTo("US");

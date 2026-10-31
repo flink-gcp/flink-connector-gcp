@@ -66,8 +66,9 @@ public final class QueueDestination implements Serializable {
      * @param queue the queue id
      * @return the destination
      * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
-     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
-     *     address a different resource
+     *     whitespace, contains {@code '/'}, or is exactly {@code .} or {@code ..} — a separator
+     *     would make the composed resource path address a different resource, and a dot segment is
+     *     path navigation rather than a name
      */
     public static QueueDestination of(String project, String location, String queue) {
         ResourceNames.checkComponent(project, "project");

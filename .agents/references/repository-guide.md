@@ -1167,8 +1167,8 @@ connector gets its own module file rather than a section here.
   what would break it. Which sites convert how, and that measurement, are in the ADR.
 - **A configured name is checked for what this project will do with it, not for what the service
   might refuse** (#984; `docs/adr/0127`): a component the connector concatenates into a resource
-  path rejects `/` and edge whitespace via `ResourceNames.checkComponent`, because a `/` inside one
-  silently addresses a *different* resource and the service then answers accurately about a name
+  path rejects `/`, a whole `.` or `..` (#1948), and edge whitespace via
+  `ResourceNames.checkComponent`, because a `/` inside one silently addresses a *different* resource and the service then answers accurately about a name
   the user never typed; a value the connector parses is checked against the grammar that will read
   it; and a value whose service-side failure would be **silent**, per-record, or would not name the
   option is checked even though it is only forwarded — which is what the Cloud Tasks URL and

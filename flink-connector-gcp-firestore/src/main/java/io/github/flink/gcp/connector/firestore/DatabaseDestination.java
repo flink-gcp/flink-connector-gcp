@@ -61,8 +61,9 @@ public final class DatabaseDestination implements Serializable {
      * @param project the Google Cloud project id, as a bare id rather than a resource path
      * @return the database reference
      * @throws IllegalArgumentException if the project is null or blank, has leading or trailing
-     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
-     *     address a different resource
+     *     whitespace, contains {@code '/'}, or is exactly {@code .} or {@code ..} — a separator
+     *     would make the composed resource path address a different resource, and a dot segment is
+     *     path navigation rather than a name
      */
     public static DatabaseDestination of(String project) {
         return of(project, DEFAULT_DATABASE_ID);
@@ -75,8 +76,9 @@ public final class DatabaseDestination implements Serializable {
      * @param databaseId the database id, for example {@value #DEFAULT_DATABASE_ID}
      * @return the database reference
      * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
-     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
-     *     address a different resource
+     *     whitespace, contains {@code '/'}, or is exactly {@code .} or {@code ..} — a separator
+     *     would make the composed resource path address a different resource, and a dot segment is
+     *     path navigation rather than a name
      */
     public static DatabaseDestination of(String project, String databaseId) {
         ResourceNames.checkComponent(project, "project");

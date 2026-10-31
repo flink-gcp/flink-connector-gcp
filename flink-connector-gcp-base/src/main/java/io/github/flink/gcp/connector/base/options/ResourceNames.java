@@ -27,9 +27,12 @@ import org.apache.flink.util.StringUtils;
  * The argument here is its own, which is what that class asks of a new check: a connector builds
  * {@code projects/{project}/topics/{topic}} and its siblings by concatenation, so a {@code '/'}
  * inside a component does not fail — it silently addresses a <em>different</em> resource, and the
- * service answers for a name the user never typed. Leading or trailing whitespace is rejected in
- * the same breath because it is never meant, and because a name is compared and logged far from
- * where it was set.
+ * service answers for a name the user never typed. A component that is exactly {@code .} or {@code
+ * ..} is rejected for the same reason: it is path navigation rather than a name, no resource id
+ * these components carry can be either, and whether anything else refuses it depends on how the
+ * destination composes its path (api-common's {@code PathTemplate} does since 2.71.0; a connector's
+ * own concatenation does not). Leading or trailing whitespace is rejected in the same breath
+ * because it is never meant, and because a name is compared and logged far from where it was set.
  *
  * <p>The rule is deliberately narrow, and two neighbouring shapes fall outside it. A value that
  * <em>is</em> a full resource path — Pub/Sub's {@code kmsKeyName}, spelled {@code
@@ -39,8 +42,9 @@ import org.apache.flink.util.StringUtils;
  * rules kept here would refuse a name it would have taken. ADR-0127 carries the survey and the
  * measurement behind both boundaries.
  *
- * <p>The three messages are the wording the six private copies this replaces already had, kept
- * verbatim so a rejection reads the same as it did before.
+ * <p>The first three messages are the wording the six private copies this replaces already had,
+ * kept verbatim so a rejection reads the same as it did before; the dot-segment one was added with
+ * #1948.
  */
 @Internal
 public final class ResourceNames {
@@ -64,6 +68,11 @@ public final class ResourceNames {
                 value);
         Preconditions.checkArgument(
                 value.indexOf('/') < 0, "%s must not contain '/': '%s'", name, value);
+        Preconditions.checkArgument(
+                !value.equals(".") && !value.equals(".."),
+                "%s must not be '.' or '..': '%s'",
+                name,
+                value);
         return value;
     }
 
