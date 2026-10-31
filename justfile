@@ -296,15 +296,16 @@ binary-compat ceiling:
     diff -u target/floor-tests.txt target/ceiling-tests.txt || { echo "::error::A different set of tests ran on Flink {{ ceiling }} than on the floor, so this run proves nothing about binary compatibility."; exit 1; }
     @echo "Same tests ran on both: $(wc -l < target/floor-tests.txt | tr -d ' ') classes."
 
-# The ceiling defaults to the one the weekly workflow verifies, so the version
-# still has exactly one home. That default is long enough that `just --list`
-# wraps this entry onto two lines — a [doc] attribute does not help, the
+# The ceiling and the LTS default to the ones the weekly workflow verifies, so
+# each version still has exactly one home. Those defaults are long enough that
+# `just --list` wraps this entry — a [doc] attribute does not help, the
 # signature itself is what wraps — which is accepted in exchange for the
-# listing showing where the version comes from.
+# listing showing where the versions come from.
 #
-# Has Flink released a minor newer than the supported ceiling?
-check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.yaml | cut -d"'" -f2`:
-    scripts/check-flink-release.sh {{ ceiling }}
+# Has Flink released a minor newer than the ceiling, or a newer LTS patch?
+[positional-arguments]
+check-flink-release ceiling=`grep -m1 "FLINK_CEILING:" .github/workflows/weekly.yaml | cut -d"'" -f2` lts=`grep -m1 "FLINK_LTS:" .github/workflows/weekly.yaml | cut -d"'" -f2`:
+    scripts/check-flink-release.sh "$1" "$2"
 
 # The guard logic lives in scripts/worktree-env.sh, where shellcheck reads it
 # (issue #156).

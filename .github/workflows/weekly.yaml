@@ -13,7 +13,8 @@ name: Weekly
 #     source (the lts row — see the version policy in CLAUDE.md and #32)
 #   * the next unreleased Flink gets an early warning, so upstream changes are
 #     found before they are released rather than after
-#   * a newly released Flink minor is noticed at all — see new_minor_check
+#   * a newly released Flink minor or 1.x LTS patch is noticed at all — see
+#     new_release_check
 #   * the pinned licence-text sources still serve the checked-in bytes even
 #     when nothing in the repository changed — verify.yaml re-fetches them
 #     only on a licence-input change — see notice_sources
@@ -40,7 +41,7 @@ permissions:
 # supported range they are — and the version is resolved in a step.
 env:
   # The newest supported Flink minor. Bumped when Flink releases a new minor,
-  # together with flink.version in the pom; new_minor_check fails until it is.
+  # together with flink.version in the pom; new_release_check fails until it is.
   FLINK_CEILING: '2.3.0'
   # Upstream early warning: the next Flink that does not exist yet.
   FLINK_NEXT_SNAPSHOT: '2.4-SNAPSHOT'
@@ -48,7 +49,7 @@ env:
   # tests the whole suite against it, selecting the flink1 compat source root
   # (the one-interface seam described at the flink.compat property in pom.xml).
   # Bumping to a new 1.20 patch is an edit here — dependabot does not see
-  # workflow env, the same accepted staleness FLINK_CEILING has. release.yaml
+  # workflow env, so new_release_check fails until it is made. release.yaml
   # and scripts/check-flink-api-tiers.py read this line by its exact shape.
   FLINK_LTS: '1.20.5'
   # Every Maven run reads Google's mirror of Central first, and the wrapper fetches
@@ -240,19 +241,21 @@ jobs:
       - name: Build on the floor, re-run on Flink ${{ env.FLINK_CEILING }}
         run: just binary-compat "$FLINK_CEILING"
 
-  # Nothing else would tell us a new Flink minor shipped.
+  # Nothing else would tell us a new Flink minor or 1.x LTS patch shipped.
   #
   # The supported range is "the current and the previous minor", so a Flink
   # release silently makes this repository's claim wrong — and the dependabot PR
   # that used to be the de-facto notification is now suppressed on purpose (see
   # the ignore rule in dependabot.yml), because triaging it monthly was the
-  # problem. That trade only works if something else raises its hand.
+  # problem. That trade only works if something else raises its hand. A 1.x LTS
+  # patch never had a dependabot PR at all, because FLINK_LTS is workflow env;
+  # 1.20.5 sat unnoticed on Maven Central for nearly five months (#1973).
   #
   # Deliberately independent of the jobs above rather than a dependency of them:
   # a new upstream release must not stop the current range from being verified.
-  new_minor_check:
+  new_release_check:
     if: github.repository_id == '1305440656'
-    name: New Flink minor released?
+    name: New Flink minor or LTS patch released?
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -266,10 +269,11 @@ jobs:
         with:
           tool: just
 
-      # The ceiling is passed explicitly. Run by hand the recipe derives it from
-      # this file, so either way FLINK_CEILING above stays its only home.
-      - name: Compare the ceiling against Maven Central
-        run: just check-flink-release "$FLINK_CEILING"
+      # The ceiling and the LTS are passed explicitly. Run by hand the recipe
+      # derives both from this file, so either way FLINK_CEILING and FLINK_LTS
+      # above stay their only home.
+      - name: Compare the ceiling and the LTS against Maven Central
+        run: just check-flink-release "$FLINK_CEILING" "$FLINK_LTS"
 
   # The offline NOTICE check never consults the recorded licence-text sources,
   # and verify.yaml re-fetches them only when a change touches a licence-source

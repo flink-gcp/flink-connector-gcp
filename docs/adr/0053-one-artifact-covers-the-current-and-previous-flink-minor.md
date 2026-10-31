@@ -61,14 +61,16 @@ rest on annotations alone. Before [#102] the working assumption was a per-minor 
     GitHub does not expose the `env` context to `strategy` and a version repeated across rows
     is how one of them gets missed; the version is resolved in a step from `FLINK_CEILING` /
     `FLINK_NEXT_SNAPSHOT` / `FLINK_LTS` at the top of the file. Those envs are hand-edited —
-    dependabot does not see workflow env, an accepted staleness.
+    dependabot does not see workflow env — so the release check below is what tells a
+    maintainer that `FLINK_CEILING` or `FLINK_LTS` is behind.
   - The `floor` row passes no `-Dflink.version` at all, so the pom stays the single source of
     truth for it, and it runs on JDK 21 because floor-on-17 is already covered by `verify.yaml`
     and by `binary_compat`.
   - The `next` row is upstream early-warning and is deliberately **not** `continue-on-error`.
-- **`scripts/check-flink-release.sh` (the `new_minor_check` job) announces new upstream
+- **`scripts/check-flink-release.sh` (the `new_release_check` job) announces new upstream
   minors**, because suppressing the dependabot minor PR removed the only thing that did. It
-  compares the ceiling against Maven Central weekly and fails until the range is moved. It is
+  compares the ceiling against Maven Central weekly and fails until the range is moved; the
+  same run checks ADR-0054's LTS patch. It is
   deliberately **not** a dependency of the other jobs: a new upstream release must not stop the
   current range from being verified.
 
