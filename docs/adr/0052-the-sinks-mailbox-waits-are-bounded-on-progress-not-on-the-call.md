@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0052: The Pub/Sub sink's mailbox waits are bounded on progress, not on the call
 
 - Status: Accepted
-- Date: 2026-08-07; revised by [#755] (2026-08-16), [#1132] (2026-08-29)
-- Issues: [#333], [#755], [#1132]
+- Date: 2026-08-07; revised by [#755] (2026-08-16), [#1132] (2026-08-29), [#1963] (2026-10-31)
+- Issues: [#333], [#755], [#1132], [#1963]
 - Modules: pubsub
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (the progress-timeout
   section); `docs/content/docs/reference/pubsub.md` for the knob
@@ -125,18 +125,28 @@ Measured 2026-08-07 against an unreachable endpoint, and every number decided so
 - **The ordered path has no self-terminating condition at all** — still waiting at 700 s, past
   the 591 s the unordered default had already died of, which is the only alternative hypothesis
   worth testing. So this knob is the only thing *inside the sink* that ends an ordered outage —
-  outside it, Flink's checkpoint timeout still does at its default, which the next bullet measures,
-  and stops doing the moment `tolerable-failed-checkpoints` is raised.
+  outside it, Flink's checkpoint timeout still does, which the next two bullets measure: at its
+  default after one timeout, and with `tolerable-failed-checkpoints` raised to N after about N + 1.
 - **What Flink does without this knob**, since it is what makes [#333] a P0 rather than a
   nuisance: at defaults the *checkpoint* timeout ends the job (measured: terminal at 25791/25319
   ms for a 20 s timeout and 45562/45959 ms for 40 s — the ~20 s delta is what identifies the
   mechanism), so an ordered outage costs 600 s of a stalled job and then dies of
   `Checkpoint expired`, naming nothing about Pub/Sub. Raise
-  `execution.checkpointing.tolerable-failed-checkpoints` above 0 and **nothing ends it**: the
-  job stayed `RUNNING` with its record count frozen (11462 → 11462, 10658 → 10658 over a further
-  60 s) while checkpoint after checkpoint expired. The control that pins that on ordering rather
+  `execution.checkpointing.tolerable-failed-checkpoints` above 0 and the job outlives the
+  timeout: it stayed `RUNNING` with its record count frozen (11462 → 11462, 10658 → 10658 over a
+  further 60 s) while six checkpoints expired. The control that pins that on ordering rather
   than on the harness is the identical job with ordering off, which dies of
   `UnavailableException` whatever the checkpoint settings are.
+- **A raised tolerance postpones the failure; only an unlimited one removes it** (measured
+  2026-10-31 for [#1963], after this record had read the bullet above as "nothing ends it").
+  `CheckpointFailureManager` counts consecutive expired checkpoints and fails the job once the
+  count exceeds the tolerance, in the same source on Flink 1.20.4 and 2.2.1. A probe on both
+  versions stalled the task thread under a 2 s checkpoint timeout, with no restart strategy. On
+  1.20.4 and then 2.2.1, a tolerance of 0 failed the job 2.2 and 2.3 s after the stall, 2 at 6.2
+  and 6.4 s, and 5 at 12.5 and 12.1 s, each with `Exceeded checkpoint tolerable failure
+  threshold` naming `Checkpoint expired before completing`; at `2147483647`, Flink's unlimited
+  value, the job was still `RUNNING` at 30 s.
+  The six expiries above are what a tolerance of six or more absorbs.
 - Cancellation was measured and is **not** the failure mode: the mailbox wait is interruptible,
   so a stalled job cancelled reached terminal in 5036/5037 ms — exactly its `shutdownTimeout`,
   nowhere near `task.cancellation.timeout`. The discriminating half was run too (2 s
@@ -165,8 +175,9 @@ coincidence for the dead-letter queue and resolved it the other way, choosing 60
 lands *inside* the checkpoint budget. The difference is what the two budgets are measured against:
 the queue's is a side channel with no natural scale, while this one is chosen to equal what the
 unordered path already spends before the client gives up, so that ordering costs a job no
-*additional* strictness. The case the knob exists for — `tolerable-failed-checkpoints` above 0,
-where nothing else fails the job at all — is unaffected by the race. Operators who want the
+*additional* strictness. The case the knob exists for — `tolerable-failed-checkpoints` raised,
+where the checkpoint timeout fails the job only after one more timeout per tolerated failure, and
+never at the unlimited value — is unaffected by the race. Operators who want the
 Pub/Sub-named failure first are told to set it below their checkpoint timeout.
 
 **A stalled wait warns at a tenth of the budget, and that is the answer to the default's race
@@ -195,3 +206,4 @@ abandons in-flight publishes; this one does not.
 [#333]: https://github.com/flink-gcp/flink-connector-gcp/issues/333
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
 [#1132]: https://github.com/flink-gcp/flink-connector-gcp/issues/1132
+[#1963]: https://github.com/flink-gcp/flink-connector-gcp/issues/1963
