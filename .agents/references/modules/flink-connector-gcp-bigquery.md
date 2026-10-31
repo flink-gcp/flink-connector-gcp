@@ -171,6 +171,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   keeps every REST field attribute `mergeSchema` preserves — do not hand-build the schema JSON.
   Never put a read's non-schema attributes back into the patch resource.
 
+## Commit order (`docs/adr/0192`)
+
+- `OrderingMode.PER_TABLE` holds only because every default-stream append of a table either awaits
+  the table's previous append first (`appendPending` through `awaitPreviousAppend`) or is awaited
+  before anything else is sent (`retryBatches`). A new append site must do one of the two; do not
+  pipeline a table's requests under the mode, since a failed default-stream request need not fail
+  the ones behind it.
+- A repair rebuilds the destination's state, and the pending rows move with it, so code that awaits
+  a previous append re-reads the state from `states` afterwards and hands it back to the caller.
+- `sink.ordering-mode` is a member of the default-stream option family for the foreign-family
+  check although its key is the cross-connector spelling, outside `sink.default-stream.`; the
+  mapper test adds it to the declared side by hand.
+- An ordering test asserts that `NONE` reorders the same input, so it can fail.
+
 ## Table metadata (`docs/adr/0182`)
 
 - `TableCreateOptions` description and labels are creation options like the rest: applied when the

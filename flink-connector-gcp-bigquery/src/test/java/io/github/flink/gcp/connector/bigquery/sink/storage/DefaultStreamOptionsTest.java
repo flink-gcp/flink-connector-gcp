@@ -16,9 +16,13 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.storage;
 
+import org.apache.flink.util.InstantiationUtil;
+
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -60,6 +64,42 @@ class DefaultStreamOptionsTest {
         assertThat(options.getDestinationIdleTimeout())
                 .isEqualTo(DefaultStreamOptions.DEFAULT_DESTINATION_IDLE_TIMEOUT);
         assertThat(options.getFlushInterval()).isNull();
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.NONE);
+    }
+
+    @Test
+    void theOrderingModeIsPartOfTheValue() throws Exception {
+        DefaultStreamOptions options =
+                DefaultStreamOptions.builder().orderingMode(OrderingMode.PER_TABLE).build();
+
+        assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.PER_TABLE);
+        assertThat(options.toString()).contains("orderingMode=per-table");
+        assertThat(options)
+                .isEqualTo(
+                        DefaultStreamOptions.builder().orderingMode(OrderingMode.PER_TABLE).build())
+                .hasSameHashCodeAs(
+                        DefaultStreamOptions.builder()
+                                .orderingMode(OrderingMode.PER_TABLE)
+                                .build());
+        assertThat(InstantiationUtil.clone(options)).isEqualTo(options);
+        assertThatThrownBy(() -> DefaultStreamOptions.builder().orderingMode(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("orderingMode must not be null");
+    }
+
+    @Test
+    void optionsSerializedBeforeTheOrderingModeExistedReadAsNone() throws Exception {
+        // A job graph serialized before the field existed deserializes it as null; the reflective
+        // write stands in for those bytes, which no test can produce from this source.
+        DefaultStreamOptions old = DefaultStreamOptions.builder().build();
+        Field field = DefaultStreamOptions.class.getDeclaredField("orderingMode");
+        field.setAccessible(true);
+        field.set(old, null);
+
+        assertThat(old.getOrderingMode()).isEqualTo(OrderingMode.NONE);
+        assertThat(old)
+                .isEqualTo(DefaultStreamOptions.builder().build())
+                .hasSameHashCodeAs(DefaultStreamOptions.builder().build());
     }
 
     /**
@@ -410,6 +450,8 @@ class DefaultStreamOptionsTest {
                                 .build())
                 .isNotEqualTo(defaults);
         assertThat(DefaultStreamOptions.builder().flushInterval(Duration.ofSeconds(1)).build())
+                .isNotEqualTo(defaults);
+        assertThat(DefaultStreamOptions.builder().orderingMode(OrderingMode.PER_TABLE).build())
                 .isNotEqualTo(defaults);
     }
 }

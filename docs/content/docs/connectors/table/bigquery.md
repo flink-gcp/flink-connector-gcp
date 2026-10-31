@@ -446,6 +446,30 @@ An aggregation grouped by the key columns plans with no clause, and so does an i
 Flink 1.20 and 2.2 do not parse the clause, and ignore the setting.
 All of this is streaming behaviour: in batch execution Flink 2.3 plans such a statement with no clause, and accepts an `ON CONFLICT` clause without watermarks but drops it, so the rows reach the sink with no materializer and the clause has no effect (measured on 2.3.0).
 
+### Commit order of a table's rows
+
+Under `storage-api-at-least-once`, a table's rows can commit in a different order from the one in which the sink subtask received them.
+The writer keeps several append requests in flight, and when one fails it re-sends that request on a rebuilt stream writer after later requests may already have committed.
+The failure has to be one the writer repairs, such as a transient error or a row-level rejection whose surviving rows it re-sends.
+The job keeps running, and the re-send shows only in the writer's metrics, such as `appendRetries`, and its log.
+
+The order is visible in two ways.
+A [CDC](#change-data-capture) table without a sequence leaves BigQuery to resolve the changes of one primary key by the order they arrive, so an older `UPSERT` that is re-sent late overwrites a newer one.
+An append-only table has no such overwrite, but a reader can still depend on the commit order: a query over `APPENDS` that keeps the row with the latest `_CHANGE_TIMESTAMP` per key, or a reader that resumes after the highest value it has seen and never returns for a row that lands behind it.
+
+`'sink.ordering-mode' = 'per-table'` makes each sink subtask commit a table's append requests in the order it sent them, so no row commits ahead of a row the subtask received earlier and sent in an earlier request.
+The writer then sends the table's next append request only after the previous one has committed, or after its failed rows have been re-sent or handed to the failure handler, so a table has one request in flight at a time.
+That bounds a table's throughput per subtask to one round trip per request of up to `sink.default-stream.max-append-request-bytes`; raising that size is how a job with the mode on regains throughput.
+Measured from a workstation far from the dataset's region, 50 MB into one table took about 24 s at the default 512 KiB against about 3 s without the mode, roughly eight times as long, and about 6 s at 8 MiB, roughly twice; ADR-0192 records the runs.
+The order is the order one subtask received, so rows whose order matters must reach the same subtask: the changes of one key in a CDC table that Flink shuffles by its `PRIMARY KEY`, for example.
+The order holds between requests, not inside one: BigQuery's CDC documentation states no order among the rows of one append request, so a CDC key changed twice within one request still has no defined winner without a [sequence](#what-the-sequence-value-looks-like).
+A CDC table whose keys change in quick succession therefore still wants a sequence column.
+An attempt that timed out on the client can still be committed by the service after a later request, and a restart re-sends the rows written since the last completed checkpoint after the ones that had already landed, in the order the replay delivers them.
+
+The option belongs to `storage-api-at-least-once` and is rejected with the other two write methods.
+`storage-api-exactly-once` appends with offsets, so a failed append cannot be overtaken by a later one, and `file-loads` makes rows visible one checkpoint commit at a time, the finest order it offers.
+[ADR-0192]({{< param BookRepo >}}/blob/main/docs/adr/0192-the-bigquery-default-stream-keeps-arrival-order-per-table-on-opt-in.md) records the decision and why Pub/Sub and Cloud Tasks take no such option.
+
 ## Change data capture
 
 Experimental ([#706]({{< param BookRepo >}}/issues/706)), with the DataStream CDC surface it maps
@@ -534,7 +558,7 @@ BigQuery schema.
 Selecting more than one sequence source fails during planning.
 Once a sequence metadata column is selected, every emitted row must supply a non-null valid value;
 missing or invalid values enter the configured row-failure path.
-Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order.
+Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order, which a re-sent request can change unless `sink.ordering-mode` is `per-table` (see [Commit order of a table's rows](#commit-order-of-a-tables-rows)).
 
 ### What the sequence value looks like
 
@@ -797,7 +821,7 @@ or SDK already uses. The full list of defaults is in the
 
 | Option | Type | Maps to |
 |---|---|---|
-| `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below, and a key of a family this option does not select is rejected rather than ignored |
+| `sink.write-method` | Enum | `writeMethod(...)` — `storage-api-at-least-once`, `storage-api-exactly-once` or `file-loads`. Each carries its own tuning family below (`sink.ordering-mode` belongs to the `storage-api-at-least-once` one), and a key of a family this option does not select is rejected rather than ignored |
 | `sink.cdc.enabled` | Boolean | Enables BigQuery CDC mutations through `cdcOptions(...)`. Defaults to `false`; requires `storage-api-at-least-once` and a declared primary key |
 | `sink.cdc.debezium-mysql.source-uuids` | List&lt;String&gt; | Ordered MySQL GTID source UUIDs. The append-only order assigns failover epochs for the Debezium MySQL sequence profile |
 | `sink.cdc.ticdc.cluster-id` | String | The TiCDC cluster ID whose commit timestamp oracle values order this table, as the changefeed reports it in `cluster_id`. A row change reporting another cluster is rejected rather than ordered against an unrelated oracle. TiCDC defaults this identifier to `default` |
@@ -868,6 +892,7 @@ defaults.
 | `sink.default-stream.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)` |
 | `sink.default-stream.flush-interval` | Duration | `flushInterval(...)` |
 | `sink.default-stream.metrics.per-destination` | Boolean | `perDestinationMetrics(...)` |
+| `sink.ordering-mode` | Enum: `none`, `per-table` | `orderingMode(...)` |
 
 ### Sink tuning — `storage-api-exactly-once`
 
@@ -942,7 +967,10 @@ loaded; batch execution needs none, because the sink flushes or loads at end of 
 on the DataStream page for the full statement; what a SQL user needs is:
 
 - **`storage-api-at-least-once`** (the default) — rows are durable once a checkpoint completes, and
-  a restart may re-append rows the previous attempt had already written.
+  a restart may re-append rows the previous attempt had already written. A table's append requests
+  commit in the order a subtask sent them only with `sink.ordering-mode` = `per-table`, which does
+  not order the rows of one request (see
+  [Commit order of a table's rows](#commit-order-of-a-tables-rows)).
 - **`storage-api-exactly-once`** — rows become visible only when a completed checkpoint commits
   them, so a restart **from a checkpoint or savepoint** neither loses nor duplicates. A *stateless*
   redeploy is the exception, and it loses: rows appended but not yet flushed stay invisible forever.
@@ -1007,8 +1035,8 @@ Storage that no emulator provides.
 **The two required families are built from the write method, not from key presence.** Selecting
 `storage-api-exactly-once` or `file-loads` and tuning nothing is a complete configuration: every
 knob of `BufferedStreamOptions` has a default, and `FileLoadsOptions` needs only its staging path.
-`sink.default-stream.*` is the one family whose absence means absence, because its write method is
-chosen by not choosing.
+The `storage-api-at-least-once` family, `sink.default-stream.*` with `sink.ordering-mode`, is the
+one family whose absence means absence, because its write method is chosen by not choosing.
 
 **Metadata columns are CDC-only and write-only.** A BigQuery row has no envelope around it, so the
 source exposes no readable metadata.

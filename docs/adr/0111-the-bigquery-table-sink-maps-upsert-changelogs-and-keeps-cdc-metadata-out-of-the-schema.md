@@ -16,7 +16,9 @@ limitations under the License.
 
 # ADR-0111: The BigQuery table sink maps upsert changelogs and keeps CDC metadata out of the schema
 
-- Status: Accepted
+- Status: Accepted; refined by
+  [ADR-0192](0192-the-bigquery-default-stream-keeps-arrival-order-per-table-on-opt-in.md)
+  (2026-10-31), which keeps on opt-in the request order a sequence-less CDC write depends on
 - Date: 2026-08-14; revised by [#629](https://github.com/flink-gcp/flink-connector-gcp/issues/629),
   [#631](https://github.com/flink-gcp/flink-connector-gcp/issues/631) and
   [#717](https://github.com/flink-gcp/flink-connector-gcp/issues/717) (2026-08-15)
@@ -66,6 +68,9 @@ The sink exposes `change-sequence-number` as a nullable string, `debezium-source
 nullable string map, and `spanner-change-sequence` as a nullable row.
 The planner may select no sequence source or exactly one; selecting one while CDC is disabled or
 selecting more than one fails during planning.
+With no sequence, BigQuery resolves a key's mutations by ingestion time, so the writer's commit
+order decides which one wins; [ADR-0192](0192-the-bigquery-default-stream-keeps-arrival-order-per-table-on-opt-in.md)
+keeps that order on opt-in.
 The physical row type remains the sole input to BigQuery schema derivation, and the selected
 metadata value is read at the physical arity after Flink appends it to the runtime row.
 

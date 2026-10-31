@@ -815,6 +815,8 @@ Each value contains one to four slash-separated hexadecimal sections of at most 
 and the connector canonicalizes hexadecimal letters to uppercase.
 BigQuery uses the sequence to order mutations for the same primary key; without one, BigQuery uses
 the system time at which it ingests each mutation.
+That time follows the order the writer's requests commit in, which a re-sent request can change
+unless `orderingMode(OrderingMode.PER_TABLE)` is set (see [Commit order](#commit-order)).
 
 The serializer runs before either CDC provider.
 Its `null` result therefore keeps the ordinary skip contract and invokes neither provider.
@@ -1749,6 +1751,57 @@ Neither method is uniformly safer — their loss paths are disjoint:
 | Checkpointing disabled | buffered rows lost; window bounded by `flushInterval` when set | impossible — rejected at graph construction |
 | Committable outliving its write stream | none (holds no committer state) | possible — see [Exactly-once](#exactly-once-buffered-streams) |
 | `FailureHandler` drop policies | by configuration | by configuration |
+
+### Commit order
+
+The `STORAGE_API_AT_LEAST_ONCE` writer does not keep a table's rows in the order a subtask received
+them.
+It keeps several append requests in flight, and it repairs a failed one on the task thread at the
+next `write()` or `flush()`, by re-sending the failed rows on a rebuilt stream writer.
+By then later requests may have committed, the repair re-sends several failed requests in no
+particular order, and the surviving rows of a row-level rejection are re-sent after the requests
+that followed them.
+The job keeps running through all three, and the re-sends show only in the writer's metrics, such
+as `appendRetries`, and its log.
+
+Two kinds of reader see the difference.
+A [CDC](#change-data-capture) write without a sequence leaves BigQuery to resolve one primary key's
+mutations by ingestion time, so an older `UPSERT` re-sent late wins over a newer one.
+An append-only table has no such overwrite, but a reader that depends on the commit order does: a
+query over `APPENDS` that keeps the row with the latest `_CHANGE_TIMESTAMP` per key, a BigQuery
+continuous query that forwards rows as they commit, or a reader that resumes after the highest value
+it has seen and never returns for a row that lands behind it.
+
+`DefaultStreamOptions.builder().orderingMode(OrderingMode.PER_TABLE)` makes each subtask commit a
+table's append requests in the order it sent them, so no row commits ahead of a row the subtask
+received earlier and sent in an earlier request.
+The writer awaits a table's previous append before it sends the next one, and repairs a failed one
+first, so a table has one append in flight at a time while different tables still overlap.
+A terminal failure stops the writer before a later append is sent.
+The cost is throughput: a table's rate per subtask is one round trip per request of up to
+`maxAppendRequestBytes`, so a job that turns the mode on is the case for raising that cap toward the
+10 MB request limit.
+Measured from a workstation far from the dataset's region, 50 MB into one table took about 24 s at
+the default 512 KiB cap against about 3 s without the mode, and about 6 s at an 8 MiB cap.
+
+The guarantee has four limits.
+It holds between requests, not inside one: BigQuery's CDC documentation states no order among the
+rows of one append request, so a CDC key changed twice within one request has no defined winner without a
+`CdcSequenceNumberProvider`.
+It is per subtask, so rows whose order matters must reach one subtask, for example by `keyBy` on
+the primary key.
+An append that timed out on the client can still be committed by the service after a later one,
+which the writer cannot observe.
+And a restart re-sends the rows written since the last completed checkpoint after the ones that had
+already committed, which is the at-least-once duplicate described above; the re-sent rows keep the
+order the replay delivers them in, which the mode does not choose.
+
+The other two write methods take no such option, and the builder rejects `DefaultStreamOptions`
+with them.
+`STORAGE_API_EXACTLY_ONCE` appends with offsets, so an append that failed cannot be overtaken, and
+`FILE_LOADS` makes rows visible one checkpoint commit at a time.
+[ADR-0192]({{< param BookRepo >}}/blob/main/docs/adr/0192-the-bigquery-default-stream-keeps-arrival-order-per-table-on-opt-in.md)
+records the decision.
 
 ### Exactly-once (buffered streams)
 
@@ -2896,6 +2949,7 @@ Caveats — the pool is JVM-global:
 
 **Writer housekeeping** — `destinationIdleTimeout` on both Storage Write API option classes, and
 `flushInterval` on `DefaultStreamOptions`, are per-subtask behavior of the writer itself.
+`orderingMode` is too, and its cost is described under [Commit order](#commit-order).
 
 Cold-destination eviction is memory hygiene for long-lived jobs with dynamic destinations (for
 example date-suffixed daily tables), whose per-destination state otherwise grows without bound.

@@ -23,6 +23,7 @@ import org.apache.flink.configuration.Configuration;
 import com.google.cloud.bigquery.TimePartitioning;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -67,6 +68,9 @@ class ConnectorEnumOptionSpellingTest {
         // since ADR-0141, so neither japicmp profile compares its constants, while the
         // sink.cdc.table-reconciliation option that resolves them stays @PublicEvolving.
         assertSpellings(CdcTableReconciliationPolicy.class, "verify-only", "reconcile");
+        // Same reason: OrderingMode is @Experimental, a closure stop on the @Public
+        // DefaultStreamOptions (ADR-0124).
+        assertSpellings(OrderingMode.class, "none", "per-table");
     }
 
     @Test
@@ -78,6 +82,7 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(StagingFormat.class);
         assertRoundTrips(ParquetCompression.class);
         assertRoundTrips(CdcTableReconciliationPolicy.class);
+        assertRoundTrips(OrderingMode.class);
     }
 
     @Test

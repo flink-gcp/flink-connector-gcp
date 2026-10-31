@@ -23,6 +23,7 @@ import org.apache.flink.configuration.MemorySize;
 
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -277,9 +278,9 @@ public final class BigQueryConnectorOptions {
     // ------------------------------------------------------------------------
 
     /**
-     * Which write path the sink uses. Each carries its own tuning family — 'sink.default-stream.*',
-     * 'sink.buffered-stream.*' and 'sink.file-loads.*' — and a key of a family this option does not
-     * select is rejected rather than ignored.
+     * Which write path the sink uses. Each carries its own tuning family — 'sink.default-stream.*'
+     * with 'sink.ordering-mode', 'sink.buffered-stream.*' and 'sink.file-loads.*' — and a key of a
+     * family this option does not select is rejected rather than ignored.
      */
     public static final ConfigOption<WriteMethod> SINK_WRITE_METHOD =
             ConfigOptions.key("sink.write-method")
@@ -287,9 +288,10 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "Which write path the sink uses. Each carries its own tuning family —"
-                                    + " 'sink.default-stream.*', 'sink.buffered-stream.*' and"
-                                    + " 'sink.file-loads.*' — and a key of a family this option"
-                                    + " does not select is rejected rather than ignored.");
+                                    + " 'sink.default-stream.*' with 'sink.ordering-mode',"
+                                    + " 'sink.buffered-stream.*' and 'sink.file-loads.*' — and a"
+                                    + " key of a family this option does not select is rejected"
+                                    + " rather than ignored.");
 
     /** Whether a missing destination table is created from the DDL schema or fails the job. */
     public static final ConfigOption<CreateDisposition> SINK_CREATE_DISPOSITION =
@@ -704,6 +706,27 @@ public final class BigQueryConnectorOptions {
                             "Whether the sink reports its write metrics per destination table as"
                                     + " well as in total. One SQL table writes to one destination,"
                                     + " so this mainly adds the table name to the metric group.");
+
+    /**
+     * Whether the sink commits the table's append requests in the order the sink subtask sent them.
+     * 'per-table' sends an append request only after the previous one has committed or been
+     * repaired, at one round trip per request; 'none' does not order them. BigQuery's CDC
+     * documentation states no order among the rows of one request. Applies to the
+     * 'storage-api-at-least-once' write method, with or without CDC.
+     */
+    public static final ConfigOption<OrderingMode> SINK_ORDERING_MODE =
+            ConfigOptions.key("sink.ordering-mode")
+                    .enumType(OrderingMode.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the sink commits the table's append requests in the order"
+                                    + " the sink subtask sent them. 'per-table' sends an append"
+                                    + " request only after the previous one has committed or been"
+                                    + " repaired, at one round trip per request; 'none' does not"
+                                    + " order them. BigQuery's CDC documentation states no order"
+                                    + " among the rows of one request. Applies to the"
+                                    + " 'storage-api-at-least-once' write method, with or without"
+                                    + " CDC.");
 
     // ------------------------------------------------------------------------
     //  Sink — STORAGE_API_EXACTLY_ONCE tuning

@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolution;
 import io.github.flink.gcp.connector.bigquery.sink.DestinationResolutionDispatcher;
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
@@ -179,6 +180,7 @@ public class BigQueryDefaultStreamWriter<T>
     private final LongSupplier nanoClock;
     private final DefaultStreamWriterMetrics metrics;
     private final StorageWriteSchemaReconciler<T> schemaReconciler;
+    private final OrderingMode orderingMode;
 
     /**
      * Stops the periodic-flush timer from re-arming (and from flushing closed appenders) once the
@@ -296,7 +298,8 @@ public class BigQueryDefaultStreamWriter<T>
                 options.getDestinationIdleTimeout(),
                 options.getFlushInterval(),
                 timerService,
-                System::nanoTime);
+                System::nanoTime,
+                options.getOrderingMode());
     }
 
     BigQueryDefaultStreamWriter(
@@ -333,6 +336,34 @@ public class BigQueryDefaultStreamWriter<T>
             @Nullable Duration flushInterval,
             @Nullable ProcessingTimeService timerService,
             LongSupplier nanoClock) {
+        this(
+                config,
+                appenderFactory,
+                tableAdmin,
+                metrics,
+                maxAppendRequestBytes,
+                recoverySchedule,
+                schemaWaitSchedule,
+                destinationIdleTimeout,
+                flushInterval,
+                timerService,
+                nanoClock,
+                OrderingMode.NONE);
+    }
+
+    BigQueryDefaultStreamWriter(
+            BigQuerySinkConfig<T> config,
+            RowAppenderFactory appenderFactory,
+            TableAdmin tableAdmin,
+            DefaultStreamWriterMetrics metrics,
+            long maxAppendRequestBytes,
+            RetrySchedule recoverySchedule,
+            RetrySchedule schemaWaitSchedule,
+            Duration destinationIdleTimeout,
+            @Nullable Duration flushInterval,
+            @Nullable ProcessingTimeService timerService,
+            LongSupplier nanoClock,
+            OrderingMode orderingMode) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         this.appenderFactory =
                 Preconditions.checkNotNull(appenderFactory, "appenderFactory must not be null");
@@ -353,6 +384,8 @@ public class BigQueryDefaultStreamWriter<T>
         this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
         this.schemaReconciler = new StorageWriteSchemaReconciler<>(config, tableAdmin);
+        this.orderingMode =
+                Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
         // Both gauges read collections the task thread owns; a reporter thread sampling them can
         // see a size mid-update, which is what "best-effort" means for a gauge over a live map.
         this.metrics.bindWriterState(
@@ -457,7 +490,7 @@ public class BigQueryDefaultStreamWriter<T>
         state = refreshOnFingerprintChange(destination, state);
         state.lastAccessNanos = nanoClock.getAsLong();
         if (state.pendingCount() > 0 && state.pendingBytes + row.size() > maxAppendRequestBytes) {
-            appendPending(destination, state);
+            state = appendPending(destination, state);
         }
         state.add(row);
     }
@@ -687,7 +720,18 @@ public class BigQueryDefaultStreamWriter<T>
                         : RepairState.startingFresh(recoverySchedule));
     }
 
-    private void appendPending(TableDestination destination, DestinationState state) {
+    /**
+     * Appends the destination's pending rows. Under {@link OrderingMode#PER_TABLE} it first awaits
+     * the destination's previous append, which the repair of a failure may replace the stream
+     * writer for, so the state the rows are taken from is read only afterwards.
+     *
+     * @return the state the rows were taken from, which the caller adds later rows to
+     */
+    private DestinationState appendPending(TableDestination destination, DestinationState state)
+            throws IOException {
+        if (orderingMode == OrderingMode.PER_TABLE) {
+            state = awaitPreviousAppend(destination, state);
+        }
         long rowBytes = state.pendingBytes;
         ProtoRows rows = state.take();
         ApiFuture<AppendRowsResponse> future = state.appender.append(rows);
@@ -698,6 +742,9 @@ public class BigQueryDefaultStreamWriter<T>
         metrics.batchAppended(
                 metrics.forTable(destination), rows.getSerializedRowsCount(), rowBytes);
         inFlight.put(future, new InFlightBatch(destination, rows));
+        if (orderingMode == OrderingMode.PER_TABLE) {
+            state.lastAppend = future;
+        }
         ApiFutures.addCallback(
                 future,
                 new ApiFutureCallback<AppendRowsResponse>() {
@@ -734,6 +781,36 @@ public class BigQueryDefaultStreamWriter<T>
                     }
                 },
                 Runnable::run);
+        return state;
+    }
+
+    /**
+     * Awaits the destination's previous append and repairs it if it failed, so the next append
+     * cannot commit ahead of rows still to be re-sent. A repair re-sends every failed batch of the
+     * destination and awaits each re-send before it returns, which is what leaves nothing of the
+     * destination in flight afterwards. A terminal failure that a completion callback captured is
+     * surfaced here rather than at the next {@code write()}, so no later append follows it — also
+     * when there is no previous append to await, because a state the schema refresh rebuilt has
+     * none, and the refresh may have awaited a failure whose callback took it.
+     *
+     * @return the destination's state after the wait, which a repair may have rebuilt
+     */
+    private DestinationState awaitPreviousAppend(
+            TableDestination destination, DestinationState state) throws IOException {
+        ApiFuture<AppendRowsResponse> previous = state.lastAppend;
+        if (previous != null) {
+            state.lastAppend = null;
+            Throwable failure =
+                    awaitFailure(
+                            destination,
+                            previous,
+                            "Interrupted while ordering appends to BigQuery");
+            if (failure != null) {
+                handleFailedAppend(previous, failure);
+            }
+        }
+        checkAsyncError();
+        return states.get(destination);
     }
 
     /** How a failed append is repaired (or not) on the task thread. */
@@ -1543,6 +1620,13 @@ public class BigQueryDefaultStreamWriter<T>
          * instantly idle.
          */
         private long lastAccessNanos;
+
+        /**
+         * The future of the destination's latest {@code appendPending} append, which {@link
+         * OrderingMode#PER_TABLE} awaits before the next one. Not carried into a rebuilt state: the
+         * repair that rebuilds it has awaited every append of the destination.
+         */
+        @Nullable private ApiFuture<AppendRowsResponse> lastAppend;
 
         DestinationState(RowAppender appender, Object schemaFingerprint, long createdNanos) {
             this.appender = appender;

@@ -23,6 +23,7 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 
 import javax.annotation.Nullable;
@@ -34,8 +35,9 @@ import java.util.Objects;
 /**
  * Options specific to {@link WriteMethod#STORAGE_API_AT_LEAST_ONCE}: how large append requests may
  * grow, how the connector-driven re-append budget backs off, how the SDK retries retriable append
- * failures in-stream, how the SDK's connection pool (multiplexing) is sized, and the writer's
- * housekeeping ({@code destinationIdleTimeout}, {@code flushInterval}).
+ * failures in-stream, how the SDK's connection pool (multiplexing) is sized, the writer's
+ * housekeeping ({@code destinationIdleTimeout}, {@code flushInterval}), and the order a table's
+ * rows commit in ({@code orderingMode}).
  *
  * <p>Set via {@link BigQuerySinkBuilder#defaultStreamOptions(DefaultStreamOptions)}; optional for a
  * {@code STORAGE_API_AT_LEAST_ONCE} sink (all knobs are defaulted, and an unconfigured sink uses
@@ -151,6 +153,7 @@ public final class DefaultStreamOptions implements Serializable {
     private final Duration destinationIdleTimeout;
     @Nullable private final Duration flushInterval;
     private final boolean perDestinationMetrics;
+    @Nullable private final OrderingMode orderingMode;
 
     private DefaultStreamOptions(Builder builder) {
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
@@ -169,6 +172,7 @@ public final class DefaultStreamOptions implements Serializable {
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.flushInterval = builder.flushInterval;
         this.perDestinationMetrics = builder.perDestinationMetrics;
+        this.orderingMode = builder.orderingMode;
     }
 
     /**
@@ -275,6 +279,16 @@ public final class DefaultStreamOptions implements Serializable {
         return perDestinationMetrics;
     }
 
+    /**
+     * Returns the order a table's rows commit in.
+     *
+     * <p>The {@code null} fallback preserves the default for options serialized before this field
+     * existed.
+     */
+    public OrderingMode getOrderingMode() {
+        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -299,7 +313,8 @@ public final class DefaultStreamOptions implements Serializable {
                 && maxRetryDuration.equals(that.maxRetryDuration)
                 && destinationIdleTimeout.equals(that.destinationIdleTimeout)
                 && Objects.equals(flushInterval, that.flushInterval)
-                && perDestinationMetrics == that.perDestinationMetrics;
+                && perDestinationMetrics == that.perDestinationMetrics
+                && getOrderingMode() == that.getOrderingMode();
     }
 
     @Override
@@ -320,7 +335,8 @@ public final class DefaultStreamOptions implements Serializable {
                 maxConnectionsPerRegion,
                 destinationIdleTimeout,
                 flushInterval,
-                perDestinationMetrics);
+                perDestinationMetrics,
+                getOrderingMode());
     }
 
     @Override
@@ -357,6 +373,8 @@ public final class DefaultStreamOptions implements Serializable {
                 + flushInterval
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
+                + ", orderingMode="
+                + getOrderingMode()
                 + "}";
     }
 
@@ -380,6 +398,7 @@ public final class DefaultStreamOptions implements Serializable {
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         @Nullable private Duration flushInterval;
         private boolean perDestinationMetrics;
+        private OrderingMode orderingMode = OrderingMode.NONE;
 
         private Builder() {}
 
@@ -670,6 +689,27 @@ public final class DefaultStreamOptions implements Serializable {
          */
         public Builder perDestinationMetrics(boolean perDestinationMetrics) {
             this.perDestinationMetrics = perDestinationMetrics;
+            return this;
+        }
+
+        /**
+         * Sets whether a table's append requests commit in the order the subtask sent them.
+         * Defaults to {@link OrderingMode#NONE}.
+         *
+         * <p>{@link OrderingMode#PER_TABLE} sends a table's next append request only after the
+         * previous one has committed, or after its failed rows have been re-sent or handed to the
+         * failure handler. A table then has one request in flight at a time, so its throughput is
+         * bounded by one round trip per request of up to {@link #maxAppendRequestBytes(long)}. The
+         * order is the order one subtask received, so the input must send every row whose order
+         * matters to the same subtask, and it holds between requests, not among the rows of one;
+         * see {@link OrderingMode#PER_TABLE}.
+         *
+         * @param orderingMode the ordering mode
+         * @return this builder
+         */
+        public Builder orderingMode(OrderingMode orderingMode) {
+            this.orderingMode =
+                    Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
             return this;
         }
 

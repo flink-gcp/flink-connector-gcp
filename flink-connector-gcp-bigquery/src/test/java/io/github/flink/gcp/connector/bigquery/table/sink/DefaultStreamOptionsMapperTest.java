@@ -20,6 +20,7 @@ import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryConnectorOptions;
 import org.junit.jupiter.api.Test;
@@ -97,6 +98,7 @@ class DefaultStreamOptionsMapperTest {
         SETTER_TO_OPTION.put(
                 "perDestinationMetrics",
                 BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION);
+        SETTER_TO_OPTION.put("orderingMode", BigQueryConnectorOptions.SINK_ORDERING_MODE);
     }
 
     private static String key(String setter) {
@@ -129,6 +131,8 @@ class DefaultStreamOptionsMapperTest {
         Set<String> declared = OptionFamilies.declaredKeysUnder("sink.default-stream.");
         // Guards the reflection itself: an empty set would make the assertion vacuous.
         assertThat(declared).isNotEmpty();
+        // The one member outside the prefix, spelled the way the other connectors spell it.
+        declared.add(BigQueryConnectorOptions.SINK_ORDERING_MODE.key());
 
         Set<String> mapped =
                 SETTER_TO_OPTION.values().stream()
@@ -182,6 +186,7 @@ class DefaultStreamOptionsMapperTest {
         options.put(key("destinationIdleTimeout"), "2 h");
         options.put(key("flushInterval"), "5 s");
         options.put(key("perDestinationMetrics"), "true");
+        options.put(key("orderingMode"), "per-table");
 
         DefaultStreamOptions mapped = map(options);
 
@@ -201,6 +206,7 @@ class DefaultStreamOptionsMapperTest {
         assertThat(mapped.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(2));
         assertThat(mapped.getFlushInterval()).isEqualTo(Duration.ofSeconds(5));
         assertThat(mapped.isPerDestinationMetrics()).isTrue();
+        assertThat(mapped.getOrderingMode()).isEqualTo(OrderingMode.PER_TABLE);
     }
 
     @Test

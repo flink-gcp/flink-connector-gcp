@@ -1,0 +1,183 @@
+<!--
+Copyright 2026 The flink-gcp authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+
+# ADR-0192: The BigQuery default stream keeps arrival order per table on opt-in
+
+- Status: Accepted
+- Date: 2026-10-31 (writer behavior reproduced with unit tests; cost measured 2026-10-31 against
+  the service from a workstation, dataset in `us-central1`)
+- Issues: [#1621], [#1618], [#1936]
+- Modules: bigquery (`sink`, `sink.storage`, `sink.storage.writer`, `table`, `table.sink`)
+- Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Commit order;
+  `docs/content/docs/connectors/table/bigquery.md` § Commit order of a table's rows;
+  `docs/content/docs/reference/bigquery.md` § `DefaultStreamOptions`
+
+## Context
+
+[#1618] asks each keyed sink for an opt-in mode that keeps the order of successive writes to one
+key, and [ADR-0187], [ADR-0189] and [ADR-0190] answered it for Firestore, Spanner and Bigtable.
+[#1621] carried the BigQuery CDC sink's share of the question. A CDC write without a
+`_CHANGE_SEQUENCE_NUMBER` leaves BigQuery to resolve one primary key's mutations by the time it
+ingests them ([ADR-0111]), so the sink's commit order decides which mutation wins.
+
+The `STORAGE_API_AT_LEAST_ONCE` writer does not keep that order. It keeps several append requests
+of one table in flight, and a completion callback that sees a repairable failure only marks the
+writer; the task thread repairs at the next `write()` or `flush()` by re-sending the failed rows on
+a rebuilt stream writer ([ADR-0017], [ADR-0030]). Three paths then commit a table's rows out of the
+order a subtask received them:
+
+- later requests are sent, and may commit, before the failed one is re-sent;
+- the repair collects the destination's failed requests from a hash map keyed by future and
+  re-sends them in that map's order, and `flush()` sends the pending batch before it repairs;
+- after a row-level rejection, the surviving rows are re-sent behind the requests that followed
+  them.
+
+None of these fails the job; the re-sends show only in the writer's metrics (`appendRetries` and
+the per-status error counters) and its log.
+The documentation described only BigQuery's own tie-break.
+
+The same writer serves the append-only path, and the owner decided on 2026-10-30 that it gets the
+same opt-in rather than being excluded: an append-only table has no same-key overwrite, but a reader
+can depend on commit order. A query over `APPENDS` that keeps the row with the latest
+`_CHANGE_TIMESTAMP` per key, a BigQuery continuous query that forwards rows as they commit, and a
+reader that resumes after the highest value it has seen all observe it.
+
+## Decision
+
+- **`OrderingMode.PER_TABLE` sends a table's next append only after the previous one has
+  committed, or after its failed rows have been re-sent or handed to the failure handler.** The
+  writer records each table's latest append, awaits it before the next one, and repairs it on the
+  spot when it failed. A repair re-sends every failed batch of the table and awaits each re-send
+  before it returns, so nothing of the table is left in flight, and the hash-map order of the
+  second path above has at most one entry. A terminal failure that a completion callback captured
+  is surfaced before the next append is sent rather than at the next `write()`. Different tables
+  keep their appends in flight together.
+- **The order is kept between requests, not inside one.** BigQuery's
+  [CDC documentation](https://cloud.google.com/bigquery/docs/change-data-capture#manage_custom_ordering)
+  resolves a sequence-less key by ingestion time, cautions that this "might not be sufficient" for
+  very frequent upserts to one key, and says nothing about the rows of one append request. A CDC
+  key changed twice within one request therefore has no defined winner under `PER_TABLE` either;
+  the documentation recommends a `_CHANGE_SEQUENCE_NUMBER` for that case. Sending a batch before a
+  row whose CDC key it already holds, as [ADR-0189] does for Spanner, would close the gap for CDC
+  tables; the owner routed it to [#1936] (2026-10-31) rather than this change.
+- **The mode orders a table, not a key.** The default stream offers nothing narrower: a failed
+  request need not fail the requests behind it (a row-level rejection fails only its own), which is
+  what lets a later one commit first, so the only order that holds across a failure is one request
+  at a time. Ordering by key would mean
+  splitting batches by primary key inside the writer for CDC and would mean nothing for append-only
+  tables, which have no key.
+- **The constant is `PER_TABLE`, spelled `per-table`, not the umbrella's `per-key`** (owner,
+  2026-10-31). A shared name diverges only to name a real difference ([ADR-0137]), and this is
+  one: the mode orders a table's requests rather than a key's writes, and an append-only table has
+  no key for the name to refer to. The Table option keeps the shared key, `sink.ordering-mode`, and the
+  DataStream setter keeps the shared shape, `DefaultStreamOptions.Builder#orderingMode`, with a
+  BigQuery `OrderingMode` enum in `bigquery.sink` ([ADR-0137]).
+- **The option belongs to `STORAGE_API_AT_LEAST_ONCE` alone.** It is a member of the
+  `sink.default-stream.*` family for the factory's foreign-family check although its key is not under
+  that prefix, so `storage-api-exactly-once` and `file-loads` reject it with the family's message.
+  Neither has the problem in this form. The buffered writer appends with offsets ([ADR-0022]), so a
+  failed append cannot be overtaken, and `FILE_LOADS` makes rows visible one checkpoint commit at a
+  time; the order of the load jobs inside one commit was not examined.
+- **`OrderingMode` is `@Experimental`**, a closure stop on the `@Public` `DefaultStreamOptions`
+  signatures, recorded in [ADR-0124]'s revision, as Spanner's and Bigtable's are.
+
+## Evidence
+
+- `BigQueryDefaultStreamWriterArrivalOrderTest` drives the writer against a fake service that
+  answers an append when the writer awaits it, or else when the next append of the same table is
+  sent. Each test asserts both modes on one input. Under `NONE`, a transient failure of the first of
+  three appends lands `b, c, a`, and so does one whose re-send fails again; a row-level rejection
+  in the first of three appends lands the survivor after both later batches; and twenty failed
+  appends land the twenty-first batch first and the rest in hash order. Under `PER_TABLE` each
+  lands in arrival order. Further tests pin that a terminal failure, an exhausted repair, and a
+  terminal failure a schema refresh awaited each stop the next append; that two tables keep an
+  append in flight each while a repair runs during `flush()`; that an answer arriving before the
+  next record keeps the order; and that the mode reaches the writer from `DefaultStreamOptions`
+  through the sink.
+- Seven mutants of the mode, each removing one piece (the await, the recorded future, the captured
+  failure check, the same check when there is no previous append, the two places the state a
+  repair rebuilds is re-read, and the public constructor passing the mode), were each killed by
+  that test class.
+
+Measured against the service on 2026-10-31, from one writer on a workstation outside Google Cloud,
+far from the dataset's region, writing to a table in `us-central1`: 50,000 rows of about 1 KB each
+per run, three repetitions per configuration after a warm-up, alternating which mode went first.
+
+| `maxAppendRequestBytes` | `NONE` | `PER_TABLE` |
+|---|---|---|
+| 512 KiB (default), about 97 requests | 2.7–3.0 s | 23.8–24.8 s, about 0.25 s per request |
+| 8 MiB, about 7 requests | 2.8–4.5 s | 5.4–7.7 s |
+
+- **The cost is a round trip per request.** At the default cap, `PER_TABLE` took about eight times
+  as long, and the time per request matches one round trip from this client. An 8 MiB cap brought
+  it to about twice `NONE`'s time, because each round trip carried sixteen times the rows. A client
+  closer to the dataset's region has shorter round trips and should pay less; that was not
+  measured.
+- **Every run committed every row exactly once**: each table held its 50,000 rows and the warm-up
+  row, all distinct. No append failed during the runs, so the measurement prices the mode and does
+  not show a reordering; the unit tests above are what show one.
+
+## Alternatives declined
+
+- **Deriving a `_CHANGE_SEQUENCE_NUMBER` in the writer.** It covers CDC only, and a writer-local
+  counter does not survive a restart or a rescale that moves a key to another subtask, so it would
+  need a clock component, which is the timestamp-only ordering [ADR-0111] declines.
+- **Keeping requests in flight and holding only the requests behind a failed one.** By the time the
+  failure is seen, later requests may already have committed; nothing on the default stream
+  guarantees that they fail with it.
+- **A per-key sequencer like [ADR-0187]'s for CDC tables.** It would need the primary-key values of
+  every serialized row inside the writer, and BigQuery commits a request as a whole, so the request,
+  not the key, is the unit a failure reorders.
+- **Ordering across tables.** Rows of different tables have no commit order a reader can compare
+  through BigQuery, and serializing them would cost every dynamic-destination job without a reader
+  that benefits.
+- **The same opt-in for Pub/Sub.** Ordering keys already express it, a constant key giving a
+  subtask's arrival order at Pub/Sub's 1 MB/s per key, and without a key Pub/Sub delivers in no
+  defined order.
+- **The same opt-in for Cloud Tasks.** The service makes "no guarantees or best effort attempts" to
+  execute tasks in any particular order
+  ([Common pitfalls](https://cloud.google.com/tasks/docs/common-pitfalls)), so an order the sink kept
+  could not reach the handler.
+
+## Consequences
+
+- A table has one append in flight per subtask under `PER_TABLE`, so its throughput is one round
+  trip per request of up to `maxAppendRequestBytes`. Raising that cap is how a job with the mode on
+  regains throughput.
+- The order kept is the order one subtask received. The DataStream user keys the stream before the
+  sink; the CDC Table sink gets it for one key when Flink shuffles the changelog by the primary key.
+- Rows of one request are not ordered by the mode, so a CDC key changed twice within one request
+  still needs a sequence for a defined winner.
+- An append that timed out on the client can still be committed by the service after a later one,
+  as in [ADR-0175], [ADR-0189] and [ADR-0190], and the writer cannot observe it.
+- A restart re-sends the rows written since the last completed checkpoint after the rows that had
+  already committed, which is the at-least-once duplicate. The re-sent rows keep the order the
+  replay delivers them in, which the mode does not choose.
+- `NONE` stays the default and its behavior is unchanged.
+
+[#1618]: https://github.com/flink-gcp/flink-connector-gcp/issues/1618
+[#1621]: https://github.com/flink-gcp/flink-connector-gcp/issues/1621
+[#1936]: https://github.com/flink-gcp/flink-connector-gcp/issues/1936
+[ADR-0017]: 0017-bigquery-error-handling-routes-row-verdicts-and-repairs-dead-writers.md
+[ADR-0022]: 0022-exactly-once-uses-buffered-streams-reused-across-checkpoints-never-finalized.md
+[ADR-0030]: 0030-a-missing-bigquery-table-does-not-answer-not-found.md
+[ADR-0111]: 0111-the-bigquery-table-sink-maps-upsert-changelogs-and-keeps-cdc-metadata-out-of-the-schema.md
+[ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md
+[ADR-0137]: 0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md
+[ADR-0175]: 0175-the-datastore-sink-commits-batches-and-confirms-a-refusal-one-write-at-a-time.md
+[ADR-0187]: 0187-the-firestore-sink-keeps-per-document-order-on-opt-in.md
+[ADR-0189]: 0189-the-spanner-sink-keeps-per-row-order-on-opt-in.md
+[ADR-0190]: 0190-the-bigtable-sinks-keep-per-row-order-on-opt-in.md
