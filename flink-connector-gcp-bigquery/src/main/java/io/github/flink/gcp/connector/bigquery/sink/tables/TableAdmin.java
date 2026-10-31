@@ -29,6 +29,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 
 /**
  * Administers destination tables: creation for {@link
@@ -117,6 +118,21 @@ public interface TableAdmin {
     long prepareTemporaryTable(
             TableDestination table, Schema schema, TableLayout layout, Duration expiration)
             throws IOException;
+
+    /**
+     * Reads the primary key an existing table declares, in key order, with each column's type and
+     * collation from the table's schema.
+     *
+     * <p>The default-stream writer reads it for a CDC destination under {@code
+     * OrderingMode.PER_TABLE}, after {@code ensureCdcTable} has made sure the table exists, so that
+     * it can keep one primary key out of an append request twice (ADR-0192).
+     *
+     * @param destination the table to read
+     * @return the key columns, empty when the table declares no primary key
+     * @throws IOException if the table cannot be read, does not exist, or names a key column its
+     *     schema does not have
+     */
+    List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) throws IOException;
 
     /**
      * Reads the live schema of the given table, bypassing any caches.

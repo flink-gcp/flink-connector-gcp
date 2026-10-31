@@ -1784,10 +1784,30 @@ The cost is throughput: a table's rate per subtask is one round trip per request
 Measured from a workstation far from the dataset's region, 50 MB into one table took about 24 s at
 the default 512 KiB cap against about 3 s without the mode, and about 6 s at an 8 MiB cap.
 
-The guarantee has four limits.
-It holds between requests, not inside one: BigQuery's CDC documentation states no order among the
-rows of one append request, so a CDC key changed twice within one request has no defined winner without a
-`CdcSequenceNumberProvider`.
+BigQuery's CDC documentation states no order among the rows of one append request, and measured
+against the service the first of a key's changes in one request won over the later ones every
+time, so without the mode a sequence-less key changed twice in one request keeps its older value.
+Two changes of a key with equal sequences fall back to the same ingestion-time order, which the
+PostgreSQL, TiCDC and Spanner sequence providers can each produce, for example for Spanner writes
+to disjoint columns of one row at one commit timestamp.
+For a CDC sink, with or without a sequence, the mode therefore also keeps one primary key out of a
+request twice.
+The writer reads the table's primary key when it opens the table, reads each row's key from the
+bytes the serializer wrote, and sends the pending request before a row whose key it already holds.
+A key changed in quick succession therefore costs one request per change: from the same
+workstation, 200 changes of one key took about 34 s, about 0.17 s per change, where one request
+without the mode took under 0.2 s and kept the first change.
+The bytes are compared as written, which is exact for a `string` field in a `STRING` column, a
+`bytes` field in a `BYTES` column, a `bool` field in a `BOOL` column, an integer field in an `INT64`,
+`DATE`, `DATETIME`, `TIMESTAMP`, `NUMERIC` or `BIGNUMERIC` column, and a `NUMERIC` or `BIGNUMERIC`
+column written as the client library's bytes; under a parameterized type such as `NUMERIC(10, 2)`,
+a value with more fractional digits than the column keeps is rounded by BigQuery, so its row goes
+in a request of its own.
+A key column written in a form with several spellings of one value, such as a `TIMESTAMP` or
+`NUMERIC` written as text, a floating-point field, or a collated `STRING`, makes every row of the
+table its own request, and the writer logs a warning naming the column when it opens the table.
+
+The guarantee has three limits.
 It is per subtask, so rows whose order matters must reach one subtask, for example by `keyBy` on
 the primary key.
 An append that timed out on the client can still be committed by the service after a later one,

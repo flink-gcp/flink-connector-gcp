@@ -471,6 +471,109 @@ class BigQueryTableAdminTest {
     }
 
     @Test
+    void thePrimaryKeyIsReadInKeyOrderWithTheSchemasTypesAndCollation() throws Exception {
+        // The constraint names the columns in another case than the schema; BigQuery column names
+        // compare case-insensitively, and the schema's spelling is the one returned.
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        StandardTableDefinition.of(
+                                Schema.of(
+                                        Field.of("payload", StandardSQLTypeName.STRING),
+                                        Field.newBuilder("Region", StandardSQLTypeName.STRING)
+                                                .setCollation("und:ci")
+                                                .build(),
+                                        Field.of("id", StandardSQLTypeName.INT64))),
+                        "etag-1",
+                        null,
+                        Arrays.asList("ID", "region")));
+
+        assertThat(new BigQueryTableAdmin(client).getPrimaryKey(DESTINATION))
+                .containsExactly(
+                        new PrimaryKeyColumn("id", StandardSQLTypeName.INT64, null),
+                        new PrimaryKeyColumn("Region", StandardSQLTypeName.STRING, "und:ci"));
+    }
+
+    @Test
+    void aDecimalKeyCarriesItsDeclaredScaleAndNumericOfPReadsAsScaleZero() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        StandardTableDefinition.of(
+                                Schema.of(
+                                        Field.newBuilder("price", StandardSQLTypeName.NUMERIC)
+                                                .setPrecision(10L)
+                                                .setScale(2L)
+                                                .build(),
+                                        Field.newBuilder("units", StandardSQLTypeName.NUMERIC)
+                                                .setPrecision(5L)
+                                                .build(),
+                                        Field.of("ratio", StandardSQLTypeName.BIGNUMERIC))),
+                        "etag-1",
+                        null,
+                        Arrays.asList("price", "units", "ratio")));
+
+        assertThat(new BigQueryTableAdmin(client).getPrimaryKey(DESTINATION))
+                .extracting(PrimaryKeyColumn::getScale)
+                .containsExactly(2L, 0L, null);
+    }
+
+    @Test
+    void aTableWithoutAPrimaryKeyReadsAsAnEmptyKey() throws Exception {
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        StandardTableDefinition.of(
+                                Schema.of(Field.of("id", StandardSQLTypeName.INT64))),
+                        "etag-1",
+                        null,
+                        null));
+
+        assertThat(new BigQueryTableAdmin(client).getPrimaryKey(DESTINATION)).isEmpty();
+    }
+
+    @Test
+    void aPrimaryKeyReadTheServiceRateLimitsIsRetriable() {
+        // Typed like a creation's failure, so that the retrying admin repeats it.
+        StubBigQuery client = new StubBigQuery();
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.failing(
+                        new BigQueryException(
+                                403,
+                                "Exceeded rate limits",
+                                new BigQueryError("rateLimitExceeded", null, "Exceeded"))),
+                StubBigQuery.TableAnswer.failing(new BigQueryException(400, "Bad request")));
+
+        assertThatThrownBy(() -> new BigQueryTableAdmin(client).getPrimaryKey(DESTINATION))
+                .isInstanceOf(RetriableTableAdminException.class)
+                .hasMessageContaining("primary key");
+        assertThatThrownBy(() -> new BigQueryTableAdmin(client).getPrimaryKey(DESTINATION))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(RetriableTableAdminException.class);
+    }
+
+    @Test
+    void aPrimaryKeyReadFailsForAnAbsentTableOrAKeyColumnTheSchemaLacks() {
+        StubBigQuery absent = new StubBigQuery();
+        absent.tablesAnswering(StubBigQuery.TableAnswer.absent());
+        assertThatThrownBy(() -> new BigQueryTableAdmin(absent).getPrimaryKey(DESTINATION))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("does not exist");
+
+        StubBigQuery dangling = new StubBigQuery();
+        dangling.tablesAnswering(
+                StubBigQuery.TableAnswer.existing(
+                        StandardTableDefinition.of(
+                                Schema.of(Field.of("id", StandardSQLTypeName.INT64))),
+                        "etag-1",
+                        null,
+                        Arrays.asList("id", "tenant")));
+        assertThatThrownBy(() -> new BigQueryTableAdmin(dangling).getPrimaryKey(DESTINATION))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("primary-key column tenant");
+    }
+
+    @Test
     void aSchemaTheConverterRejectsSurfacesAsTheSpiFailure() {
         // The SPI promises IOException; a converter meeting a column it cannot describe throws an
         // unchecked one, which would otherwise travel straight past every caller's catch — the

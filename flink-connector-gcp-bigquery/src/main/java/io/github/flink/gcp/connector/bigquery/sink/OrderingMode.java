@@ -37,10 +37,16 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
  * when every row of the key reaches the same subtask: a Table API changelog that Flink shuffles by
  * the sink's primary key, or a stream keyed before the sink.
  *
- * <p>The order is kept between requests, not inside one. BigQuery's CDC documentation states no
- * order among the rows of one append request, so a CDC key changed twice in one request has no
- * defined winner without a {@code _CHANGE_SEQUENCE_NUMBER}. A CDC table whose keys change more than
- * once within a request's worth of rows needs a sequence for a defined result.
+ * <p>BigQuery's CDC documentation states no order among the rows of one append request, and
+ * measured against the service the first of a key's changes in one request won, so a CDC key
+ * changed twice in one request keeps its older value without a {@code _CHANGE_SEQUENCE_NUMBER}. Two
+ * of its changes with equal sequences are resolved the same way, by ingestion time, as BigQuery
+ * documents. For a CDC write, this mode therefore also keeps one primary key out of a request
+ * twice: the writer sends the pending request before a row whose key it already holds, and a key
+ * changed in quick succession costs a request per change. The key is read from the bytes the
+ * serializer wrote, and a key column written in an encoding with several spellings of one value,
+ * such as a {@code TIMESTAMP} or {@code NUMERIC} written as text, makes every row of the table its
+ * own request.
  *
  * @see DefaultStreamOptions.Builder#orderingMode(OrderingMode)
  */
@@ -61,7 +67,8 @@ public enum OrderingMode {
      * requests in flight together. A table therefore has one request in flight at a time, so its
      * throughput is bounded by one round trip per request of up to {@code maxAppendRequestBytes},
      * and an attempt that timed out on the client can still be committed by the service after a
-     * later request.
+     * later request. For a CDC write, a request also ends before a row whose primary key it already
+     * holds.
      */
     PER_TABLE("per-table");
 

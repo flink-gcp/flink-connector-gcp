@@ -184,6 +184,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   check although its key is the cross-connector spelling, outside `sink.default-stream.`; the
   mapper test adds it to the declared side by hand.
 - An ordering test asserts that `NONE` reorders the same input, so it can fail.
+- Under `PER_TABLE`, a CDC write ends a request before a row whose primary key it already holds
+  (#1936), with a sequence too, since equal sequences fall back to ingestion order. `CdcRowKeys` reads the key from the serialized bytes and must only ever
+  merge keys, never split two keys BigQuery would compare as equal: an encoding with several
+  spellings of one value (text for a non-`STRING` column, floating point, a collated `STRING`) is
+  unreadable, and an unreadable key matches every row. The pending keys move with the pending rows
+  when a repair rebuilds the state (`absorbPending`); a new path that moves pending rows must move
+  them too. Request boundaries are kept by every repair, so do not merge batches on a re-send.
 
 ## Table metadata (`docs/adr/0182`)
 

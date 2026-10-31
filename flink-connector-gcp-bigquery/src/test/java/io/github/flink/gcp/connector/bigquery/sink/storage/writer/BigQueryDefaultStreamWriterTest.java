@@ -53,6 +53,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.tables.PrimaryKeyColumn;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetriableTableAdminException;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
@@ -111,6 +112,11 @@ class BigQueryDefaultStreamWriterTest {
                 TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
             throw new UnsupportedOperationException(
                     "FILE_LOADS temporary tables are not used here");
+        }
+
+        @Override
+        public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) {
+            return List.of();
         }
 
         @Override

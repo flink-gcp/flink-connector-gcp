@@ -141,7 +141,7 @@ adopts whichever stream writer is built first.
 
 | Option | Default | What it does |
 |---|---|---|
-| `orderingMode` | `NONE` | `PER_TABLE` commits a table's append requests in the order the subtask sent them, by sending the table's next append only after the previous one has committed or been repaired. A table then has one append in flight at a time, so its throughput is one round trip per `maxAppendRequestBytes` request. See [Commit order]({{< relref "docs/connectors/datastream/bigquery" >}}#commit-order) |
+| `orderingMode` | `NONE` | `PER_TABLE` commits a table's append requests in the order the subtask sent them, by sending the table's next append only after the previous one has committed or been repaired. A table then has one append in flight at a time, so its throughput is one round trip per `maxAppendRequestBytes` request. For a CDC sink, a request also ends before a row whose primary key it already holds. See [Commit order]({{< relref "docs/connectors/datastream/bigquery" >}}#commit-order) |
 
 ## `BufferedStreamOptions`
 

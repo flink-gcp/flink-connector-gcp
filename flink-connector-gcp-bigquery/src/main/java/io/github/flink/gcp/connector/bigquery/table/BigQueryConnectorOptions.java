@@ -710,8 +710,8 @@ public final class BigQueryConnectorOptions {
     /**
      * Whether the sink commits the table's append requests in the order the sink subtask sent them.
      * 'per-table' sends an append request only after the previous one has committed or been
-     * repaired, at one round trip per request; 'none' does not order them. BigQuery's CDC
-     * documentation states no order among the rows of one request. Applies to the
+     * repaired, at one round trip per request, and under CDC also ends a request before a row whose
+     * primary key it already holds; 'none' does not order them. Applies to the
      * 'storage-api-at-least-once' write method, with or without CDC.
      */
     public static final ConfigOption<OrderingMode> SINK_ORDERING_MODE =
@@ -722,11 +722,11 @@ public final class BigQueryConnectorOptions {
                             "Whether the sink commits the table's append requests in the order"
                                     + " the sink subtask sent them. 'per-table' sends an append"
                                     + " request only after the previous one has committed or been"
-                                    + " repaired, at one round trip per request; 'none' does not"
-                                    + " order them. BigQuery's CDC documentation states no order"
-                                    + " among the rows of one request. Applies to the"
-                                    + " 'storage-api-at-least-once' write method, with or without"
-                                    + " CDC.");
+                                    + " repaired, at one round trip per request, and under CDC"
+                                    + " also ends a request before a row whose primary key it"
+                                    + " already holds; 'none' does not order them."
+                                    + " Applies to the 'storage-api-at-least-once' write method,"
+                                    + " with or without CDC.");
 
     // ------------------------------------------------------------------------
     //  Sink — STORAGE_API_EXACTLY_ONCE tuning
