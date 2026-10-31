@@ -20,7 +20,9 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.DataTypes;
+import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -28,6 +30,8 @@ import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -270,5 +274,82 @@ class BigQueryCdcPlanTest {
                                                 + " mod_number) FROM swapped_changes"))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("change_sequence");
+    }
+
+    /**
+     * Columns laid out so that three ways of locating the sequence column disagree. The planner's
+     * target-column indexes count every column of the schema, which puts {@code seq} at 2; counting
+     * only persisted columns would put it at 1, and its position in the row the sink consumes,
+     * after the three physical columns, is 3.
+     */
+    private static String columnListTable(String sequenceColumn) {
+        return "CREATE TABLE column_list_rows ("
+                + "id STRING NOT NULL, label AS UPPER(id), "
+                + sequenceColumn
+                + ", amount BIGINT, note STRING, "
+                + "PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                + "'connector'='bigquery', 'project'='p', 'dataset'='d', "
+                + "'table'='column_list_rows', 'sink.cdc.enabled'='true', "
+                + "'emulator-endpoint'='localhost:1')";
+    }
+
+    /**
+     * Flink fills a column an {@code INSERT} column list leaves out with {@code NULL}, so a list
+     * without the sequence column would plan and then fail every row at runtime (#1959). Every
+     * sequence key is covered, and a column named after its key, which declares no {@code FROM}.
+     */
+    @ParameterizedTest
+    @CsvSource(
+            delimiter = '|',
+            quoteCharacter = '"',
+            value = {
+                "seq | seq STRING METADATA FROM 'change-sequence-number' | change-sequence-number",
+                "seq | seq MAP<STRING, STRING> METADATA FROM 'debezium-source-properties'"
+                        + " | debezium-source-properties",
+                "seq | seq ROW<commit_timestamp TIMESTAMP_LTZ(9), record_sequence STRING,"
+                        + " mod_number INT> METADATA FROM 'spanner-change-sequence'"
+                        + " | spanner-change-sequence",
+                "change-sequence-number | `change-sequence-number` STRING METADATA"
+                        + " | change-sequence-number"
+            })
+    void rejectsAnInsertColumnListThatLeavesOutTheSequenceColumn(
+            String column, String declaration, String key) {
+        TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        table.executeSql(columnListTable(declaration));
+
+        assertThatThrownBy(
+                        () ->
+                                table.explainSql(
+                                        "INSERT INTO column_list_rows (id, amount, note)"
+                                                + " SELECT 'a', CAST(1 AS BIGINT), 'n'"))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("default_catalog.default_database.column_list_rows")
+                .hasMessageContaining(
+                        "leaves out the change sequence column '"
+                                + column
+                                + "' (metadata '"
+                                + key
+                                + "')");
+    }
+
+    @Test
+    void plansAnInsertThatWritesTheSequenceColumnWithOrWithoutAColumnList() {
+        TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        table.executeSql(columnListTable("seq STRING METADATA FROM 'change-sequence-number'"));
+
+        assertThat(
+                        table.explainSql(
+                                "INSERT INTO column_list_rows (amount, seq, id)"
+                                        + " SELECT CAST(1 AS BIGINT), '0001', 'a'"))
+                .contains("targetColumns=[[3],[2],[0]]");
+        // Leaving out a physical column is the column list's ordinary use; only the sequence
+        // column is required.
+        assertThat(table.explainSql("INSERT INTO column_list_rows (seq, id) SELECT '0001', 'a'"))
+                .contains("targetColumns=[[2],[0]]");
+        assertThat(
+                        table.explainSql(
+                                "INSERT INTO column_list_rows"
+                                        + " SELECT 'a', '0001', CAST(1 AS BIGINT), 'n'"))
+                .doesNotContain("targetColumns");
     }
 }

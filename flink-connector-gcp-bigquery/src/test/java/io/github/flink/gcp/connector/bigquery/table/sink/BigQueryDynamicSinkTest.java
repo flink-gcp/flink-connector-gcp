@@ -21,6 +21,7 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.abilities.SupportsWritingMetadata;
+import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.RowKind;
 
@@ -56,6 +57,10 @@ class BigQueryDynamicSinkTest {
                     DataTypes.FIELD("id", DataTypes.STRING()),
                     DataTypes.FIELD("amount", DataTypes.BIGINT()));
 
+    /** Third of the table's columns, after id and amount, as the factory would find it. */
+    private static final BigQueryDynamicSink.SequenceColumn SEQUENCE =
+            new BigQueryDynamicSink.SequenceColumn(2, "seq", "change-sequence-number");
+
     private static final TableDestination DESTINATION =
             TableDestination.of("my-project", "my_dataset", "my_table");
 
@@ -70,7 +75,8 @@ class BigQueryDynamicSinkTest {
                 .physicalDataType(ROW)
                 .destination(DESTINATION)
                 .schemaOptions(RowDataSchemaOptions.defaults())
-                .primaryKeyIndexes(new int[] {0});
+                .primaryKeyIndexes(new int[] {0})
+                .sequenceColumn(SEQUENCE);
     }
 
     private static BigQueryDynamicSink sink() {
@@ -184,6 +190,37 @@ class BigQueryDynamicSinkTest {
     }
 
     @Test
+    void cdcRequiresTheSequenceColumnWhenBuilt() {
+        assertThatThrownBy(() -> base().cdcEnabled(true).sequenceColumn(null).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cdcEnabled requires a sequenceColumn");
+    }
+
+    /**
+     * The planner fills a column an INSERT column list leaves out with NULL, so a list without the
+     * sequence column is refused, and one that names it, or no list at all, is not (#1959).
+     */
+    @Test
+    void refusesOnlyAColumnListThatLeavesOutTheSequenceColumn() {
+        BigQueryDynamicSink cdc = sinkWith(builder -> builder.cdcEnabled(true));
+        cdc.applyWritableMetadata(Collections.singletonList("change-sequence-number"), ROW);
+
+        assertThatThrownBy(
+                        () ->
+                                cdc.getSinkRuntimeProvider(
+                                        new SinkRuntimeProviderContext(
+                                                false, new int[][] {{0}, {1}})))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("An INSERT INTO the sink table lists its target columns")
+                .hasMessageContaining("leaves out the change sequence column 'seq'");
+        assertThat(
+                        cdc.getSinkRuntimeProvider(
+                                new SinkRuntimeProviderContext(false, new int[][] {{2}, {0}})))
+                .isNotNull();
+        assertThat(cdc.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false))).isNotNull();
+    }
+
+    @Test
     void describesItselfByName() {
         assertThat(sink().asSummaryString()).isEqualTo("BigQuery table sink");
     }
@@ -260,6 +297,12 @@ class BigQueryDynamicSinkTest {
         varied.put("emulatorEndpoint", a -> a.emulatorEndpoint("localhost:9060"));
         varied.put("emulatorRestEndpoint", a -> a.emulatorRestEndpoint("localhost:9050"));
         varied.put("parallelism", a -> a.parallelism(3));
+        varied.put(
+                "sequenceColumn",
+                a ->
+                        a.sequenceColumn(
+                                new BigQueryDynamicSink.SequenceColumn(
+                                        3, "source_properties", "debezium-source-properties")));
         varied.put(
                 "metadataKeys",
                 a ->

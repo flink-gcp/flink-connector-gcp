@@ -565,6 +565,9 @@ BigQuery schema.
 Selecting more than one sequence source fails during planning.
 Every emitted row must supply a non-null valid value; missing or invalid values enter the
 configured row-failure path.
+Flink fills a column an `INSERT` column list leaves out with `NULL`, so such a list must name the
+sequence column, and one that leaves it out fails during planning.
+An `INSERT` without a column list writes every column.
 
 Without a sequence, BigQuery orders one primary key's changes by the time it ingests them, and its
 [CDC documentation](https://docs.cloud.google.com/bigquery/docs/change-data-capture#manage_custom_ordering)

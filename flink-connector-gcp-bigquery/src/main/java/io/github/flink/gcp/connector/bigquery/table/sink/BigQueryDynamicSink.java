@@ -59,6 +59,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * The {@code bigquery} table sink.
@@ -109,6 +110,9 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     @Nullable private final String emulatorRestEndpoint;
     @Nullable private final Integer parallelism;
 
+    /** The persisted sequence metadata column; required with CDC, which is all it is used for. */
+    @Nullable private final SequenceColumn sequenceColumn;
+
     /** Metadata keys selected by the planner, in {@link WritableMetadata#listAll()} order. */
     private List<String> metadataKeys;
 
@@ -146,6 +150,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         this.emulatorEndpoint = builder.emulatorEndpoint;
         this.emulatorRestEndpoint = builder.emulatorRestEndpoint;
         this.parallelism = builder.parallelism;
+        this.sequenceColumn = builder.sequenceColumn;
         this.metadataKeys = immutableMetadataKeys(builder.metadataKeys, cdcEnabled);
     }
 
@@ -159,24 +164,56 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     }
 
     /**
-     * Returns whether a sink schema declares a persisted column for one of the CDC sequence
-     * metadata keys, which a CDC sink requires (ADR-0193).
+     * Returns the persisted column a sink schema declares for one of the CDC sequence metadata
+     * keys, which a CDC sink requires (ADR-0193). Flink rejects two columns of one table that read
+     * the same metadata key, and {@link #applyWritableMetadata(List, DataType)} rejects a write
+     * that selects two sequence keys, so a table that plans has at most one.
      *
      * @param schema the sink table's schema
-     * @return whether a sequence metadata column is declared and not {@code VIRTUAL}
+     * @return the first such column that is not {@code VIRTUAL}, or empty
      */
-    public static boolean declaresSequenceMetadata(ResolvedSchema schema) {
+    public static Optional<SequenceColumn> sequenceColumn(ResolvedSchema schema) {
         Map<String, DataType> keys = WritableMetadata.listAll();
-        for (Column column : schema.getColumns()) {
+        List<Column> columns = schema.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            Column column = columns.get(i);
             if (column instanceof Column.MetadataColumn) {
                 Column.MetadataColumn metadata = (Column.MetadataColumn) column;
-                if (!metadata.isVirtual()
-                        && keys.containsKey(metadata.getMetadataKey().orElse(column.getName()))) {
-                    return true;
+                String key = metadata.getMetadataKey().orElse(column.getName());
+                if (!metadata.isVirtual() && keys.containsKey(key)) {
+                    return Optional.of(new SequenceColumn(i, column.getName(), key));
                 }
             }
         }
-        return false;
+        return Optional.empty();
+    }
+
+    /**
+     * Rejects an {@code INSERT} whose column list leaves out the sequence column. The planner fills
+     * an omitted column with {@code NULL}, and a CDC row without a sequence enters the row-failure
+     * path, so the statement would plan and then send every row there (#1959). Without a column
+     * list the planner reports no target columns, and every column is written.
+     */
+    private void checkSequenceColumnIsWritten(Context context) {
+        Optional<int[][]> targetColumns = context.getTargetColumns();
+        if (!targetColumns.isPresent()) {
+            return;
+        }
+        for (int[] path : targetColumns.get()) {
+            // A path starts at a top-level column; only a nested field would make it longer.
+            if (path.length > 0 && path[0] == sequenceColumn.index) {
+                return;
+            }
+        }
+        throw new ValidationException(
+                String.format(
+                        "An INSERT INTO %s lists its target columns but leaves out the change"
+                                + " sequence column '%s' (metadata '%s'). Flink writes NULL into an"
+                                + " omitted column, and every BigQuery CDC row requires a sequence:"
+                                + " add the column to the list, or list no columns.",
+                        lineageTableName != null ? lineageTableName : "the sink table",
+                        sequenceColumn.name,
+                        sequenceColumn.metadataKey));
     }
 
     /**
@@ -255,6 +292,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 // a sink built without the factory.
                 throw new ValidationException(missingSequenceMessage());
             }
+            checkSequenceColumnIsWritten(context);
             WritableMetadata source = WritableMetadata.of(metadataKeys.get(0));
             int position = DataType.getFieldCount(physicalDataType);
             CdcSequenceNumberProvider<RowData> sequenceProvider =
@@ -340,6 +378,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 .emulatorEndpoint(emulatorEndpoint)
                 .emulatorRestEndpoint(emulatorRestEndpoint)
                 .parallelism(parallelism)
+                .sequenceColumn(sequenceColumn)
                 .metadataKeys(metadataKeys)
                 .build();
     }
@@ -380,6 +419,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
+                && Objects.equals(sequenceColumn, that.sequenceColumn)
                 && metadataKeys.equals(that.metadataKeys);
     }
 
@@ -408,6 +448,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                         emulatorEndpoint,
                         emulatorRestEndpoint,
                         parallelism,
+                        sequenceColumn,
                         metadataKeys);
         result = 31 * result + Arrays.hashCode(primaryKeyIndexes);
         return result;
@@ -446,6 +487,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private String emulatorEndpoint;
         @Nullable private String emulatorRestEndpoint;
         @Nullable private Integer parallelism;
+        @Nullable private SequenceColumn sequenceColumn;
         private List<String> metadataKeys = Collections.emptyList();
 
         private Builder() {}
@@ -657,6 +699,18 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
             return this;
         }
 
+        /**
+         * Sets the table's persisted sequence metadata column, as {@link
+         * BigQueryDynamicSink#sequenceColumn(ResolvedSchema)} finds it. Required with CDC.
+         *
+         * @param sequenceColumn the sequence column, or {@code null}
+         * @return this builder
+         */
+        public Builder sequenceColumn(@Nullable SequenceColumn sequenceColumn) {
+            this.sequenceColumn = sequenceColumn;
+            return this;
+        }
+
         /** Restores the writable metadata selection when a sink is copied. */
         Builder metadataKeys(List<String> metadataKeys) {
             this.metadataKeys = new ArrayList<>(metadataKeys);
@@ -676,7 +730,67 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
             Preconditions.checkState(
                     !cdcEnabled || primaryKeyIndexes.length > 0,
                     "cdcEnabled requires at least one primaryKeyIndexes entry");
+            Preconditions.checkState(
+                    !cdcEnabled || sequenceColumn != null, "cdcEnabled requires a sequenceColumn");
             return new BigQueryDynamicSink(this);
+        }
+    }
+
+    /**
+     * A table's persisted sequence metadata column, located the way the planner's target-column
+     * indexes count: among every column of the resolved schema, computed and metadata columns
+     * included (measured on Flink 1.20.4 and 2.2.1).
+     */
+    @Internal
+    public static final class SequenceColumn {
+
+        private final int index;
+        private final String name;
+        private final String metadataKey;
+
+        /**
+         * Creates the column.
+         *
+         * @param index the position among all of the table's columns
+         * @param name the column name
+         * @param metadataKey the sequence metadata key the column writes
+         */
+        public SequenceColumn(int index, String name, String metadataKey) {
+            Preconditions.checkArgument(index >= 0, "index must not be negative");
+            this.index = index;
+            this.name = Preconditions.checkNotNull(name, "name must not be null");
+            this.metadataKey =
+                    Preconditions.checkNotNull(metadataKey, "metadataKey must not be null");
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            SequenceColumn that = (SequenceColumn) o;
+            return index == that.index
+                    && name.equals(that.name)
+                    && metadataKey.equals(that.metadataKey);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(index, name, metadataKey);
+        }
+
+        @Override
+        public String toString() {
+            return "SequenceColumn{index="
+                    + index
+                    + ", name="
+                    + name
+                    + ", key="
+                    + metadataKey
+                    + "}";
         }
     }
 }
