@@ -5,8 +5,8 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 
 > **Status: released.** Artifacts are on
 > [Maven Central](https://central.sonatype.com/namespace/io.github.flink-gcp) under the
-> `io.github.flink-gcp` namespace, in two version lines per release: `1.2.0` for the supported
-> Flink 2.x range and `1.2.0-1.20` for the Flink 1.20 LTS. The SQL uber-jars are also attached
+> `io.github.flink-gcp` namespace, in two version lines per release: `1.3.0` for the supported
+> Flink 2.x range and `1.3.0-1.20` for the Flink 1.20 LTS. The SQL uber-jars are also attached
 > to the [GitHub releases](https://github.com/flink-gcp/flink-connector-gcp/releases).
 
 ## Modules

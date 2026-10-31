@@ -53,14 +53,14 @@ runs. Everything here writes to real Google Cloud — to run without touching a 
 ## Getting the connector onto the classpath
 
 The artifacts are on Maven Central under the `io.github.flink-gcp` group, in two version lines
-per release: `1.2.0` is compiled against the supported Flink 2.x floor, and `1.2.0-1.20` is the
+per release: `1.3.0` is compiled against the supported Flink 2.x floor, and `1.3.0-1.20` is the
 same code compiled for the Flink 1.20 LTS. An ordinary dependency resolves the 2.x line:
 
 ```xml
 <dependency>
   <groupId>io.github.flink-gcp</groupId>
   <artifactId>flink-connector-gcp-bigquery</artifactId>
-  <version>1.2.0</version>
+  <version>1.3.0</version>
 </dependency>
 
 <!-- The connectors declare their Flink dependencies as `provided`, so a job brings its own.
@@ -83,7 +83,7 @@ The other connector artifact ids are `flink-connector-gcp-pubsub`,
 `flink-connector-gcp-spanner` and `flink-connector-gcp-firestore`. The Flink version above is the floor the connectors are compiled
 against, and one artifact covers the whole 2.x range — a job on 2.3 needs no different artifact.
 **Flink 1.20 is the exception**: that claim spans 2.x only, so a 1.20 job depends on the `-1.20`
-line instead — the same coordinates with `<version>1.2.0-1.20</version>`. Building either line
+line instead — the same coordinates with `<version>1.3.0-1.20</version>`. Building either line
 from source is covered by [Development]({{< relref "docs/development" >}}).
 
 **For SQL**, use the corresponding
