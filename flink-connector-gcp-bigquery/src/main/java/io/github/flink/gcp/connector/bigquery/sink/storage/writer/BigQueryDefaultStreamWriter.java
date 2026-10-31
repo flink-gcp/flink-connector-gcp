@@ -31,6 +31,7 @@ import com.google.cloud.bigquery.storage.v1.Exceptions;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import com.google.cloud.bigquery.storage.v1.RowError;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.DestinationMetrics;
@@ -47,6 +48,7 @@ import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.tables.PrimaryKeyColumn;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdminException;
 import io.grpc.Status;
@@ -62,6 +64,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -181,6 +184,19 @@ public class BigQueryDefaultStreamWriter<T>
     private final DefaultStreamWriterMetrics metrics;
     private final StorageWriteSchemaReconciler<T> schemaReconciler;
     private final OrderingMode orderingMode;
+
+    /**
+     * Whether a batch is sent before a row whose CDC primary key it already holds: under {@link
+     * OrderingMode#PER_TABLE}, for a CDC write, where BigQuery states no order among the rows of
+     * one request and a sequence may repeat (ADR-0192).
+     */
+    private final boolean keepsKeysApart;
+
+    /**
+     * The primary key of each destination {@code keepsKeysApart} applies to, read when the
+     * destination's state is first created and dropped with it. Task thread only.
+     */
+    private final Map<TableDestination, List<PrimaryKeyColumn>> primaryKeys = new HashMap<>();
 
     /**
      * Stops the periodic-flush timer from re-arming (and from flushing closed appenders) once the
@@ -386,6 +402,8 @@ public class BigQueryDefaultStreamWriter<T>
         this.schemaReconciler = new StorageWriteSchemaReconciler<>(config, tableAdmin);
         this.orderingMode =
                 Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
+        this.keepsKeysApart =
+                orderingMode == OrderingMode.PER_TABLE && config.getCdcOptions() != null;
         // Both gauges read collections the task thread owns; a reporter thread sampling them can
         // see a size mid-update, which is what "best-effort" means for a gauge over a live map.
         this.metrics.bindWriterState(
@@ -489,10 +507,15 @@ public class BigQueryDefaultStreamWriter<T>
         // bytes are appended.
         state = refreshOnFingerprintChange(destination, state);
         state.lastAccessNanos = nanoClock.getAsLong();
-        if (state.pendingCount() > 0 && state.pendingBytes + row.size() > maxAppendRequestBytes) {
+        // Read from the state the refresh above left, whose descriptor the row was written with.
+        // The key does not depend on the descriptor afterwards, so a rebuild below keeps it valid.
+        ByteString key = state.rowKeys == null ? null : state.rowKeys.keyOf(row);
+        if (state.pendingCount() > 0
+                && (state.pendingBytes + row.size() > maxAppendRequestBytes
+                        || state.holdsKeyOf(key))) {
             state = appendPending(destination, state);
         }
-        state.add(row);
+        state.add(row, key);
     }
 
     @Override
@@ -552,6 +575,7 @@ public class BigQueryDefaultStreamWriter<T>
                 continue;
             }
             iterator.remove();
+            primaryKeys.remove(entry.getKey());
             try {
                 state.appender.close();
             } catch (RuntimeException e) {
@@ -576,6 +600,7 @@ public class BigQueryDefaultStreamWriter<T>
             closeables.add(state.appender);
         }
         states.clear();
+        primaryKeys.clear();
         // Both maps back gauges a reporter may still sample between this call and the metric
         // group's own close, so a writer torn down mid-flight must not keep reporting appends it
         // will never wait for again. Nothing re-adds an entry: the completion callbacks only
@@ -603,6 +628,9 @@ public class BigQueryDefaultStreamWriter<T>
         }
         if (managesCdcTableContract()) {
             ensureCdcTable(destination);
+        }
+        if (keepsKeysApart) {
+            primaryKeys.put(destination, tableAdmin.getPrimaryKey(destination));
         }
         try {
             state = createState(destination);
@@ -638,10 +666,42 @@ public class BigQueryDefaultStreamWriter<T>
         // between the two calls, the stale fingerprint triggers a redundant-but-harmless refresh
         // on the next record, whereas the opposite order could miss a change.
         Object fingerprint = config.getSchemaFingerprint(destination);
+        Descriptors.Descriptor descriptor = config.getWriteDescriptor(destination);
         RowAppender appender =
-                appenderFactory.create(
-                        destination, config.getWriteDescriptor(destination), config.getLocation());
-        return new DestinationState(appender, fingerprint, nanoClock.getAsLong());
+                appenderFactory.create(destination, descriptor, config.getLocation());
+        CdcRowKeys rowKeys = null;
+        if (keepsKeysApart) {
+            rowKeys =
+                    CdcRowKeys.of(
+                            primaryKeys.getOrDefault(destination, Collections.emptyList()),
+                            descriptor);
+            warnIfUnreadable(destination, rowKeys);
+        }
+        return new DestinationState(appender, fingerprint, nanoClock.getAsLong(), rowKeys);
+    }
+
+    /**
+     * Warns when no row's key can be read from the bytes the serializer writes, which sends every
+     * row of the table in a request of its own. Called before the new state replaces the current
+     * one, so a rebuild warns only when it changes the reason, as a schema change can.
+     */
+    private void warnIfUnreadable(TableDestination destination, CdcRowKeys rowKeys) {
+        String reason = rowKeys.unreadableReason();
+        if (reason == null) {
+            return;
+        }
+        DestinationState current = states.get(destination);
+        if (current != null
+                && current.rowKeys != null
+                && reason.equals(current.rowKeys.unreadableReason())) {
+            return;
+        }
+        LOG.warn(
+                "Every row of BigQuery CDC table {} is sent in an append request of its own"
+                        + " under ordering mode {}, because {}",
+                destination,
+                orderingMode,
+                reason);
     }
 
     /**
@@ -1358,9 +1418,7 @@ public class BigQueryDefaultStreamWriter<T>
         DestinationState old = states.put(destination, fresh);
         if (old != null) {
             if (old.pendingCount() > 0) {
-                for (ByteString row : old.take().getSerializedRowsList()) {
-                    fresh.add(row);
-                }
+                fresh.absorbPending(old);
             }
             old.appender.close();
         }
@@ -1628,15 +1686,58 @@ public class BigQueryDefaultStreamWriter<T>
          */
         @Nullable private ApiFuture<AppendRowsResponse> lastAppend;
 
-        DestinationState(RowAppender appender, Object schemaFingerprint, long createdNanos) {
+        /** Reads each row's CDC key under {@code keepsKeysApart}, or {@code null} otherwise. */
+        @Nullable private final CdcRowKeys rowKeys;
+
+        /** The CDC keys of the pending rows, tracked only when {@code rowKeys} is set. */
+        private final Set<ByteString> pendingKeys = new HashSet<>();
+
+        /** Whether a pending row's key could not be read, so that it matches every row. */
+        private boolean pendingUnkeyed;
+
+        DestinationState(
+                RowAppender appender,
+                Object schemaFingerprint,
+                long createdNanos,
+                @Nullable CdcRowKeys rowKeys) {
             this.appender = appender;
             this.schemaFingerprint = schemaFingerprint;
             this.lastAccessNanos = createdNanos;
+            this.rowKeys = rowKeys;
         }
 
-        void add(ByteString row) {
+        /**
+         * Whether a row with this key must not join the pending rows: some pending row has the same
+         * key, or one of the two keys could not be read. Always false when keys are not tracked.
+         * The caller checks that rows are pending.
+         */
+        boolean holdsKeyOf(@Nullable ByteString key) {
+            if (rowKeys == null) {
+                return false;
+            }
+            return key == null || pendingUnkeyed || pendingKeys.contains(key);
+        }
+
+        void add(ByteString row, @Nullable ByteString key) {
             rows.addSerializedRows(row);
             pendingBytes += row.size();
+            if (rowKeys != null) {
+                if (key == null) {
+                    pendingUnkeyed = true;
+                } else {
+                    pendingKeys.add(key);
+                }
+            }
+        }
+
+        /** Moves another state's pending rows, and the keys they hold, behind this one's. */
+        void absorbPending(DestinationState other) {
+            pendingKeys.addAll(other.pendingKeys);
+            pendingUnkeyed |= other.pendingUnkeyed;
+            for (ByteString row : other.take().getSerializedRowsList()) {
+                rows.addSerializedRows(row);
+                pendingBytes += row.size();
+            }
         }
 
         int pendingCount() {
@@ -1647,6 +1748,8 @@ public class BigQueryDefaultStreamWriter<T>
             ProtoRows batch = rows.build();
             rows = ProtoRows.newBuilder();
             pendingBytes = 0;
+            pendingKeys.clear();
+            pendingUnkeyed = false;
             return batch;
         }
     }

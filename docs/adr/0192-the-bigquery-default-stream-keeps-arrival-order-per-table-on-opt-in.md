@@ -18,9 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-10-31 (writer behavior reproduced with unit tests; cost measured 2026-10-31 against
-  the service from a workstation, dataset in `us-central1`)
+  the service from a workstation, dataset in `us-central1`); refined 2026-10-31 for [#1936], which
+  keeps a CDC key out of a request twice (unit tests, and the service measured the same day from
+  the same workstation)
 - Issues: [#1621], [#1618], [#1936]
-- Modules: bigquery (`sink`, `sink.storage`, `sink.storage.writer`, `table`, `table.sink`)
+- Modules: bigquery (`sink`, `sink.storage`, `sink.storage.writer`, `sink.tables`, `table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Commit order;
   `docs/content/docs/connectors/table/bigquery.md` § Commit order of a table's rows;
   `docs/content/docs/reference/bigquery.md` § `DefaultStreamOptions`
@@ -65,20 +67,54 @@ reader that resumes after the highest value it has seen all observe it.
   second path above has at most one entry. A terminal failure that a completion callback captured
   is surfaced before the next append is sent rather than at the next `write()`. Different tables
   keep their appends in flight together.
-- **The order is kept between requests, not inside one.** BigQuery's
+- **For a CDC write, a request ends before a row whose primary key it already holds**
+  ([#1936]). BigQuery's
   [CDC documentation](https://cloud.google.com/bigquery/docs/change-data-capture#manage_custom_ordering)
   resolves a sequence-less key by ingestion time, cautions that this "might not be sufficient" for
-  very frequent upserts to one key, and says nothing about the rows of one append request. A CDC
-  key changed twice within one request therefore has no defined winner under `PER_TABLE` either;
-  the documentation recommends a `_CHANGE_SEQUENCE_NUMBER` for that case. Sending a batch before a
-  row whose CDC key it already holds, as [ADR-0189] does for Spanner, would close the gap for CDC
-  tables; the owner routed it to [#1936] (2026-10-31) rather than this change.
+  very frequent upserts to one key, and says nothing about the rows of one append request, so a
+  key changed twice within one request would have no defined winner; the measurement below found
+  that the first change wins. Two changes with equal sequences fall back to the same ingestion-time
+  order, and the PostgreSQL, TiCDC and Spanner profiles can each produce equal sequences for one
+  key ([ADR-0111]), so the split applies with a sequence too. The writer therefore sends
+  the pending request before such a row, the shape [ADR-0189] uses for Spanner, and a key's
+  changes land in successive requests, which the rest of the mode orders. The owner routed this to
+  [#1936] when the first version of the mode left it open.
+- **The key is the table's declared primary key, read from the serialized row.** When it opens a
+  CDC destination under the mode, the writer reads the table's primary-key columns with their
+  types and collation through the Tables API, after the CDC table contract has been ensured, and
+  reads each row's key from the bytes the serializer wrote, by field name. Reading the serialized
+  row serves the Table API and every DataStream serializer the same way, where reading the record
+  before serialization would need a key accessor for each record type. The live table rather than
+  `CdcTableOptions` names the key, because the options need not name one: a table that exists is
+  verified against its own key when they do not. Columns are matched by name case-insensitively,
+  through the `column_name` annotation of a placeholder field when the name is not a valid proto
+  field name, as the Storage Write API matches them. The read is a second `tables.get` beside the
+  provisioning one and is retried as that one is, so a rate limit on it delays the table's
+  activation rather than failing the job.
+- **A key is compared as the bytes that encode it, and every imprecision may only merge keys.**
+  Two rows BigQuery would see with one key must never compare as different, since that is the
+  defect the split exists to close; two different keys compared as one only cost a request. Bytes
+  name one value exactly for a `string` or `bytes` field in an uncollated `STRING` column, a
+  `bytes` field in a `BYTES` column, a `bool` field in a `BOOL` column, any integer field in an
+  `INT64`, `DATE`, `DATETIME` or `TIMESTAMP` column, and a `bytes` (after removing redundant sign
+  bytes) or integer field in a `NUMERIC` or `BIGNUMERIC` column, which covers every key type the
+  Table API writes. Under a parameterized decimal type, BigQuery rounds a value with more
+  fractional digits than the column's scale, so two different encoded values can meet in one key;
+  such a value's row has an unreadable key. `NUMERIC(P)` declares no scale and is read as scale
+  zero. Any other encoding, such as a `TIMESTAMP` or `NUMERIC` written as text, a
+  floating-point field, or a collated `STRING`, has several spellings of one value or several values
+  BigQuery compares as equal; its key is unreadable, an unreadable key matches every row, and every
+  row of the table becomes its own request. The writer logs a warning naming the column when it
+  opens such a table, and again only if a schema change alters the reason. A row whose key does
+  not parse matches every row the same way, a default value is read as absent, and a key column
+  the descriptor lacks is absent in every row; all three only merge.
+- **An append-only write is not split.** It has no key, and the mode orders its requests as it
+  orders any table's.
 - **The mode orders a table, not a key.** The default stream offers nothing narrower: a failed
   request need not fail the requests behind it (a row-level rejection fails only its own), which is
   what lets a later one commit first, so the only order that holds across a failure is one request
-  at a time. Ordering by key would mean
-  splitting batches by primary key inside the writer for CDC and would mean nothing for append-only
-  tables, which have no key.
+  at a time. The CDC key split above decides where a request ends, not which requests may be in
+  flight together, and an append-only table has no key to order by.
 - **The constant is `PER_TABLE`, spelled `per-table`, not the umbrella's `per-key`** (owner,
   2026-10-31). A shared name diverges only to name a real difference ([ADR-0137]), and this is
   one: the mode orders a table's requests rather than a key's writes, and an append-only table has
@@ -130,6 +166,55 @@ per run, three repetitions per configuration after a warm-up, alternating which 
   row, all distinct. No append failed during the runs, so the measurement prices the mode and does
   not show a reordering; the unit tests above are what show one.
 
+### The CDC key split ([#1936])
+
+- `BigQueryDefaultStreamWriterCdcKeyOrderTest` writes through the sink's production path. Each
+  test that expects a split runs `NONE` over the same input, where one request carries every row:
+  under `PER_TABLE` a repeated key starts a new request, also when every row carries the same
+  sequence; a row whose key cannot be read shares a request with no other row; the keys of pending
+  rows survive the rebuild a schema refresh makes; a failed request is re-sent as it was, without
+  merging into the pending rows behind it; and a key column whose name is not a valid proto field
+  name is found through its placeholder field's annotation. Further tests pin that an append-only
+  table leaves the request whole and reads no key, that the key is read after the table contract
+  is ensured and again when an evicted table returns, and that an unreadable key is logged once,
+  not again on a rebuild that leaves the reason unchanged. `CdcRowKeysTest` holds which encodings
+  are read, that every normalization only merges, and that a decimal finer than its column's
+  scale is unreadable; `BigQueryTableAdminTest` holds the scale read, `NUMERIC(P)` included.
+- Of twenty-seven mutants, each removing one piece, twenty-six were killed by those classes and
+  the admin tests: the key check, the unreadable-key match in either direction, the key carry-over
+  on a rebuild and the reset on a send, a sequence exemption, the primary key reaching the reader
+  and being read after the contract is ensured, the wire-type check, each normalization, each
+  rejected encoding, the length prefix that keeps columns apart, the absent single-column key, the
+  `column_name` lookup, the decimal scale check and both encoded scales, `NUMERIC(P)` read as
+  scale zero, the warning and its suppression on a rebuild, and the retry and failure typing of the
+  key read. The survivor drops the eviction's removal of the key from the writer's map, which
+  changes no behavior, because a returning table reads its key again; the removal keeps the map
+  from holding tables a dynamic-destination job no longer writes to.
+
+Measured against the service on 2026-10-31, from the same workstation, writing to CDC tables in
+`us-central1` that the sink created, with a `STRING` primary key and no maximum staleness: each
+configuration three times, alternating which mode went first, each into a fresh table, and the
+table's rows read back after every write had committed.
+
+| Workload | `NONE` | `PER_TABLE` |
+|---|---|---|
+| 500 keys, each changed twice in a row | 1 request, 0.21–0.24 s; the first change won for all 500 keys, in every run | 501 requests, 84.8–85.5 s; the last change won for all 500 keys, in every run |
+| 1 key changed 200 times | 1 request, 0.16–0.17 s; the first change won, in every run | 200 requests, 33.9–34.0 s; the last change won, in every run |
+
+- **The service resolved one key's rows within a request to the first of them.** It did so for
+  all 1,504 keys that had two or more changes in one request (the three runs of each workload and
+  a warm-up of one key), so the gap this split closes is not only an undefined order in principle
+  but an older value kept in practice. One reading is that the rows of one request share an
+  ingestion time and the tie goes to the first row; nothing documents the tie-break, and the
+  measurement does not show the mechanism.
+- **Successive requests did not tie.** Under `PER_TABLE`, the two changes of each of 1,500 keys
+  were in adjacent requests one round trip apart, and the later change won every time; the hot
+  key's last change won over its 199 earlier ones in each run. The ingestion time the service
+  assigns therefore ordered requests one round trip apart in every case measured. The documentation does not promise it, and a client much
+  closer to the service has shorter round trips; that was not measured.
+- **The cost is one round trip per change of a hot key**, about 0.17 s from this client, and a
+  workload whose keys repeat within a request's worth of rows pays it once per repeat.
+
 ## Alternatives declined
 
 - **Deriving a `_CHANGE_SEQUENCE_NUMBER` in the writer.** It covers CDC only, and a writer-local
@@ -138,9 +223,23 @@ per run, three repetitions per configuration after a warm-up, alternating which 
 - **Keeping requests in flight and holding only the requests behind a failed one.** By the time the
   failure is seen, later requests may already have committed; nothing on the default stream
   guarantees that they fail with it.
-- **A per-key sequencer like [ADR-0187]'s for CDC tables.** It would need the primary-key values of
-  every serialized row inside the writer, and BigQuery commits a request as a whole, so the request,
-  not the key, is the unit a failure reorders.
+- **A per-key sequencer like [ADR-0187]'s for CDC tables.** BigQuery commits a request as a whole,
+  so the request, not the key, is the unit a failure reorders; reading the key from each row, as
+  the split does, does not change that.
+- **Comparing CDC keys as GoogleSQL values** ([#1936]). Parsing every text spelling BigQuery accepts
+  for a `TIMESTAMP`, `DATETIME`, `DATE` or `NUMERIC` key would reproduce the service's parser, and a
+  parse that disagreed with it in one case would split two spellings of one key, which is the gap
+  the split exists to close. Treating those encodings as unreadable costs requests instead, and the
+  Table API never writes them.
+- **Returning the key from the CDC provisioning read** ([#1936]). It would save one `tables.get`
+  per table activation under the mode, at the cost of widening `ensureCdcTable`, whose result
+  today reports only whether a creation was requested and which every test admin implements. A
+  separate read keeps the provisioning contract as it is.
+- **Leaving a request whole under a sequence** ([#1936]). An unequal sequence decides the winner,
+  but an equal one falls back to ingestion order. The first version of this refinement exempted
+  every sequence; the independent review of its pull request found the tie, which three shipped
+  profiles can produce. A writer with unique sequences has little reason to use the mode for CDC
+  at all, so the split costs it little in practice.
 - **Ordering across tables.** Rows of different tables have no commit order a reader can compare
   through BigQuery, and serializing them would cost every dynamic-destination job without a reader
   that benefits.
@@ -159,8 +258,13 @@ per run, three repetitions per configuration after a warm-up, alternating which 
   regains throughput.
 - The order kept is the order one subtask received. The DataStream user keys the stream before the
   sink; the CDC Table sink gets it for one key when Flink shuffles the changelog by the primary key.
-- Rows of one request are not ordered by the mode, so a CDC key changed twice within one request
-  still needs a sequence for a defined winner.
+- A CDC key changed in quick succession costs one request per change, so a hot key writes at one
+  round trip per change per subtask.
+- A DataStream serializer that writes a key column as text, as floating point, or into a collated
+  `STRING` makes every row of the table its own request; the warning at open names the column.
+- The order inside one request remains undefined, but no CDC key appears in one request twice, so
+  the remaining in-request question concerns rows of different keys, which do not overwrite one
+  another.
 - An append that timed out on the client can still be committed by the service after a later one,
   as in [ADR-0175], [ADR-0189] and [ADR-0190], and the writer cannot observe it.
 - A restart re-sends the rows written since the last completed checkpoint after the rows that had

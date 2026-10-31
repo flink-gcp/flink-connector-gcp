@@ -462,8 +462,13 @@ The writer then sends the table's next append request only after the previous on
 That bounds a table's throughput per subtask to one round trip per request of up to `sink.default-stream.max-append-request-bytes`; raising that size is how a job with the mode on regains throughput.
 Measured from a workstation far from the dataset's region, 50 MB into one table took about 24 s at the default 512 KiB against about 3 s without the mode, roughly eight times as long, and about 6 s at 8 MiB, roughly twice; ADR-0192 records the runs.
 The order is the order one subtask received, so rows whose order matters must reach the same subtask: the changes of one key in a CDC table that Flink shuffles by its `PRIMARY KEY`, for example.
-The order holds between requests, not inside one: BigQuery's CDC documentation states no order among the rows of one append request, so a CDC key changed twice within one request still has no defined winner without a [sequence](#what-the-sequence-value-looks-like).
-A CDC table whose keys change in quick succession therefore still wants a sequence column.
+BigQuery's CDC documentation states no order among the rows of one append request, and measured against the service the first of a key's changes in one request won over the later ones every time, so without the mode a key changed twice in one request keeps its older value.
+Two changes of a key whose [sequences](#what-the-sequence-value-looks-like) are equal fall back to the same order, which the PostgreSQL, TiCDC and Spanner profiles can produce.
+For a CDC table, with or without a sequence, the mode therefore also keeps one primary key out of a request twice: the writer reads the table's primary key when it opens the table and sends the pending request before a row whose key it already holds.
+A key changed in quick succession therefore costs one request per change; 200 changes of one key took about 34 s from the same workstation, about 0.17 s per change, where one request without the mode took under 0.2 s and kept the first change.
+The Table API writes every key type BigQuery accepts in an encoding the writer compares exactly, so only a repeated key ends a request early, with two exceptions.
+A `STRING` key column the table declares with a collation makes every row its own request and logs a warning when the sink opens the table.
+A `DECIMAL` key with a larger scale than an existing table's parameterized `NUMERIC` or `BIGNUMERIC` key column, such as `DECIMAL(6, 3)` into `NUMERIC(6, 2)`, is rounded by BigQuery, so a row whose value has more fractional digits than the column keeps goes in a request of its own; a table the sink creates takes the Flink type's scale and never meets this.
 An attempt that timed out on the client can still be committed by the service after a later request, and a restart re-sends the rows written since the last completed checkpoint after the ones that had already landed, in the order the replay delivers them.
 
 The option belongs to `storage-api-at-least-once` and is rejected with the other two write methods.
@@ -558,7 +563,7 @@ BigQuery schema.
 Selecting more than one sequence source fails during planning.
 Once a sequence metadata column is selected, every emitted row must supply a non-null valid value;
 missing or invalid values enter the configured row-failure path.
-Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order, which a re-sent request can change unless `sink.ordering-mode` is `per-table` (see [Commit order of a table's rows](#commit-order-of-a-tables-rows)).
+Without any of them, BigQuery resolves colliding mutations for a primary key by arrival order, which a re-sent request can change, and in measurements it kept the first of a key's changes within one append request; `sink.ordering-mode = per-table` addresses both (see [Commit order of a table's rows](#commit-order-of-a-tables-rows)).
 
 ### What the sequence value looks like
 

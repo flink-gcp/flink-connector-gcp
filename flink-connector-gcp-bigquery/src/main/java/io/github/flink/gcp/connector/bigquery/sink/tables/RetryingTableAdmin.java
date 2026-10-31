@@ -35,6 +35,8 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * A {@link TableAdmin} that repeats a creation, or a temporary table's preparation, the service
@@ -57,9 +59,11 @@ import java.time.Duration;
  *
  * <p>{@link #create}, {@link #ensureCdcTable} and {@link #prepareTemporaryTable(TableDestination,
  * Schema, TableLayout, Duration)} retry; the last covers both the creation and the extension of an
- * existing table's expiration. {@link #getSchema} and {@link #updateSchema} pass straight through —
- * the latter reports its own lost race as {@code false} for the caller to re-read and re-derive
- * from, which a blind repeat here would turn into a stale-proposal loop.
+ * existing table's expiration. {@link #getPrimaryKey(TableDestination)} retries too: it runs where
+ * a destination is opened, beside the provisioning read that does. {@link
+ * #getSchema(TableDestination)} and {@link #updateSchema} pass straight through — the latter
+ * reports its own lost race as {@code false} for the caller to re-read and re-derive from, which a
+ * blind repeat here would turn into a stale-proposal loop.
  */
 @Internal
 public final class RetryingTableAdmin implements TableAdmin {
@@ -211,6 +215,16 @@ public final class RetryingTableAdmin implements TableAdmin {
     @Override
     public TableSchemaSnapshot getSchema(TableDestination destination) throws IOException {
         return delegate.getSchema(destination);
+    }
+
+    @Override
+    public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) throws IOException {
+        List<List<PrimaryKeyColumn>> key = new ArrayList<>(1);
+        retry(
+                destination,
+                "read the primary key of",
+                () -> key.add(delegate.getPrimaryKey(destination)));
+        return key.get(0);
     }
 
     @Override

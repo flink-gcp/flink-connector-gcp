@@ -701,8 +701,9 @@ public final class DefaultStreamOptions implements Serializable {
          * failure handler. A table then has one request in flight at a time, so its throughput is
          * bounded by one round trip per request of up to {@link #maxAppendRequestBytes(long)}. The
          * order is the order one subtask received, so the input must send every row whose order
-         * matters to the same subtask, and it holds between requests, not among the rows of one;
-         * see {@link OrderingMode#PER_TABLE}.
+         * matters to the same subtask. For a CDC write, a request also ends before a row whose
+         * primary key it already holds, since BigQuery states no order among the rows of one
+         * request; see {@link OrderingMode}.
          *
          * @param orderingMode the ordering mode
          * @return this builder

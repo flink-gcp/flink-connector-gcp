@@ -368,6 +368,71 @@ public class BigQueryTableAdmin implements TableAdmin {
     }
 
     @Override
+    public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) throws IOException {
+        Table table;
+        try {
+            table = client(destination).getTable(toTableId(destination));
+        } catch (BigQueryException e) {
+            // Typed like the creation path's failures, so that the retrying admin repeats a
+            // rate-limited or server-side read rather than failing the activation it sits on.
+            throw toFailure("Failed to read the primary key of BigQuery table " + destination, e);
+        }
+        if (table == null) {
+            throw new IOException("BigQuery table " + destination + " does not exist");
+        }
+        TableConstraints constraints = table.getTableConstraints();
+        if (constraints == null
+                || constraints.getPrimaryKey() == null
+                || constraints.getPrimaryKey().getColumns() == null) {
+            return new ArrayList<>();
+        }
+        Schema schema = table.<TableDefinition>getDefinition().getSchema();
+        FieldList fields = schema == null ? null : schema.getFields();
+        List<PrimaryKeyColumn> key = new ArrayList<>();
+        for (String column : constraints.getPrimaryKey().getColumns()) {
+            Field field = fields == null ? null : topLevelField(fields, column);
+            if (field == null) {
+                throw new IOException(
+                        "BigQuery table "
+                                + destination
+                                + " declares primary-key column "
+                                + column
+                                + ", which its schema does not have");
+            }
+            key.add(
+                    new PrimaryKeyColumn(
+                            field.getName(),
+                            field.getType().getStandardType(),
+                            field.getCollation(),
+                            declaredScale(field)));
+        }
+        return key;
+    }
+
+    /**
+     * The scale of a parameterized decimal column: {@code NUMERIC(P)} declares a precision and no
+     * scale, which BigQuery reads as a scale of zero.
+     */
+    @Nullable
+    private static Long declaredScale(Field field) {
+        if (field.getScale() != null) {
+            return field.getScale();
+        }
+        return field.getPrecision() != null ? Long.valueOf(0L) : null;
+    }
+
+    /** Finds a top-level column by name; BigQuery column names compare case-insensitively. */
+    @Nullable
+    private static Field topLevelField(FieldList fields, String name) {
+        for (Field field : fields) {
+            if (field.getName().equalsIgnoreCase(name)) {
+                return field;
+            }
+        }
+        return null;
+    }
+
+    @Override
     public boolean updateSchema(
             TableDestination destination, TableSchemaSnapshot base, TableSchema proposed)
             throws IOException {

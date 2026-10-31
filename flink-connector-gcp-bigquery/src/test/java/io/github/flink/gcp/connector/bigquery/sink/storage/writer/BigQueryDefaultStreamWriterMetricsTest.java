@@ -49,6 +49,7 @@ import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
+import io.github.flink.gcp.connector.bigquery.sink.tables.PrimaryKeyColumn;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdminException;
@@ -880,6 +881,11 @@ class BigQueryDefaultStreamWriterMetricsTest {
                 TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
             throw new UnsupportedOperationException(
                     "FILE_LOADS temporary tables are not used here");
+        }
+
+        @Override
+        public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) {
+            throw new UnsupportedOperationException("primary keys are not read here");
         }
 
         @Override

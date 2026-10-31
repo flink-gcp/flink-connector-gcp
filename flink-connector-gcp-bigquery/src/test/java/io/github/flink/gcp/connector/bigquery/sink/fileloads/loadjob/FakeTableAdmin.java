@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.tables.PrimaryKeyColumn;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
@@ -101,6 +102,11 @@ public final class FakeTableAdmin implements TableAdmin {
         preparedSchemas.add(schema);
         preparedExpirations.add(expiration);
         return temporaryTables.computeIfAbsent(table, unused -> ++clock);
+    }
+
+    @Override
+    public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination) {
+        throw new UnsupportedOperationException("primary keys are not read here");
     }
 
     @Override

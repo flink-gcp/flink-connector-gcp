@@ -88,7 +88,9 @@ class RetryingTableAdminTest {
         private final Deque<IOException> cdcFailures = new ArrayDeque<>();
         private final Deque<Boolean> cdcResults = new ArrayDeque<>();
         private final Deque<IOException> preparationFailures = new ArrayDeque<>();
+        private final Deque<IOException> primaryKeyFailures = new ArrayDeque<>();
         private int preparations;
+        private int primaryKeyReads;
         private int getSchemaCalls;
         private int updateSchemaCalls;
 
@@ -136,6 +138,19 @@ class RetryingTableAdminTest {
         }
 
         @Override
+        public List<PrimaryKeyColumn> getPrimaryKey(TableDestination destination)
+                throws IOException {
+            primaryKeyReads++;
+            IOException failure = primaryKeyFailures.poll();
+            if (failure != null) {
+                throw failure;
+            }
+            return List.of(
+                    new PrimaryKeyColumn(
+                            "id", com.google.cloud.bigquery.StandardSQLTypeName.INT64, null));
+        }
+
+        @Override
         public TableSchemaSnapshot getSchema(TableDestination destination) {
             getSchemaCalls++;
             return null;
@@ -169,6 +184,19 @@ class RetryingTableAdminTest {
                 .create(DESTINATION, SCHEMA, TableCreateOptions.defaults());
 
         assertThat(delegate.creates).containsExactly(DESTINATION, DESTINATION, DESTINATION);
+    }
+
+    @Test
+    void repeatsARateLimitedPrimaryKeyReadAndReturnsTheKey() throws Exception {
+        // The read sits on the path that opens a destination, beside the provisioning read that
+        // is repeated, so a rate limit on it must not fail the write that opened the table.
+        ScriptedTableAdmin delegate = new ScriptedTableAdmin();
+        delegate.primaryKeyFailures.add(rateLimited());
+
+        assertThat(new RetryingTableAdmin(delegate, fast(3)).getPrimaryKey(DESTINATION))
+                .extracting(PrimaryKeyColumn::getName)
+                .containsExactly("id");
+        assertThat(delegate.primaryKeyReads).isEqualTo(2);
     }
 
     @Test
