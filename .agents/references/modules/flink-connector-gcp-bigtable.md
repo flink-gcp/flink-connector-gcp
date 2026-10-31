@@ -634,13 +634,20 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   and reject the Change Streams options there too. Keep the scan and lookup options a sink cannot
   act on accepted — one table legitimately scans and writes under separate application profiles.
 - **Selected-cell mode is stateless because the producer supplies the complete logical value.**
-  Require exactly one physical primary key and at least one non-key field; decode the mutation row
-  key with `CellValueCodec` and the non-key fields with insert-only `value.format`.
+  Require exactly one physical primary key and at least one non-key field besides the commit
+  columns below; decode the mutation row key with `CellValueCodec` and the remaining non-key fields
+  with insert-only `value.format`.
   Accept only one full selected-column or selected-family delete followed by exactly one selected
   `SetCell` for `UPDATE_AFTER`, or that delete alone for a key-only `DELETE`.
   Ignore unrelated entries and fail on every ambiguous selected-cell mutation, wrong source
   cluster, selected-cell GC or aggregate mutation, and zero/multiple/null format output.
   Do not add a lookup, snapshot bootstrap, old-value state, or format metadata.
+  `scan.change-stream.commit-timestamp-column` and `scan.change-stream.tie-breaker-column` name
+  non-key `TIMESTAMP_LTZ(9)` and `INT` columns the source fills from the mutation on every row, a
+  key-only delete included, and `value.format` does not decode (`docs/adr/0194`). They are physical
+  because reading a metadata column keeps Flink's `ChangelogNormalize`, which completes a delete
+  from the held row; `SelectedCellCommitColumnsPlanTest` pins that 2.x drops it for a
+  physical-only query and 1.20 does not.
 - **Readable Change Streams metadata is scalar mutation data, not source protocol state** (#601,
   ADR-0106). `mutation-type` is `STRING NOT NULL`; `source-cluster-id` is nullable and maps the GC
   model's empty id to null; `commit-timestamp` and `estimated-low-watermark` are

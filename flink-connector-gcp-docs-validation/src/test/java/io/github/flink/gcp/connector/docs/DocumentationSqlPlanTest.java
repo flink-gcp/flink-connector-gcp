@@ -568,6 +568,12 @@ public class DocumentationSqlPlanTest {
                                 "selected-cell-upserts",
                                 "SELECT * FROM current_profiles;")),
                 scenario(
+                        "Bigtable table reference selected-cell commit columns",
+                        withFollowup(
+                                "flink/BigtableTableReference.sql",
+                                "selected-cell-commit-columns",
+                                "SELECT profile_id, commit_ts, tie_breaker FROM profile_changes;")),
+                scenario(
                         "Bigtable table reference application watermark fragment",
                         fragment(
                                 "flink/BigtableTableReference.sql",
@@ -712,6 +718,13 @@ public class DocumentationSqlPlanTest {
                                 "flink/SpannerTableReference.sql",
                                 "change-stream",
                                 "SELECT * FROM order_changes;")),
+                scenario(
+                        "Spanner table reference change-stream coordinate columns",
+                        withFollowup(
+                                "flink/SpannerTableReference.sql",
+                                "change-stream-coordinate-columns",
+                                "SELECT order_id, commit_ts, record_sequence, mod_number"
+                                        + " FROM order_coordinates;")),
                 scenario(
                         "Spanner table reference schema marker fragment",
                         fragment(

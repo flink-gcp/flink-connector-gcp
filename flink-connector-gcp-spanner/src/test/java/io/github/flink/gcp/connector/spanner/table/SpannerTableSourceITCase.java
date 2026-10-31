@@ -16,19 +16,26 @@
 
 package io.github.flink.gcp.connector.spanner.table;
 
+import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.TableEnvironment;
+import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
+import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -256,6 +263,106 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
         // ignored, and the deadline fails rather than hangs a source that never finishes.
         assertThat(firstRows(table, "SELECT id, name FROM cdc", expected.size() + 1, ROW_DEADLINE))
                 .containsExactlyInAnyOrderElementsOf(expected);
+    }
+
+    /**
+     * The coordinate columns end to end (#1960): the job serializes them to the reader, and a
+     * key-only delete leaves the source carrying its own commit timestamp. Whether it still does at
+     * the sink is the planner's choice, which differs by Flink version, so the delete's expected
+     * timestamp branches on it as {@code SpannerChangeStreamCoordinatePlanTest} does.
+     */
+    @Test
+    void anUpsertDeleteCarriesItsOwnCoordinatesThroughPhysicalColumns() throws Exception {
+        DatabaseDestination database =
+                createDatabase(
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        "CREATE TABLE records (id INT64 NOT NULL, name STRING(64)) PRIMARY KEY (id)",
+                        "CREATE CHANGE STREAM changes FOR records",
+                        "ALTER CHANGE STREAM changes SET OPTIONS (value_capture_type = 'NEW_ROW')");
+        Instant inserted = insert(database, 1L, "Ada");
+        Instant updated =
+                commit(
+                        database,
+                        Mutation.newUpdateBuilder("records")
+                                .set("id")
+                                .to(1L)
+                                .set("name")
+                                .to("Grace")
+                                .build());
+        Instant deleted = commit(database, Mutation.delete("records", Key.of(1L)));
+        Instant bound =
+                Instant.ofEpochMilli(
+                        Math.addExact(
+                                deleted.toEpochMilli(),
+                                deleted.getNano() % 1_000_000 == 0 ? 0 : 1));
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        table.executeSql(
+                changeStreamTableDdl(
+                                database,
+                                Dialect.GOOGLE_STANDARD_SQL,
+                                null,
+                                "records",
+                                inserted.toEpochMilli())
+                        .replace(
+                                "  name STRING,\n",
+                                "  name STRING,\n"
+                                        + "  commit_ts TIMESTAMP_LTZ(9) NOT NULL,\n"
+                                        + "  record_sequence STRING NOT NULL,\n"
+                                        + "  mod_number INT NOT NULL,\n")
+                        .replace(
+                                "'scan.change-stream.changelog-mode' = 'full'",
+                                "'scan.change-stream.changelog-mode' = 'upsert'")
+                        .replace(
+                                "  'scan.parallelism' = '1',\n",
+                                "  'scan.parallelism' = '1',\n"
+                                        + "  'scan.bounded.timestamp-millis' = '"
+                                        + bound.toEpochMilli()
+                                        + "',\n"
+                                        + "  'scan.change-stream.commit-timestamp-column' ="
+                                        + " 'commit_ts',\n"
+                                        + "  'scan.change-stream.sequence-column' ="
+                                        + " 'record_sequence',\n"
+                                        + "  'scan.change-stream.mod-number-column' ="
+                                        + " 'mod_number',\n"));
+
+        List<Row> changes = new ArrayList<>();
+        // An upsert stream rather than collect(): SQL result collection would turn the changelog
+        // into retractions and hide the delete the source emitted.
+        try (CloseableIterator<Row> rows =
+                table.toChangelogStream(
+                                table.sqlQuery(
+                                        "SELECT id, name, commit_ts, record_sequence, mod_number"
+                                                + " FROM cdc"),
+                                Schema.newBuilder().primaryKey("id").build(),
+                                ChangelogMode.upsert())
+                        .executeAndCollect()) {
+            rows.forEachRemaining(changes::add);
+        }
+
+        String version = DataTypes.class.getPackage().getImplementationVersion();
+        assertThat(version).as("the Flink version on the classpath").isNotNull();
+        // Flink 1.20 completes the delete from the row it holds, the update.
+        Instant deleteCommit = version.startsWith("1.") ? updated : deleted;
+        assertThat(changes)
+                .extracting(row -> Row.ofKind(row.getKind(), row.getField(0), row.getField(2)))
+                .containsExactly(
+                        Row.ofKind(RowKind.INSERT, 1L, inserted),
+                        Row.ofKind(RowKind.UPDATE_AFTER, 1L, updated),
+                        Row.ofKind(RowKind.DELETE, 1L, deleteCommit));
+        assertThat(changes)
+                .allSatisfy(
+                        row -> {
+                            assertThat(row.getFieldAs(3).toString()).isNotBlank();
+                            assertThat((Object) row.getField(4)).isEqualTo(0);
+                        });
+    }
+
+    private static Instant commit(DatabaseDestination database, Mutation mutation) {
+        Timestamp commit = client(database).write(List.of(mutation));
+        return Instant.ofEpochSecond(commit.getSeconds(), commit.getNanos());
     }
 
     private static Instant insert(DatabaseDestination database, long id, String name) {

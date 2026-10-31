@@ -16,7 +16,10 @@ limitations under the License.
 
 # ADR-0106: The Bigtable table change stream preserves mutations or decodes one complete cell
 
-- Status: Accepted
+- Status: Accepted; refined by
+  [ADR-0194](0194-change-stream-sources-fill-physical-commit-coordinate-columns.md) (2026-10-31),
+  which fills physical columns with the selected-cell mutation's commit timestamp and tie breaker
+  on every row, a key-only delete included
 - Date: 2026-08-13
 - Issues: [#523](https://github.com/flink-gcp/flink-connector-gcp/issues/523), [#600](https://github.com/flink-gcp/flink-connector-gcp/issues/600), [#601](https://github.com/flink-gcp/flink-connector-gcp/issues/601), [#602](https://github.com/flink-gcp/flink-connector-gcp/issues/602), [#603](https://github.com/flink-gcp/flink-connector-gcp/issues/603)
 - Modules: bigtable (`table`, `table.source`)

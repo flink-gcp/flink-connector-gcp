@@ -341,7 +341,7 @@ A table written to may still carry the bounded-scan and lookup options it is als
 `full` accepts only records captured with `NEW_ROW_AND_OLD_VALUES` and emits `INSERT`, adjacent `UPDATE_BEFORE` and `UPDATE_AFTER`, and full `DELETE` rows.
 For an update, the complete new row is copied and each reported old value replaces its new value to reconstruct the before row.
 `upsert` accepts `NEW_ROW` and `NEW_ROW_AND_OLD_VALUES`, requires a declared primary key, and emits `INSERT`, `UPDATE_AFTER`, and key-only `DELETE` rows.
-A key-only `DELETE` carries `NULL` in every non-key physical column, including one the DDL declares `NOT NULL`.
+A key-only `DELETE` carries `NULL` in every non-key physical column, including one the DDL declares `NOT NULL`, except the coordinate columns described in [a delete's own coordinates](#a-deletes-own-coordinates).
 On Flink 2.x the planner hands such a delete on as it is to a sink that accepts key-only deletes, unless the query needs a `ChangelogNormalize`: reading a metadata column, filtering on a non-key column and aggregating each do.
 That operator, which Flink 1.20 always keeps, completes each delete from the last row it holds for the key and drops the delete of a key the job never saw.
 On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect a delete handed on as it is: a projection evaluates its expressions over the null columns, which can fail the job when this table declares one of them `NOT NULL` ([FLINK-40528](https://issues.apache.org/jira/browse/FLINK-40528)), and Flink's not-null enforcer fails the job when the sink table declares one of them `NOT NULL` ([FLINK-40477](https://issues.apache.org/jira/browse/FLINK-40477)).
@@ -359,7 +359,7 @@ Omit the watermark declaration and use `TIMESTAMP_LTZ(9)` when downstream SQL mu
 `mod-number` is the zero-based position of the mod in its original Spanner data-change record.
 The adjacent before and after rows produced for one full-mode update carry the same `mod-number`, so metadata never splits the logical identity of that mod.
 
-Each data-change record is validated against the DDL's physical names, native Spanner types, and, in upsert mode, primary-key column membership before any row from that record is emitted.
+Each data-change record is validated against the DDL's physical names other than the coordinate columns, native Spanner types, and, in upsert mode, primary-key column membership before any row from that record is emitted.
 Extra watched columns are ignored, while a missing declared column, a type mismatch, an incompatible value-capture mode, or an absent required row value fails deserialization.
 Spanner change streams do not watch a generated column outside the primary key, so a change-stream table that lists a column outside its declared `PRIMARY KEY` in `generated-columns` is refused when it is planned; one declared without the marker fails on the first record, as any missing declared column does, with a message saying the record omits a declared column.
 Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
@@ -367,6 +367,37 @@ A conversion failure identifies the table, commit timestamp, transaction, record
 
 Startup, expired-restore fallback, the bounded timestamp, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
 The checkpoint, retention, delivery, and capacity contracts therefore remain those of the [DataStream Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
+
+### A delete's own coordinates
+
+To receive each change's commit timestamp, record sequence and mod number as ordinary columns, declare a `TIMESTAMP_LTZ(9)`, a `STRING` and an `INT` column in the `CREATE TABLE` statement and name them in `scan.change-stream.commit-timestamp-column`, `scan.change-stream.sequence-column`, and `scan.change-stream.mod-number-column`.
+The source writes into those columns the same values the metadata columns of those names read, on every row it emits, a key-only `DELETE` included.
+The column names are the table author's to choose; each option only says which column receives its value, and any of them may be set alone.
+The options apply in `upsert` mode only.
+
+{{< sql-snippet file="flink/SpannerTableReference.sql" tag="change-stream-coordinate-columns" >}}
+
+These columns are not watched table columns, so a record is neither validated against them nor expected to carry them.
+A record that does carry a watched column of a coordinate column's name fails deserialization, since the coordinate would otherwise replace that column's value, and a type marker such as `json-field-paths` that names a coordinate column is refused when the table is planned.
+
+The `commit-timestamp`, `sequence`, and `mod-number` metadata columns read the same values, except on an `upsert` delete.
+In a Flink changelog a `DELETE` row stands for the row being deleted, so when a query reads a metadata column of an upsert source, the planner puts a `ChangelogNormalize` operator after the source, and that operator completes each key-only delete from the last row it holds for the key, metadata included.
+The completed delete therefore carries the coordinates of the change it deletes rather than its own, and the delete of a key the operator holds no row for is dropped.
+That is Flink's design rather than a bug: the completed row is the deleted row, which is what the changelog promises, but a sink that orders a key's changes by their coordinates, such as a BigQuery CDC table with a `spanner-change-sequence`, needs the delete's own.
+
+Physical columns avoid the operator on Flink 2.x.
+When a query reads them and no metadata column, the planner drops the `ChangelogNormalize` in front of a sink that accepts key-only deletes, such as a BigQuery CDC table, so each delete reaches the sink with its own coordinates, and the delete of a key the job holds no row for reaches the sink instead of being dropped.
+Filtering on a non-key column, aggregating, reading any metadata column or setting `table.exec.source.cdc-events-duplicate` brings the operator back.
+Flink 1.20 keeps the operator after every upsert source, so on 1.20 a delete still carries the coordinates of the row it deletes, and the delete of a key the job holds no row for is still dropped.
+The options are refused in `full` mode: a retraction there must repeat the row it withdraws, and a coordinate column would carry the retracting change's coordinates instead; `full` mode plans no `ChangelogNormalize` unless `table.exec.source.cdc-events-duplicate` is set, so there the metadata columns already serve it.
+
+On Flink 2.x this rests on one planner behaviour: with the operator dropped, a key-only delete's non-key columns reach the sink as the source wrote them.
+Flink describes a key-only delete as carrying the key (`ChangelogMode#keyOnlyDeletes`) and says nothing about its other columns, so this is measured rather than promised.
+The connector's tests check it on every Flink version the connector supports, the plan tests for the operator's absence and the emulator test for the values a delete carries, so a Flink release that changed it would fail them.
+
+The columns are filled on every row, so declaring them `NOT NULL` is safe on Flink 2.2 and 2.3: the two Flink bugs [described above](#change-streams-scan-behavior) concern columns a delete leaves `NULL`.
+A catalog table cannot declare them, since its columns are the Spanner table's; read the stream through a hand-written table, which the Flink 2.2 and 2.3 bugs already call for.
+The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#native-change-streams-sql) builds a BigQuery change sequence from the three columns.
 
 ## Options
 
@@ -390,6 +421,9 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 | `scan.mode` | `bounded` | `bounded` reads one snapshot; `change-stream` emits a CDC changelog, unbounded unless `scan.bounded.timestamp-millis` is set, and makes the table source-only, so writing to it is rejected |
 | `scan.change-stream.name` | **required in change-stream mode** | Change Stream whose generated read function supplies records |
 | `scan.change-stream.changelog-mode` | **required in change-stream mode** | `full` emits retract rows from `NEW_ROW_AND_OLD_VALUES`; `upsert` emits keyed upserts from `NEW_ROW` or `NEW_ROW_AND_OLD_VALUES` |
+| `scan.change-stream.commit-timestamp-column` | *unset ⇒ no such column* | `upsert` change-stream mode only; a non-key `TIMESTAMP_LTZ(9)` physical column the source fills with the record's commit timestamp on every row, a key-only `DELETE` included. See [a delete's own coordinates](#a-deletes-own-coordinates) |
+| `scan.change-stream.sequence-column` | *unset ⇒ no such column* | `upsert` change-stream mode only; a non-key `STRING` physical column the source fills with the record sequence on every row, a key-only `DELETE` included |
+| `scan.change-stream.mod-number-column` | *unset ⇒ no such column* | `upsert` change-stream mode only; a non-key `INT` physical column the source fills with the mod's zero-based position in its record on every row, a key-only `DELETE` included |
 | `scan.startup.mode` | `latest` | Fresh Change Streams start: `earliest`, `latest`, or `timestamp` |
 | `scan.startup.timestamp-millis` | *unset* | Unix epoch milliseconds required only when startup mode is `timestamp` |
 | `scan.resume-fallback.mode` | *unset ⇒ fail an expired restore* | Position used after discarding an expired restored ledger: `earliest`, `latest`, or `timestamp` |

@@ -129,9 +129,9 @@ CREATE TABLE order_changes (
   OrderId BIGINT,
   Customer STRING,
   Status STRING,
-  commit_timestamp TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
-  record_sequence STRING METADATA FROM 'sequence' VIRTUAL,
-  mod_number INT METADATA FROM 'mod-number' VIRTUAL,
+  commit_timestamp TIMESTAMP_LTZ(9) NOT NULL,
+  record_sequence STRING NOT NULL,
+  mod_number INT NOT NULL,
   PRIMARY KEY (OrderId) NOT ENFORCED
 ) WITH (
   'connector' = 'spanner',
@@ -142,6 +142,10 @@ CREATE TABLE order_changes (
   'scan.mode' = 'change-stream',
   'scan.change-stream.name' = 'order_changes',
   'scan.change-stream.changelog-mode' = 'upsert',
+  -- Physical columns the source fills on every row, a delete included.
+  'scan.change-stream.commit-timestamp-column' = 'commit_timestamp',
+  'scan.change-stream.sequence-column' = 'record_sequence',
+  'scan.change-stream.mod-number-column' = 'mod_number',
   'scan.startup.mode' = 'latest'
 );
 -- end::spanner-change-stream-source[]

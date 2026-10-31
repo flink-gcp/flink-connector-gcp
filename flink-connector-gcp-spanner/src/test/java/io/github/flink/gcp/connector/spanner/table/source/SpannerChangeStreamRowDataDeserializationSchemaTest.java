@@ -25,6 +25,8 @@ import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.BigIntType;
+import org.apache.flink.table.types.logical.IntType;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.types.RowKind;
@@ -39,6 +41,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureTyp
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -218,6 +222,192 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("record primary key differs from the table DDL")
                 .hasMessageContaining("modIndex=-1");
+    }
+
+    /**
+     * With and without readable metadata: a physical-only query, the case the coordinate columns
+     * exist for, takes the deserializer's path that appends no metadata.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void fillsTheCoordinateColumnsOfEveryRowAKeyOnlyDeleteIncluded(boolean withMetadata)
+            throws Exception {
+        SpannerChangeStreamRowDataDeserializationSchema deserializer =
+                coordinateDeserializer(
+                        withMetadata
+                                ? new ReadableMetadata[] {ReadableMetadata.TABLE}
+                                : new ReadableMetadata[0]);
+        List<RowData> rows = new ArrayList<>();
+
+        deserializer.deserialize(
+                record(
+                        "people",
+                        COLUMNS,
+                        ModType.UPDATE,
+                        ValueCaptureType.NEW_ROW,
+                        Arrays.asList(
+                                new Mod("{\"id\":\"1\"}", "{\"name\":\"Ada\"}", null),
+                                new Mod("{\"id\":\"2\"}", "{\"name\":\"Lin\"}", null))),
+                collector(rows));
+        deserializer.deserialize(
+                DataChangeRecord.builder()
+                        .commitTimestamp(Instant.parse("2026-08-13T00:00:01.000000002Z"))
+                        .recordSequence("0007")
+                        .serverTransactionId("tx-2")
+                        .lastRecordInTransactionInPartition(true)
+                        .tableName("people")
+                        .columnTypes(COLUMNS)
+                        .mods(Collections.singletonList(new Mod("{\"id\":\"1\"}", null, null)))
+                        .modType(ModType.DELETE)
+                        .valueCaptureType(ValueCaptureType.NEW_ROW)
+                        .numberOfRecordsInTransaction(1)
+                        .numberOfPartitionsInTransaction(1)
+                        .transactionTag("")
+                        .systemTransaction(false)
+                        .build(),
+                collector(rows));
+
+        assertThat(rows)
+                .extracting(RowData::getRowKind)
+                .containsExactly(RowKind.UPDATE_AFTER, RowKind.UPDATE_AFTER, RowKind.DELETE);
+        assertThat(rows).extracting(RowData::getArity).containsOnly(withMetadata ? 6 : 5);
+        assertThat(rows)
+                .extracting(row -> row.getTimestamp(0, 9).toInstant())
+                .containsExactly(
+                        Instant.parse("2026-08-13T00:00:00.123456789Z"),
+                        Instant.parse("2026-08-13T00:00:00.123456789Z"),
+                        Instant.parse("2026-08-13T00:00:01.000000002Z"));
+        assertThat(rows).extracting(row -> row.getLong(1)).containsExactly(1L, 2L, 1L);
+        assertThat(rows).extracting(row -> row.getInt(2)).containsExactly(0, 1, 0);
+        assertThat(rows)
+                .extracting(row -> row.isNullAt(3) ? null : row.getString(3).toString())
+                .containsExactly("Ada", "Lin", null);
+        assertThat(rows)
+                .extracting(row -> row.getString(4).toString())
+                .containsExactly("0001", "0001", "0007");
+        if (withMetadata) {
+            // Metadata is still appended after the declared physical row.
+            assertThat(rows).extracting(row -> row.getString(5).toString()).containsOnly("people");
+        }
+    }
+
+    @Test
+    void widensAKeyOnlyDeleteOverANotNullPrimitiveColumn() throws Exception {
+        // A key-only delete leaves every non-key watched column null, a NOT NULL one included.
+        // Flink 1.20's field getter for a NOT NULL BIGINT unboxes without a null check, so the
+        // widening must read the watched row with nullable getters.
+        RowType declared =
+                RowType.of(
+                        new org.apache.flink.table.types.logical.LogicalType[] {
+                            new BigIntType(false),
+                            new BigIntType(false),
+                            new LocalZonedTimestampType(false, 9)
+                        },
+                        new String[] {"id", "amount", "commit_ts"});
+        ChangeStreamCoordinateColumns coordinateColumns =
+                ChangeStreamCoordinateColumns.resolve(
+                        declared, new int[] {0}, "commit_ts", null, null);
+        SpannerChangeStreamRowDataDeserializationSchema deserializer =
+                new SpannerChangeStreamRowDataDeserializationSchema(
+                        SpannerTableSchemaConverter.of(
+                                coordinateColumns.getDataType(),
+                                coordinateColumns.getDataPrimaryKeyIndexes(),
+                                Dialect.GOOGLE_STANDARD_SQL,
+                                Collections.emptyList(),
+                                Collections.emptyList(),
+                                Collections.emptyMap(),
+                                Collections.emptyMap()),
+                        table(null, "people"),
+                        ChangeStreamChangelogMode.UPSERT,
+                        coordinateColumns,
+                        new ReadableMetadata[0],
+                        TypeInformation.of(RowData.class));
+        List<RowData> rows = new ArrayList<>();
+
+        deserializer.deserialize(
+                record(
+                        "people",
+                        Arrays.asList(
+                                column("id", "{\"code\":\"INT64\"}", true, 1),
+                                column("amount", "{\"code\":\"INT64\"}", false, 2)),
+                        ModType.DELETE,
+                        ValueCaptureType.NEW_ROW,
+                        Collections.singletonList(new Mod("{\"id\":\"1\"}", null, null))),
+                collector(rows));
+
+        assertThat(rows).hasSize(1);
+        RowData delete = rows.get(0);
+        assertThat(delete.getRowKind()).isEqualTo(RowKind.DELETE);
+        assertThat(delete.getLong(0)).isEqualTo(1L);
+        assertThat(delete.isNullAt(1)).isTrue();
+        assertThat(delete.getTimestamp(2, 9).toInstant())
+                .isEqualTo(Instant.parse("2026-08-13T00:00:00.123456789Z"));
+    }
+
+    @Test
+    void refusesARecordThatCarriesAColumnACoordinateFills() {
+        // A watched column of a coordinate column's name would otherwise be replaced by the
+        // coordinate on every row without a word.
+        List<DataChangeRecord.ColumnType> watched =
+                Arrays.asList(
+                        column("id", "{\"code\":\"INT64\"}", true, 1),
+                        column("name", "{\"code\":\"STRING\"}", false, 2),
+                        column("record_sequence", "{\"code\":\"STRING\"}", false, 3));
+
+        assertThatThrownBy(
+                        () ->
+                                coordinateDeserializer(new ReadableMetadata[0])
+                                        .deserialize(
+                                                record(
+                                                        "people",
+                                                        watched,
+                                                        ModType.INSERT,
+                                                        ValueCaptureType.NEW_ROW,
+                                                        Collections.singletonList(
+                                                                new Mod(
+                                                                        "{\"id\":\"1\"}",
+                                                                        "{\"name\":\"Ada\",\"record_sequence\":\"x\"}",
+                                                                        null))),
+                                                collector(new ArrayList<>())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(
+                        "the record carries a watched column the table fills with a"
+                                + " change-stream coordinate");
+    }
+
+    /**
+     * The declared table puts the three coordinate columns around the watched ones, so a watched
+     * value landing on a coordinate's position, or the reverse, shows as a wrong value.
+     */
+    private static SpannerChangeStreamRowDataDeserializationSchema coordinateDeserializer(
+            ReadableMetadata[] metadata) {
+        RowType declared =
+                RowType.of(
+                        new org.apache.flink.table.types.logical.LogicalType[] {
+                            new LocalZonedTimestampType(false, 9),
+                            new BigIntType(false),
+                            new IntType(false),
+                            new VarCharType(),
+                            new VarCharType(false, VarCharType.MAX_LENGTH)
+                        },
+                        new String[] {"commit_ts", "id", "mod_number", "name", "record_sequence"});
+        ChangeStreamCoordinateColumns coordinateColumns =
+                ChangeStreamCoordinateColumns.resolve(
+                        declared, new int[] {1}, "commit_ts", "record_sequence", "mod_number");
+        return new SpannerChangeStreamRowDataDeserializationSchema(
+                SpannerTableSchemaConverter.of(
+                        coordinateColumns.getDataType(),
+                        coordinateColumns.getDataPrimaryKeyIndexes(),
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap()),
+                table(null, "people"),
+                ChangeStreamChangelogMode.UPSERT,
+                coordinateColumns,
+                metadata,
+                TypeInformation.of(RowData.class));
     }
 
     @Test
@@ -805,6 +995,7 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
                         Collections.emptyMap()),
                 table,
                 mode,
+                null,
                 metadata,
                 TypeInformation.of(RowData.class));
     }

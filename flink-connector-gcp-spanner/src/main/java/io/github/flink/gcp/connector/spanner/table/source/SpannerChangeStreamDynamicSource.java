@@ -64,6 +64,7 @@ import java.util.Objects;
 public final class SpannerChangeStreamDynamicSource
         implements ScanTableSource, SupportsReadingMetadata, SupportsSourceWatermark {
     private final SpannerTableSchemaConverter schema;
+    @Nullable private final ChangeStreamCoordinateColumns coordinateColumns;
     private final DatabaseDestination database;
     private final SpannerTableName table;
     @Nullable private final SpannerTableLineage lineage;
@@ -89,17 +90,24 @@ public final class SpannerChangeStreamDynamicSource
             DataType producedDataType,
             ReadableConfig config,
             SpannerTableName table) {
-        return from(schema, producedDataType, config, table, null);
+        return from(schema, null, producedDataType, config, table, null);
     }
 
+    /**
+     * @param schema the watched columns, over which each record is validated and converted
+     * @param coordinateColumns the coordinate columns that widen each converted row to {@code
+     *     producedDataType}, or {@code null} when the table declares none
+     */
     public static SpannerChangeStreamDynamicSource from(
             SpannerTableSchemaConverter schema,
+            @Nullable ChangeStreamCoordinateColumns coordinateColumns,
             DataType producedDataType,
             ReadableConfig config,
             SpannerTableName table,
             @Nullable SpannerTableLineage lineage) {
         return new SpannerChangeStreamDynamicSource(
                 schema,
+                coordinateColumns,
                 DatabaseDestination.of(
                         config.get(SpannerConnectorOptions.PROJECT),
                         config.get(SpannerConnectorOptions.INSTANCE),
@@ -127,6 +135,7 @@ public final class SpannerChangeStreamDynamicSource
 
     private SpannerChangeStreamDynamicSource(
             SpannerTableSchemaConverter schema,
+            @Nullable ChangeStreamCoordinateColumns coordinateColumns,
             DatabaseDestination database,
             SpannerTableName table,
             DataType producedDataType,
@@ -146,6 +155,7 @@ public final class SpannerChangeStreamDynamicSource
             SpannerClientMetricsConfig clientMetrics,
             @Nullable SpannerTableLineage lineage) {
         this.schema = schema;
+        this.coordinateColumns = coordinateColumns;
         this.database = database;
         this.table = table;
         this.producedDataType = producedDataType;
@@ -221,6 +231,7 @@ public final class SpannerChangeStreamDynamicSource
                                         schema,
                                         table,
                                         changelogMode,
+                                        coordinateColumns,
                                         selectedMetadata,
                                         producedType))
                         .startPosition(startPosition);
@@ -263,6 +274,7 @@ public final class SpannerChangeStreamDynamicSource
     public DynamicTableSource copy() {
         return new SpannerChangeStreamDynamicSource(
                 schema,
+                coordinateColumns,
                 database,
                 table,
                 producedDataType,
@@ -300,6 +312,7 @@ public final class SpannerChangeStreamDynamicSource
         return maxConcurrentQueriesPerSubtask == that.maxConcurrentQueriesPerSubtask
                 && Objects.equals(lineage, that.lineage)
                 && schema.equals(that.schema)
+                && Objects.equals(coordinateColumns, that.coordinateColumns)
                 && database.equals(that.database)
                 && table.equals(that.table)
                 && producedDataType.equals(that.producedDataType)
@@ -322,6 +335,7 @@ public final class SpannerChangeStreamDynamicSource
     public int hashCode() {
         return Objects.hash(
                 schema,
+                coordinateColumns,
                 database,
                 table,
                 producedDataType,

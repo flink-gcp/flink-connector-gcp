@@ -89,11 +89,25 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
     private final ChangeStreamChangelogMode changelogMode;
     private final StructToRowDataConverter rowConverter;
     private final boolean[] primaryKeyFields;
+    private final Set<String> coordinateColumns;
 
     DataChangeRecordToRowDataConverter(
             SpannerTableSchemaConverter schema,
             SpannerTableName table,
             ChangeStreamChangelogMode changelogMode) {
+        this(schema, table, changelogMode, Collections.emptySet());
+    }
+
+    /**
+     * @param coordinateColumns the declared columns the source fills with a change-stream
+     *     coordinate, which a record must not carry: the coordinate would silently replace the
+     *     watched value (ADR-0127's silent per-record failure)
+     */
+    DataChangeRecordToRowDataConverter(
+            SpannerTableSchemaConverter schema,
+            SpannerTableName table,
+            ChangeStreamChangelogMode changelogMode,
+            Set<String> coordinateColumns) {
         this.schema = schema;
         this.table = table;
         this.changelogMode = changelogMode;
@@ -102,6 +116,7 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
         for (int index : schema.getPrimaryKeyIndexes()) {
             primaryKeyFields[index] = true;
         }
+        this.coordinateColumns = new HashSet<>(coordinateColumns);
     }
 
     List<ConvertedRow> convert(DataChangeRecord record) throws IOException {
@@ -143,6 +158,10 @@ final class DataChangeRecordToRowDataConverter implements Serializable {
         Map<String, DataChangeRecord.ColumnType> byName = new HashMap<>();
         for (DataChangeRecord.ColumnType column : record.getColumnTypes()) {
             require(byName.put(column.getName(), column) == null, "duplicate watched column");
+            require(
+                    !coordinateColumns.contains(column.getName()),
+                    "the record carries a watched column the table fills with a change-stream"
+                            + " coordinate");
         }
         for (SpannerTableSchemaConverter.Column expected : schema.getColumns()) {
             DataChangeRecord.ColumnType actual = byName.get(expected.getName());

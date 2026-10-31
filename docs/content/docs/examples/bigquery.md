@@ -663,11 +663,11 @@ Debezium-shaped map:
 The native route needs no DataStream bridge.
 The Debezium route needs one because Flink's Avro changelog drops the envelope's `source` record,
 whereas the Spanner source of this repository is a Flink table in its own right and already exposes
-its ordering coordinates as metadata columns.
+its ordering coordinates as columns.
 Source DDL, sink DDL, and the `INSERT` are therefore all the SQL below.
 
-Declare the change stream as a source table and expose its three ordering coordinates as metadata
-columns:
+Declare the change stream as a source table and have it fill three physical columns with its
+ordering coordinates:
 
 {{< sql-snippet file="flink/BigQueryExamples.sql" tag="spanner-change-stream-source" >}}
 
@@ -675,11 +675,11 @@ Declare the BigQuery table and take the sequence as one row of writable metadata
 
 {{< sql-snippet file="flink/BigQueryExamples.sql" tag="spanner-change-stream-sink" >}}
 
-Insert the changelog and build the sequence row from the three source metadata columns:
+Insert the changelog and build the sequence row from the three coordinate columns:
 
 {{< sql-snippet file="flink/BigQueryExamples.sql" tag="spanner-change-stream-insert" >}}
 
-Four details in and behind that DDL are load-bearing.
+Five details in and behind that DDL are load-bearing.
 The checkpoint interval persists the Change Streams position and flushes the BigQuery default
 stream, so it must remain enabled for at-least-once recovery.
 The source runs in `upsert` changelog mode, because `full` also emits update-before rows, which the
@@ -692,6 +692,11 @@ shows the physical stream creation step.
 The commit-timestamp column is declared `TIMESTAMP_LTZ(9)` and carries no watermark: Flink permits
 watermark columns only through precision 3, and truncating the commit timestamp to milliseconds
 would let two changes of one key inside the same millisecond compare equal on their first section.
+The coordinates are physical columns the source fills, not the `commit-timestamp`, `sequence` and
+`mod-number` metadata columns, because reading a metadata column makes the planner put a
+`ChangelogNormalize` operator between the source and the sink, and that operator completes a
+key-only delete from the last row it holds, so the delete would carry the coordinates of the change
+it deletes ([a delete's own coordinates]({{< relref "docs/connectors/table/spanner" >}}#a-deletes-own-coordinates)).
 
 This is an analytics-replica pipeline: it keeps the current row shape in BigQuery for analytical
 queries, rather than promising a byte-for-byte or transactionally consistent Spanner replica.
@@ -704,20 +709,23 @@ The pipeline is still at-least-once, but the `spanner-change-sequence` metadata 
 from resolving ordered changes for one key merely by append arrival time.
 Those three coordinates do not create a total order where Spanner exposes none: disjoint column
 writes can retain equal coordinates, which BigQuery still resolves by ingestion order.
-A delete ties the same way: the query reads metadata columns of an `upsert` source, so Flink's
-`ChangelogNormalize` completes each key-only delete from the last row it holds, and the delete
-carries the sequence of the change it deletes.
+On Flink 2.x the query reads no metadata column, so each key-only delete reaches the sink with its
+own coordinates.
+Flink 1.20 keeps the `ChangelogNormalize` after every upsert source, so there a delete carries the
+coordinates of the change it deletes and ties with it.
 The sink therefore sets
 [`'sink.ordering-mode' = 'per-table'`]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows),
-which commits those changes in the order the sink subtask receives them; without it, a delete that
-shares an append request with the change before it loses, and the row stays in BigQuery.
+which commits those changes in the order the sink subtask receives them; without it on 1.20, a
+delete that shares an append request with the change before it loses, and the row stays in
+BigQuery.
 
 The [Bigtable selected-cell analytics replica]({{< relref "docs/examples/bigtable" >}}#replicating-a-selected-cell-into-bigquery)
 shows the corresponding keyed upsert/delete shape for a single Bigtable cell.
-That example builds its sequence from the Bigtable commit timestamp and tie breaker, and sets
+That example builds its sequence from the Bigtable commit timestamp and tie breaker, which the
+source fills into physical columns for the same reason, and sets
 [`'sink.ordering-mode' = 'per-table'`]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows)
-because a delete Flink completes carries the sequence of the change it deletes and so depends on
-the order the sink receives the two in.
+for Flink 1.20, where a delete Flink completes carries the sequence of the change it deletes and so
+depends on the order the sink receives the two in.
 
 ## Local development
 

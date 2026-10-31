@@ -122,6 +122,8 @@ class BigtableDynamicTableFactoryTest {
                     Map.entry("scan.change-stream.selected-cell.family", "state"),
                     Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
                     Map.entry("scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
+                    Map.entry("scan.change-stream.commit-timestamp-column", "commit_ts"),
+                    Map.entry("scan.change-stream.tie-breaker-column", "tie_breaker"),
                     Map.entry("value.format", "json"));
 
     private static final DataType CHANGE_STREAM_GENERIC_VALUE =
@@ -1168,6 +1170,8 @@ class BigtableDynamicTableFactoryTest {
                         Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
                         Map.entry(
                                 "scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
+                        Map.entry("scan.change-stream.commit-timestamp-column", "commit_ts"),
+                        Map.entry("scan.change-stream.tie-breaker-column", "tie_breaker"),
                         Map.entry("value.format", "json"))) {
             Map<String, String> envelope = minimalChangeStreamOptions();
             envelope.put(incompatible.getKey(), incompatible.getValue());
@@ -1177,6 +1181,130 @@ class BigtableDynamicTableFactoryTest {
                     .hasStackTraceContaining("valid only when")
                     .hasStackTraceContaining("selected-cell");
         }
+    }
+
+    private static ResolvedSchema commitColumnSchema(DataType commitType, DataType tieType) {
+        return new ResolvedSchema(
+                Arrays.asList(
+                        Column.physical("name", DataTypes.STRING()),
+                        Column.physical("commit_ts", commitType),
+                        Column.physical("row_id", DataTypes.STRING().notNull()),
+                        Column.physical("tie_breaker", tieType),
+                        Column.physical("score", DataTypes.INT())),
+                Collections.emptyList(),
+                UniqueConstraint.primaryKey("pk", Collections.singletonList("row_id")));
+    }
+
+    private static Map<String, String> commitColumnOptions() {
+        Map<String, String> options = minimalSelectedCellOptions();
+        options.put("scan.change-stream.commit-timestamp-column", "commit_ts");
+        options.put("scan.change-stream.tie-breaker-column", "tie_breaker");
+        return options;
+    }
+
+    @Test
+    void takesTheCommitColumnsOutOfTheFormatPayload() {
+        DynamicTableSource source =
+                source(
+                        commitColumnSchema(
+                                DataTypes.TIMESTAMP_LTZ(9).notNull(), DataTypes.INT().notNull()),
+                        commitColumnOptions());
+
+        assertThat(source.copy()).isEqualTo(source).hasSameHashCodeAs(source);
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source)
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        assertThat(provider.createSource())
+                .extracting("config.deserializer")
+                .hasFieldOrPropertyWithValue("primaryKeyIndex", 2)
+                .hasFieldOrPropertyWithValue("commitTimestampIndex", 1)
+                .hasFieldOrPropertyWithValue("tieBreakerIndex", 3)
+                .hasFieldOrPropertyWithValue("payloadPhysicalIndexes", new int[] {0, 4});
+
+        // Either column alone is accepted, and a nullable declaration is too: the source fills
+        // the column on every row, so its nullability decides nothing here.
+        Map<String, String> commitOnly = minimalSelectedCellOptions();
+        commitOnly.put("scan.change-stream.commit-timestamp-column", "commit_ts");
+        assertThat(
+                        source(
+                                commitColumnSchema(DataTypes.TIMESTAMP_LTZ(9), DataTypes.INT()),
+                                commitOnly))
+                .isInstanceOf(BigtableChangeStreamDynamicSource.class);
+    }
+
+    @Test
+    void rejectsACommitColumnTheTableCannotHold() {
+        ResolvedSchema schema =
+                commitColumnSchema(DataTypes.TIMESTAMP_LTZ(9).notNull(), DataTypes.INT().notNull());
+
+        Map<String, String> undeclared = commitColumnOptions();
+        undeclared.put("scan.change-stream.commit-timestamp-column", "committed_at");
+        assertThatThrownBy(() -> source(schema, undeclared))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.commit-timestamp-column' names column"
+                                + " 'committed_at', which the table does not declare");
+
+        Map<String, String> key = commitColumnOptions();
+        key.put("scan.change-stream.tie-breaker-column", "row_id");
+        assertThatThrownBy(() -> source(schema, key))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.tie-breaker-column' names the primary-key"
+                                + " column 'row_id'");
+
+        Map<String, String> same = commitColumnOptions();
+        same.put("scan.change-stream.tie-breaker-column", "commit_ts");
+        assertThatThrownBy(() -> source(schema, same))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.tie-breaker-column' names column 'commit_ts' of"
+                                + " type TIMESTAMP_LTZ(9) NOT NULL; declare it INT.");
+
+        Map<String, String> blank = commitColumnOptions();
+        blank.put("scan.change-stream.tie-breaker-column", " ");
+        assertThatThrownBy(() -> source(schema, blank))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.tie-breaker-column' must not be blank");
+
+        // Millisecond precision would let two changes of one key inside a millisecond compare
+        // equal, so only the nanosecond type the service reports is accepted.
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        commitColumnSchema(
+                                                DataTypes.TIMESTAMP_LTZ(3),
+                                                DataTypes.INT().notNull()),
+                                        commitColumnOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.commit-timestamp-column' names column"
+                                + " 'commit_ts' of type TIMESTAMP_LTZ(3); declare it"
+                                + " TIMESTAMP_LTZ(9).");
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        commitColumnSchema(
+                                                DataTypes.TIMESTAMP_LTZ(9), DataTypes.BIGINT()),
+                                        commitColumnOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.tie-breaker-column' names column"
+                                + " 'tie_breaker' of type BIGINT; declare it INT.");
+
+        ResolvedSchema onlyCommitColumns =
+                new ResolvedSchema(
+                        Arrays.asList(
+                                Column.physical("row_id", DataTypes.STRING().notNull()),
+                                Column.physical("commit_ts", DataTypes.TIMESTAMP_LTZ(9)),
+                                Column.physical("tie_breaker", DataTypes.INT())),
+                        Collections.emptyList(),
+                        UniqueConstraint.primaryKey("pk", Collections.singletonList("row_id")));
+        assertThatThrownBy(() -> source(onlyCommitColumns, commitColumnOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("needs at least one non-key physical column");
     }
 
     @Test

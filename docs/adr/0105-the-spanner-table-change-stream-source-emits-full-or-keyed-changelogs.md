@@ -16,7 +16,10 @@ limitations under the License.
 
 # ADR-0105: The Spanner table Change Stream source emits full or keyed changelogs
 
-- Status: Accepted
+- Status: Accepted; refined by
+  [ADR-0194](0194-change-stream-sources-fill-physical-commit-coordinate-columns.md) (2026-10-31),
+  which fills physical columns with the commit timestamp, record sequence and mod number of every
+  row, a key-only delete included
 - Date: 2026-08-13
 - Issues: [#582](https://github.com/flink-gcp/flink-connector-gcp/issues/582), [#583](https://github.com/flink-gcp/flink-connector-gcp/issues/583) (under [#225](https://github.com/flink-gcp/flink-connector-gcp/issues/225)), [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635)
 - Modules: spanner

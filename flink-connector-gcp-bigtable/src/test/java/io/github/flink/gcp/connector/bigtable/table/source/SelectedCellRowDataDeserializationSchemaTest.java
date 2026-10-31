@@ -58,7 +58,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                     DataTypes.FIELD("row_id", DataTypes.STRING().notNull()),
                     DataTypes.FIELD("score", DataTypes.INT()));
     private static final SelectedCellTableSchema TABLE_SCHEMA =
-            SelectedCellTableSchema.of(PHYSICAL_TYPE, new int[] {1});
+            SelectedCellTableSchema.of(PHYSICAL_TYPE, new int[] {1}, null, null);
 
     @Test
     void decodesAnUpsertAndInsertsTheNonLeadingKeyBeforeMetadata() throws Exception {
@@ -118,6 +118,71 @@ class SelectedCellRowDataDeserializationSchemaTest {
     }
 
     @Test
+    void fillsTheCommitColumnsOfAnUpsertAndDecodesTheRestThroughTheFormat() throws Exception {
+        Instant commitTime = Instant.parse("2026-10-31T00:00:01.123456789Z");
+        List<RowData> output = new ArrayList<>();
+
+        commitColumnSchema(oneRow(StringData.fromString("Alice"), 7))
+                .deserialize(
+                        mutation(
+                                ByteString.copyFromUtf8("row-1"),
+                                commitTime,
+                                -3,
+                                builder -> {
+                                    builder.deleteCells(
+                                            FAMILY, QUALIFIER, Range.TimestampRange.unbounded());
+                                    builder.startCell(FAMILY, QUALIFIER, 1L);
+                                    builder.cellValue(ByteString.copyFromUtf8("payload"));
+                                    builder.finishCell();
+                                }),
+                        collectingInto(output));
+
+        assertThat(output).hasSize(1);
+        RowData row = output.get(0);
+        assertThat(row.getRowKind()).isEqualTo(RowKind.UPDATE_AFTER);
+        assertThat(row.getTimestamp(0, 9).toInstant()).isEqualTo(commitTime);
+        assertThat(row.getString(1).toString()).isEqualTo("row-1");
+        assertThat(row.getString(2).toString()).isEqualTo("Alice");
+        assertThat(row.getInt(3)).isEqualTo(-3);
+        assertThat(row.getInt(4)).isEqualTo(7);
+    }
+
+    @Test
+    void aKeyOnlyDeleteCarriesItsOwnCommitColumns() throws Exception {
+        // The point of the commit columns (#1960): a delete's own coordinates, not those of the
+        // change it deletes, so a sink downstream can order the two.
+        Instant commitTime = Instant.parse("2026-10-31T00:00:02.000000002Z");
+        List<RowData> output = new ArrayList<>();
+
+        commitColumnSchema(
+                        payload(
+                                (bytes, out) -> {
+                                    throw new AssertionError(
+                                            "delete must not invoke the value format");
+                                }))
+                .deserialize(
+                        mutation(
+                                ByteString.copyFromUtf8("row-1"),
+                                commitTime,
+                                8,
+                                builder ->
+                                        builder.deleteCells(
+                                                FAMILY,
+                                                QUALIFIER,
+                                                Range.TimestampRange.unbounded())),
+                        collectingInto(output));
+
+        assertThat(output).hasSize(1);
+        RowData row = output.get(0);
+        assertThat(row.getRowKind()).isEqualTo(RowKind.DELETE);
+        assertThat(row.getTimestamp(0, 9).toInstant()).isEqualTo(commitTime);
+        assertThat(row.getString(1).toString()).isEqualTo("row-1");
+        assertThat(row.isNullAt(2)).isTrue();
+        assertThat(row.getInt(3)).isEqualTo(8);
+        assertThat(row.isNullAt(4)).isTrue();
+    }
+
+    @Test
     void aMalformedRowKeyIsReportedWithTheKeyEscaped() {
         // The guard RowToRowDataConverter's row-key decode carries, on this path: a BIGINT primary
         // key meeting the four-byte key an external writer stored used to surface as a bare
@@ -136,7 +201,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                                             "delete must not invoke the value format");
                                 }),
                         new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
-                        SelectedCellTableSchema.of(type, new int[] {0}),
+                        SelectedCellTableSchema.of(type, new int[] {0}, null, null),
                         TrailingBytes.IGNORE,
                         new ChangeStreamReadableMetadata[0],
                         InternalTypeInfo.of((RowType) type.getLogicalType()));
@@ -173,7 +238,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                                             "delete must not invoke the value format");
                                 }),
                         new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
-                        SelectedCellTableSchema.of(type, new int[] {0}),
+                        SelectedCellTableSchema.of(type, new int[] {0}, null, null),
                         TrailingBytes.IGNORE,
                         new ChangeStreamReadableMetadata[0],
                         InternalTypeInfo.of((RowType) type.getLogicalType()));
@@ -214,7 +279,7 @@ class SelectedCellRowDataDeserializationSchemaTest {
                                             "delete must not invoke the value format");
                                 }),
                         new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
-                        SelectedCellTableSchema.of(type, new int[] {0}),
+                        SelectedCellTableSchema.of(type, new int[] {0}, null, null),
                         TrailingBytes.REJECT,
                         new ChangeStreamReadableMetadata[0],
                         InternalTypeInfo.of((RowType) type.getLogicalType()));
@@ -297,6 +362,31 @@ class SelectedCellRowDataDeserializationSchemaTest {
                 producedType);
     }
 
+    /**
+     * A table whose commit columns sit on both sides of the key and of the payload, so a payload
+     * field landing on a commit column's position, or the reverse, shows as a wrong value.
+     */
+    private static SelectedCellRowDataDeserializationSchema commitColumnSchema(
+            DeserializationSchema<RowData> payload) {
+        DataType type =
+                DataTypes.ROW(
+                        DataTypes.FIELD("commit_ts", DataTypes.TIMESTAMP_LTZ(9).notNull()),
+                        DataTypes.FIELD("row_id", DataTypes.STRING().notNull()),
+                        DataTypes.FIELD("name", DataTypes.STRING()),
+                        DataTypes.FIELD("tie_breaker", DataTypes.INT().notNull()),
+                        DataTypes.FIELD("score", DataTypes.INT()));
+        SelectedCellTableSchema tableSchema =
+                SelectedCellTableSchema.of(type, new int[] {1}, "commit_ts", "tie_breaker");
+        assertThat(tableSchema.getPayloadDataType()).isEqualTo(TABLE_SCHEMA.getPayloadDataType());
+        return new SelectedCellRowDataDeserializationSchema(
+                payload,
+                new SelectedCellMutationClassifier(FAMILY, QUALIFIER, "cluster-1"),
+                tableSchema,
+                TrailingBytes.IGNORE,
+                new ChangeStreamReadableMetadata[0],
+                InternalTypeInfo.of((RowType) type.getLogicalType()));
+    }
+
     private static SelectedCellRowDataDeserializationSchema schema(
             CollectorDeserializer payload, ChangeStreamReadableMetadata[] metadata) {
         return schema(payload(payload), metadata);
@@ -375,9 +465,17 @@ class SelectedCellRowDataDeserializationSchemaTest {
     private static BigtableChangeStreamMutation mutation(
             ByteString rowKey,
             java.util.function.Consumer<ChangeStreamRecordBuilder<ChangeStreamRecord>> entries) {
+        return mutation(rowKey, Instant.parse("2026-08-13T00:00:00Z"), 0, entries);
+    }
+
+    private static BigtableChangeStreamMutation mutation(
+            ByteString rowKey,
+            Instant commitTime,
+            int tieBreaker,
+            java.util.function.Consumer<ChangeStreamRecordBuilder<ChangeStreamRecord>> entries) {
         ChangeStreamRecordBuilder<ChangeStreamRecord> builder =
                 new DefaultChangeStreamRecordAdapter().createChangeStreamRecordBuilder();
-        builder.startUserMutation(rowKey, "cluster-1", Instant.parse("2026-08-13T00:00:00Z"), 0);
+        builder.startUserMutation(rowKey, "cluster-1", commitTime, tieBreaker);
         entries.accept(builder);
         return TestBigtableChangeStreamMutations.convert(
                 (ChangeStreamMutation)
