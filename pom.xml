@@ -158,7 +158,7 @@ limitations under the License.
              the parent's ignoreNonResolvableArtifacts=true makes the check log a
              warning and pass. -->
         <japicmp.referenceVersion>1.2.0</japicmp.referenceVersion>
-        <google-cloud-libraries-bom.version>26.90.0</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.91.0</google-cloud-libraries-bom.version>
         <!-- OpenTelemetry, whose Metrics API base's ClientMetrics implements (#713, ADR-0186)
              and which most Google Cloud clients bring in transitively, their built-in metrics
              export using the SDK. libraries-bom manages none of it, so this import is what keeps the
