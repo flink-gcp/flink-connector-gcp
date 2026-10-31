@@ -102,7 +102,7 @@ jobs:
       # The gate list comes from the same locked Java parser as the class
       # inventory, so a new gate gets a job here without a workflow edit, and a
       # gate that selects no class fails before any billed job starts.
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: uv
 
@@ -159,7 +159,7 @@ jobs:
       # instance, observe its id and stop it after the Cloud Tasks class.
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '17'
@@ -167,13 +167,13 @@ jobs:
 
       # The E2E class inventory uses the same locked Java parser as the
       # per-pull-request gated-tag audit.
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: uv
 
       # Unpinned, and install-action rather than mise: see the note on the same
       # step in verify.yaml.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
         with:
           tool: just
 
@@ -208,7 +208,7 @@ jobs:
       # failed job from failing on a name an earlier attempt already used.
       - name: Retain the gate's evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-evidence-${{ matrix.gate }}
           path: target/e2e/evidence/
@@ -230,7 +230,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: uv
 
@@ -238,7 +238,7 @@ jobs:
       # all, is not this step's failure to report: the aggregation below
       # derives the gates and their classes from the tree, and names every gate
       # that left nothing.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           pattern: e2e-evidence-*
@@ -276,7 +276,7 @@ jobs:
       # them; the per-gate artifacts above are replaced by a re-run.
       - name: Retain E2E evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: target/e2e/evidence/

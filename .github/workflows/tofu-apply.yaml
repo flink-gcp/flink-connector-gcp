@@ -83,7 +83,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: opentofu
 
@@ -102,7 +102,7 @@ jobs:
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
       - name: Install environment-lock tools
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: uv
       - name: Acquire the shared Tier-3 environment lock
@@ -116,12 +116,12 @@ jobs:
 
       - name: Install Kubernetes tools
         if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: kubectl uv
       - name: Install Helm
         if: matrix.target.working_directory == 'opentofu/tier3-operator'
-        uses: jdx/mise-action@7a4e45a543138629540c9a1616d08632b893e492 # v5.0.1
+        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: helm
       - name: Install the GKE credential plugin
@@ -217,7 +217,7 @@ jobs:
       - name: Mint an App token for the follow-up pull request
         id: app-token
         if: failure() && steps.apply.outcome == 'failure' && env.APP_CREDENTIALS != ''
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ vars.BOT_APP_ID }}
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
