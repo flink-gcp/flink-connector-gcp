@@ -16,6 +16,8 @@
 
 package io.github.flink.gcp.connector.spanner.sink.writer;
 
+import org.apache.flink.util.Preconditions;
+
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.MutationGroup;
@@ -23,6 +25,7 @@ import com.google.rpc.Status;
 
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -48,6 +51,9 @@ final class FakeSpannerDatabaseAccess implements SpannerDatabaseAccess {
 
     private CellWeights cellWeights = CellWeights.empty();
     private PrimaryKeys primaryKeys = PrimaryKeys.empty();
+    private final Deque<Object> primaryKeyOutcomes = new ArrayDeque<>();
+    private final List<String> primaryKeyReads = new ArrayList<>();
+    private final List<String> cellWeightReads = new ArrayList<>();
     private int closeCalls;
 
     /** Scripts the next requests, in order. Anything beyond the script is applied in full. */
@@ -68,6 +74,35 @@ final class FakeSpannerDatabaseAccess implements SpannerDatabaseAccess {
         return this;
     }
 
+    /**
+     * Scripts the next reads of the primary keys, in order: a {@link PrimaryKeys} is returned and
+     * kept for the reads after it, an {@link IOException} is thrown. Unscripted reads return the
+     * keys last returned or set.
+     */
+    FakeSpannerDatabaseAccess thenPrimaryKeyReads(Object... outcomes) {
+        for (Object outcome : outcomes) {
+            Preconditions.checkArgument(
+                    outcome instanceof PrimaryKeys || outcome instanceof IOException,
+                    "outcome must be PrimaryKeys or IOException");
+            primaryKeyOutcomes.add(outcome);
+        }
+        return this;
+    }
+
+    /**
+     * The table every read of the primary keys was narrowed to, {@code null} for none, in order.
+     */
+    List<String> primaryKeyReads() {
+        return primaryKeyReads;
+    }
+
+    /**
+     * The table every read of the cell weights was narrowed to, {@code null} for none, in order.
+     */
+    List<String> cellWeightReads() {
+        return cellWeightReads;
+    }
+
     /** The mutations of every request, in the order they were sent. */
     List<List<Mutation>> requests() {
         return requests;
@@ -78,12 +113,21 @@ final class FakeSpannerDatabaseAccess implements SpannerDatabaseAccess {
     }
 
     @Override
-    public CellWeights readCellWeights() {
+    public CellWeights readCellWeights(@Nullable String table) {
+        cellWeightReads.add(table);
         return cellWeights;
     }
 
     @Override
-    public PrimaryKeys readPrimaryKeys() {
+    public PrimaryKeys readPrimaryKeys(@Nullable String table) throws IOException {
+        primaryKeyReads.add(table);
+        Object next = primaryKeyOutcomes.poll();
+        if (next instanceof IOException) {
+            throw (IOException) next;
+        }
+        if (next != null) {
+            primaryKeys = (PrimaryKeys) next;
+        }
         return primaryKeys;
     }
 

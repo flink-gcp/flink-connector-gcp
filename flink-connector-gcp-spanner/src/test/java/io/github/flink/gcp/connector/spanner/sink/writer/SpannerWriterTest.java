@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.Timeout;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -286,6 +288,144 @@ class SpannerWriterTest {
         assertThat(sentNames()).containsExactly(List.of("1:a"), List.of("1:b", "2:a"));
     }
 
+    // ---------------------------------------------------------------- tables the keys do not list
+
+    @Test
+    void perKeyReadsTheKeysAgainForATableCreatedAfterOpen() throws Exception {
+        // Open knows no table; the read for Orders finds it.
+        access.thenPrimaryKeyReads(PrimaryKeys.empty(), ORDERS_KEY);
+        SinkWriter<String> writer = writer(keyed(), perKey(), new RecordingHandler());
+
+        write(writer, "1:a", "2:a", "3:a", "1:b");
+        writer.flush(false);
+
+        // Named from the first mutation on: the rows share a request until 1 repeats.
+        assertThat(sentNames()).containsExactly(List.of("1:a", "2:a", "3:a"), List.of("1:b"));
+        assertThat(access.primaryKeyReads()).hasSize(2);
+    }
+
+    @Test
+    void perKeySendsTheBatchBeforeReadingTheKeysAgain() throws Exception {
+        access.thenPrimaryKeyReads(ORDERS_KEY, ORDERS_AND_LINES_KEYS);
+        SinkWriter<String> writer = writer(ordersOrLines(), perKey(), new RecordingHandler());
+
+        write(writer, "1:a", "2:a", "L1:a", "3:a", "L2:a");
+        writer.flush(false);
+
+        // The batch held before the read is sent; after it, Lines rows are named like any other.
+        assertThat(sentNames())
+                .containsExactly(List.of("1:a", "2:a"), List.of("L1:a", "3:a", "L2:a"));
+        assertThat(access.primaryKeyReads()).hasSize(2);
+    }
+
+    @Test
+    void perKeyReadsTheKeysAgainOnceForANameTheyStillDoNotList() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SinkWriter<String> writer = writer(ordersOrLines(), perKey(), new RecordingHandler());
+
+        // Lines stays unlisted, as a synonym does: ordered against the whole batch each time, and
+        // read for only once.
+        write(writer, "1:a", "L1:a", "2:a", "L2:a");
+        writer.flush(false);
+
+        assertThat(sentNames())
+                .containsExactly(List.of("1:a"), List.of("L1:a"), List.of("2:a"), List.of("L2:a"));
+        assertThat(access.primaryKeyReads()).hasSize(2);
+    }
+
+    @Test
+    void perKeyReadsTheKeysAgainOnceForEverySpellingOfOneName() throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        SpannerMutationSerializationSchema<String> serializer =
+                (element, context) ->
+                        Mutation.newInsertOrUpdateBuilder(element)
+                                .set("Id")
+                                .to(1L)
+                                .set("Name")
+                                .to(element)
+                                .build();
+        SinkWriter<String> writer = writer(serializer, perKey(), new RecordingHandler());
+
+        // Table names compare without case, so these are one unlisted name.
+        write(writer, "Lines", "LINES", "lines");
+        writer.flush(false);
+
+        assertThat(access.primaryKeyReads()).hasSize(2);
+    }
+
+    @Test
+    void perKeyRetriesATransientFailureToReadTheKeysAgain() throws Exception {
+        access.thenPrimaryKeyReads(
+                PrimaryKeys.empty(),
+                readFailure(ErrorCode.UNAVAILABLE),
+                readFailure(ErrorCode.DEADLINE_EXCEEDED),
+                ORDERS_KEY);
+        SinkWriter<String> writer = writer(keyed(), perKey(fastRetries()), new RecordingHandler());
+
+        write(writer, "1:a", "2:a");
+        writer.flush(false);
+
+        assertThat(sentNames()).containsExactly(List.of("1:a", "2:a"));
+        assertThat(access.primaryKeyReads()).hasSize(4);
+    }
+
+    @Test
+    void perKeyFailsTheJobWhenTheKeysCannotBeReadAgain() throws Exception {
+        access.thenPrimaryKeyReads(PrimaryKeys.empty(), readFailure(ErrorCode.PERMISSION_DENIED));
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer = writer(keyed(), perKey(fastRetries()), handler);
+
+        assertThatThrownBy(() -> writer.write("1:a", TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessage("Failed to read the primary keys.")
+                .hasCauseInstanceOf(SpannerException.class);
+        // Not retried, and not routed: the schema read failed, not the record.
+        assertThat(access.primaryKeyReads()).hasSize(2);
+        assertThat(handler.handled).isEmpty();
+    }
+
+    @Test
+    void perKeyGivesUpReadingTheKeysAgainWhenTheRecoveryBudgetIsSpent() throws Exception {
+        access.thenPrimaryKeyReads(
+                PrimaryKeys.empty(),
+                readFailure(ErrorCode.UNAVAILABLE),
+                readFailure(ErrorCode.UNAVAILABLE));
+        SinkWriter<String> writer =
+                writer(
+                        keyed(),
+                        perKey(fastRetries().recoveryMaxAttempts(2)),
+                        new RecordingHandler());
+
+        assertThatThrownBy(() -> writer.write("1:a", TestContexts.NO_OP))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("after 2 attempt(s)")
+                .hasMessageContaining("recoveryMaxAttempts");
+        assertThat(access.primaryKeyReads()).hasSize(3);
+    }
+
+    @Test
+    void perKeyReadsTheKeysAgainForTheTableTheSerializerDeclares() throws Exception {
+        access.thenPrimaryKeyReads(PrimaryKeys.empty(), ORDERS_KEY);
+        SinkWriter<String> writer = writer(new OrdersOnly(), perKey(), new RecordingHandler());
+
+        write(writer, "1:a");
+        writer.flush(false);
+
+        assertThat(access.primaryKeyReads()).hasSize(2).last().isEqualTo("Orders");
+    }
+
+    @Test
+    void withoutTheModeTheKeysAreNeverReadAgain() throws Exception {
+        SinkWriter<String> writer =
+                writer(ordersOrLines(), SpannerWriterOptions.defaults(), new RecordingHandler());
+        int readsAtOpen = access.primaryKeyReads().size();
+
+        write(writer, "1:a", "L1:a");
+        writer.flush(false);
+
+        assertThat(access.primaryKeyReads()).hasSize(readsAtOpen);
+    }
+
     // ---------------------------------------------------------------- per-mutation failures
 
     @Test
@@ -430,7 +570,7 @@ class SpannerWriterTest {
                         .build();
         SinkWriter<String> writer =
                 ((SpannerMutationsSink<String>) sink)
-                        .createWriter(access, weights(), access.readPrimaryKeys(), metrics);
+                        .createWriter(access, weights(), openKeys(), metrics);
 
         writer.write("a", TestContexts.NO_OP);
         writer.flush(false);
@@ -656,6 +796,50 @@ class SpannerWriterTest {
                     .keyColumn("Orders", "Id", 1, "INT64")
                     .build();
 
+    private static final PrimaryKeys ORDERS_AND_LINES_KEYS =
+            PrimaryKeys.builder(Dialect.GOOGLE_STANDARD_SQL)
+                    .keyColumn("Orders", "Id", 1, "INT64")
+                    .keyColumn("Lines", "Id", 1, "STRING(MAX)")
+                    .build();
+
+    /**
+     * Writes {@code Lid:name} records to {@code Lines} and {@code id:name} ones to {@code Orders}.
+     */
+    private static SpannerMutationSerializationSchema<String> ordersOrLines() {
+        return (element, context) ->
+                element.startsWith("L")
+                        ? Mutation.newInsertOrUpdateBuilder("Lines")
+                                .set("Id")
+                                .to(element.substring(0, element.indexOf(':')))
+                                .set("Name")
+                                .to(element)
+                                .build()
+                        : keyed().serialize(element, context);
+    }
+
+    /** Writes {@code Orders} only, and says so, as the Table sink's serializer does. */
+    private static final class OrdersOnly implements SingleTableSerializationSchema<String> {
+
+        private static final long serialVersionUID = 1L;
+
+        @Override
+        public Mutation serialize(String element, SinkWriter.Context context) throws IOException {
+            return keyed().serialize(element, context);
+        }
+
+        @Override
+        public String table() {
+            return "Orders";
+        }
+    }
+
+    /** A failed schema read, as the service adapter reports one. */
+    private static IOException readFailure(ErrorCode code) {
+        return new IOException(
+                "Failed to read the primary keys.",
+                SpannerExceptionFactory.newSpannerException(code, code.name()));
+    }
+
     /** Writes {@code id:name} records as upserts of the row {@code id}. */
     private static SpannerMutationSerializationSchema<String> keyed() {
         return (element, context) ->
@@ -723,11 +907,20 @@ class SpannerWriterTest {
                         .failedMutationHandler(handler)
                         .build();
         return ((SpannerMutationsSink<String>) sink)
-                .createWriter(access, weights(), access.readPrimaryKeys(), metrics);
+                .createWriter(access, weights(), openKeys(), metrics);
     }
 
     private CellWeights weights() {
-        return access.readCellWeights();
+        return access.readCellWeights(null);
+    }
+
+    /** The read the sink makes when the writer opens, which the fake counts like any other. */
+    private PrimaryKeys openKeys() {
+        try {
+            return access.readPrimaryKeys(null);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     private static SpannerWriterOptions.Builder fastRetries() {

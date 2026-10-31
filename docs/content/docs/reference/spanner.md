@@ -110,7 +110,7 @@ decides how large a request grows**. The reasoning is under
 
 | Option | Default | What it does |
 |---|---|---|
-| `orderingMode` | `NONE` | Experimental. `PER_KEY` applies mutations of one row in the order the subtask received them, sending the batch before a mutation whose row it already holds. Reads every table's primary key from `INFORMATION_SCHEMA` when the writer opens. A mutation whose row cannot be named, such as a key-range delete, is ordered against its whole table. See [Order per row]({{< relref "docs/connectors/datastream/spanner" >}}#order-per-row) |
+| `orderingMode` | `NONE` | Experimental. `PER_KEY` applies mutations of one row in the order the subtask received them, sending the batch before a mutation whose row it already holds. Reads every table's primary key from `INFORMATION_SCHEMA` when the writer opens, and reads the keys again, once per name, for a table the first read did not list. A mutation whose row cannot be named, such as a key-range delete, is ordered against its whole table. See [Order per row]({{< relref "docs/connectors/datastream/spanner" >}}#order-per-row) |
 
 ### Retry budget
 

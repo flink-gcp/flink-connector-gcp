@@ -22,7 +22,10 @@ import org.apache.flink.annotation.VisibleForTesting;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ResultSet;
+import com.google.cloud.spanner.Statement;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
+
+import javax.annotation.Nullable;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -135,7 +138,48 @@ public final class CellWeights {
     }
 
     /**
-     * Reads the weights from the result of {@link #query(Dialect)}. Does not close the result set.
+     * Returns the query of {@link #query(Dialect)}, narrowed to one table when {@code table} names
+     * one. The table is matched without case in both dialects, as table names compare; that reads
+     * one table at most, because GoogleSQL names are case-insensitive and the service refuses a
+     * PostgreSQL table whose name differs from another's only by case.
+     *
+     * @param dialect the database's dialect
+     * @param table the table's native API name, {@code table} or {@code schema.table}, or {@code
+     *     null} for every table of the database
+     * @return the statement to run
+     * @throws IllegalArgumentException if {@code table} is not one of those two shapes
+     */
+    static Statement query(Dialect dialect, @Nullable String table) {
+        String sql = query(dialect);
+        if (table == null) {
+            return Statement.of(sql);
+        }
+        SpannerTableName name = SpannerTableName.ofApiName(table, dialect);
+        // query(dialect) has already refused a dialect it has no statement for.
+        if (dialect == Dialect.POSTGRESQL) {
+            return Statement.newBuilder(
+                            sql
+                                    + " AND LOWER(table_schema) = LOWER($1)"
+                                    + " AND LOWER(table_name) = LOWER($2)")
+                    .bind("p1")
+                    .to(name.schema())
+                    .bind("p2")
+                    .to(name.table())
+                    .build();
+        }
+        return Statement.newBuilder(
+                        sql
+                                + " AND LOWER(TABLE_SCHEMA) = LOWER(@schema_name)"
+                                + " AND LOWER(TABLE_NAME) = LOWER(@table_name)")
+                .bind("schema_name")
+                .to(name.schema())
+                .bind("table_name")
+                .to(name.table())
+                .build();
+    }
+
+    /**
+     * Reads the weights from the result of either query. Does not close the result set.
      *
      * @param resultSet the query result, positioned before the first row
      * @param dialect the database's dialect

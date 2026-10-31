@@ -242,4 +242,26 @@ class SpannerTableNameTest {
         assertThat(InstantiationUtil.clone(table.accessPath("\"ByScore\"", "scan.index")))
                 .isEqualTo(table.accessPath("\"ByScore\"", "scan.index"));
     }
+
+    @Test
+    void parsesANativeApiNameIntoTheSchemaAndTableAMutationAddresses() {
+        SpannerTableName qualified = SpannerTableName.ofApiName("sales.Orders", Dialect.POSTGRESQL);
+        assertThat(qualified.schema()).isEqualTo("sales");
+        assertThat(qualified.table()).isEqualTo("Orders");
+        assertThat(qualified.apiName()).isEqualTo("sales.Orders");
+
+        assertThat(SpannerTableName.ofApiName("Orders", Dialect.POSTGRESQL).schema())
+                .isEqualTo("public");
+        assertThat(SpannerTableName.ofApiName("Orders", Dialect.GOOGLE_STANDARD_SQL).schema())
+                .isEmpty();
+    }
+
+    @Test
+    void refusesANativeApiNameOfAnotherShape() {
+        for (String name : new String[] {"", " ", "a.b.c", ".Orders", "sales."}) {
+            assertThatThrownBy(() -> SpannerTableName.ofApiName(name, Dialect.GOOGLE_STANDARD_SQL))
+                    .as(name)
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
 }

@@ -255,6 +255,7 @@ for the cross-connector distinction between a planner key and a destination writ
 A declared `PRIMARY KEY` makes the sink an upsert sink.
 `INSERT` and `UPDATE_AFTER` rows use Spanner `insertOrUpdate`, and `DELETE` rows use a key built in the declared column order.
 The key may be composite, but every member must map to a Spanner key type.
+The sink reads the schema of its own table only, for the [batch limits]({{< relref "docs/connectors/datastream/spanner" >}}#batching) and, with `sink.ordering-mode` set to `per-key`, for the primary key.
 
 On Flink 2.x a delete may carry the key alone, which is all the sink reads from it.
 On Flink 2.2 and 2.3, two Flink bugs fixed in 2.4.0 affect such a delete, whose non-key columns are null.
@@ -461,7 +462,8 @@ The sink is **at-least-once**.
 Replaying one upsert or delete is idempotent, while insert-only writes can fail on a replayed primary key.
 The writer submits records as separate `BatchWrite` mutation groups, whose application order within one request is not guaranteed, so by default successive updates to the same key in one request do not provide a latest-input-value guarantee.
 `'sink.ordering-mode' = 'per-key'` sends the batch before a change whose key it already holds, so each request carries a key at most once and the changes of a key are applied in the order the sink subtask received them, unless the service applies an attempt that timed out on the client after a later request.
-It costs one request per change of a key changed repeatedly in a row, and it reads the database's primary keys when the writer opens.
+It costs one request per change of a key changed repeatedly in a row, and it reads the table's primary key when the writer opens.
+The writer cannot detect a changed primary key, so restart a `per-key` job after dropping its table and creating it again with another primary key.
 The order kept is the order the sink subtask receives, so it is the changelog's order for a key only when every change of the key reaches one sink subtask.
 They do when Flink shuffles the input by the PRIMARY KEY, which it does for an upsert changelog it materializes and when the sink's parallelism differs from the input's; an insert-only input carrying several rows per key at the same parallelism is not shuffled unless `table.exec.sink.keyed-shuffle` is `FORCE`.
 The [DataStream page]({{< relref "docs/connectors/datastream/spanner" >}}#order-per-row) describes which changes the writer orders against a whole table, and the measured cost.

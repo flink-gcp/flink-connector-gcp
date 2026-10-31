@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-10-29 (client library read in google-cloud-spanner 6.124.0; emulator behavior measured
   2026-10-28 against the pinned `gcr.io/cloud-spanner-emulator/emulator` image, three runs; service
   behavior measured 2026-10-29 on an ephemeral 100-processing-unit `STANDARD` instance in
-  `regional-us-central1`), revised by [#1927] (2026-10-30)
-- Issues: [#1619], [#1618], [#1556], [#1927]
+  `regional-us-central1`), revised by [#1927] (2026-10-30) and [#1928] (2026-10-30)
+- Issues: [#1619], [#1618], [#1556], [#1927], [#1928]
 - Modules: spanner (`sink`, `sink.writer`, `table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Order per row;
   `docs/content/docs/connectors/table/spanner.md` § Delivery guarantee;
@@ -61,6 +61,13 @@ risk.
   there ([#1927]). The catalog's `SpannerTypeSpelling` moved to the module root so that the sink
   parses the spellings without reaching into the table layer. Under `NONE` the writer opens
   exactly as before.
+- **The read covers the tables the serializer may name** ([#1928]). The DataStream serializer
+  chooses a table per mutation ([ADR-0075]), so its writer reads every table. The Table sink writes
+  the one table it was planned for, and its serializer declares that table by implementing the
+  internal `SingleTableSerializationSchema`, so its writer reads that table alone, as it does for the cell weights
+  ([ADR-0077]). The table is matched without case in both dialects, as table names compare, which
+  reads one table at most: GoogleSQL names are case-insensitive, and the service refuses a
+  PostgreSQL table whose name differs from another's only by case.
 - **Doubt resolves toward the whole table.** Finding two rows the same when they are not costs an
   earlier flush; finding them different when they are the same costs the order. So a mutation whose
   row the writer cannot name is ordered against every mutation of its table: a delete of a key range
@@ -70,12 +77,25 @@ risk.
   delete. A GoogleSQL table declared with `PRIMARY KEY ()` is one of these too, and there the
   answer is exact rather than cautious: it has no key column and holds one row at most, so its
   table is its row ([#1927]).
-- **A table name the schema did not list is ordered against the whole database.** It may be a table
-  created after the writer opened, or a synonym, which addresses a listed table's rows under
-  another name; only the whole database is sure to contain the rows it addresses. A synonym is a
-  `TABLES` row of type `SYNONYM`, not `BASE TABLE`, so the query does not list it. The independent
-  review found the synonym case: the first version ordered an unlisted name against its own name
-  only, so an upsert of `Orders` and a delete through a synonym of it could share a request.
+- **A table name the keys do not list makes the writer send its batch and read them again, once
+  per name** ([#1928]). The name may be a table created after the writer opened, which the new read
+  lists, so its rows are named from then on. It may also be a synonym, which addresses a listed
+  table's rows under another name, or a table the writer's role cannot see; the new read does not
+  list those either, and they stay ordered against the whole database, since only the whole
+  database is sure to contain the rows they address. A synonym is a `TABLES` row of type
+  `SYNONYM`, not `BASE TABLE`, so the query never lists it. The independent review of [#1619]
+  found the synonym case: the first version ordered an unlisted name against its own name only, so
+  an upsert of `Orders` and a delete through a synonym of it could share a request. A name the new
+  read does not list is remembered, and never triggers another read, so the reads a writer makes
+  are bounded by the distinct unlisted names it meets. A name that is neither a table nor a synonym
+  fails its write with `NOT_FOUND`, which fails the job, and the restart reads the schema at open.
+  The batch is sent before the read: the mutation would have sent it anyway, and sending it means
+  every row the batch held was named by the keys the next rows are compared with.
+- **A failed read again follows the batch write's failure policy** ([ADR-0075], [ADR-0076]).
+  `ABORTED`, `UNAVAILABLE`, `DEADLINE_EXCEEDED` and `RESOURCE_EXHAUSTED` are retried under
+  `recoveryInitialBackoff`, `recoveryMaxBackoff` and `recoveryMaxAttempts`, and fail the job once
+  those are spent; every other status fails the job at once. The read runs outside the per-record
+  guard, so its failure is never routed as a failed mutation.
 - **A key value is compared as its column's type reads it, and only in the client library's
   representation of that type.** Spanner receives a mutation's values untyped and reads each by its
   column's type, so one row can be addressed in more than one spelling, such as a `UUID` key as a
@@ -91,7 +111,8 @@ risk.
 - **Table names compare without case in both dialects.** The cell weights match a PostgreSQL table
   name exactly ([ADR-0077]), and whether the service does is not measured; an undercounted cell
   weight is harmless, but a table split in two here would break the order. Folding only merges, and
-  two PostgreSQL tables whose names differ only by case are each ordered as a whole.
+  never merges two tables: the service refuses a PostgreSQL table whose name differs from
+  another's only by case, measured for [#1928].
 - **The commit-timestamp placeholder is one value.** Groups of one request may commit in one
   transaction, and so at one timestamp, so two writes keyed by it may address one row.
 - **The option is `orderingMode(OrderingMode)` on `SpannerWriterOptions` and `sink.ordering-mode` =
@@ -152,6 +173,22 @@ were not returned.
   falls in the same range in both modes, and the changelog shape's spread between runs is wider than
   the difference between the modes.
 
+- [#1928]'s firing controls, each a mutant run against the tests that should fail it with
+  checkstyle skipped, all failed a test: no read again, a read for every mutation of an unlisted
+  name, the raw table name as the key of the names read for, no batch sent before the read, no
+  retry of a transient read failure, a narrowed query that ignores its table, a serializer's table
+  not taken, and the Table sink's serializer not declaring its table. `SpannerWriteITCase.perKeyNamesTheRowsOfATableCreatedAfterTheWriterOpened`
+  creates a table after the writer opened and writes three of its rows and a repeat, in both
+  dialects on the emulator: two requests, where an unlisted table takes four.
+  `readsOnlyTheNamedTableOutOfTheRealSchema` reads one table, spelled in another case, out of two.
+- Measured against the service on 2026-10-30 for [#1928], through the writer's own database access
+  on two ephemeral 100-processing-unit `STANDARD` instances in `regional-us-central1` that the
+  gated harness created and deleted. A read scoped to a table spelled in another case listed that
+  table alone: in GoogleSQL a default-schema table and a named-schema one, in PostgreSQL an
+  unquoted table and a quoted mixed-case one. A scope naming a synonym listed nothing, and a table
+  created just before a read was listed by it. The service refused to create a PostgreSQL table
+  `"Orders"` beside `orders`: "Schema object names differ only in case".
+
 ## Alternatives declined
 
 - **A per-key sequencer like [ADR-0187]'s.** It holds a write until the earlier one is answered,
@@ -168,22 +205,46 @@ were not returned.
   representation the normalizations missed split a row.
 - **Not shipping the mode**, because the service kept the order in the measurement. The opt-in leaves
   the default unchanged, and the measured order is not a contract a sink can rely on.
+- **Reading the keys again at an interval, or periodically** ([#1928]). The first plan re-read on
+  an unlisted name at most once per interval, to bound a synonym written on every record. The owner
+  asked why the schema must be read on a schedule at all. Remembering the names a read did not
+  list bounds the reads without one, and a name that is neither a synonym nor a table fails its
+  write. A synonym dropped and replaced by a table of its name, or a table the role is later
+  granted, stays ordered against the whole batch until a read made for another name, or a restart,
+  lists it, which costs requests but keeps the order.
+- **A lookup per name, with a cache of names that expires** ([#1928]). It reads one table rather
+  than the scope, but needs a rule for how a lookup by name treats a synonym, and the expiry brings
+  back the schedule the item above removes. Re-reading the scope keeps one query, whose treatment
+  of synonyms was measured on the service.
+- **Warning and keeping the old keys when a read fails** ([#1928]), the first plan. The order would
+  hold, since an unlisted name is ordered against the whole database, but a table created since
+  the writer opened would stay at one request per mutation behind a job that looks healthy. The
+  failures that are not transient, a lost grant or a deleted database, fail the writes as well.
+- **A builder setter for the read scope** ([#1928]). Only this module's Table sink knows its table
+  when the writer is built, and a public setter would let a DataStream user narrow the read below
+  the tables the serializer writes. The serializer declares the scope instead.
+- **Reading the cell weights again with the keys.** See [ADR-0077]: a weight the writer lacks
+  undercounts inside the headroom, while a key it lacks costs a request per mutation.
 
 ## Consequences
 
 - A row written n times in a row takes n requests under `PER_KEY`. A table whose writes the writer
   cannot name, such as one whose key column is generated and whose inserts carry no key, gets one
-  request per mutation, and a table name the schema did not list sends the batch before and after
-  each of its mutations.
+  request per mutation, and a table name the keys do not list even when read again sends the batch
+  before and after each of its mutations.
 - The order kept is the order one subtask received. The DataStream user must key the stream by
   primary key before the sink, and the Table sink gets it when Flink shuffles the input by the
   primary key, which an insert-only input at the sink's own parallelism is not unless
   `table.exec.sink.keyed-shuffle` is `FORCE`.
 - One order is out of the writer's reach, as in [ADR-0175]: an attempt that timed out on the client
   can still be applied by the service after a later request.
-- A table created after the writer opened is ordered against the whole database until the writer is
-  recreated, which a job restart does. A table dropped and created again with another primary key is compared by
-  its old key until then, which can split a row; the mode does not detect it.
+- A table created after the writer opened costs one schema read and one flush, at its first
+  mutation, and is named from then on. A synonym costs one read, the first time it appears, and is
+  ordered against the whole batch at every mutation, as before.
+- A table dropped and created again with another primary key is still compared by its old key
+  until the writer is created again, which can split a row; the mode does not detect it, because no
+  schema version fences the read against the write. The DataStream and Table pages tell the user to
+  restart a `per-key` job after such a change ([#1928]).
 - Rows related by an interleaved parent's `ON DELETE CASCADE`, a foreign key or a `UNIQUE` index
   are different rows and are not ordered against each other.
 - `OrderingMode` is `@Experimental`, a closure stop on the `@Public` `SpannerWriterOptions`
@@ -194,7 +255,9 @@ were not returned.
 [#1618]: https://github.com/flink-gcp/flink-connector-gcp/issues/1618
 [#1619]: https://github.com/flink-gcp/flink-connector-gcp/issues/1619
 [#1927]: https://github.com/flink-gcp/flink-connector-gcp/issues/1927
+[#1928]: https://github.com/flink-gcp/flink-connector-gcp/issues/1928
 [ADR-0075]: 0075-the-spanner-sink-batch-writes-and-owns-the-whole-retry-loop.md
+[ADR-0076]: 0076-two-spanner-statuses-are-routed-and-a-request-failure-never-is.md
 [ADR-0077]: 0077-batch-limits-are-counted-in-index-aware-cells-read-once-at-open.md
 [ADR-0124]: 0124-the-stability-boundary-at-1-0-0-is-a-promoted-public-entry-surface-checked-by-japicmp.md
 [ADR-0175]: 0175-the-datastore-sink-commits-batches-and-confirms-a-refusal-one-write-at-a-time.md

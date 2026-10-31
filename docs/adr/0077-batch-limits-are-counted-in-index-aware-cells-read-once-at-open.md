@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-09 (client library facts read in google-cloud-spanner 6.119.0; schema read verified
   2026-08-09 against `gcr.io/cloud-spanner-emulator/emulator:1.5.56`, both dialects), revised by
-  [#435] (2026-08-09), [#573] (2026-08-12), [#1926] (2026-10-30)
-- Issues: [#220], [#435], [#573], [#1926]
+  [#435] (2026-08-09), [#573] (2026-08-12), [#1926] (2026-10-30), [#1928] (2026-10-30)
+- Issues: [#220], [#435], [#573], [#1926], [#1928]
 - Modules: spanner (`sink`, `sink.writer`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Batching, and
   `docs/content/docs/reference/spanner.md`
@@ -204,6 +204,7 @@ Two qualifications the guard's own framing has to carry, or it claims more than 
 
 **The index coverage is read once, when the writer opens**, with a dialect-branched query over
 `INFORMATION_SCHEMA.INDEX_COLUMNS` for every visible user schema.
+A serializer that writes one table, as the Table sink's does, narrows the read to that table, matched without case in both dialects ([#1928]); the DataStream serializer chooses a table per mutation, so its writer reads the whole database.
 The schema and table names form the table identity, so equal short table names in different schemas keep independent weights.
 The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the filter Beam has shipped against both the service and the emulator), since its cells are already counted by the columns themselves.
 
@@ -271,7 +272,9 @@ The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the f
   configuration, and clamping it would silently change a value the user typed.
 - **Refreshing the weights periodically.** A schema change during a job is real, but the failure it
   causes is an undercount inside a 16-fold headroom, not a wrong answer. Reopen if a measurement
-  shows the undercount reaching the limit.
+  shows the undercount reaching the limit. [#1928] reads the primary keys again for a table name
+  they do not list, and still not the weights: a table the per-key mode cannot name costs a request
+  per mutation, while one the weights do not know is only undercounted inside the headroom.
 - **One holder for every `INFORMATION_SCHEMA` statement in the module**, at the module root beside
   `SpannerTableName` and `SpannerTypeSpelling` ([#1926]). The eight statements, in five places,
   select different columns for different contracts. The cell weights read index coverage and the
@@ -291,4 +294,5 @@ The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the f
 [#441]: https://github.com/flink-gcp/flink-connector-gcp/issues/441
 [#573]: https://github.com/flink-gcp/flink-connector-gcp/issues/573
 [#1926]: https://github.com/flink-gcp/flink-connector-gcp/issues/1926
+[#1928]: https://github.com/flink-gcp/flink-connector-gcp/issues/1928
 [ADR-0189]: 0189-the-spanner-sink-keeps-per-row-order-on-opt-in.md

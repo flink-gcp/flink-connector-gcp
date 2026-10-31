@@ -16,15 +16,21 @@
 
 package io.github.flink.gcp.connector.spanner.table.sink;
 
+import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
+import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.factories.utils.FactoryMocks;
+import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.types.RowKind;
 
+import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSink;
+import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -78,5 +84,23 @@ class SpannerDynamicSinkTest {
                 .containsExactlyInAnyOrder(RowKind.INSERT, RowKind.UPDATE_AFTER, RowKind.DELETE);
         assertThat(sink(true).getChangelogMode(ChangelogMode.insertOnly()))
                 .isEqualTo(ChangelogMode.insertOnly());
+    }
+
+    @Test
+    void theSinksSerializerDeclaresItsTableSoTheWriterReadsThatTableAlone() {
+        DynamicTableSink sink = sink(true);
+
+        Sink<?> runtime =
+                ((SinkV2Provider)
+                                sink.getSinkRuntimeProvider(new SinkRuntimeProviderContext(false)))
+                        .createSink();
+        if (runtime instanceof TableLineageSink) {
+            runtime = ((TableLineageSink<?>) runtime).delegate();
+        }
+
+        assertThat(
+                        SingleTableSerializationSchema.tableOf(
+                                ((SpannerMutationsSink<?>) runtime).getConfig().getSerializer()))
+                .isEqualTo("people");
     }
 }

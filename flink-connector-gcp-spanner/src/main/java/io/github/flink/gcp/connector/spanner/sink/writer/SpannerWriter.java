@@ -36,6 +36,7 @@ import io.github.flink.gcp.connector.spanner.sink.FailedMutation;
 import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkConfig;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import io.github.flink.gcp.connector.spanner.sink.serializer.SingleTableSerializationSchema;
 import io.github.flink.gcp.connector.spanner.sink.serializer.SpannerMutationSerializationSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,7 +45,9 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * The Spanner sink's writer: buffers mutations, applies them with {@code batchWriteAtLeastOnce},
@@ -107,6 +110,12 @@ import java.util.List;
  * against its whole table. The one order this cannot keep is against an attempt that timed out on
  * the client and is applied by the service after the writer moved on.
  *
+ * <p>A mutation of a table the primary keys do not list makes the writer send its batch and read
+ * them again, once per such name: the table may have been created since the writer opened. A name
+ * the new read does not list either, such as a synonym, stays ordered against the whole batch and
+ * never triggers another read. A failed read is retried as a batch write is, and then fails the
+ * job.
+ *
  * @param <T> type of the records written by the sink
  */
 @Internal
@@ -126,8 +135,20 @@ public class SpannerWriter<T> implements SinkWriter<T> {
     private final int maxBatchCells;
     private final long maxBatchBytes;
 
-    /** The primary keys rows are named by; {@code null} unless the order per row is kept. */
-    @Nullable private final PrimaryKeys primaryKeys;
+    /** The one table the writer reads the schema of, or {@code null} for the whole database. */
+    @Nullable private final String schemaTable;
+
+    /**
+     * The primary keys rows are named by; {@code null} unless the order per row is kept. Replaced
+     * when a mutation names a table they do not list. Task-thread only.
+     */
+    @Nullable private PrimaryKeys primaryKeys;
+
+    /**
+     * The table names the primary keys have been read again for; {@code null} unless the order per
+     * row is kept. Task-thread only.
+     */
+    @Nullable private final Set<String> rereadTables;
 
     /** The batch being accumulated. Task-thread only. */
     private final List<PendingMutation> buffer = new ArrayList<>();
@@ -161,6 +182,7 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         this.cellWeights = Preconditions.checkNotNull(cellWeights, "cellWeights must not be null");
         this.metrics = new SpannerWriterMetrics(metricGroup);
         this.constraintViolationPolicy = config.getConstraintViolationPolicy();
+        this.schemaTable = SingleTableSerializationSchema.tableOf(config.getSerializer());
 
         SpannerWriterOptions options = config.getWriterOptions();
         // Validates the three recovery knobs on the way past, which is why they are not re-checked
@@ -183,9 +205,11 @@ public class SpannerWriter<T> implements SinkWriter<T> {
             this.primaryKeys =
                     Preconditions.checkNotNull(primaryKeys, "primaryKeys must not be null");
             this.batchedRows = new BatchedRows();
+            this.rereadTables = new HashSet<>();
         } else {
             this.primaryKeys = null;
             this.batchedRows = null;
+            this.rereadTables = null;
         }
 
         metrics.bindWriterState(buffer::size, () -> bufferedCells, () -> bufferedBytes);
@@ -238,12 +262,18 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         }
         PrimaryKeys.Footprint footprint = null;
         if (primaryKeys != null) {
-            try {
-                footprint = primaryKeys.footprintOf(mutation);
-            } catch (RuntimeException e) {
-                // Insurance, as above: naming the rows reads user-supplied values too.
-                route(mutation, "Failed to name the rows the mutation addresses.", e);
+            footprint = footprintOf(mutation);
+            if (footprint == null) {
                 return;
+            }
+            if (footprint.isWholeDatabase() && rereadTables.add(primaryKeys.tableKeyOf(mutation))) {
+                // Outside the per-record guard: a schema the writer cannot read is not this
+                // record's failure, and routing it would drop a record the service never refused.
+                rereadPrimaryKeys(mutation.getTable());
+                footprint = footprintOf(mutation);
+                if (footprint == null) {
+                    return;
+                }
             }
         }
         if (!buffer.isEmpty()
@@ -257,6 +287,73 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         buffer.add(pending);
         bufferedCells += pending.cells;
         bufferedBytes += pending.bytes;
+    }
+
+    /**
+     * Returns the rows the mutation addresses, or {@code null} when naming them threw and the
+     * record went to the failure handler.
+     */
+    @Nullable
+    private PrimaryKeys.Footprint footprintOf(Mutation mutation) throws IOException {
+        try {
+            return primaryKeys.footprintOf(mutation);
+        } catch (RuntimeException e) {
+            // Insurance, as above: naming the rows reads user-supplied values too.
+            route(mutation, "Failed to name the rows the mutation addresses.", e);
+            return null;
+        }
+    }
+
+    /**
+     * Reads the primary keys again for a table they do not list, which may have been created since
+     * the writer opened.
+     *
+     * <p>The batch is sent first. The mutation would have sent it anyway, since an unlisted table
+     * is ordered against the whole batch, and sending it means every row the batch held was named
+     * by the keys the next rows are compared with.
+     *
+     * <p>A failed read is retried under the batch write's recovery budget when its status is one
+     * {@link SpannerErrorClassifier} retries, and fails the job otherwise or once the budget is
+     * spent. Carrying on with the old keys would keep the order, but would leave a table created
+     * since the writer opened at one request per mutation behind a job that looks healthy.
+     */
+    private void rereadPrimaryKeys(String table) throws IOException, InterruptedException {
+        if (!buffer.isEmpty()) {
+            flushBatch();
+        }
+        for (int attempt = 1; ; attempt++) {
+            try {
+                primaryKeys = access.readPrimaryKeys(schemaTable);
+                LOG.info(
+                        "Read the primary keys of {} again for table '{}', which they did not list:"
+                                + " {} table(s) now.",
+                        database,
+                        table,
+                        primaryKeys.tableCount());
+                return;
+            } catch (IOException e) {
+                if (SpannerErrorClassifier.classify(e) != SpannerErrorClassifier.Kind.TRANSIENT) {
+                    throw e;
+                }
+                if (attempt >= retrySchedule.maxAttempts()) {
+                    throw new IOException(
+                            "Giving up on reading the primary keys of "
+                                    + database
+                                    + " again for table '"
+                                    + table
+                                    + "' after "
+                                    + attempt
+                                    + " attempt(s). Raise recoveryMaxAttempts if the database is"
+                                    + " expected to be unavailable for longer than the current"
+                                    + " budget.",
+                            e);
+                }
+                Retries.sleep(
+                        retrySchedule.backoffMs(attempt),
+                        "Interrupted while backing off before reading the Spanner primary keys"
+                                + " again.");
+            }
+        }
     }
 
     /** Hands one record to the failure handler, counting it on the way. */

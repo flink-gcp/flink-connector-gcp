@@ -179,7 +179,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                                 SpannerWriterOptions.defaults(),
                                 EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
                         .create()) {
-            weights = access.readCellWeights();
+            weights = access.readCellWeights(null);
         }
 
         // One secondary index covers name, and the primary-key index is excluded — so a mutation
@@ -226,7 +226,7 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                                 SpannerWriterOptions.defaults(),
                                 EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
                         .create()) {
-            keys = access.readPrimaryKeys();
+            keys = access.readPrimaryKeys(null);
         }
 
         // The secondary index on name is not the key: a write names its row by id alone.
@@ -282,6 +282,72 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
                 .isEqualTo(2L);
     }
 
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void perKeyNamesTheRowsOfATableCreatedAfterTheWriterOpened(Dialect dialect) throws Exception {
+        DatabaseDestination database = ordersDatabase(dialect);
+        SinkWriter<String> writer =
+                writer(
+                        database,
+                        SpannerWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build(),
+                        null,
+                        SpannerWriteITCase::lineMutation);
+        updateDdl(
+                database,
+                dialect == Dialect.POSTGRESQL
+                        ? "CREATE TABLE lines (id varchar(64) NOT NULL PRIMARY KEY, n varchar(64))"
+                        : "CREATE TABLE lines (id STRING(64) NOT NULL, n STRING(64)) PRIMARY KEY (id)");
+
+        for (String element : new String[] {"a:1", "b:1", "c:1", "a:2"}) {
+            writer.write(element, TestContexts.NO_OP);
+        }
+        writer.flush(false);
+
+        assertThat(query(database, "SELECT n FROM lines ORDER BY id"))
+                .extracting(row -> row.getString(0))
+                .containsExactly("a:2", "b:1", "c:1");
+        // The first write of lines reads the primary keys again, so its rows are named: one request
+        // for a, b and c, and one for the repeat of a. Ordered against the whole batch instead, as
+        // a table the keys read at open do not list, each write is its own request: four.
+        assertThat(
+                        lastContext
+                                .getSinkWriterMetricGroup()
+                                .counterValue(SpannerMetricNames.BATCHES_SENT))
+                .isEqualTo(2L);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void readsOnlyTheNamedTableOutOfTheRealSchema(Dialect dialect) throws Exception {
+        DatabaseDestination database = ordersDatabase(dialect);
+        updateDdl(
+                database,
+                dialect == Dialect.POSTGRESQL
+                        ? "CREATE TABLE lines (id varchar(64) NOT NULL PRIMARY KEY, n varchar(64))"
+                        : "CREATE TABLE lines (id STRING(64) NOT NULL, n STRING(64)) PRIMARY KEY (id)",
+                "CREATE INDEX lines_by_n ON lines (n)");
+
+        PrimaryKeys keys;
+        CellWeights weights;
+        try (SpannerDatabaseAccess access =
+                new DefaultSpannerDatabaseAccessFactory(
+                                database,
+                                SpannerWriterOptions.defaults(),
+                                EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))
+                        .create()) {
+            // Spelled in another case: the scope matches the table without case in both dialects.
+            keys = access.readPrimaryKeys("ORDERS");
+            weights = access.readCellWeights("ORDERS");
+        }
+
+        assertThat(keys.tableCount()).isEqualTo(1);
+        assertThat(keys.footprintOf(insertOrUpdate("a")).isWholeTable()).isFalse();
+        assertThat(keys.footprintOf(lineMutation("a:1", TestContexts.NO_OP)).isWholeDatabase())
+                .isTrue();
+        assertThat(weights.knows("orders")).isTrue();
+        assertThat(weights.knows("lines")).isFalse();
+    }
+
     // ---------------------------------------------------------------- helpers
 
     private static final int ROWS = 20;
@@ -331,6 +397,16 @@ class SpannerWriteITCase extends AbstractSpannerEmulatorITCase {
             return Mutation.newInsertOrUpdateBuilder("singleton").set("v").to(parts[1]).build();
         }
         return insertOrUpdate(parts[1]);
+    }
+
+    /** Turns {@code id:round} into an upsert of the {@code lines} row {@code id}. */
+    private static Mutation lineMutation(String element, SinkWriter.Context context) {
+        return Mutation.newInsertOrUpdateBuilder("lines")
+                .set("id")
+                .to(element.substring(0, element.indexOf(':')))
+                .set("n")
+                .to(element)
+                .build();
     }
 
     private static DatabaseDestination ordersDatabase(Dialect dialect) throws Exception {

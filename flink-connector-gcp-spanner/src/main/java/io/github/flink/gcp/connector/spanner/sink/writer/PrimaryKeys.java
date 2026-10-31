@@ -27,6 +27,7 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.ResultSet;
+import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.Type;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
@@ -69,13 +70,14 @@ import java.util.UUID;
  * {@code FLOAT32} compares at float precision, which only merges; the emulator refuses a {@code
  * FLOAT32} primary-key column, so the case is a guard rather than a path a job takes.
  *
- * <p>A table name the schema did not list when the writer opened is ordered against every mutation
- * of the batch ({@link Footprint#isWholeDatabase()}): it may be a table created since, or a
- * synonym, which names a listed table under another name.
+ * <p>A table name the schema did not list is ordered against every mutation of the batch ({@link
+ * Footprint#isWholeDatabase()}): it may be a table created since the read, which the writer then
+ * reads the schema again for, or a synonym, which names a listed table under another name.
  *
  * <p>Table names compare without case in both dialects. Whether the service matches a PostgreSQL
- * mutation's table name exactly is not measured, and folding can only merge; two PostgreSQL tables
- * whose names differ only by case therefore name their whole table.
+ * mutation's table name exactly is not measured, and folding can only merge. It never merges two
+ * tables: GoogleSQL names are case-insensitive, and the service refuses a PostgreSQL table whose
+ * name differs from another's only by case.
  */
 @Internal
 public final class PrimaryKeys {
@@ -185,8 +187,48 @@ public final class PrimaryKeys {
     }
 
     /**
-     * Reads the primary keys from the result of {@link #query(Dialect)}. Does not close the result
-     * set.
+     * Returns the query of {@link #query(Dialect)}, narrowed to one table when {@code table} names
+     * one. The table is matched without case in both dialects, as table names compare; that reads
+     * one table at most, because GoogleSQL names are case-insensitive and the service refuses a
+     * PostgreSQL table whose name differs from another's only by case.
+     *
+     * @param dialect the database's dialect
+     * @param table the table's native API name, {@code table} or {@code schema.table}, or {@code
+     *     null} for every table of the database
+     * @return the statement to run
+     * @throws IllegalArgumentException if {@code table} is not one of those two shapes
+     */
+    static Statement query(Dialect dialect, @Nullable String table) {
+        String sql = query(dialect);
+        if (table == null) {
+            return Statement.of(sql);
+        }
+        SpannerTableName name = SpannerTableName.ofApiName(table, dialect);
+        // query(dialect) has already refused a dialect it has no statement for.
+        if (dialect == Dialect.POSTGRESQL) {
+            return Statement.newBuilder(
+                            sql
+                                    + " AND LOWER(t.table_schema) = LOWER($1)"
+                                    + " AND LOWER(t.table_name) = LOWER($2)")
+                    .bind("p1")
+                    .to(name.schema())
+                    .bind("p2")
+                    .to(name.table())
+                    .build();
+        }
+        return Statement.newBuilder(
+                        sql
+                                + " AND LOWER(t.TABLE_SCHEMA) = LOWER(@schema_name)"
+                                + " AND LOWER(t.TABLE_NAME) = LOWER(@table_name)")
+                .bind("schema_name")
+                .to(name.schema())
+                .bind("table_name")
+                .to(name.table())
+                .build();
+    }
+
+    /**
+     * Reads the primary keys from the result of either query. Does not close the result set.
      *
      * @param resultSet the query result, positioned before the first row
      * @param dialect the database's dialect
@@ -419,6 +461,14 @@ public final class PrimaryKeys {
         } catch (NumberFormatException e) {
             return UNNAMEABLE;
         }
+    }
+
+    /**
+     * Returns the key a mutation's table is listed under, which is how the writer remembers a name
+     * it has already re-read the schema for.
+     */
+    String tableKeyOf(Mutation mutation) {
+        return tableKey(mutation.getTable(), dialect);
     }
 
     /**
