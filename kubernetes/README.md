@@ -247,6 +247,7 @@ The [Spanner recovery application](apps/spanner/README.md) supplies the one grap
 Build it with `just tier3-spanner-verify`.
 Its tests run the production graph against the Spanner emulator through savepoint upgrades and both rescales and pin the graph.
 The [`spanner-recovery`](lifecycle/spanner.cue) delivery runs it in the `tier3-spanner` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-spanner.tf), and the rig scenario of [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/spanner/README.md#recovery-trial) describes.
+Its four trials each reached `usable`, as the [Spanner recovery trial findings](../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) record.
 
 ## Pub/Sub recovery application
 

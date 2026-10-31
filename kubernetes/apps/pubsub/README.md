@@ -662,7 +662,7 @@ The logical count is not a cap on service deliveries, retries, bytes billed, out
 Those require separately approved execution ceilings and an independent stop path.
 
 On the DataStream entry point, the source, observer and sink have fixed UIDs `pubsub-input-v1`, `pubsub-observer-v1` and `pubsub-output-v1`.
-The `main` method fixes maximum parallelism at 128 and enables checkpoints every 120 seconds with at most one in flight; the CUE configuration sets the same interval.
+The `main` method fixes maximum parallelism at 128 and enables checkpoints every 120 seconds with at most one in flight; the CUE configuration sets the same interval and tolerates two consecutive failed checkpoints before the job restarts.
 The interval leaves the [recovery exercise](#recovery-exercise) time to publish, process and observe a cohort between two checkpoints, because the supervisor and the runner each act once per 15-second poll.
 
 The Table entry point reads both subscriptions through one `pubsub` table with the `raw` format and the `message-id` and `subscription` metadata columns.
