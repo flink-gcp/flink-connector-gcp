@@ -836,13 +836,14 @@ facts); the rules a session needs:
   artifact names it without a version. The version pairs with Avro's pin (next bullet); ADR-0150
   has the history
 - **A version pinned to match another project's pin carries an `ignore` rule for every update type**,
-  because the only thing that should move it is the pin it follows. Four of them: `zstd-jni` and
+  because the only thing that should move it is the pin it follows. Five of them: `zstd-jni` and
   `jackson-bom` follow what `avro-parent ${avro.version}` pins (reason on each property in the
-  root POM), and
+  root POM),
   `commons-collections4` and `hadoop-shaded-guava` follow what `hadoop-project ${hadoop.version}` pins,
   so that BigQuery's hand-assembled Parquet test classpath resolves what a deployment adding
   `hadoop-common` resolves rather than something only this build has tested (#940; the reason sits
-  beside the two dependencies). `avro.version` and `hadoop.version` themselves stay open — bumping one
+  beside the two dependencies), and `opentelemetry-bom` follows the OpenTelemetry the clients of
+  `libraries-bom` resolve, because the import forces it onto them (#1946, ADR-0186). `avro.version` and `hadoop.version` themselves stay open — bumping one
   is exactly what should arrive, and #916 records what a `hadoop.version` bump costs
 - Google Cloud library versions come only from `libraries-bom`; never pin individual
   google-cloud artifact versions

@@ -69,6 +69,14 @@ updates:
       # same pins, so both poms move together.
       - dependency-name: org.apache.commons:commons-collections4
       - dependency-name: org.apache.hadoop.thirdparty:hadoop-shaded-guava
+      # Same rule, with libraries-bom as the upstream: opentelemetry-bom is
+      # pinned to the OpenTelemetry the Google Cloud clients resolve, and the
+      # import forces it onto them, so a version ahead of theirs runs every
+      # client on one its own build never tested (ADR-0186; the reason is on
+      # the property in the root POM). Every update type: it moves with a
+      # libraries-bom bump, whose pull request body lists the step, and at no
+      # other time. Issue #1946 records the decision.
+      - dependency-name: io.opentelemetry:opentelemetry-bom
       # Renovate proposes libraries-bom weekly instead (.github/workflows/
       # renovate.yaml, ADR-0191): the BOM ships about every two weeks, which
       # this monthly group lags, and the Renovate job regenerates the shaded

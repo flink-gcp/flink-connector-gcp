@@ -165,8 +165,10 @@ limitations under the License.
              connector and the clients on one version. Pinned to what libraries-bom
              ${google-cloud-libraries-bom.version} resolves through the clients, and moved with every
              libraries-bom bump: a managed version is forced onto the clients too, so a pin left
-             behind would be a silent downgrade. The requireUpperBoundDeps execution below fails the
-             build when a client asks for a newer OpenTelemetry than this. -->
+             behind would be a silent downgrade, and one moved ahead would run every client on an
+             OpenTelemetry its own build never tested, which is why Dependabot ignores it (#1946).
+             The requireUpperBoundDeps execution below fails the build when a client asks for a
+             newer OpenTelemetry than this; nothing catches the opposite direction. -->
         <opentelemetry-bom.version>1.62.0</opentelemetry-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.2</avro.version>
