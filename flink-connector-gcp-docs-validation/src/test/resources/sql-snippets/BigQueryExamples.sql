@@ -160,6 +160,7 @@ CREATE TABLE current_orders (
   'dataset' = 'analytics',
   'table' = 'current_orders',
   'sink.cdc.enabled' = 'true',
+  'sink.ordering-mode' = 'per-table',
   'sink.create-disposition' = 'create-if-needed',
   'sink.cdc.max-staleness' = '10 min'
 );

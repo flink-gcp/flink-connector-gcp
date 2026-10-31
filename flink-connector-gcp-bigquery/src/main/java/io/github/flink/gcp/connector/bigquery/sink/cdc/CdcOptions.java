@@ -26,8 +26,10 @@ import java.io.Serializable;
 /**
  * Options for appending BigQuery CDC mutations through the Storage Write API default stream.
  *
- * <p>The change type provider is required. A sequence provider is optional; when configured, it
- * must return a valid non-null sequence for every record the configured serializer does not skip.
+ * <p>Both providers are required. The sequence provider must return a valid non-null sequence for
+ * every record the configured serializer does not skip, and a key's sequence should grow with each
+ * of its changes: BigQuery applies a key's changes by their sequence and falls back to ingestion
+ * time for equal ones, which only {@code OrderingMode.PER_TABLE} keeps in arrival order (ADR-0193).
  * Instances are immutable and serializable.
  */
 @Experimental
@@ -36,7 +38,7 @@ public final class CdcOptions<T> implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private final CdcChangeTypeProvider<? super T> changeTypeProvider;
-    @Nullable private final CdcSequenceNumberProvider<? super T> sequenceNumberProvider;
+    private final CdcSequenceNumberProvider<? super T> sequenceNumberProvider;
 
     private CdcOptions(Builder<T> builder) {
         this.changeTypeProvider = builder.changeTypeProvider;
@@ -53,15 +55,9 @@ public final class CdcOptions<T> implements Serializable {
         return changeTypeProvider;
     }
 
-    /** Returns the sequence provider, or {@code null} when rows carry no sequence number. */
-    @Nullable
+    /** Returns the provider that supplies each non-skipped record's sequence number. */
     public CdcSequenceNumberProvider<? super T> getSequenceNumberProvider() {
         return sequenceNumberProvider;
-    }
-
-    /** Returns whether every non-skipped row must carry a sequence number. */
-    public boolean hasSequenceNumberProvider() {
-        return sequenceNumberProvider != null;
     }
 
     /** Builder for {@link CdcOptions}. */
@@ -78,8 +74,8 @@ public final class CdcOptions<T> implements Serializable {
         }
 
         /**
-         * Sets the sequence provider. Once configured, every non-skipped record must produce a
-         * valid sequence.
+         * Sets the sequence provider, which {@link #build()} requires. Every non-skipped record
+         * must produce a valid sequence, which should grow with each change of its primary key.
          */
         public Builder<T> sequenceNumberProvider(
                 CdcSequenceNumberProvider<? super T> sequenceNumberProvider) {
@@ -89,8 +85,25 @@ public final class CdcOptions<T> implements Serializable {
             return this;
         }
 
-        /** Builds the immutable options. */
+        /**
+         * Builds the immutable options.
+         *
+         * @return the options
+         * @throws IllegalStateException if no sequence provider was set
+         */
         public CdcOptions<T> build() {
+            Preconditions.checkState(
+                    sequenceNumberProvider != null,
+                    "CdcOptions requires a sequenceNumberProvider(...): without a"
+                            + " _CHANGE_SEQUENCE_NUMBER, BigQuery orders one primary key's"
+                            + " changes by ingestion time, which the default ordering mode does"
+                            + " not keep in arrival order. A source without a change-log"
+                            + " position can supply a value taken where each change is made"
+                            + " that never repeats for one key and grows with each of its"
+                            + " changes, such as the source's commit time in nanoseconds or an"
+                            + " increasing ID, never a clock read in the pipeline, written as"
+                            + " one to four '/'-separated hexadecimal sections of at most 16"
+                            + " digits.");
             return new CdcOptions<>(this);
         }
     }

@@ -507,6 +507,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
@@ -544,6 +545,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
@@ -578,6 +580,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptionsProvider(ignored -> null)
                                 .build();
@@ -605,6 +608,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
@@ -647,6 +651,7 @@ class BigQueryDefaultStreamWriterTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .build();
         SinkWriter<String> writer =

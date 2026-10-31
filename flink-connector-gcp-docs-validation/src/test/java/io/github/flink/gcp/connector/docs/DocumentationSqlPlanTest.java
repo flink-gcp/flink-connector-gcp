@@ -477,6 +477,28 @@ public class DocumentationSqlPlanTest {
                                         + "SELECT 'order-1' AS id, CAST(1 AS BIGINT) AS amount, "
                                         + "'0000000000000001' AS formatted_sequence"),
                         snippet("flink/BigQueryTableReference.sql", "formatted-cdc-sequence")),
+                // A catalog table lookup asks BigQuery, so an in-memory catalog of the
+                // same name holds the table that catalog would resolve: its connector
+                // options and its primary key.
+                scenario(
+                        "BigQuery table reference catalog CDC sequence",
+                        List.of(
+                                setup(
+                                        "CREATE CATALOG bq WITH ('type' = 'generic_in_memory',"
+                                                + " 'default-database' = 'analytics')"),
+                                setup(
+                                        "CREATE TABLE bq.analytics.current_orders ("
+                                                + "id STRING NOT NULL, amount BIGINT, "
+                                                + "PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                                                + "'connector' = 'bigquery', "
+                                                + "'project' = 'my-project', "
+                                                + "'dataset' = 'analytics', "
+                                                + "'table' = 'current_orders')"),
+                                setup(
+                                        "CREATE TEMPORARY VIEW ordered_changes AS "
+                                                + "SELECT 'order-1' AS id, CAST(1 AS BIGINT) AS amount, "
+                                                + "'0000000000000001' AS formatted_sequence")),
+                        snippet("flink/BigQueryTableReference.sql", "catalog-cdc-sequence")),
                 scenario(
                         "Bigtable table reference overview and lookup join",
                         List.of(

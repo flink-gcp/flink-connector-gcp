@@ -116,7 +116,9 @@ public final class BigQueryLineageTestFixtures {
         BigQuerySinkBuilder<String> builder = sinkBuilder(method, keyFile);
         if (cdc) {
             builder.cdcOptions(
-                    CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build());
+                    CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                            .sequenceNumberProvider(ignored -> "1")
+                            .build());
         }
         return builder.build();
     }

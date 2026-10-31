@@ -73,3 +73,14 @@ CREATE TABLE current_orders (
 INSERT INTO current_orders
 SELECT id, amount, formatted_sequence FROM ordered_changes;
 -- end::formatted-cdc-sequence[]
+
+-- tag::catalog-cdc-sequence[]
+CREATE TEMPORARY TABLE current_orders_cdc (
+  sequence STRING METADATA FROM 'change-sequence-number'
+) WITH (
+  'sink.cdc.enabled' = 'true'
+) LIKE bq.analytics.current_orders;
+
+INSERT INTO current_orders_cdc
+SELECT id, amount, formatted_sequence FROM ordered_changes;
+-- end::catalog-cdc-sequence[]

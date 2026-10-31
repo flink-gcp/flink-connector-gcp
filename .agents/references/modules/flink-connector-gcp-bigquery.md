@@ -189,13 +189,20 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   check although its key is the cross-connector spelling, outside `sink.default-stream.`; the
   mapper test adds it to the declared side by hand.
 - An ordering test asserts that `NONE` reorders the same input, so it can fail.
+- A CDC write requires a sequence (`docs/adr/0193`): `CdcOptions.Builder#build()` requires a
+  sequence provider, and the Table sink rejects `sink.cdc.enabled` without a sequence metadata
+  column in `getSinkRuntimeProvider`. Do not reintroduce sequence-less CDC or a key order under
+  `NONE` without engaging ADR-0193: a split with requests in flight together measured wrong even on
+  one connection.
 - Under `PER_TABLE`, a CDC write ends a request before a row whose primary key it already holds
-  (#1936), with a sequence too, since equal sequences fall back to ingestion order. `CdcRowKeys` reads the key from the serialized bytes and must only ever
-  merge keys, never split two keys BigQuery would compare as equal: an encoding with several
-  spellings of one value (text for a non-`STRING` column, floating point, a collated `STRING`) is
-  unreadable, and an unreadable key matches every row. The pending keys move with the pending rows
-  when a repair rebuilds the state (`absorbPending`); a new path that moves pending rows must move
-  them too. Request boundaries are kept by every repair, so do not merge batches on a re-send.
+  (#1936), because equal sequences fall back to ingestion order and Flink's `ChangelogNormalize`
+  gives a completed key-only delete the sequence of the change it deletes (ADR-0193). `CdcRowKeys`
+  reads the key from the serialized bytes and must only ever merge keys, never split two keys
+  BigQuery would compare as equal: an encoding with several spellings of one value (text for a
+  non-`STRING` column, floating point, a collated `STRING`) is unreadable, and an unreadable key
+  matches every row. The pending keys move with the pending rows when a repair rebuilds the state
+  (`absorbPending`); a new path that moves pending rows must move them too. Request boundaries are
+  kept by every repair, so do not merge batches on a re-send.
 
 ## Table metadata (`docs/adr/0182`)
 

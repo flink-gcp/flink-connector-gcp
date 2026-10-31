@@ -331,6 +331,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
@@ -366,6 +367,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
@@ -400,6 +402,7 @@ class BigQueryDefaultStreamWriterMetricsTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()

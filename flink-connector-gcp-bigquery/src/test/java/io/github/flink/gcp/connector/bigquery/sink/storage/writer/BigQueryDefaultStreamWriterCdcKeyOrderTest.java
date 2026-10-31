@@ -273,8 +273,11 @@ class BigQueryDefaultStreamWriterCdcKeyOrderTest {
         return (BigQueryDefaultStreamSink<String>) builder.build();
     }
 
+    /** Upserts whose sequences differ per record, as a sequence that never repeats does. */
     private static CdcOptions<String> upserts() {
-        return CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+        return CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                .sequenceNumberProvider(record -> Integer.toHexString(record.hashCode()))
+                .build();
     }
 
     /** Writes the records through the sink's production path, then flushes. */
@@ -414,9 +417,9 @@ class BigQueryDefaultStreamWriterCdcKeyOrderTest {
     }
 
     @Test
-    void aSequenceDoesNotExemptARepeatedKey() throws Exception {
-        // Equal sequences fall back to ingestion order, as an absent one does, so a sequence
-        // leaves the split in place.
+    void aTiedSequenceStillStartsANewRequestUnderPerTable() throws Exception {
+        // Equal sequences fall back to ingestion order, so under per-table the split keeps them
+        // in separate requests, which commit in arrival order (ADR-0193).
         String[] records = {"a:1", "a:2", "b:1"};
 
         assertThat(requests(OrderingMode.NONE, tiedSequence(), new KeyedAdmin(STRING_KEY), records))

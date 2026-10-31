@@ -16,7 +16,10 @@ limitations under the License.
 
 # ADR-0192: The BigQuery default stream keeps arrival order per table on opt-in
 
-- Status: Accepted
+- Status: Accepted; refined by
+  [ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md) (2026-10-31), which
+  requires a sequence for every CDC write; the CDC key split recorded here for [#1936] then orders
+  equal sequences
 - Date: 2026-10-31 (writer behavior reproduced with unit tests; cost measured 2026-10-31 against
   the service from a workstation, dataset in `us-central1`); refined 2026-10-31 for [#1936], which
   keeps a CDC key out of a request twice (unit tests, and the service measured the same day from

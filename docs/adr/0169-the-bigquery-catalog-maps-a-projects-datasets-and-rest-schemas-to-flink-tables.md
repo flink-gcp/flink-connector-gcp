@@ -16,7 +16,8 @@ limitations under the License.
 
 # ADR-0169: The BigQuery catalog maps a project's datasets and REST schemas to Flink tables
 
-- Status: Accepted
+- Status: Accepted; refined by [ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md) (2026-10-31), under which a CDC
+  write needs a sequence column a catalog table cannot carry
 - Date: 2026-09-27
 - Issues: [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212)
 - Modules: bigquery
@@ -91,7 +92,7 @@ A table the sink created reads back with `TINYINT`, `SMALLINT` and `INT` as `BIG
 `TableInfo.getTableConstraints().getPrimaryKey()` becomes the Flink primary key, in the constraint's column order, with its columns made `NOT NULL` as ADR-0168 requires.
 Key columns are matched to the schema ignoring case, since BigQuery column names are case-insensitive, and take the schema's spelling.
 The connector's own CDC tables (ADR-0112) carry a primary key over `NULLABLE` columns unless `sink.derive-required-columns` is set, so this is what lets them resolve at all.
-An upsert `INSERT INTO` a keyed catalog table takes ADR-0111's CDC path once the statement adds `'sink.cdc.enabled' = 'true'` as a hint; without it the planner refuses the upsert as it would for a hand-written table.
+An upsert `INSERT INTO` a keyed catalog table takes ADR-0111's CDC path through a table created `LIKE` it with a sequence metadata column, which ADR-0193 requires and a catalog table cannot carry; without CDC the planner refuses the upsert as it would for a hand-written table.
 
 ### Views
 

@@ -1,6 +1,6 @@
 # flink-sql-connector-gcp-bigquery
 
-The BigQuery connector packaged for SQL users supports bounded table and query reads, all three sink write methods, and experimental CDC upsert/delete ingestion with a declared primary key on the at-least-once default stream.
+The BigQuery connector packaged for SQL users supports bounded table and query reads, all three sink write methods, and experimental CDC upsert/delete ingestion with a declared primary key and a change sequence on the at-least-once default stream.
 It is one jar to drop into Flink's `lib/`, bundling
 `flink-connector-gcp-bigquery` and its whole runtime tree — the BigQuery Storage Read, Storage Write and REST
 clients, the Cloud Storage client, gRPC, protobuf, Avro, Guava and the rest — with every bundled

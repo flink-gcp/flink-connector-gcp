@@ -589,8 +589,9 @@ A transaction that moves one key's value onto another key, such as the primary-k
 [TiCDC's UPDATE splitting behavior](https://docs.pingcap.com/tidb/stable/ticdc-split-update-behavior/),
 emits both a DELETE and an INSERT for one key at one sequence, and BigQuery resolves that pair by
 ingestion time rather than by TiCDC's emission order.
-Where such transactions occur, supply an application tie-breaker through `change-sequence-number`
-or a custom `CdcSequenceNumberProvider`; see the
+Where such transactions occur, `'sink.ordering-mode' = 'per-table'` commits the pair in the order
+the sink subtask receives them, or supply an application tie-breaker through
+`change-sequence-number` or a custom `CdcSequenceNumberProvider`; see the
 [BigQuery table CDC contract]({{< relref "docs/connectors/table/bigquery" >}}#change-data-capture).
 
 See the [TiCDC Debezium protocol](https://docs.pingcap.com/tidb/stable/ticdc-debezium/),
@@ -703,14 +704,20 @@ The pipeline is still at-least-once, but the `spanner-change-sequence` metadata 
 from resolving ordered changes for one key merely by append arrival time.
 Those three coordinates do not create a total order where Spanner exposes none: disjoint column
 writes can retain equal coordinates, which BigQuery still resolves by ingestion order.
+A delete ties the same way: the query reads metadata columns of an `upsert` source, so Flink's
+`ChangelogNormalize` completes each key-only delete from the last row it holds, and the delete
+carries the sequence of the change it deletes.
+The sink therefore sets
+[`'sink.ordering-mode' = 'per-table'`]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows),
+which commits those changes in the order the sink subtask receives them; without it, a delete that
+shares an append request with the change before it loses, and the row stays in BigQuery.
 
 The [Bigtable selected-cell analytics replica]({{< relref "docs/examples/bigtable" >}}#replicating-a-selected-cell-into-bigquery)
 shows the corresponding keyed upsert/delete shape for a single Bigtable cell.
-That example does not supply BigQuery sequence metadata, so conflicting changes for one key are
-resolved by BigQuery ingestion order rather than source coordinates.
-With [`'sink.ordering-mode' = 'per-table'`]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows),
-changes commit in the order the sink subtask received them, and two changes of one key go in
-separate append requests, one round trip apart.
+That example builds its sequence from the Bigtable commit timestamp and tie breaker, and sets
+[`'sink.ordering-mode' = 'per-table'`]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows)
+because a delete Flink completes carries the sequence of the change it deletes and so depends on
+the order the sink receives the two in.
 
 ## Local development
 

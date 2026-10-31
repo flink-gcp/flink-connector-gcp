@@ -247,7 +247,10 @@ class BigQueryDefaultStreamWriterAugmentedEvolutionTest {
     }
 
     private static void cdc(BigQuerySinkBuilder<String> builder) {
-        builder.cdcOptions(CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build())
+        builder.cdcOptions(
+                        CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                                .sequenceNumberProvider(record -> "1")
+                                .build())
                 .cdcTableOptions(CdcTableOptions.builder().primaryKeyColumns(List.of("k")).build());
     }
 
@@ -305,17 +308,67 @@ class BigQueryDefaultStreamWriterAugmentedEvolutionTest {
     void aCdcRowPendingAcrossEvolutionKeepsItsChangeType() throws Exception {
         assertThat(pendingAcrossEvolution(BigQueryDefaultStreamWriterAugmentedEvolutionTest::cdc))
                 .containsExactlyInAnyOrder(
-                        Map.of("k", "a", "v", "1", "_change_type", "UPSERT", READ_WITH, "v1"),
-                        Map.of("k", "b", "v", "2", "_change_type", "UPSERT", READ_WITH, "v1"));
+                        Map.of(
+                                "k",
+                                "a",
+                                "v",
+                                "1",
+                                "_change_type",
+                                "UPSERT",
+                                "_change_sequence_number",
+                                "1",
+                                READ_WITH,
+                                "v1"),
+                        Map.of(
+                                "k",
+                                "b",
+                                "v",
+                                "2",
+                                "_change_type",
+                                "UPSERT",
+                                "_change_sequence_number",
+                                "1",
+                                READ_WITH,
+                                "v1"));
     }
 
     @Test
     void aCdcRowARepairResendsAfterEvolutionKeepsItsChangeType() throws Exception {
         assertThat(repairedAcrossEvolution(BigQueryDefaultStreamWriterAugmentedEvolutionTest::cdc))
                 .containsExactlyInAnyOrder(
-                        Map.of("k", "a", "v", "1", "_change_type", "UPSERT", READ_WITH, "v1"),
-                        Map.of("k", "x", "v", "0", "_change_type", "UPSERT", READ_WITH, "v1"),
-                        Map.of("k", "b", "v", "2", "_change_type", "UPSERT", READ_WITH, "v1"));
+                        Map.of(
+                                "k",
+                                "a",
+                                "v",
+                                "1",
+                                "_change_type",
+                                "UPSERT",
+                                "_change_sequence_number",
+                                "1",
+                                READ_WITH,
+                                "v1"),
+                        Map.of(
+                                "k",
+                                "x",
+                                "v",
+                                "0",
+                                "_change_type",
+                                "UPSERT",
+                                "_change_sequence_number",
+                                "1",
+                                READ_WITH,
+                                "v1"),
+                        Map.of(
+                                "k",
+                                "b",
+                                "v",
+                                "2",
+                                "_change_type",
+                                "UPSERT",
+                                "_change_sequence_number",
+                                "1",
+                                READ_WITH,
+                                "v1"));
     }
 
     @Test

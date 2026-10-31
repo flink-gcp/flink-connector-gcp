@@ -313,6 +313,7 @@ class BigQuerySinkBuilderTest {
                                 .cdcOptions(
                                         CdcOptions.<String>builder(
                                                         CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
                                                 .build())
                                 .cdcTableOptions(
                                         CdcTableOptions.builder()
@@ -331,7 +332,7 @@ class BigQuerySinkBuilderTest {
                 .containsExactly("f", "computed");
         assertThat(descriptor.getFields())
                 .extracting(Descriptors.FieldDescriptor::getName)
-                .containsExactly("computed", "_change_type");
+                .containsExactly("computed", "_change_type", "_change_sequence_number");
         assertThat(row.getField(descriptor.findFieldByName("computed"))).isEqualTo("value");
         assertThat(row.getField(descriptor.findFieldByName("_change_type"))).isEqualTo("UPSERT");
     }
@@ -374,7 +375,12 @@ class BigQuerySinkBuilderTest {
         BigQueryDefaultStreamSink<String> copy = InstantiationUtil.clone(sink);
 
         assertThat(copy.getConfig().getCdcOptions()).isNotNull();
-        assertThat(copy.getConfig().getCdcOptions().hasSequenceNumberProvider()).isTrue();
+        assertThat(
+                        copy.getConfig()
+                                .getCdcOptions()
+                                .getSequenceNumberProvider()
+                                .getSequenceNumber("x"))
+                .isEqualTo("A");
     }
 
     @Test
@@ -384,7 +390,9 @@ class BigQuerySinkBuilderTest {
                 .hasMessage("cdcOptions must not be null");
 
         CdcOptions<String> options =
-                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(ignored -> "1")
+                        .build();
         assertThatThrownBy(
                         () ->
                                 BigQuerySink.<String>builder()
@@ -420,7 +428,9 @@ class BigQuerySinkBuilderTest {
     @Test
     void cdcOptionsAllowCreateIfNeededByDefault() {
         CdcOptions<String> options =
-                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(ignored -> "1")
+                        .build();
 
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
@@ -449,7 +459,9 @@ class BigQuerySinkBuilderTest {
     @Test
     void fixedCdcAutoCreationDefersMissingTablePrimaryKeyValidationToRuntime() {
         CdcOptions<String> cdc =
-                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(ignored -> "1")
+                        .build();
 
         assertThat(
                         BigQuerySink.<String>builder()
@@ -494,7 +506,9 @@ class BigQuerySinkBuilderTest {
     @Test
     void reconcileRequiresAnAuthoritativePrimaryKey() {
         CdcOptions<String> cdc =
-                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly()).build();
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(ignored -> "1")
+                        .build();
 
         assertThatThrownBy(
                         () ->

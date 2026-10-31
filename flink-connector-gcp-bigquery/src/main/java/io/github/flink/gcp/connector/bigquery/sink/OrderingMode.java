@@ -25,28 +25,29 @@ import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
  * requests in the order a sink subtask sent them, so that no row commits ahead of a row the subtask
  * received earlier and sent in an earlier request.
  *
- * <p>The order is observable in two ways. A CDC write without a {@code _CHANGE_SEQUENCE_NUMBER}
- * leaves BigQuery to resolve the mutations of one primary key by the order they arrive, so a later
- * {@code UPSERT} that lands first is overwritten by the earlier one. An append-only table has no
- * such overwrite, but a reader can still depend on the commit order: a query over {@code APPENDS}
- * that keeps the row with the latest {@code _CHANGE_TIMESTAMP} per key, or a reader that resumes
- * after the highest value it has seen and never returns for a row that lands behind it.
+ * <p>The order is observable to a reader that depends on the commit order: a query over {@code
+ * APPENDS} that keeps the row with the latest {@code _CHANGE_TIMESTAMP} per key, a continuous query
+ * that forwards rows as they commit, or a reader that resumes after the highest value it has seen
+ * and never returns for a row that lands behind it. It does not decide the value a CDC table
+ * settles on: every CDC row carries a {@code _CHANGE_SEQUENCE_NUMBER}, and BigQuery applies one
+ * primary key's mutations by it (ADR-0193), except where two of a key's mutations carry equal
+ * sequences, which BigQuery resolves by ingestion time.
  *
- * <p>Each subtask orders only what it receives, so the order of rows that reach different subtasks
- * stays undefined whatever this mode says. A key's rows in different requests keep their order only
- * when every row of the key reaches the same subtask: a Table API changelog that Flink shuffles by
- * the sink's primary key, or a stream keyed before the sink.
- *
- * <p>BigQuery's CDC documentation states no order among the rows of one append request, and
- * measured against the service the first of a key's changes in one request won, so a CDC key
- * changed twice in one request keeps its older value without a {@code _CHANGE_SEQUENCE_NUMBER}. Two
- * of its changes with equal sequences are resolved the same way, by ingestion time, as BigQuery
- * documents. For a CDC write, this mode therefore also keeps one primary key out of a request
+ * <p>BigQuery's CDC documentation states no order among the rows of one append request, and,
+ * measured without a sequence, the first of a key's changes in one request won. Equal sequences
+ * come from a source that can repeat one, or from Flink's {@code ChangelogNormalize}, which
+ * completes a key-only delete from the last row it holds and so gives it the sequence of the change
+ * it deletes. For a CDC write, this mode therefore also keeps one primary key out of a request
  * twice: the writer sends the pending request before a row whose key it already holds, and a key
  * changed in quick succession costs a request per change. The key is read from the bytes the
  * serializer wrote, and a key column written in an encoding with several spellings of one value,
  * such as a {@code TIMESTAMP} or {@code NUMERIC} written as text, makes every row of the table its
  * own request.
+ *
+ * <p>Each subtask orders only what it receives, so the order of rows that reach different subtasks
+ * stays undefined whatever this mode says. A key's rows in different requests keep their order only
+ * when every row of the key reaches the same subtask: a Table API changelog that Flink shuffles by
+ * the sink's primary key, or a stream keyed before the sink.
  *
  * @see DefaultStreamOptions.Builder#orderingMode(OrderingMode)
  */
