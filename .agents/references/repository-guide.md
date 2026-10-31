@@ -521,7 +521,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   resolved paths require. A narrow repair uses the bounded review delta; expanded scope or a
   broader contract change restarts the full review. Current PR merge-ref CI validates build
   integration without duplicating main's build locally. Compatibility-sensitive Flink 1.x work
-  retains the root guidance's local `just verify-flink 1.20.4` exception.
+  retains the root guidance's local `just verify-flink 1.20.5` exception.
 - **After creating a draft PR, always self-review it** — applying simplification and efficiency
   findings, not only correctness ones — and push the fixes before asking for review. Record the
   findings *and the deferrals, with their reasons* as inline review comments, using an empty review

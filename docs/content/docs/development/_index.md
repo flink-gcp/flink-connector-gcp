@@ -64,7 +64,7 @@ is necessary rather than sufficient. Two narrower forms serve day-to-day work:
 
 ```sh
 just verify-module flink-connector-gcp-bigquery   # one module and what it is built on
-just verify-flink 1.20.4                          # the full build against another Flink version
+just verify-flink 1.20.5                          # the full build against another Flink version
 ```
 
 One source tree supports Flink 2.x and 1.20 together: the few API differences between the

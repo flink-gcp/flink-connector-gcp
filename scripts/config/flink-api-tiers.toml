@@ -81,7 +81,7 @@ artifacts = [
 ]
 
 # The Tier-3 job modules that are also built at the LTS: weekly.yaml's lts row
-# passes -Ptier3-cloudtasks, so the module compiles against 1.20.4 there.
+# passes -Ptier3-cloudtasks, so the module compiles against FLINK_LTS there.
 # Every other Tier-3 module is classified at flink.version alone. A name with no
 # kubernetes/apps/<name>/src/main fails the audit; a module listed here that is
 # not really built at the LTS can fail it too, as a type absent at the LTS.

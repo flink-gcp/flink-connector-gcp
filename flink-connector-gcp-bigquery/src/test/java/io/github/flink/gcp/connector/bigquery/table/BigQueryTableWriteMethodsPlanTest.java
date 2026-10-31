@@ -357,7 +357,7 @@ class BigQueryTableWriteMethodsPlanTest {
         //
         // A framework assertion in a connector test, deliberately: the fact it pins is a premise
         // of this connector's code, and nothing in the connector can observe it. The string is
-        // byte-identical in flink-table-planner 1.20.4, 2.2.1 and 2.3.0 — the whole range
+        // byte-identical in flink-table-planner 1.20.5, 2.2.1 and 2.3.0 — the whole range
         // verify-flink covers — so it is a premise, not a version-fragile probe.
         Configuration configuration = new Configuration();
         configuration.set(ExecutionOptions.RUNTIME_MODE, RuntimeExecutionMode.AUTOMATIC);

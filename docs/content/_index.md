@@ -67,8 +67,8 @@ compiles the whole suite against 1.20 as well. This is source-level support — 
 compiled per major, and the one-artifact claim above spans the 2.x range only. The 1.20 lane
 is verified on Java 17; the Java 21 row above is a 2.x claim.
 
-Building for 1.20 means selecting that seam along with the version — `just verify-flink 1.20.4`
-does both, and the raw Maven form is `./mvnw verify -Dflink.version=1.20.4
+Building for 1.20 means selecting that seam along with the version — `just verify-flink 1.20.5`
+does both, and the raw Maven form is `./mvnw verify -Dflink.version=1.20.5
 -Dflink.compat=flink1` (the `flink.compat` property's comment in the root `pom.xml` is where
 the mechanism is documented). A 1.20 cluster does not need that build: the published
 `X.Y.Z-1.20` version line is this same compilation, released.

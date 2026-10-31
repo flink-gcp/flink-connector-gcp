@@ -36,7 +36,7 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
   let the per-connector CI lane carry the full verification — it is faster than a local full build
   and starts clean. Two exceptions stay local: per-PR CI builds one Flink version, so a
   compatibility-sensitive change (cross-version shims, renames the 1.x source root sees) still
-  runs `just verify-flink 1.20.4` before push; and self-review's requirement to rerun affected
+  runs `just verify-flink 1.20.5` before push; and self-review's requirement to rerun affected
   checks means the scoped suite above, not an unconditional full verify.
 - `just verify-flink <version>`: verify another supported Flink version; clean when moving between
   Flink 1.x and 2.x.
@@ -155,7 +155,7 @@ green; use the clean-state procedures in that guide for such changes.
   that the old head was pushed and reviewed, inspect whether the upstream delta affects the PR's
   claims, prove whether the PR-owned patch changed, and inspect every resolved hunk. Run only the
   checks the resolved paths owe; current PR merge-ref CI validates build integration with the new
-  base. The compatibility-sensitive `just verify-flink 1.20.4` exception still applies.
+  base. The compatibility-sensitive `just verify-flink 1.20.5` exception still applies.
 - After creating the draft PR, run `$self-review`, apply verified findings, push fixes, and then run
   `$self-review-round-two` when its trigger applies. Record findings and reasoned deferrals as
   inline review comments with an empty review body. Each round's first full review freezes its
