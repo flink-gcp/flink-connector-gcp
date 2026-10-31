@@ -247,3 +247,9 @@ ADR-0190 adds `io.github.flink.gcp.connector.bigtable.sink.OrderingMode` as an `
 The same type is also named by the `@PublicEvolving` `BigtableRequestOptions`, which constrains nothing further.
 The enum may still grow an ordering by a version carried in the data, which ADR-0187 leaves room for.
 The type is newly introduced after 1.0.0, so this is not a demotion of a released API.
+
+## BigQuery commit-order revision (2026-10-31)
+
+ADR-0192 adds `io.github.flink.gcp.connector.bigquery.sink.OrderingMode` as an `@Experimental` closure stop on the existing `@Public DefaultStreamOptions.getOrderingMode()` and `DefaultStreamOptions.Builder.orderingMode` signatures.
+Its constants are `NONE` and `PER_TABLE` rather than the other connectors' `PER_KEY`, and the enum may still grow another ordering.
+The type is newly introduced after 1.0.0, so this is not a demotion of a released API.

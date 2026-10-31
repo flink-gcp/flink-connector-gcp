@@ -708,6 +708,9 @@ The [Bigtable selected-cell analytics replica]({{< relref "docs/examples/bigtabl
 shows the corresponding keyed upsert/delete shape for a single Bigtable cell.
 That example does not supply BigQuery sequence metadata, so conflicting changes for one key are
 resolved by BigQuery ingestion order rather than source coordinates.
+With [`'sink.ordering-mode' = 'per-table'`]({{< relref "docs/connectors/table/bigquery" >}}#commit-order-of-a-tables-rows),
+changes in different append requests commit in the order the sink subtask received them; two
+changes of one key in the same request still need sequence metadata for a defined winner.
 
 ## Local development
 

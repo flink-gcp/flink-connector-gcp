@@ -46,6 +46,7 @@ import org.apache.flink.util.InstantiationUtil;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableOptions;
 import io.github.flink.gcp.connector.bigquery.sink.CdcTableReconciliationPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
@@ -1065,6 +1066,40 @@ class BigQueryDynamicTableFactoryTest {
                 (BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), options);
         assertThat(cdc.getConfig().getCdcOptions()).isNotNull();
         assertThat(cdc.getConfig().getCdcOptions().hasSequenceNumberProvider()).isFalse();
+    }
+
+    @Test
+    void theOrderingModeReachesTheDefaultStreamWithAndWithoutCdc() {
+        Map<String, String> append = optionsFor(WriteMethod.STORAGE_API_AT_LEAST_ONCE);
+        append.put("sink.ordering-mode", "per-table");
+        assertThat(((BigQueryDefaultStreamSink<?>) built(append)).getOptions().getOrderingMode())
+                .isEqualTo(OrderingMode.PER_TABLE);
+
+        Map<String, String> cdc = minimalOptions();
+        cdc.put("sink.cdc.enabled", "true");
+        cdc.put("sink.create-disposition", "create-never");
+        cdc.put("sink.ordering-mode", "per-table");
+        assertThat(
+                        ((BigQueryDefaultStreamSink<?>) built(withPrimaryKey(SCHEMA), cdc))
+                                .getOptions()
+                                .getOrderingMode())
+                .isEqualTo(OrderingMode.PER_TABLE);
+    }
+
+    @Test
+    void theOrderingModeIsRejectedOutsideTheDefaultStream() {
+        // The key sits outside the sink.default-stream. prefix, so the family matrix above, which
+        // takes one key per family, does not reach it.
+        for (WriteMethod selected :
+                new WriteMethod[] {WriteMethod.STORAGE_API_EXACTLY_ONCE, WriteMethod.FILE_LOADS}) {
+            Map<String, String> options = optionsFor(selected);
+            options.put("sink.ordering-mode", "per-table");
+            assertThatThrownBy(() -> sink(options))
+                    .as("under '%s'", selected)
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining("but this table's write method is")
+                    .hasStackTraceContaining("[sink.ordering-mode]");
+        }
     }
 
     @Test

@@ -31,7 +31,9 @@ import java.util.Arrays;
 import java.util.List;
 
 /**
- * Maps the {@code sink.default-stream.*} options onto {@link DefaultStreamOptions}.
+ * Maps the {@code sink.default-stream.*} options, and {@code sink.ordering-mode}, which tunes the
+ * same write method under the spelling the other connectors share, onto {@link
+ * DefaultStreamOptions}.
  *
  * <p>Adds no defaults of its own and owns no bounds: an option left out of the DDL leaves its
  * setter uncalled through {@link OptionSetters}, the builder's own {@code Preconditions} are the
@@ -64,7 +66,8 @@ public final class DefaultStreamOptionsMapper {
                     BigQueryConnectorOptions.SINK_DEFAULT_STREAM_MAX_CONNECTIONS_PER_REGION,
                     BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT,
                     BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL,
-                    BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION);
+                    BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION,
+                    BigQueryConnectorOptions.SINK_ORDERING_MODE);
 
     private DefaultStreamOptionsMapper() {}
 
@@ -160,6 +163,8 @@ public final class DefaultStreamOptionsMapper {
                 config,
                 BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION,
                 builder::perDestinationMetrics);
+        OptionSetters.apply(
+                config, BigQueryConnectorOptions.SINK_ORDERING_MODE, builder::orderingMode);
 
         return builder.build();
     }

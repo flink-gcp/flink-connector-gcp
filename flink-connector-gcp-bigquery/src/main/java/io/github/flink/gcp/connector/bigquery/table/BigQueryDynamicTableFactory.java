@@ -167,6 +167,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_DEFAULT_STREAM_DESTINATION_IDLE_TIMEOUT,
                         BigQueryConnectorOptions.SINK_DEFAULT_STREAM_FLUSH_INTERVAL,
                         BigQueryConnectorOptions.SINK_DEFAULT_STREAM_METRICS_PER_DESTINATION,
+                        BigQueryConnectorOptions.SINK_ORDERING_MODE,
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_MAX_APPEND_REQUEST_BYTES,
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_DESTINATION_IDLE_TIMEOUT,
                         BigQueryConnectorOptions.SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF,

@@ -137,6 +137,12 @@ adopts whichever stream writer is built first.
 | `flushInterval` | disabled | Periodic processing-time flush, for streaming jobs running without checkpointing. A mitigation, not a substitute for the guarantee |
 | `perDestinationMetrics` | `false` | Register `recordsSend`/`sendErrors` counters per destination table. Off by default because Flink cannot unregister a metric — see [Metrics]({{< relref "docs/connectors/datastream/bigquery" >}}#metrics) |
 
+**Commit order.**
+
+| Option | Default | What it does |
+|---|---|---|
+| `orderingMode` | `NONE` | `PER_TABLE` commits a table's append requests in the order the subtask sent them, by sending the table's next append only after the previous one has committed or been repaired. A table then has one append in flight at a time, so its throughput is one round trip per `maxAppendRequestBytes` request. See [Commit order]({{< relref "docs/connectors/datastream/bigquery" >}}#commit-order) |
+
 ## `BufferedStreamOptions`
 
 Required by `STORAGE_API_EXACTLY_ONCE` and rejected by the other two methods; every knob is

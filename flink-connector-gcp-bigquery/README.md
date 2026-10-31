@@ -12,6 +12,7 @@ The sink supports these write features:
 | `STORAGE_API_EXACTLY_ONCE` | Implemented, including dynamic destinations and mid-stream schema evolution ([#30](https://github.com/flink-gcp/flink-connector-gcp/issues/30), [#76](https://github.com/flink-gcp/flink-connector-gcp/issues/76), [#77](https://github.com/flink-gcp/flink-connector-gcp/issues/77)) |
 | `FILE_LOADS` | Implemented ([#14](https://github.com/flink-gcp/flink-connector-gcp/issues/14) batch, [#69](https://github.com/flink-gcp/flink-connector-gcp/issues/69) streaming, [#646](https://github.com/flink-gcp/flink-connector-gcp/issues/646) metadata-preserving batch replacement) |
 | CDC upserts and deletes with `STORAGE_API_AT_LEAST_ONCE` | Implemented ([#625](https://github.com/flink-gcp/flink-connector-gcp/issues/625)); Experimental ([#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706)) |
+| Opt-in per-table commit order on `STORAGE_API_AT_LEAST_ONCE` (`orderingMode` / `sink.ordering-mode`) | Implemented ([#1621](https://github.com/flink-gcp/flink-connector-gcp/issues/1621)) |
 
 <!-- readme-example file="BigQueryConnectorOverview.java" tag="bigquery-connector-overview" -->
 ```java
