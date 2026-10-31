@@ -244,7 +244,7 @@ limitations under the License.
              file:// staging directory, 0.11.0 bundles them, and Central rejects the bundle
              ("Bundle has content that does NOT have a .pom file", #1812). -->
         <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
-        <versions-maven-plugin.version>2.22.0</versions-maven-plugin.version>
+        <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
         <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
 
         <!-- Test execution -->
