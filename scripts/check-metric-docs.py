@@ -75,7 +75,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-from java_ast import (
+from lib.java_ast import (
     JavaSource,
     JavaSyntaxError,
     code_named_children,

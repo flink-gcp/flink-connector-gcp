@@ -43,8 +43,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from java_ast import JavaSyntaxError
-from java_example_regions import SourceRegion, collect_source_regions
+from lib.java_ast import JavaSyntaxError
+from lib.java_example_regions import SourceRegion, collect_source_regions
 
 ROOT = Path(__file__).resolve().parent.parent
 SNIPPET_SOURCES = (

@@ -58,7 +58,7 @@ import re
 import sys
 from pathlib import Path
 
-from java_ast import (
+from lib.java_ast import (
     TYPE_DECLARATIONS,
     JavaSource,
     JavaSyntaxError,

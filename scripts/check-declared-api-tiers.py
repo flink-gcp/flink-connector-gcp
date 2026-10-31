@@ -41,7 +41,7 @@ be read or parsed, or no source at all.
 import sys
 from pathlib import Path
 
-from java_ast import (
+from lib.java_ast import (
     API_TIER_SOURCE_PATTERNS,
     JavaSource,
     JavaSyntaxError,
