@@ -38,12 +38,16 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CdcProtoRowFieldsTest {
+
+    /** {@code ProtoDescriptorAugmenter.AUGMENTATION_CEILING}, which this package cannot see. */
+    private static final int CEILING = (1 << 18) - 1;
 
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "dataset", "table");
@@ -172,8 +176,8 @@ class CdcProtoRowFieldsTest {
     }
 
     @Test
-    void preservesNestedDescriptorsAndSkipsReservedFieldNumbers() throws Exception {
-        Descriptors.Descriptor nested = nestedDescriptorWithFieldNumber(18_999);
+    void preservesNestedDescriptorsAndSkipsTakenFieldNumbers() throws Exception {
+        Descriptors.Descriptor nested = nestedDescriptorWithFieldNumber(CEILING);
         BigQueryProtoSerializationSchema<TestRecord> serializer = descriptorOnlySerializer(nested);
         ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
                 cdcSerializer(serializer, record -> "1");
@@ -182,9 +186,9 @@ class CdcProtoRowFieldsTest {
 
         assertThat(augmented.getContainingType().getName()).isEqualTo("Envelope");
         assertThat(augmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD).getNumber())
-                .isEqualTo(20_000);
+                .isEqualTo(CEILING - 1);
         assertThat(augmented.findFieldByName(CdcProtoRowFields.SEQUENCE_NUMBER_FIELD).getNumber())
-                .isEqualTo(20_001);
+                .isEqualTo(CEILING - 2);
     }
 
     @Test
@@ -196,32 +200,8 @@ class CdcProtoRowFieldsTest {
                         optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64),
                         optionalField("name", 2, FieldDescriptorProto.Type.TYPE_STRING));
         AtomicInteger schemaVersion = new AtomicInteger();
-        BigQueryProtoSerializationSchema<TestRecord> serializer =
-                new BigQueryProtoSerializationSchema<>() {
-                    private static final long serialVersionUID = 1L;
-
-                    @Override
-                    public TableSchema getTableSchema(TableDestination destination) {
-                        return TABLE_SCHEMA;
-                    }
-
-                    @Override
-                    public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-                        return schemaVersion.get() == 0 ? first : second;
-                    }
-
-                    @Override
-                    public Object getSchemaFingerprint(TableDestination destination) {
-                        return schemaVersion.get();
-                    }
-
-                    @Override
-                    public ByteString serialize(TestRecord element) {
-                        return ByteString.EMPTY;
-                    }
-                };
         ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
-                cdcSerializer(serializer, record -> "1");
+                cdcSerializer(evolvingSerializer(schemaVersion, first, second), record -> "1");
 
         Descriptors.Descriptor firstAugmented = cdcSerializer.getDescriptor(DESTINATION);
         schemaVersion.set(1);
@@ -229,9 +209,77 @@ class CdcProtoRowFieldsTest {
 
         assertThat(firstAugmented.findFieldByName("name")).isNull();
         assertThat(secondAugmented.findFieldByName("name")).isNotNull();
-        assertThat(secondAugmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD))
-                .isNotNull();
+        assertThat(secondAugmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD).getNumber())
+                .isEqualTo(
+                        firstAugmented
+                                .findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD)
+                                .getNumber());
         assertThat(secondAugmented).isNotSameAs(firstAugmented);
+    }
+
+    /**
+     * The schema cache is keyed weakly by whichever equal destination object derived an entry
+     * first, which a writer retaining rows need not hold. The guard must not depend on that entry.
+     */
+    @Test
+    void failsAnEvolutionAfterTheFirstDestinationObjectIsCollected() throws Exception {
+        Descriptors.Descriptor first =
+                descriptorWithFields(optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64));
+        Descriptors.Descriptor second =
+                descriptorWithFields(
+                        optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64),
+                        optionalField("name", CEILING, FieldDescriptorProto.Type.TYPE_STRING));
+        AtomicInteger schemaVersion = new AtomicInteger();
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
+                cdcSerializer(evolvingSerializer(schemaVersion, first, second), record -> "1");
+
+        WeakReference<TableDestination> firstObject = prepareWithAFreshDestination(cdcSerializer);
+        for (int i = 0; i < 20 && firstObject.get() != null; i++) {
+            System.gc();
+        }
+        // Also holds that the guard's own record does not pin the object, which would keep the
+        // cache's weak key, and every descriptor derived for it, alive.
+        assertThat(firstObject.get())
+                .as("the first destination object, after System.gc()")
+                .isNull();
+        schemaVersion.set(1);
+
+        assertThatThrownBy(() -> cdcSerializer.prepare(TableDestination.of("p", "d", "t")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("moves BigQuery CDC pseudocolumn _change_type");
+    }
+
+    private static WeakReference<TableDestination> prepareWithAFreshDestination(
+            ProtoRowAugmentingSerializer<TestRecord> serializer) {
+        TableDestination destination = TableDestination.of("p", "d", "t");
+        serializer.prepare(destination);
+        return new WeakReference<>(destination);
+    }
+
+    @Test
+    void failsAnEvolutionThatTakesAPseudocolumnNumber() throws Exception {
+        Descriptors.Descriptor first =
+                descriptorWithFields(optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64));
+        Descriptors.Descriptor second =
+                descriptorWithFields(
+                        optionalField("id", 1, FieldDescriptorProto.Type.TYPE_INT64),
+                        optionalField("name", CEILING, FieldDescriptorProto.Type.TYPE_STRING));
+        AtomicInteger schemaVersion = new AtomicInteger();
+        ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
+                cdcSerializer(evolvingSerializer(schemaVersion, first, second), record -> "1");
+
+        cdcSerializer.prepare(DESTINATION);
+        schemaVersion.set(1);
+
+        assertThatThrownBy(() -> cdcSerializer.prepare(DESTINATION))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(
+                        "The evolved row descriptor for "
+                                + DESTINATION
+                                + " moves BigQuery CDC pseudocolumn _change_type from field"
+                                + " number 262143 to 262142, which would misread rows serialized"
+                                + " before the change; the evolved descriptor must leave field"
+                                + " numbers 262142 and above as they were");
     }
 
     @Test
@@ -254,11 +302,16 @@ class CdcProtoRowFieldsTest {
         DescriptorProto row =
                 DescriptorProto.newBuilder()
                         .setName("Row")
-                        .addField(optionalField("id", 4, FieldDescriptorProto.Type.TYPE_INT64))
+                        .addField(
+                                optionalField("id", CEILING, FieldDescriptorProto.Type.TYPE_INT64))
                         .addReservedRange(
-                                DescriptorProto.ReservedRange.newBuilder().setStart(5).setEnd(7))
+                                DescriptorProto.ReservedRange.newBuilder()
+                                        .setStart(CEILING - 2)
+                                        .setEnd(CEILING))
                         .addExtensionRange(
-                                DescriptorProto.ExtensionRange.newBuilder().setStart(7).setEnd(9))
+                                DescriptorProto.ExtensionRange.newBuilder()
+                                        .setStart(CEILING - 4)
+                                        .setEnd(CEILING - 2))
                         .build();
         Descriptors.Descriptor base = descriptor(row, new Descriptors.FileDescriptor[0]);
         ProtoRowAugmentingSerializer<TestRecord> cdcSerializer =
@@ -267,9 +320,9 @@ class CdcProtoRowFieldsTest {
         Descriptors.Descriptor augmented = cdcSerializer.getDescriptor(DESTINATION);
 
         assertThat(augmented.findFieldByName(CdcProtoRowFields.CHANGE_TYPE_FIELD).getNumber())
-                .isEqualTo(9);
+                .isEqualTo(CEILING - 5);
         assertThat(augmented.findFieldByName(CdcProtoRowFields.SEQUENCE_NUMBER_FIELD).getNumber())
-                .isEqualTo(10);
+                .isEqualTo(CEILING - 6);
     }
 
     @Test
@@ -344,6 +397,39 @@ class CdcProtoRowFieldsTest {
         } catch (Descriptors.DescriptorValidationException e) {
             throw new AssertionError(e);
         }
+    }
+
+    /**
+     * A serializer answering {@code first} while {@code schemaVersion} is zero, then {@code
+     * second}.
+     */
+    private static BigQueryProtoSerializationSchema<TestRecord> evolvingSerializer(
+            AtomicInteger schemaVersion,
+            Descriptors.Descriptor first,
+            Descriptors.Descriptor second) {
+        return new BigQueryProtoSerializationSchema<>() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public TableSchema getTableSchema(TableDestination destination) {
+                return TABLE_SCHEMA;
+            }
+
+            @Override
+            public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+                return schemaVersion.get() == 0 ? first : second;
+            }
+
+            @Override
+            public Object getSchemaFingerprint(TableDestination destination) {
+                return schemaVersion.get();
+            }
+
+            @Override
+            public ByteString serialize(TestRecord element) {
+                return ByteString.EMPTY;
+            }
+        };
     }
 
     private static Descriptors.Descriptor nestedDescriptorWithFieldNumber(int number)

@@ -21,6 +21,8 @@ import com.google.cloud.bigquery.storage.v1.StorageError;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Any;
+import com.google.protobuf.Descriptors;
+import com.google.protobuf.DynamicMessage;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
@@ -31,6 +33,10 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.FakeTableAdmin;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalField;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNullPolicy;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -50,6 +56,7 @@ import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQuer
 import static io.github.flink.gcp.connector.bigquery.sink.storage.writer.BigQueryBufferedStreamWriterTest.onlyCommittable;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 /** Tests for schema evolution on application-created buffered streams. */
 class BigQueryBufferedStreamWriterSchemaEvolutionTest {
@@ -240,6 +247,69 @@ class BigQueryBufferedStreamWriterSchemaEvolutionTest {
         assertThat(service.openedAppenders).containsExactly(stream, stream);
         assertThat(service.appends).extracting(call -> call.offset).containsExactly(0L, 0L);
         assertThat(onlyCommittable(writer.prepareCommit()).getFlushOffset()).isZero();
+    }
+
+    /**
+     * A mismatch on the drain that precedes a fingerprint refresh reopens the stream with the
+     * serializer's current descriptor, so a row serialized under the old one is re-sent under the
+     * evolved one; its additional field must keep its number across the evolution (#1950).
+     */
+    @Test
+    void aRowReSentUnderTheEvolvedDescriptorKeepsItsAdditionalField() throws Exception {
+        EvolvingSerializer serializer = new EvolvingSerializer(V1);
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        service.appendResults.add(FakeBufferedStreamService.failure(schemaMismatch()));
+        FakeTableAdmin admin = new FakeTableAdmin();
+        admin.tables.put(DESTINATION, V1);
+        BigQuerySinkConfig<String> config =
+                ((BigQueryBufferedStreamSink<String>)
+                                BigQuerySink.<String>builder()
+                                        .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                        .table(DESTINATION)
+                                        .serializer(serializer)
+                                        .additionalFields(
+                                                AdditionalFields.<String>builder()
+                                                        .field(
+                                                                AdditionalField.<String>of(
+                                                                        "source",
+                                                                        AdditionalFieldType.STRING,
+                                                                        AdditionalFieldNullPolicy
+                                                                                .NULLABLE,
+                                                                        record ->
+                                                                                "src-"
+                                                                                        + record
+                                                                                                .charAt(
+                                                                                                        0)))
+                                                        .build())
+                                        .schemaUpdateOptions(
+                                                SchemaUpdateOptions.builder()
+                                                        .allowNewFields()
+                                                        .build())
+                                        .bufferedStreamOptions(options())
+                                        .build())
+                        .getConfig();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(config, service, admin, TestSinkWriterMetricGroup.create());
+
+        writer.write("alice", CONTEXT);
+        serializer.evolveTo(V2);
+        writer.write("bob:hello", CONTEXT);
+        writer.flush(false);
+
+        // The first append of alice failed under V1; the re-send went through the appender the
+        // mismatch reopened, which already carries the evolved descriptor.
+        // Opened under V1, reopened under V2 by the mismatch repair, and reopened under V2 again
+        // by the fingerprint refresh after the drain; the re-send of alice is the second append.
+        assertThat(service.openedDescriptors)
+                .extracting(descriptor -> descriptor.findFieldByName("note") != null)
+                .containsExactly(false, true, true);
+        assertThat(service.appends).extracting(call -> call.offset).containsExactly(0L, 0L, 1L);
+        Descriptors.Descriptor evolved = service.openedDescriptors.get(1);
+        DynamicMessage resent =
+                DynamicMessage.parseFrom(evolved, service.appends.get(1).rows.getSerializedRows(0));
+        assertThat(resent.getAllFields())
+                .extractingFromEntries(entry -> entry.getKey().getName(), Map.Entry::getValue)
+                .containsExactlyInAnyOrder(tuple("name", "alice"), tuple("source", "src-a"));
     }
 
     @Test

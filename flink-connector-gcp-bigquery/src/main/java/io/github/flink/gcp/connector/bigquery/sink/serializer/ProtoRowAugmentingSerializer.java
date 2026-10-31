@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -54,6 +55,9 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
     private final String rowFailureMessage;
 
     private transient Map<TableDestination, SchemaSurfaces> schemaCache;
+
+    /** Each evolving destination's augmentation field numbers, in declaration order. */
+    private transient Map<String, int[]> appendedNumbers;
 
     public ProtoRowAugmentingSerializer(
             BigQueryProtoSerializationSchema<? super T> delegate,
@@ -184,12 +188,13 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         // collision it is, rather than as the descriptor collision it also causes.
         TableSchema augmentedTableSchema = augmentedTableSchema(destination);
         Descriptors.Descriptor descriptor = augmentedDescriptor(destination);
+        List<Descriptors.FieldDescriptor> augmentationFields = augmentationFields(descriptor);
+        if (fingerprint != null) {
+            checkNumbersKept(destination, augmentationFields);
+        }
         SchemaSurfaces derived =
                 new SchemaSurfaces(
-                        fingerprint,
-                        augmentedTableSchema,
-                        descriptor,
-                        augmentationFields(descriptor));
+                        fingerprint, augmentedTableSchema, descriptor, augmentationFields);
         cache().put(destination, derived);
         return derived;
     }
@@ -211,6 +216,61 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
             resolved.add(resolvedField);
         }
         return Collections.unmodifiableList(resolved);
+    }
+
+    /**
+     * Fails an evolution that moved an augmentation field to another number. The writers append
+     * rows serialized before a schema change through the stream writer rebuilt for it, without
+     * re-encoding them, so a moved field would be read as whatever the evolved descriptor numbers
+     * there. The numbers move only when the evolved base descriptor claims or frees a number in the
+     * region the augmentation fields count down through, which {@link
+     * ProtoDescriptorAugmenter#augment(Descriptors.Descriptor, List, String)} keeps out of reach of
+     * a base that appends its fields after its highest number.
+     *
+     * <p>The numbers a destination was first given are kept strongly by table path, apart from the
+     * weakly keyed schema cache: that cache's key is whichever equal destination object derived the
+     * entry first, which a writer retaining rows need not hold, so the entry can be collected while
+     * rows remain. Only serializers that report a fingerprint can evolve, so only they keep the
+     * numbers.
+     */
+    private void checkNumbersKept(
+            TableDestination destination, List<Descriptors.FieldDescriptor> current) {
+        int[] numbers = new int[current.size()];
+        for (int i = 0; i < numbers.length; i++) {
+            numbers[i] = current.get(i).getNumber();
+        }
+        // Keyed by the table path, which no component's '/' can make ambiguous, rather than by
+        // the caller's object: holding that would also keep the schema cache's weak key, and with
+        // it every descriptor derived for it, alive for as long as this map lives.
+        int[] previous = appendedNumbers().putIfAbsent(destination.toTablePath(), numbers);
+        if (previous == null) {
+            return;
+        }
+        for (int i = 0; i < numbers.length; i++) {
+            if (previous[i] != numbers[i]) {
+                throw new IllegalStateException(
+                        String.format(
+                                "The evolved row descriptor for %s moves %s %s from field number"
+                                        + " %d to %d, which would misread rows serialized before"
+                                        + " the change; the evolved descriptor must leave field"
+                                        + " numbers %d and above as they were",
+                                destination,
+                                descriptorFieldDescription,
+                                current.get(i).getName(),
+                                previous[i],
+                                numbers[i],
+                                Math.min(previous[i], numbers[i])));
+            }
+        }
+    }
+
+    private Map<String, int[]> appendedNumbers() {
+        Map<String, int[]> local = appendedNumbers;
+        if (local == null) {
+            local = new HashMap<>();
+            appendedNumbers = local;
+        }
+        return local;
     }
 
     private Map<TableDestination, SchemaSurfaces> cache() {

@@ -1648,6 +1648,15 @@ Caveats:
   inside nested types) and relax `REQUIRED`→`NULLABLE`; never remove, reorder or re-type fields.
   Turning a nullability option on or off is wire-compatible in both directions — it changes
   protobuf field labels, not the encoding of any value.
+- The additional fields and CDC pseudocolumns the sink adds to each row take protobuf field
+  numbers counting down from 262,143, or from just below an extension range that covers that
+  number, and keep them across an evolution.
+  A schema change that gives a new field one of those numbers, or reserves one, fails the write
+  rather than misreading rows serialized before it.
+  A message with no free number at or below 262,143 gets numbers above its own highest field
+  instead; a new field above its highest one moves them, and the sink fails that evolution.
+  The check compares against the numbers each destination was first given in the running task,
+  whether or not the sink still holds rows for it, and starts afresh when the task restarts.
 - A column the serializer newly derives as `REQUIRED` is added to an existing table as `NULLABLE`,
   after which the derived schema and the table disagree about that column forever. That is
   harmless: the union only ever relaxes, so it reports no change and never tries to tighten. The

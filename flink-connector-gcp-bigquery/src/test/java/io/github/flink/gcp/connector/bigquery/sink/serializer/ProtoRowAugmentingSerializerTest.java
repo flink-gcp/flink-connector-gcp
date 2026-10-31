@@ -53,6 +53,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ProtoRowAugmentingSerializerTest {
 
+    private static final int CEILING = ProtoDescriptorAugmenter.AUGMENTATION_CEILING;
+
     private static final TableDestination DESTINATION =
             TableDestination.of("project", "dataset", "table");
     private static final TableSchema BASE_SCHEMA =
@@ -428,7 +430,7 @@ class ProtoRowAugmentingSerializerTest {
                         descriptor,
                         original.serialize(new TestRecord(1, "value", Instant.EPOCH), DESTINATION));
 
-        assertThat(descriptor.findFieldByName("computed").getNumber()).isEqualTo(9);
+        assertThat(descriptor.findFieldByName("computed").getNumber()).isEqualTo(CEILING - 5);
         assertThat(row.getField(descriptor.findFieldByName("computed"))).isEqualTo("value");
 
         ProtoRowAugmentingSerializer<TestRecord> copy =
@@ -518,13 +520,17 @@ class ProtoRowAugmentingSerializerTest {
                         .addField(
                                 FieldDescriptorProto.newBuilder()
                                         .setName("id")
-                                        .setNumber(4)
+                                        .setNumber(CEILING)
                                         .setType(FieldDescriptorProto.Type.TYPE_INT64)
                                         .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL))
                         .addReservedRange(
-                                DescriptorProto.ReservedRange.newBuilder().setStart(5).setEnd(7))
+                                DescriptorProto.ReservedRange.newBuilder()
+                                        .setStart(CEILING - 2)
+                                        .setEnd(CEILING))
                         .addExtensionRange(
-                                DescriptorProto.ExtensionRange.newBuilder().setStart(7).setEnd(9))
+                                DescriptorProto.ExtensionRange.newBuilder()
+                                        .setStart(CEILING - 4)
+                                        .setEnd(CEILING - 2))
                         .build();
         Descriptors.FileDescriptor file =
                 Descriptors.FileDescriptor.buildFrom(

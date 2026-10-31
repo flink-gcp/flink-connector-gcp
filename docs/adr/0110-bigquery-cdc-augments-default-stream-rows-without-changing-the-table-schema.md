@@ -51,9 +51,11 @@ CDC uses the shared post-serializer protobuf engine introduced by ADR-0113, but 
 the engine's allowlisted write-only case.
 For the write stream, the engine copies the serializer's protobuf file descriptor and adds the
 pseudocolumn fields to the selected row message without adding physical columns.
-It preserves nested messages and file dependencies, allocates field numbers after the physical
-fields while skipping protobuf and message-specific reserved ranges, and caches each augmented
-descriptor by the serializer's schema fingerprint.
+It preserves nested messages and file dependencies, allocates field numbers counting down from a
+fixed ceiling while skipping the physical fields, the protobuf and message-specific reserved
+ranges and the extension ranges (refined by [ADR-0113](0113-bigquery-additional-fields-are-opt-in-and-share-the-serializer-boundary.md#revision-appended-field-numbers-survive-schema-evolution-2026-10-31),
+[#1950](https://github.com/flink-gcp/flink-connector-gcp/issues/1950); they first followed the
+physical fields), and caches each augmented descriptor by the serializer's schema fingerprint.
 A changed fingerprint therefore produces a new augmented descriptor without adding CDC
 pseudocolumns to schema reconciliation; serializers with evolving descriptors must update that
 fingerprint as required by the serializer contract.
