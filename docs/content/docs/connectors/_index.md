@@ -57,12 +57,13 @@ A setter rejects a value when doing so tells you more than the service's own ref
 |---|---|
 | Missing, or `null` | Every required option |
 | Empty, or nothing but whitespace | Every configured name, id or file path. Row-key values are the exception: an empty `prefix` means "scan the whole table" |
-| A `/`, or leading or trailing whitespace | A component the connector concatenates into a resource path: `project`, `dataset`, `table`, `instance`, `database`, `databaseId`, `topic`, `subscription`, `location`, `queue`, `parentProject`, `queryResultDataset`, `tempDataset` |
+| A `/`, a whole value of `.` or `..`, or leading or trailing whitespace | A component the connector concatenates into a resource path: `project`, `dataset`, `table`, `instance`, `database`, `databaseId`, `topic`, `subscription`, `location`, `queue`, `parentProject`, `queryResultDataset`, `tempDataset` |
 | Not matching the grammar the connector will read it by | A value it parses itself: an emulator endpoint's `host:port`, a Spanner identifier's quoting, a row-range or row-key literal, a `gs://` staging path, a Cloud Tasks relative URI, an additional field's protobuf name, a Firestore document path |
 
 The `/` rule is about addressing rather than spelling. A component with a `/` in it does not fail —
 it silently names a *different* resource, and the service then answers accurately about something
-you never typed. A value that genuinely *is* a full path, such as Pub/Sub's `kmsKeyName`, is
+you never typed. A component that is exactly `.` or `..` is path navigation for the same reason,
+while a dot inside a name is the service's to judge. A value that genuinely *is* a full path, such as Pub/Sub's `kmsKeyName`, is
 exempt for the same reason.
 
 Two more checks exist because of where the service's own answer would land. A Cloud Tasks target URL

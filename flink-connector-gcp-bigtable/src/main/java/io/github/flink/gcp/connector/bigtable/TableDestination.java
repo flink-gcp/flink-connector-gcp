@@ -64,8 +64,9 @@ public final class TableDestination implements Serializable {
      * @param table the Bigtable table id
      * @return the destination
      * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
-     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
-     *     address a different resource
+     *     whitespace, contains {@code '/'}, or is exactly {@code .} or {@code ..} — a separator
+     *     would make the composed resource path address a different resource, and a dot segment is
+     *     path navigation rather than a name
      */
     public static TableDestination of(String project, String instance, String table) {
         ResourceNames.checkComponent(project, "project");

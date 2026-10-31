@@ -70,8 +70,9 @@ public final class DatabaseDestination implements Serializable {
      * @param database the Spanner database id
      * @return the database reference
      * @throws IllegalArgumentException if a component is null or blank, has leading or trailing
-     *     whitespace, or contains {@code '/'} — a separator would make the composed resource path
-     *     address a different resource
+     *     whitespace, contains {@code '/'}, or is exactly {@code .} or {@code ..} — a separator
+     *     would make the composed resource path address a different resource, and a dot segment is
+     *     path navigation rather than a name
      */
     public static DatabaseDestination of(String project, String instance, String database) {
         ResourceNames.checkComponent(project, "project");

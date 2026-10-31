@@ -18,9 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-22 (measured 2026-08-22), revised by [#1009] and [#1013] (2026-08-22), then by
-  [#1019], then by [#1028] (2026-08-22)
-- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019], [#1028]
-- Modules: base (`base.options`), bigquery, bigtable, cloudtasks, pubsub, spanner
+  [#1019], then by [#1028] (2026-08-22), then by [#1948] (2026-10-31)
+- Issues: [#984], [#920], [#976], [#1009], [#1013], [#1019], [#1028], [#1948]
+- Modules: base (`base.options`), bigquery, bigtable, cloudtasks, firestore, pubsub, spanner
 - Current behavior: `docs/content/docs/connectors/_index.md`, "What a builder checks"
 
 ## Context
@@ -89,6 +89,16 @@ the value:
    whitespace. A `/` inside a component does not fail — it silently addresses a *different*
    resource, so the service answers accurately about a name the user never typed. This is
    `ResourceNames.checkComponent`, and it now reaches every such component rather than nine of them.
+   A component that is exactly `.` or `..` is rejected on the same ground ([#1948], 2026-10-31):
+   it is path navigation rather than a name, and no resource id these components carry can be
+   either. Without the check, whether anything refuses it depends on how a destination composes
+   its path and on the client version. api-common 2.71.0 (`libraries-bom` 26.91.0, [#1940])
+   makes `PathTemplate.instantiate` throw for such a segment in its own wording, which the
+   BigQuery, Cloud Tasks and Pub/Sub destinations reach through `TableName`, `QueueName`,
+   `TopicName` and `ProjectSubscriptionName.format`; 2.70.0, which `libraries-bom` 26.90.0
+   resolves, has no such check. The Bigtable, Spanner, Firestore and Datastore destinations
+   concatenate their paths and accept it under either version. A dot inside a name (`a.b`, `...`, a domain-scoped `example.com:project`) is
+   not navigation and stays the service's to judge.
 2. **A value the connector parses, splits, quotes or emits** is checked against the grammar that
    will read it, because otherwise the failure names the grammar rather than the option:
    `SpannerIdentifier` (which decodes canonical quoting), `SpannerTableName`, `RowRangeParser`,
@@ -333,6 +343,8 @@ project's own methods.
 [#1013]: https://github.com/flink-gcp/flink-connector-gcp/issues/1013
 [#1019]: https://github.com/flink-gcp/flink-connector-gcp/issues/1019
 [#1028]: https://github.com/flink-gcp/flink-connector-gcp/issues/1028
+[#1940]: https://github.com/flink-gcp/flink-connector-gcp/pull/1940
+[#1948]: https://github.com/flink-gcp/flink-connector-gcp/issues/1948
 [#1029]: https://github.com/flink-gcp/flink-connector-gcp/pull/1029
 [#1032]: https://github.com/flink-gcp/flink-connector-gcp/pull/1032
 [#971]: https://github.com/flink-gcp/flink-connector-gcp/issues/971

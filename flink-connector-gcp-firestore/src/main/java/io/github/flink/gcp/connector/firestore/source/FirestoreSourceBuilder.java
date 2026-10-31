@@ -108,8 +108,9 @@ public class FirestoreSourceBuilder<T> {
      *
      * @param collectionGroup the collection id, for example {@code orders}
      * @return this builder
-     * @throws IllegalArgumentException if the id is blank, has leading or trailing whitespace, or
-     *     contains {@code '/'} — a collection id is one path segment
+     * @throws IllegalArgumentException if the id is blank, has leading or trailing whitespace,
+     *     contains {@code '/'}, or is exactly {@code .} or {@code ..} — a collection id is one path
+     *     segment
      */
     public FirestoreSourceBuilder<T> collectionGroup(String collectionGroup) {
         this.collectionGroup = ResourceNames.checkComponent(collectionGroup, "collectionGroup");
