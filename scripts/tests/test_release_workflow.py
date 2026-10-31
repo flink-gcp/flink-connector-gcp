@@ -15,6 +15,7 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -247,6 +248,35 @@ def test_rehearsal_skips_staging_and_holds_no_central_credentials(
     result = run(rehearse, tmp_path, **fake_just, VERSION="1.3.0")
     assert result.returncode == 0, result.stderr
     assert json.loads((tmp_path / "calls").read_text()) == ["rehearse-release", "1.3.0"]
+
+
+def reads_secrets(node):
+    # Only expressions count: a run script that merely says "secrets" reads none.
+    expressions = re.findall(r"\$\{\{(.*?)\}\}", str(node), flags=re.DOTALL)
+    return any(re.search(r"\bsecrets\b", e, flags=re.IGNORECASE) for e in expressions)
+
+
+def test_every_secret_reader_names_the_release_environment():
+    # The release secrets live in the release environment, whose ref policy
+    # admits only main and v* tags (#1971). A job without that environment
+    # reads the repository's secret store, which the ref policy does not guard.
+    workflow = yaml.safe_load((ROOT / ".github/workflows/release.yaml").read_text())
+    assert not reads_secrets(workflow.get("env", {})), (
+        "workflow-level env reads a secret"
+    )
+    jobs = workflow["jobs"]
+    # A calling job cannot name an environment, so inherit hands the called
+    # workflow the repository's secrets without passing through the gate.
+    assert [n for n, job in jobs.items() if job.get("secrets") == "inherit"] == []
+    readers = {name: job for name, job in jobs.items() if reads_secrets(job)}
+    assert readers, "no job reads a secret; the scan no longer sees the release job"
+    for name, job in readers.items():
+        environment = job.get("environment")
+        if isinstance(environment, dict):
+            environment = environment.get("name")
+        assert environment == "release", (
+            f"{name} reads secrets outside the release environment"
+        )
 
 
 def test_dispatch_rehearses_by_default():

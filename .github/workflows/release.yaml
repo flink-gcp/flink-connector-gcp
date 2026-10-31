@@ -76,6 +76,11 @@ jobs:
     # records (a transfer or rename switches a name guard off silently).
     if: github.repository_id == '1305440656'
     name: Validate both lines and release
+    # The release secrets live only in this environment, whose ref policy
+    # (main and v* tags) GitHub enforces even where a branch's copy of this
+    # file drops the ancestry check below; a dispatch in either mode therefore
+    # targets main or a release tag (ADR-0147, #1971).
+    environment: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
