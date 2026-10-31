@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-10-31 (the default stream measured 2026-10-31 against the service from a workstation,
   dataset in `us-central1`)
-- Issues: [#1945], [#1618], [#1936]
+- Issues: [#1945], [#1618], [#1936], [#1959]
 - Modules: bigquery (`sink.cdc`, `sink.storage.writer`, `sink.tables`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md` § Change data capture;
   `docs/content/docs/connectors/datastream/bigquery.md` § Change data capture and § Commit order
@@ -55,6 +55,13 @@ within one request's worth of rows still kept its older value, with no failure a
   The value has to be taken where the change is made, as a source's commit time is: a clock read in
   the writer orders changes by when they reached it, which is the timestamp-only ordering
   [ADR-0111] declines.
+  Declaring the column is not enough on its own: Flink fills a column an `INSERT` column list
+  leaves out with `NULL`, which would send every row of that statement to the row-failure path.
+  The sink therefore also rejects, during planning, a CDC `INSERT` whose column list does not name
+  the sequence column ([#1959]).
+  It reads `DynamicTableSink.Context#getTargetColumns()`, measured on Flink 1.20.4 and 2.2.1 to
+  index every column of the resolved schema, computed and metadata columns included, and to be
+  empty when the statement has no column list.
 - **Equal sequences are resolved by arrival order only under `OrderingMode.PER_TABLE`.** BigQuery
   falls back to ingestion time for two changes of one key with equal sequences, and the writer
   cannot tell whether a provider can produce them.
@@ -164,6 +171,7 @@ Read from source and planned on 2026-10-31:
 [#1618]: https://github.com/flink-gcp/flink-connector-gcp/issues/1618
 [#1936]: https://github.com/flink-gcp/flink-connector-gcp/issues/1936
 [#1945]: https://github.com/flink-gcp/flink-connector-gcp/issues/1945
+[#1959]: https://github.com/flink-gcp/flink-connector-gcp/issues/1959
 [ADR-0110]: 0110-bigquery-cdc-augments-default-stream-rows-without-changing-the-table-schema.md
 [ADR-0111]: 0111-the-bigquery-table-sink-maps-upsert-changelogs-and-keeps-cdc-metadata-out-of-the-schema.md
 [ADR-0169]: 0169-the-bigquery-catalog-maps-a-projects-datasets-and-rest-schemas-to-flink-tables.md

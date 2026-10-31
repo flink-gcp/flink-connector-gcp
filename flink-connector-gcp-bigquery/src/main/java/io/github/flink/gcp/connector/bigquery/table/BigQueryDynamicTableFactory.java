@@ -295,6 +295,10 @@ public class BigQueryDynamicTableFactory
                         config.getOptional(BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT)
                                 .orElse(null))
                 .parallelism(config.getOptional(FactoryUtil.SINK_PARALLELISM).orElse(null))
+                .sequenceColumn(
+                        BigQueryDynamicSink.sequenceColumn(
+                                        context.getCatalogTable().getResolvedSchema())
+                                .orElse(null))
                 .build();
     }
 
@@ -349,8 +353,8 @@ public class BigQueryDynamicTableFactory
         }
         // Checked here rather than only when the planner applies the metadata, so the failure
         // names the table and arrives before the planner's own changelog checks (ADR-0193).
-        if (!BigQueryDynamicSink.declaresSequenceMetadata(
-                context.getCatalogTable().getResolvedSchema())) {
+        if (!BigQueryDynamicSink.sequenceColumn(context.getCatalogTable().getResolvedSchema())
+                .isPresent()) {
             throw new ValidationException(BigQueryDynamicSink.missingSequenceMessage());
         }
     }
