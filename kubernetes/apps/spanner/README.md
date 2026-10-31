@@ -57,8 +57,8 @@ The input runs at parallelism one; every other vertex runs at `--parallelism`, o
   - The pace is chained into the source's task, so no network buffer of read-ahead rows stands between a checkpoint barrier and the source, and a barrier waits at most one pause.
   - Each partition's read is one streaming read, which the pinned client (google-cloud-spanner 6.124.0) ends after an hour without retrying, so the rig sizes the seed and the pace to read every partition within that.
 
-Whether a write that repeats identical values produces a change record at all is not established here; the trials' pilot measures it, and until then a key relayed once may have been written more than once.
-The execution count is also a lower bound for a second reason: a global restart before the first completed checkpoint starts a new coordinator at a later `latest()`, so commits from before it are not relayed, although the restarted input writes every key again.
+Every execution produces a change record, including a write that repeats identical values, as [#1878's identical-write probe](https://github.com/flink-gcp/flink-connector-gcp/issues/1878#issuecomment-6525682846) measured through both `BatchWrite` and `Commit`.
+The execution count is still a lower bound, because the relay can miss a commit: a global restart before the first completed checkpoint starts a new coordinator at a later `latest()`, so commits from before it are not relayed, although the restarted input writes every key again, and the Change Streams oracle judges keys, so it does not detect such a lost commit of a key relayed otherwise.
 The trials inject their faults only after a completed checkpoint.
 
 On a fresh start the Change Streams source reads from the instant its coordinator initializes, and it stops at `--change-stream-end`, so the job finishes once the input is complete, the source reaches its end and the copy is done.
@@ -108,7 +108,7 @@ The delivery supplies the run ID, image digest, phase, parallelism and change-st
 It names the instance `sp1360-<run-id>`, which a run ID of the full 40 characters keeps at 47 of Spanner's 64, and passes no emulator endpoint or credentials file.
 
 The deployment runs as the `tier3-spanner/spanner` KSA, which selects the `tier3-spanner` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-spanner.tf) limit it to the `sp1360-` instances.
-Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-spanner/runs/<run-id>/`, deleted one day after creation.
+Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-spanner/runs/<run-id>/`, deleted one day after creation, and two consecutive failed checkpoints are tolerated before the job restarts.
 One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
 Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
 The `tier3-spanner` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)), and the shared preflight and the Operator's watch set include it ([#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876)); the [recovery trial](#recovery-trial) below creates the instance and its database, seeds it and judges the trial.
@@ -214,7 +214,7 @@ A transiently failing query is repeated every 5 seconds until the read window cl
 Each oracle reports counts and the first 20 keys of each kind of deviation:
 
 - **Sink, `input`:** every input key holds its sequence and no other key is there.
-  It reports each key's executions, counted as the key's distinct commit times in `relay`, a lower bound until [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) measures whether a write of identical values produces a change record.
+  It reports each key's executions, counted as the key's distinct commit times in `relay`, a lower bound only through a commit the relay missed, as [Graph and what each table records](#graph-and-what-each-table-records) describes.
 - **Change Streams, `relay`:** every input key was delivered at least once, no delivered key lies outside the input, no key's last relayed commit is later than the change stream's end, and the source's watermark advanced after each recovery.
   The watermark is the least of its subtasks' `currentOutputWatermark`, and each window keeps its greatest reading: the baseline's must be above Flink's `Long.MIN_VALUE`, the upgraded window's above the baseline's and the finishing window's above the upgraded one's.
   The oracle is judged only when the input's last progress line came at least 120 seconds before the change stream's end and every window read the watermark; otherwise it is unjudged, never passed.
@@ -231,4 +231,5 @@ The exercise decides the verdict with the transition that completes the run, and
 `just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory, with the coverage and each window's greatest watermark rebuilt from the exported readings and the recoveries' timing, as for the Bigtable trial.
 It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
 
-Before the first trial, the preregistration of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) measures what #1877 could not: every one of its measurements ran as the owner, so the runner's and the supervisor's grants in the [foundation's ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) are unmeasured, and so is whether a write of identical values produces a change record.
+The four trials of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) are preregistered in the [Spanner recovery trial preregistration](../../../docs/adr/evidence/0165-spanner-recovery-preregistration-1878.md), and each kind reached `usable`, as their [findings](../../../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) record.
+The measurements of #1877 all ran as the owner, so the runner's and the supervisor's grants in the [foundation's ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) were first run by these trials, and no attempt's exported evidence holds a `PERMISSION_DENIED`.

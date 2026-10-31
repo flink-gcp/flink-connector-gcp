@@ -100,6 +100,7 @@ def bigtable_configuration(run_id):
         "execution.checkpointing.timeout": "120 s",
         "execution.checkpointing.max-concurrent-checkpoints": "1",
         "execution.checkpointing.num-retained": "2",
+        "execution.checkpointing.tolerable-failed-checkpoints": "2",
         "execution.checkpointing.dir": f"{storage}/checkpoints",
         "execution.checkpointing.savepoint-dir": f"{storage}/savepoints",
         "high-availability.type": "kubernetes",

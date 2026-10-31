@@ -217,7 +217,7 @@ The sink's parallelism is not part of that identity, so a savepoint taken at one
 Sequence `s` goes to sink subtask `s mod p` at sink parallelism `p`, and the sink keeps maximum parallelism 128 at either.
 The job is two vertices, the source chained to the identity operator and the sink's writer chained to its committer, which is what the rig's measurements read; `RecoveryJobITCase` holds that shape.
 The source, identity and sink UIDs are `ct1362-source-v1`, `ct1362-input-v1` and `ct1362-sink-v1`.
-Checkpoints run every 30 seconds, one at a time.
+Checkpoints run every 30 seconds, one at a time, and two consecutive failed checkpoints are tolerated before the job restarts.
 
 The sink is built with the public builder: a fixed `queue(...)`, `deliveryGuarantee(EXACTLY_ONCE)`, and the default staged and writer options.
 Under those defaults the committer reads the queue's `tombstoneTtl` back before it creates a task and refuses a queue that keeps names for less than an hour, so the workload identity needs `cloudtasks.queues.get` beside `cloudtasks.tasks.create`.

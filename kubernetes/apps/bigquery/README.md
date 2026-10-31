@@ -111,7 +111,7 @@ Each TaskManager has one slot, job parallelism is the writers' and autoscaling i
 These resource choices follow the smoke Pod shape and still need approval in the complete trial budget; they do not establish sufficient heap or a runtime Pod ceiling.
 No PVC or application volume is requested.
 
-Checkpoints run every 30 seconds in the Storage Write modes and every 120 seconds in FILE_LOADS mode, matching the interval the application enables, with at most one concurrent checkpoint, a 120-second timeout and two retained checkpoints.
+Checkpoints run every 30 seconds in the Storage Write modes and every 120 seconds in FILE_LOADS mode, matching the interval the application enables, with at most one concurrent checkpoint, a 120-second timeout, two retained checkpoints and two consecutive failed checkpoints tolerated before the job restarts.
 The hashmap backend uses filesystem checkpoint storage, with checkpoints, savepoints and Kubernetes HA state below `gs://flink-gcp-tier3-bigquery/runs/<run-id>/` in separate `checkpoints`, `savepoints` and `ha` prefixes.
 The fixed-delay restart strategy permits three attempts with a ten-second delay; the external supervisor must bound wall-clock runtime and repeated process incarnations.
 

@@ -99,10 +99,10 @@ class Sink(_Check):
     def report(self, relay):
         """The verdict, with the sink's executions counted from `relay`'s commits.
 
-        Each write the sink executes commits under a time of its own, so a
-        key's distinct relayed commit times count its executions. A write
-        that produced no change record is not among them, so the count is a
-        lower bound.
+        Each write the sink executes commits under a time of its own, and
+        produces a change record even when it repeats identical values, so a
+        key's distinct relayed commit times count its executions. A commit
+        the relay missed is not among them, so the count is a lower bound.
         """
         result = super().report(("foreign", "wrong_value"))
         histogram = {}

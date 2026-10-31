@@ -614,6 +614,8 @@ def test_smoke_application_preserves_state_and_bounds_resources(module, phase):
     ]
     config = spec["flinkConfiguration"]
     assert config["high-availability.type"] == "kubernetes"
+    # Two consecutive failed checkpoints, such as storage timeouts, restart nothing.
+    assert config["execution.checkpointing.tolerable-failed-checkpoints"] == "2"
     for option, suffix in [
         ("execution.checkpointing.dir", "checkpoints"),
         ("execution.checkpointing.savepoint-dir", "savepoints"),
@@ -1112,6 +1114,7 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
         assert config["execution.checkpointing.max-concurrent-checkpoints"] == "1"
         assert config["execution.checkpointing.timeout"] == "120 s"
         assert config["execution.checkpointing.num-retained"] == "2"
+        assert config["execution.checkpointing.tolerable-failed-checkpoints"] == "2"
         assert config["state.backend.type"] == "hashmap"
         assert config["execution.checkpointing.storage"] == "filesystem"
         assert config["high-availability.type"] == "kubernetes"
@@ -1421,6 +1424,7 @@ def cloudtasks_configuration(run_id):
         "execution.checkpointing.timeout": "120 s",
         "execution.checkpointing.max-concurrent-checkpoints": "1",
         "execution.checkpointing.num-retained": "2",
+        "execution.checkpointing.tolerable-failed-checkpoints": "2",
         "execution.checkpointing.dir": f"{storage}/checkpoints",
         "execution.checkpointing.savepoint-dir": f"{storage}/savepoints",
         "high-availability.type": "kubernetes",
@@ -1808,6 +1812,7 @@ def test_pubsub_recovery_deployment_contract(
     )
     assert config["execution.checkpointing.interval"] == "120 s"
     assert config["execution.checkpointing.max-concurrent-checkpoints"] == "1"
+    assert config["execution.checkpointing.tolerable-failed-checkpoints"] == "2"
     assert config["execution.checkpointing.storage"] == "filesystem"
     assert config["high-availability.type"] == "kubernetes"
     assert config["execution.checkpointing.externalized-checkpoint-retention"] == (

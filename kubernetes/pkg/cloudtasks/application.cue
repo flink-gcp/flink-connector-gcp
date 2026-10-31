@@ -60,6 +60,7 @@ import (
 				"execution.checkpointing.timeout":                             "120 s"
 				"execution.checkpointing.max-concurrent-checkpoints":          "1"
 				"execution.checkpointing.num-retained":                        "2"
+				"execution.checkpointing.tolerable-failed-checkpoints":        "2"
 				"execution.checkpointing.dir":                                 "\(storage)/checkpoints"
 				"execution.checkpointing.savepoint-dir":                       "\(storage)/savepoints"
 				"high-availability.type":                                      "kubernetes"
