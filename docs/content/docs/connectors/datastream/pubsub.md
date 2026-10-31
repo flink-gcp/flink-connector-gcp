@@ -958,7 +958,9 @@ and since that default is also 600 s, expect it to be what you see first, with t
 than to beat that clock; if you want a Pub/Sub-named failure ahead of it, set this below your
 checkpoint timeout, as the dead-letter queue's `flushTimeout` does by defaulting to a tenth of it.
 Where the two stop being interchangeable is `execution.checkpointing.tolerable-failed-checkpoints`:
-raise it above `0` and the checkpoint timeout stops failing anything, leaving this budget alone.
+raised to N, it lets N consecutive checkpoints expire before the next fails the job, so the
+checkpoint timeout ends a stall only after about N + 1 timeouts, and at its unlimited value
+`2147483647` never, which leaves this budget as the only bound.
 
 Which publish-completion path a stalled sink is parked in is not something an operator gets to
 choose — it depends on which gate, checkpoint, or recovery step first needs a completion.
@@ -1011,9 +1013,10 @@ exception.
 If you leave it at its default, note what happens without it: an ordered sink whose topic became
 unreachable does not fail. With Flink's own defaults the *checkpoint* timeout eventually fails the
 job — 600 s of a stalled job, ending in `Checkpoint expired before completing`, which names nothing
-about Pub/Sub. With `execution.checkpointing.tolerable-failed-checkpoints` raised above `0`, nothing
-fails it at all: measured, the job stayed `RUNNING` with its record count frozen while checkpoint
-after checkpoint expired underneath it.
+about Pub/Sub. With `execution.checkpointing.tolerable-failed-checkpoints` raised to N, that failure
+comes only after N + 1 consecutive checkpoints have expired, each one checkpoint timeout long, and at
+the unlimited value `2147483647` it never comes. Measured with a tolerance that absorbed six expiries,
+the job stayed `RUNNING` with its record count frozen while they expired underneath it.
 
 The cost of the bound is the honest other half: a disturbance longer than the budget now fails the
 job where the SDK's retries used to absorb it, and a persistent one becomes a restart loop. That is

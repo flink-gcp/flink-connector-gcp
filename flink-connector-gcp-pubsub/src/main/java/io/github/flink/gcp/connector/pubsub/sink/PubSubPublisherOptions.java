@@ -781,9 +781,10 @@ public final class PubSubPublisherOptions implements Serializable {
          * retryTotalTimeout} (600 s by default), which fails the job by itself. With ordering the
          * SDK retries a publish without limit, so nothing <em>inside the sink</em> ends an outage
          * but this. Outside it, Flink's own {@code execution.checkpointing.timeout} still fails the
-         * job at its default — later, and naming nothing about Pub/Sub — but only while {@code
-         * execution.checkpointing.tolerable-failed-checkpoints} is 0. Raise that and this budget is
-         * the only thing left (issue #333).
+         * job — later, and naming nothing about Pub/Sub — after one timeout at the default {@code
+         * execution.checkpointing.tolerable-failed-checkpoints} of 0, and after about N + 1
+         * timeouts when that is raised to N. At its unlimited value, {@code 2147483647}, this
+         * budget is the only thing left (issues #333 and #1963).
          *
          * <p>Expiry fails the job and drops nothing: the sink is at-least-once and stores nothing
          * in Flink state, so the records behind the unresolved publishes are replayed from the last
