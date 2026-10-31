@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The production page reader against the emulator, which records the first page of every split a
- * reader starts and holds reads back after a few pages until the test opens the gate.
+ * reader starts and holds reads back after a few pages of its own until the test opens the gate.
  *
  * <p>A split's first page is told apart by its query with the paging fields cleared: each task
  * attempt deserializes its own instance, so the first page an instance reads of a key range is the
@@ -56,16 +56,22 @@ final class GatedPageReader implements QueryPageReader {
 
     static final List<RunQueryRequest> STARTED_SPLITS = new CopyOnWriteArrayList<>();
     static final AtomicBoolean GATE_OPEN = new AtomicBoolean();
-    private static final AtomicInteger PAGES = new AtomicInteger();
-
-    /**
-     * When every held page gives up waiting: one deadline for the whole run, set by the first page
-     * the gate holds, so a gate that never opens costs a minute rather than a minute per page.
-     */
-    private static final AtomicReference<Long> DEADLINE = new AtomicReference<>();
 
     private final ClientQueryPageReader delegate;
     private final int freePages;
+
+    /**
+     * This instance's pages, so each subtask's reader gets its own free pages: a count shared by
+     * both subtasks could spend every free page on one of them.
+     */
+    private final AtomicInteger pages = new AtomicInteger();
+
+    /**
+     * When this instance's held pages give up waiting: one deadline per instance, set by the first
+     * page the gate holds, so a gate that never opens costs each subtask a minute rather than a
+     * minute per page.
+     */
+    private final AtomicReference<Long> deadline = new AtomicReference<>();
 
     @Nullable private transient Set<Query> started;
 
@@ -78,19 +84,17 @@ final class GatedPageReader implements QueryPageReader {
     static void reset() {
         STARTED_SPLITS.clear();
         GATE_OPEN.set(false);
-        PAGES.set(0);
-        DEADLINE.set(null);
     }
 
     @Override
     public QueryResultBatch read(DatabaseDestination database, RunQueryRequest page)
             throws IOException {
         recordStart(page);
-        if (PAGES.incrementAndGet() > freePages) {
+        if (pages.incrementAndGet() > freePages) {
             // Not 0 as "unset": System.nanoTime() may be any long, zero and negatives included.
-            DEADLINE.compareAndSet(null, System.nanoTime() + 60_000_000_000L);
-            long deadline = DEADLINE.get();
-            while (!GATE_OPEN.get() && System.nanoTime() - deadline < 0) {
+            deadline.compareAndSet(null, System.nanoTime() + 60_000_000_000L);
+            long giveUpAt = deadline.get();
+            while (!GATE_OPEN.get() && System.nanoTime() - giveUpAt < 0) {
                 try {
                     Thread.sleep(10);
                 } catch (InterruptedException e) {
