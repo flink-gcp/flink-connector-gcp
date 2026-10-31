@@ -167,7 +167,7 @@ limitations under the License.
              libraries-bom bump: a managed version is forced onto the clients too, so a pin left
              behind would be a silent downgrade. The requireUpperBoundDeps execution below fails the
              build when a client asks for a newer OpenTelemetry than this. -->
-        <opentelemetry-bom.version>1.62.0</opentelemetry-bom.version>
+        <opentelemetry-bom.version>1.67.0</opentelemetry-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.2</avro.version>
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
@@ -242,7 +242,7 @@ limitations under the License.
              file:// staging directory, 0.11.0 bundles them, and Central rejects the bundle
              ("Bundle has content that does NOT have a .pom file", #1812). -->
         <central-publishing-maven-plugin.version>0.12.0</central-publishing-maven-plugin.version>
-        <versions-maven-plugin.version>2.22.0</versions-maven-plugin.version>
+        <versions-maven-plugin.version>2.23.0</versions-maven-plugin.version>
         <maven-help-plugin.version>3.5.2</maven-help-plugin.version>
 
         <!-- Test execution -->
