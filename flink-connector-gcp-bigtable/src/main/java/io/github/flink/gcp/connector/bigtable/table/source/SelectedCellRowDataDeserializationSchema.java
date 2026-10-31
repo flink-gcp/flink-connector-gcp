@@ -48,6 +48,10 @@ final class SelectedCellRowDataDeserializationSchema
     private final SelectedCellMutationClassifier classifier;
     private final CellValueCodec.FieldDecoder primaryKeyDecoder;
     private final int primaryKeyIndex;
+    private final int physicalFieldCount;
+    private final int[] payloadPhysicalIndexes;
+    private final int commitTimestampIndex;
+    private final int tieBreakerIndex;
     private final RowData.FieldGetter[] payloadGetters;
     private final ChangeStreamReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedType;
@@ -65,6 +69,11 @@ final class SelectedCellRowDataDeserializationSchema
         this.classifier = Preconditions.checkNotNull(classifier, "classifier must not be null");
         this.primaryKeyDecoder = CellValueCodec.decoder(schema.getPrimaryKeyType(), trailingBytes);
         this.primaryKeyIndex = schema.getPrimaryKeyIndex();
+        this.physicalFieldCount =
+                ((RowType) schema.getPhysicalDataType().getLogicalType()).getFieldCount();
+        this.payloadPhysicalIndexes = schema.getPayloadPhysicalIndexes();
+        this.commitTimestampIndex = schema.getCommitTimestampIndex();
+        this.tieBreakerIndex = schema.getTieBreakerIndex();
         RowType payloadType = (RowType) schema.getPayloadDataType().getLogicalType();
         this.payloadGetters = new RowData.FieldGetter[payloadType.getFieldCount()];
         for (int index = 0; index < payloadGetters.length; index++) {
@@ -92,7 +101,7 @@ final class SelectedCellRowDataDeserializationSchema
                 result.getKind() == SelectedCellMutationClassifier.Kind.UPSERT
                         ? RowKind.UPDATE_AFTER
                         : RowKind.DELETE;
-        GenericRowData physical = new GenericRowData(rowKind, payloadGetters.length + 1);
+        GenericRowData physical = new GenericRowData(rowKind, physicalFieldCount);
         byte[] key = mutation.getRowKey().toByteArray();
         try {
             physical.setField(primaryKeyIndex, primaryKeyDecoder.decode(key));
@@ -138,11 +147,23 @@ final class SelectedCellRowDataDeserializationSchema
                                 + ".");
             }
             for (int payloadIndex = 0; payloadIndex < payloadGetters.length; payloadIndex++) {
-                int physicalIndex =
-                        payloadIndex < primaryKeyIndex ? payloadIndex : payloadIndex + 1;
                 physical.setField(
-                        physicalIndex, payloadGetters[payloadIndex].getFieldOrNull(payload[0]));
+                        payloadPhysicalIndexes[payloadIndex],
+                        payloadGetters[payloadIndex].getFieldOrNull(payload[0]));
             }
+        }
+        // Filled on a delete as on an upsert: these are the delete's own coordinates, which is
+        // what lets a downstream sink order it against the change it deletes (#1960).
+        // The metadata columns' own readers, so a column and the metadata of the same name
+        // cannot drift apart.
+        if (commitTimestampIndex >= 0) {
+            physical.setField(
+                    commitTimestampIndex,
+                    ChangeStreamReadableMetadata.COMMIT_TIMESTAMP.read(mutation));
+        }
+        if (tieBreakerIndex >= 0) {
+            physical.setField(
+                    tieBreakerIndex, ChangeStreamReadableMetadata.TIE_BREAKER.read(mutation));
         }
 
         if (metadata.length == 0) {

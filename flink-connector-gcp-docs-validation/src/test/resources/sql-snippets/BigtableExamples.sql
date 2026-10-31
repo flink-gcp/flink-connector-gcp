@@ -241,8 +241,8 @@ CREATE TABLE current_profiles (
   profile_id STRING NOT NULL,
   name STRING,
   tier STRING,
-  commit_ts TIMESTAMP_LTZ(9) METADATA FROM 'commit-timestamp' VIRTUAL,
-  tie_breaker INT METADATA FROM 'tie-breaker' VIRTUAL,
+  commit_ts TIMESTAMP_LTZ(9) NOT NULL,
+  tie_breaker INT NOT NULL,
   PRIMARY KEY (profile_id) NOT ENFORCED
 ) WITH (
   'connector' = 'bigtable',
@@ -256,6 +256,9 @@ CREATE TABLE current_profiles (
   -- Base64 for the qualifier "current".
   'scan.change-stream.selected-cell.qualifier-base64' = 'Y3VycmVudA==',
   'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-a',
+  -- Physical columns the source fills on every row, a delete included.
+  'scan.change-stream.commit-timestamp-column' = 'commit_ts',
+  'scan.change-stream.tie-breaker-column' = 'tie_breaker',
   'value.format' = 'json'
 );
 

@@ -36,14 +36,19 @@ import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.sink.SpannerDynamicSink;
 import io.github.flink.gcp.connector.spanner.table.sink.WriterOptionsMapper;
+import io.github.flink.gcp.connector.spanner.table.source.ChangeStreamCoordinateColumns;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerChangeStreamDynamicSource;
 import io.github.flink.gcp.connector.spanner.table.source.SpannerDynamicSource;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -96,6 +101,9 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCAN_MODE,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_SEQUENCE_COLUMN,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_MOD_NUMBER_COLUMN,
                         SpannerConnectorOptions.SCAN_STARTUP_MODE,
                         SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
@@ -180,7 +188,37 @@ public final class SpannerDynamicTableFactory
         ReadableConfig config = helper.getOptions();
         validateCredentialsMode(config);
         DataType physicalType = context.getPhysicalRowDataType();
-        SpannerTableSchemaConverter schema = createSchema(context, config, physicalType);
+        // Resolved before the schema is built: the coordinate columns are not watched table
+        // columns, so the schema the records are validated against leaves them out. Outside
+        // change-stream mode the options are refused by validateSourceMode below.
+        ChangeStreamCoordinateColumns coordinateColumns =
+                config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM
+                        ? ChangeStreamCoordinateColumns.resolve(
+                                (RowType) physicalType.getLogicalType(),
+                                context.getPrimaryKeyIndexes(),
+                                optionalNonBlank(
+                                        config,
+                                        SpannerConnectorOptions
+                                                .SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN),
+                                optionalNonBlank(
+                                        config,
+                                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_SEQUENCE_COLUMN),
+                                optionalNonBlank(
+                                        config,
+                                        SpannerConnectorOptions
+                                                .SCAN_CHANGE_STREAM_MOD_NUMBER_COLUMN))
+                        : null;
+        if (coordinateColumns != null) {
+            rejectCoordinatesInFullMode(config);
+            rejectMarkedCoordinateColumns(config, coordinateColumns);
+        }
+        SpannerTableSchemaConverter schema =
+                coordinateColumns == null
+                        ? createSchema(context, config, physicalType)
+                        : createSchema(
+                                config,
+                                coordinateColumns.getDataType(),
+                                coordinateColumns.getDataPrimaryKeyIndexes());
         validateSourceMode(context.getCatalogTable().getOptions(), config, schema);
         // After the check that refuses an option outright; see validateEmulatorEndpoint.
         validateEmulatorEndpoint(config);
@@ -190,6 +228,7 @@ public final class SpannerDynamicTableFactory
         if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
             return SpannerChangeStreamDynamicSource.from(
                     schema,
+                    coordinateColumns,
                     physicalType,
                     config,
                     table,
@@ -351,8 +390,9 @@ public final class SpannerDynamicTableFactory
 
     /**
      * Rejects a change-stream table written to. Nothing downstream catches it: a change-stream DDL
-     * declares the watched table's own columns and {@link #createSchema} builds it identically for
-     * both directions, so the write lands in the table being watched.
+     * declares the watched table's own columns and {@link #createSchema(Context, ReadableConfig,
+     * DataType)} builds it identically for both directions, so the write lands in the table being
+     * watched.
      */
     private static void checkNotAChangeStreamTable(ReadableConfig config) {
         if (config.get(SpannerConnectorOptions.SCAN_MODE) == ScanMode.CHANGE_STREAM) {
@@ -369,6 +409,9 @@ public final class SpannerDynamicTableFactory
                 incompatibleWith,
                 SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME,
                 SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_SEQUENCE_COLUMN,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_MOD_NUMBER_COLUMN,
                 SpannerConnectorOptions.SCAN_STARTUP_MODE,
                 SpannerConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                 SpannerConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
@@ -388,6 +431,89 @@ public final class SpannerDynamicTableFactory
                         option.key() + " is incompatible with " + incompatibleWith + ".");
             }
         }
+    }
+
+    /**
+     * Refuses the coordinate columns in {@code full} mode. A retraction there must repeat the row
+     * it retracts, and an {@code UPDATE_BEFORE} or {@code DELETE} would carry the retracting
+     * change's coordinates instead of those of the row it withdraws. {@code full} mode plans no
+     * {@code ChangelogNormalize} unless {@code table.exec.source.cdc-events-duplicate} is set, so
+     * there the metadata columns already serve it.
+     */
+    private static void rejectCoordinatesInFullMode(ReadableConfig config) {
+        if (config.getOptional(SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)
+                        .orElse(null)
+                == ChangeStreamChangelogMode.FULL) {
+            throw new ValidationException(
+                    "scan.change-stream.commit-timestamp-column, sequence-column and"
+                            + " mod-number-column are valid only when"
+                            + " scan.change-stream.changelog-mode=upsert: in full mode a"
+                            + " retraction would carry the retracting change's coordinates"
+                            + " rather than those of the row it withdraws. Read the"
+                            + " commit-timestamp, sequence and mod-number metadata columns"
+                            + " instead.");
+        }
+    }
+
+    /**
+     * Refuses a type marker on a coordinate column. The schema is built without the coordinate
+     * columns, so without this check the marker's own validation would report a column the DDL
+     * declares as unknown and name neither option.
+     */
+    private static void rejectMarkedCoordinateColumns(
+            ReadableConfig config, ChangeStreamCoordinateColumns coordinateColumns) {
+        Map<ConfigOption<?>, Collection<String>> markers = new LinkedHashMap<>();
+        markers.put(
+                SpannerConnectorOptions.JSON_FIELD_PATHS,
+                config.getOptional(SpannerConnectorOptions.JSON_FIELD_PATHS)
+                        .orElse(Collections.emptyList()));
+        markers.put(
+                SpannerConnectorOptions.UUID_FIELD_PATHS,
+                config.getOptional(SpannerConnectorOptions.UUID_FIELD_PATHS)
+                        .orElse(Collections.emptyList()));
+        markers.put(
+                SpannerConnectorOptions.GENERATED_COLUMNS,
+                config.getOptional(SpannerConnectorOptions.GENERATED_COLUMNS)
+                        .orElse(Collections.emptyList()));
+        markers.put(
+                SpannerConnectorOptions.PROTO_TYPE_NAMES,
+                config.getOptional(SpannerConnectorOptions.PROTO_TYPE_NAMES)
+                        .orElse(Collections.emptyMap())
+                        .keySet());
+        markers.put(
+                SpannerConnectorOptions.ENUM_TYPE_NAMES,
+                config.getOptional(SpannerConnectorOptions.ENUM_TYPE_NAMES)
+                        .orElse(Collections.emptyMap())
+                        .keySet());
+        for (Map.Entry<ConfigOption<?>, Collection<String>> marker : markers.entrySet()) {
+            for (String path : marker.getValue()) {
+                // A marker path addresses a nested field or element as column.field or column[].
+                String column = path.split("[.\\[]", 2)[0];
+                String coordinateOption = coordinateColumns.optionKeyFor(column);
+                if (coordinateOption != null) {
+                    throw new ValidationException(
+                            marker.getKey().key()
+                                    + " names '"
+                                    + path
+                                    + "', a column "
+                                    + coordinateOption
+                                    + " fills with a change-stream coordinate rather than a"
+                                    + " Spanner value; remove it from "
+                                    + marker.getKey().key()
+                                    + ".");
+                }
+            }
+        }
+    }
+
+    /** Returns an option that was not required, rejecting it when it was set but blank. */
+    @Nullable
+    private static String optionalNonBlank(ReadableConfig config, ConfigOption<String> option) {
+        String value = config.getOptional(option).orElse(null);
+        if (value != null && value.isBlank()) {
+            throw new ValidationException(option.key() + " must not be blank.");
+        }
+        return value;
     }
 
     private static void requireNonBlank(ReadableConfig config, ConfigOption<String> option) {
@@ -449,9 +575,15 @@ public final class SpannerDynamicTableFactory
 
     private static SpannerTableSchemaConverter createSchema(
             Context context, ReadableConfig config, DataType physicalType) {
+        return createSchema(
+                config, (RowType) physicalType.getLogicalType(), context.getPrimaryKeyIndexes());
+    }
+
+    private static SpannerTableSchemaConverter createSchema(
+            ReadableConfig config, RowType rowType, int[] primaryKeyIndexes) {
         return SpannerTableSchemaConverter.of(
-                (RowType) physicalType.getLogicalType(),
-                context.getPrimaryKeyIndexes(),
+                rowType,
+                primaryKeyIndexes,
                 config.get(SpannerConnectorOptions.DIALECT),
                 config.getOptional(SpannerConnectorOptions.JSON_FIELD_PATHS)
                         .orElse(Collections.emptyList()),

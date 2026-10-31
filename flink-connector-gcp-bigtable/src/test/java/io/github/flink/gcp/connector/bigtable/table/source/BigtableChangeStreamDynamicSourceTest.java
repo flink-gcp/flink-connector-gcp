@@ -51,7 +51,7 @@ class BigtableChangeStreamDynamicSourceTest {
                     DataTypes.FIELD("row_id", DataTypes.STRING().notNull()),
                     DataTypes.FIELD("score", DataTypes.INT()));
     private static final SelectedCellTableSchema SELECTED_CELL_SCHEMA =
-            SelectedCellTableSchema.of(PHYSICAL_DATA_TYPE, new int[] {0});
+            SelectedCellTableSchema.of(PHYSICAL_DATA_TYPE, new int[] {0}, null, null);
 
     @Test
     void anEnvelopeSourceRejectsASelectedCellValueLeftOnTheBuilder() {

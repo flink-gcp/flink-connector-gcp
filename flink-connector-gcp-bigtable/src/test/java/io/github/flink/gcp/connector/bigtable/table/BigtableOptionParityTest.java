@@ -329,6 +329,14 @@ class BigtableOptionParityTest {
                 BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID.key(),
                 "bounds the selected-cell mutation protocol to one source cluster");
         map.put(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN.key(),
+                "names the selected-cell physical column the table layer fills with the commit"
+                        + " timestamp");
+        map.put(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_TIE_BREAKER_COLUMN.key(),
+                "names the selected-cell physical column the table layer fills with the tie"
+                        + " breaker");
+        map.put(
                 BigtableConnectorOptions.VALUE_FORMAT.key(),
                 "is discovered by the table factory and decodes selected-cell non-key columns");
         map.put(

@@ -1044,8 +1044,9 @@ inserted envelope row rather than a Flink `DELETE` or `UPDATE`.
 Set `scan.change-stream.changelog-mode = selected-cell` only when one Bigtable cell contains the
 complete serialized non-key part of a logical row.
 The mutation row key supplies exactly one declared physical primary key, which may appear anywhere
-in the DDL, and `value.format` decodes every other physical column.
-At least one non-key column is required.
+in the DDL, and `value.format` decodes every other physical column except the commit-timestamp and
+tie-breaker columns [described below](#a-deletes-own-commit-time).
+At least one column for `value.format` to decode is required.
 The primary key decodes under the same fixed-width rule as every other read, and this mode is
 where its default bites hardest: a key longer than a fixed-width primary key's layout silently
 decodes as its prefix, and the `DELETE` or `UPDATE_AFTER` it keys then lands on the wrong Flink
@@ -1064,7 +1065,8 @@ The source recognizes only this atomic producer protocol:
 - Entries for other cells and families produce no row.
 
 A key-only `DELETE` carries `NULL` in every non-key physical column, including one the DDL declares
-`NOT NULL`.
+`NOT NULL`, except the commit-timestamp and tie-breaker columns described
+[below](#a-deletes-own-commit-time).
 On Flink 2.x the planner hands such a delete on as it is to a sink that accepts key-only deletes,
 unless the query needs a `ChangelogNormalize`: reading a metadata column, filtering on a non-key
 column and aggregating each do.
@@ -1157,6 +1159,56 @@ or unassigned, so the job must choose how it handles records behind that waterma
 See [ADR-0109]({{< param BookRepo >}}/blob/main/docs/adr/0109-bigtable-change-stream-estimates-do-not-become-native-source-watermarks.md)
 for the decision and the different Spanner heartbeat contract.
 
+#### A delete's own commit time
+
+To receive each mutation's commit timestamp and tie breaker as ordinary columns, declare a
+`TIMESTAMP_LTZ(9)` column and an `INT` column in the `CREATE TABLE` statement and name them in
+`scan.change-stream.commit-timestamp-column` and `scan.change-stream.tie-breaker-column`.
+The source writes the mutation's values into those columns on every row it emits, a key-only
+`DELETE` included.
+The column names are the table author's to choose; each option only says which column receives
+its value, and either may be set alone.
+`value.format` does not decode these columns, so a field of the same name in the selected cell's
+value never reaches the row.
+
+{{< sql-snippet file="flink/BigtableTableReference.sql" tag="selected-cell-commit-columns" >}}
+
+The `commit-timestamp` and `tie-breaker` metadata columns read the same values, except on a delete.
+In a Flink changelog a `DELETE` row stands for the row being deleted, so when a query reads a
+metadata column of an upsert source, the planner puts a `ChangelogNormalize` operator after the
+source, and that operator completes each key-only delete from the last row it holds for the key,
+metadata included.
+The completed delete therefore carries the commit time of the change it deletes rather than its
+own, and the delete of a key the operator holds no row for is dropped.
+That is Flink's design rather than a bug: the completed row is the deleted row, which is what the
+changelog promises, but a sink that orders a key's changes by commit time, such as a BigQuery CDC
+table with a sequence, needs the delete's own time.
+
+Physical columns avoid the operator on Flink 2.x.
+When a query reads them and no metadata column, the planner drops the `ChangelogNormalize` in front
+of a sink that accepts key-only deletes, such as a BigQuery CDC table, so each delete reaches the
+sink with its own commit time and tie breaker, and the delete of a key the job holds no row for
+reaches the sink instead of being dropped.
+Filtering on a non-key column, aggregating, reading any metadata column or setting
+`table.exec.source.cdc-events-duplicate` brings the operator back.
+Flink 1.20 keeps the operator after every upsert source, so on 1.20 a delete still carries the
+commit time of the row it deletes, and the delete of a key the job holds no row for is still
+dropped.
+
+On Flink 2.x this rests on one planner behaviour: with the operator dropped, a key-only delete's
+non-key columns reach the sink as the source wrote them.
+Flink describes a key-only delete as carrying the key (`ChangelogMode#keyOnlyDeletes`) and says
+nothing about its other columns, so this is measured rather than promised.
+The connector's tests check it on every Flink version the connector supports, the plan tests for
+the operator's absence and the Spanner emulator test for the values a delete carries, so a Flink
+release that changed it would fail them.
+
+Both columns are filled on every row, so declaring them `NOT NULL` is safe on Flink 2.2 and 2.3:
+the two Flink bugs [described with selected-cell upserts](#selected-cell-upserts) concern columns a
+delete leaves `NULL`.
+The [BigQuery replica example]({{< relref "docs/examples/bigtable" >}}#replicating-a-selected-cell-into-bigquery)
+builds a BigQuery change sequence from the two columns.
+
 ## Options
 
 Scan, connection and write options map onto builder setters of the DataStream API, which stays their
@@ -1207,7 +1259,9 @@ DataStream builder.
 | `scan.change-stream.selected-cell.family` | String | Required only in selected-cell mode; family that holds the complete serialized logical value |
 | `scan.change-stream.selected-cell.qualifier-base64` | String | Required only in selected-cell mode; exact qualifier in canonical padded RFC 4648 standard Base64. An empty decoded qualifier is valid |
 | `scan.change-stream.selected-cell.source-cluster-id` | String | Required only in selected-cell mode; the one source cluster accepted for mutations affecting the selected cell |
-| `value.format` | String | Required only in selected-cell mode; insert-only Flink format that decodes the selected cell into all non-key physical columns. Its `value.<format>.*` options configure that format |
+| `scan.change-stream.commit-timestamp-column` | String | Selected-cell mode only; a non-key `TIMESTAMP_LTZ(9)` physical column the source fills with the mutation's commit timestamp on every row, a key-only `DELETE` included. See [a delete's own commit time](#a-deletes-own-commit-time) |
+| `scan.change-stream.tie-breaker-column` | String | Selected-cell mode only; a non-key `INT` physical column the source fills with the mutation's tie breaker on every row, a key-only `DELETE` included |
+| `value.format` | String | Required only in selected-cell mode; insert-only Flink format that decodes the selected cell into all non-key physical columns other than the commit-timestamp and tie-breaker columns. Its `value.<format>.*` options configure that format |
 | `scan.startup.mode` | Enum | `startPosition(...)`: `earliest`, `latest`, or `timestamp`. Unset retains the builder's latest default |
 | `scan.startup.timestamp-millis` | Long | Epoch-millisecond instant paired with startup mode `timestamp` |
 | `scan.resume-fallback.mode` | Enum | `resumeFallback(...)`: explicit fallback for an expired restored continuation; uses the same three modes |

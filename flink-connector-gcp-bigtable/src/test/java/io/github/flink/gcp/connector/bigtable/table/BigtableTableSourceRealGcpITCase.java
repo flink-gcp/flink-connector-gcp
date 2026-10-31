@@ -331,7 +331,8 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
         tEnv.executeSql(
                 ddl(
                         "profile_changes",
-                        "rowkey STRING, name STRING, tier STRING",
+                        "rowkey STRING, name STRING, tier STRING,"
+                                + " commit_ts TIMESTAMP_LTZ(9) NOT NULL, tie_breaker INT NOT NULL",
                         table.getTable(),
                         "scan.mode",
                         "change-stream",
@@ -345,6 +346,10 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
                         "Y3VycmVudA==",
                         "scan.change-stream.selected-cell.source-cluster-id",
                         sourceCluster,
+                        "scan.change-stream.commit-timestamp-column",
+                        "commit_ts",
+                        "scan.change-stream.tie-breaker-column",
+                        "tie_breaker",
                         "scan.startup.mode",
                         "timestamp",
                         "scan.startup.timestamp-millis",
@@ -363,18 +368,35 @@ class BigtableTableSourceRealGcpITCase extends AbstractBigtableRealGcpITCase {
         // and can suppress the repeated replacement, hiding the source's actual changelog.
         try (CloseableIterator<Row> rows =
                 tEnv.toChangelogStream(
-                                tEnv.sqlQuery("SELECT rowkey, name, tier FROM profile_changes"),
+                                tEnv.sqlQuery(
+                                        "SELECT rowkey, name, tier, commit_ts, tie_breaker"
+                                                + " FROM profile_changes"),
                                 Schema.newBuilder().primaryKey("rowkey").build(),
                                 ChangelogMode.upsert())
                         .executeAndCollect()) {
             rows.forEachRemaining(changes::add);
         }
         assertThat(changes)
+                .extracting(
+                        row ->
+                                Row.ofKind(
+                                        row.getKind(),
+                                        row.getField(0),
+                                        row.getField(1),
+                                        row.getField(2)))
                 .containsExactly(
                         Row.ofKind(RowKind.UPDATE_AFTER, "profile#1", "Alice", "gold"),
                         Row.ofKind(RowKind.UPDATE_AFTER, "profile#1", null, "silver"),
                         Row.ofKind(RowKind.UPDATE_AFTER, "profile#1", null, "silver"),
                         Row.ofKind(RowKind.DELETE, "profile#1", null, null));
+        // Each of the four is its own commit, made one after another, so their commit times
+        // increase. The delete's is its own (#1960): a delete completed from the row Flink held
+        // would repeat the last replacement's instead.
+        // The tie breaker's value is pinned by the unit tests; the service gives no expected one.
+        assertThat(changes)
+                .extracting(change -> (Instant) change.getField(3))
+                .isSorted()
+                .doesNotHaveDuplicates();
     }
 
     private static void assertRawValue(Row value, ByteString expected) {

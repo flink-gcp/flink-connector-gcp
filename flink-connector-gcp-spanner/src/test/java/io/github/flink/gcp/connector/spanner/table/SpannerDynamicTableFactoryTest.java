@@ -35,6 +35,7 @@ import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
+import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Mutation;
@@ -91,6 +92,9 @@ class SpannerDynamicTableFactoryTest {
             Map.ofEntries(
                     Map.entry("scan.change-stream.name", "people_changes"),
                     Map.entry("scan.change-stream.changelog-mode", "full"),
+                    Map.entry("scan.change-stream.commit-timestamp-column", "commit_ts"),
+                    Map.entry("scan.change-stream.sequence-column", "record_sequence"),
+                    Map.entry("scan.change-stream.mod-number-column", "mod_number"),
                     Map.entry("scan.startup.mode", "latest"),
                     Map.entry("scan.startup.timestamp-millis", "1000"),
                     Map.entry("scan.resume-fallback.mode", "earliest"),
@@ -977,6 +981,186 @@ class SpannerDynamicTableFactoryTest {
         fallback.put("scan.resume-fallback.timestamp-millis", "1000");
         assertThatThrownBy(() -> source(SCHEMA, fallback))
                 .hasStackTraceContaining("requires scan.resume-fallback.mode=timestamp");
+    }
+
+    private static ResolvedSchema coordinateSchema(
+            DataType commitType, DataType sequenceType, DataType modNumberType) {
+        return new ResolvedSchema(
+                Arrays.asList(
+                        Column.physical("commit_ts", commitType),
+                        Column.physical("id", DataTypes.BIGINT().notNull()),
+                        Column.physical("record_sequence", sequenceType),
+                        Column.physical("name", DataTypes.STRING()),
+                        Column.physical("mod_number", modNumberType)),
+                Collections.emptyList(),
+                UniqueConstraint.primaryKey("pk", Arrays.asList("id")));
+    }
+
+    private static ResolvedSchema coordinateSchema() {
+        return coordinateSchema(
+                DataTypes.TIMESTAMP_LTZ(9).notNull(),
+                DataTypes.STRING().notNull(),
+                DataTypes.INT().notNull());
+    }
+
+    private static Map<String, String> coordinateOptions() {
+        Map<String, String> options = changeStreamOptions("upsert");
+        options.put("scan.change-stream.commit-timestamp-column", "commit_ts");
+        options.put("scan.change-stream.sequence-column", "record_sequence");
+        options.put("scan.change-stream.mod-number-column", "mod_number");
+        return options;
+    }
+
+    @Test
+    void leavesTheCoordinateColumnsOutOfTheWatchedSchema() throws Exception {
+        ScanTableSource dynamic = (ScanTableSource) source(coordinateSchema(), coordinateOptions());
+
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+        assertThat(dynamic)
+                .extracting("schema")
+                .extracting("columns")
+                .asList()
+                .extracting("name")
+                .containsExactly("id", "name");
+        // What the job runs with, not only what the planner holds: the deserializer the runtime
+        // provider builds carries the same coordinate columns, and its converter refuses them.
+        SpannerChangeStreamSourceConfig<?> config =
+                TestSources.changeStreamConfig(
+                        runtimeSource(
+                                ((SourceProvider)
+                                                dynamic.getScanRuntimeProvider(
+                                                        ScanRuntimeProviderContext.INSTANCE))
+                                        .createSource()));
+        assertThat(config.getDeserializer())
+                .extracting("coordinateColumns")
+                .isNotNull()
+                .isEqualTo(
+                        org.assertj.core.util.introspection.PropertyOrFieldSupport.EXTRACTION
+                                .getValueOf("coordinateColumns", dynamic));
+        assertThat(config.getDeserializer())
+                .extracting("converter.coordinateColumns")
+                .asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.COLLECTION)
+                .containsExactlyInAnyOrder("commit_ts", "record_sequence", "mod_number");
+        assertThat(dynamic)
+                .extracting("coordinateColumns")
+                .hasFieldOrPropertyWithValue("commitTimestampIndex", 0)
+                .hasFieldOrPropertyWithValue("sequenceIndex", 2)
+                .hasFieldOrPropertyWithValue("modNumberIndex", 4)
+                .hasFieldOrPropertyWithValue("dataPhysicalIndexes", new int[] {1, 3});
+
+        // One coordinate alone is accepted, and a nullable declaration as well: the source fills
+        // the column on every row. The columns no option names stay watched.
+        Map<String, String> commitOnly = changeStreamOptions("upsert");
+        commitOnly.put("scan.change-stream.commit-timestamp-column", "commit_ts");
+        assertThat(
+                        source(
+                                coordinateSchema(
+                                        DataTypes.TIMESTAMP_LTZ(9),
+                                        DataTypes.STRING(),
+                                        DataTypes.BIGINT()),
+                                commitOnly))
+                .extracting("schema")
+                .extracting("columns")
+                .asList()
+                .extracting("name")
+                .containsExactly("id", "record_sequence", "name", "mod_number");
+    }
+
+    @Test
+    void rejectsACoordinateColumnTheTableCannotHold() {
+        Map<String, String> undeclared = coordinateOptions();
+        undeclared.put("scan.change-stream.sequence-column", "seq");
+        assertThatThrownBy(() -> source(coordinateSchema(), undeclared))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.sequence-column' names column 'seq', which the"
+                                + " table does not declare");
+
+        Map<String, String> key = coordinateOptions();
+        key.put("scan.change-stream.mod-number-column", "id");
+        assertThatThrownBy(() -> source(coordinateSchema(), key))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.mod-number-column' names the primary-key"
+                                + " column 'id'");
+
+        Map<String, String> blank = coordinateOptions();
+        blank.put("scan.change-stream.commit-timestamp-column", " ");
+        assertThatThrownBy(() -> source(coordinateSchema(), blank))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "scan.change-stream.commit-timestamp-column must not be blank");
+
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        coordinateSchema(
+                                                DataTypes.TIMESTAMP_LTZ(3),
+                                                DataTypes.STRING(),
+                                                DataTypes.INT()),
+                                        coordinateOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.commit-timestamp-column' names column"
+                                + " 'commit_ts' of type TIMESTAMP_LTZ(3); declare it"
+                                + " TIMESTAMP_LTZ(9).");
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        coordinateSchema(
+                                                DataTypes.TIMESTAMP_LTZ(9),
+                                                DataTypes.VARCHAR(20),
+                                                DataTypes.INT()),
+                                        coordinateOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.sequence-column' names column"
+                                + " 'record_sequence' of type VARCHAR(20); declare it STRING.");
+        assertThatThrownBy(
+                        () ->
+                                source(
+                                        coordinateSchema(
+                                                DataTypes.TIMESTAMP_LTZ(9),
+                                                DataTypes.STRING(),
+                                                DataTypes.BIGINT()),
+                                        coordinateOptions()))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.change-stream.mod-number-column' names column"
+                                + " 'mod_number' of type BIGINT; declare it INT.");
+    }
+
+    @Test
+    void rejectsTheCoordinateColumnsInFullMode() {
+        // A full-mode retraction must repeat the row it withdraws; a coordinate column would carry
+        // the retracting change's coordinates instead.
+        Map<String, String> options = coordinateOptions();
+        options.put("scan.change-stream.changelog-mode", "full");
+
+        assertThatThrownBy(() -> source(coordinateSchema(), options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "are valid only when scan.change-stream.changelog-mode=upsert");
+    }
+
+    @Test
+    void rejectsATypeMarkerOnACoordinateColumnUnderBothOptionKeys() {
+        // Without the check the marker's own validation runs over the watched columns only, and
+        // reports a column the DDL declares as unknown.
+        for (Map.Entry<String, String> marker :
+                Arrays.asList(
+                        Map.entry("uuid-field-paths", "record_sequence"),
+                        Map.entry("json-field-paths", "record_sequence"),
+                        Map.entry("generated-columns", "commit_ts"))) {
+            Map<String, String> options = coordinateOptions();
+            options.put(marker.getKey(), marker.getValue());
+            assertThatThrownBy(() -> source(coordinateSchema(), options))
+                    .as(marker.getKey())
+                    .isInstanceOf(ValidationException.class)
+                    .hasStackTraceContaining(
+                            marker.getKey() + " names '" + marker.getValue() + "', a column")
+                    .hasStackTraceContaining("scan.change-stream.");
+        }
     }
 
     private static Map<String, String> changeStreamOptions(String changelogMode) {

@@ -83,7 +83,7 @@ class SelectedCellChangeStreamJobITCase {
                             DataTypes.FIELD("row_id", DataTypes.STRING().notNull()),
                             DataTypes.FIELD("score", DataTypes.INT()));
             SelectedCellTableSchema tableSchema =
-                    SelectedCellTableSchema.of(physicalType, new int[] {1});
+                    SelectedCellTableSchema.of(physicalType, new int[] {1}, null, null);
             TypeInformation<RowData> producedType =
                     InternalTypeInfo.of((RowType) physicalType.getLogicalType());
             schema =

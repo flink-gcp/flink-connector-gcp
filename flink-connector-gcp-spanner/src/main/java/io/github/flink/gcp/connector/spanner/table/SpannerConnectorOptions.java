@@ -214,6 +214,50 @@ public final class SpannerConnectorOptions {
                     .withDescription(
                             "The emitted changelog: full includes UPDATE_BEFORE rows, while upsert emits insert, update-after, and key-only delete rows.");
 
+    /**
+     * The physical TIMESTAMP_LTZ(9) column the change-stream source fills with the record's commit
+     * timestamp on every row it emits, a key-only delete included. The column is not a watched
+     * table column.
+     */
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN =
+            ConfigOptions.key("scan.change-stream.commit-timestamp-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The physical TIMESTAMP_LTZ(9) column the change-stream source fills"
+                                    + " with the record's commit timestamp on every row it emits,"
+                                    + " a key-only delete included. The column is not a watched"
+                                    + " table column.");
+
+    /**
+     * The physical STRING column the change-stream source fills with the record's sequence on every
+     * row it emits, a key-only delete included. The column is not a watched table column.
+     */
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_SEQUENCE_COLUMN =
+            ConfigOptions.key("scan.change-stream.sequence-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The physical STRING column the change-stream source fills with the"
+                                    + " record's sequence on every row it emits, a key-only"
+                                    + " delete included. The column is not a watched table"
+                                    + " column.");
+
+    /**
+     * The physical INT column the change-stream source fills with the mod's zero-based position in
+     * its record on every row it emits, a key-only delete included. The column is not a watched
+     * table column.
+     */
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_MOD_NUMBER_COLUMN =
+            ConfigOptions.key("scan.change-stream.mod-number-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The physical INT column the change-stream source fills with the"
+                                    + " mod's zero-based position in its record on every row it"
+                                    + " emits, a key-only delete included. The column is not a"
+                                    + " watched table column.");
+
     /** Where a new change-stream source starts: earliest, latest, or timestamp. */
     public static final ConfigOption<ChangeStreamStartMode> SCAN_STARTUP_MODE =
             ConfigOptions.key("scan.startup.mode")

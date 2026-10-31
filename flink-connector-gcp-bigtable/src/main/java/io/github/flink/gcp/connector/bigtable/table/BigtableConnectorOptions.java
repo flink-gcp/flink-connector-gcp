@@ -439,8 +439,38 @@ public final class BigtableConnectorOptions {
                                     + " cannot reorder the keyed changelog.");
 
     /**
+     * The physical TIMESTAMP_LTZ(9) column the selected-cell source fills with the mutation's
+     * commit timestamp on every row it emits, a key-only delete included. The format does not
+     * decode this column.
+     */
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN =
+            ConfigOptions.key("scan.change-stream.commit-timestamp-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The physical TIMESTAMP_LTZ(9) column the selected-cell source fills"
+                                    + " with the mutation's commit timestamp on every row it"
+                                    + " emits, a key-only delete included. The format does not"
+                                    + " decode this column.");
+
+    /**
+     * The physical INT column the selected-cell source fills with the mutation's tie breaker on
+     * every row it emits, a key-only delete included. The format does not decode this column.
+     */
+    public static final ConfigOption<String> SCAN_CHANGE_STREAM_TIE_BREAKER_COLUMN =
+            ConfigOptions.key("scan.change-stream.tie-breaker-column")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The physical INT column the selected-cell source fills with the"
+                                    + " mutation's tie breaker on every row it emits, a key-only"
+                                    + " delete included. The format does not decode this"
+                                    + " column.");
+
+    /**
      * The Flink decoding format for the selected cell's complete logical row. The mutation row key
-     * supplies the declared primary key, so the format decodes every other physical column.
+     * supplies the declared primary key, so the format decodes every other physical column except
+     * the commit-timestamp and tie-breaker columns.
      */
     public static final ConfigOption<String> VALUE_FORMAT =
             ConfigOptions.key("value.format")
@@ -449,7 +479,8 @@ public final class BigtableConnectorOptions {
                     .withDescription(
                             "The Flink decoding format for the selected cell's complete logical"
                                     + " row. The mutation row key supplies the declared primary"
-                                    + " key, so the format decodes every other physical column.");
+                                    + " key, so the format decodes every other physical column"
+                                    + " except the commit-timestamp and tie-breaker columns.");
 
     /** Where a fresh Change Streams source starts. */
     public static final ConfigOption<ChangeStreamStartMode> SCAN_STARTUP_MODE =

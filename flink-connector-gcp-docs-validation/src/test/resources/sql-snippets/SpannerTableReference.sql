@@ -94,6 +94,31 @@ CREATE TABLE order_changes (
 );
 -- end::change-stream[]
 
+-- tag::change-stream-coordinate-columns[]
+CREATE TABLE order_coordinates (
+  order_id BIGINT,
+  status STRING,
+  -- Ordinary physical columns: the source writes the record's values into them.
+  commit_ts TIMESTAMP_LTZ(9) NOT NULL,
+  record_sequence STRING NOT NULL,
+  mod_number INT NOT NULL,
+  PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'spanner',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'database' = 'orders-db',
+  'table' = 'orders',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.name' = 'order_changes',
+  'scan.change-stream.changelog-mode' = 'upsert',
+  -- Name the columns above; any non-key column names of these types will do.
+  'scan.change-stream.commit-timestamp-column' = 'commit_ts',
+  'scan.change-stream.sequence-column' = 'record_sequence',
+  'scan.change-stream.mod-number-column' = 'mod_number'
+);
+-- end::change-stream-coordinate-columns[]
+
 -- tag::schema-markers[]
 WITH (
   'uuid-field-paths' = 'id;related_ids',

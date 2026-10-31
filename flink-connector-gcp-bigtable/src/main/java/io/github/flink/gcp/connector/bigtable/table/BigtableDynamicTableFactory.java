@@ -142,6 +142,8 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_FAMILY,
                         BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64,
                         BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID,
+                        BigtableConnectorOptions.SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN,
+                        BigtableConnectorOptions.SCAN_CHANGE_STREAM_TIE_BREAKER_COLUMN,
                         BigtableConnectorOptions.VALUE_FORMAT,
                         BigtableConnectorOptions.SCAN_STARTUP_MODE,
                         BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
@@ -416,7 +418,16 @@ public class BigtableDynamicTableFactory
                             config.get(BigtableConnectorOptions.VALUE_FORMAT)));
         }
         SelectedCellTableSchema schema =
-                SelectedCellTableSchema.of(physicalDataType, context.getPrimaryKeyIndexes());
+                SelectedCellTableSchema.of(
+                        physicalDataType,
+                        context.getPrimaryKeyIndexes(),
+                        optionalNonBlank(
+                                config,
+                                BigtableConnectorOptions
+                                        .SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN),
+                        optionalNonBlank(
+                                config,
+                                BigtableConnectorOptions.SCAN_CHANGE_STREAM_TIE_BREAKER_COLUMN));
         String family =
                 requireNonBlank(
                         config, BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_FAMILY);
@@ -535,6 +546,8 @@ public class BigtableDynamicTableFactory
                 BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_FAMILY,
                 BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_QUALIFIER_BASE64,
                 BigtableConnectorOptions.SCAN_CHANGE_STREAM_SELECTED_CELL_SOURCE_CLUSTER_ID,
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_COMMIT_TIMESTAMP_COLUMN,
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_TIE_BREAKER_COLUMN,
                 BigtableConnectorOptions.VALUE_FORMAT);
     }
 
@@ -577,9 +590,9 @@ public class BigtableDynamicTableFactory
 
     /**
      * Rejects a blank value for an option that was set. Separate from the presence check above
-     * because the three options this guards state their required-ness differently — one is required
-     * by its own message, one by the selected-cell message, and one is optional altogether — while
-     * the blankness rejection is the same sentence for all three.
+     * because the options this guards state their required-ness differently — some are required by
+     * their own message, some by the selected-cell message, and some are optional altogether —
+     * while the blankness rejection is the same sentence for all of them.
      */
     private static void checkNotBlank(String value, ConfigOption<String> option) {
         if (value.isBlank()) {

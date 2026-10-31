@@ -392,7 +392,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   copying the complete new row and overlaying the reported old values. Upsert mode accepts
   `NEW_ROW` and `NEW_ROW_AND_OLD_VALUES`, requires the DDL and record primary keys to match, and
   emits key-only deletes.
-- Validate every declared physical column against the record's recursive type descriptor. Ignore
+- Validate every declared physical column other than a coordinate column (below) against the
+  record's recursive type descriptor. Ignore
   extra watched columns, but fail on missing declared columns, incompatible native types, named
   type FQNs, capture modes, or absent values needed for a complete row.
 - Keep absent JSON members distinct from explicit JSON null. A missing complete-row value is not a
@@ -421,6 +422,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Flink 1.20 uses its sole upsert declaration, while Flink 2.x declares key-only deletes through
   the boolean overload in their versioned `CrossVersionChangelogMode` sources. Do not call the
   newer overload from common code.
+- **Commit coordinates a delete carries are physical columns, not metadata** (`docs/adr/0194`):
+  `scan.change-stream.{commit-timestamp,sequence,mod-number}-column` name non-key columns of exactly
+  `TIMESTAMP_LTZ(9)`, `STRING` and `INT`, in `upsert` mode only (a `full`-mode retraction must
+  repeat the withdrawn row), that `ChangeStreamCoordinateColumns` resolves before the schema
+  converter is built, so record validation and conversion run over the remaining watched columns and
+  each converted row is widened back. Reading any metadata column keeps Flink's
+  `ChangelogNormalize`, which completes a key-only delete from the held row;
+  `SpannerChangeStreamCoordinatePlanTest` pins that 2.x drops it for physical-only queries and 1.20
+  does not. Do not make the coordinates metadata again, and keep the values identical to the
+  metadata column of the same name.
 
 ## Catalog (`docs/adr/0168`, `docs/adr/0176`)
 

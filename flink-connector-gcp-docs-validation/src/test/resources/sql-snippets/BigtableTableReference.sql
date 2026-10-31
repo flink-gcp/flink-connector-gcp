@@ -222,6 +222,33 @@ CREATE TABLE current_profiles (
 );
 -- end::selected-cell-upserts[]
 
+-- tag::selected-cell-commit-columns[]
+CREATE TABLE profile_changes (
+  profile_id STRING NOT NULL,
+  name STRING,
+  score INT,
+  -- Ordinary physical columns: the source writes the mutation's values into them.
+  commit_ts TIMESTAMP_LTZ(9) NOT NULL,
+  tie_breaker INT NOT NULL,
+  PRIMARY KEY (profile_id) NOT ENFORCED
+) WITH (
+  'connector' = 'bigtable',
+  'project' = 'my-project',
+  'instance' = 'my-instance',
+  'table' = 'profiles',
+  'scan.mode' = 'change-stream',
+  'scan.change-stream.changelog-mode' = 'selected-cell',
+  'scan.app-profile-id' = 'single-cluster-profile',
+  'scan.change-stream.selected-cell.family' = 'state',
+  'scan.change-stream.selected-cell.qualifier-base64' = 'Y3VycmVudA==',
+  'scan.change-stream.selected-cell.source-cluster-id' = 'cluster-a',
+  -- Name the columns above; any non-key column names of these types will do.
+  'scan.change-stream.commit-timestamp-column' = 'commit_ts',
+  'scan.change-stream.tie-breaker-column' = 'tie_breaker',
+  'value.format' = 'json'
+);
+-- end::selected-cell-commit-columns[]
+
 -- tag::application-watermark[]
 commit_timestamp TIMESTAMP_LTZ(3) NOT NULL
   METADATA FROM 'commit-timestamp' VIRTUAL,

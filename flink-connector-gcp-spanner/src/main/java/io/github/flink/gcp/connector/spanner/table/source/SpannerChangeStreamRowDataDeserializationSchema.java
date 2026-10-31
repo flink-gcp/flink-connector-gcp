@@ -30,8 +30,11 @@ import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStre
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /** Collects the atomic row batch produced from one Spanner data-change record. */
@@ -41,6 +44,7 @@ final class SpannerChangeStreamRowDataDeserializationSchema
     private static final long serialVersionUID = 1L;
 
     private final DataChangeRecordToRowDataConverter converter;
+    @Nullable private final ChangeStreamCoordinateColumns coordinateColumns;
     private final ReadableMetadata[] metadata;
     private final TypeInformation<RowData> producedType;
 
@@ -49,16 +53,30 @@ final class SpannerChangeStreamRowDataDeserializationSchema
             SpannerTableName table,
             ChangeStreamChangelogMode changelogMode,
             TypeInformation<RowData> producedType) {
-        this(schema, table, changelogMode, new ReadableMetadata[0], producedType);
+        this(schema, table, changelogMode, null, new ReadableMetadata[0], producedType);
     }
 
+    /**
+     * @param schema the watched columns, over which each record is validated and converted
+     * @param coordinateColumns the coordinate columns that widen each converted row to the declared
+     *     physical row, or {@code null} when the table declares none
+     */
     SpannerChangeStreamRowDataDeserializationSchema(
             SpannerTableSchemaConverter schema,
             SpannerTableName table,
             ChangeStreamChangelogMode changelogMode,
+            @Nullable ChangeStreamCoordinateColumns coordinateColumns,
             ReadableMetadata[] metadata,
             TypeInformation<RowData> producedType) {
-        this.converter = new DataChangeRecordToRowDataConverter(schema, table, changelogMode);
+        this.converter =
+                new DataChangeRecordToRowDataConverter(
+                        schema,
+                        table,
+                        changelogMode,
+                        coordinateColumns == null
+                                ? Collections.emptySet()
+                                : coordinateColumns.getColumnNames());
+        this.coordinateColumns = coordinateColumns;
         this.metadata = Preconditions.checkNotNull(metadata, "metadata must not be null").clone();
         this.producedType =
                 Preconditions.checkNotNull(producedType, "producedType must not be null");
@@ -68,17 +86,26 @@ final class SpannerChangeStreamRowDataDeserializationSchema
     public void deserialize(DataChangeRecord record, Collector<RowData> out) throws IOException {
         List<DataChangeRecordToRowDataConverter.ConvertedRow> convertedRows =
                 converter.convert(record);
-        if (metadata.length == 0) {
+        if (metadata.length == 0 && coordinateColumns == null) {
             for (DataChangeRecordToRowDataConverter.ConvertedRow converted : convertedRows) {
                 out.collect(converted.getRow());
             }
             return;
         }
 
+        // Staged, so a record whose second row fails emits none of its rows.
         List<RowData> staged = new ArrayList<>(convertedRows.size());
         for (DataChangeRecordToRowDataConverter.ConvertedRow converted : convertedRows) {
-            RowData physical = converted.getRow();
             try {
+                RowData physical =
+                        coordinateColumns == null
+                                ? converted.getRow()
+                                : coordinateColumns.widen(
+                                        converted.getRow(), record, converted.getModNumber());
+                if (metadata.length == 0) {
+                    staged.add(physical);
+                    continue;
+                }
                 GenericRowData metadataRow = new GenericRowData(metadata.length);
                 for (int index = 0; index < metadata.length; index++) {
                     metadataRow.setField(
