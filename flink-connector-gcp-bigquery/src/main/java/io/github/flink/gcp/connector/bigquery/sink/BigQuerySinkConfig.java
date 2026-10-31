@@ -31,6 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 
 import javax.annotation.Nullable;
 
@@ -183,6 +184,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     /**
      * Serializes a row for its destination, including configured additional or write-only fields.
+     *
+     * @throws SchemaDerivationException when the destination's schema failed to derive while the
+     *     row was serialized, typically because the serializer changed it. It wraps the failure
+     *     {@link #prepareWriteSchema(TableDestination)} would report, so a caller fails on it
+     *     rather than handling it as the row's.
      */
     @Nullable
     public ByteString serialize(T element, TableDestination destination) throws IOException {

@@ -412,6 +412,100 @@ class ProtoRowAugmentingSerializerTest {
         assertThat(calls).hasValue(0);
     }
 
+    /**
+     * A delegate that changes its schema while serializing an element leaves the derivation to
+     * {@code serialize}, inside the writers' row-failure boundary; its failure carries the type the
+     * writers rethrow (#1954).
+     */
+    @Test
+    void marksASchemaConflictFoundWhileSerializingAsTheDestinations() throws Exception {
+        BigQueryProtoSerializationSchema<TestRecord> delegate =
+                new BigQueryProtoSerializationSchema<>() {
+                    private static final long serialVersionUID = 1L;
+
+                    private boolean evolved;
+
+                    @Override
+                    public TableSchema getTableSchema(TableDestination destination) {
+                        return evolved
+                                ? BASE_SCHEMA.toBuilder()
+                                        .addFields(
+                                                field(
+                                                        "COMPUTED",
+                                                        TableFieldSchema.Type.STRING,
+                                                        TableFieldSchema.Mode.NULLABLE))
+                                        .build()
+                                : BASE_SCHEMA;
+                    }
+
+                    @Override
+                    public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+                        return descriptor(getTableSchema(destination));
+                    }
+
+                    @Override
+                    public Object getSchemaFingerprint(TableDestination destination) {
+                        return evolved;
+                    }
+
+                    @Override
+                    public ByteString serialize(TestRecord element) {
+                        evolved = true;
+                        return ByteString.EMPTY;
+                    }
+                };
+        ProtoRowAugmentingSerializer<TestRecord> serializer =
+                serializer(
+                        delegate,
+                        options(
+                                AdditionalField.of(
+                                        "computed",
+                                        AdditionalFieldType.STRING,
+                                        AdditionalFieldNullPolicy.NULLABLE,
+                                        record -> record.uuid)));
+        serializer.prepare(DESTINATION);
+
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        new TestRecord(1, "uuid-1", Instant.EPOCH), DESTINATION))
+                .isInstanceOf(SchemaDerivationException.class)
+                .hasMessageContaining(DESTINATION.toString())
+                .cause()
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(
+                        "The physical BigQuery table schema must not declare additional field computed");
+    }
+
+    /** The delegate's own failure stays the element's, for the writers' failure policy (#1954). */
+    @Test
+    void leavesADelegateFailureUnmarked() {
+        IllegalStateException poison = new IllegalStateException("poison record");
+        ProtoRowAugmentingSerializer<TestRecord> serializer =
+                serializer(
+                        new TestSerializer() {
+                            private static final long serialVersionUID = 1L;
+
+                            @Override
+                            public ByteString serialize(TestRecord element) {
+                                throw poison;
+                            }
+                        },
+                        options(
+                                AdditionalField.of(
+                                        "computed",
+                                        AdditionalFieldType.STRING,
+                                        AdditionalFieldNullPolicy.NULLABLE,
+                                        record -> record.uuid)));
+        serializer.prepare(DESTINATION);
+
+        assertThatThrownBy(
+                        () ->
+                                serializer.serialize(
+                                        new TestRecord(1, "uuid-1", Instant.EPOCH), DESTINATION))
+                .isSameAs(poison);
+    }
+
     @Test
     void genericPathRetainsReservedFieldAllocationAndJobGraphSerialization() throws Exception {
         Descriptors.Descriptor reserved = descriptorWithReservedRange();

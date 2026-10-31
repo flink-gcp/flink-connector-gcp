@@ -89,6 +89,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `ProtoDescriptorAugmenter` counts down from `AUGMENTATION_CEILING` instead of following the base
   descriptor's highest number, and `ProtoRowAugmentingSerializer` fails an evolution that moves
   one. Do not number an appended field from the base again.
+- **A writer rethrows `SchemaDerivationException` ahead of its row-failure `catch`** (`docs/adr/0113`,
+  revision for #1954): `ProtoRowAugmentingSerializer.serialize` derives the schema again on a cache
+  miss, which a serializer changing its fingerprint while serializing causes, and wraps that
+  derivation's failure so it fails the job as `prepareWriteSchema`'s would. A new writer or row-failure boundary around
+  `BigQuerySinkConfig.serialize` keeps the rethrow.
 - Additional fields are absent unless `additionalFields(...)` is configured.
   Every built-in serializer reaches the common protobuf row boundary before the fields are added.
   Configured fields are physical singular scalar columns used by all three write methods; only the

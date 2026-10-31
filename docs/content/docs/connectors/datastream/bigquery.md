@@ -693,6 +693,9 @@ JSON `String` or the custom serializer's input type.
 Declarations retain their order in the table schema, protobuf descriptor and emitted row.
 The column name must be a protobuf-compatible identifier and must not collide
 case-insensitively with the serializer's physical fields or another additional field.
+A collision belongs to the destination, so it never reaches the failure policy as a record's
+failure: the job fails when a record is serialized under the colliding schema, including a schema a
+custom serializer changes to while the job runs, and no record is dropped or dead-lettered for it.
 Additional fields are singular scalars; repeated values, records, `RANGE`, `INTERVAL` and BigQuery
 flexible column names are not accepted by this API.
 

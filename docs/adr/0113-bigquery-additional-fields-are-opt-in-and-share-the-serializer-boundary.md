@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0113: BigQuery additional fields are opt-in and share the serializer boundary
 
 - Status: Accepted
-- Date: 2026-08-14; refined 2026-10-31 ([#1950])
-- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950]
+- Date: 2026-08-14; refined 2026-10-31 ([#1950], [#1954])
+- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950], [#1954]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#additional-physical-fields`
 
@@ -149,8 +149,7 @@ The numbers therefore stay fixed across additive evolution, which is what keeps 
 **An evolution that still moves an appended field fails the job.**
 When a destination's fingerprint changes, the engine compares each appended field's new number with the one it held and throws if they differ, naming the field and the numbers the base must leave as they were.
 The writers derive the schema in `prepare`, before the row-failure boundary, so a failure policy does not see the failure when the fingerprint changed between records.
-A serializer that changes its fingerprint while serializing a record reaches the derivation inside `serialize` instead, where the failure counts as that record's, and the job fails only when the destination's next record arrives.
-The collision checks the engine already ran at derivation share that path.
+A serializer that changes its fingerprint while serializing a record reaches the derivation inside `serialize` instead; the revision for [#1954] below keeps that failure out of the row-failure boundary as well.
 The check is per process: a restarted task holds no retained rows and derives the evolved descriptor afresh, so it does not fail again, while a serializer that reaches the same evolution again after every restart fails each time until its numbering changes.
 The comparison does not use the weakly keyed schema cache, whose key is whichever equal destination object derived the entry first: a writer retaining rows need not hold that object, so the entry can be collected while rows remain, for example when a resolver returns a fresh destination per record and the first record was skipped.
 The numbers each destination was first given are kept instead in a strongly held map, keyed by the destination's table path so that the cache's weak key stays collectable, and only for serializers that report a fingerprint, the only ones that can evolve.
@@ -168,4 +167,25 @@ The alternatives were weighed as follows.
   Tags above `2^25` take five bytes, two more per appended field per row than below `2^18`, for no gain in the case the ceiling already covers.
   The chosen ceiling itself costs up to two bytes per appended field per row over the old numbering, whose tags took one or two bytes below 2,048 base fields; a two-byte ceiling (`2^11 - 1`, 2,047) would sit inside the reach of a table's 10,000 columns.
 
+## Revision: a schema derived while serializing fails the job (2026-10-31)
+
+[#1954] found that the derivation inside `serialize` reported its failures as the record's.
+The writers call `prepare` before their row-failure boundary so that a destination-wide schema conflict fails the job.
+The engine derives the schema again after the serializer has serialized the record, and that second derivation runs inside the boundary.
+A serializer that changes its fingerprint while serializing a record is therefore first seen there, and a conflict in its new schema reached the failure handler as a serialization failure of that record.
+Writer tests reproduced it under a recording handler, which, like log-and-drop, lets the write go on: a table-schema name collision on all three write methods, and the field-number check of the revision above on the default stream, the one write method that accepts CDC options. Each time the record was handed to the handler and the write succeeded.
+Under log-and-drop or a dead-letter handler, the job failed only when the destination's next record reached `prepare`, and a bounded job whose last record for the destination was that one finished green without it.
+
+**A derivation failure inside `serialize` now fails the job.**
+The engine wraps it in `SchemaDerivationException`, and each writer rethrows that type ahead of its row-failure `catch`.
+The wrapper names the destination and keeps the derivation's own failure as its cause.
+Only a custom serializer can fail there: every built-in one, including the Table API's, reports a `null` fingerprint, which never changes, so it reaches the derivation inside `serialize` only after its cache entry was collected and derives the schema `prepare` just accepted.
+A serializer that changes its fingerprint and then skips or fails the record never reaches that derivation; nothing is written under the changed schema, and the destination's next record meets the conflict in `prepare`.
+
+The alternative was weighed as follows.
+
+- **Take the derivation out of `serialize` and repeat `prepare` after it, outside the boundary.**
+  The engine adds the appended fields with the descriptor it derives, and their value providers fail per record, so the writers would need two row-failure boundaries around one call that one boundary covers today, in each of the three writers.
+
 [#1950]: https://github.com/flink-gcp/flink-connector-gcp/issues/1950
+[#1954]: https://github.com/flink-gcp/flink-connector-gcp/issues/1954

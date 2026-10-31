@@ -42,6 +42,8 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaAdvancingSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
@@ -76,6 +78,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Tests for {@link FileLoadsWriter}, staging into an {@link InMemoryStagingStorage}. */
 class FileLoadsWriterTest {
@@ -859,6 +862,60 @@ class FileLoadsWriterTest {
                             assertThat(record.get("name")).hasToString("alpha");
                             assertThat(record.get("source")).hasToString("computed-alpha");
                         });
+    }
+
+    /**
+     * A schema the serializer changes to while serializing a record is derived inside the
+     * row-failure boundary; a conflict in it is the destination's, so it fails the write rather
+     * than dropping the record (#1954).
+     */
+    @Test
+    void aSchemaConflictFoundWhileSerializingFailsTheWrite() throws Exception {
+        SchemaAdvancingSerializer serializer = new SchemaAdvancingSerializer();
+        CollectingHandler handler = new CollectingHandler();
+        BigQueryFileLoadsSink<String> sink =
+                (BigQueryFileLoadsSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .table(TableDestination.of("p", "d", "t"))
+                                .serializer(serializer)
+                                .failureHandler(handler)
+                                .fileLoadsOptions(
+                                        FileLoadsOptions.builder()
+                                                .stagingPath("gs://bucket/prefix")
+                                                .build())
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .build();
+        FileLoadsWriter<String> writer =
+                new FileLoadsWriter<>(
+                        sink.getConfig(),
+                        FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                        new InMemoryStagingStorage(),
+                        TestSinkWriterMetricGroup.create(),
+                        "0123456789abcdef0123456789abcdef",
+                        3,
+                        1,
+                        new ManualProcessingTimeService());
+        writer.write("first", CONTEXT);
+        serializer.addColumnOnNextSerialize("source");
+
+        Throwable thrown = catchThrowable(() -> writer.write("second", CONTEXT));
+
+        // The handler first: had the record reached it, its failure says why.
+        assertThat(handler.rows).isEmpty();
+        assertThat(thrown)
+                .isInstanceOf(SchemaDerivationException.class)
+                .hasRootCauseMessage(
+                        "The physical BigQuery table schema must not declare additional field"
+                                + " source");
     }
 
     @Test

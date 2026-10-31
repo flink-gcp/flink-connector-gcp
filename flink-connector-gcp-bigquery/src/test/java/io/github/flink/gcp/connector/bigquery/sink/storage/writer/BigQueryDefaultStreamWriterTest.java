@@ -51,6 +51,8 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaAdvancingSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.PrimaryKeyColumn;
@@ -73,6 +75,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Tests for {@link BigQueryDefaultStreamWriter}. */
 class BigQueryDefaultStreamWriterTest {
@@ -662,6 +665,50 @@ class BigQueryDefaultStreamWriterTest {
                 .hasMessageContaining("pseudocolumn");
         assertThat(serializer.serializations).hasValue(0);
         assertThat(factory.appenders).isEmpty();
+    }
+
+    /**
+     * A serializer may change its schema while serializing a record, which this writer supports.
+     * That schema is derived inside the row-failure boundary; a conflict in it is the
+     * destination's, so it fails the write rather than dropping the record (#1954).
+     */
+    @Test
+    void aSchemaConflictFoundWhileSerializingFailsTheWrite() throws Exception {
+        FakeAppenderFactory factory = new FakeAppenderFactory();
+        SchemaAdvancingSerializer serializer = new SchemaAdvancingSerializer();
+        BigQueryBufferedStreamWriterTest.RecordingHandler handler =
+                new BigQueryBufferedStreamWriterTest.RecordingHandler();
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .table(TableDestination.of("p", "d", "t"))
+                                .serializer(serializer)
+                                .failureHandler(handler)
+                                .createDisposition(CreateDisposition.CREATE_NEVER)
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .build();
+        SinkWriter<String> writer =
+                sink.createWriter(factory, NOOP_ADMIN, TestSinkWriterMetricGroup.create());
+        writer.write("first", CONTEXT);
+        serializer.addColumnOnNextSerialize("source");
+
+        Throwable thrown = catchThrowable(() -> writer.write("second", CONTEXT));
+
+        // The handler first: had the record reached it, its failure says why.
+        assertThat(handler.rows).isEmpty();
+        assertThat(thrown)
+                .isInstanceOf(SchemaDerivationException.class)
+                .hasRootCauseMessage(
+                        "The physical BigQuery table schema must not declare additional field"
+                                + " source");
     }
 
     @Test
