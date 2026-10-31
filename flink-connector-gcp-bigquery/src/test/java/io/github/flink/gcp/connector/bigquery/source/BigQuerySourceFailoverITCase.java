@@ -42,7 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -72,14 +72,13 @@ class BigQuerySourceFailoverITCase {
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
 
     private static final AtomicBoolean CHECKPOINTED_AFTER_RECORDS = new AtomicBoolean();
-    private static final AtomicInteger SEEN = new AtomicInteger();
 
     @Test
     void readsEveryRowExactlyOnceAcrossAFailure() throws Exception {
         FAILED_ONCE.set(false);
         CHECKPOINTED_AFTER_RECORDS.set(false);
-        SEEN.set(0);
         FailAfterACheckpoint.SEEN_AT_BARRIER.clear();
+        FailAfterACheckpoint.INJECTED_BY.set(null);
         ScriptedRowStreamOpener.reset(OPENER_ID);
         // Every stream stops after its first block until a checkpoint has covered records already
         // read. Without it the table can be read to its end before that happens, and the failure
@@ -105,9 +104,9 @@ class BigQuerySourceFailoverITCase {
 
         assertThat(FAILED_ONCE)
                 .as(
-                        "the job failed once on purpose (records seen: %s, checkpoints that covered"
-                                + " records: %s)",
-                        SEEN.get(), FailAfterACheckpoint.SEEN_AT_BARRIER)
+                        "the job failed once on purpose (records at each checkpoint/subtask"
+                                + " barrier: %s)",
+                        FailAfterACheckpoint.SEEN_AT_BARRIER)
                 .isTrue();
         assertThat(collected)
                 .containsExactlyInAnyOrderElementsOf(
@@ -118,7 +117,11 @@ class BigQuerySourceFailoverITCase {
         // means the reopen resumed. Only a recovery reopens here: the readers' one wake-up is the
         // shutdown that follows the last row.
         assertThat(ScriptedRowStreamOpener.opens(OPENER_ID))
-                .as("the recovered reader resumed rather than starting its stream over")
+                .as(
+                        "the recovered reader resumed rather than starting its stream over"
+                                + " (injected by %s;"
+                                + " records at each checkpoint/subtask barrier: %s)",
+                        FailAfterACheckpoint.INJECTED_BY, FailAfterACheckpoint.SEEN_AT_BARRIER)
                 .hasSizeGreaterThan(STREAMS)
                 .anyMatch(open -> !open.endsWith("@0"));
     }
@@ -152,19 +155,54 @@ class BigQuerySourceFailoverITCase {
      * have crossed the source before a single row was emitted, and restoring to it starts the
      * streams over — which is what an earlier version of this test measured. What the source's
      * offset follows is the barrier, so the record count is captured in {@code snapshotState} and
-     * only a checkpoint that had already seen rows arms the failure.
+     * only a checkpoint that had already seen rows arms the failure, and only in the subtask whose
+     * records it saw.
      */
     private static final class FailAfterACheckpoint extends RichMapFunction<GenericRecord, String>
             implements CheckpointedFunction, CheckpointListener {
 
         private static final long serialVersionUID = 1L;
 
-        static final Map<Long, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
+        /**
+         * Each subtask's {@code seenHere} at each checkpoint's barrier, keyed {@code
+         * checkpoint/subtask}, for the failure messages.
+         */
+        static final Map<String, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
+
+        /** Which subtask injected the failure, and its first covering checkpoint. */
+        static final AtomicReference<String> INJECTED_BY = new AtomicReference<>();
+
+        /**
+         * What this subtask's map saw, not the job's: source and map are chained, so a count above
+         * zero at this subtask's barrier proves its own split's offset had moved. A counter shared
+         * by both subtasks could be raised by the other one between the two barriers, which armed
+         * the failure on a checkpoint that covered no subtask's records (#1939).
+         */
+        private transient int seenHere;
+
+        /**
+         * The first checkpoint whose barrier found {@code seenHere} above zero; zero before one.
+         */
+        private transient long firstCoveringCheckpoint;
+
+        /**
+         * Whether a checkpoint covering this subtask's records has completed. Only such a subtask
+         * fails the job: it fails on its next record, so its split cannot finish first, and every
+         * checkpoint the job can restore holds that split past its start. A subtask without records
+         * in a completed checkpoint could fail after the other subtask's split had finished and
+         * left the checkpoint, and the restore would then reopen only a split at its start.
+         */
+        private transient boolean armedHere;
 
         @Override
         public String map(GenericRecord row) {
-            SEEN.incrementAndGet();
-            if (CHECKPOINTED_AFTER_RECORDS.get() && FAILED_ONCE.compareAndSet(false, true)) {
+            seenHere++;
+            if (armedHere && FAILED_ONCE.compareAndSet(false, true)) {
+                INJECTED_BY.set(
+                        "subtask "
+                                + getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()
+                                + " after checkpoint "
+                                + firstCoveringCheckpoint);
                 throw new IllegalStateException("Failing the job once, on purpose.");
             }
             return "row-" + row.get("id");
@@ -172,7 +210,14 @@ class BigQuerySourceFailoverITCase {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) {
-            SEEN_AT_BARRIER.merge(context.getCheckpointId(), SEEN.get(), Math::max);
+            SEEN_AT_BARRIER.put(
+                    context.getCheckpointId()
+                            + "/"
+                            + getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
+                    seenHere);
+            if (seenHere > 0 && firstCoveringCheckpoint == 0) {
+                firstCoveringCheckpoint = context.getCheckpointId();
+            }
         }
 
         @Override
@@ -180,7 +225,11 @@ class BigQuerySourceFailoverITCase {
 
         @Override
         public void notifyCheckpointComplete(long checkpointId) {
-            if (SEEN_AT_BARRIER.getOrDefault(checkpointId, 0) > 0) {
+            // Checkpoint ids start at one and grow, and seenHere only grows, so completing this
+            // checkpoint or a later one means a completed checkpoint covered this subtask's
+            // records.
+            if (firstCoveringCheckpoint > 0 && checkpointId >= firstCoveringCheckpoint) {
+                armedHere = true;
                 CHECKPOINTED_AFTER_RECORDS.set(true);
             }
         }

@@ -33,10 +33,11 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The production page reader against the emulator, which records the query of every split a reader
- * starts and holds reads back after a few pages until the test opens the gate.
+ * starts and holds reads back after a few pages of its own until the test opens the gate.
  *
  * <p>The gate is what lets a checkpoint land mid-split: without it the emulator answers so fast
  * that the whole read finishes before the first checkpoint that covers a document. The records are
@@ -49,10 +50,22 @@ final class GatedPageReader implements QueryPageReader {
 
     static final List<RunQueryRequest> STARTED_SPLITS = new CopyOnWriteArrayList<>();
     static final AtomicBoolean GATE_OPEN = new AtomicBoolean();
-    private static final AtomicInteger PAGES = new AtomicInteger();
 
     private final ClientQueryPageReader delegate;
     private final int freePages;
+
+    /**
+     * This instance's pages, so each subtask's reader gets its own free pages: a count shared by
+     * both subtasks could spend every free page on one of them.
+     */
+    private final AtomicInteger pages = new AtomicInteger();
+
+    /**
+     * When this instance's held pages give up waiting: one deadline per instance, set by the first
+     * page the gate holds, so a gate that never opens costs each subtask a minute rather than a
+     * minute per page.
+     */
+    private final AtomicReference<Long> deadline = new AtomicReference<>();
 
     GatedPageReader(String emulatorEndpoint, int freePages) {
         this.delegate =
@@ -63,7 +76,6 @@ final class GatedPageReader implements QueryPageReader {
     static void reset() {
         STARTED_SPLITS.clear();
         GATE_OPEN.set(false);
-        PAGES.set(0);
     }
 
     @Override
@@ -75,9 +87,11 @@ final class GatedPageReader implements QueryPageReader {
     @Override
     public List<? extends DocumentSnapshot> read(Query page, Timestamp readTime)
             throws IOException {
-        if (PAGES.incrementAndGet() > freePages) {
-            long deadline = System.nanoTime() + 60_000_000_000L;
-            while (!GATE_OPEN.get() && System.nanoTime() < deadline) {
+        if (pages.incrementAndGet() > freePages) {
+            // Not 0 as "unset": System.nanoTime() may be any long, zero and negatives included.
+            deadline.compareAndSet(null, System.nanoTime() + 60_000_000_000L);
+            long giveUpAt = deadline.get();
+            while (!GATE_OPEN.get() && System.nanoTime() - giveUpAt < 0) {
                 try {
                     Thread.sleep(10);
                 } catch (InterruptedException e) {

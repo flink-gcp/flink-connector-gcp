@@ -39,7 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,14 +58,11 @@ class DatastoreSourceFailoverITCase extends AbstractDatastoreEmulatorITCase {
 
     private static final AtomicBoolean FAILED_ONCE = new AtomicBoolean();
 
-    /** Every entity either subtask's map saw, for the failure message only. */
-    private static final AtomicInteger SEEN = new AtomicInteger();
-
     @BeforeEach
     void forgetTheLastRun() {
         FAILED_ONCE.set(false);
-        SEEN.set(0);
         FailAfterACheckpoint.SEEN_AT_BARRIER.clear();
+        FailAfterACheckpoint.INJECTED_BY.set(null);
         GatedPageReader.reset();
     }
 
@@ -113,8 +110,9 @@ class DatastoreSourceFailoverITCase extends AbstractDatastoreEmulatorITCase {
 
         assertThat(FAILED_ONCE)
                 .as(
-                        "the job failed once on purpose (entities seen: %s, checkpoints: %s)",
-                        SEEN.get(), FailAfterACheckpoint.SEEN_AT_BARRIER)
+                        "the job failed once on purpose (entities at each checkpoint/subtask"
+                                + " barrier: %s)",
+                        FailAfterACheckpoint.SEEN_AT_BARRIER)
                 .isTrue();
         assertThat(collected).containsExactlyInAnyOrderElementsOf(names);
         // Both planned ranges start without a cursor. A split whose first page in an attempt starts
@@ -122,31 +120,68 @@ class DatastoreSourceFailoverITCase extends AbstractDatastoreEmulatorITCase {
         // source re-reading its restored splits from the beginning would show only as duplicates
         // above.
         assertThat(GatedPageReader.STARTED_SPLITS)
-                .as("the restored reader resumed after its last entity")
+                .as(
+                        "the restored reader resumed after its last entity"
+                                + " (injected by %s;"
+                                + " entities at each checkpoint/subtask barrier: %s)",
+                        FailAfterACheckpoint.INJECTED_BY, FailAfterACheckpoint.SEEN_AT_BARRIER)
                 .hasSizeGreaterThan(2)
                 .anyMatch(page -> !page.getQuery().getStartCursor().isEmpty());
     }
 
-    /** Fails the job once, after a checkpoint whose barrier passed entities has completed. */
+    /**
+     * Fails the job once, after a checkpoint whose barrier passed entities has completed, and only
+     * in the subtask whose entities it saw.
+     */
     private static final class FailAfterACheckpoint extends RichMapFunction<String, String>
             implements CheckpointedFunction, CheckpointListener {
 
         private static final long serialVersionUID = 1L;
 
-        static final Map<Long, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
+        /**
+         * Each subtask's {@code seenHere} at each checkpoint's barrier, keyed {@code
+         * checkpoint/subtask}, for the failure messages.
+         */
+        static final Map<String, Integer> SEEN_AT_BARRIER = new ConcurrentHashMap<>();
+
+        /** Which subtask injected the failure, and its first covering checkpoint. */
+        static final AtomicReference<String> INJECTED_BY = new AtomicReference<>();
 
         /**
          * What this subtask's map saw, not the job's: source and map are chained, so a count above
-         * zero at this subtask's barrier proves its own split state had moved. The shared {@code
-         * SEEN} could be raised by the other subtask between the two barriers.
+         * zero at this subtask's barrier proves its own split's position had moved. A counter
+         * shared by both subtasks could be raised by the other one between the two barriers.
          */
         private transient int seenHere;
 
+        /**
+         * The first checkpoint whose barrier found {@code seenHere} above zero; zero before one.
+         */
+        private transient long firstCoveringCheckpoint;
+
+        /**
+         * Whether a checkpoint covering this subtask's entities has completed. Only such a subtask
+         * fails the job: it fails on its next entity, so its split cannot finish first, and every
+         * checkpoint the job can restore holds that split past its start. A subtask without
+         * entities in a completed checkpoint could fail after the other subtask's split had
+         * finished and left the checkpoint, and the restore would then reopen only a split at its
+         * start.
+         *
+         * <p>That holds while the gate is still holding the split back when the subtask arms. Once
+         * the gate's minute runs out, injection still needs another record to reach an armed
+         * subtask; if none does, {@code FAILED_ONCE} stays false.
+         */
+        private transient boolean armedHere;
+
         @Override
         public String map(String name) {
-            SEEN.incrementAndGet();
             seenHere++;
-            if (GatedPageReader.GATE_OPEN.get() && FAILED_ONCE.compareAndSet(false, true)) {
+            if (armedHere && FAILED_ONCE.compareAndSet(false, true)) {
+                INJECTED_BY.set(
+                        "subtask "
+                                + getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()
+                                + " after checkpoint "
+                                + firstCoveringCheckpoint);
                 throw new IllegalStateException("Failing the job once, on purpose.");
             }
             return name;
@@ -154,7 +189,14 @@ class DatastoreSourceFailoverITCase extends AbstractDatastoreEmulatorITCase {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) {
-            SEEN_AT_BARRIER.merge(context.getCheckpointId(), seenHere, Math::max);
+            SEEN_AT_BARRIER.put(
+                    context.getCheckpointId()
+                            + "/"
+                            + getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
+                    seenHere);
+            if (seenHere > 0 && firstCoveringCheckpoint == 0) {
+                firstCoveringCheckpoint = context.getCheckpointId();
+            }
         }
 
         @Override
@@ -162,7 +204,11 @@ class DatastoreSourceFailoverITCase extends AbstractDatastoreEmulatorITCase {
 
         @Override
         public void notifyCheckpointComplete(long checkpointId) {
-            if (SEEN_AT_BARRIER.getOrDefault(checkpointId, 0) > 0) {
+            // Checkpoint ids start at one and grow, and seenHere only grows, so completing this
+            // checkpoint or a later one means a completed checkpoint covered this subtask's
+            // entities.
+            if (firstCoveringCheckpoint > 0 && checkpointId >= firstCoveringCheckpoint) {
+                armedHere = true;
                 GatedPageReader.GATE_OPEN.set(true);
             }
         }
