@@ -105,7 +105,9 @@ class Runner:
         # A rate-limited intent write backs off; admission may close meanwhile.
         self.admission_open()
         try:
-            created = self.env.kube.create(application)
+            created = self.env.kube.create(
+                application, before_repeat=self.admission_open
+            )
         except rt.Failure:
             self.adopt_application(application)
             raise
@@ -148,7 +150,9 @@ class Runner:
         self.env.records.intend(key, intent)
         self.admission_open()
         try:
-            self.env.remember(key, self.env.kube.create(manifest))
+            self.env.remember(
+                key, self.env.kube.create(manifest, before_repeat=self.admission_open)
+            )
         except rt.Failure:
             self.adopt_root(key)
             raise

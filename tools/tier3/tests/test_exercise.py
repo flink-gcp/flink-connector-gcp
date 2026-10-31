@@ -106,6 +106,8 @@ class World:
             self.pod(name, component)
         self.patches, self.deleted = [], []
         self.patch_error = None
+        # Runs once, between a throttled first upgrade patch and its repeat.
+        self.between_attempts = None
         monkeypatch.setattr(self.env.kube, "patch", self.patch)
         monkeypatch.setattr(self.env.kube, "delete", self.delete)
         self.restored, self.completed = {}, {}
@@ -128,8 +130,14 @@ class World:
             "status": {"phase": "Running"},
         }
 
-    def patch(self, app, operations, subresource=""):
+    def patch(self, app, operations, subresource="", before_repeat=None):
         assert app["metadata"]["uid"] == "app-uid" and not subresource
+        if self.between_attempts:
+            # The adapter runs `before_repeat` before it sends the patch again.
+            self.between_attempts()
+            self.between_attempts = None
+            if before_repeat is not None:
+                before_repeat()
         if self.patch_error:
             raise self.patch_error
         self.patches.append(operations)
@@ -342,6 +350,24 @@ def test_a_target_that_never_runs_ends_at_the_upgrade_deadline(world):
     with pytest.raises(Failure, match="deadline expired: upgrade"):
         world.observe()
     assert world.deleted == []
+
+
+@pytest.mark.parametrize("close", ["stop", "deadline"])
+def test_an_upgrade_patch_is_not_repeated_after_the_exercise_closes(world, close):
+    """A stop, or the deadline, reached while a throttled upgrade waits ends it."""
+
+    def closing():
+        if close == "stop":
+            world.env.records.request_stop()
+        else:
+            world.advance(CLOUDTASKS_OBSERVATIONS["recovery_seconds"])
+
+    world.between_attempts = closing
+    with pytest.raises(
+        Failure, match="stopped" if close == "stop" else "deadline expired: upgrade"
+    ):
+        world.baseline()
+    assert world.patches == []
 
 
 @pytest.mark.parametrize("world", [{"failover": "taskmanager"}], indirect=True)

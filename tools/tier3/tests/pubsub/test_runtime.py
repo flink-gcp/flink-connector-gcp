@@ -164,16 +164,16 @@ def test_runner_releases_before_supervisor_cleanup_and_complete_settlement(runti
             events.append("service-delete")
 
     a.service.resources.before = service_call
-    original = a.kube.request
+    original = a.kube.patch
 
-    def request(method, path, body=None, **kwargs):
-        if method == "PATCH" and body[-1].get("value") == 0:
+    def patch(value, changes, subresource="", before_repeat=None):
+        if subresource == "/scale" and changes[-1].get("value") == 0:
             require_pubsub_clean(a.sender.env.refresh())
             assert not checkpoint_exists(a)
             events.append("operator-stop")
-        return original(method, path, body, **kwargs)
+        return original(value, changes, subresource, before_repeat=before_repeat)
 
-    a.kube.request = request
+    a.kube.patch = patch
 
     def cleanup():
         assert actors(a.sender.env)["runner"]["released"]

@@ -221,9 +221,11 @@ class World:
         pod["status"] = {"phase": "Running", "containerStatuses": [{"restartCount": 0}]}
         return self.kube.put(pod)
 
-    def patch(self, app, changes, subresource=""):
+    def patch(self, app, changes, subresource="", before_repeat=None):
         if app["kind"] != "FlinkDeployment":
-            return self.original_patch(app, changes, subresource)
+            return self.original_patch(
+                app, changes, subresource, before_repeat=before_repeat
+            )
         self.calls.append(("upgrade", self.clock()))
         current = self.app()
         assert app["metadata"]["uid"] == current["metadata"]["uid"]
@@ -1072,11 +1074,11 @@ def test_runner_provisions_before_application_admission(prepared, monkeypatch, f
     create = kube.create
     sequence = []
 
-    def created(manifest, dry_run=False):
+    def created(manifest, dry_run=False, before_repeat=None):
         if manifest["kind"] == "FlinkDeployment":
             sequence.append("application")
             assert len(resources.tables) == resources.plan.trial.destinations
-        result = create(manifest, dry_run)
+        result = create(manifest, dry_run, before_repeat=before_repeat)
         if manifest["kind"] == "Job" and not dry_run:
             pod = supervisor_pod(
                 (
@@ -1297,10 +1299,10 @@ def test_failed_admission_keeps_supervisor_for_released_cleanup(
     create = environment.kube.create
     pods = []
 
-    def created(value, dry_run=False):
+    def created(value, dry_run=False, before_repeat=None):
         if value["kind"] == "FlinkDeployment" and dry_run and failure == "dry-run":
             raise Failure("Application dry-run rejected")
-        actual = create(value, dry_run)
+        actual = create(value, dry_run, before_repeat=before_repeat)
         if value["kind"] == "Job" and not dry_run:
             pods.append(
                 supervisor_pod(
@@ -1364,7 +1366,7 @@ def test_failed_config_creation_does_not_leave_resource_intent(prepared, monkeyp
     resources = QueryResources(environment.approval.bigquery_plan)
     runner = Runner(environment, bigquery=handoff(environment, resources, application))
 
-    def fail(_value, dry_run=False):
+    def fail(_value, dry_run=False, before_repeat=None):
         raise Failure("Config admission rejected")
 
     monkeypatch.setattr(environment.kube, "create", fail)

@@ -136,8 +136,8 @@ def admitting(prepared, monkeypatch):
     supervisor_pods = []
     create = kube.create
 
-    def created(manifest, dry_run=False):
-        result = create(manifest, dry_run)
+    def created(manifest, dry_run=False, before_repeat=None):
+        result = create(manifest, dry_run, before_repeat=before_repeat)
         if dry_run:
             return result
         if manifest["kind"] == "Job":
@@ -352,8 +352,8 @@ def test_the_runner_judges_the_workload_probe_by_its_exit_status(
     else:
         create = a.environment.kube.create
 
-        def failing(manifest, dry_run=False):
-            result = create(manifest, dry_run)
+        def failing(manifest, dry_run=False, before_repeat=None):
+            result = create(manifest, dry_run, before_repeat=before_repeat)
             if manifest["kind"] == "Pod" and not dry_run:
                 result["status"] = {"phase": "Failed"}
                 a.environment.kube.put(result)
@@ -531,8 +531,8 @@ def prepare_for_supervisor(a):
 def failed_probe(a, monkeypatch):
     create = a.environment.kube.create
 
-    def failing(manifest, dry_run=False):
-        result = create(manifest, dry_run)
+    def failing(manifest, dry_run=False, before_repeat=None):
+        result = create(manifest, dry_run, before_repeat=before_repeat)
         if manifest["kind"] == "Pod" and not dry_run:
             result["status"] = {"phase": "Failed"}
             a.environment.kube.put(result)
@@ -583,14 +583,14 @@ def test_the_application_waits_until_the_probe_pod_is_gone(admitting, monkeypatc
             return True
         return delete(value, force)
 
-    def created(manifest, dry_run=False):
+    def created(manifest, dry_run=False, before_repeat=None):
         if manifest["kind"] == "FlinkDeployment" and not dry_run:
             assert not [
                 p
                 for p in kube.items("Pod", PUBSUB)
                 if p["metadata"]["name"].endswith("-probe")
             ], "application created while the probe Pod still terminates"
-        result = create(manifest, dry_run)
+        result = create(manifest, dry_run, before_repeat=before_repeat)
         if manifest["kind"] == "Pod" and not dry_run:
             # The supervisor is already in, so nothing else waits between the
             # probe's deletion and the application's creation.
@@ -684,8 +684,8 @@ def test_a_supervisor_job_that_ends_during_the_probe_stops_admission(
     kube = a.environment.kube
     create = kube.create
 
-    def created(manifest, dry_run=False):
-        result = create(manifest, dry_run)
+    def created(manifest, dry_run=False, before_repeat=None):
+        result = create(manifest, dry_run, before_repeat=before_repeat)
         if manifest["kind"] == "Pod" and not dry_run:
             result["status"] = {"phase": "Running"}
             kube.put(result)
