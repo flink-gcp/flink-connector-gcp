@@ -63,7 +63,7 @@ from bisect import bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from java_ast import (
+from lib.java_ast import (
     TYPE_DECLARATIONS,
     JavaSource,
     JavaSyntaxError,
@@ -76,7 +76,7 @@ from java_ast import (
     string_literal_content,
     type_imports,
 )
-from java_example_regions import line_at
+from lib.java_example_regions import line_at
 from tree_sitter import Node
 
 ROOT = Path(__file__).resolve().parent.parent

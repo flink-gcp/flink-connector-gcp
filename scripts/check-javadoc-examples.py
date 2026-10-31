@@ -44,8 +44,8 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
-from java_ast import JavaSource, JavaSyntaxError
-from java_example_regions import (
+from lib.java_ast import JavaSource, JavaSyntaxError
+from lib.java_example_regions import (
     SourceRegion,
     collect_source_regions,
     line_at,

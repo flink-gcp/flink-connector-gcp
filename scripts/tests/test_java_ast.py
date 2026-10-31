@@ -14,7 +14,7 @@
 """Firing controls for the shared Java syntax boundary."""
 
 import pytest
-from java_ast import (
+from lib.java_ast import (
     JavaSource,
     JavaSyntaxError,
     code_named_children,

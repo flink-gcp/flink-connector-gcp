@@ -59,7 +59,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from java_ast import (
+from lib.java_ast import (
     API_TIER_SOURCE_PATTERNS,
     TYPE_DECLARATIONS,
     JavaSource,

@@ -216,7 +216,7 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   with no `curate-*` skill**, on the argument the next entry makes: no allowlist to judge, and the
   failure message carries the whole repair — the parameter list where there is a method to name,
   `{@code member}` where the sentence means the state itself. Java syntax comes from the shared
-  Tree-sitter parser in `scripts/java_ast.py`, installed from the root `uv.lock`; an `ERROR` or
+  Tree-sitter parser in `scripts/lib/java_ast.py`, installed from the root `uv.lock`; an `ERROR` or
   `MISSING` node is an infrastructure failure rather than a partial inventory
 - `just check-gated-tags` — the two markers a gated real-GCP ITCase carries have to stay together
   (#245; ADR-0065 records both failure directions): the `@EnabledIfEnvironmentVariable` the E2E
@@ -239,6 +239,12 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   exception whose inputs appear in `lint.yaml`. A new Python checker owes tests here and a
   curate-* skill only when its failures require judgment. ADR-0118 records the project shape,
   fixture boundary and mutation evidence
+- **A file name directly under `scripts/` says it is a command.** A Python or shell command there
+  has a hyphenated name (`check-notice.py`, `update-notices.sh`) and is run by a recipe, a
+  workflow or another script. Code that two commands share is a module under `scripts/lib/` with
+  an underscore name, imported as `from lib.<module> import ...`, because Python cannot import a
+  hyphenated name. Do not put an importable module directly under `scripts/`, and do not give a
+  command an underscore name
 - `just check-license-headers` — every Java source starts with a complete copyright-bearing
   or ASF Apache-2.0 header, **and** no file this project owns, of any type, names an unrecorded
   copyright holder. RAT identifies the licence family from a distinctive line and remains

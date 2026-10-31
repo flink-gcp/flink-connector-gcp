@@ -230,8 +230,9 @@ def repo(tmp_path):
     (root / "module").mkdir()
     # The real LTS reader, so a change to its flag or its weekly.yaml parsing
     # fails here too.
-    for name in ("rehearse-release.py", "check-flink-api-tiers.py", "java_ast.py"):
+    for name in ("rehearse-release.py", "check-flink-api-tiers.py"):
         shutil.copy2(SCRIPTS / name, root / "scripts")
+    shutil.copytree(SCRIPTS / "lib", root / "scripts" / "lib")
     weekly = root / ".github" / "workflows" / "weekly.yaml"
     weekly.parent.mkdir(parents=True)
     weekly.write_text("env:\n  FLINK_LTS: '1.20.9'\n")

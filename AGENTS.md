@@ -31,7 +31,7 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 - Scope local test runs to what changed: targeted `-Dtest=...` while iterating, one module's
   tests before committing. Run the full `just verify` locally only when the change touches what
   every module builds against — `flink-connector-gcp-base`, `flink-connector-gcp-test-utils`, the
-  root POM, `mise.toml`, or a `justfile`/CI recipe; a `scripts/*.py` change wants `just
+  root POM, `mise.toml`, or a `justfile`/CI recipe; a `scripts/**/*.py` change wants `just
   test-scripts` and the affected checker, not a Maven build. For a single-module change, push and
   let the per-connector CI lane carry the full verification — it is faster than a local full build
   and starts clean. Two exceptions stay local: per-PR CI builds one Flink version, so a
