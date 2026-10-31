@@ -17,12 +17,14 @@ limitations under the License.
 # ADR-0147: Releases publish after both Central Portal deployments validate
 
 - Status: Accepted
-- Date: 2026-08-30; revised by [#1185] (2026-09-06) and [#1818] (2026-10-17)
-- Issues: [#724], [#39], [#29], [#1185], [#1818]
+- Date: 2026-08-30; revised by [#1185] (2026-09-06), [#1818] (2026-10-17) and [#1971]
+  (2026-10-31)
+- Issues: [#724], [#39], [#29], [#1185], [#1818], [#1971]
 - Modules: all (build and release engineering)
 - Current behavior: `justfile` § `stage-release` and § `rehearse-release`,
   `scripts/rehearse-release.py`, `.agents/references/repository-guide.md`
-  § Version policy
+  § Version policy, and the repository settings: the `release` environment and the
+  `release tags` ruleset
 
 ## Context
 
@@ -91,7 +93,8 @@ attaches an `index.html` pointing at the published API reference, active only wh
 provides `src/main/central-javadoc-stub`.
 
 **The signing key is a dedicated project release key**, not a personal identity key: UID naming
-the project, private key and passphrase held as repository secrets plus an offline backup, public
+the project, private key and passphrase held as secrets of the `release` environment plus an
+offline backup, public
 key on `keyserver.ubuntu.com`. The namespace maps to a Portal Organization so publish rights can
 be granted to future members; a personal key would re-create the single-person coupling that
 structure removed. Signing uses maven-gpg-plugin 3.x's Bouncy Castle signer reading
@@ -116,6 +119,18 @@ It reports each line's files and uncompressed bytes, which is how the Usage Cent
 Those numbers inform a limit-raise request to Sonatype before the tag; they do not gate the run, because the limit is raised on request.
 The rehearsal became the dispatch's default mode, so a dispatch costs no Central usage unless `mode: validate` is chosen.
 
+**The release credentials are secrets of a ref-restricted environment ([#1971]).**
+Through 1.2.0, the signing key, its passphrase and the Central token pair were repository secrets, which a workflow file on any branch of this repository can read.
+The rules that a release is a tag on `main` and that a dispatch never publishes lived only in the workflow file at the triggering ref.
+Anyone with write access could therefore push a `v*` tag on a branch commit whose `release.yaml` drops the ancestry check, or dispatch a modified workflow from a branch, and that run would receive the key and the token.
+The `stage` job now names the environment `release`, and the four secrets exist only there.
+The environment's deployment policy admits the `main` branch and `v*` tags, and GitHub, not the workflow file, enforces it: a job whose ref is neither fails before its first step, without the secrets.
+A tag ruleset on `refs/tags/v*` restricts creation, update and deletion to the repository admin role, so a write-access account cannot create a `v*` tag that the policy would then admit.
+The environment has no required reviewers.
+Both settings live in the repository's settings rather than in source; flink-datastream-protobuf carries the same pair.
+The environment guards against unmerged refs only.
+What reaches `main` is governed by `main`'s branch protection, which requires CI but not an approving review, so a change merged to `main` runs with the secrets.
+
 ## Declined alternatives
 
 - **Publishing each line with `autoPublish=true`.**
@@ -131,6 +146,8 @@ The rehearsal became the dispatch's default mode, so a dispatch costs no Central
 - **Combining both version lines into one Portal bundle.**
   Considered for [#1185]; the maintainer chose to retain two deployments and require both validations before either publication.
   This keeps the existing staging builds and their module-local publication exclusions.
+- **Required reviewers on the `release` environment.**
+  Considered for [#1971]; declined because an approval would restore the manual step that [#1185] removed, and the tag ruleset already limits who can start a release.
 - **Publishing `flink-connector-gcp-test-utils`.** Declined; reasons in the decision. Revisit if
   a user asks for the test doubles as a dependency.
 - **A `maven-release-plugin` release-commit flow** (`release:prepare`/`release:perform`).
@@ -154,6 +171,9 @@ The rehearsal became the dispatch's default mode, so a dispatch costs no Central
   The event guard excludes both Publish and GitHub Release creation even when a dispatch targets a tag.
   Validate rehearsals exercise ID capture, status and Drop authentication; Publish first runs at a real release.
   The default rehearsal exercises the signed build and the bundle, but neither the upload nor Central's validation; a defect only Central detects still surfaces at the tag, before Publish.
+- A dispatch, in either mode, runs only from `main` or a `v*` tag, because the rehearsal also signs.
+  A change to `release.yaml` itself is therefore first exercised after it merges.
+  A local `just rehearse-release` checks the bundle that `scripts/rehearse-release.py` builds, not the workflow.
 - The staged bundle's validation report (signing, checksums, POM completeness, sources/javadoc
   presence) is produced by the Portal on every upload, giving each release a pre-publish
   checklist for free.
@@ -194,4 +214,5 @@ A tag cut on the wrong commit remains correctable only before Publish; afterward
 [#1185]: https://github.com/flink-gcp/flink-connector-gcp/issues/1185
 [#1812]: https://github.com/flink-gcp/flink-connector-gcp/issues/1812
 [#1818]: https://github.com/flink-gcp/flink-connector-gcp/issues/1818
+[#1971]: https://github.com/flink-gcp/flink-connector-gcp/issues/1971
 [Portal API]: https://central.sonatype.org/publish/publish-portal-api/

@@ -741,8 +741,17 @@ facts); the rules a session needs:
   real check; for the release whose version equals the reference, the skip was also
   load-bearing — ADR-0124) and `-DskipTests`, because
   the staged commit already passed every CI lane
+- **The release credentials are secrets of the `release` environment** (ADR-0147, issue #1971):
+  `MAVEN_GPG_KEY`, `MAVEN_GPG_PASSPHRASE`, `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD`
+  exist only there, not as repository secrets, and every `release.yaml` job that reads one names
+  the environment (`test_release_workflow.py` holds this). Its deployment policy admits only
+  `main` and `v*` tags; do not add required reviewers. A tag ruleset on `refs/tags/v*`
+  restricts creation, update and deletion to the repository admin role. Both are repository
+  settings, not source: a new release secret goes into the environment
+  (`gh secret set <name> --env release`), never the repository store
 - **Every tag is preceded by a bundle rehearsal** (issue #1818): dispatch `release.yaml` with the
-  bare version and the default `mode: rehearse`, on the commit to be tagged. It runs
+  bare version and the default `mode: rehearse`, from `main` on the commit to be tagged (the
+  environment gate refuses any other branch). It runs
   `just rehearse-release` (`scripts/rehearse-release.py`), which stages both lines with
   `-DskipUpload=true`, so it uploads nothing and costs no Central usage. It then fails the run if a
   bundle directory lacks its `<artifactId>-<version>.pom`, carries a local-repository file
