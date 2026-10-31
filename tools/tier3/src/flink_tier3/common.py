@@ -39,6 +39,18 @@ class TransportError(Failure):
     """A Kubernetes transport failure, distinct from an invariant violation."""
 
 
+class ConnectionDropped(TransportError):
+    """A Kubernetes request whose connection was lost before an answer.
+
+    A reset or aborted connection, or a TLS handshake the peer closed. Kept
+    apart from a timeout, which is not repeated: a repeat goes over a new
+    connection. It usually fails within moments, but a peer can drop a
+    connection the request has waited on, so one attempt can last almost as
+    long as its connect timeout, or its timeout on a read without data,
+    allows.
+    """
+
+
 class StorageRequestFailed(Failure):
     """A storage request that got no answer.
 

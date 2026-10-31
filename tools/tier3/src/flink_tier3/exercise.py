@@ -766,7 +766,8 @@ class RecoveryExercise:
         """Apply the approved upgrade once; a lost response must show it applied."""
         # Patch cannot recreate a deleted CR; the UID/version tests lose to deletion.
         try:
-            self.env.kube.patch(app, operations)
+            # A stop or the deadline reached while a repeat waits ends it.
+            self.env.kube.patch(app, operations, before_repeat=self.check_open)
         except (ApiError, TransportError) as error:
             if isinstance(error, ApiError) and error.status in (409, 422):
                 raise Failure(

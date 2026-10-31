@@ -457,9 +457,11 @@ class Relay:
         app["status"]["jobStatus"]["state"] = "RUNNING"
         self.kube.put(app)
 
-    def patch(self, value, changes, subresource=""):
+    def patch(self, value, changes, subresource="", before_repeat=None):
         if value["kind"] != "FlinkDeployment":
-            return self.original_patch(value, changes, subresource)
+            return self.original_patch(
+                value, changes, subresource, before_repeat=before_repeat
+            )
         self.events.append(("patch", [c["path"] for c in changes]))
         app = self.app()
         for change in changes:

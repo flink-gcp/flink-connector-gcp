@@ -77,8 +77,7 @@ def supervisor_main(directory):
             str(account / "ca.crt"),
         ),
     )
-    identity = kube.request(
-        "POST",
+    identity = kube.review(
         "/apis/authentication.k8s.io/v1/selfsubjectreviews",
         {"apiVersion": "authentication.k8s.io/v1", "kind": "SelfSubjectReview"},
     )

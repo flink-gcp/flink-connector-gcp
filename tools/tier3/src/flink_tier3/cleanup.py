@@ -196,13 +196,14 @@ class Cleanup:
             for key, value in resources.items():
                 hard["requests." + key] = value
                 hard["limits." + key] = value
-        if admission:
-            self.env.admission_open()
-        else:
-            self.env.assert_owner()
+        check = self.env.admission_open if admission else self.env.assert_owner
+        # The check runs again before any repeat of the patch.
+        check()
         if obj["spec"]["hard"] != hard:
             self.env.kube.patch(
-                obj, [{"op": "replace", "path": "/spec/hard", "value": hard}]
+                obj,
+                [{"op": "replace", "path": "/spec/hard", "value": hard}],
+                before_repeat=check,
             )
 
     @retry_conflicts
@@ -218,31 +219,26 @@ class Cleanup:
         if scale["metadata"]["uid"] != obj["metadata"]["uid"]:
             raise Failure("Operator scale identity changed")
         if replicas:
-            self.env.admission_open()
+            check = self.env.admission_open
         else:
-            self.env.assert_owner()
-            control = self.env.refresh()
-            require_services_clean(control)
-        # ScaleSpec omits zero replicas from its JSON representation.
+
+            def check():
+                self.env.assert_owner()
+                require_services_clean(self.env.refresh())
+
+        # The check runs again before any repeat of the patch.
+        check()
+        # ScaleSpec omits zero replicas from its JSON representation, so a
+        # read-back cannot show a lost patch to zero as applied; its conflict
+        # re-reads the scale here, which then needs no patch.
         if scale["spec"].get("replicas", 0) != replicas:
-            patch = [
-                {
-                    "op": "test",
-                    "path": "/metadata/uid",
-                    "value": obj["metadata"]["uid"],
-                },
-                {
-                    "op": "test",
-                    "path": "/metadata/resourceVersion",
-                    "value": scale["metadata"]["resourceVersion"],
-                },
-                {"op": "add", "path": "/spec/replicas", "value": replicas},
-            ]
-            self.env.kube.request(
-                "PATCH",
-                self.env.kube.path("Deployment", SYSTEM, OPERATOR) + "/scale",
-                patch,
-                content_type="application/json-patch+json",
+            # The scale's uid is the Deployment's, checked above, and its
+            # resourceVersion guards the patch.
+            self.env.kube.patch(
+                {"kind": "Deployment", "metadata": scale["metadata"]},
+                [{"op": "add", "path": "/spec/replicas", "value": replicas}],
+                subresource="/scale",
+                before_repeat=check,
             )
 
     def inventory(self):

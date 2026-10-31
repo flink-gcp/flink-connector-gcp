@@ -199,7 +199,8 @@ POLL = 15
 
 HTTP_TIMEOUT = 20
 # Seconds before each retry of an idempotent Kubernetes or Cloud Storage read
-# that met a transient failure; mutations are never retried this way.
+# that met a transient failure. Kubernetes mutations take the same schedule:
+# each waits a delay before it is sent again or its outcome is read back.
 READ_RETRY_DELAYS = (1, 2, 4)
 
 

@@ -16,6 +16,7 @@
 import copy
 import io
 import json
+import ssl
 import subprocess
 from decimal import Decimal
 from pathlib import Path
@@ -28,7 +29,12 @@ import urllib3
 import yaml
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import metrics, repository
-from flink_tier3.common import ReadCeilingExceeded, StorageRequestFailed, TransportError
+from flink_tier3.common import (
+    ConnectionDropped,
+    ReadCeilingExceeded,
+    StorageRequestFailed,
+    TransportError,
+)
 from flink_tier3.policy import CLEANUP_SECONDS, STATE_OBJECTS
 from google.cloud import storage
 
@@ -185,6 +191,16 @@ class Kube:
         self.normal_cleanup = True
         self.replace_before_delete = None
         self.fail_create_response = False
+        # Runs once, between a throttled first attempt and its repeat.
+        self.between_attempts = None
+
+    def repeat(self, before_repeat):
+        """Model a throttled first attempt, after which `before_repeat` runs."""
+        if self.between_attempts:
+            self.between_attempts()
+            self.between_attempts = None
+            if before_repeat is not None:
+                before_repeat()
 
     def put(self, value):
         self.data[
@@ -220,8 +236,10 @@ class Kube:
             and item.get("involvedObject", {}).get("kind") == "Node"
         ]
 
-    def patch(self, value, changes, subresource=""):
-        assert not subresource
+    def patch(self, value, changes, subresource="", before_repeat=None):
+        self.repeat(before_repeat)
+        if subresource:
+            return self.patch_scale(value, changes, subresource)
         current = self.get(
             value["kind"], value["metadata"]["namespace"], value["metadata"]["name"]
         )
@@ -267,7 +285,9 @@ class Kube:
         }
         return True
 
-    def create(self, value, dry_run=False):
+    def create(self, value, dry_run=False, before_repeat=None):
+        if not dry_run:
+            self.repeat(before_repeat)
         self.calls.append(("create", value["kind"], dry_run))
         if dry_run:
             return value
@@ -282,39 +302,31 @@ class Kube:
     def path(self, kind, namespace, name):
         return f"/{namespace}/{kind}/{name}"
 
-    def request(self, method, path, body=None, **_kwargs):
-        assert path.endswith("/scale")
+    def scale(self):
         current = self.get("Deployment", rt.SYSTEM, rt.OPERATOR)
-        spec = (
-            {"replicas": current["spec"]["replicas"]}
-            if current["spec"]["replicas"]
-            else {}
-        )
-        if method == "GET":
-            return {
-                "apiVersion": "autoscaling/v1",
-                "kind": "Scale",
-                "metadata": current["metadata"],
-                "spec": spec,
-            }
-        assert method == "PATCH"
-        assert body[:2] == [
-            {
-                "op": "test",
-                "path": "/metadata/uid",
-                "value": current["metadata"]["uid"],
-            },
-            {
-                "op": "test",
-                "path": "/metadata/resourceVersion",
-                "value": current["metadata"]["resourceVersion"],
-            },
-        ]
-        assert body[-1]["path"] == "/spec/replicas"
-        assert body[-1]["op"] in ("add", "replace")
-        if body[-1]["op"] == "replace" and "replicas" not in spec:
-            raise rt.ApiError(422, method, path)
-        replicas = body[-1]["value"]
+        replicas = current["spec"]["replicas"]
+        return current, {"replicas": replicas} if replicas else {}
+
+    def request(self, method, path, body=None, **_kwargs):
+        assert method == "GET" and path.endswith("/scale")
+        current, spec = self.scale()
+        return {
+            "apiVersion": "autoscaling/v1",
+            "kind": "Scale",
+            "metadata": current["metadata"],
+            "spec": spec,
+        }
+
+    def patch_scale(self, value, changes, subresource):
+        assert subresource == "/scale" and value["kind"] == "Deployment"
+        current, spec = self.scale()
+        for field in ("namespace", "name", "uid", "resourceVersion"):
+            assert value["metadata"][field] == current["metadata"][field]
+        assert [change["path"] for change in changes] == ["/spec/replicas"]
+        assert changes[0]["op"] in ("add", "replace")
+        if changes[0]["op"] == "replace" and "replicas" not in spec:
+            raise rt.ApiError(422, "PATCH", subresource)
+        replicas = changes[0]["value"]
         self.calls.append(("scale", replicas))
         current["spec"]["replicas"] = replicas
         current["status"]["replicas"] = replicas
@@ -548,6 +560,93 @@ def test_admission_closing_while_intent_is_written_prevents_the_create(
             runner.create_root("config", obj("ConfigMap", "source", rt.SYSTEM))
     assert ("create", "FlinkDeployment", False) not in env[0].calls
     assert ("create", "ConfigMap", False) not in env[0].calls
+
+
+@pytest.mark.parametrize("write", ["application", "config", "quota", "scale"])
+def test_an_admission_write_is_not_repeated_after_admission_closes(env, write):
+    """A stop requested while a throttled write waits ends it before its repeat."""
+    runner = lifecycle(env, cli.runner_api.Runner)
+    env[0].between_attempts = runner.env.records.request_stop
+    with pytest.raises(rt.Failure, match="stopped"):
+        if write == "application":
+            runner.create_application(app(env))
+        elif write == "config":
+            runner.create_root("config", obj("ConfigMap", "source", rt.SYSTEM))
+        elif write == "quota":
+            runner.cleanup.quota(rt.SMOKE, "run")
+        else:
+            runner.cleanup.scale_operator(1)
+    assert [call for call in env[0].calls if call[-1] is not True] == []
+
+
+@pytest.mark.parametrize("write", ["quota", "scale"])
+def test_a_cleanup_write_is_not_repeated_after_the_lock_changes_hands(env, write):
+    runner = lifecycle(env, cli.runner_api.Runner)
+    runner.cleanup.quota(rt.SMOKE, "run")
+    runner.cleanup.scale_operator(1)
+    before = list(env[0].calls)
+
+    def take_lock():
+        _, generation = env[1].read(rt.ENVIRONMENT)
+        env[1].write(rt.ENVIRONMENT, {"nonce": "new-owner"}, generation)
+
+    env[0].between_attempts = take_lock
+    with pytest.raises(rt.Failure, match="lock owner changed"):
+        if write == "quota":
+            runner.cleanup.quota(rt.SMOKE, None)
+        else:
+            runner.cleanup.scale_operator(0)
+    assert env[0].calls == before
+
+
+@pytest.mark.parametrize("write", ["application", "config"])
+def test_a_runner_create_rechecks_the_runner_admission_before_its_repeat(
+    env, monkeypatch, write
+):
+    """The repeat's check is the runner's, with its startup deadlines."""
+    runner = lifecycle(env, cli.runner_api.Runner)
+    admission_open, expired = runner.admission_open, []
+
+    def runner_admission_open():
+        admission_open()
+        if expired:
+            raise rt.Failure("Fixture startup deadline expired")
+
+    monkeypatch.setattr(runner, "admission_open", runner_admission_open)
+    env[0].between_attempts = lambda: expired.append(True)
+    with pytest.raises(rt.Failure, match="startup deadline expired"):
+        if write == "application":
+            runner.create_application(app(env))
+        else:
+            runner.create_root("config", obj("ConfigMap", "source", rt.SYSTEM))
+    assert [call for call in env[0].calls if call[-1] is not True] == []
+
+
+@pytest.mark.parametrize("write", ["quota", "scale"])
+def test_a_cleanup_write_is_repeated_after_admission_closes(env, write):
+    """Cleanup's repeat checks lock ownership, not admission, so it proceeds."""
+    runner = lifecycle(env, cli.runner_api.Runner)
+    runner.cleanup.quota(rt.SMOKE, "run")
+    runner.cleanup.scale_operator(1)
+    before = len(env[0].calls)
+    env[0].between_attempts = runner.env.records.request_stop
+    if write == "quota":
+        runner.cleanup.quota(rt.SMOKE, None)
+        assert env[0].calls[before][:2] == ("patch", "ResourceQuota")
+    else:
+        runner.cleanup.scale_operator(0)
+        assert env[0].calls[before:] == [("scale", 0)]
+
+
+def test_an_operator_stop_rechecks_service_cleanup_before_its_repeat(env):
+    runner = lifecycle(env, cli.runner_api.Runner)
+    runner.cleanup.scale_operator(1)
+    env[0].between_attempts = lambda: runner.env.records._change(
+        lambda record: setattr(record, "pubsub", {"stage": "preparing"})
+    )
+    with pytest.raises(rt.Failure, match="Pub/Sub resource cleanup is incomplete"):
+        runner.cleanup.scale_operator(0)
+    assert ("scale", 0) not in env[0].calls
 
 
 def test_lost_create_response_records_verified_uid(env):
@@ -1625,8 +1724,8 @@ def test_supervisor_state_machine_returns_to_cleanup_on_each_outcome(
     application = app(env)
     create, request = env[0].create, env[0].request
 
-    def created(value, dry_run=False):
-        actual = create(value, dry_run)
+    def created(value, dry_run=False, before_repeat=None):
+        actual = create(value, dry_run, before_repeat=before_repeat)
         if value["kind"] == "FlinkDeployment" and not dry_run:
             if failure == "cancellation":
                 runner.env.records.request_stop()
@@ -1819,8 +1918,8 @@ def test_api_defaulted_supervisor_creation_reaches_idle(
     }
     original_create = env[0].create
 
-    def defaulted(manifest, dry_run=False):
-        value = original_create(manifest, dry_run)
+    def defaulted(manifest, dry_run=False, before_repeat=None):
+        value = original_create(manifest, dry_run, before_repeat=before_repeat)
         container = value["spec"]["template"]["spec"]["containers"][0]
         container.update(
             imagePullPolicy="IfNotPresent",
@@ -2400,6 +2499,22 @@ def test_plan_timeout_workflow_output_is_bounded(env, monkeypatch, tmp_path, cap
     assert (tmp_path / "flink-gcp-init.log").read_text() == output
 
 
+def raised(method, url, error):
+    """`error` as urllib3 2.7 raises it with its retries disabled.
+
+    It re-raises a read error bare for a method it would not retry, POST and
+    PATCH among them, and wraps any other failure in the `MaxRetryError` that
+    ends its spent retries.
+    """
+    read_error = (urllib3.exceptions.ProtocolError, urllib3.exceptions.ReadTimeoutError)
+    if (
+        isinstance(error, read_error)
+        and method not in urllib3.Retry.DEFAULT_ALLOWED_METHODS
+    ):
+        return error
+    return urllib3.exceptions.MaxRetryError(None, url, error)
+
+
 class SdkPool:
     def __init__(self, replies):
         self.replies = iter(replies)
@@ -2407,7 +2522,10 @@ class SdkPool:
 
     def request(self, *args, **kwargs):
         self.calls.append((args, kwargs))
-        status, body, *headers = next(self.replies)
+        reply = next(self.replies)
+        if isinstance(reply, Exception):
+            raise raised(*args[:2], reply)
+        status, body, *headers = reply
         return urllib3.HTTPResponse(
             body=io.BytesIO(body if isinstance(body, bytes) else rt.json_bytes(body)),
             status=status,
@@ -2424,17 +2542,24 @@ def sdk_kube(replies, token=lambda: "fixture-token"):
 
 
 def test_kubernetes_sdk_preserves_delete_and_patch_preconditions():
-    kube, pool = sdk_kube([(200, {}), (200, {})])
+    kube, pool = sdk_kube([(200, {}), (200, {}), (200, {})])
     pod = obj("Pod", "owned")
     kube.delete(pod)
     kube.patch(pod, [{"op": "replace", "path": "/metadata/finalizers", "value": []}])
-    delete, patch = [json.loads(kwargs["body"]) for _, kwargs in pool.calls]
+    scale = obj("Deployment", rt.OPERATOR, rt.SYSTEM)
+    kube.patch(scale, [{"op": "add", "path": "/spec/replicas", "value": 1}], "/scale")
+    delete, *patches = [json.loads(kwargs["body"]) for _, kwargs in pool.calls]
     assert delete["preconditions"] == {"uid": pod["metadata"]["uid"]}
-    assert patch[:2] == [
-        {"op": "test", "path": "/metadata/uid", "value": pod["metadata"]["uid"]},
-        {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
-    ]
-    assert pool.calls[1][1]["headers"]["Content-Type"] == "application/json-patch+json"
+    for patch, target in zip(patches, (pod, scale)):
+        assert patch[:2] == [
+            {"op": "test", "path": "/metadata/uid", "value": target["metadata"]["uid"]},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
+        ]
+    assert pool.calls[2][0][1].endswith("/deployments/" + rt.OPERATOR + "/scale")
+    assert all(
+        kwargs["headers"]["Content-Type"] == "application/json-patch+json"
+        for _, kwargs in pool.calls[1:]
+    )
     assert all(
         kwargs["timeout"].read_timeout == rt.HTTP_TIMEOUT for _, kwargs in pool.calls
     )
@@ -2477,7 +2602,7 @@ def test_kubernetes_sdk_errors_are_mapped_without_retries(status):
     assert len(pool.calls) == 1
 
 
-def test_a_transient_read_is_retried_and_a_mutation_is_not():
+def test_a_transient_read_is_retried():
     """Pilot bq1312-alo-10-a6 lost a run to one 503 on a namespace read."""
     kube, pool = sdk_kube([(503, {}), (502, {}), (200, {"metadata": {"uid": "u"}})])
     slept = []
@@ -2489,11 +2614,406 @@ def test_a_transient_read_is_retried_and_a_mutation_is_not():
     with pytest.raises(rt.ApiError, match="503"):
         kube.get("Pod", rt.SYSTEM, "owned")
     assert len(pool.calls) == 4
-    kube, pool = sdk_kube([(503, {})])
-    kube.sleep = lambda _delay: pytest.fail("A mutation was retried")
-    with pytest.raises(rt.ApiError, match="503"):
-        kube.delete(obj("Pod", "owned"))
+
+
+def reset():
+    return urllib3.exceptions.ProtocolError(
+        "Connection aborted.", ConnectionResetError(104, "Connection reset by peer")
+    )
+
+
+def tls_closed():
+    """A TLS handshake the peer closed, as a local probe of urllib3 2.7 shows it."""
+    return urllib3.exceptions.SSLError(
+        ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+    )
+
+
+def timeout():
+    return urllib3.exceptions.ReadTimeoutError(None, "/api", "Read timed out.")
+
+
+@pytest.mark.parametrize(
+    "error, lost",
+    [
+        (reset(), True),
+        (tls_closed(), True),
+        (timeout(), False),
+        # A body upload that timed out, as urllib3 2.7 wraps the socket's timeout.
+        (
+            urllib3.exceptions.ProtocolError(
+                "Connection aborted.", TimeoutError("timed out")
+            ),
+            False,
+        ),
+        (urllib3.exceptions.ConnectTimeoutError(None, "/api", "timed out"), False),
+        (urllib3.exceptions.NewConnectionError(None, "Connection refused"), False),
+        (urllib3.exceptions.SSLError(ssl.SSLCertVerificationError(1, "bad")), False),
+    ],
+    ids=[
+        "reset",
+        "tls-closed",
+        "read-timeout",
+        "upload-timeout",
+        "connect-timeout",
+        "refused",
+        "cert",
+    ],
+)
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_only_a_connection_lost_before_an_answer_is_dropped(method, error, lost):
+    kube, _ = sdk_kube([error])
+    with pytest.raises(TransportError) as failure:
+        kube.http.json(method, "https://fixture.example/api/v1/namespaces/tier3-system")
+    assert isinstance(failure.value, ConnectionDropped) is lost
+
+
+@pytest.mark.parametrize("drop", [reset, tls_closed], ids=["reset", "tls-closed"])
+def test_a_read_whose_connection_dropped_is_retried(drop):
+    """Run sp1878-ro-a3's settle lost its campaign to one reset namespace read."""
+    kube, pool = sdk_kube([drop(), (200, {"metadata": {"uid": "u"}})])
+    slept = []
+    kube.sleep = slept.append
+    assert kube.get("Pod", rt.SYSTEM, "owned") == {"metadata": {"uid": "u"}}
+    assert len(pool.calls) == 2 and slept == [1]
+    kube, pool = sdk_kube([drop() for _ in range(4)])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(ConnectionDropped):
+        kube.get("Pod", rt.SYSTEM, "owned")
+    assert len(pool.calls) == 4
+
+
+def test_a_review_is_retried_as_a_read():
+    """The supervisor's identity review persists nothing, so it repeats freely."""
+    review = {"status": {"userInfo": {"username": "u"}}}
+    kube, pool = sdk_kube([reset(), (503, {}), (201, review)])
+    slept = []
+    kube.sleep = slept.append
+    assert kube.review("/apis/authentication.k8s.io/v1/selfsubjectreviews", {}) == (
+        review
+    )
+    assert [args[0] for args, _ in pool.calls] == ["POST"] * 3 and slept == [1, 2]
+
+
+def sent_manifest():
+    manifest = obj("ConfigMap", "lifecycle-run", rt.SYSTEM)
+    meta = manifest["metadata"]
+    del meta["uid"], meta["resourceVersion"]
+    meta["labels"] = {"flink-gcp.io/run-id": "run"}
+    meta["annotations"] = {rt.NONCE: "nonce"}
+    return manifest
+
+
+def stored(manifest, **annotations):
+    """`manifest` as the API server stores it, with what it adds."""
+    result = copy.deepcopy(manifest)
+    result["metadata"].update(uid="created-uid", resourceVersion="7")
+    result["metadata"]["annotations"].update(annotations)
+    return result
+
+
+UPGRADED = ["--input", "upgraded"]
+# The upgrade patch_upgrade sends, whose value the API server stores as sent.
+UPGRADE = [{"op": "replace", "path": "/spec/job/args", "value": UPGRADED}]
+
+
+def patch_target(uid="app-uid", version="1", args=("--input", "initial")):
+    result = obj("FlinkDeployment", "app", rt.SYSTEM)
+    result["metadata"].update(uid=uid, resourceVersion=version)
+    result["spec"] = {"job": {"args": list(args)}}
+    return result
+
+
+def pod(**metadata):
+    result = obj("Pod", "owned", rt.SYSTEM)
+    result["metadata"].update(metadata)
+    return result
+
+
+def mutation(verb):
+    """The call, its answered result, what it returns, and its read-backs.
+
+    `absent` reads back an attempt that did not land and `landed` one that
+    did.
+    """
+    if verb == "create":
+        manifest = sent_manifest()
+        landed = stored(manifest, server="added")
+        return SimpleNamespace(
+            call=lambda kube, **check: kube.create(manifest, **check),
+            method="POST",
+            answer=(201, landed),
+            result=landed,
+            absent=(404, {}),
+            landed=(200, landed),
+        )
+    if verb == "patch":
+        landed = patch_target(version="2", args=UPGRADED)
+        return SimpleNamespace(
+            call=lambda kube, **check: kube.patch(patch_target(), UPGRADE, **check),
+            method="PATCH",
+            answer=(200, landed),
+            result=landed,
+            absent=(200, patch_target()),
+            landed=(200, landed),
+        )
+    return SimpleNamespace(
+        call=lambda kube: kube.delete(pod()),
+        method="DELETE",
+        answer=(200, {}),
+        result=True,
+        absent=(200, pod()),
+        landed=(200, pod(deletionTimestamp="2026-10-31T00:00:00Z")),
+    )
+
+
+VERBS = ["create", "patch", "delete"]
+
+
+def methods(pool):
+    return [args[0] for args, _ in pool.calls]
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_throttled_mutation_is_sent_again(verb):
+    """API Priority and Fairness refuses a 429 before the server processes it."""
+    case = mutation(verb)
+    kube, pool = sdk_kube([(429, {}, ("Retry-After", "2")), case.answer])
+    waits = []
+    kube.sleep = waits.append
+    assert case.call(kube) == case.result
+    assert methods(pool) == [case.method] * 2 and waits == [2]
+
+
+# A mutation that met one of these may have landed, and a repeat can succeed.
+DROPPED = {"reset": reset, "tls-closed": tls_closed, "503": lambda: (503, {})}
+
+
+@pytest.mark.parametrize("cause", DROPPED)
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_mutation_that_did_not_land_is_sent_again(verb, cause):
+    case = mutation(verb)
+    kube, pool = sdk_kube([DROPPED[cause](), case.absent, case.answer])
+    waits = []
+    kube.sleep = waits.append
+    assert case.call(kube) == case.result
+    assert methods(pool) == [case.method, "GET", case.method] and waits == [1]
+
+
+@pytest.mark.parametrize("cause", [*DROPPED, "timeout"])
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_mutation_that_landed_is_not_sent_again(verb, cause):
+    case = mutation(verb)
+    kube, pool = sdk_kube([DROPPED.get(cause, timeout)(), case.landed])
+    kube.sleep = lambda _delay: None
+    assert case.call(kube) == case.result
+    assert methods(pool) == [case.method, "GET"]
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_timed_out_mutation_that_did_not_land_is_not_sent_again(verb):
+    """Its timeout is already spent, as a timed-out read's is."""
+    case = mutation(verb)
+    kube, pool = sdk_kube([timeout(), case.absent])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(TransportError) as failure:
+        case.call(kube)
+    assert not isinstance(failure.value, ConnectionDropped)
+    assert methods(pool) == [case.method, "GET"]
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_failed_read_back_is_chained_to_the_failure_it_settled(verb):
+    case = mutation(verb)
+    kube, pool = sdk_kube([reset(), (403, {"message": "fixture refusal"})])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(rt.ApiError) as failure:
+        case.call(kube)
+    assert failure.value.status == 403
+    assert isinstance(failure.value.__cause__, ConnectionDropped)
+    assert methods(pool) == [case.method, "GET"]
+
+
+@pytest.mark.parametrize(
+    "verb, refused",
+    [("create", 409), ("patch", 409), ("patch", 422), ("delete", 404), ("delete", 409)],
+)
+def test_a_repeat_refused_by_its_own_earlier_attempt_is_settled(verb, refused):
+    """The first attempt landed after its read-back, before the repeat arrived."""
+    case = mutation(verb)
+    landed = case.landed
+    if verb == "delete":
+        # Gone, or replaced under its name, as the precondition's 409 says.
+        landed = (404, {}) if refused == 404 else (200, pod(uid="replacement"))
+    kube, pool = sdk_kube([reset(), case.absent, (refused, {}), landed])
+    kube.sleep = lambda _delay: None
+    assert case.call(kube) == case.result
+    assert methods(pool) == [case.method, "GET"] * 2
+
+
+@pytest.mark.parametrize("verb", ["create", "patch"])
+def test_before_repeat_runs_before_each_repeat_and_nothing_else(verb):
+    case = mutation(verb)
+    kube, pool = sdk_kube([reset(), case.absent, (429, {}), case.answer])
+    kube.sleep = lambda _delay: None
+    checked = []
+
+    def check():
+        checked.append(methods(pool))
+
+    assert case.call(kube, before_repeat=check) == case.result
+    assert checked == [[case.method, "GET"], [case.method, "GET", case.method]]
+    kube, pool = sdk_kube([reset(), case.landed])
+    kube.sleep = lambda _delay: None
+    assert case.call(
+        kube, before_repeat=lambda: pytest.fail("checked before a read-back")
+    ) == (case.result)
+
+
+@pytest.mark.parametrize("first", ["throttled", "dropped", "dropped-then-throttled"])
+@pytest.mark.parametrize("verb", ["create", "patch"])
+def test_a_failed_check_ends_a_mutation_before_its_repeat(verb, first):
+    """A stop requested during the delay is not answered by a later write.
+
+    The failure is chained to the latest one after which the mutation may
+    have landed, which a later 429 does not replace.
+    """
+    case = mutation(verb)
+    # The replies before the failed check, and the repeat it fails before.
+    replies, failing = {
+        "throttled": ([(429, {})], 1),
+        "dropped": ([reset(), case.absent], 1),
+        "dropped-then-throttled": ([reset(), case.absent, (429, {})], 2),
+    }[first]
+    kube, pool = sdk_kube(replies)
+    kube.sleep = lambda _delay: None
+    checks = []
+
+    def check():
+        checks.append(None)
+        if len(checks) == failing:
+            raise rt.Failure("Run admission has been stopped")
+
+    with pytest.raises(rt.Failure, match="stopped") as failure:
+        case.call(kube, before_repeat=check)
+    assert methods(pool) == [case.method, "GET", case.method][: len(replies)]
+    cause = failure.value.__cause__
+    if first == "throttled":
+        assert isinstance(cause, rt.ApiError) and cause.status == 429
+    else:
+        assert isinstance(cause, ConnectionDropped)
+
+
+def test_a_failed_check_with_its_own_cause_keeps_it():
+    """A check that failed on its own I/O keeps that cause for the classifiers."""
+    case = mutation("create")
+    kube, _pool = sdk_kube([(429, {})])
+    kube.sleep = lambda _delay: None
+    own = ConnectionResetError("lock read reset")
+
+    def check():
+        raise rt.Failure("Environment lock read failed") from own
+
+    with pytest.raises(rt.Failure, match="lock read failed") as failure:
+        case.call(kube, before_repeat=check)
+    assert failure.value.__cause__ is own
+    assert any("429" in note for note in failure.value.__notes__)
+
+
+def test_a_delete_whose_first_attempt_meets_404_was_already_gone():
+    kube, pool = sdk_kube([(404, {})])
+    kube.sleep = lambda _delay: pytest.fail("A first-attempt 404 was settled")
+    assert kube.delete(pod()) is False
     assert len(pool.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        patch_target(version="2"),
+        patch_target(uid="replacement", version="2", args=UPGRADED),
+    ],
+    ids=["changed-by-another", "replaced"],
+)
+def test_a_patch_whose_target_changed_otherwise_is_a_conflict(current):
+    """The 422 a failed test operation gets, so retry_conflicts still applies."""
+    kube, pool = sdk_kube([reset(), (200, current)])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(rt.ApiError, match="422"):
+        kube.patch(patch_target(), UPGRADE)
+    assert methods(pool) == ["PATCH", "GET"]
+
+
+def test_a_patch_whose_target_is_gone_is_answered_as_the_server_would():
+    kube, pool = sdk_kube([reset(), (404, {})])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(rt.ApiError, match="404"):
+        kube.patch(patch_target(), UPGRADE)
+    assert methods(pool) == ["PATCH", "GET"]
+
+
+def without_nonce(manifest):
+    del manifest["metadata"]["annotations"][rt.NONCE]
+    return manifest
+
+
+@pytest.mark.parametrize(
+    "field, key, value, sent",
+    [
+        ("annotations", rt.NONCE, "another-run", sent_manifest),
+        ("labels", "flink-gcp.io/run-id", "another-run", sent_manifest),
+        # Without the nonce even an identical object may be another run's.
+        ("annotations", "server", "added", lambda: without_nonce(sent_manifest())),
+    ],
+    ids=["another-nonce", "another-label", "no-nonce"],
+)
+def test_a_create_whose_name_another_object_holds_is_refused(field, key, value, sent):
+    foreign = stored(sent())
+    foreign["metadata"][field][key] = value
+    kube, pool = sdk_kube([reset(), (200, foreign)])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(rt.Failure, match="not the object it sent"):
+        kube.create(sent())
+    assert methods(pool) == ["POST", "GET"]
+
+
+def test_a_dry_run_create_is_never_read_back():
+    """It persists nothing, so only a 429 repeats it."""
+    kube, pool = sdk_kube([(429, {}), reset()])
+    kube.sleep = lambda _delay: None
+    with pytest.raises(ConnectionDropped):
+        kube.create(sent_manifest(), dry_run=True)
+    assert methods(pool) == ["POST", "POST"]
+
+
+@pytest.mark.parametrize("verb", VERBS)
+def test_a_mutation_whose_schedule_is_spent_raises_its_last_failure(verb):
+    case = mutation(verb)
+    kube, pool = sdk_kube([reset(), case.absent] * 3 + [reset()])
+    waits = []
+    kube.sleep = waits.append
+    with pytest.raises(ConnectionDropped):
+        case.call(kube)
+    assert methods(pool).count(case.method) == 4 and waits == [1, 2, 4]
+
+
+@pytest.mark.parametrize("cause", ["reset", "503"])
+def test_a_mutation_in_doubt_raises_its_doubt_however_the_schedule_ends(cause):
+    """A later 429 says nothing of the first attempt, so a caller still checks."""
+    kube, pool = sdk_kube([DROPPED[cause](), (200, pod()), *[(429, {})] * 3])
+    waits = []
+    kube.sleep = waits.append
+    with pytest.raises((ConnectionDropped, rt.ApiError)) as failure:
+        kube.delete(pod())
+    assert methods(pool) == ["DELETE", "GET"] + ["DELETE"] * 3 and waits == [1, 2, 4]
+    if cause == "503":
+        assert failure.value.status == 503
+    else:
+        assert isinstance(failure.value, ConnectionDropped)
+    assert failure.value.__cause__.status == 429
+    # What exercise.delete_pod does with a transport failure or a 5xx.
+    pool.replies = iter([(200, pod(deletionTimestamp="2026-10-31T00:00:00Z"))])
+    assert kube.get("Pod", rt.SYSTEM, "owned")["metadata"]["deletionTimestamp"]
 
 
 def test_a_throttled_read_is_retried_and_a_persistent_throttle_still_fails():
@@ -2545,14 +3065,6 @@ def test_a_throttled_log_read_is_retried():
     assert len(pool.calls) == 2 and waits == [2]
 
 
-def test_a_throttled_mutation_is_not_retried():
-    kube, pool = sdk_kube([(429, {}, ("Retry-After", "1"))])
-    kube.sleep = lambda _delay: pytest.fail("A mutation was retried")
-    with pytest.raises(rt.ApiError, match="429"):
-        kube.delete(obj("Pod", "owned"))
-    assert len(pool.calls) == 1
-
-
 def test_a_proxied_flink_rest_read_is_not_retried():
     """Its 503 is the job's answer, which recovery windows classify themselves."""
     kube, pool = sdk_kube([(503, {})])
@@ -2577,16 +3089,11 @@ def test_a_proxied_flink_rest_read_is_not_retried():
 )
 def test_a_timed_out_read_is_not_retried(read):
     """Its timeout is already spent; repeating it multiplies that cost."""
-    kube, pool = sdk_kube([])
-
-    def timed_out(*args, **kwargs):
-        pool.calls.append((args, kwargs))
-        raise urllib3.exceptions.ReadTimeoutError(None, "/api", "Read timed out.")
-
-    pool.request = timed_out
+    kube, pool = sdk_kube([timeout()])
     kube.sleep = lambda _delay: pytest.fail("A timed-out read was retried")
-    with pytest.raises(TransportError, match="ReadTimeoutError"):
+    with pytest.raises(TransportError) as failure:
         read(kube)
+    assert not isinstance(failure.value, ConnectionDropped)
     assert len(pool.calls) == 1
 
 
@@ -3029,8 +3536,8 @@ def test_runner_admits_after_supervisor_readiness_and_settles_once(
     runner = lifecycle(env, cli.runner_api.Runner)
     create = env[0].create
 
-    def created(value, dry_run=False):
-        actual = create(value, dry_run)
+    def created(value, dry_run=False, before_repeat=None):
+        actual = create(value, dry_run, before_repeat=before_repeat)
         if not dry_run and value["kind"] == "Job":
             env[0].put(pod)
             heartbeat_as_supervisor(env, pod)
@@ -3138,25 +3645,25 @@ def ready_admission(env, monkeypatch, *, operator_ready=True):
     env[0].data.pop(("Pod", rt.SYSTEM, pod["metadata"]["name"]))
     env[0].data.pop(("Job", rt.SYSTEM, "supervisor"))
     seed_record(env, roots={})
-    create, request = env[0].create, env[0].request
+    create, patch = env[0].create, env[0].patch
 
-    def created(value, dry_run=False):
-        result = create(value, dry_run)
+    def created(value, dry_run=False, before_repeat=None):
+        result = create(value, dry_run, before_repeat=before_repeat)
         if value["kind"] == "Job" and not dry_run:
             env[0].put(pod)
             heartbeat_as_supervisor(env, pod)
         return result
 
-    def requested(method, path, *args, **kwargs):
-        result = request(method, path, *args, **kwargs)
-        if not operator_ready:
+    def patched(value, changes, subresource="", before_repeat=None):
+        result = patch(value, changes, subresource, before_repeat=before_repeat)
+        if not operator_ready and subresource:
             operator = env[0].get("Deployment", rt.SYSTEM, rt.OPERATOR)
             operator["status"]["readyReplicas"] = 0
             env[0].put(operator)
         return result
 
     monkeypatch.setattr(env[0], "create", created)
-    monkeypatch.setattr(env[0], "request", requested)
+    monkeypatch.setattr(env[0], "patch", patched)
     return supervisor, pod, lifecycle(env, cli.runner_api.Runner)
 
 
@@ -3182,12 +3689,7 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
     env, monkeypatch, stage, conflict
 ):
     supervisor, pod, runner = ready_admission(env, monkeypatch)
-    create, patch, request, delete = (
-        env[0].create,
-        env[0].patch,
-        env[0].request,
-        env[0].delete,
-    )
+    create, patch, delete = env[0].create, env[0].patch, env[0].delete
     interrupted = False
 
     def stop():
@@ -3207,33 +3709,26 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
         if conflict:
             raise rt.ApiError(409, "PATCH", "fixture")
 
-    def created(value, dry_run=False):
+    def created(value, dry_run=False, before_repeat=None):
         if (
             stage == "application"
             and value["kind"] == "FlinkDeployment"
             and not dry_run
         ):
             stop()
-        return create(value, dry_run)
+        return create(value, dry_run, before_repeat=before_repeat)
 
     def patched(value, changes, **kwargs):
-        if (
-            stage == "quota"
-            and not interrupted
-            and value["metadata"]["namespace"] == rt.SMOKE
+        if not interrupted and (
+            (stage == "quota" and value["metadata"]["namespace"] == rt.SMOKE)
+            or (
+                stage == "scale"
+                and kwargs.get("subresource")
+                and changes[-1]["value"] == 1
+            )
         ):
             stop()
         return patch(value, changes, **kwargs)
-
-    def requested(method, path, body=None, **kwargs):
-        if (
-            stage == "scale"
-            and not interrupted
-            and method == "PATCH"
-            and body[-1]["value"] == 1
-        ):
-            stop()
-        return request(method, path, body, **kwargs)
 
     def deleted(value, **kwargs):
         if value["kind"] == "FlinkDeployment":
@@ -3245,7 +3740,6 @@ def test_supervisor_stop_cannot_clean_ahead_of_inflight_admission(
 
     monkeypatch.setattr(env[0], "create", created)
     monkeypatch.setattr(env[0], "patch", patched)
-    monkeypatch.setattr(env[0], "request", requested)
     monkeypatch.setattr(env[0], "delete", deleted)
     with pytest.raises(rt.Failure):
         runner.start(
@@ -3357,8 +3851,8 @@ def test_config_creation_intent_pins_data_without_copying_source(
     config["data"] = {"runtime.py": "# Reviewed source.\n" * 10000}
     create = env[0].create
 
-    def created(value, dry_run=False):
-        result = create(value, dry_run)
+    def created(value, dry_run=False, before_repeat=None):
+        result = create(value, dry_run, before_repeat=before_repeat)
         if changed_data:
             result["data"]["runtime.py"] = "# Different source.\n"
             env[0].put(result)
@@ -3539,8 +4033,8 @@ def test_cli_start_settles_once_after_the_last_admission_call(
     )
     create = env[0].create
 
-    def created(value, dry_run=False):
-        result = create(value, dry_run)
+    def created(value, dry_run=False, before_repeat=None):
+        result = create(value, dry_run, before_repeat=before_repeat)
         if value["kind"] == "FlinkDeployment" and not dry_run:
             current = env[0].get("Job", rt.SYSTEM, "supervisor")
             current["status"]["succeeded"] = 1
@@ -3886,8 +4380,8 @@ def test_recorded_supervisor_uid_allows_cleanup_after_server_template_rewrite(
     }
     create = env[0].create
 
-    def rewritten(manifest, dry_run=False):
-        value = create(manifest, dry_run)
+    def rewritten(manifest, dry_run=False, before_repeat=None):
+        value = create(manifest, dry_run, before_repeat=before_repeat)
         value["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"][
             "cpu"
         ] = "500m"
