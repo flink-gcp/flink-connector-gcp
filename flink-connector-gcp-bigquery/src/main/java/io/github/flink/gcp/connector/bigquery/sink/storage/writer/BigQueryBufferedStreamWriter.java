@@ -43,6 +43,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -306,6 +307,9 @@ public class BigQueryBufferedStreamWriter<T>
             // A poison record must reach the handler no matter how the serializer fails,
             // without creating a stream (or auto-creating a table) it may never need.
             row = config.serialize(element, destination);
+        } catch (SchemaDerivationException e) {
+            // The destination's schema failure, not this record's; see SchemaDerivationException.
+            throw e;
         } catch (IOException | RuntimeException e) {
             metrics.rowFailed();
             failureHandler.handle(

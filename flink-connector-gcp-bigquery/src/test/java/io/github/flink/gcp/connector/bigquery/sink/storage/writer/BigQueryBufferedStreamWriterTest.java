@@ -43,6 +43,8 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaAdvancingSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryBufferedStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamCommittable;
@@ -66,6 +68,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /** Tests for {@link BigQueryBufferedStreamWriter} (happy path and stream lifecycle). */
 class BigQueryBufferedStreamWriterTest {
@@ -578,6 +581,54 @@ class BigQueryBufferedStreamWriterTest {
                         descriptor, service.appends.get(0).rows.getSerializedRows(0));
         assertThat(row.getField(descriptor.findFieldByName("value"))).isEqualTo("alpha");
         assertThat(row.getField(descriptor.findFieldByName("source"))).isEqualTo("computed-alpha");
+    }
+
+    /**
+     * A schema the serializer changes to while serializing a record is derived inside the
+     * row-failure boundary; a conflict in it is the destination's, so it fails the write rather
+     * than dropping the record (#1954).
+     */
+    @Test
+    void aSchemaConflictFoundWhileSerializingFailsTheWrite() throws Exception {
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        SchemaAdvancingSerializer serializer = new SchemaAdvancingSerializer();
+        RecordingHandler handler = new RecordingHandler();
+        BigQueryBufferedStreamSink<String> sink =
+                (BigQueryBufferedStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_EXACTLY_ONCE)
+                                .table(DESTINATION)
+                                .serializer(serializer)
+                                .failureHandler(handler)
+                                .bufferedStreamOptions(fastOptions(3))
+                                .additionalFields(
+                                        AdditionalFields.<String>builder()
+                                                .field(
+                                                        AdditionalField.of(
+                                                                "source",
+                                                                AdditionalFieldType.STRING,
+                                                                AdditionalFieldNullPolicy.REQUIRED,
+                                                                value -> "computed-" + value))
+                                                .build())
+                                .build();
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        sink.getConfig(),
+                        sink.getOptions(),
+                        service,
+                        BigQueryDefaultStreamWriterTest.NOOP_ADMIN);
+        writer.write("first", CONTEXT);
+        serializer.addColumnOnNextSerialize("source");
+
+        Throwable thrown = catchThrowable(() -> writer.write("second", CONTEXT));
+
+        // The handler first: had the record reached it, its failure says why.
+        assertThat(handler.rows).isEmpty();
+        assertThat(thrown)
+                .isInstanceOf(SchemaDerivationException.class)
+                .hasRootCauseMessage(
+                        "The physical BigQuery table schema must not declare additional field"
+                                + " source");
     }
 
     @Test

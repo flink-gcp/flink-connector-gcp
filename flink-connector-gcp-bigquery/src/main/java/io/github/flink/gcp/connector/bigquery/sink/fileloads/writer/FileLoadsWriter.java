@@ -40,6 +40,7 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittabl
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.slf4j.Logger;
@@ -228,6 +229,9 @@ public final class FileLoadsWriter<T>
             // A poison record must reach the handler no matter how the serializer fails,
             // matching the streaming writer's contract.
             rowBytes = config.serialize(element, destination);
+        } catch (SchemaDerivationException e) {
+            // The destination's schema failure, not this record's; see SchemaDerivationException.
+            throw e;
         } catch (IOException | RuntimeException e) {
             metrics.recordFailed(metrics.forTable(destination));
             config.getFailureHandler()

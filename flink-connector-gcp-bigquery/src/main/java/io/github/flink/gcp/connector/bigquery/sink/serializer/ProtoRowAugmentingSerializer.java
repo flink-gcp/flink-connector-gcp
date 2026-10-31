@@ -121,7 +121,13 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
                 descriptorFieldDescription);
     }
 
-    /** Serializes one row, preserving the delegate's {@code null} means skip contract. */
+    /**
+     * Serializes one row, preserving the delegate's {@code null} means skip contract.
+     *
+     * @throws SchemaDerivationException when the destination's schema, derived again after the
+     *     delegate serialized the element, failed to derive; the failure belongs to the
+     *     destination, not to the element
+     */
     @Nullable
     public ByteString serialize(T element, TableDestination destination) throws IOException {
         ByteString serialized = delegate.serialize(element);
@@ -129,7 +135,16 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
             return null;
         }
 
-        SchemaSurfaces surfaces = schemaSurfaces(destination);
+        SchemaSurfaces surfaces;
+        try {
+            surfaces = schemaSurfaces(destination);
+        } catch (RuntimeException e) {
+            // After prepare(destination), the cache misses here when the delegate changed its
+            // fingerprint while serializing this element, or when the weakly held entry was
+            // collected. Either way the derivation depends on the destination and the delegate,
+            // never on the element, so its failure is the one prepare() would have failed on.
+            throw new SchemaDerivationException(destination, e);
+        }
         DynamicMessage.Builder row =
                 DynamicMessage.newBuilder(surfaces.descriptor).mergeFrom(serialized);
         for (int i = 0; i < fields.size(); i++) {

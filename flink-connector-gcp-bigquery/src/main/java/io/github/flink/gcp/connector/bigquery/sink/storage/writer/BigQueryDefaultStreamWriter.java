@@ -47,6 +47,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.tables.PrimaryKeyColumn;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
@@ -470,6 +471,9 @@ public class BigQueryDefaultStreamWriter<T>
             // auto-creating a table) for a destination that may never receive a row. Resolver
             // failures, by contrast, are configuration errors and propagate.
             row = config.serialize(element, destination);
+        } catch (SchemaDerivationException e) {
+            // The destination's schema failure, not this record's; see SchemaDerivationException.
+            throw e;
         } catch (IOException | RuntimeException e) {
             metrics.rowFailed(metrics.forTable(destination));
             failureHandler.handle(

@@ -45,6 +45,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
 import io.github.flink.gcp.connector.testutils.TestContexts;
@@ -61,6 +62,7 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
  * Tests that a row serialized before the serializer schema evolves keeps its appended fields — the
@@ -91,6 +93,7 @@ class BigQueryDefaultStreamWriterAugmentedEvolutionTest {
         private TableSchema schema =
                 TableSchema.newBuilder().addFields(column("k")).addFields(column("v")).build();
         private int newColumnNumber;
+        private int pendingColumnNumber;
         private int version;
         private transient Descriptors.Descriptor descriptor;
 
@@ -107,6 +110,11 @@ class BigQueryDefaultStreamWriterAugmentedEvolutionTest {
             newColumnNumber = fieldNumber;
             version++;
             descriptor = null;
+        }
+
+        /** Makes the next {@link #serialize(String)} call {@link #addColumn(int)} first. */
+        void addColumnOnNextSerialize(int fieldNumber) {
+            pendingColumnNumber = fieldNumber;
         }
 
         @Override
@@ -158,6 +166,10 @@ class BigQueryDefaultStreamWriterAugmentedEvolutionTest {
 
         @Override
         public ByteString serialize(String element) {
+            if (pendingColumnNumber != 0) {
+                addColumn(pendingColumnNumber);
+                pendingColumnNumber = 0;
+            }
             String[] parts = element.split(":", 2);
             Descriptors.Descriptor d = getDescriptor(DESTINATION);
             return DynamicMessage.newBuilder(d)
@@ -365,5 +377,38 @@ class BigQueryDefaultStreamWriterAugmentedEvolutionTest {
                                 + " to "
                                 + (CEILING - 1));
         assertThat(factory.rows).isEmpty();
+    }
+
+    /**
+     * The same evolution, made by the serializer while it serializes a record, is derived inside
+     * the row-failure boundary, and still fails the write rather than dropping the record (#1954).
+     */
+    @Test
+    void anEvolutionTakingAnAppendedFieldNumberWhileSerializingFailsTheWrite() throws Exception {
+        GrowingSerializer serializer = new GrowingSerializer();
+        DecodingFactory factory = new DecodingFactory();
+        BigQueryBufferedStreamWriterTest.RecordingHandler handler =
+                new BigQueryBufferedStreamWriterTest.RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        serializer,
+                        factory,
+                        handler,
+                        BigQueryDefaultStreamWriterAugmentedEvolutionTest::cdc);
+        writer.write("a:1", CONTEXT);
+        serializer.addColumnOnNextSerialize(CEILING);
+
+        Throwable thrown = catchThrowable(() -> writer.write("b:2", CONTEXT));
+
+        // The handler first: had the record reached it, its failure says why.
+        assertThat(handler.rows).isEmpty();
+        assertThat(thrown)
+                .isInstanceOf(SchemaDerivationException.class)
+                .rootCause()
+                .hasMessageContaining(
+                        "moves BigQuery CDC pseudocolumn _change_type from field number "
+                                + CEILING
+                                + " to "
+                                + (CEILING - 1));
     }
 }
