@@ -18,19 +18,30 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-10-31 (the default stream measured 2026-10-31 against the service from a workstation,
-  dataset in `us-central1`)
-- Issues: [#1945], [#1618], [#1936], [#1959]
+  dataset in `us-central1`); rationale refined 2026-10-31 ([#1965])
+- Issues: [#1945], [#1618], [#1936], [#1959], [#1965]
 - Modules: bigquery (`sink.cdc`, `sink.storage.writer`, `sink.tables`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md` § Change data capture;
   `docs/content/docs/connectors/datastream/bigquery.md` § Change data capture and § Commit order
 
 ## Context
 
-[ADR-0110] and [ADR-0111] made the `_CHANGE_SEQUENCE_NUMBER` pseudocolumn optional.
-Without it, BigQuery orders one primary key's mutations by the time it ingests them, and its
-[CDC documentation](https://docs.cloud.google.com/bigquery/docs/change-data-capture#manage_custom_ordering)
-warns that this "might not be sufficient" when a key is upserted frequently in a short window, in
-which case "a user-supplied ordering key might be necessary".
+[ADR-0110] and [ADR-0111] made the `_CHANGE_SEQUENCE_NUMBER` pseudocolumn optional, as the service
+does.
+BigQuery's [CDC documentation](https://docs.cloud.google.com/bigquery/docs/change-data-capture)
+calls the pseudocolumn "an optional column" and says that without it the service orders one primary
+key's mutations by "the BigQuery system time".
+The rows its UPSERT and DELETE example streams carry `_CHANGE_TYPE` as their only pseudocolumn, and
+each of the example's three keys changes once.
+A sequence-less CDC write is therefore the vendor's documented default.
+The same page's [custom ordering section](https://docs.cloud.google.com/bigquery/docs/change-data-capture#manage_custom_ordering)
+warns that system-time ordering "might not be sufficient" when a key is upserted frequently in a
+short window or "where the upsert order is not guaranteed", in which case "a user-supplied ordering
+key might be necessary".
+Apache Beam's `BigQueryIO`, the BigQuery connector a Dataflow pipeline writes through, requires one:
+its [`RowMutationInformation`](https://beam.apache.org/releases/javadoc/current/org/apache/beam/sdk/io/gcp/bigquery/RowMutationInformation.html)
+states that "A sequence number must always be supplied to order the updates", both of its factory
+methods take a sequence, and the `String` form rejects a null or empty value.
 
 [ADR-0192] measured the consequence inside one append request: the first of a key's changes won
 for all 1,504 keys tried.
@@ -49,6 +60,13 @@ within one request's worth of rows still kept its older value, with no failure a
   worth supporting: the measurement below shows that the sink cannot make ingestion order follow
   arrival order except by waiting a round trip, and the input the CDC path is designed for, a
   Debezium-format changelog, carries a sequence through the built-in profiles.
+  The owner re-examined the decision against the vendor's sequence-less default on 2026-10-31
+  ([#1965]) and kept it.
+  In the measurement below, two changes of one key in one request resolved to the first, and only
+  requests awaited one at a time left the last change in place, so the system-time order the
+  documentation describes is not the order of rows within a request; a Flink sink puts many rows
+  into one request where the vendor's example changes each key once, and Beam's connector requires
+  a sequence too (Context).
   Any other source supplies, through `change-sequence-number` or a custom
   `CdcSequenceNumberProvider`, a value that never repeats for one primary key and grows with each
   of its changes, such as a nanosecond timestamp or an increasing ID.
@@ -143,6 +161,15 @@ Read from source and planned on 2026-10-31:
   A sequence orders all of those cases without the writer.
 - **Keeping the sequence optional and documenting the gap.** It leaves a key changed twice within
   one request silently at its older value under the default mode, which no metric shows.
+  It is the vendor's documented default (Context), so the owner re-examined it on 2026-10-31
+  ([#1965]) and kept the requirement on the Decision's grounds.
+- **Accepting a sequence-less CDC write only under `PER_TABLE`** (owner, 2026-10-31, [#1965]).
+  The split and the await already exist for that mode, and the split-and-await rows above left no
+  key at an older value.
+  It was declined because the await orders only what one subtask has in flight, so the gaps the
+  `NONE` variant above names remain, at one round trip per repeat (34–35 s for one key changed 200
+  times above), and because it would add a second documented behaviour for an input the built-in
+  profiles never produce.
 - **A new ordering mode for sequence-less CDC** (owner, 2026-10-31). The mode would exist to repair
   an input this decision no longer accepts; `PER_TABLE` already orders commits for CDC and
   append-only tables alike.
@@ -172,6 +199,7 @@ Read from source and planned on 2026-10-31:
 [#1936]: https://github.com/flink-gcp/flink-connector-gcp/issues/1936
 [#1945]: https://github.com/flink-gcp/flink-connector-gcp/issues/1945
 [#1959]: https://github.com/flink-gcp/flink-connector-gcp/issues/1959
+[#1965]: https://github.com/flink-gcp/flink-connector-gcp/issues/1965
 [ADR-0110]: 0110-bigquery-cdc-augments-default-stream-rows-without-changing-the-table-schema.md
 [ADR-0111]: 0111-the-bigquery-table-sink-maps-upsert-changelogs-and-keeps-cdc-metadata-out-of-the-schema.md
 [ADR-0169]: 0169-the-bigquery-catalog-maps-a-projects-datasets-and-rest-schemas-to-flink-tables.md
