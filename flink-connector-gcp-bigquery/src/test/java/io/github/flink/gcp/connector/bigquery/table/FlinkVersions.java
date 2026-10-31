@@ -64,7 +64,7 @@ final class FlinkVersions {
      * <p>True from 2.3 onwards. The floor (2.2) and the 1.x LTS resolve a declared {@code TIME(p)}
      * to {@code TIME(0)} before the connector sees the schema, and 2.3 was the release that
      * stopped. Flink promises none of this, so it is measured instead: the weekly matrix covers
-     * 1.20.4, 2.2.1 and 2.3.0, and its {@code next} row covers {@code 2.4-SNAPSHOT}. That the
+     * 1.20.5, 2.2.1 and 2.3.0, and its {@code next} row covers {@code 2.4-SNAPSHOT}. That the
      * versions after those keep 2.3's behaviour is what this predicate assumes rather than
      * something anyone has measured — and the {@code next} row is what would catch it if a release
      * changed course, which is the whole reason the boundary lives in one place.

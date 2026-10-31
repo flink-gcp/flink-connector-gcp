@@ -48,7 +48,7 @@ documentation site.
 The Flink range mirrors Flink's own support policy — the current and the previous minor
 release — so a new Flink minor moves both ends of the range. Moving it is a deliberate change
 backed by a weekly build over every supported version, never an automatic bump. Flink 1.20 is
-supported from the same source (`just verify-flink 1.20.4` builds and tests for it) and its
+supported from the same source (`just verify-flink 1.20.5` builds and tests for it) and its
 lane is verified on Java 17 — the Java 21 row is a 2.x claim. Java 11 is not supported even
 though Flink 2.x declares it.
 See [Supported versions](https://flink-gcp.github.io/flink-connector-gcp/#supported-versions)

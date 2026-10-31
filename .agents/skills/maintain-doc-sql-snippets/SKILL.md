@@ -136,7 +136,7 @@ page, file and tag. Temporarily make one GoogleSQL statement invalid and require
 test to fail. Restore the committed baseline after every probe. Inspect rendered HTML to confirm it
 contains the SQL region but excludes the licence header and marker comments.
 
-Because the planner APIs differ across supported Flink versions, run `just verify-flink 1.20.4
+Because the planner APIs differ across supported Flink versions, run `just verify-flink 1.20.5
 -Pdocs-snippets` when the validation harness or SQL syntax changes. That profile-only build checks
 the version-sensitive planner boundary; `just check-doc-sql-snippets` separately owns the
 version-independent rendered-site inventory.
