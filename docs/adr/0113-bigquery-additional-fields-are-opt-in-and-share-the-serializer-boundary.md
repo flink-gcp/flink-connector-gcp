@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0113: BigQuery additional fields are opt-in and share the serializer boundary
 
 - Status: Accepted
-- Date: 2026-08-14
-- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641)
+- Date: 2026-08-14; refined 2026-10-31 ([#1950])
+- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#additional-physical-fields`
 
@@ -130,3 +130,42 @@ The option is absent by default, so existing sinks retain their exact serializer
 Configured fields participate in table creation, schema reconciliation, protobuf conversion and
 file staging as ordinary BigQuery columns.
 CDC keeps its separate default-stream-only API and its two pseudocolumns remain write-only.
+
+## Revision: appended field numbers survive schema evolution (2026-10-31)
+
+[#1950] found that the engine numbered the appended fields from the base descriptor's highest field number, so the numbers followed the base.
+Both Storage Write API writers append a row serialized before a fingerprint change through a stream writer rebuilt with the evolved descriptor, without re-encoding it.
+The default-stream writer does so for the rows pending at the rebuild and for the failed batches a repair re-sends.
+The buffered writer drains the old rows under the old descriptor first, but a schema mismatch during that drain reopens the appender with the serializer's current descriptor and re-sends them under it.
+When the base appended a column, as the serializer contract asks, the column took the number an appended field had held and every appended field moved up by one.
+Writer tests reproduced it on both writers: a retained CDC row arrived with its `_CHANGE_TYPE` value in the new column and no change type, and a retained row with a `REQUIRED` additional field no longer parsed.
+
+**The appended fields count down from 262,143** (`2^18 - 1`, the highest field number whose tag still encodes in three bytes), in declaration order, skipping the base's own field numbers, protobuf's reserved 19,000 to 19,999, and the message's reserved and extension ranges.
+A base that appends its fields after its highest number reaches one of them only once that number nears the ceiling, which a descriptor numbered from one does past 261,000 fields; [a BigQuery table holds at most 10,000 columns](https://docs.cloud.google.com/bigquery/quotas).
+A message whose extension range covers the ceiling, such as proto2's `extensions 100 to max`, gets the numbers just below that range, which its own fields reach sooner; the numbering it had before always followed its fields, so this is no regression, and the check below covers it.
+A message with no free number at or below the ceiling, for example one reserving `1` to `262,143`, gets the free numbers above both the ceiling and its own highest field, as the old numbering would have given it, rather than a refusal; those numbers follow its highest field, so an evolution that adds a field above it moves them and fails the write through the check below.
+The numbers therefore stay fixed across additive evolution, which is what keeps the writer Javadoc's claim, that previously serialized bytes stay valid under the new descriptor, true for the augmented row as well as the serializer's.
+
+**An evolution that still moves an appended field fails the job.**
+When a destination's fingerprint changes, the engine compares each appended field's new number with the one it held and throws if they differ, naming the field and the numbers the base must leave as they were.
+The writers derive the schema in `prepare`, before the row-failure boundary, so a failure policy does not see the failure when the fingerprint changed between records.
+A serializer that changes its fingerprint while serializing a record reaches the derivation inside `serialize` instead, where the failure counts as that record's, and the job fails only when the destination's next record arrives.
+The collision checks the engine already ran at derivation share that path.
+The check is per process: a restarted task holds no retained rows and derives the evolved descriptor afresh, so it does not fail again, while a serializer that reaches the same evolution again after every restart fails each time until its numbering changes.
+The comparison does not use the weakly keyed schema cache, whose key is whichever equal destination object derived the entry first: a writer retaining rows need not hold that object, so the entry can be collected while rows remain, for example when a resolver returns a fresh destination per record and the first record was skipped.
+The numbers each destination was first given are kept instead in a strongly held map, keyed by the destination's table path so that the cache's weak key stays collectable, and only for serializers that report a fingerprint, the only ones that can evolve.
+An entry is a few integers per destination and is not released when a writer evicts the destination.
+
+The alternatives were weighed as follows.
+
+- **Keep the previous numbers per destination and allocate only new ones.**
+  The base takes the colliding number in exactly the case at issue, so the appended field would have to move anyway.
+- **Re-encode retained rows under the new descriptor.**
+  The writers keep bytes, not records, and the default stream's retry and repair paths would each need the old descriptor to decode them.
+- **Refuse to rebuild while rows are retained.**
+  It would turn every additive evolution on a CDC or additional-fields sink into a job failure.
+- **Count down from the top of the field-number space.**
+  Tags above `2^25` take five bytes, two more per appended field per row than below `2^18`, for no gain in the case the ceiling already covers.
+  The chosen ceiling itself costs up to two bytes per appended field per row over the old numbering, whose tags took one or two bytes below 2,048 base fields; a two-byte ceiling (`2^11 - 1`, 2,047) would sit inside the reach of a table's 10,000 columns.
+
+[#1950]: https://github.com/flink-gcp/flink-connector-gcp/issues/1950

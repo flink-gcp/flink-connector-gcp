@@ -29,21 +29,25 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ProtoDescriptorAugmenterTest {
 
+    private static final int CEILING = ProtoDescriptorAugmenter.AUGMENTATION_CEILING;
+
+    private static final int MAX_FIELD_NUMBER = (1 << 29) - 1;
+
     @Test
     void preservesNestedPlacementAndDependenciesWhileAllocatingFieldNumbers() throws Exception {
         Descriptors.FileDescriptor dependency = dependency();
         DescriptorProto row =
                 DescriptorProto.newBuilder()
                         .setName("Row")
-                        .addField(messageField("shared", 18_999, ".dependency.Shared"))
+                        .addField(messageField("shared", CEILING, ".dependency.Shared"))
                         .addReservedRange(
                                 DescriptorProto.ReservedRange.newBuilder()
-                                        .setStart(20_000)
-                                        .setEnd(20_002))
+                                        .setStart(CEILING - 2)
+                                        .setEnd(CEILING))
                         .addExtensionRange(
                                 DescriptorProto.ExtensionRange.newBuilder()
-                                        .setStart(20_002)
-                                        .setEnd(20_004))
+                                        .setStart(CEILING - 4)
+                                        .setEnd(CEILING - 2))
                         .build();
         DescriptorProto envelope =
                 DescriptorProto.newBuilder().setName("Envelope").addNestedType(row).build();
@@ -72,8 +76,180 @@ class ProtoDescriptorAugmenterTest {
         assertThat(augmented.getFile().getDependencies())
                 .extracting(Descriptors.FileDescriptor::getName)
                 .containsExactly("dependency.proto");
-        assertThat(augmented.findFieldByName("first").getNumber()).isEqualTo(20_004);
-        assertThat(augmented.findFieldByName("second").getNumber()).isEqualTo(20_005);
+        // Counted down from the ceiling, past the base field, the reserved and the extension range.
+        assertThat(augmented.findFieldByName("first").getNumber()).isEqualTo(CEILING - 5);
+        assertThat(augmented.findFieldByName("second").getNumber()).isEqualTo(CEILING - 6);
+    }
+
+    @Test
+    void appendedFieldNumbersDoNotFollowTheBaseFields() throws Exception {
+        List<FieldDescriptorProto> additions =
+                List.of(
+                        field("first", FieldDescriptorProto.Type.TYPE_STRING),
+                        field("second", FieldDescriptorProto.Type.TYPE_INT64));
+
+        Descriptors.Descriptor before =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(optionalField("a", 1), optionalField("b", 2)),
+                        additions,
+                        "test field");
+        Descriptors.Descriptor after =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(
+                                optionalField("a", 1),
+                                optionalField("b", 2),
+                                optionalField("c", 3)),
+                        additions,
+                        "test field");
+
+        // The column the base appended takes number 3, which no appended field holds, so a row
+        // serialized under the first descriptor reads the same under the second.
+        assertThat(before.findFieldByName("first").getNumber()).isEqualTo(CEILING);
+        assertThat(before.findFieldByName("second").getNumber()).isEqualTo(CEILING - 1);
+        assertThat(after.findFieldByName("first").getNumber()).isEqualTo(CEILING);
+        assertThat(after.findFieldByName("second").getNumber()).isEqualTo(CEILING - 1);
+    }
+
+    @Test
+    void takesAFreeNumberAboveATakenOne() throws Exception {
+        Descriptors.Descriptor augmented =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(optionalField("id", CEILING - 1)),
+                        List.of(
+                                field("first", FieldDescriptorProto.Type.TYPE_STRING),
+                                field("second", FieldDescriptorProto.Type.TYPE_INT64)),
+                        "test field");
+
+        assertThat(augmented.findFieldByName("first").getNumber()).isEqualTo(CEILING);
+        assertThat(augmented.findFieldByName("second").getNumber()).isEqualTo(CEILING - 2);
+    }
+
+    @Test
+    void rangeEndsAreFreeNumbers() throws Exception {
+        DescriptorProto row =
+                DescriptorProto.newBuilder()
+                        .setName("Row")
+                        .addField(optionalField("id", 1))
+                        .addReservedRange(
+                                DescriptorProto.ReservedRange.newBuilder()
+                                        .setStart(CEILING - 2)
+                                        .setEnd(CEILING))
+                        .addExtensionRange(
+                                DescriptorProto.ExtensionRange.newBuilder()
+                                        .setStart(CEILING - 5)
+                                        .setEnd(CEILING - 3))
+                        .build();
+
+        Descriptors.Descriptor augmented =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(row),
+                        List.of(
+                                field("first", FieldDescriptorProto.Type.TYPE_STRING),
+                                field("second", FieldDescriptorProto.Type.TYPE_STRING),
+                                field("third", FieldDescriptorProto.Type.TYPE_STRING)),
+                        "test field");
+
+        // A DescriptorProto range's end is exclusive, so each range's end is free.
+        assertThat(augmented.findFieldByName("first").getNumber()).isEqualTo(CEILING);
+        assertThat(augmented.findFieldByName("second").getNumber()).isEqualTo(CEILING - 3);
+        assertThat(augmented.findFieldByName("third").getNumber()).isEqualTo(CEILING - 6);
+    }
+
+    @Test
+    void skipsTheProtobufReservedRangeBelowAnExtensionRange() throws Exception {
+        DescriptorProto row =
+                DescriptorProto.newBuilder()
+                        .setName("Row")
+                        .addField(optionalField("id", 18_999))
+                        .addExtensionRange(
+                                DescriptorProto.ExtensionRange.newBuilder()
+                                        .setStart(20_000)
+                                        .setEnd(MAX_FIELD_NUMBER + 1))
+                        .build();
+
+        Descriptors.Descriptor augmented =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(row),
+                        List.of(field("added", FieldDescriptorProto.Type.TYPE_STRING)),
+                        "test field");
+
+        assertThat(augmented.findFieldByName("added").getNumber()).isEqualTo(18_998);
+    }
+
+    @Test
+    void countsUpAboveTheBaseWhenNothingAtOrBelowTheCeilingIsFree() throws Exception {
+        DescriptorProto row =
+                DescriptorProto.newBuilder()
+                        .setName("Row")
+                        .addField(optionalField("id", 300_000))
+                        .addReservedRange(
+                                DescriptorProto.ReservedRange.newBuilder()
+                                        .setStart(1)
+                                        .setEnd(CEILING + 1))
+                        .build();
+
+        Descriptors.Descriptor augmented =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(row),
+                        List.of(
+                                field("first", FieldDescriptorProto.Type.TYPE_STRING),
+                                field("second", FieldDescriptorProto.Type.TYPE_STRING)),
+                        "test field");
+
+        assertThat(augmented.findFieldByName("first").getNumber()).isEqualTo(300_001);
+        assertThat(augmented.findFieldByName("second").getNumber()).isEqualTo(300_002);
+    }
+
+    @Test
+    void countsUpAboveTheCeilingOnceTheFreeNumbersBelowItRunOut() throws Exception {
+        DescriptorProto row =
+                DescriptorProto.newBuilder()
+                        .setName("Row")
+                        .addField(optionalField("id", 1))
+                        .addReservedRange(
+                                DescriptorProto.ReservedRange.newBuilder()
+                                        .setStart(3)
+                                        .setEnd(CEILING + 2))
+                        .build();
+
+        Descriptors.Descriptor augmented =
+                ProtoDescriptorAugmenter.augment(
+                        descriptor(row),
+                        List.of(
+                                field("first", FieldDescriptorProto.Type.TYPE_STRING),
+                                field("second", FieldDescriptorProto.Type.TYPE_STRING)),
+                        "test field");
+
+        // Number 2 is the only free one at or below the ceiling; the ceiling's successor is
+        // reserved too, so the second field lands just above the reserved range.
+        assertThat(augmented.findFieldByName("first").getNumber()).isEqualTo(2);
+        assertThat(augmented.findFieldByName("second").getNumber()).isEqualTo(CEILING + 2);
+    }
+
+    @Test
+    void failsWhenNoFieldNumberIsLeft() throws Exception {
+        DescriptorProto row =
+                DescriptorProto.newBuilder()
+                        .setName("Row")
+                        .addExtensionRange(
+                                DescriptorProto.ExtensionRange.newBuilder()
+                                        .setStart(1)
+                                        .setEnd(MAX_FIELD_NUMBER + 1))
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                ProtoDescriptorAugmenter.augment(
+                                        descriptor(row),
+                                        List.of(
+                                                field(
+                                                        "added",
+                                                        FieldDescriptorProto.Type.TYPE_STRING)),
+                                        "test field"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(
+                        "The protobuf row descriptor has no field number available for"
+                                + " augmentation");
     }
 
     @Test
@@ -130,8 +306,11 @@ class ProtoDescriptorAugmenterTest {
 
     private static Descriptors.Descriptor descriptor(FieldDescriptorProto... fields)
             throws Exception {
-        DescriptorProto row =
-                DescriptorProto.newBuilder().setName("Row").addAllField(List.of(fields)).build();
+        return descriptor(
+                DescriptorProto.newBuilder().setName("Row").addAllField(List.of(fields)).build());
+    }
+
+    private static Descriptors.Descriptor descriptor(DescriptorProto row) throws Exception {
         Descriptors.FileDescriptor file =
                 Descriptors.FileDescriptor.buildFrom(
                         FileDescriptorProto.newBuilder()

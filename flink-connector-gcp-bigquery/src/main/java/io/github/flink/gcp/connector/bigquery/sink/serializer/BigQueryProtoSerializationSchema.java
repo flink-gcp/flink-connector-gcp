@@ -108,7 +108,10 @@ public abstract class BigQueryProtoSerializationSchema<T> implements Serializabl
      * bytes and are never re-encoded, so an evolved schema must keep previously serialized bytes
      * valid. Appending new fields (at the end, including inside nested types) and relaxing {@code
      * REQUIRED} fields to {@code NULLABLE} are wire-compatible; removing, reordering or re-typing
-     * fields is not and leads to corrupt rows or failed appends.
+     * fields is not and leads to corrupt rows or failed appends. Fields the sink adds to the row
+     * itself, such as additional fields or CDC pseudocolumns, take numbers that an appending schema
+     * does not normally reach (the sink documentation states which); a schema change that gives a
+     * new field one of those numbers fails the write rather than misreading earlier rows.
      *
      * @param destination the destination table
      * @return the schema fingerprint, or {@code null} for static schemas

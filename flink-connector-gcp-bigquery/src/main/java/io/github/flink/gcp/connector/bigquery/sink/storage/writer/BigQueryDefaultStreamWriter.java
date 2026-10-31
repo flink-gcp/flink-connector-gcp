@@ -147,7 +147,9 @@ import java.util.function.LongSupplier;
  * <p>Retained batches are serialized bytes and are never re-encoded; rebuilding writers relies on
  * the serializer evolving additively (see {@code
  * BigQueryProtoSerializationSchema#getSchemaFingerprint}), which keeps previously serialized bytes
- * valid under the new descriptor.
+ * valid under the new descriptor. The CDC pseudocolumns and additional fields the sink appends to
+ * those bytes keep their field numbers across such an evolution, and an evolution that would move
+ * one fails the write instead ({@code ProtoDescriptorAugmenter}, ADR-0113).
  *
  * <p>(The schema-evolution mechanics — update-on-error with a bounded jittered wait for schema
  * propagation, the proactive local pre-check, and the coordinator-free concurrent updates — are
