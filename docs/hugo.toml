@@ -47,8 +47,9 @@ title = "GCP Connectors for Apache Flink"
   # ignoreImports drops all of its imports (today only Hugo Book), which the
   # import below replaces so that the site publishes only the theme files it
   # uses. Hugo Book's KaTeX, Mermaid and asciinema-player features are left out:
-  # their bundles carry no notice, KaTeX's fonts are under the SIL OFL, and the
-  # Mermaid and asciinema-player bundles compile in third-party dependencies.
+  # their bundles carry no notice of their own, KaTeX's fonts are under the SIL
+  # OFL, and the Mermaid and asciinema-player bundles compile in third-party
+  # dependencies.
   # With their shortcodes and code-block hooks excluded, such a shortcode fails
   # the build and such a code block renders as plain code; neither links a file
   # the site does not publish.
