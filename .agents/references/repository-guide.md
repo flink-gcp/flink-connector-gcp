@@ -296,8 +296,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   a broken `relref` or a missing shortcode fails the build) and preview it.
   `mise.toml` pins hugo-extended and Go; the shared design module and its Hugo Book dependency
   resolve through `docs/go.mod` and `docs/go.sum`. Regenerate palettes in flink-gcp-dev-tools,
-  then update this site's module pin. These build the hand-written pages only; the generated half is
-  `just docs-javadoc` (below), which the docs workflow runs first
+  then update this site's module pin. A pin that moves Hugo Book fails `just docs` until the
+  site licenses page documents the new version (see Licensing and provenance). These build the
+  hand-written pages only; the generated half is `just docs-javadoc` (below), which the docs
+  workflow runs first
 - `just docs-javadoc` — the aggregated JavaDoc that ships as the site's API reference (#88;
   ADR-0056), into `docs/static/api/java`, which Hugo copies verbatim (gitignored, rat-excluded).
   The one correct bare goal in this repository; the exemption from the licence-goal rule above
@@ -956,6 +958,11 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   from how much has changed, and where the audit leaves room for judgement the notice stays;
   `docs/adr/0123` records that audit, the four files it retired and why
   the rest keep theirs
+- **The documentation site carries notices for the theme files it publishes.** A change that
+  publishes another third-party file on the site, enables a Hugo Book feature the site excludes,
+  or moves Hugo Book updates `docs/content/docs/licenses.md` by the procedure in the contributing
+  guide's shared-development-assets section; ADR-0164 records why the KaTeX, Mermaid and
+  asciinema-player bundles are not published
 - Files written for this project carry the plain Apache-2.0 header. Files copied from Apache
   projects keep their ASF header.
   Apache RAT enforces the approved licence families over the whole tree (configuration overridden

@@ -100,6 +100,12 @@ The shared repository also maintains the search readiness guard and its regressi
 This repository owns its content, source-snippet mounts and shortcodes, Javadoc, version assembly and Pages workflow.
 Validate a module update with `just docs` and compare the affected pages in both color schemes.
 Local assets or partials override module files, so avoid reintroducing copies of the shared theme files.
+`docs/hugo.toml` ignores the design module's own imports, imports Hugo Book after it, and publishes from Hugo Book's `static/` directory only the two favicons and the Fuse.js module.
+Hugo Book's KaTeX, Mermaid and asciinema-player features are excluded, so their shortcodes fail the build; enabling one means mounting its files and adding every notice its bundle owes first, including those of the dependencies it compiles in.
+The hidden [site licenses]({{< relref "docs/licenses" >}}) page carries the notices for what the site publishes and names the Hugo Book version it documents; `just docs` fails when the site resolves another version or a replacement.
+When the design module pin moves, check that its `hugo.toml` still imports nothing but Hugo Book, and that its templates reference no Hugo Book static file beyond those published.
+When Hugo Book moves, compare its `assets/`, `layouts/`, `i18n/` and published static files between the two tags, update each affected section of the page from the upstream license at the new version, and then change the version the page names.
+A third-party file that the design module adds itself needs a section too, which no check catches.
 
 ## Licensing and attribution
 
