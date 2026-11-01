@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0164: Workflow skills and documentation design come from dev-tools
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01)
-- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984)
+- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01) and [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990) (2026-11-01)
+- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990)
 - Modules: all (workflow), docs
 - Current behavior: [Contributing](../content/docs/development/contributing.md#shared-development-assets)
 
@@ -74,6 +74,12 @@ License 1.1, and the Mermaid and asciinema-player bundles compile in third-party
 The hidden site licenses page carries the notices for what is published, and its `hugo-book-version`
 shortcode fails the build when the resolved Hugo Book version differs from the documented one or when a
 module replacement or vendored copy substitutes other files.
+The page lists the notices of what the site distributes directly: the theme and the components it ships as
+their own files or compiled styles, each checked against its own license.
+It does not follow those components further, so code compiled inside one, output that a tool generates,
+and values a component borrows stay off the page, such as the Lodash helpers inside Fuse.js, the Chroma
+styles Hugo generates the code palettes from, the scripts the JDK's javadoc bundles with the API
+reference, and the Nord colours in Hugo Book's dark theme; that trail has no natural end.
 Release lines built from earlier tags keep their full theme `static/` directory until they leave the
 retention window.
 
