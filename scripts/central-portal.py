@@ -48,7 +48,10 @@ UPLOAD = re.compile(
 STATES = {"PENDING", "VALIDATING", "VALIDATED", "PUBLISHING", "PUBLISHED", "FAILED"}
 BASE_URL = "https://central.sonatype.com/api/v1/publisher"
 REQUEST_TIMEOUT = 30
-WAIT_TIMEOUT = 1800
+# v1.3.0's two deployments stayed PUBLISHING for about 2.5 hours (#1968), 1.1.0's for about
+# 14 minutes. A longer publication fails the release workflow's publish job, which
+# "Re-run failed jobs" resumes with the same IDs (#1980).
+WAIT_TIMEOUT = 3 * 60 * 60
 POLL_INTERVAL = 5
 
 
@@ -218,7 +221,8 @@ def publish(portal: Portal, ids: list[str]) -> None:
         if remaining:
             if time.monotonic() >= deadline:
                 raise PortalError(
-                    "publication wait timed out; resume with the same deployment IDs"
+                    "publication wait timed out; resume with the same deployment IDs "
+                    "(in the release workflow, Re-run failed jobs)"
                 )
             time.sleep(POLL_INTERVAL)
     summary("All requested Central deployments are PUBLISHED.")

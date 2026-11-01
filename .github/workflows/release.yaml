@@ -16,12 +16,13 @@ name: Release
 
 # A tag stages both version lines, publishes only after both are VALIDATED,
 # and creates the GitHub Release after both are PUBLISHED (#1185, ADR-0147).
+# The three are separate jobs, so a run that fails after staging is finished
+# with "Re-run failed jobs": the failed publication or Release job runs again
+# with the staged deployment IDs, and staging never repeats (#1980).
 # workflow_dispatch is the dry run for both lines: mode rehearse (the default,
 # #1818) builds and inspects both bundles without uploading them, and mode
-# validate uploads both, waits for validation and drops them. Its event guard
-# prevents publication even when the dispatch targets a tag.
-# Publish requests are separate operations. Recovery after publication starts
-# uses the saved deployment IDs, not another staging run (see ADR-0147).
+# validate uploads both, waits for validation and drops them. The publication
+# jobs' event guard prevents publication even when the dispatch targets a tag.
 on:
   push:
     tags:
@@ -65,8 +66,10 @@ concurrency:
   group: release
   cancel-in-progress: false
 
-# The default token is dropped entirely at the workflow level; the one job
-# re-grants the single scope the GitHub Release step needs.
+# The default token is dropped entirely at the workflow level; each job
+# re-grants only what it needs. No job holds both the Central token and a
+# write scope: staging reads, and only the Release job, which holds no
+# release secret, writes.
 permissions: {}
 
 jobs:
@@ -75,7 +78,8 @@ jobs:
     # immutable repository ID, not the owner name, for the reason e2e.yaml
     # records (a transfer or rename switches a name guard off silently).
     if: github.repository_id == '1305440656'
-    name: Validate both lines and release
+    # The re-run guard below matches this name in the previous attempt.
+    name: Stage and validate both lines
     # The release secrets live only in this environment, whose ref policy
     # (main and v* tags) GitHub enforces even where a branch's copy of this
     # file drops the ancestry check below; a dispatch in either mode therefore
@@ -83,17 +87,46 @@ jobs:
     environment: release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-    # Allow up to 30 min for each validation and for the publication wait;
-    # builds, setup and asset uploads share the remaining budget. IDs are saved after
-    # upload, before the plugin starts waiting for validation.
-    timeout-minutes: 150
+      contents: read
+      # The re-run guard reads the previous attempt's jobs.
+      actions: read
+    # Each validation waits up to the plugin's 30-minute waitMaxTime default;
+    # setup and both builds took 15 minutes for v1.3.0 (run 41269916162). IDs
+    # are saved after upload, before the plugin waits for validation.
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      deployment-2x: ${{ steps.ids.outputs.deployment-2x }}
+      deployment-1x: ${{ steps.ids.outputs.deployment-1x }}
     steps:
+      # "Re-run all jobs" after this job succeeded in any earlier attempt would
+      # stage the version again while its deployments are PUBLISHING or
+      # PUBLISHED, so refuse before anything is signed. Every earlier attempt
+      # counts: a refused attempt fails this job, and a later "Re-run failed
+      # jobs" would otherwise find only that failure. A refused run has lost its
+      # outputs, so the recovery is then by hand (ADR-0147). After staging
+      # failed in every earlier attempt, a re-run stages afresh, as before.
+      - name: Refuse to restage a staged release
+        if: github.event_name == 'push' && github.run_attempt != '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_JOB: Stage and validate both lines
+        run: |
+          for ((attempt = 1; attempt < GITHUB_RUN_ATTEMPT; attempt++)); do
+            conclusion=$(gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$attempt/jobs" \
+              --jq ".jobs[] | select(.name == env.STAGE_JOB) | .conclusion")
+            if [ "$conclusion" = success ]; then
+              echo "attempt $attempt already staged this release; do not stage it again." \
+                "Finish it by hand with that attempt's deployment IDs (ADR-0147, Recovery)." >&2
+              exit 1
+            fi
+          done
+
       # persist-credentials matters more here than anywhere else in this
-      # repository: this is the one job that both holds a write-capable token
-      # and executes third-party Maven plugin code, and the release
-      # action authenticates from its env, not from .git/config. fetch-depth 0
-      # is for the ancestry assertion below.
+      # repository: this job holds the signing key and the Central token while
+      # it executes third-party Maven plugin code, which must not also find a
+      # token in .git/config. fetch-depth 0 is for the ancestry assertion below.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -197,7 +230,8 @@ jobs:
       # Collected OUTSIDE the working tree: the next staging build opens with
       # `clean` (which would wipe target/) and runs apache-rat over the whole
       # tree (which fails on a collected .asc). The script asserts the count,
-      # so the Release cannot quietly miss an artifact.
+      # so a build that lost or renamed an uber-jar stops before Publish; the
+      # GitHub Release itself is built from Central's copies.
       - name: Collect the staged uber-jars
         if: inputs.mode != 'rehearse'
         env:
@@ -237,27 +271,24 @@ jobs:
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
         run: just rehearse-release "$VERSION"
 
-      # The helper checks BOTH states before its first Publish request. A failed
-      # build, validation, ID capture or collection skips this step entirely.
-      - name: Publish both Central deployments
+      # Runs only once every earlier step succeeded, so both lines staged,
+      # validated and collected; the publication jobs then start only on this
+      # job's success (a bare if over needs keeps the implicit success()).
+      - name: Hand both deployment IDs to the publication
+        id: ids
         if: github.event_name == 'push'
-        env:
-          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
         run: |
-          just central-portal publish \
-            "$(cat "$RUNNER_TEMP/central-2x.id")" "$(cat "$RUNNER_TEMP/central-1x.id")"
-
-      # Generated notes remain the release history mechanism (#29). The preceding
-      # step waits for both PUBLISHED states before exposing this Release.
-      - name: Publish the GitHub Release
-        if: github.event_name == 'push'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          draft: false
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: ${{ runner.temp }}/dist/*
+          outputs=()
+          for line in 2x 1x; do
+            # Two IDs leave a newline inside, which the anchored pattern rejects.
+            id=$(cat "$RUNNER_TEMP/central-$line.id")
+            if [[ ! "$id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]]; then
+              echo "release: expected one captured deployment ID for the $line line" >&2
+              exit 1
+            fi
+            outputs+=("deployment-$line=$id")
+          done
+          printf '%s\n' "${outputs[@]}" >> "$GITHUB_OUTPUT"
 
       # Also clean up a successful first upload if the second staging run fails.
       # Missing files mean no ID was captured. A validation still in progress or
@@ -277,3 +308,69 @@ jobs:
           if [ "${#ids[@]}" -gt 0 ]; then
             just central-portal drop "${ids[@]}"
           fi
+
+  # Sends Publish only for a VALIDATED deployment, waits on a PUBLISHING one and
+  # returns at once for PUBLISHED ones, so a re-run resumes where the last
+  # attempt stopped. It holds the Central token but no signing key, runs no
+  # build, and has no write scope.
+  publish-central:
+    if: github.event_name == 'push'
+    needs: stage
+    name: Publish both Central deployments
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # central-portal.py's 3-hour WAIT_TIMEOUT, with minutes for setup.
+    timeout-minutes: 200
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2.88.0
+        with:
+          tool: just
+
+      - name: Publish or wait for both Central deployments
+        env:
+          DEPLOYMENT_2X: ${{ needs.stage.outputs.deployment-2x }}
+          DEPLOYMENT_1X: ${{ needs.stage.outputs.deployment-1x }}
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: just central-portal publish "$DEPLOYMENT_2X" "$DEPLOYMENT_1X"
+
+  # Built from Maven Central's files on every attempt, so the attachments are
+  # the published artifacts, checked against their .sha1 and the release key,
+  # and a re-run follows the same path as the first attempt. Generated notes
+  # remain the release history mechanism (#29). It holds no release secret.
+  github-release:
+    if: github.event_name == 'push'
+    needs: [stage, publish-central]
+    name: Publish the GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Up to 30 minutes for repo1 to serve every file, then the transfers.
+    timeout-minutes: 60
+    steps:
+      # The tag's checkout fixes the set of SQL uber-jar modules.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download and verify the published uber-jars
+        env:
+          VERSION: ${{ needs.stage.outputs.version }}
+        run: python3 scripts/release-assets.py download "$VERSION" "$RUNNER_TEMP/dist"
+
+      # A draft created with --verify-tag, published only once its attachments
+      # are exactly the downloaded files.
+      - name: Create or complete the GitHub Release
+        env:
+          VERSION: ${{ needs.stage.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/release-assets.py complete "$VERSION" "$RUNNER_TEMP/dist"
