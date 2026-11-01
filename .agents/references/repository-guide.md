@@ -731,8 +731,13 @@ facts); the rules a session needs:
   the workflow publishes only after both lines validate and both artifact collections succeed,
   and creates a public GitHub Release only after both deployments are PUBLISHED.
   `just central-portal` captures upload IDs immediately and provides status, publish and drop
-  operations with the existing token pair. A failed build or validation publishes neither line;
-  a failure after a Publish request requires recovery with the saved IDs, not a workflow rerun.
+  operations with the existing token pair. A failed build or validation publishes neither line.
+  Staging, publication and the GitHub Release are separate jobs (#1980): after a Publish request
+  the recovery is "Re-run failed jobs" on the failed run, never "Re-run all jobs", and ADR-0147
+  records why. Each job's `timeout-minutes` covers the waits it runs, as
+  `test_release_workflow.py` holds: `stage` two plugin validations, `publish-central`
+  `central-portal.py`'s 3-hour `WAIT_TIMEOUT`, `github-release` `release-assets.py`'s
+  `FETCH_WAIT`; change a wait and its limit together.
   The two publications and GitHub Release are separate operations, with no rollback; ADR-0147
   records recovery commands. Every release stages two version
   lines: bare `X.Y.Z` built for the 2.x range (ADR-0053's one artifact) and `X.Y.Z-1.20` built

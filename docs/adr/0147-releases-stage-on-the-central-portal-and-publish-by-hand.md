@@ -17,12 +17,13 @@ limitations under the License.
 # ADR-0147: Releases publish after both Central Portal deployments validate
 
 - Status: Accepted
-- Date: 2026-08-30; revised by [#1185] (2026-09-06), [#1818] (2026-10-17) and [#1971]
-  (2026-10-31)
-- Issues: [#724], [#39], [#29], [#1185], [#1818], [#1971]
+- Date: 2026-08-30; revised by [#1185] (2026-09-06), [#1818] (2026-10-17), [#1971]
+  (2026-10-31) and [#1980] (2026-11-01)
+- Issues: [#724], [#39], [#29], [#1185], [#1818], [#1971], [#1980]
 - Modules: all (build and release engineering)
 - Current behavior: `justfile` § `stage-release` and § `rehearse-release`,
-  `scripts/rehearse-release.py`, `.agents/references/repository-guide.md`
+  `scripts/rehearse-release.py`, `scripts/central-portal.py`, `scripts/release-assets.py`,
+  `.github/workflows/release.yaml`, `.agents/references/repository-guide.md`
   § Version policy, and the repository settings: the `release` environment and the
   `release tags` ruleset
 
@@ -54,7 +55,28 @@ The upload stops at *validated*.
 `scripts/central-portal.py` captures each upload ID before the plugin waits for validation, preserving it even if Maven subsequently fails.
 After both staging commands and both artifact collections succeed, the helper checks both deployment states before sending either Publish request.
 It waits for both to be PUBLISHED before the workflow creates a public GitHub Release with generated notes and every SQL uber-jar of both lines with its signature.
-The pinned `softprops/action-gh-release` v3.0.3 first creates an ordinary release as a draft, uploads its assets, then applies `draft: false` when finalizing it.
+
+**Staging, publication and the GitHub Release are three jobs, and a failed run is finished by re-running its failed jobs ([#1980]).**
+v1.3.0's two deployments stayed PUBLISHING for about 2.5 hours, where 1.1.0's had taken about 14 minutes.
+The 30-minute publication wait then expired after Central had accepted both Publish requests, so the single job failed and skipped the GitHub Release and the docs; the maintainer finished both by hand ([#1968]).
+Re-running that job would have staged and uploaded another pair, which is why the Recovery section forbade it.
+The wait is now 3 hours, which covers that measurement, and the workflow is split so a re-run no longer stages:
+
+- `stage` builds, uploads, validates and collects both lines, then hands the version and both deployment IDs on as job outputs.
+  The step that hands them on runs only after every earlier step succeeded, and the jobs after `stage` start only on its success, so neither can start from a run that failed any of those gates.
+- `publish-central` runs `just central-portal publish <2x-id> <1x-id>`: it sends Publish only for a VALIDATED deployment, waits on a PUBLISHING one and returns at once for PUBLISHED ones.
+- `github-release` downloads both lines' SQL uber-jars and their `.asc` files from Maven Central with `scripts/release-assets.py`.
+  It accepts a jar only when it matches its `.sha1` and gpg reports a valid signature by the release key's pinned fingerprint, fetched from `keyserver.ubuntu.com`; Central publishes no checksum for a `.asc`.
+  It then creates the Release as a draft with `--verify-tag` when none exists, deletes attachments whose upload never finished, attaches the missing files, and publishes the draft only once its attachments are exactly those files with matching digests.
+
+When `publish-central` or `github-release` fails, "Re-run failed jobs" runs it again with the job outputs of the original `stage` attempt, which GitHub keeps for the re-run (measured on a throwaway workflow, run 41286883270: the re-run job read the first attempt's output and the succeeded job was not re-run).
+Each of those jobs is safe to repeat, so a publication that outlasts the wait, or a GitHub error during the Release, needs only the button.
+A successful re-run completes the run with the `push` event, which is what `docs.yaml` publishes the docs on; each attempt's completion has fired its own `workflow_run` event in this repository's history.
+"Re-run all jobs" after a successful `stage` would stage the version again, so `stage` first reads every earlier attempt's jobs and refuses before anything is signed if it succeeded in any of them.
+A refused attempt has no outputs for the later jobs, so after that mistake the run is finished by hand.
+After `stage` failed in every earlier attempt, a re-run stages afresh, as before.
+The Release is built from Central's files on every attempt rather than from the jars `stage` built: the first attempt and a re-run then take the same path, no artifact has to cross jobs or attempts, and the attachments are checked to be what Maven Central publishes.
+The jobs divide the credentials: `stage` holds the signing key and the Central token with read-only scopes, `publish-central` holds the Central token without a write scope, and `github-release` holds `contents: write` and no release secret.
 
 **The first release used manual Publish and Drop; [#1185] retires those clicks.**
 Release run `33323702321` exercised both staging paths for `1.0.0` and `1.0.0-1.20`.
@@ -146,6 +168,16 @@ What reaches `main` is governed by `main`'s branch protection, which requires CI
 - **Combining both version lines into one Portal bundle.**
   Considered for [#1185]; the maintainer chose to retain two deployments and require both validations before either publication.
   This keeps the existing staging builds and their module-local publication exclusions.
+- **A `resume` dispatch with typed deployment IDs.**
+  Considered for [#1980] and drafted first.
+  Typed IDs are where a recovery goes wrong: a mistyped ID, or the pair of a run that failed before Publish, would be published irreversibly, and a check of the deployments' Portal names could not tell whether the run had passed its collection gate.
+  The dispatch also needed `actions: write` to start the docs, and a `workflow_dispatch` runs the dispatched ref's copy of the workflow, so tags cut before a fix never see it.
+  Re-running the failed job carries the IDs from the job that captured them, and needs no input.
+- **Telling a published version from coordinates.**
+  Considered for [#1980].
+  repo1 shows a version only once it is PUBLISHED, and the Portal documents no lookup by coordinates or listing of deployments, so a run could not tell PUBLISHING from never uploaded and might upload a second bundle while the first is still publishing.
+- **Building the Release from the jars `stage` built.**
+  They would have to cross to another job as an artifact and survive into a re-run attempt, and the recovery path would then differ from the first attempt's.
 - **Required reviewers on the `release` environment.**
   Considered for [#1971]; declined because an approval would restore the manual step that [#1185] removed, and the tag ruleset already limits who can start a release.
 - **Publishing `flink-connector-gcp-test-utils`.** Declined; reasons in the decision. Revisit if
@@ -174,6 +206,7 @@ What reaches `main` is governed by `main`'s branch protection, which requires CI
 - A dispatch, in either mode, runs only from `main` or a `v*` tag, because the rehearsal also signs.
   A change to `release.yaml` itself is therefore first exercised after it merges.
   A local `just rehearse-release` checks the bundle that `scripts/rehearse-release.py` builds, not the workflow.
+- A re-run uses the workflow and scripts of the tagged commit, so this recovery applies to tags cut after [#1980]; an older tag is recovered by hand.
 - The staged bundle's validation report (signing, checksums, POM completeness, sources/javadoc
   presence) is produced by the Portal on every upload, giving each release a pre-publish
   checklist for free.
@@ -183,7 +216,7 @@ What reaches `main` is governed by `main`'s branch protection, which requires CI
   The [Portal API] publishes one deployment per request; the two requests and GitHub Release creation are not a transaction.
   A network failure after the first request can leave one line PUBLISHED and the other VALIDATED.
   The helper stops on preflight or Publish errors and on invalid or permanently rejected status responses.
-  During the publication wait, it retries read-only status polls after transport failures, HTTP 429 or HTTP 5xx; it uses a 30-second socket timeout and checks a 30-minute deadline between polling rounds.
+  During the publication wait, it retries read-only status polls after transport failures, HTTP 429 or HTTP 5xx; it uses a 30-second socket timeout and checks a 3-hour deadline between polling rounds.
   The run summary records state transitions; repeated unchanged polls remain in the log.
   It does not blindly retry a Publish whose response was lost.
 
@@ -196,15 +229,18 @@ Before publication starts, Drop leftover VALIDATED or FAILED deployments with `j
 Drop attempts every supplied ID even if one deletion fails, tolerates an already absent ID, and refuses deployments in other states.
 Leave a still-validating deployment until its state can be checked again.
 
-After any Publish request, **do not rerun the entire workflow**: that would upload another pair under immutable release coordinates.
-Resume with `just central-portal publish <2x-id> <1x-id>`.
-It checks every ID before acting, publishes only VALIDATED deployments, and waits for already PUBLISHING deployments without issuing another Publish.
-PUBLISHED deployments need no further publication.
+After a Publish request, the recovery is **"Re-run failed jobs"** on the failed run, never "Re-run all jobs", which would upload another pair under immutable release coordinates.
+`stage` refuses that re-run before anything is signed, but the refused attempt leaves no outputs, so the run must then be finished by hand with the IDs from the summary of the attempt whose `stage` succeeded.
+The re-run repeats `publish-central`, `github-release` or both with the original IDs, so a publication that outlasted the wait resumes from the wait, and a GitHub-side failure repeats only the Release.
+GitHub offers a re-run for 30 days after the run.
+If `github-release` stops at an attachment it cannot vouch for (a finished attachment outside the published set, or one whose digest differs from Maven Central's file), delete or replace that attachment by hand after comparing it with Central's file, then re-run the failed job again.
 If publication fails permanently, inspect the Portal error before choosing a recovery; the helper cannot roll back Central.
 
-If only GitHub Release creation failed, confirm both deployments are PUBLISHED, download every published SQL uber-jar of both lines and its `.asc` file from Maven Central, then use `gh release create --draft --verify-tag --generate-notes` with the original tag and those files. `scripts/collect-release-jars.sh` fixes the set: six uber-jars and six signatures per line from 1.2.0, so 24 files.
-If the Release already exists with incomplete attachments, use `gh release upload` for the missing files.
-If it remains a draft, confirm all of those files are attached, then publish it with `gh release edit <tag> --draft=false`.
+Without the workflow, for example for a tag cut before [#1980], after a refused "Re-run all jobs", or for a failure no re-run fixes, the same steps run by hand.
+`just central-portal publish <2x-id> <1x-id>` checks every ID before acting, publishes only VALIDATED deployments, and waits for already PUBLISHING deployments without issuing another Publish.
+`scripts/release-assets.py download <version> <new-dir>` fetches and verifies the release's files (six uber-jars and six signatures per line from 1.2.0, five of each for 1.0.0 and 1.1.0), and `scripts/release-assets.py complete <version> <dir>` creates or completes the Release.
+Run both with a checkout of the release tag as the working directory, whose `flink-sql-connector-gcp-*` modules fix the set; a tag cut before [#1980] has no copy of the script, so run `main`'s copy from that directory, for example from a `git worktree add <dir> v<version>`.
+Trigger the docs with `gh workflow run docs.yaml --ref main`.
 Do not restage Central to repair GitHub attachments.
 A tag cut on the wrong commit remains correctable only before Publish; afterward, changed artifacts require a new version.
 
@@ -215,4 +251,6 @@ A tag cut on the wrong commit remains correctable only before Publish; afterward
 [#1812]: https://github.com/flink-gcp/flink-connector-gcp/issues/1812
 [#1818]: https://github.com/flink-gcp/flink-connector-gcp/issues/1818
 [#1971]: https://github.com/flink-gcp/flink-connector-gcp/issues/1971
+[#1968]: https://github.com/flink-gcp/flink-connector-gcp/issues/1968
+[#1980]: https://github.com/flink-gcp/flink-connector-gcp/issues/1980
 [Portal API]: https://central.sonatype.org/publish/publish-portal-api/

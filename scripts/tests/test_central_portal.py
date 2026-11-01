@@ -215,6 +215,21 @@ def test_publication_wait_has_a_deadline(helper, monkeypatch):
         helper.publish(portal, [FIRST, SECOND])
 
 
+def test_publication_wait_is_three_hours(helper, monkeypatch):
+    # v1.3.0 stayed PUBLISHING for about 2.5 hours (#1968): a wait one second
+    # short of three hours still polls, and the three-hour mark ends it.
+    assert helper.WAIT_TIMEOUT == 3 * 60 * 60
+    portal = FakePortal({FIRST: ["PUBLISHING"], SECOND: ["PUBLISHED"]})
+    times = iter([0, helper.WAIT_TIMEOUT - 1, helper.WAIT_TIMEOUT])
+    monkeypatch.setattr(helper.time, "monotonic", lambda: next(times))
+    sleeps = []
+    monkeypatch.setattr(helper.time, "sleep", sleeps.append)
+    with pytest.raises(helper.PortalError, match="Re-run failed jobs"):
+        helper.publish(portal, [FIRST, SECOND])
+    assert sleeps == [helper.POLL_INTERVAL]
+    assert portal.calls.count(("status", FIRST)) == 3
+
+
 def test_transient_poll_failure_retries_only_status(helper, monkeypatch):
     portal = FakePortal(
         {
