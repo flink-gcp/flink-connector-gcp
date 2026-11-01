@@ -43,8 +43,41 @@ title = "GCP Connectors for Apache Flink"
     source = "../flink-connector-gcp-spanner/src/test/resources/sql-snippets"
     target = "assets/sql-snippets/spanner"
 
+  # The design module comes first so its layouts and assets override the theme's.
+  # ignoreImports drops all of its imports (today only Hugo Book), which the
+  # import below replaces so that the site publishes only the theme files it
+  # uses. Hugo Book's KaTeX, Mermaid and asciinema-player features are left out:
+  # their bundles carry no notice, KaTeX's fonts are under the SIL OFL, and the
+  # Mermaid and asciinema-player bundles compile in third-party dependencies.
+  # With their shortcodes and code-block hooks excluded, such a shortcode fails
+  # the build and such a code block renders as plain code; neither links a file
+  # the site does not publish.
   [[module.imports]]
     path = "github.com/flink-gcp/flink-gcp-dev-tools/hugo"
+    ignoreImports = true
+  [[module.imports]]
+    path = "github.com/alex-shpak/hugo-book"
+    [[module.imports.mounts]]
+      source = "assets"
+      target = "assets"
+    [[module.imports.mounts]]
+      source = "layouts"
+      target = "layouts"
+      files = [
+        "! /_markup/render-codeblock-katex.html",
+        "! /_markup/render-codeblock-mermaid.html",
+        "! /_shortcodes/asciinema.html",
+        "! /_shortcodes/katex.html",
+        "! /_shortcodes/mermaid.html",
+      ]
+    [[module.imports.mounts]]
+      source = "i18n"
+      target = "i18n"
+    [[module.imports.mounts]]
+      # favicon.svg is the web app manifest's icon.
+      source = "static"
+      target = "static"
+      files = ["/favicon.png", "/favicon.svg", "/fuse.min.mjs"]
 
 [params]
   # A generic code-block render hook rejects raw SQL fences under these paths. Source-backed

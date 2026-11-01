@@ -45,3 +45,5 @@ Each page links to the exact source commit from which it was built.
 When a series leaves the retention window, its pages are removed from the hosted site.
 The [GitHub Releases]({{< param BookRepo >}}/releases) archive retains release downloads and links to the tagged source, including its documentation.
 Hosting an older series does not promise continued bug fixes for that connector release.
+
+The [site licenses]({{< relref "docs/licenses" >}}) page carries the notices for the site's theme and the third-party files the site publishes.

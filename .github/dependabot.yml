@@ -93,8 +93,10 @@ updates:
         update-types:
           - minor
           - patch
-  # No group here: docs/go.mod requires exactly one dependency, so a group could
-  # never collapse anything and would only rename the pull request.
+  # No group here: the design module is docs/go.mod's only direct requirement, so
+  # a group could never collapse anything and would only rename the pull request.
+  # Hugo Book is required too, marked indirect as `hugo mod get` writes it. It is
+  # meant to move with the design module that requires it, not on its own.
   - package-ecosystem: gomod
     directory: /docs
     schedule:

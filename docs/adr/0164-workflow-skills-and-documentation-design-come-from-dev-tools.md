@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0164: Workflow skills and documentation design come from dev-tools
 
 - Status: Accepted
-- Date: 2026-09-06
-- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24)
+- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01)
+- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984)
 - Modules: all (workflow), docs
 - Current behavior: [Contributing](../content/docs/development/contributing.md#shared-development-assets)
 
@@ -63,6 +63,20 @@ The local mount preserves site-specific extensions beside the source-snippet sub
 Palette generation, theme-control changes and search initialization belong in dev-tools; this repository owns content,
 source-backed snippets, Javadoc, documentation version assembly and Pages deployment.
 
+Publish only the theme files the site uses.
+`docs/hugo.toml` ignores the design module's own imports, which today are only Hugo Book, and imports Hugo
+Book after it, so the design module's layouts and assets still take precedence.
+From Hugo Book's `static/` directory the site publishes the two favicons and the Fuse.js module, and it
+excludes the KaTeX, Mermaid and asciinema-player shortcodes and code-block hooks, so a page that tries one
+of those features fails the build or renders plain code rather than linking a file that is not published.
+No page used those features, and their files carry no notice: KaTeX's fonts are under the SIL Open Font
+License 1.1, and the Mermaid and asciinema-player bundles compile in third-party dependencies.
+The hidden site licenses page carries the notices for what is published, and its `hugo-book-version`
+shortcode fails the build when the resolved Hugo Book version differs from the documented one or when a
+module replacement or vendored copy substitutes other files.
+Release lines built from earlier tags keep their full theme `static/` directory until they leave the
+retention window.
+
 ## Evidence
 
 Measured on 2026-09-06, one before/after pair at connector base
@@ -70,6 +84,33 @@ Measured on 2026-09-06, one before/after pair at connector base
 the six local theme files produced the same 137 output files byte for byte under `just docs`.
 This comparison preceded the development-guide edits in the adoption change.
 It covers the ordinary site build, without generating the separate Javadoc or versioned-site artifacts.
+
+Measured on 2026-11-01 for the reduced static mount, at connector base
+`2b417720fbdbb7c3347ff5bd6253c216862d3273` with Hugo Extended 0.164.0: changing only the module
+configuration removed 68 published files (KaTeX 63, of which 60 are fonts; asciinema-player 3;
+`mermaid.min.js`; `favicon.svg`) and left every other output file byte-identical.
+`favicon.svg` was restored afterwards because the web app manifest that Hugo Book renders names it.
+The Mermaid 11.14.0 package lists 21 direct dependencies, and its bundle retains license comments for only
+some of them; asciinema-player 3.15.1 embeds SolidJS; the `name` table of every KaTeX font declares OFL 1.1.
+The shortcode guard was probed six ways: the pinned version passes, while a different documented version,
+a `go.mod` replace, a `HUGO_MODULE_REPLACEMENTS` replacement, a Hugo workspace and `hugo mod vendor` each
+fail the build.
+
+## Alternatives declined
+
+- **Publish the KaTeX, Mermaid and asciinema-player bundles with every notice they owe.** Declined: the
+  versions of the dependencies compiled into each bundle are recoverable only from each project's lockfile
+  at the bundled release, and that inventory would be re-derived on every theme update for features no
+  page uses.
+- **Reduce the mount inside the design module instead.** Not done here: it would change
+  flink-datastream-protobuf's site in the same step, which tracks the same problem in
+  [flink-gcp/flink-datastream-protobuf#190](https://github.com/flink-gcp/flink-datastream-protobuf/issues/190).
+  The local configuration copies no theme file, so the rule above about local precedence still holds;
+  the contributing guide asks a design module update to check that the module imports nothing but Hugo
+  Book.
+- **Remove the bundles from retained release lines when the site is assembled.** Declined by the
+  maintainer on 2026-11-01: the 1.2 and 1.3 lines, built from tags that predate this decision, stay as
+  built and leave the site as later minors are released.
 
 ## Consequences
 
