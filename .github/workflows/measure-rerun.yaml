@@ -1,0 +1,52 @@
+# Copyright 2026 The flink-gcp authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Throwaway measurement for #1980; never merged. Does "Re-run failed jobs"
+# hand a re-run job the outputs of a job that succeeded in attempt 1?
+name: Measure re-run outputs
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/measure-rerun.yaml'
+
+permissions: {}
+
+jobs:
+  first:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      value: ${{ steps.make.outputs.value }}
+    steps:
+      - id: make
+        run: |
+          value="attempt-$GITHUB_RUN_ATTEMPT-$RANDOM"
+          echo "first job produced $value"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+  second:
+    needs: first
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          VALUE: ${{ needs.first.outputs.value }}
+        run: |
+          echo "second job attempt $GITHUB_RUN_ATTEMPT read value='$VALUE'"
+          test -n "$VALUE"
+          if [ "$GITHUB_RUN_ATTEMPT" = "1" ]; then
+            echo "failing attempt 1 on purpose" >&2
+            exit 1
+          fi
