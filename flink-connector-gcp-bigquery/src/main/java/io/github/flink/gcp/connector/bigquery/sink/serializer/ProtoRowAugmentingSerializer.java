@@ -130,8 +130,26 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
      */
     @Nullable
     public ByteString serialize(T element, TableDestination destination) throws IOException {
-        ByteString serialized = delegate.serialize(element);
-        if (serialized == null) {
+        SerializedRow row = serializeRow(element, destination);
+        return row == null ? null : row.toByteString();
+    }
+
+    /**
+     * Serializes one row without encoding it, preserving the delegate's {@code null} means skip
+     * contract.
+     *
+     * <p>The delegate's row is kept as it came back, as a message when the delegate is a {@link
+     * ProtoRowMessageSerializer} and as bytes otherwise, and the augmentation fields are set on a
+     * separate tail message; see {@link SerializedRow} for why the two encode as one row.
+     *
+     * @throws SchemaDerivationException when the destination's schema, derived again after the
+     *     delegate serialized the element, failed to derive; the failure belongs to the
+     *     destination, not to the element
+     */
+    @Nullable
+    public SerializedRow serializeRow(T element, TableDestination destination) throws IOException {
+        SerializedRow base = SerializedRow.serialize(delegate, element);
+        if (base == null) {
             return null;
         }
 
@@ -145,8 +163,14 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
             // never on the element, so its failure is the one prepare() would have failed on.
             throw new SchemaDerivationException(destination, e);
         }
-        DynamicMessage.Builder row =
-                DynamicMessage.newBuilder(surfaces.descriptor).mergeFrom(serialized);
+        // The delegate's bytes are not parsed, but a tail must not follow an encoding that is not
+        // well-formed. Checked where the parse used to fail: after the destination's derivation,
+        // whose failure outranks the record's, and before any provider runs.
+        boolean carriesAppendedNumbers = base.checkWellFormed(surfaces.augmentationNumbers);
+        // Only the augmentation fields are set here. The delegate's row is not parsed into this
+        // builder: SerializedRow encodes it ahead of the tail, which decodes as the same row.
+        DynamicMessage.Builder tail = DynamicMessage.newBuilder(surfaces.descriptor);
+        Object[] values = new Object[fields.size()];
         for (int i = 0; i < fields.size(); i++) {
             ProtoRowAugmentationField<? super T> field = fields.get(i);
             Object value;
@@ -164,15 +188,57 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
                 continue;
             }
             try {
-                row.setField(surfaces.augmentationFields.get(i), value);
+                tail.setField(surfaces.augmentationFields.get(i), value);
             } catch (RuntimeException e) {
                 throw new IOException(rowFailureMessage, e);
             }
+            values[i] = value;
         }
+        if (carriesAppendedNumbers) {
+            return mergedRow(base, values, surfaces);
+        }
+        DynamicMessage builtTail;
         try {
-            // CDC deletes may intentionally omit physical REQUIRED fields. Every augmentation
+            // The tail sets no delegate field, so any REQUIRED one is missing from it by
+            // construction; CDC deletes may also omit physical REQUIRED fields. Every augmentation
             // field enforces its own required-value policy before reaching this point.
-            return row.buildPartial().toByteString();
+            builtTail = tail.buildPartial();
+        } catch (RuntimeException e) {
+            throw new IOException(rowFailureMessage, e);
+        }
+        return base.withTail(builtTail);
+    }
+
+    /**
+     * Builds the row as setting the fields on the parsed delegate row would, for delegate bytes
+     * that already carry a value under an appended number.
+     *
+     * <p>Concatenating a tail does not always override such a value. Under a {@code proto3}
+     * delegate descriptor an appended field has no presence, so setting it to its default value
+     * encodes nothing and the delegate's value would survive; and {@code FILE_LOADS} reads appended
+     * fields from the tail alone, so a value kept for a {@code null} provider would be lost there.
+     * This row instead moves every appended field of the merged row into the tail and encodes the
+     * rest as the base, so both readings agree with the parse-and-set row.
+     */
+    private SerializedRow mergedRow(SerializedRow base, Object[] values, SchemaSurfaces surfaces)
+            throws IOException {
+        DynamicMessage.Builder merged =
+                DynamicMessage.newBuilder(surfaces.descriptor).mergeFrom(base.toByteString());
+        DynamicMessage.Builder tail = DynamicMessage.newBuilder(surfaces.descriptor);
+        try {
+            for (int i = 0; i < values.length; i++) {
+                if (values[i] != null) {
+                    merged.setField(surfaces.augmentationFields.get(i), values[i]);
+                }
+            }
+            for (Descriptors.FieldDescriptor field : surfaces.augmentationFields) {
+                if (merged.hasField(field)) {
+                    tail.setField(field, merged.getField(field));
+                    merged.clearField(field);
+                }
+            }
+            return SerializedRow.ofBytes(merged.buildPartial().toByteString())
+                    .withTail(tail.buildPartial());
         } catch (RuntimeException e) {
             throw new IOException(rowFailureMessage, e);
         }
@@ -302,6 +368,7 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         private final TableSchema tableSchema;
         private final Descriptors.Descriptor descriptor;
         private final List<Descriptors.FieldDescriptor> augmentationFields;
+        private final int[] augmentationNumbers;
 
         private SchemaSurfaces(
                 Object fingerprint,
@@ -312,6 +379,10 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
             this.tableSchema = tableSchema;
             this.descriptor = descriptor;
             this.augmentationFields = augmentationFields;
+            this.augmentationNumbers = new int[augmentationFields.size()];
+            for (int i = 0; i < augmentationNumbers.length; i++) {
+                augmentationNumbers[i] = augmentationFields.get(i).getNumber();
+            }
         }
     }
 }

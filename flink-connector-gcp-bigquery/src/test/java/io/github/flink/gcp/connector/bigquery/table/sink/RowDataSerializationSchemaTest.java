@@ -25,6 +25,7 @@ import org.apache.flink.util.InstantiationUtil;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcProtoRowFields;
@@ -67,6 +68,22 @@ class RowDataSerializationSchemaTest {
                 new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
         assertThat(serializer.getDescriptor(DESTINATION))
                 .isSameAs(serializer.getDescriptor(DESTINATION));
+    }
+
+    /**
+     * The serializer hands over a message of exactly the descriptor it reports, which is what lets
+     * {@code FILE_LOADS} convert it without encoding and parsing it (#2019).
+     */
+    @Test
+    void handsOverAMessageOfItsOwnDescriptor() throws Exception {
+        RowDataSerializationSchema serializer =
+                new RowDataSerializationSchema(rowType(), RowDataSchemaOptions.defaults());
+        GenericRowData row = GenericRowData.of(StringData.fromString("alice"), 7L);
+
+        Message message = serializer.serializeToMessage(row);
+
+        assertThat(message.getDescriptorForType()).isSameAs(serializer.getDescriptor(DESTINATION));
+        assertThat(serializer.serialize(row)).isEqualTo(message.toByteString());
     }
 
     @Test

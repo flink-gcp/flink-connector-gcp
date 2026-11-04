@@ -25,9 +25,11 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import javax.annotation.Nullable;
@@ -54,7 +56,8 @@ import java.io.IOException;
  * at this layer anyway.
  */
 @Internal
-final class RowDataSerializationSchema extends BigQueryProtoSerializationSchema<RowData> {
+final class RowDataSerializationSchema extends BigQueryProtoSerializationSchema<RowData>
+        implements ProtoRowMessageSerializer<RowData> {
 
     private static final long serialVersionUID = 1L;
 
@@ -99,15 +102,20 @@ final class RowDataSerializationSchema extends BigQueryProtoSerializationSchema<
 
     @Override
     public ByteString serialize(RowData element) throws IOException {
+        return serializeToMessage(element).toByteString();
+    }
+
+    @Override
+    public Message serializeToMessage(RowData element) throws IOException {
         RowKind kind = element.getRowKind();
         if (kind == RowKind.UPDATE_BEFORE) {
             throw new IOException("UPDATE_BEFORE is not part of the BigQuery CDC sink changelog");
         }
         ConversionState conversion = state();
         if (kind == RowKind.DELETE && conversion.deleteRowConverter != null) {
-            return conversion.deleteRowConverter.convertPartial(element).toByteString();
+            return conversion.deleteRowConverter.convertPartial(element);
         }
-        return conversion.rowConverter.convert(element).toByteString();
+        return conversion.rowConverter.convert(element);
     }
 
     private ConversionState state() {

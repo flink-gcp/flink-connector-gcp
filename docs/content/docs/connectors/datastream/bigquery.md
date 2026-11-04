@@ -2262,9 +2262,10 @@ This writer-side option does not set checkpoint-time destination concurrency.
 Committables still enter the single committer, whose separate `maxConcurrentDestinations` bound
 controls that work.
 
-**Serialized row memory.** `maxSerializedRowBytes` rejects a serialized protobuf row before
-`DynamicMessage` parsing and Avro conversion, where the previous path transiently held several
-representations of a large row.
+**Serialized row memory.** `maxSerializedRowBytes` rejects a serialized protobuf row before Avro
+conversion, where a large row would be held in more representations at once.
+The limit applies to the row's encoded size, including additional fields, even when a built-in
+serializer hands the writer its row without encoding it.
 The 15,000,000-byte default leaves 1,000,000 bytes below BigQuery's
 [16 MB Avro block limit](https://cloud.google.com/bigquery/quotas#load_jobs), but protobuf and Avro
 encodings are not byte-for-byte equivalent.

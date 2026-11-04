@@ -32,6 +32,8 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -66,10 +68,10 @@ import java.util.Map;
  * decimal literal) re-encoded as big-endian Avro decimals, and {@code TIMESTAMP} epoch-micros longs
  * kept as-is.
  *
- * <p>{@link #convert} throws {@link IOException} for per-row value failures (for example a decimal
- * exceeding the column's scale), mirroring the serializer contract so callers can route the row to
- * the configured failure policy; descriptor/schema mismatches are configuration errors and throw
- * unchecked at construction time.
+ * <p>{@link #convert(MessageOrBuilder, MessageOrBuilder)} throws {@link IOException} for per-row
+ * value failures (for example a decimal exceeding the column's scale), mirroring the serializer
+ * contract so callers can route the row to the configured failure policy; descriptor/schema
+ * mismatches are configuration errors and throw unchecked at construction time.
  *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization.
  */
@@ -132,7 +134,30 @@ public final class ProtoToAvroConverter {
      */
     public ProtoToAvroConverter(
             TableSchema tableSchema, Descriptors.Descriptor descriptor, Schema avroSchema) {
-        this.plan = buildRecordPlan(tableSchema.getFieldsList(), descriptor, avroSchema, "");
+        this(tableSchema, descriptor, null, avroSchema);
+    }
+
+    /**
+     * Creates a converter for one destination's schemas whose rows carry fields the sink added
+     * after the serializer in a separate tail message.
+     *
+     * <p>A top-level schema field is read from the base message when the serializer's descriptor
+     * declares it, and otherwise from the tail, whose descriptor is the augmented one.
+     *
+     * @param tableSchema the Storage API table schema, including the added fields
+     * @param descriptor the serializer's row descriptor, which the base message has
+     * @param tailDescriptor the augmented descriptor, which the tail message has, or {@code null}
+     *     when the sink adds no field
+     * @param avroSchema the Avro schema from {@link TableSchemaToAvroConverter#convert}
+     */
+    public ProtoToAvroConverter(
+            TableSchema tableSchema,
+            Descriptors.Descriptor descriptor,
+            @Nullable Descriptors.Descriptor tailDescriptor,
+            Schema avroSchema) {
+        this.plan =
+                buildRecordPlan(
+                        tableSchema.getFieldsList(), descriptor, tailDescriptor, avroSchema, "");
     }
 
     /**
@@ -143,7 +168,21 @@ public final class ProtoToAvroConverter {
      * @throws IOException if a value cannot be represented in the destination column
      */
     public GenericRecord convert(MessageOrBuilder message) throws IOException {
-        return plan.convert(message);
+        return plan.convert(message, null);
+    }
+
+    /**
+     * Converts one row held as the serializer's message and the sink's tail.
+     *
+     * @param base the serializer's row, a message of the serializer's descriptor
+     * @param tail the added fields, a message of the augmented descriptor, or {@code null} when
+     *     this converter was built without one
+     * @return the equivalent Avro record
+     * @throws IOException if a value cannot be represented in the destination column
+     */
+    public GenericRecord convert(MessageOrBuilder base, @Nullable MessageOrBuilder tail)
+            throws IOException {
+        return plan.convert(base, tail);
     }
 
     /** How a proto value is converted to its Avro representation. */
@@ -169,6 +208,7 @@ public final class ProtoToAvroConverter {
     private static RecordPlan buildRecordPlan(
             List<TableFieldSchema> fields,
             Descriptors.Descriptor descriptor,
+            @Nullable Descriptors.Descriptor tailDescriptor,
             Schema avroSchema,
             String parentPath) {
         // BigQuery column names are case-insensitive (and BQTableSchemaToProtoDescriptor
@@ -179,12 +219,28 @@ public final class ProtoToAvroConverter {
                     BigQuerySchemaUtil.getFieldName(protoField).toLowerCase(Locale.ROOT),
                     protoField);
         }
+        // Only fields the base lacks are read from the tail: a base field's nested types belong to
+        // the base descriptor's file, so its plan must hold the base's field descriptors.
+        Map<String, Descriptors.FieldDescriptor> tailFieldsByName = new HashMap<>();
+        if (tailDescriptor != null) {
+            for (Descriptors.FieldDescriptor tailField : tailDescriptor.getFields()) {
+                String name = BigQuerySchemaUtil.getFieldName(tailField).toLowerCase(Locale.ROOT);
+                if (!protoFieldsByName.containsKey(name)) {
+                    tailFieldsByName.put(name, tailField);
+                }
+            }
+        }
         List<FieldPlan> fieldPlans = new ArrayList<>(fields.size());
         for (TableFieldSchema field : fields) {
             String path =
                     parentPath.isEmpty() ? field.getName() : parentPath + "." + field.getName();
-            Descriptors.FieldDescriptor protoField =
-                    protoFieldsByName.get(field.getName().toLowerCase(Locale.ROOT));
+            String key = field.getName().toLowerCase(Locale.ROOT);
+            Descriptors.FieldDescriptor protoField = protoFieldsByName.get(key);
+            boolean fromTail = false;
+            if (protoField == null) {
+                protoField = tailFieldsByName.get(key);
+                fromTail = protoField != null;
+            }
             Preconditions.checkState(
                     protoField != null,
                     "The serializer's descriptor has no field for schema field %s",
@@ -192,7 +248,7 @@ public final class ProtoToAvroConverter {
             Schema.Field avroField = avroSchema.getField(field.getName());
             Preconditions.checkState(
                     avroField != null, "The Avro schema has no field for schema field %s", path);
-            fieldPlans.add(buildFieldPlan(field, protoField, avroField, path));
+            fieldPlans.add(buildFieldPlan(field, protoField, avroField, path, fromTail));
         }
         return new RecordPlan(avroSchema, fieldPlans.toArray(new FieldPlan[0]));
     }
@@ -201,7 +257,8 @@ public final class ProtoToAvroConverter {
             TableFieldSchema field,
             Descriptors.FieldDescriptor protoField,
             Schema.Field avroField,
-            String path) {
+            String path,
+            boolean fromTail) {
         boolean repeated = field.getMode() == TableFieldSchema.Mode.REPEATED;
         boolean nullable = !repeated && field.getMode() != TableFieldSchema.Mode.REQUIRED;
         Preconditions.checkState(
@@ -215,6 +272,7 @@ public final class ProtoToAvroConverter {
                         ? buildRecordPlan(
                                 field.getFieldsList(),
                                 protoField.getMessageType(),
+                                null,
                                 valueSchema,
                                 path)
                         : null;
@@ -223,7 +281,15 @@ public final class ProtoToAvroConverter {
                         ? ((LogicalTypes.Decimal) valueSchema.getLogicalType()).getScale()
                         : 0;
         return new FieldPlan(
-                protoField, avroField.pos(), kind, repeated, nullable, nested, scale, path);
+                protoField,
+                avroField.pos(),
+                kind,
+                repeated,
+                nullable,
+                nested,
+                scale,
+                path,
+                fromTail);
     }
 
     private static Schema unwrap(Schema schema, boolean repeated, boolean nullable) {
@@ -347,16 +413,26 @@ public final class ProtoToAvroConverter {
 
         private final Schema avroSchema;
         private final FieldPlan[] fields;
+        private final boolean readsTail;
 
         RecordPlan(Schema avroSchema, FieldPlan[] fields) {
             this.avroSchema = avroSchema;
             this.fields = fields;
+            boolean anyFromTail = false;
+            for (FieldPlan field : fields) {
+                anyFromTail |= field.fromTail;
+            }
+            this.readsTail = anyFromTail;
         }
 
-        GenericRecord convert(MessageOrBuilder message) throws IOException {
+        GenericRecord convert(MessageOrBuilder message, @Nullable MessageOrBuilder tail)
+                throws IOException {
+            if (readsTail && tail == null) {
+                throw new IllegalStateException("No tail row carries the added fields");
+            }
             GenericRecord record = new GenericData.Record(avroSchema);
             for (FieldPlan field : fields) {
-                record.put(field.avroPos, field.convert(message));
+                record.put(field.avroPos, field.convert(field.fromTail ? tail : message));
             }
             return record;
         }
@@ -373,6 +449,7 @@ public final class ProtoToAvroConverter {
         private final RecordPlan nested;
         private final int decimalScale;
         private final String path;
+        private final boolean fromTail;
 
         FieldPlan(
                 Descriptors.FieldDescriptor protoField,
@@ -382,7 +459,8 @@ public final class ProtoToAvroConverter {
                 boolean nullable,
                 RecordPlan nested,
                 int decimalScale,
-                String path) {
+                String path,
+                boolean fromTail) {
             this.protoField = protoField;
             this.avroPos = avroPos;
             this.kind = kind;
@@ -391,6 +469,7 @@ public final class ProtoToAvroConverter {
             this.nested = nested;
             this.decimalScale = decimalScale;
             this.path = path;
+            this.fromTail = fromTail;
         }
 
         Object convert(MessageOrBuilder message) throws IOException {
@@ -439,7 +518,7 @@ public final class ProtoToAvroConverter {
                                                 (ByteString) value)
                                         : new BigDecimal((String) value));
                     case STRUCT:
-                        return nested.convert((MessageOrBuilder) value);
+                        return nested.convert((MessageOrBuilder) value, null);
                     default:
                         throw new IllegalStateException("Unknown conversion kind: " + kind);
                 }
