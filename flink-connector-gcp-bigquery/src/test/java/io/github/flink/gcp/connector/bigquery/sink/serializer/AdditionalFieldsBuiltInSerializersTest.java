@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.Message;
 import com.google.protobuf.Timestamp;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -116,5 +117,29 @@ class AdditionalFieldsBuiltInSerializersTest {
                 .extracting(TableFieldSchema::getName)
                 .endsWith("__source");
         assertThat(row.getField(descriptor.findFieldByName("__source"))).isEqualTo(expectedValue);
+        assertHandsOverItsOwnMessage(serializer, record, config);
+    }
+
+    /**
+     * A built-in serializer hands over a message of exactly the descriptor it reports, which is
+     * what lets {@code FILE_LOADS} convert it without encoding and parsing it (#2019), and its
+     * bytes are that message's.
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> void assertHandsOverItsOwnMessage(
+            BigQueryProtoSerializationSchema<? super T> serializer,
+            T record,
+            BigQuerySinkConfig<T> config)
+            throws IOException {
+        assertThat(serializer).isInstanceOf(ProtoRowMessageSerializer.class);
+        Message message =
+                ((ProtoRowMessageSerializer<? super T>) serializer).serializeToMessage(record);
+        Descriptors.Descriptor own = serializer.getDescriptor(DESTINATION);
+
+        assertThat(message.getDescriptorForType()).isSameAs(own);
+        assertThat(serializer.serialize(record)).isEqualTo(message.toByteString());
+        Message handedOver = config.serializeRow(record, DESTINATION).getBase(own);
+        assertThat(handedOver.getDescriptorForType()).isSameAs(own);
+        assertThat(handedOver).isEqualTo(message);
     }
 }

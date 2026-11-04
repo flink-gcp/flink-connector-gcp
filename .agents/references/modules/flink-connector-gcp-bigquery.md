@@ -98,6 +98,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Every built-in serializer reaches the common protobuf row boundary before the fields are added.
   Configured fields are physical singular scalar columns used by all three write methods; only the
   internal CDC allowlist may add descriptor-only fields (`docs/adr/0113`).
+- **An extended row is the serializer's row followed by an encoded tail of the appended fields**
+  (`docs/adr/0113`, revision for #2019); the engine neither parses nor re-encodes the serializer's
+  row. That is equivalent only because every appended field is a singular scalar, whose last
+  occurrence wins, and because `SerializedRow.checkWellFormed` refuses serializer bytes a tail
+  could be read into and reports bytes that already carry an appended number, which the engine
+  then builds the old way and splits; do not admit a message or repeated appended field without
+  replacing the concatenation, and do not drop the check. A new built-in serializer implements `ProtoRowMessageSerializer`, so that
+  `FILE_LOADS` converts its message instead of parsing its bytes, and that writer reads the base
+  and the tail through `SerializedRow`, which tolerates a descriptor instance other than its own.
 - **The protobuf mapping is normative for every serializer**; `NULLABLE` is the default mode and
   `deriveRequiredColumns()` the opt-in on both proto and Avro sides — neither default is to be
   flipped per format again, and the method name went through two rejected candidates
@@ -351,8 +360,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   committable list without limit between commits.
   Conversion succeeds before a new destination can evict a healthy one, and object names use one
   writer-global monotonic sequence because per-destination sequences cannot survive eviction.
-  `maxSerializedRowBytes` applies to the serializer's protobuf bytes before parsing and Avro
-  conversion; larger rows follow the failure policy without creating state.
+  `maxSerializedRowBytes` applies to the row's encoded size before Avro conversion, computed
+  without encoding a row the serializer handed over as a message; larger rows follow the failure
+  policy without creating state, and only they are encoded, for their `FailedRow`.
   The documented Avro sizing baseline starts with one 4 MiB GCS chunk per active destination, but
   Parquet also budgets one `maxStagingFileBytes` row group per active destination.
 

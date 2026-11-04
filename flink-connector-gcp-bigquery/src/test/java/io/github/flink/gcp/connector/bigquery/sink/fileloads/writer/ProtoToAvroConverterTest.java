@@ -68,6 +68,79 @@ class ProtoToAvroConverterTest {
         }
     }
 
+    /**
+     * A row held as the serializer's message and a tail converts as the merged row does. The tail's
+     * descriptor comes from another file, so a base column, nested ones included, must be read with
+     * the base's field descriptors; an added column is paired by name case-insensitively, as every
+     * column is.
+     */
+    @Test
+    void convertsABaseAndATailAsTheMergedRow() throws Exception {
+        TableSchema base =
+                schemaOf(
+                        field("id", TableFieldSchema.Type.INT64, TableFieldSchema.Mode.REQUIRED),
+                        TableFieldSchema.newBuilder()
+                                .setName("item")
+                                .setType(TableFieldSchema.Type.STRUCT)
+                                .setMode(TableFieldSchema.Mode.NULLABLE)
+                                .addFields(
+                                        field(
+                                                "sku",
+                                                TableFieldSchema.Type.STRING,
+                                                TableFieldSchema.Mode.NULLABLE))
+                                .build(),
+                        field(
+                                "tags",
+                                TableFieldSchema.Type.STRING,
+                                TableFieldSchema.Mode.REPEATED));
+        TableSchema augmented =
+                base.toBuilder()
+                        .addFields(
+                                field(
+                                        "Source",
+                                        TableFieldSchema.Type.STRING,
+                                        TableFieldSchema.Mode.NULLABLE))
+                        .build();
+        Descriptors.Descriptor baseDescriptor =
+                BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(base);
+        Descriptors.Descriptor augmentedDescriptor =
+                BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(augmented);
+        Descriptors.Descriptor item = baseDescriptor.findFieldByName("item").getMessageType();
+        DynamicMessage baseRow =
+                DynamicMessage.newBuilder(baseDescriptor)
+                        .setField(baseDescriptor.findFieldByName("id"), 7L)
+                        .setField(
+                                baseDescriptor.findFieldByName("item"),
+                                DynamicMessage.newBuilder(item)
+                                        .setField(item.findFieldByName("sku"), "sku-1")
+                                        .build())
+                        .addRepeatedField(baseDescriptor.findFieldByName("tags"), "a")
+                        .addRepeatedField(baseDescriptor.findFieldByName("tags"), "b")
+                        .build();
+        DynamicMessage tail =
+                DynamicMessage.newBuilder(augmentedDescriptor)
+                        .setField(augmentedDescriptor.findFieldByName("source"), "s")
+                        .buildPartial();
+
+        GenericRecord split =
+                new ProtoToAvroConverter(
+                                augmented,
+                                baseDescriptor,
+                                augmentedDescriptor,
+                                TableSchemaToAvroConverter.convert(augmented))
+                        .convert(baseRow, tail);
+        GenericRecord merged =
+                new Setup(augmented, augmentedDescriptor)
+                        .converter.convert(
+                                DynamicMessage.parseFrom(
+                                        augmentedDescriptor,
+                                        baseRow.toByteString().concat(tail.toByteString())));
+
+        assertThat(split).isEqualTo(merged);
+        assertThat(split.get("Source")).hasToString("s");
+        assertThat(((GenericRecord) split.get("item")).get("sku")).hasToString("sku-1");
+    }
+
     private static TableFieldSchema field(
             String name, TableFieldSchema.Type type, TableFieldSchema.Mode mode) {
         return TableFieldSchema.newBuilder().setName(name).setType(type).setMode(mode).build();

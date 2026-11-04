@@ -31,7 +31,9 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SerializedRow;
 
 import javax.annotation.Nullable;
 
@@ -195,6 +197,41 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         return rowAugmentingSerializer == null
                 ? serializer.serialize(element)
                 : rowAugmentingSerializer.serialize(element, destination);
+    }
+
+    /**
+     * Serializes a row for its destination without encoding it, for a write method that walks the
+     * row rather than sending its bytes.
+     *
+     * <p>The row's base is the serializer's own: the message it built when it is a {@link
+     * ProtoRowMessageSerializer}, and its bytes otherwise. Configured additional or write-only
+     * fields are the row's tail. {@link SerializedRow#toByteString()} returns what {@link
+     * #serialize(Object, TableDestination)} would.
+     *
+     * @throws SchemaDerivationException as {@link #serialize(Object, TableDestination)} does
+     */
+    @Nullable
+    public SerializedRow serializeRow(T element, TableDestination destination) throws IOException {
+        return rowAugmentingSerializer == null
+                ? SerializedRow.serialize(serializer, element)
+                : rowAugmentingSerializer.serializeRow(element, destination);
+    }
+
+    /**
+     * Returns whether rows carry fields added after the serializer, which a {@link SerializedRow}
+     * holds as its tail.
+     */
+    public boolean addsRowFields() {
+        return rowAugmentingSerializer != null;
+    }
+
+    /**
+     * Returns the configured serializer's own descriptor for the destination, which describes a
+     * {@link SerializedRow}'s base; {@link #getWriteDescriptor(TableDestination)} adds the tail's
+     * fields to it.
+     */
+    public Descriptors.Descriptor getSerializerDescriptor(TableDestination destination) {
+        return serializer.getDescriptor(destination);
     }
 
     /** Returns the table create disposition. */

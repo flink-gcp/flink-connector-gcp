@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -42,6 +43,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaAdvancingSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -199,6 +201,10 @@ class FileLoadsWriterTest {
             if ("skip-me".equals(element.name)) {
                 return null;
             }
+            if ("truncated".equals(element.name)) {
+                // Field 1 declares five bytes and carries one: not a well-formed encoding.
+                return ByteString.copyFrom(new byte[] {0x0A, 0x05, 0x61});
+            }
             if (element.produceGarbageBytes) {
                 // Missing the REQUIRED name field; parsing rejects it.
                 return ByteString.EMPTY;
@@ -221,6 +227,90 @@ class FileLoadsWriterTest {
                                 : ByteString.copyFrom(huge));
             }
             return row.build().toByteString();
+        }
+    }
+
+    /**
+     * Hands over the message {@link TestRowSerializer} would encode; encoding it through {@link
+     * #serialize} is a test failure.
+     */
+    private static final class MessageTestRowSerializer
+            extends BigQueryProtoSerializationSchema<TestRow>
+            implements ProtoRowMessageSerializer<TestRow> {
+        private static final long serialVersionUID = 1L;
+
+        private final TestRowSerializer rows;
+
+        MessageTestRowSerializer(TableSchema schema) {
+            this.rows = new TestRowSerializer(schema);
+        }
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return rows.getTableSchema(destination);
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return rows.getDescriptor(destination);
+        }
+
+        @Override
+        public ByteString serialize(TestRow element) {
+            throw new AssertionError("the message must be handed over, not encoded");
+        }
+
+        @Override
+        public Message serializeToMessage(TestRow element) throws IOException {
+            ByteString bytes = rows.serialize(element);
+            return bytes == null ? null : DynamicMessage.parseFrom(rows.descriptor(), bytes);
+        }
+    }
+
+    /**
+     * Hands over a row of 2,048 references to one 1 MiB {@code ByteString}: past 2 GiB encoded, in
+     * 1 MiB of memory.
+     */
+    private static final class AliasedHugeRowSerializer
+            extends BigQueryProtoSerializationSchema<TestRow>
+            implements ProtoRowMessageSerializer<TestRow> {
+        private static final long serialVersionUID = 1L;
+
+        private static final TableSchema BLOBS =
+                TableSchema.newBuilder()
+                        .addFields(
+                                TableFieldSchema.newBuilder()
+                                        .setName("blobs")
+                                        .setType(TableFieldSchema.Type.BYTES)
+                                        .setMode(TableFieldSchema.Mode.REPEATED))
+                        .build();
+
+        private final TestRowSerializer rows = new TestRowSerializer(BLOBS);
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return BLOBS;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            return rows.descriptor();
+        }
+
+        @Override
+        public ByteString serialize(TestRow element) {
+            throw new AssertionError("the message must be handed over, not encoded");
+        }
+
+        @Override
+        public Message serializeToMessage(TestRow element) {
+            Descriptors.FieldDescriptor blobs = rows.descriptor().findFieldByName("blobs");
+            ByteString mebibyte = ByteString.copyFrom(new byte[1 << 20]);
+            DynamicMessage.Builder row = DynamicMessage.newBuilder(rows.descriptor());
+            for (int i = 0; i < 2048; i++) {
+                row.addRepeatedField(blobs, mebibyte);
+            }
+            return row.build();
         }
     }
 
@@ -283,12 +373,19 @@ class FileLoadsWriterTest {
             FailureHandler<BigQueryFailure> handler,
             TableSchema schema,
             AdditionalFields<TestRow> additionalFields) {
+        return config(handler, new TestRowSerializer(schema), additionalFields);
+    }
+
+    private static BigQuerySinkConfig<TestRow> config(
+            FailureHandler<BigQueryFailure> handler,
+            BigQueryProtoSerializationSchema<TestRow> serializer,
+            AdditionalFields<TestRow> additionalFields) {
         var builder =
                 BigQuerySink.<TestRow>builder()
                         .writeMethod(WriteMethod.FILE_LOADS)
                         .destinationResolver(
                                 (element, context) -> TableDestination.of("p", "d", element.table))
-                        .serializer(new TestRowSerializer(schema))
+                        .serializer(serializer)
                         .failureHandler(handler)
                         .fileLoadsOptions(
                                 FileLoadsOptions.builder()
@@ -862,6 +959,185 @@ class FileLoadsWriterTest {
                             assertThat(record.get("name")).hasToString("alpha");
                             assertThat(record.get("source")).hasToString("computed-alpha");
                         });
+    }
+
+    /**
+     * A serializer that hands its message over is converted from that message, with the added
+     * fields read from the sink's tail, and stages the same record as one returning bytes (#2019).
+     */
+    @Test
+    void stagesAHandedOverMessageWithItsPhysicalFieldsWithoutEncodingIt() throws Exception {
+        AdditionalFields<TestRow> additionalFields = sourceField();
+        InMemoryStagingStorage bytesStorage = new InMemoryStagingStorage();
+        InMemoryStagingStorage messageStorage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> bytesWriter =
+                writer(
+                        config(FailureHandler.failJob(), SCHEMA, additionalFields),
+                        bytesStorage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+        FileLoadsWriter<TestRow> messageWriter =
+                writer(
+                        config(
+                                FailureHandler.failJob(),
+                                new MessageTestRowSerializer(SCHEMA),
+                                additionalFields),
+                        messageStorage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+
+        for (FileLoadsWriter<TestRow> writer : List.of(bytesWriter, messageWriter)) {
+            writer.write(new TestRow("t", "alpha", 1L), CONTEXT);
+            writer.write(new TestRow("t", "beta", null), CONTEXT);
+            writer.write(new TestRow("t", "skip-me", 3L), CONTEXT);
+        }
+        String bytesUri = bytesWriter.prepareCommit().iterator().next().getUri();
+        String messageUri = messageWriter.prepareCommit().iterator().next().getUri();
+        bytesWriter.close();
+        messageWriter.close();
+
+        List<GenericRecord> fromMessages = readAvro(messageStorage.getObjects().get(messageUri));
+        assertThat(fromMessages).isEqualTo(readAvro(bytesStorage.getObjects().get(bytesUri)));
+        assertThat(fromMessages)
+                .extracting(record -> record.get("source").toString())
+                .containsExactly("computed-alpha", "computed-beta");
+        assertThat(fromMessages.get(1).get("value")).isNull();
+    }
+
+    /**
+     * The size limit counts the added fields of a row that was never encoded, and a row over it is
+     * routed with exactly the bytes the Storage Write paths would have sent.
+     */
+    @Test
+    void serializedRowLimitCountsAHandedOverRowsTailAndRoutesItsEncoding() throws Exception {
+        TestRow row = new TestRow("a", "row", 1L);
+        BigQuerySinkConfig<TestRow> probe =
+                config(FailureHandler.failJob(), new TestRowSerializer(SCHEMA), sourceField());
+        ByteString encoded = probe.serialize(row, TableDestination.of("p", "d", "a"));
+
+        InMemoryStagingStorage acceptedStorage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> accepted =
+                writer(
+                        config(
+                                FailureHandler.failJob(),
+                                new MessageTestRowSerializer(SCHEMA),
+                                sourceField()),
+                        acceptedStorage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxSerializedRowBytes(encoded.size())
+                                .build());
+        accepted.write(row, CONTEXT);
+        assertThat(accepted.prepareCommit()).hasSize(1);
+        accepted.close();
+
+        CollectingHandler handler = new CollectingHandler();
+        FileLoadsWriter<TestRow> rejected =
+                writer(
+                        config(handler, new MessageTestRowSerializer(SCHEMA), sourceField()),
+                        new InMemoryStagingStorage(),
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .maxSerializedRowBytes(encoded.size() - 1L)
+                                .build());
+        rejected.write(row, CONTEXT);
+        rejected.close();
+
+        assertThat(handler.rows)
+                .singleElement()
+                .satisfies(
+                        failure -> {
+                            assertThat(failure.getPayloadBytes()).isEqualTo(encoded);
+                            assertThat(failure.getErrorMessage())
+                                    .contains(" is " + encoded.size() + " bytes");
+                        });
+        Descriptors.Descriptor writeDescriptor =
+                probe.getWriteDescriptor(TableDestination.of("p", "d", "a"));
+        DynamicMessage routed =
+                DynamicMessage.newBuilder(writeDescriptor)
+                        .mergeFrom(handler.rows.get(0).getPayloadBytes())
+                        .buildPartial();
+        assertThat(routed.getField(writeDescriptor.findFieldByName("name"))).isEqualTo("row");
+        assertThat(routed.getField(writeDescriptor.findFieldByName("source")))
+                .isEqualTo("computed-row");
+    }
+
+    /**
+     * Bytes that are not a well-formed encoding are refused before the added fields follow them,
+     * and reach the handler as the serialization failure they were before #2019.
+     */
+    @Test
+    void routesMalformedSerializerBytesWithAddedFieldsAsASerializationFailure() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        CollectingHandler handler = new CollectingHandler();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(handler, SCHEMA, sourceField()),
+                        storage,
+                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+
+        writer.write(new TestRow("t", "truncated", 1L), CONTEXT);
+        assertThat(writer.prepareCommit()).isEmpty();
+        writer.close();
+
+        assertThat(handler.rows)
+                .singleElement()
+                .satisfies(
+                        failure -> {
+                            assertThat(failure.getErrorMessage())
+                                    .startsWith("Failed to serialize a record for");
+                            assertThat(failure.getPayloadBytes()).isNull();
+                        });
+        assertThat(storage.getObjects()).isEmpty();
+    }
+
+    /**
+     * Protobuf's size of a row past 2 GiB overflows negative; the row is routed as over the limit,
+     * without the encoding it cannot have, rather than passing the check into conversion.
+     */
+    @Test
+    void routesARowWhoseProtobufSizeOverflowedWithoutItsEncoding() throws Exception {
+        // The largest limit the builder accepts as well as the default: a row with no encoding
+        // fails under either.
+        for (long limit :
+                new long[] {FileLoadsOptions.DEFAULT_MAX_SERIALIZED_ROW_BYTES, Long.MAX_VALUE}) {
+            CollectingHandler handler = new CollectingHandler();
+            InMemoryStagingStorage storage = new InMemoryStagingStorage();
+            FileLoadsWriter<TestRow> writer =
+                    writer(
+                            config(handler, new AliasedHugeRowSerializer(), null),
+                            storage,
+                            FileLoadsOptions.builder()
+                                    .stagingPath("gs://bucket/prefix")
+                                    .maxSerializedRowBytes(limit)
+                                    .build());
+
+            writer.write(new TestRow("t", "huge", 1L), CONTEXT);
+            assertThat(writer.prepareCommit()).as("limit %s", limit).isEmpty();
+            writer.close();
+
+            assertThat(handler.rows)
+                    .as("limit %s", limit)
+                    .singleElement()
+                    .satisfies(
+                            failure -> {
+                                assertThat(failure.getPayloadBytes()).isNull();
+                                assertThat(failure.getErrorMessage())
+                                        .contains("is more than " + Integer.MAX_VALUE + " bytes")
+                                        .contains("no protobuf encoding can hold")
+                                        .doesNotContain("configured");
+                            });
+            assertThat(storage.getObjects()).as("limit %s", limit).isEmpty();
+        }
+    }
+
+    private static AdditionalFields<TestRow> sourceField() {
+        return AdditionalFields.<TestRow>builder()
+                .field(
+                        AdditionalField.of(
+                                "source",
+                                AdditionalFieldType.STRING,
+                                AdditionalFieldNullPolicy.REQUIRED,
+                                row -> "computed-" + row.name))
+                .build();
     }
 
     /**

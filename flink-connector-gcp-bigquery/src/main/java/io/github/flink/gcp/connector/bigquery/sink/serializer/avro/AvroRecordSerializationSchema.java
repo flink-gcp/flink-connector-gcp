@@ -16,15 +16,18 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.avro;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.IndexedRecord;
@@ -57,7 +60,8 @@ import java.io.IOException;
  */
 @Public
 public final class AvroRecordSerializationSchema
-        extends BigQueryProtoSerializationSchema<IndexedRecord> {
+        extends BigQueryProtoSerializationSchema<IndexedRecord>
+        implements ProtoRowMessageSerializer<IndexedRecord> {
 
     private static final long serialVersionUID = 1L;
 
@@ -144,7 +148,23 @@ public final class AvroRecordSerializationSchema
 
     @Override
     public ByteString serialize(IndexedRecord element) throws IOException {
-        return state().rowConverter.convert(element).toByteString();
+        return serializeToMessage(element).toByteString();
+    }
+
+    /**
+     * Converts a record into its protobuf row message, the row {@link #serialize} encodes.
+     *
+     * <p>Internal: the sink calls this to hand the row to a write method that walks the message
+     * rather than its bytes.
+     *
+     * @param element the record
+     * @return the row message
+     * @throws IOException if the record cannot be converted
+     */
+    @Internal
+    @Override
+    public Message serializeToMessage(IndexedRecord element) throws IOException {
+        return state().rowConverter.convert(element);
     }
 
     private ConversionState state() {

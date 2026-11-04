@@ -24,11 +24,14 @@ import com.google.cloud.bigquery.storage.v1.CivilTimeEncoder;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
+import com.google.protobuf.CodedOutputStream;
 import com.google.protobuf.DescriptorProtos.DescriptorProto;
 import com.google.protobuf.DescriptorProtos.FieldDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.InvalidProtocolBufferException;
+import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField.SchemaOwnership;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField.WriteOnlyField;
@@ -256,6 +259,212 @@ class ProtoRowAugmentingSerializerTest {
                         "The provider for required additional field required_value returned null");
     }
 
+    /**
+     * The row is the delegate's bytes followed by the encoded fields rather than the delegate's row
+     * parsed, given the fields and serialized again. Both decode to the same message, including
+     * when the delegate's bytes already carry a value under an added field's number: a set field's
+     * value is the later occurrence, and an omitted {@code NULLABLE} field leaves the delegate's.
+     */
+    @Test
+    void encodesTheSameRowAsSettingTheFieldsOnTheParsedDelegateRow() throws Exception {
+        AdditionalField<TestRecord> set =
+                AdditionalField.of(
+                        "set_value",
+                        AdditionalFieldType.STRING,
+                        AdditionalFieldNullPolicy.NULLABLE,
+                        record -> record.uuid);
+        AdditionalField<TestRecord> omitted =
+                AdditionalField.of(
+                        "omitted_value",
+                        AdditionalFieldType.STRING,
+                        AdditionalFieldNullPolicy.NULLABLE,
+                        record -> null);
+        Descriptors.Descriptor augmented =
+                serializer(new TestSerializer(), options(set, omitted)).getDescriptor(DESTINATION);
+        int setNumber = augmented.findFieldByName("set_value").getNumber();
+        int omittedNumber = augmented.findFieldByName("omitted_value").getNumber();
+        TestSerializer stray =
+                new TestSerializer() {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public ByteString serialize(TestRecord element) {
+                        try {
+                            ByteString.Output out = ByteString.newOutput();
+                            CodedOutputStream coded = CodedOutputStream.newInstance(out);
+                            coded.writeString(setNumber, "stale-set");
+                            coded.writeString(omittedNumber, "stale-omitted");
+                            coded.flush();
+                            return super.serialize(element).concat(out.toByteString());
+                        } catch (IOException e) {
+                            throw new AssertionError(e);
+                        }
+                    }
+                };
+        ProtoRowAugmentingSerializer<TestRecord> serializer =
+                serializer(stray, options(set, omitted));
+        TestRecord record = new TestRecord(5, "fresh", Instant.EPOCH);
+        Descriptors.Descriptor descriptor = serializer.getDescriptor(DESTINATION);
+
+        DynamicMessage expected =
+                DynamicMessage.newBuilder(descriptor)
+                        .mergeFrom(stray.serialize(record))
+                        .setField(descriptor.findFieldByName("set_value"), "fresh")
+                        .buildPartial();
+        DynamicMessage actual =
+                DynamicMessage.parseFrom(descriptor, serializer.serialize(record, DESTINATION));
+
+        assertThat(actual).isEqualTo(expected);
+        assertThat(actual.getField(descriptor.findFieldByName("set_value"))).isEqualTo("fresh");
+        assertThat(actual.getField(descriptor.findFieldByName("omitted_value")))
+                .isEqualTo("stale-omitted");
+    }
+
+    /**
+     * Each of these bytes would read the appended fields as part of a field it leaves open, so the
+     * row is refused before any provider runs, as parsing it used to refuse it.
+     */
+    @Test
+    void refusesDelegateBytesThatATailCannotFollow() {
+        byte[][] malformed = {
+            // Field 1, length-delimited, declares 5 bytes and carries 1.
+            {0x0A, 0x05, 0x61},
+            // Field 1, a group that is never closed.
+            {0x0B},
+            // An end-group tag for a group that was never opened.
+            {0x0C},
+            // A varint that never terminates.
+            {0x08, (byte) 0x80}
+        };
+        for (byte[] bytes : malformed) {
+            AtomicInteger calls = new AtomicInteger();
+            TestSerializer delegate =
+                    new TestSerializer() {
+                        private static final long serialVersionUID = 1L;
+
+                        @Override
+                        public ByteString serialize(TestRecord element) {
+                            return ByteString.copyFrom(bytes);
+                        }
+                    };
+            ProtoRowAugmentingSerializer<TestRecord> serializer =
+                    serializer(
+                            delegate,
+                            options(
+                                    AdditionalField.of(
+                                            "source",
+                                            AdditionalFieldType.STRING,
+                                            AdditionalFieldNullPolicy.REQUIRED,
+                                            record -> {
+                                                calls.incrementAndGet();
+                                                return "s";
+                                            })));
+
+            assertThatThrownBy(
+                            () ->
+                                    serializer.serialize(
+                                            new TestRecord(1, "u", Instant.EPOCH), DESTINATION))
+                    .as("bytes %s", Arrays.toString(bytes))
+                    .isInstanceOf(InvalidProtocolBufferException.class);
+            assertThat(calls).as("bytes %s", Arrays.toString(bytes)).hasValue(0);
+        }
+    }
+
+    /**
+     * Under a {@code proto3} delegate descriptor an appended field has no presence, so a provider
+     * returning its default value encodes nothing, and a tail alone would leave the delegate's
+     * value under that number in place. The row must still be the parse-and-set row, and its tail
+     * must carry what {@code FILE_LOADS} reads, including a value kept for a {@code null} provider.
+     */
+    @Test
+    void matchesTheParsedRowWhenAProto3DelegateCarriesAnAppendedNumber() throws Exception {
+        Descriptors.Descriptor proto3 = proto3Descriptor();
+        AdditionalField<TestRecord> defaulted =
+                AdditionalField.of(
+                        "defaulted_value",
+                        AdditionalFieldType.STRING,
+                        AdditionalFieldNullPolicy.NULLABLE,
+                        record -> "");
+        AdditionalField<TestRecord> omitted =
+                AdditionalField.of(
+                        "omitted_value",
+                        AdditionalFieldType.STRING,
+                        AdditionalFieldNullPolicy.NULLABLE,
+                        record -> null);
+        Descriptors.Descriptor augmented =
+                serializer(new TestSerializer(BASE_SCHEMA, proto3), options(defaulted, omitted))
+                        .getDescriptor(DESTINATION);
+        int defaultedNumber = augmented.findFieldByName("defaulted_value").getNumber();
+        int omittedNumber = augmented.findFieldByName("omitted_value").getNumber();
+        TestSerializer stray =
+                new TestSerializer(BASE_SCHEMA, proto3) {
+                    private static final long serialVersionUID = 1L;
+
+                    @Override
+                    public ByteString serialize(TestRecord element) {
+                        try {
+                            ByteString.Output out = ByteString.newOutput();
+                            CodedOutputStream coded = CodedOutputStream.newInstance(out);
+                            coded.writeString(defaultedNumber, "stale-defaulted");
+                            coded.writeString(omittedNumber, "stale-omitted");
+                            coded.flush();
+                            return super.serialize(element).concat(out.toByteString());
+                        } catch (IOException e) {
+                            throw new AssertionError(e);
+                        }
+                    }
+                };
+        ProtoRowAugmentingSerializer<TestRecord> serializer =
+                serializer(stray, options(defaulted, omitted));
+        TestRecord record = new TestRecord(5, "unused", Instant.EPOCH);
+        Descriptors.Descriptor descriptor = serializer.getDescriptor(DESTINATION);
+        Descriptors.FieldDescriptor defaultedField = descriptor.findFieldByName("defaulted_value");
+        Descriptors.FieldDescriptor omittedField = descriptor.findFieldByName("omitted_value");
+
+        DynamicMessage expected =
+                DynamicMessage.newBuilder(descriptor)
+                        .mergeFrom(stray.serialize(record))
+                        .setField(defaultedField, "")
+                        .buildPartial();
+        SerializedRow row = serializer.serializeRow(record, DESTINATION);
+        DynamicMessage actual = DynamicMessage.parseFrom(descriptor, row.toByteString());
+
+        assertThat(actual).isEqualTo(expected);
+        assertThat(actual.getField(defaultedField)).isEqualTo("");
+        assertThat(row.getSerializedSize()).isEqualTo(row.toByteString().size());
+        DynamicMessage tail = row.getTail(descriptor);
+        assertThat(tail.hasField(defaultedField)).isFalse();
+        assertThat(tail.getField(omittedField)).isEqualTo("stale-omitted");
+    }
+
+    @Test
+    void handsADelegateMessageOverWithoutEncodingIt() throws Exception {
+        MessageSerializer delegate = new MessageSerializer();
+        ProtoRowAugmentingSerializer<TestRecord> serializer =
+                serializer(
+                        delegate,
+                        options(
+                                AdditionalField.of(
+                                        "source",
+                                        AdditionalFieldType.STRING,
+                                        AdditionalFieldNullPolicy.REQUIRED,
+                                        record -> record.uuid)));
+        Descriptors.Descriptor descriptor = serializer.getDescriptor(DESTINATION);
+
+        SerializedRow row =
+                serializer.serializeRow(new TestRecord(9, "u", Instant.EPOCH), DESTINATION);
+        DynamicMessage decoded = DynamicMessage.parseFrom(descriptor, row.toByteString());
+
+        assertThat(row.getBase(delegate.getDescriptor(DESTINATION))).isSameAs(delegate.last);
+        assertThat(row.getTail(descriptor).getAllFields())
+                .containsOnlyKeys(descriptor.findFieldByName("source"));
+        assertThat(row.getSerializedSize()).isEqualTo(row.toByteString().size());
+        assertThat(decoded.getField(descriptor.findFieldByName("id"))).isEqualTo(9L);
+        assertThat(decoded.getField(descriptor.findFieldByName("source"))).isEqualTo("u");
+        assertThat(serializer.serializeRow(new TestRecord(-1, "skip", Instant.EPOCH), DESTINATION))
+                .isNull();
+    }
+
     @Test
     void delegateSkipsBeforeProvidersAndProviderFailuresNameTheField() throws Exception {
         AtomicInteger calls = new AtomicInteger();
@@ -451,7 +660,9 @@ class ProtoRowAugmentingSerializerTest {
                     @Override
                     public ByteString serialize(TestRecord element) {
                         evolved = true;
-                        return ByteString.EMPTY;
+                        // Not a well-formed encoding either: the destination's failure outranks
+                        // the record's, as it did when the engine parsed these bytes.
+                        return ByteString.copyFrom(new byte[] {0x0C});
                     }
                 };
         ProtoRowAugmentingSerializer<TestRecord> serializer =
@@ -607,6 +818,28 @@ class ProtoRowAugmentingSerializerTest {
         }
     }
 
+    /** The base schema's descriptor, declared {@code proto3}, where scalars have no presence. */
+    private static Descriptors.Descriptor proto3Descriptor() throws Exception {
+        DescriptorProto row =
+                DescriptorProto.newBuilder()
+                        .setName("Row")
+                        .addField(
+                                FieldDescriptorProto.newBuilder()
+                                        .setName("id")
+                                        .setNumber(1)
+                                        .setType(FieldDescriptorProto.Type.TYPE_INT64)
+                                        .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL))
+                        .build();
+        return Descriptors.FileDescriptor.buildFrom(
+                        FileDescriptorProto.newBuilder()
+                                .setName("row3.proto")
+                                .setSyntax("proto3")
+                                .addMessageType(row)
+                                .build(),
+                        new Descriptors.FileDescriptor[0])
+                .findMessageTypeByName("Row");
+    }
+
     private static Descriptors.Descriptor descriptorWithReservedRange() throws Exception {
         DescriptorProto row =
                 DescriptorProto.newBuilder()
@@ -691,6 +924,48 @@ class ProtoRowAugmentingSerializerTest {
                     .setField(rowDescriptor.findFieldByName("id"), element.id)
                     .build()
                     .toByteString();
+        }
+    }
+
+    /** Hands its row message over; encoding it through {@link #serialize} is a test failure. */
+    private static final class MessageSerializer
+            extends BigQueryProtoSerializationSchema<TestRecord>
+            implements ProtoRowMessageSerializer<TestRecord> {
+        private static final long serialVersionUID = 1L;
+
+        private transient Descriptors.Descriptor descriptor;
+        private transient Message last;
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return BASE_SCHEMA;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            if (descriptor == null) {
+                descriptor = descriptor(BASE_SCHEMA);
+            }
+            return descriptor;
+        }
+
+        @Override
+        public ByteString serialize(TestRecord element) {
+            throw new AssertionError("the message must be handed over, not encoded");
+        }
+
+        @Override
+        @Nullable
+        public Message serializeToMessage(TestRecord element) {
+            if (element.id < 0) {
+                return null;
+            }
+            Descriptors.Descriptor rowDescriptor = getDescriptor(DESTINATION);
+            last =
+                    DynamicMessage.newBuilder(rowDescriptor)
+                            .setField(rowDescriptor.findFieldByName("id"), element.id)
+                            .build();
+            return last;
         }
     }
 

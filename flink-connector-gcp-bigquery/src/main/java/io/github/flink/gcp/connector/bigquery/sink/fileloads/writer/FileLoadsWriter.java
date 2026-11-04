@@ -25,9 +25,7 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
-import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
@@ -41,10 +39,13 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.SerializedRow;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -224,11 +225,11 @@ public final class FileLoadsWriter<T>
     @Override
     public void visit(TableDestination destination, T element, Context context) throws IOException {
         config.prepareWriteSchema(destination);
-        ByteString rowBytes;
+        SerializedRow row;
         try {
             // A poison record must reach the handler no matter how the serializer fails,
             // matching the streaming writer's contract.
-            rowBytes = config.serialize(element, destination);
+            row = config.serializeRow(element, destination);
         } catch (SchemaDerivationException e) {
             // The destination's schema failure, not this record's; see SchemaDerivationException.
             throw e;
@@ -243,7 +244,7 @@ public final class FileLoadsWriter<T>
                                     e));
             return;
         }
-        if (rowBytes == null) {
+        if (row == null) {
             // Skip by contract, not a failure. Ahead of stateFor(...), so a record written nowhere
             // opens no file — and ahead of every metrics.forTable(...), which registers a
             // destination's counters on first use and can never unregister them, so a table only
@@ -253,20 +254,33 @@ public final class FileLoadsWriter<T>
             metrics.recordSkipped();
             return;
         }
-        if (rowBytes.size() > maxSerializedRowBytes) {
+        // The size of the bytes the serializer would have returned, computed without encoding
+        // them; the bytes themselves are encoded only for a row routed to the failure handler.
+        long rowSize = row.getSerializedSize();
+        // A row past Integer.MAX_VALUE bytes has no encoding, so it fails under any configured
+        // limit, Long.MAX_VALUE included; see getSerializedSize.
+        boolean encodable = rowSize <= Integer.MAX_VALUE;
+        if (!encodable || rowSize > maxSerializedRowBytes) {
             metrics.recordFailed(metrics.forTable(destination));
             config.getFailureHandler()
                     .handle(
                             FailedRow.of(
                                     destination,
-                                    rowBytes,
-                                    "A serialized row for "
-                                            + destination
-                                            + " is "
-                                            + rowBytes.size()
-                                            + " bytes, exceeding the configured "
-                                            + maxSerializedRowBytes
-                                            + "-byte FILE_LOADS limit",
+                                    encodable ? row.toByteString() : null,
+                                    encodable
+                                            ? "A serialized row for "
+                                                    + destination
+                                                    + " is "
+                                                    + rowSize
+                                                    + " bytes, exceeding the configured "
+                                                    + maxSerializedRowBytes
+                                                    + "-byte FILE_LOADS limit"
+                                            : "A serialized row for "
+                                                    + destination
+                                                    + " is more than "
+                                                    + Integer.MAX_VALUE
+                                                    + " bytes, which no protobuf encoding can"
+                                                    + " hold",
                                     null));
             return;
         }
@@ -274,15 +288,18 @@ public final class FileLoadsWriter<T>
         boolean newlyActive = !destinations.containsKey(destination);
         GenericRecord record;
         try {
-            DynamicMessage row = DynamicMessage.parseFrom(state.descriptor, rowBytes);
-            record = state.converter.convert(row);
+            // A serializer that hands over its message is not parsed at all; one that returns
+            // bytes is parsed once, against its own descriptor rather than the augmented one.
+            record =
+                    state.converter.convert(
+                            row.getBase(state.descriptor), row.getTail(state.writeDescriptor));
         } catch (InvalidProtocolBufferException e) {
             metrics.recordFailed(metrics.forTable(destination));
             config.getFailureHandler()
                     .handle(
                             FailedRow.of(
                                     destination,
-                                    rowBytes,
+                                    row.toByteString(),
                                     "A row for "
                                             + destination
                                             + " does not conform to the serializer's descriptor: "
@@ -295,7 +312,7 @@ public final class FileLoadsWriter<T>
                     .handle(
                             FailedRow.of(
                                     destination,
-                                    rowBytes,
+                                    row.toByteString(),
                                     "Failed to convert a row for " + destination + " to Avro: " + e,
                                     e));
             return;
@@ -403,13 +420,20 @@ public final class FileLoadsWriter<T>
         DestinationState state = destinations.get(destination);
         if (state == null) {
             TableSchema tableSchema = config.getTableSchema(destination);
-            Descriptors.Descriptor descriptor = config.getWriteDescriptor(destination);
+            Descriptors.Descriptor descriptor = config.getSerializerDescriptor(destination);
+            // Only a row with added fields has a tail to read them from; without any, a second
+            // descriptor from a serializer that derives one per call would give the plan nothing
+            // to read but could still disagree with the first.
+            Descriptors.Descriptor writeDescriptor =
+                    config.addsRowFields() ? config.getWriteDescriptor(destination) : null;
             Schema avroSchema = TableSchemaToAvroConverter.convert(tableSchema);
             state =
                     new DestinationState(
                             descriptor,
+                            writeDescriptor,
                             avroSchema,
-                            new ProtoToAvroConverter(tableSchema, descriptor, avroSchema),
+                            new ProtoToAvroConverter(
+                                    tableSchema, descriptor, writeDescriptor, avroSchema),
                             formatFor(destination, tableSchema));
         }
         return state;
@@ -548,7 +572,12 @@ public final class FileLoadsWriter<T>
     /** Per-destination conversion state and the currently open file, if any. */
     private static final class DestinationState {
 
+        /** The serializer's own descriptor, which a row's base has. */
         private final Descriptors.Descriptor descriptor;
+
+        /** The descriptor with the sink's added fields, which a row's tail has, or null. */
+        @Nullable private final Descriptors.Descriptor writeDescriptor;
+
         private final Schema avroSchema;
         private final ProtoToAvroConverter converter;
         private final StagingFormat format;
@@ -557,10 +586,12 @@ public final class FileLoadsWriter<T>
 
         DestinationState(
                 Descriptors.Descriptor descriptor,
+                @Nullable Descriptors.Descriptor writeDescriptor,
                 Schema avroSchema,
                 ProtoToAvroConverter converter,
                 StagingFormat format) {
             this.descriptor = descriptor;
+            this.writeDescriptor = writeDescriptor;
             this.avroSchema = avroSchema;
             this.converter = converter;
             this.format = format;

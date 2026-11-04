@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0113: BigQuery additional fields are opt-in and share the serializer boundary
 
 - Status: Accepted
-- Date: 2026-08-14; refined 2026-10-31 ([#1950], [#1954])
-- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950], [#1954]
+- Date: 2026-08-14; refined 2026-10-31 ([#1950], [#1954]) and 2026-11-04 ([#2019])
+- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950], [#1954], [#2019]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#additional-physical-fields`
 
@@ -187,5 +187,52 @@ The alternative was weighed as follows.
 - **Take the derivation out of `serialize` and repeat `prepare` after it, outside the boundary.**
   The engine adds the appended fields with the descriptor it derives, and their value providers fail per record, so the writers would need two row-failure boundaries around one call that one boundary covers today, in each of the three writers.
 
+## Revision: the appended fields follow the serializer's row instead of re-encoding it (2026-11-04)
+
+[#2019] found that the engine re-encoded every row it extended.
+It parsed the serializer's bytes into a builder of the augmented descriptor, set the appended fields and serialized the builder again, and `FILE_LOADS` then parsed the result once more to convert it to Avro.
+Thread dumps of a streaming `FILE_LOADS` job with three additional fields put those two passes at about 30% of the writer's task thread.
+
+**The engine now encodes only the appended fields, and the row is the serializer's bytes followed by them.**
+The appended fields are set on a tail message of the augmented descriptor that sets nothing else.
+Protobuf decodes a concatenation of two encodings as their merge, and for a singular scalar field the last occurrence wins, so the concatenated row decodes as the re-encoded one did.
+Concatenation alone does not reproduce that row when the serializer's bytes already carry a value under an appended number, which a serializer passing on rows this sink extended earlier would do.
+Under a `proto3` serializer descriptor an appended field has no presence, so a provider returning its default value encodes nothing and the serializer's value survives; and `FILE_LOADS` reads appended fields from the tail alone, so a value the old row kept for a `null` provider would be lost.
+When the walk described below finds such a number, the engine builds that row the old way, by parsing the bytes against the augmented descriptor and setting the fields, and splits it: the appended fields go to the tail and the rest is encoded again as the base.
+Only those rows pay for a parse.
+The equivalence depends on every appended field being a singular scalar, which the declaration API already requires; a message field would merge with an earlier occurrence, and a repeated one would append to it.
+It also depends on the serializer's bytes being a well-formed encoding.
+Bytes whose last field declares more bytes than remain, or that leave a group open, would read the tail as part of that field and could decode as another valid row.
+The engine therefore walks bytes it did not get as a message, without building anything and noting any appended number on the way, and refuses a row that is not a well-formed encoding at the point where the parse used to fail: after the destination's schema derivation and before any provider runs.
+The walk sees framing only.
+The one parse failure it does not see, invalid UTF-8 in a string field of a `proto3` serializer descriptor, now reaches the service on the Storage Write API paths, as it does from a sink without appended fields, and `FILE_LOADS` still reports it when it parses the row.
+
+**`FILE_LOADS` converts the serializer's own message where it can.**
+The four built-in serializers implement an internal interface that returns the row message they build before encoding it.
+The writer converts that message directly and reads the appended fields from the tail, so such a row is neither encoded nor parsed after the serializer.
+A custom serializer keeps the byte contract, and its bytes are parsed once, against its own descriptor.
+`maxSerializedRowBytes` still applies to the encoded size of the whole row, which the writer computes without encoding it; the bytes a `FailedRow` carries are encoded only when a row is routed to the failure handler.
+Protobuf computes that size as an `int` without an overflow check, for the serializer's row and for the tail alike, and repeated references to one `ByteString` can pass 2 GiB in little memory; such a size is negative, so the writer fails the row under any configured limit, `Long.MAX_VALUE` included, and routes it without a payload, which it could not encode.
+A size wrapped past 4 GiB reads positive again and is not detected; before this change such a row failed while it was being encoded.
+
+A probe of the writer's per-record cost, run single-threaded against the previous code with staging bytes discarded, measured the following medians for a nested message of about 9.5 KB with 120 repeated sub-messages and for a one-field message.
+Each range spans three runs with different generated inputs, alternating the two builds, and staged bytes per record were equal on both sides.
+
+| Row | Additional fields | Before | After |
+|---|---:|---:|---:|
+| Nested | 3 | 281-312 µs | 134-149 µs |
+| Nested | 0 | 207-225 µs | 134-149 µs |
+| One field | 3 | 1.62-1.79 µs | 0.95-1.06 µs |
+| One field | 0 | 0.66-0.79 µs | 0.46-0.52 µs |
+
+The alternatives were weighed as follows.
+
+- **Add a message-returning method to `BigQueryProtoSerializationSchema`.**
+  The type is `@Public`, so the method would be frozen with it and every custom serializer would inherit it.
+  An internal interface on the built-in serializers reaches the rows the measurement was about, and its methods stay free to change; removing the interface from those `@Public` classes may still need a compatibility exclusion.
+- **Encode the appended fields by hand rather than through a tail message.**
+  Setting a field on the tail is what checks a provider's value against the field's type and names the field when it is wrong; hand encoding would have to repeat that check for every supported type.
+
 [#1950]: https://github.com/flink-gcp/flink-connector-gcp/issues/1950
 [#1954]: https://github.com/flink-gcp/flink-connector-gcp/issues/1954
+[#2019]: https://github.com/flink-gcp/flink-connector-gcp/issues/2019

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
@@ -26,6 +27,7 @@ import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import java.io.IOException;
@@ -53,7 +55,7 @@ import java.io.IOException;
  */
 @Public
 public final class ProtoMessageSerializationSchema<T extends Message>
-        extends BigQueryProtoSerializationSchema<T> {
+        extends BigQueryProtoSerializationSchema<T> implements ProtoRowMessageSerializer<T> {
 
     private static final long serialVersionUID = 1L;
 
@@ -114,7 +116,23 @@ public final class ProtoMessageSerializationSchema<T extends Message>
 
     @Override
     public ByteString serialize(T element) throws IOException {
-        return state().rowConverter.convert(element).toByteString();
+        return serializeToMessage(element).toByteString();
+    }
+
+    /**
+     * Converts a record into its protobuf row message, the row {@link #serialize} encodes.
+     *
+     * <p>Internal: the sink calls this to hand the row to a write method that walks the message
+     * rather than its bytes.
+     *
+     * @param element the record
+     * @return the row message
+     * @throws IOException if the record cannot be converted
+     */
+    @Internal
+    @Override
+    public Message serializeToMessage(T element) throws IOException {
+        return state().rowConverter.convert(element);
     }
 
     private ConversionState state() {

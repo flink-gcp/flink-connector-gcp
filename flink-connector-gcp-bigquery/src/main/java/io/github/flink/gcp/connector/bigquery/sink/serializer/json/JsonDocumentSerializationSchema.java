@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.json;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
@@ -24,9 +25,11 @@ import com.google.cloud.bigquery.storage.v1.JsonToProtoMessage;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
 import org.json.JSONObject;
@@ -56,8 +59,8 @@ import java.io.IOException;
  * choose and throughput matters, a native protobuf record avoids both.
  */
 @Public
-public final class JsonDocumentSerializationSchema
-        extends BigQueryProtoSerializationSchema<String> {
+public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializationSchema<String>
+        implements ProtoRowMessageSerializer<String> {
 
     private static final long serialVersionUID = 1L;
 
@@ -142,6 +145,22 @@ public final class JsonDocumentSerializationSchema
 
     @Override
     public ByteString serialize(String element) throws IOException {
+        return serializeToMessage(element).toByteString();
+    }
+
+    /**
+     * Converts a record into its protobuf row message, the row {@link #serialize} encodes.
+     *
+     * <p>Internal: the sink calls this to hand the row to a write method that walks the message
+     * rather than its bytes.
+     *
+     * @param element the record
+     * @return the row message
+     * @throws IOException if the record cannot be converted
+     */
+    @Internal
+    @Override
+    public Message serializeToMessage(String element) throws IOException {
         Preconditions.checkNotNull(element, "element must not be null");
         // Derived outside the try below, so that a schema no wire descriptor can be derived from
         // fails as itself rather than being relabelled "Failed to convert a JSON record" — it is a
@@ -160,10 +179,8 @@ public final class JsonDocumentSerializationSchema
             throw new IOException("Record is an empty JSON object, which has no columns to write");
         }
         try {
-            return JsonToProtoMessage.INSTANCE
-                    .convertToProtoMessage(
-                            descriptor, tableSchema, json, options.isIgnoreUnknownFields())
-                    .toByteString();
+            return JsonToProtoMessage.INSTANCE.convertToProtoMessage(
+                    descriptor, tableSchema, json, options.isIgnoreUnknownFields());
         } catch (RuntimeException e) {
             // The client library reports every per-row problem — an unconvertible value, a missing
             // REQUIRED column, an unknown field — as an unchecked exception. The serializer
