@@ -42,7 +42,9 @@ import java.util.Objects;
  * Builder#subscriberBufferMaxMessages(long)} and {@link Builder#subscriberBufferMaxBytes(long)}. A
  * separate per-split bound parks subscribers paused by watermark alignment through {@link
  * Builder#pausedSplitBufferMaxMessages(long)} and {@link Builder#pausedSplitBufferMaxBytes(long)}.
- * The source still acknowledges emitted records only after checkpoint completion.
+ * Both bounds default to twice the effective flow-control limits per subscriber, so that SDK flow
+ * control, not either bound, is what holds a backpressured subscriber back. The source still
+ * acknowledges emitted records only after checkpoint completion.
  *
  * <p>The subscriber shutdown <em>mode</em> is deliberately not a knob. It is fixed to {@code
  * NACK_IMMEDIATELY} so that closing a reader releases messages at once; the SDK's {@code
@@ -57,16 +59,15 @@ public final class PubSubSubscriberOptions implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    private static final long DEFAULT_SUBSCRIBER_BUFFER_MAX_MESSAGES = 10_000;
-    private static final long DEFAULT_SUBSCRIBER_BUFFER_MAX_BYTES = 64L * 1024 * 1024;
-
     private static final PubSubSubscriberOptions DEFAULTS = builder().build();
 
     @Nullable private final Long flowControlMaxOutstandingElementCount;
     @Nullable private final Long flowControlMaxOutstandingRequestBytes;
-    // Nullable only on a Java-serialized instance written before these fields existed. Keeping the
-    // UID lets a restored source retain every older setting; the getters supply this version's
-    // defaults for the two fields ObjectInputStream leaves null.
+    // Null when unset, which derives the budget from flow control. A Java-serialized instance keeps
+    // what it was written with: one from before these fields existed reads them as null and takes
+    // the derived budget, while one written between #1138 and #2020 carries that version's fixed
+    // default as an explicit cap, which build() would now reject and only the reader's warning
+    // reports. Options travel in the job graph, which a resubmission rebuilds through build().
     @Nullable private final Long subscriberBufferMaxMessages;
     @Nullable private final Long subscriberBufferMaxBytes;
     @Nullable private final Long pausedSplitBufferMaxMessages;
@@ -131,18 +132,40 @@ public final class PubSubSubscriberOptions implements Serializable {
         return flowControlMaxOutstandingRequestBytes;
     }
 
-    /** Returns the reader-wide hard cap on messages retained in subscriber buffers. */
+    /**
+     * Returns the reader-wide hard cap on messages retained in subscriber buffers: the configured
+     * cap, or, when it is unset, the cap of a reader holding one subscriber — twice the effective
+     * flow-control outstanding-message limit, or an explicit {@link
+     * #getPausedSplitBufferMaxMessages()} where that is larger. A reader holding several
+     * subscribers scales an unset cap by their count.
+     */
     public long getSubscriberBufferMaxMessages() {
-        return subscriberBufferMaxMessages == null
-                ? DEFAULT_SUBSCRIBER_BUFFER_MAX_MESSAGES
-                : subscriberBufferMaxMessages;
+        return SubscriberBufferLimits.of(this).maxMessages(1);
     }
 
-    /** Returns the reader-wide hard cap on serialized bytes retained in subscriber buffers. */
+    /**
+     * Returns the reader-wide hard cap on serialized bytes retained in subscriber buffers: the
+     * configured cap, or, when it is unset, the cap of a reader holding one subscriber — twice the
+     * effective flow-control outstanding-byte limit, or an explicit {@link
+     * #getPausedSplitBufferMaxBytes()} where that is larger. A reader holding several subscribers
+     * scales an unset cap by their count, and at run time an unset cap is also never less than
+     * twice the largest message a subscriber has received, so this is the configuration's baseline
+     * rather than the most a reader can then hold.
+     */
     public long getSubscriberBufferMaxBytes() {
-        return subscriberBufferMaxBytes == null
-                ? DEFAULT_SUBSCRIBER_BUFFER_MAX_BYTES
-                : subscriberBufferMaxBytes;
+        return SubscriberBufferLimits.of(this).maxBytes(1);
+    }
+
+    /** The configured message cap, or {@code null} when it is derived from flow control. */
+    @Nullable
+    Long configuredSubscriberBufferMaxMessages() {
+        return subscriberBufferMaxMessages;
+    }
+
+    /** The configured byte cap, or {@code null} when it is derived from flow control. */
+    @Nullable
+    Long configuredSubscriberBufferMaxBytes() {
+        return subscriberBufferMaxBytes;
     }
 
     /**
@@ -226,8 +249,8 @@ public final class PubSubSubscriberOptions implements Serializable {
             return false;
         }
         PubSubSubscriberOptions that = (PubSubSubscriberOptions) o;
-        return getSubscriberBufferMaxMessages() == that.getSubscriberBufferMaxMessages()
-                && getSubscriberBufferMaxBytes() == that.getSubscriberBufferMaxBytes()
+        return Objects.equals(subscriberBufferMaxMessages, that.subscriberBufferMaxMessages)
+                && Objects.equals(subscriberBufferMaxBytes, that.subscriberBufferMaxBytes)
                 && maxRecordsPerFetch == that.maxRecordsPerFetch
                 && Objects.equals(awaitAckConfirmation, that.awaitAckConfirmation)
                 && Objects.equals(
@@ -251,8 +274,8 @@ public final class PubSubSubscriberOptions implements Serializable {
         return Objects.hash(
                 flowControlMaxOutstandingElementCount,
                 flowControlMaxOutstandingRequestBytes,
-                getSubscriberBufferMaxMessages(),
-                getSubscriberBufferMaxBytes(),
+                subscriberBufferMaxMessages,
+                subscriberBufferMaxBytes,
                 pausedSplitBufferMaxMessages,
                 pausedSplitBufferMaxBytes,
                 parallelPullCount,
@@ -272,9 +295,9 @@ public final class PubSubSubscriberOptions implements Serializable {
                 + ", flowControlMaxOutstandingRequestBytes="
                 + flowControlMaxOutstandingRequestBytes
                 + ", subscriberBufferMaxMessages="
-                + getSubscriberBufferMaxMessages()
+                + subscriberBufferMaxMessages
                 + ", subscriberBufferMaxBytes="
-                + getSubscriberBufferMaxBytes()
+                + subscriberBufferMaxBytes
                 + ", pausedSplitBufferMaxMessages="
                 + pausedSplitBufferMaxMessages
                 + ", pausedSplitBufferMaxBytes="
@@ -304,8 +327,8 @@ public final class PubSubSubscriberOptions implements Serializable {
 
         @Nullable private Long flowControlMaxOutstandingElementCount;
         @Nullable private Long flowControlMaxOutstandingRequestBytes;
-        private long subscriberBufferMaxMessages = DEFAULT_SUBSCRIBER_BUFFER_MAX_MESSAGES;
-        private long subscriberBufferMaxBytes = DEFAULT_SUBSCRIBER_BUFFER_MAX_BYTES;
+        @Nullable private Long subscriberBufferMaxMessages;
+        @Nullable private Long subscriberBufferMaxBytes;
         @Nullable private Long pausedSplitBufferMaxMessages;
         @Nullable private Long pausedSplitBufferMaxBytes;
         @Nullable private Integer parallelPullCount;
@@ -361,6 +384,25 @@ public final class PubSubSubscriberOptions implements Serializable {
          * alignment, their subscribers are parked; otherwise the source coordinator fails the job
          * so the response remains visible while downstream polling is stopped.
          *
+         * <p>Optional; defaults to <b>twice</b> the effective {@link
+         * #flowControlMaxOutstandingElementCount(long)} for every subscriber the reader holds — so
+         * 2000 messages for a reader with one subscriber when nothing is set — or to an explicit
+         * {@link #pausedSplitBufferMaxMessages(long)} per subscriber where that is larger, so that
+         * the per-split park stays reachable. Acknowledgements wait for a checkpoint, so whenever
+         * downstream drains more slowly than Pub/Sub delivers, a subscriber's buffer fills until
+         * its flow control stops the client, which is up to one flow-control window. At twice that
+         * window, flow control is what holds a backpressured reader back, and only a downstream
+         * that stops consuming for longer than {@link #maxAckExtensionPeriod(Duration)} — after
+         * which the client lets leases lapse and keeps receiving — reaches the cap.
+         *
+         * <p>An explicit cap is the reader's, not a subscriber's, and is not scaled. {@link
+         * #build()} rejects one below twice the effective flow-control limit: below one window a
+         * downstream that merely slows crosses it, failing the job and failing it again on every
+         * restart over the backlog, and below two it leaves too little headroom for the deliveries
+         * that pass the window. A reader holding several subscribers whose combined share passes an
+         * explicit cap logs a warning when it registers them. To hold less in memory, lower the
+         * flow-control limits instead.
+         *
          * <p>This cap does not include records already handed to Flink's fetcher queues. Use {@link
          * #maxRecordsPerFetch(int)} and Flink's {@code source.reader.element.queue.capacity} for
          * that separate footprint.
@@ -380,6 +422,15 @@ public final class PubSubSubscriberOptions implements Serializable {
          * Sets the hard aggregate serialized-byte cap corresponding to {@link
          * #subscriberBufferMaxMessages(long)}. Both caps apply, and the first delivery that would
          * cross either one is rejected.
+         *
+         * <p>Optional; defaults to <b>twice</b> the effective {@link
+         * #flowControlMaxOutstandingRequestBytes(long)} for every subscriber the reader holds — so
+         * 200 MiB for a reader with one subscriber when nothing is set — or to an explicit {@link
+         * #pausedSplitBufferMaxBytes(long)} per subscriber where that is larger, and never to less
+         * than twice the largest message received, since the client admits one message larger than
+         * its byte limit once its window is free; for the reason given on {@link
+         * #subscriberBufferMaxMessages(long)}, which also describes the rejection of an explicit
+         * cap below twice the effective flow-control limit.
          *
          * <p>Sizes use {@code PubsubMessage.getSerializedSize()}, the same unit as the SDK's flow
          * control.
@@ -653,6 +704,10 @@ public final class PubSubSubscriberOptions implements Serializable {
          * Builds the options.
          *
          * @return the options
+         * @throws IllegalStateException if {@code minDurationPerAckExtension} is not shorter than
+         *     {@code maxDurationPerAckExtension}
+         * @throws IllegalArgumentException if an explicit subscriber-buffer cap is below twice the
+         *     effective flow-control limit it shadows
          */
         public PubSubSubscriberOptions build() {
             // The SDK enforces this itself, but with a message-less argument check; saying which
@@ -662,6 +717,12 @@ public final class PubSubSubscriberOptions implements Serializable {
                             || maxDurationPerAckExtension == null
                             || minDurationPerAckExtension.compareTo(maxDurationPerAckExtension) < 0,
                     "minDurationPerAckExtension must be shorter than maxDurationPerAckExtension.");
+            SubscriberBufferLimits.checkCoversFlowControl(
+                    subscriberBufferMaxMessages,
+                    subscriberBufferMaxBytes,
+                    flowControlMaxOutstandingElementCount,
+                    flowControlMaxOutstandingRequestBytes,
+                    SubscriberBufferLimits.Names.BUILDER);
             return new PubSubSubscriberOptions(this);
         }
     }

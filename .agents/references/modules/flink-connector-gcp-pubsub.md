@@ -164,7 +164,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `docs/adr/0066`).
   One `SubscriberBufferBudget` is shared by every split subscriber in the reader and admits a
   delivery only when both the aggregate message and serialized-byte totals remain at or below
-  `subscriberBufferMaxMessages` / `subscriberBufferMaxBytes` (10000 / 64 MiB by default).
+  `subscriberBufferMaxMessages` / `subscriberBufferMaxBytes`.
+  **Left unset, both are twice the effective flow-control limits per registered or starting
+  subscriber** (#2020) — raised to an explicit paused-split bound where that is larger, and in
+  bytes never below twice the largest message received, since the client admits one message
+  larger than its byte limit. `SubscriberBufferLimits` resolves them; the paused-split default is
+  the twice-flow-control lapse bound alone. The getters return the configured baseline, not the
+  run-time widened cap. Never reintroduce a fixed default — any value below one flow-control window is crossed by
+  ordinary backpressure and becomes a restart loop over the backlog. An explicit budget is not
+  scaled; `build()` rejects one below twice the effective flow-control limit, the table mapper runs the same check
+  under the DDL keys first, and a reader whose subscribers outgrow an explicit budget warns once.
+  The `@Public` getters keep `long` and return the one-subscriber value when unset; equality
+  compares the configured fields.
   The crossing delivery is NACKed before `AckTracker` or the deque sees it, and every subscriber is
   asked to stop asynchronously.
   If every assigned split is alignment-paused, the fetcher completes the existing park lifecycle;

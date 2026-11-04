@@ -127,11 +127,12 @@ final class SubscriberRoster {
         // Below the guard, not above it: the registry is shared with every split reader this
         // reader's supplier makes, so evicting on a removal this one does not own would drop
         // another's live subscriber from the gauges with nothing to say so.
-        bufferBudget.unregister(split.splitId());
         metrics.subscriberClosed(split.splitId());
         if (slot.isParked()) {
-            // Nothing to close and nothing to nack: parking already did both. The count still has
-            // to be given back, or the gauge keeps reporting a split that no longer exists.
+            // Nothing to close and nothing to nack: parking already did both, and unregistered it
+            // from the budget. The count still has to be given back, or the gauge keeps reporting
+            // a split that no longer exists.
+            bufferBudget.unregister(split.splitId());
             metrics.splitUnparked();
             return;
         }
@@ -148,7 +149,15 @@ final class SubscriberRoster {
             // SourceReaderBase's eofRecordEvaluator branch, and PubSubSourceReader supplies none,
             // while the enumerator never removes a split either. One list, so the subscriber is
             // released whichever step throws.
-            Closers.closeAll(subscriber::checkFailure, subscriber);
+            //
+            // The budget is unregistered after the close, as the park and closeAll() do: an unset
+            // budget is a share per registered subscriber, and dropping the share while the close
+            // has not yet released this subscriber's buffered messages would shrink the cap under
+            // them and could fail a healthy peer's next reservation (#2020).
+            Closers.closeAll(
+                    subscriber::checkFailure,
+                    subscriber,
+                    () -> bufferBudget.unregister(split.splitId()));
         } catch (Exception e) {
             throw new RuntimeException(
                     "Failed to close the Pub/Sub subscriber for split " + split.splitId(), e);

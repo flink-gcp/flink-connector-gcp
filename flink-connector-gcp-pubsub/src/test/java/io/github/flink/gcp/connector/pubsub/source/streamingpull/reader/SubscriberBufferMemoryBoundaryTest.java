@@ -25,7 +25,10 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** Verifies the default subscriber-buffer cap in a modest, constrained child JVM. */
+/**
+ * Verifies the default subscriber-buffer cap of a one-subscriber reader — twice the SDK's default
+ * flow-control message limit — in a modest, constrained child JVM.
+ */
 class SubscriberBufferMemoryBoundaryTest {
 
     @Test
@@ -53,6 +56,6 @@ class SubscriberBufferMemoryBoundaryTest {
 
         assertThat(completed).as(output).isTrue();
         assertThat(process.exitValue()).as(output).isZero();
-        assertThat(output).contains("PASS buffered=10000 rejected=1");
+        assertThat(output).contains("PASS buffered=2000 rejected=1");
     }
 }

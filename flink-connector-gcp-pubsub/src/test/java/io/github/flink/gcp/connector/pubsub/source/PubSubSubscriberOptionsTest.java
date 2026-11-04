@@ -37,10 +37,11 @@ class PubSubSubscriberOptionsTest {
 
         assertThat(options.getFlowControlMaxOutstandingElementCount()).isNull();
         assertThat(options.getFlowControlMaxOutstandingRequestBytes()).isNull();
-        assertThat(options.getSubscriberBufferMaxMessages()).isEqualTo(10_000);
-        assertThat(options.getSubscriberBufferMaxBytes()).isEqualTo(64L * 1024 * 1024);
+        // Unset, so a one-subscriber reader's cap is twice the SDK's flow-control defaults.
+        assertThat(options.getSubscriberBufferMaxMessages()).isEqualTo(2_000);
+        assertThat(options.getSubscriberBufferMaxBytes()).isEqualTo(200L * 1024 * 1024);
         // Unset, which resolves to twice the effective flow-control limits rather than to a
-        // number of their own — PausedSplitBufferLimits is where that fallback lives.
+        // number of their own — SubscriberBufferLimits is where that fallback lives.
         assertThat(options.getPausedSplitBufferMaxMessages()).isNull();
         assertThat(options.getPausedSplitBufferMaxBytes()).isNull();
         assertThat(options.getParallelPullCount()).isNull();
@@ -300,7 +301,7 @@ class PubSubSubscriberOptionsTest {
     }
 
     @Test
-    void serializedOptionsFromBeforeTheBufferLimitsUseTheNewDefaults() throws Exception {
+    void serializedOptionsFromBeforeTheBufferLimitsDeriveTheirBudget() throws Exception {
         assertThat(ObjectStreamClass.lookup(PubSubSubscriberOptions.class).getSerialVersionUID())
                 .isEqualTo(1L);
         PubSubSubscriberOptions legacy = fullyPopulated();
@@ -313,19 +314,87 @@ class PubSubSubscriberOptionsTest {
         PubSubSubscriberOptions restored =
                 InstantiationUtil.deserializeObject(
                         InstantiationUtil.serializeObject(legacy), getClass().getClassLoader());
-        PubSubSubscriberOptions expected =
-                fullyPopulatedBuilder()
-                        .subscriberBufferMaxMessages(10_000)
-                        .subscriberBufferMaxBytes(64L * 1024 * 1024)
-                        .build();
+        PubSubSubscriberOptions expected = withoutBudgetBuilder().build();
 
-        assertThat(restored.getSubscriberBufferMaxMessages()).isEqualTo(10_000);
-        assertThat(restored.getSubscriberBufferMaxBytes()).isEqualTo(64L * 1024 * 1024);
+        // Twice the fixture's flow-control limits of 500 messages and 1 MiB.
+        assertThat(restored.getSubscriberBufferMaxMessages()).isEqualTo(1_000);
+        assertThat(restored.getSubscriberBufferMaxBytes()).isEqualTo(2L * 1024 * 1024);
         assertThat(restored).isEqualTo(expected);
         assertThat(restored).hasSameHashCodeAs(expected);
         assertThat(restored.toString())
-                .contains("subscriberBufferMaxMessages=10000")
-                .contains("subscriberBufferMaxBytes=67108864");
+                .contains("subscriberBufferMaxMessages=null")
+                .contains("subscriberBufferMaxBytes=null");
+    }
+
+    @Test
+    void anUnsetBudgetIsTwiceTheConfiguredFlowControl() {
+        PubSubSubscriberOptions options =
+                PubSubSubscriberOptions.builder()
+                        .flowControlMaxOutstandingElementCount(3_000_000)
+                        .flowControlMaxOutstandingRequestBytes(16L * 1024 * 1024 * 1024)
+                        .build();
+
+        assertThat(options.getSubscriberBufferMaxMessages()).isEqualTo(6_000_000);
+        assertThat(options.getSubscriberBufferMaxBytes()).isEqualTo(32L * 1024 * 1024 * 1024);
+    }
+
+    @Test
+    void anExplicitBudgetEqualToItsDerivedValueIsStillADifferentSetting() {
+        // An explicit cap is the reader's and is never scaled by its subscriber count, so it must
+        // not compare equal to an unset one that happens to resolve to the same one-subscriber cap.
+        PubSubSubscriberOptions derived = withoutBudgetBuilder().build();
+        PubSubSubscriberOptions explicit =
+                withoutBudgetBuilder()
+                        .subscriberBufferMaxMessages(derived.getSubscriberBufferMaxMessages())
+                        .subscriberBufferMaxBytes(derived.getSubscriberBufferMaxBytes())
+                        .build();
+
+        assertThat(explicit.getSubscriberBufferMaxMessages())
+                .isEqualTo(derived.getSubscriberBufferMaxMessages());
+        assertThat(explicit).isNotEqualTo(derived);
+    }
+
+    @Test
+    void rejectsAnExplicitBudgetBelowTwiceTheEffectiveFlowControl() {
+        // The #2020 configuration: flow control sized to the checkpoint interval, budget left at
+        // what used to be its default.
+        assertThatThrownBy(
+                        () ->
+                                PubSubSubscriberOptions.builder()
+                                        .flowControlMaxOutstandingElementCount(3_000_000)
+                                        .subscriberBufferMaxMessages(10_000)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("subscriberBufferMaxMessages (10000)")
+                .hasMessageContaining("flowControlMaxOutstandingElementCount (3000000)")
+                .hasMessageContaining("at least 6000000");
+        // Against the SDK's 100 MiB default when flow control is left unset: the old 64 MiB
+        // default would have been crossed by one backpressured subscriber of large messages.
+        assertThatThrownBy(
+                        () ->
+                                PubSubSubscriberOptions.builder()
+                                        .subscriberBufferMaxBytes(64L * 1024 * 1024)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("subscriberBufferMaxBytes (67108864)")
+                .hasMessageContaining("flowControlMaxOutstandingRequestBytes (104857600)");
+        // Exactly twice is accepted, in both dimensions.
+        PubSubSubscriberOptions atTheShare =
+                PubSubSubscriberOptions.builder()
+                        .flowControlMaxOutstandingElementCount(500)
+                        .flowControlMaxOutstandingRequestBytes(1_000)
+                        .subscriberBufferMaxMessages(1_000)
+                        .subscriberBufferMaxBytes(2_000)
+                        .build();
+        assertThat(atTheShare.getSubscriberBufferMaxMessages()).isEqualTo(1_000);
+        assertThatThrownBy(
+                        () ->
+                                PubSubSubscriberOptions.builder()
+                                        .flowControlMaxOutstandingRequestBytes(1_000)
+                                        .subscriberBufferMaxBytes(1_999)
+                                        .build())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least 2000");
     }
 
     private static void setField(Object target, String name, Object value) throws Exception {
@@ -349,11 +418,16 @@ class PubSubSubscriberOptionsTest {
     }
 
     private static PubSubSubscriberOptions.Builder fullyPopulatedBuilder() {
+        return withoutBudgetBuilder()
+                .subscriberBufferMaxMessages(8_000)
+                .subscriberBufferMaxBytes(32L * 1024 * 1024);
+    }
+
+    /** {@link #fullyPopulatedBuilder()} with the subscriber-buffer budget left to be derived. */
+    private static PubSubSubscriberOptions.Builder withoutBudgetBuilder() {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(500)
                 .flowControlMaxOutstandingRequestBytes(1_048_576)
-                .subscriberBufferMaxMessages(8_000)
-                .subscriberBufferMaxBytes(32L * 1024 * 1024)
                 .pausedSplitBufferMaxMessages(400)
                 .pausedSplitBufferMaxBytes(524_288)
                 .maxAckExtensionPeriod(Duration.ofMinutes(30))

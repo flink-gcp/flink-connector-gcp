@@ -165,8 +165,8 @@ specific to this source, that acknowledgement waits for a checkpoint.
 |---|---|---|
 | `flowControlMaxOutstandingElementCount` | *unset ⇒ SDK default (1000)* | Messages one subscriber holds outstanding before it stops pulling, for as long as it is extending their leases |
 | `flowControlMaxOutstandingRequestBytes` | *unset ⇒ SDK default (100 MB)* | The same in bytes |
-| `subscriberBufferMaxMessages` | 10000 | Hard aggregate cap on messages retained in all subscriber buffers of one source reader |
-| `subscriberBufferMaxBytes` | 64 MiB | Hard aggregate cap on serialized bytes retained in all subscriber buffers of one source reader; whichever hard cap would be crossed first controls the response |
+| `subscriberBufferMaxMessages` | *unset ⇒ twice the effective `flowControlMaxOutstandingElementCount`, or an explicit `pausedSplitBufferMaxMessages` where larger, per subscriber the reader holds (so 2000 for one subscriber by default)* | Hard aggregate cap on messages retained in all subscriber buffers of one source reader. An explicit cap is not scaled, and one below twice the effective flow-control limit is rejected |
+| `subscriberBufferMaxBytes` | *unset ⇒ twice the effective `flowControlMaxOutstandingRequestBytes` or twice the largest message received, whichever is larger, or an explicit `pausedSplitBufferMaxBytes` where larger still, per subscriber the reader holds (so 200 MiB for one subscriber by default)* | The same in serialized bytes; whichever hard cap would be crossed first controls the response |
 | `pausedSplitBufferMaxMessages` | *unset ⇒ twice the effective `flowControlMaxOutstandingElementCount` (so 2000 by default)* | Messages a split paused by watermark alignment may buffer before its subscriber is stopped and reopened on resume |
 | `pausedSplitBufferMaxBytes` | *unset ⇒ twice the effective `flowControlMaxOutstandingRequestBytes` (so 200 MB by default)* | The same in bytes; whichever bound is exceeded first stops the subscriber |
 | `parallelPullCount` | *unset ⇒ SDK default (1)* | Streaming-pull connections per subscriber. Rejected under `orderingMode(PER_KEY)` |

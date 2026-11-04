@@ -19,14 +19,19 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -38,6 +43,12 @@ import java.util.function.Consumer;
  * subscribers, while any unpaused split makes the coordinator fail the job. A resume or active
  * split registration racing that park promotes it to failure, because a stopped or newly opened
  * subscriber can no longer be left active.
+ *
+ * <p>An unset cap is a share per registered subscriber, so it is evaluated against the subscribers
+ * registered at each reservation, counting a reserving subscriber that has started receiving before
+ * its registration landed (#2020). An explicit cap is fixed; when the subscribers registered
+ * against it could together hold more than it under ordinary backpressure, the first such
+ * registration logs a warning, once per reader.
  */
 @Internal
 final class SubscriberBufferBudget {
@@ -52,8 +63,9 @@ final class SubscriberBufferBudget {
     private static final Admission ADMITTED =
             new Admission(Response.ADMIT, null, null, false, NO_EVENT);
 
-    private final long maxMessages;
-    private final long maxBytes;
+    private static final Logger LOG = LoggerFactory.getLogger(SubscriberBufferBudget.class);
+
+    private final SubscriberBufferLimits limits;
     private final Consumer<SubscriberBufferLimitExceededEvent> failureReporter;
 
     private final Map<String, SubscriberState> subscribers = new LinkedHashMap<>();
@@ -61,24 +73,40 @@ final class SubscriberBufferBudget {
     private long messages;
     private long bytes;
     private long pauseTransitions;
+    // Subscribers that have reserved before the roster registered them; the roster starts a
+    // subscriber, waits for it to run and only then registers it, so its deliveries can precede
+    // its registration. Counted by every reservation, not only their own, so that a peer's
+    // reservation in that window sees the share whose bytes are already in the aggregate.
+    private final Set<String> starting = new HashSet<>();
+    private long largestMessageBytes;
+    private boolean coverageWarned;
     private Response response = Response.ADMIT;
     @Nullable private SubscriberBufferLimitExceededEvent overflowEvent;
 
     SubscriberBufferBudget(
-            long maxMessages,
-            long maxBytes,
+            SubscriberBufferLimits limits,
             Consumer<SubscriberBufferLimitExceededEvent> failureReporter) {
-        this.maxMessages = maxMessages;
-        this.maxBytes = maxBytes;
+        this.limits = limits;
         this.failureReporter = failureReporter;
     }
 
+    @VisibleForTesting
+    SubscriberBufferBudget(
+            long maxMessages,
+            long maxBytes,
+            Consumer<SubscriberBufferLimitExceededEvent> failureReporter) {
+        this(SubscriberBufferLimits.fixed(maxMessages, maxBytes), failureReporter);
+    }
+
     static SubscriberBufferBudget unbounded() {
-        return new SubscriberBufferBudget(Long.MAX_VALUE, Long.MAX_VALUE, NO_EVENT);
+        return new SubscriberBufferBudget(
+                SubscriberBufferLimits.fixed(Long.MAX_VALUE, Long.MAX_VALUE), NO_EVENT);
     }
 
     synchronized Admission register(String splitId, Runnable stopAsync) {
         subscribers.put(splitId, new SubscriberState(stopAsync));
+        starting.remove(splitId);
+        warnIfBelowTheDerivedBudget();
         if (response == Response.ADMIT) {
             return ADMITTED;
         }
@@ -99,6 +127,7 @@ final class SubscriberBufferBudget {
 
     synchronized void unregister(String splitId) {
         subscribers.remove(splitId);
+        starting.remove(splitId);
         resetAfterParkIfEmpty();
     }
 
@@ -140,6 +169,13 @@ final class SubscriberBufferBudget {
             if (response != Response.ADMIT) {
                 return new Admission(response, null, null, false, NO_EVENT);
             }
+            if (!subscribers.containsKey(splitId)) {
+                starting.add(splitId);
+            }
+            int holders = subscribers.size() + starting.size();
+            largestMessageBytes = Math.max(largestMessageBytes, messageBytes);
+            long maxMessages = limits.maxMessages(holders);
+            long maxBytes = limits.maxBytes(holders, largestMessageBytes);
             long attemptedMessages = messages == Long.MAX_VALUE ? Long.MAX_VALUE : messages + 1;
             long attemptedBytes =
                     messageBytes > Long.MAX_VALUE - bytes ? Long.MAX_VALUE : bytes + messageBytes;
@@ -200,6 +236,34 @@ final class SubscriberBufferBudget {
 
     synchronized BufferUsage usage() {
         return BufferUsage.of(Math.toIntExact(messages), bytes);
+    }
+
+    @VisibleForTesting
+    synchronized boolean coverageWarned() {
+        return coverageWarned;
+    }
+
+    private void warnIfBelowTheDerivedBudget() {
+        int holders = subscribers.size();
+        if (coverageWarned || limits.coversDerived(holders)) {
+            return;
+        }
+        coverageWarned = true;
+        LOG.warn(
+                "This Pub/Sub source reader now holds {} subscribers. While downstream drains more"
+                        + " slowly than Pub/Sub delivers, each fills its buffer up to its"
+                        + " flow-control window, and the budget derived for them would be {}"
+                        + " messages and {} bytes: twice their windows, or their paused-split"
+                        + " bounds where larger. The explicit subscriberBufferMaxMessages={} or"
+                        + " subscriberBufferMaxBytes={} is below that, so ordinary backpressure can"
+                        + " fail the job, and every restart over a backlog can fail it again. Leave"
+                        + " both unset to derive them per subscriber, raise them, or lower the"
+                        + " flow-control limits.",
+                holders,
+                limits.derivedMaxMessages(holders),
+                limits.derivedMaxBytes(holders),
+                limits.maxMessages(holders),
+                limits.maxBytes(holders));
     }
 
     private void resetAfterParkIfEmpty() {

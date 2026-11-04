@@ -471,14 +471,20 @@ public class PubSubSplitEnumerator
                         + exceeded.attemptedMessages()
                         + " messages and "
                         + exceeded.attemptedBytes()
-                        + " bytes, past subscriberBufferMaxMessages="
+                        + " bytes, past the reader's budget of "
                         + exceeded.maxMessages()
-                        + " or subscriberBufferMaxBytes="
+                        + " messages or "
                         + exceeded.maxBytes()
-                        + ". Increase those PubSubSubscriberOptions limits (Table API:"
-                        + " 'scan.subscriber-buffer.max-messages' and"
-                        + " 'scan.subscriber-buffer.max-bytes') only when the TaskManager has the"
-                        + " corresponding memory, or remove the downstream stall.");
+                        + " bytes (subscriberBufferMaxMessages / subscriberBufferMaxBytes; Table"
+                        + " API: 'scan.subscriber-buffer.max-messages' and"
+                        + " 'scan.subscriber-buffer.max-bytes'). Left unset, the budget is twice"
+                        + " the flow-control limits, or the paused-split bounds where larger, for"
+                        + " every subscriber the reader holds, and is"
+                        + " crossed only when downstream stops consuming for longer than"
+                        + " maxAckExtensionPeriod, after which the client lets leases lapse and"
+                        + " keeps receiving; remove that stall. An explicit budget below that"
+                        + " share is crossed by ordinary backpressure: leave it unset, or lower"
+                        + " the flow-control limits to hold less in memory.");
     }
 
     @Override
