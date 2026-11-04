@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 
@@ -1010,8 +1011,8 @@ public final class BigQueryConnectorOptions {
 
     /**
      * How Parquet staging files are compressed. Rejected when the staging format is Avro, whose
-     * codec is not configurable. 'none' is the only value that needs no Hadoop runtime, and it
-     * stages substantially more bytes than Avro does.
+     * codec 'sink.file-loads.avro-compression' sets. 'none' is the only value that needs no Hadoop
+     * runtime, and it stages substantially more bytes than Avro does.
      */
     public static final ConfigOption<ParquetCompression> SINK_FILE_LOADS_PARQUET_COMPRESSION =
             ConfigOptions.key("sink.file-loads.parquet-compression")
@@ -1019,9 +1020,38 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "How Parquet staging files are compressed. Rejected when the staging"
-                                    + " format is Avro, whose codec is not configurable. 'none' is"
-                                    + " the only value that needs no Hadoop runtime, and it stages"
+                                    + " format is Avro, whose codec"
+                                    + " 'sink.file-loads.avro-compression' sets. 'none' is the only"
+                                    + " value that needs no Hadoop runtime, and it stages"
                                     + " substantially more bytes than Avro does.");
+
+    /**
+     * How Avro staging files are compressed. Rejected when the staging format is Parquet. 'none'
+     * spends the least CPU on the writer and stages the most bytes.
+     */
+    public static final ConfigOption<AvroCompression> SINK_FILE_LOADS_AVRO_COMPRESSION =
+            ConfigOptions.key("sink.file-loads.avro-compression")
+                    .enumType(AvroCompression.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "How Avro staging files are compressed. Rejected when the staging"
+                                    + " format is Parquet. 'none' spends the least CPU on the"
+                                    + " writer and stages the most bytes.");
+
+    /**
+     * The zstandard level of every staging file written with zstandard, Avro or Parquet. A negative
+     * level is a fast level: less CPU, more bytes. Rejected when the selected codec is 'none', and
+     * for 0.
+     */
+    public static final ConfigOption<Integer> SINK_FILE_LOADS_ZSTD_LEVEL =
+            ConfigOptions.key("sink.file-loads.zstd-level")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The zstandard level of every staging file written with zstandard,"
+                                    + " Avro or Parquet. A negative level is a fast level: less"
+                                    + " CPU, more bytes. Rejected when the selected codec is"
+                                    + " 'none', and for 0.");
 
     /**
      * The first backoff between polls of a submitted load, copy, or terminal query job. Lowering it

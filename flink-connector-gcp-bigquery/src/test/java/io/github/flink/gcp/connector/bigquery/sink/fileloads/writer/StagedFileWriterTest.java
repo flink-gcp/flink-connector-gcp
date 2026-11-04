@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.Schema;
@@ -47,6 +49,8 @@ class StagedFileWriterTest {
                                 StagedFileWriter.open(
                                         format,
                                         ParquetCompression.ZSTD,
+                                        AvroCompression.ZSTD,
+                                        FileLoadsOptions.DEFAULT_ZSTD_LEVEL,
                                         "job",
                                         TableDestination.of("project", "dataset", "table"),
                                         "gs://bucket/object",

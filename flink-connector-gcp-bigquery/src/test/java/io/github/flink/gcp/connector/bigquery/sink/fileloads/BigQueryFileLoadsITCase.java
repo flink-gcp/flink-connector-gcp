@@ -44,6 +44,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -51,8 +54,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -102,6 +107,13 @@ class BigQueryFileLoadsITCase {
     private static final String STAGING_ROOT = "flink-file-loads-it/" + RUN_ID;
     private static final String STAGING_PREFIX = STAGING_ROOT + "/multi";
     private static final String TYPES_STAGING_PREFIX = STAGING_ROOT + "/types";
+
+    /** The non-default Avro staging codec settings, as label, codec and level (#2022). */
+    private static final Object[][] AVRO_CODECS = {
+        {"zstd_fast", AvroCompression.ZSTD, -5},
+        {"zstd_max", AvroCompression.ZSTD, FileLoadsOptions.MAX_ZSTD_LEVEL},
+        {"none", AvroCompression.NONE, null}
+    };
 
     private static final TableSchema SCHEMA =
             TableSchema.newBuilder()
@@ -282,6 +294,11 @@ class BigQueryFileLoadsITCase {
     static void cleanUp() throws Exception {
         Closers.closeAll(
                 () -> RealBigQuery.deleteTables(TABLE_A, TABLE_B, TABLE_TYPES),
+                () ->
+                        RealBigQuery.deleteTables(
+                                Arrays.stream(AVRO_CODECS)
+                                        .map(codec -> codecTable((String) codec[0]))
+                                        .toArray(String[]::new)),
                 () -> RealGcs.deletePrefix(STAGING_ROOT));
     }
 
@@ -357,6 +374,71 @@ class BigQueryFileLoadsITCase {
 
         // Staged objects are deleted after a successful load.
         assertThat(RealGcs.list(STAGING_PREFIX)).isEmpty();
+    }
+
+    private static String codecTable(String label) {
+        return "file_loads_it_codec_" + label + "_" + RUN_ID;
+    }
+
+    static Stream<Arguments> avroCodecs() {
+        return Arrays.stream(AVRO_CODECS).map(Arguments::of);
+    }
+
+    /**
+     * Each non-default Avro codec setting a sink can select stages files a load job reads (#2022):
+     * BigQuery documents the Avro codecs it accepts, but only a load proves the container this
+     * writer produces at that setting is one of them, and a rejected codec fails the whole load.
+     * The default is {@link #multiTableBatchLoad()}'s. That the setting reaches the file is held by
+     * {@code FileLoadsWriterTest}, which reads the container; this test can only see the load.
+     */
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("avroCodecs")
+    void everyAvroStagingCodecLoads(String label, AvroCompression codec, Integer level)
+            throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+        env.setParallelism(1);
+        String table = codecTable(label);
+        String stagingPrefix = STAGING_ROOT + "/codec-" + label;
+        FileLoadsOptions.Builder options =
+                FileLoadsOptions.builder()
+                        .stagingPath(RealGcs.uri(stagingPrefix))
+                        .avroCompression(codec);
+        if (level != null) {
+            options.zstdLevel(level);
+        }
+
+        env.fromData(table + "|alpha|1|POINT(1 2)", table + "|beta||")
+                .sinkTo(
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.FILE_LOADS)
+                                .destinationResolver(
+                                        (element, context) ->
+                                                RealTables.destination(
+                                                        element.substring(0, element.indexOf('|'))))
+                                .serializer(new RowSerializer())
+                                .fileLoadsOptions(options.build())
+                                .build());
+        env.execute("file-loads-codec-it-" + label);
+
+        String path = RealBigQuery.tablePath(table);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + path)).containsExactly(2L);
+        assertThat(RealBigQuery.queryLongs("SELECT value FROM " + path + " WHERE name = 'alpha'"))
+                .containsExactly(1L);
+        assertThat(
+                        RealBigQuery.queryRows(
+                                "SELECT ST_ASTEXT(boundary) FROM "
+                                        + path
+                                        + " WHERE name = 'alpha'"))
+                .extracting(row -> row.get(0).getStringValueOrDefault(null))
+                .containsExactly("POINT(1 2)");
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM "
+                                        + path
+                                        + " WHERE name = 'beta' AND value IS NULL"))
+                .containsExactly(1L);
+        assertThat(RealGcs.list(stagingPrefix)).isEmpty();
     }
 
     /**

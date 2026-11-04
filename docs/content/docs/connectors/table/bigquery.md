@@ -992,6 +992,8 @@ default, and required by the write method rather than by the connector — and l
 | `sink.file-loads.max-serialized-row-bytes` | MemorySize | `maxSerializedRowBytes(...)`, the serialized protobuf row limit before Avro conversion. The default is 15,000,000 bytes; larger rows go to the failure handler without opening a file |
 | `sink.file-loads.staging-format` | Enum | `stagingFormat(...)` — `avro` (default) or `parquet`. Parquet needs `parquet-avro`, and a Hadoop runtime unless the compression is `none`, on the cluster's classpath; a destination whose schema has a `JSON` column stages Avro whatever this says |
 | `sink.file-loads.parquet-compression` | Enum | `parquetCompression(...)` — `zstd` (default) or `none`. Rejected when the staging format is `avro` |
+| `sink.file-loads.avro-compression` | Enum | `avroCompression(...)` — `zstd` (default) or `none`. Rejected when the staging format is `parquet` |
+| `sink.file-loads.zstd-level` | Integer | `zstdLevel(...)`, the zstandard level of staging files of either format, from -131,072 to 19 but not 0. The default is 3; rejected when the selected codec is `none` |
 | `sink.file-loads.load-job-poll.initial-backoff` | Duration | `loadJobPollInitialBackoff(...)` |
 | `sink.file-loads.load-job-poll.max-backoff` | Duration | `loadJobPollMaxBackoff(...)` |
 | `sink.file-loads.schema-reconcile.initial-backoff` | Duration | `schemaReconcileInitialBackoff(...)` |

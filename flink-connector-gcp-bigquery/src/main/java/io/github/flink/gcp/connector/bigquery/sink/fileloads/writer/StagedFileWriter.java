@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
@@ -47,12 +48,17 @@ interface StagedFileWriter {
      * deployment that never selects Parquet never loads it — which is what lets {@code
      * parquet-avro} be a {@code provided} dependency rather than one this connector ships.
      *
+     * @param parquetCompression the codec of a Parquet file
+     * @param avroCompression the codec of an Avro file
+     * @param zstdLevel the level of either format's zstandard codec
      * @param maxStagingFileBytes the roll threshold, which sizes Parquet's row group; see that
      *     implementation for why it cannot be ignored there
      */
     static StagedFileWriter open(
             StagingFormat format,
-            ParquetCompression compression,
+            ParquetCompression parquetCompression,
+            AvroCompression avroCompression,
+            int zstdLevel,
             String flinkJobId,
             TableDestination destination,
             String uri,
@@ -62,7 +68,8 @@ interface StagedFileWriter {
             throws IOException {
         switch (format) {
             case AVRO:
-                return new AvroStagedFileWriter(flinkJobId, destination, uri, schema, stream);
+                return new AvroStagedFileWriter(
+                        flinkJobId, destination, uri, schema, stream, avroCompression, zstdLevel);
             case PARQUET:
                 return new ParquetStagedFileWriter(
                         flinkJobId,
@@ -70,7 +77,8 @@ interface StagedFileWriter {
                         uri,
                         schema,
                         stream,
-                        compression,
+                        parquetCompression,
+                        zstdLevel,
                         maxStagingFileBytes);
             default:
                 throw new IllegalStateException("Unhandled staging format: " + format);

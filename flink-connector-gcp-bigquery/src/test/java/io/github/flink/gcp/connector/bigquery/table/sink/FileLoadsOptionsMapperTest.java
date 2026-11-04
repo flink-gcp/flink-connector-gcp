@@ -21,6 +21,7 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
@@ -84,6 +85,9 @@ class FileLoadsOptionsMapperTest {
                 "stagingFormat", BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT);
         SETTER_TO_OPTION.put(
                 "parquetCompression", BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION);
+        SETTER_TO_OPTION.put(
+                "avroCompression", BigQueryConnectorOptions.SINK_FILE_LOADS_AVRO_COMPRESSION);
+        SETTER_TO_OPTION.put("zstdLevel", BigQueryConnectorOptions.SINK_FILE_LOADS_ZSTD_LEVEL);
         SETTER_TO_OPTION.put(
                 "loadJobPollInitialBackoff",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF);
@@ -234,6 +238,46 @@ class FileLoadsOptionsMapperTest {
         assertThatThrownBy(() -> map(options))
                 .hasMessageContaining("parquetCompression")
                 .hasMessageContaining("PARQUET");
+    }
+
+    @Test
+    void mapsTheAvroCodecAndTheZstandardLevel() {
+        // Not in mapsEveryOptionOntoItsKnob, which stages Parquet uncompressed: the Avro codec is
+        // rejected under Parquet, and a level under NONE.
+        Map<String, String> fast = staged();
+        fast.put(key("avroCompression"), "zstd");
+        fast.put(key("zstdLevel"), "-3");
+        FileLoadsOptions mappedFast = map(fast);
+        assertThat(mappedFast.getAvroCompression()).isEqualTo(AvroCompression.ZSTD);
+        assertThat(mappedFast.getZstdLevel()).isEqualTo(-3);
+
+        Map<String, String> uncompressed = staged();
+        uncompressed.put(key("avroCompression"), "none");
+        assertThat(map(uncompressed).getAvroCompression()).isEqualTo(AvroCompression.NONE);
+    }
+
+    @Test
+    void codecRejectionsReachTheSqlCaller() {
+        Map<String, String> zero = staged();
+        zero.put(key("zstdLevel"), "0");
+        assertThatThrownBy(() -> map(zero))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.file-loads.zstd-level' is invalid")
+                .hasMessageContaining("zstdLevel must be from");
+
+        // Cross-field build() rules are not renamed to one key (ADR-0133); they name the knobs.
+        Map<String, String> avroUnderParquet = staged();
+        avroUnderParquet.put(key("stagingFormat"), "parquet");
+        avroUnderParquet.put(key("avroCompression"), "none");
+        assertThatThrownBy(() -> map(avroUnderParquet))
+                .hasMessageContaining("avroCompression is only accepted with stagingFormat(AVRO)");
+
+        Map<String, String> levelWithoutCodec = staged();
+        levelWithoutCodec.put(key("avroCompression"), "none");
+        levelWithoutCodec.put(key("zstdLevel"), "5");
+        assertThatThrownBy(() -> map(levelWithoutCodec))
+                .hasMessageContaining("zstdLevel")
+                .hasMessageContaining("NONE");
     }
 
     @Test

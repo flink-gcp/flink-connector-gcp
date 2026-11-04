@@ -159,6 +159,23 @@ public final class FileLoadsOptions implements Serializable {
     /** Default for {@link Builder#parquetCompression(ParquetCompression)}. */
     public static final ParquetCompression DEFAULT_PARQUET_COMPRESSION = ParquetCompression.ZSTD;
 
+    /** Default for {@link Builder#avroCompression(AvroCompression)}. */
+    public static final AvroCompression DEFAULT_AVRO_COMPRESSION = AvroCompression.ZSTD;
+
+    /** Default for {@link Builder#zstdLevel(int)}: zstandard's own default level. */
+    public static final int DEFAULT_ZSTD_LEVEL = 3;
+
+    /** The lowest level {@link Builder#zstdLevel(int)} accepts: zstandard's fastest. */
+    static final int MIN_ZSTD_LEVEL = -(1 << 17);
+
+    /**
+     * The highest level {@link Builder#zstdLevel(int)} accepts: 19, the highest zstandard offers
+     * without its "ultra" opt-in. Both codecs build a fresh compression context for every Avro
+     * block or Parquet page, and zstandard estimates that context at about 90 MiB of native memory
+     * at 19 against 194 MiB at 20 and 778 MiB at 22, outside Flink's memory budget.
+     */
+    static final int MAX_ZSTD_LEVEL = 19;
+
     private final String stagingPath;
     @Nullable private final String tempDataset;
     // Null in an instance serialized before the option existed; the getter supplies the default.
@@ -174,6 +191,10 @@ public final class FileLoadsOptions implements Serializable {
     private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
     private final ParquetCompression parquetCompression;
+    // Null in an instance serialized before the option existed; the getter supplies the default.
+    @Nullable private final AvroCompression avroCompression;
+    // Null in an instance serialized before the option existed; the getter supplies the default.
+    @Nullable private final Integer zstdLevel;
     private final Duration loadJobPollInitialBackoff;
     private final Duration loadJobPollMaxBackoff;
     private final Duration schemaReconcileInitialBackoff;
@@ -204,6 +225,11 @@ public final class FileLoadsOptions implements Serializable {
                 builder.parquetCompression == null
                         ? DEFAULT_PARQUET_COMPRESSION
                         : builder.parquetCompression;
+        this.avroCompression =
+                builder.avroCompression == null
+                        ? DEFAULT_AVRO_COMPRESSION
+                        : builder.avroCompression;
+        this.zstdLevel = builder.zstdLevel == null ? DEFAULT_ZSTD_LEVEL : builder.zstdLevel;
         this.perDestinationMetrics = builder.perDestinationMetrics;
     }
 
@@ -307,6 +333,19 @@ public final class FileLoadsOptions implements Serializable {
         return parquetCompression;
     }
 
+    /**
+     * Returns how Avro staging files are compressed, including the Avro files a Parquet sink stages
+     * for a destination with a {@code JSON} column, which are always zstandard.
+     */
+    public AvroCompression getAvroCompression() {
+        return avroCompression == null ? DEFAULT_AVRO_COMPRESSION : avroCompression;
+    }
+
+    /** Returns the zstandard level of every staging file written with zstandard. */
+    public int getZstdLevel() {
+        return zstdLevel == null ? DEFAULT_ZSTD_LEVEL : zstdLevel;
+    }
+
     /** Returns the first backoff between load- or copy-job completion polls. */
     public Duration getLoadJobPollInitialBackoff() {
         return loadJobPollInitialBackoff;
@@ -384,6 +423,8 @@ public final class FileLoadsOptions implements Serializable {
                 && getMaxSerializedRowBytes() == that.getMaxSerializedRowBytes()
                 && stagingFormat == that.stagingFormat
                 && parquetCompression == that.parquetCompression
+                && getAvroCompression() == that.getAvroCompression()
+                && getZstdLevel() == that.getZstdLevel()
                 && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
                 && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
                 && schemaReconcileInitialBackoff.equals(that.schemaReconcileInitialBackoff)
@@ -409,6 +450,8 @@ public final class FileLoadsOptions implements Serializable {
                 getMaxSerializedRowBytes(),
                 stagingFormat,
                 parquetCompression,
+                getAvroCompression(),
+                getZstdLevel(),
                 loadJobPollInitialBackoff,
                 loadJobPollMaxBackoff,
                 schemaReconcileInitialBackoff,
@@ -447,6 +490,10 @@ public final class FileLoadsOptions implements Serializable {
                 + stagingFormat
                 + ", parquetCompression="
                 + parquetCompression
+                + ", avroCompression="
+                + getAvroCompression()
+                + ", zstdLevel="
+                + getZstdLevel()
                 + ", loadJobPollInitialBackoff="
                 + loadJobPollInitialBackoff
                 + ", loadJobPollMaxBackoff="
@@ -483,6 +530,10 @@ public final class FileLoadsOptions implements Serializable {
         // Null until set, so build() can tell "explicitly chose the default" from "never
         // touched it" and reject the option under Avro rather than silently ignoring it.
         @Nullable private ParquetCompression parquetCompression;
+        // Null until set, for the same reason: rejected under Parquet rather than ignored.
+        @Nullable private AvroCompression avroCompression;
+        // Null until set, so build() can reject a level for a codec that has none.
+        @Nullable private Integer zstdLevel;
         private Duration loadJobPollInitialBackoff = DEFAULT_LOAD_JOB_POLL_INITIAL_BACKOFF;
         private Duration loadJobPollMaxBackoff = DEFAULT_LOAD_JOB_POLL_MAX_BACKOFF;
         private Duration schemaReconcileInitialBackoff = DEFAULT_SCHEMA_RECONCILE_INITIAL_BACKOFF;
@@ -764,7 +815,8 @@ public final class FileLoadsOptions implements Serializable {
         /**
          * Sets how {@link StagingFormat#PARQUET} staging files are compressed. Defaults to {@link
          * ParquetCompression#ZSTD}. Rejected when the staging format is {@link StagingFormat#AVRO},
-         * whose codec is not configurable — an ignored option is worse than a rejected one.
+         * whose codec {@link #avroCompression(AvroCompression)} sets — an ignored option is worse
+         * than a rejected one.
          *
          * @param parquetCompression the Parquet codec
          * @return this builder
@@ -773,6 +825,49 @@ public final class FileLoadsOptions implements Serializable {
             this.parquetCompression =
                     Preconditions.checkNotNull(
                             parquetCompression, "parquetCompression must not be null");
+            return this;
+        }
+
+        /**
+         * Sets how {@link StagingFormat#AVRO} staging files are compressed. Defaults to {@link
+         * AvroCompression#ZSTD}. Rejected when the staging format is {@link StagingFormat#PARQUET},
+         * whose codec {@link #parquetCompression(ParquetCompression)} sets.
+         *
+         * <p>{@link AvroCompression#NONE} spends the least CPU on the writer's task thread and
+         * stages the most bytes; the datastream page's tuning section gives the measured trade-off.
+         *
+         * @param avroCompression the Avro codec
+         * @return this builder
+         */
+        public Builder avroCompression(AvroCompression avroCompression) {
+            this.avroCompression =
+                    Preconditions.checkNotNull(avroCompression, "avroCompression must not be null");
+            return this;
+        }
+
+        /**
+         * Sets the zstandard level of every staging file written with zstandard: Avro files under
+         * {@link AvroCompression#ZSTD}, and Parquet files under {@link ParquetCompression#ZSTD}.
+         * Defaults to {@link FileLoadsOptions#DEFAULT_ZSTD_LEVEL}. Rejected when the selected codec
+         * is {@code NONE}, which has no level.
+         *
+         * <p>A negative level is one of zstandard's fast levels: less CPU and more bytes. A level
+         * above the default buys little size for much more CPU, and each Avro block or Parquet page
+         * then allocates a larger native compression context: zstandard estimates about 90 MiB at
+         * 19, the highest level accepted. {@code 0} is rejected because zstandard reads it as its
+         * default level, which {@code 3} states plainly.
+         *
+         * @param zstdLevel the level, from -131,072 to 19, not {@code 0}
+         * @return this builder
+         */
+        public Builder zstdLevel(int zstdLevel) {
+            Preconditions.checkArgument(
+                    zstdLevel >= MIN_ZSTD_LEVEL && zstdLevel <= MAX_ZSTD_LEVEL && zstdLevel != 0,
+                    "zstdLevel must be from %s to %s and not 0: %s",
+                    MIN_ZSTD_LEVEL,
+                    MAX_ZSTD_LEVEL,
+                    zstdLevel);
+            this.zstdLevel = zstdLevel;
             return this;
         }
 
@@ -891,8 +986,21 @@ public final class FileLoadsOptions implements Serializable {
                     loadJobPollInitialBackoff);
             Preconditions.checkState(
                     stagingFormat == StagingFormat.PARQUET || parquetCompression == null,
-                    "parquetCompression is only accepted with stagingFormat(PARQUET): the Avro"
-                            + " staging codec is not configurable.");
+                    "parquetCompression is only accepted with stagingFormat(PARQUET): use"
+                            + " avroCompression(...) for the Avro staging codec.");
+            Preconditions.checkState(
+                    stagingFormat == StagingFormat.AVRO || avroCompression == null,
+                    "avroCompression is only accepted with stagingFormat(AVRO): use"
+                            + " parquetCompression(...) for the Parquet staging codec.");
+            boolean uncompressed =
+                    stagingFormat == StagingFormat.AVRO
+                            ? avroCompression == AvroCompression.NONE
+                            : parquetCompression == ParquetCompression.NONE;
+            Preconditions.checkState(
+                    zstdLevel == null || !uncompressed,
+                    "zstdLevel is only accepted with a zstandard codec: the %s staging codec is"
+                            + " NONE.",
+                    stagingFormat.name());
             if (stagingFormat == StagingFormat.PARQUET) {
                 checkParquetOnClasspath(
                         parquetCompression == null

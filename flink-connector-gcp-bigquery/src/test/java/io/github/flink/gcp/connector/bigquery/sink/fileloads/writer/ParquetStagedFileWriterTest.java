@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
@@ -87,6 +88,46 @@ class ParquetStagedFileWriterTest {
                 .allSatisfy(size -> assertThat(size).isBetween(THRESHOLD / 2, THRESHOLD * 3 / 2));
     }
 
+    /**
+     * The shared level reaches parquet-hadoop's zstandard codec, which reads it from the Hadoop
+     * configuration derived from the writer's: the same rows stage smaller at the slowest level
+     * than at a fast one. Equal sizes would mean the key never arrived.
+     */
+    @Test
+    void theZstandardLevelReachesTheParquetCodec() throws IOException {
+        // Three points, so a fast level mapped to the default fails too, not only an ignored one.
+        assertThat(stagedBytesAtLevel(19)).isLessThan(stagedBytesAtLevel(3));
+        assertThat(stagedBytesAtLevel(3)).isLessThan(stagedBytesAtLevel(-5));
+    }
+
+    /** Both ends of the accepted range write a file, rather than failing per file at runtime. */
+    @Test
+    void writesAtBothEndsOfTheAcceptedLevelRange() throws IOException {
+        assertThat(stagedBytesAtLevel(-(1 << 17))).isPositive();
+        assertThat(stagedBytesAtLevel(19)).isPositive();
+    }
+
+    private static long stagedBytesAtLevel(int level) throws IOException {
+        Schema schema = SchemaBuilder.record("Row").fields().requiredString("text").endRecord();
+        ParquetStagedFileWriter writer =
+                new ParquetStagedFileWriter(
+                        "job",
+                        TableDestination.of("project", "dataset", "table"),
+                        "gs://bucket/object",
+                        schema,
+                        OutputStream.nullOutputStream(),
+                        ParquetCompression.ZSTD,
+                        level,
+                        THRESHOLD);
+        SplittableRandom random = new SplittableRandom(7);
+        for (int i = 0; i < 20_000; i++) {
+            GenericRecord row = new GenericData.Record(schema);
+            row.put("text", "event-" + random.nextInt(5_000) + "-" + random.nextInt(5_000));
+            writer.append(row);
+        }
+        return writer.finish().getByteCount();
+    }
+
     /** Writes three files the way the writer rolls them and returns their finished sizes. */
     private static List<Long> rolledFileSizes(Schema schema, LongFunction<GenericRecord> rows)
             throws IOException {
@@ -101,6 +142,7 @@ class ParquetStagedFileWriterTest {
                             schema,
                             OutputStream.nullOutputStream(),
                             ParquetCompression.ZSTD,
+                            FileLoadsOptions.DEFAULT_ZSTD_LEVEL,
                             THRESHOLD);
             while (!writer.isFull(THRESHOLD)) {
                 writer.append(rows.apply(id++));

@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,7 @@ class ConnectorEnumOptionSpellingTest {
                 TableCreateOptions.TimePartitioningType.class, "hour", "day", "month", "year");
         assertSpellings(StagingFormat.class, "avro", "parquet");
         assertSpellings(ParquetCompression.class, "zstd", "none");
+        assertSpellings(AvroCompression.class, "zstd", "none");
         // Pinned here because nothing else holds this vocabulary: the enum is @Experimental
         // since ADR-0141, so neither japicmp profile compares its constants, while the
         // sink.cdc.table-reconciliation option that resolves them stays @PublicEvolving.
@@ -81,6 +83,7 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(TableCreateOptions.TimePartitioningType.class);
         assertRoundTrips(StagingFormat.class);
         assertRoundTrips(ParquetCompression.class);
+        assertRoundTrips(AvroCompression.class);
         assertRoundTrips(CdcTableReconciliationPolicy.class);
         assertRoundTrips(OrderingMode.class);
     }

@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.bigquery.sink.DestinationResolutionDispatch
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.failure.FailedRow;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
@@ -113,6 +114,8 @@ public final class FileLoadsWriter<T>
     private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
     private final ParquetCompression parquetCompression;
+    private final AvroCompression avroCompression;
+    private final int zstdLevel;
     private final ProcessingTimeService timerService;
     private final FileLoadsWriterMetrics metrics;
 
@@ -167,6 +170,8 @@ public final class FileLoadsWriter<T>
         this.maxSerializedRowBytes = options.getMaxSerializedRowBytes();
         this.stagingFormat = options.getStagingFormat();
         this.parquetCompression = options.getParquetCompression();
+        this.avroCompression = options.getAvroCompression();
+        this.zstdLevel = options.getZstdLevel();
         this.timerService =
                 Preconditions.checkNotNull(timerService, "timerService must not be null");
         this.metrics = new FileLoadsWriterMetrics(metricGroup, options.isPerDestinationMetrics());
@@ -520,6 +525,8 @@ public final class FileLoadsWriter<T>
         return StagedFileWriter.open(
                 state.format,
                 parquetCompression,
+                avroCompression,
+                zstdLevel,
                 flinkJobId,
                 destination,
                 uri,

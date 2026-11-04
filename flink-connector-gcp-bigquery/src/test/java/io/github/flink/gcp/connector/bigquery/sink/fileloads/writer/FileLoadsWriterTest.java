@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.UnroutableRecord;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
@@ -688,24 +689,37 @@ class FileLoadsWriterTest {
     void stagesAvroForADestinationWhoseSchemaNamesAJsonColumn() throws Exception {
         // Not a preference: a PARQUET load job is refused whenever the provided schema names a
         // JSON column, whatever the file holds, so a Parquet file here could never be loaded.
-        InMemoryStagingStorage storage = new InMemoryStagingStorage();
-        FileLoadsWriter<TestRow> writer =
-                new FileLoadsWriter<>(
-                        config(FailureHandler.failJob(), SCHEMA_WITH_JSON),
-                        parquetOptions(ParquetCompression.ZSTD),
-                        storage,
-                        TestSinkWriterMetricGroup.create(),
-                        "0123456789abcdef0123456789abcdef",
-                        3,
-                        1,
-                        new ManualProcessingTimeService());
+        // The fallback is zstandard whatever the Parquet codec says (#2022): avroCompression cannot
+        // be set under Parquet, so a NONE Parquet codec must not leak into the Avro file.
+        for (ParquetCompression parquet : ParquetCompression.values()) {
+            InMemoryStagingStorage storage = new InMemoryStagingStorage();
+            FileLoadsWriter<TestRow> writer =
+                    new FileLoadsWriter<>(
+                            config(FailureHandler.failJob(), SCHEMA_WITH_JSON),
+                            parquetOptions(parquet),
+                            storage,
+                            TestSinkWriterMetricGroup.create(),
+                            "0123456789abcdef0123456789abcdef",
+                            3,
+                            1,
+                            new ManualProcessingTimeService());
 
-        writer.write(new TestRow("t", "a", 1L), CONTEXT);
-        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
-        writer.close();
+            writer.write(new TestRow("t", "a", 1L), CONTEXT);
+            FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+            writer.close();
 
-        assertThat(committable.getFormat()).isEqualTo(StagingFormat.AVRO);
-        assertThat(committable.getUri()).endsWith(".avro");
+            assertThat(committable.getFormat()).as("%s", parquet).isEqualTo(StagingFormat.AVRO);
+            assertThat(committable.getUri()).endsWith(".avro");
+            try (DataFileReader<GenericRecord> reader =
+                    new DataFileReader<>(
+                            new SeekableByteArrayInput(
+                                    storage.getObjects().get(committable.getUri())),
+                            new GenericDatumReader<>())) {
+                assertThat(reader.getMetaString("avro.codec"))
+                        .as("%s", parquet)
+                        .isEqualTo("zstandard");
+            }
+        }
     }
 
     @Test
@@ -890,6 +904,80 @@ class FileLoadsWriterTest {
             assertThat(reader.getMetaString("avro.codec")).isEqualTo("zstandard");
             assertThat(reader.next().get("name")).hasToString("a");
         }
+    }
+
+    @Test
+    void stagesUncompressedAvroWhenTheCodecSelectsIt() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .avroCompression(AvroCompression.NONE)
+                                .build());
+
+        writer.write(new TestRow("t", "a", 1L), CONTEXT);
+        FileLoadsCommittable committable = writer.prepareCommit().iterator().next();
+        writer.close();
+
+        try (DataFileReader<GenericRecord> reader =
+                new DataFileReader<>(
+                        new SeekableByteArrayInput(storage.getObjects().get(committable.getUri())),
+                        new GenericDatumReader<>())) {
+            assertThat(reader.getMetaString("avro.codec")).isEqualTo("null");
+            assertThat(reader.next().get("name")).hasToString("a");
+        }
+    }
+
+    /**
+     * The level reaches the Avro codec: the same rows stage smaller at the slowest level than at a
+     * fast one. The container records only the codec's name, so the size is what can tell.
+     */
+    @Test
+    void theZstandardLevelReachesTheAvroCodec() throws Exception {
+        // Three points, so a fast level mapped to the default fails too, not only an ignored one.
+        long slowest = stagedBytesAtLevel(StagingFormat.AVRO, 19);
+        long standard = stagedBytesAtLevel(StagingFormat.AVRO, FileLoadsOptions.DEFAULT_ZSTD_LEVEL);
+        long fast = stagedBytesAtLevel(StagingFormat.AVRO, -5);
+        assertThat(slowest).isLessThan(standard);
+        assertThat(standard).isLessThan(fast);
+    }
+
+    /** The level travels from the options through the writer to the Parquet codec as well. */
+    @Test
+    void theZstandardLevelReachesTheParquetCodecThroughTheWriter() throws Exception {
+        long slowest = stagedBytesAtLevel(StagingFormat.PARQUET, 19);
+        long standard =
+                stagedBytesAtLevel(StagingFormat.PARQUET, FileLoadsOptions.DEFAULT_ZSTD_LEVEL);
+        long fast = stagedBytesAtLevel(StagingFormat.PARQUET, -5);
+        assertThat(slowest).isLessThan(standard);
+        assertThat(standard).isLessThan(fast);
+    }
+
+    private static long stagedBytesAtLevel(StagingFormat format, int level) throws Exception {
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        new InMemoryStagingStorage(),
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .stagingFormat(format)
+                                .zstdLevel(level)
+                                .build());
+        java.util.SplittableRandom random = new java.util.SplittableRandom(7);
+        for (int i = 0; i < 20_000; i++) {
+            writer.write(
+                    new TestRow(
+                            "t",
+                            "event-" + random.nextInt(5_000) + "-" + random.nextInt(5_000),
+                            (long) random.nextInt(1_000)),
+                    CONTEXT);
+        }
+        long bytes = writer.prepareCommit().iterator().next().getByteCount();
+        writer.close();
+        return bytes;
     }
 
     @Test

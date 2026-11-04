@@ -70,6 +70,8 @@ public final class FileLoadsOptionsMapper {
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_SERIALIZED_ROW_BYTES,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_AVRO_COMPRESSION,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_ZSTD_LEVEL,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_INITIAL_BACKOFF,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_LOAD_JOB_POLL_MAX_BACKOFF,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_SCHEMA_RECONCILE_INITIAL_BACKOFF,
@@ -162,6 +164,14 @@ public final class FileLoadsOptionsMapper {
                 config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_PARQUET_COMPRESSION,
                 builder::parquetCompression);
+        // Likewise unconditional: the builder rejects the Avro codec under Parquet, and a level
+        // for a codec that has none.
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_AVRO_COMPRESSION,
+                builder::avroCompression);
+        OptionSetters.apply(
+                config, BigQueryConnectorOptions.SINK_FILE_LOADS_ZSTD_LEVEL, builder::zstdLevel);
 
         OptionSetters.apply(
                 config,

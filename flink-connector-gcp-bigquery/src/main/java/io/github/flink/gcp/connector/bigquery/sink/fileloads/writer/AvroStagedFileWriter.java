@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 import org.apache.flink.annotation.Internal;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.AvroCompression;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import org.apache.avro.Schema;
@@ -37,44 +38,53 @@ import java.io.OutputStream;
 final class AvroStagedFileWriter implements StagedFileWriter {
 
     /**
-     * The staging codec: zstandard at Avro's own {@code DEFAULT_ZSTANDARD_LEVEL} (3).
+     * Maps the options to an Avro codec: zstandard at the configured level, or none.
      *
-     * <p><b>Chosen for CPU, not for size.</b> Compression runs on the task thread — the same one
-     * streaming into the GCS upload while the job processes records — so its cost is subtracted
-     * from throughput directly. Measured 2026-08-08 with this writer, 2,000,000 rows of a realistic
-     * mix, five passes after a warm-up, single-threaded on OpenJDK 21 (aarch64): deflate 11,436 ms,
-     * zstandard 3,182 ms, and 2,134 ms with no codec at all — so the compression itself costs 9,302
-     * ms against 1,048 ms, a factor of 8.9.
+     * <p><b>The zstandard default is chosen for CPU, not for size.</b> Compression runs on the task
+     * thread, the same one streaming into the GCS upload while the job processes records, so its
+     * cost is subtracted from throughput directly. Measured 2026-08-08 with this writer, 2,000,000
+     * rows of a realistic mix, five passes after a warm-up, single-threaded on OpenJDK 21
+     * (aarch64): deflate 11,436 ms, zstandard level 3 3,182 ms, and 2,134 ms with no codec at all,
+     * so the compression itself costs 9,302 ms against 1,048 ms, a factor of 8.9. Size is a wash
+     * against deflate there (zstandard 1.8% larger), so it must not be quoted as a reason.
      *
-     * <p>Size is a wash and must not be quoted as a reason: 201,708,003 bytes against deflate's
-     * 198,227,825, so zstandard is 1.8% <em>larger</em> here, matching the 1.01-1.02x measured at a
-     * million rows on #283. A 17% win appears only on files of a few thousand rows, where the
-     * dictionary dominates, and does not generalise.
-     *
-     * <p>Level 3 rather than a lower one: level 1 measured slower (3,459 ms) <em>and</em> 5%
-     * larger, so there is nothing below to trade for.
+     * <p>Deflate and snappy are not offered (#2022). On a nested row of about 9.5 KB, zstandard at
+     * level -3 matched snappy's CPU with 4% fewer bytes, and deflate was slower and larger than
+     * zstandard at every level measured; snappy would also add a native library to the shaded
+     * distribution.
      *
      * <p>The single-argument overload is the one taken deliberately: it selects {@code
-     * ZstandardCodec.Option(level, false, false)} — no per-block checksum and no recycling buffer
-     * pool. A checksum would duplicate what the Avro container and GCS already provide, and the
-     * pool is a memory/throughput trade this writer has no measurement for. Note the two- and
+     * ZstandardCodec.Option(level, false, false)}, with no per-block checksum and no recycling
+     * buffer pool. A checksum would duplicate what the Avro container and GCS already provide, and
+     * the pool is a memory/throughput trade this writer has no measurement for. Note the two- and
      * three-argument overloads take {@code useChecksum} before {@code useBufferPool}, which is easy
      * to transpose.
      *
-     * <p>Shared as a static because a {@code CodecFactory} is an immutable descriptor — {@code
-     * DataFileWriter.setCodec} calls {@code createInstance()} to build a per-writer {@code Codec} —
-     * so one instance is safe across the writers of a TaskManager. Avro keeps its own built-ins in
-     * a static registry the same way.
+     * <p>A {@code CodecFactory} is an immutable descriptor: {@code DataFileWriter.setCodec} calls
+     * {@code createInstance()} to build a per-writer {@code Codec}.
      *
-     * <p>The library is {@code com.github.luben:zstd-jni}, which Avro declares {@code optional} —
-     * this module declares it at runtime scope, and a shaded distribution has to keep its native
-     * libraries reachable.
+     * <p>The zstandard library is {@code com.github.luben:zstd-jni}, which Avro declares {@code
+     * optional}; this module declares it at runtime scope, and a shaded distribution has to keep
+     * its native libraries reachable.
      *
-     * <p>{@link #abort()} never closes the writer, which is safe because this codec opens and
-     * closes its compression stream per block. Revisit that method before changing the codec.
+     * <p>{@link #abort()} never closes the writer, which is safe because the zstandard codec opens
+     * and closes its compression stream per block and the null codec holds nothing. Revisit that
+     * method before adding a codec.
+     *
+     * @param compression the configured codec
+     * @param zstdLevel the zstandard level, ignored for {@link AvroCompression#NONE}
+     * @return the codec factory
      */
-    private static final CodecFactory STAGING_CODEC =
-            CodecFactory.zstandardCodec(CodecFactory.DEFAULT_ZSTANDARD_LEVEL);
+    private static CodecFactory codecOf(AvroCompression compression, int zstdLevel) {
+        switch (compression) {
+            case ZSTD:
+                return CodecFactory.zstandardCodec(zstdLevel);
+            case NONE:
+                return CodecFactory.nullCodec();
+            default:
+                throw new IllegalStateException("Unhandled Avro compression: " + compression);
+        }
+    }
 
     private final String flinkJobId;
     private final TableDestination destination;
@@ -88,7 +98,9 @@ final class AvroStagedFileWriter implements StagedFileWriter {
             TableDestination destination,
             String uri,
             Schema schema,
-            OutputStream stream)
+            OutputStream stream,
+            AvroCompression compression,
+            int zstdLevel)
             throws IOException {
         this.flinkJobId = flinkJobId;
         this.destination = destination;
@@ -96,7 +108,7 @@ final class AvroStagedFileWriter implements StagedFileWriter {
         this.countingStream = new CountingOutputStream(stream);
         DataFileWriter<GenericRecord> writer =
                 new DataFileWriter<>(new GenericDatumWriter<GenericRecord>(schema))
-                        .setCodec(STAGING_CODEC);
+                        .setCodec(codecOf(compression, zstdLevel));
         // A failure here leaves the staging stream unclosed, as abort() does: closing it would
         // finalize an object holding a partial header.
         this.avroWriter = writer.create(schema, countingStream);
@@ -128,8 +140,8 @@ final class AvroStagedFileWriter implements StagedFileWriter {
 
     @Override
     public void abort() {
-        // Closing avroWriter would compress the pending block and finalize the object. The codec
-        // opens and closes its compression stream per block, so no native resource waits for
-        // close() either.
+        // Closing avroWriter would compress the pending block and finalize the object. Neither
+        // codec holds a native resource that waits for close(): zstandard opens and closes its
+        // compression stream per block, and the null codec has none.
     }
 }
