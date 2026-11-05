@@ -99,8 +99,9 @@ def renderer(monkeypatch):
                         str(sizes[0]),
                         "--require-restored",
                         "false",
-                        # `pkg/bigquery.#Application` renders the five sink
-                        # inputs at their defaults, in this order.
+                        # `pkg/bigquery.#Application` renders the sink inputs
+                        # at their defaults, in this order, and the uploader's
+                        # bound only with the uploader on.
                         *(
                             [
                                 "--staging-format",
@@ -113,6 +114,12 @@ def renderer(monkeypatch):
                                 "16777216",
                                 "--max-open-destinations",
                                 "16",
+                                "--background-staging-upload-enabled",
+                                *(
+                                    ["true", "--max-in-flight-upload-operations", "2"]
+                                    if options["bigquery_uploader"] == "true"
+                                    else ["false"]
+                                ),
                             ]
                             if mode == "FILE_LOADS"
                             else []
@@ -206,6 +213,7 @@ def test_complete_identity_and_budget_bindings(
         "destinations": destinations,
         "records": records,
         "fault": None,
+        "uploader": False,
     }
     adapter_plan = ResourcePlan(**{**resource, "trial": Trial(**resource["trial"])})
     assert adapter_plan.job_body(11)["configuration"]["query"][
@@ -302,7 +310,7 @@ def test_the_estimate_charges_the_whole_query_budget():
 
 
 def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
-    """And each fault in place of one recovery, for the two cells that run them."""
+    """With and without the uploader, and each fault in place of one recovery."""
     faults = ("tm-replacement", "rescale-out", "rescale-in")
     assert {name: plan.trial(name) for name in plan.TRIALS} == {
         **{
@@ -311,12 +319,22 @@ def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
             for count in (10, 50)
         },
         "fl-10": {"mode": "FILE_LOADS", "destinations": 10},
+        "fl-10-uploader": {"mode": "FILE_LOADS", "destinations": 10, "uploader": True},
         **{
             f"eo-10-{fault}": {"mode": "EO", "destinations": 10, "fault": fault}
             for fault in faults
         },
         **{
             f"fl-10-{fault}": {"mode": "FILE_LOADS", "destinations": 10, "fault": fault}
+            for fault in faults
+        },
+        **{
+            f"fl-10-uploader-{fault}": {
+                "mode": "FILE_LOADS",
+                "destinations": 10,
+                "fault": fault,
+                "uploader": True,
+            }
             for fault in faults
         },
     }
@@ -336,7 +354,9 @@ def test_a_file_loads_upgrade_changes_only_phase_and_restoration(inputs, rendere
     bundle = plan.prepare(**inputs)
     initial = bundle["application"]["spec"]["job"]["args"]
     upgrade = bundle["upgrade_application"]["spec"]["job"]["args"]
-    assert initial[-2:] == ["--max-open-destinations", "16"] == upgrade[-2:]
+    assert (
+        initial[-2:] == ["--background-staging-upload-enabled", "false"] == upgrade[-2:]
+    )
     assert [i for i, (a, b) in enumerate(zip(initial, upgrade)) if a != b] == [
         3,
         initial.index("--require-restored") + 1,
@@ -569,12 +589,50 @@ def test_shared_template_containers_are_rejected(inputs, renderer, monkeypatch, 
     ],
 )
 def test_a_fault_is_refused_outside_the_cells_that_offer_it(value):
-    with pytest.raises(ValueError, match="a fault only for eo-10 or fl-10"):
+    with pytest.raises(
+        ValueError, match="a fault only for eo-10 or fl-10 or fl-10-uploader"
+    ):
         plan.validate_trial(value)
 
 
 @pytest.mark.parametrize(
-    "name", ["eo-10-tm-replacement", "eo-10-rescale-out", "fl-10-rescale-in"]
+    "value",
+    [
+        # The uploader only for FILE_LOADS, only as true, and never as a string.
+        {"mode": "EO", "destinations": 10, "uploader": True},
+        {"mode": "FILE_LOADS", "destinations": 10, "uploader": False},
+        {"mode": "FILE_LOADS", "destinations": 10, "uploader": "true"},
+        {"mode": "FILE_LOADS", "destinations": 10, "uploader": 1},
+    ],
+)
+def test_the_uploader_is_refused_outside_its_cells(value):
+    with pytest.raises(ValueError, match="with or without the uploader"):
+        plan.validate_trial(value)
+
+
+@pytest.mark.parametrize("name", ["fl-10-uploader", "fl-10-uploader-rescale-out"])
+def test_an_uploader_trial_renders_and_proposes_the_uploader(inputs, renderer, name):
+    inputs["trial"] = plan.trial(name)
+    bundle = plan.prepare(**inputs)
+    assert renderer[0][4]["bigquery_uploader"] == "true"
+    assert bundle["proposal"]["resources"]["trial"]["uploader"] is True
+    for application in ("application", "upgrade_application"):
+        assert bundle[application]["spec"]["job"]["args"][-4:] == [
+            "--background-staging-upload-enabled",
+            "true",
+            "--max-in-flight-upload-operations",
+            "2",
+        ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "eo-10-tm-replacement",
+        "eo-10-rescale-out",
+        "fl-10-rescale-in",
+        "fl-10-uploader-tm-replacement",
+    ],
 )
 def test_a_fault_trial_proposes_its_fault_at_the_same_estimate(inputs, renderer, name):
     """The rendered sizes are held against the real CUE in the manifest tests."""

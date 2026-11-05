@@ -45,23 +45,26 @@ REVIEWED_AT = "2026-09-20T00:00:00Z"
 QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
 # The dispatchable trials; the query budget above is every trial's. FILE_LOADS
-# has one cell, at ten destinations with the connector's default sink inputs: it
-# asks whether finalization is correct across recovery, not how it scales. The
-# exactly-once cells at ten destinations also run each fault the shared exercise
-# offers in place of one recovery (#1779), named `<cell>-<fault>`; the owner
-# chooses which of them run.
-FAULT_CELLS = ("eo-10", "fl-10")
+# has two cells at ten destinations, one with the sink inputs at the connector's
+# defaults and one that turns the background staging uploader on (#2030),
+# which is off by default: they ask whether
+# finalization is correct across recovery, not how it scales. The exactly-once
+# cells at ten destinations also run each fault the shared exercise offers in
+# place of one recovery (#1779), named `<cell>-<fault>`; the owner chooses which
+# of them run. A trial is (mode, destinations, fault, uploader).
+FAULT_CELLS = ("eo-10", "fl-10", "fl-10-uploader")
 TRIALS = {
     **{
-        f"{mode.lower()}-{destinations}": (mode, destinations, None)
+        f"{mode.lower()}-{destinations}": (mode, destinations, None, False)
         for destinations in (10, 50)
         for mode in ("ALO", "EO")
     },
-    "fl-10": ("FILE_LOADS", 10, None),
+    "fl-10": ("FILE_LOADS", 10, None, False),
+    "fl-10-uploader": ("FILE_LOADS", 10, None, True),
 }
 TRIALS.update(
     {
-        f"{cell}-{fault}": (*TRIALS[cell][:2], fault)
+        f"{cell}-{fault}": (*TRIALS[cell][:2], fault, TRIALS[cell][3])
         for cell in FAULT_CELLS
         for fault in FAULTS
     }
@@ -74,19 +77,24 @@ def trial(name):
     """The approved trial a dispatch names, such as `alo-10`."""
     if name not in TRIALS:
         raise Failure("BigQuery trial must be one of " + ", ".join(TRIALS))
-    mode, destinations, fault = TRIALS[name]
-    # A trial without a fault keeps the shape every earlier approval carried.
-    if fault is None:
-        return {"mode": mode, "destinations": destinations}
-    return {"mode": mode, "destinations": destinations, "fault": fault}
+    mode, destinations, fault, uploader = TRIALS[name]
+    # A trial without a fault or the uploader keeps the shape every earlier
+    # approval carried.
+    value = {"mode": mode, "destinations": destinations}
+    if fault is not None:
+        value["fault"] = fault
+    if uploader:
+        value["uploader"] = True
+    return value
 
 
 def validate_trial(value):
     # Serialized, so `10.0` or `True` cannot pass as a destination count.
     if json_bytes(value) not in {json_bytes(trial(name)) for name in TRIALS}:
         raise ValueError(
-            "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10, "
-            "and a fault only for " + " or ".join(FAULT_CELLS)
+            "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10 "
+            "with or without the uploader, and a fault only for "
+            + " or ".join(FAULT_CELLS)
         )
 
 
@@ -121,6 +129,7 @@ def resource_plan(run_id, nonce, expires_at, trial):
             trial["destinations"],
             RECORDS[trial["mode"]],
             trial.get("fault"),
+            trial.get("uploader", False),
         ),
         nonce,
         int(timestamp(expires_at) * 1000),
@@ -168,6 +177,7 @@ def prepare(
         "bigquery_mode": identity.mode,
         "bigquery_destinations": identity.destinations,
         "bigquery_fault": identity.fault or "none",
+        "bigquery_uploader": "true" if identity.uploader else "false",
     }
     initial, upgrade, delivery = render(
         run_id,

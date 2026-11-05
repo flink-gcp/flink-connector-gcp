@@ -397,7 +397,7 @@ The offline `cloudtasks-recovery` proposal is described in the [Cloud Tasks tria
 The offline `bigtable-recovery` proposal is described in the [Bigtable trial runbook](../apps/bigtable/README.md#trial-and-estimate).
 The offline `spanner-recovery` proposal is described in the [Spanner trial runbook](../apps/spanner/README.md#trial-and-estimate).
 The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
-A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, or an `eo-10` or `fl-10` fault trial) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
+A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, or an `eo-10`, `fl-10` or `fl-10-uploader` fault trial) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
 A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
 A Bigtable trial takes its kind and the published application digest, as [Dispatch](../apps/bigtable/README.md#dispatch) describes.

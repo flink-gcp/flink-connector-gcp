@@ -1028,6 +1028,8 @@ FILE_LOADS_DEFAULT_ARGS = [
     "16777216",
     "--max-open-destinations",
     "16",
+    "--background-staging-upload-enabled",
+    "false",
 ]
 BIGQUERY_MODE_ARGS = {"ALO": [], "EO": [], "FILE_LOADS": FILE_LOADS_DEFAULT_ARGS}
 BIGQUERY_MODE_INTERVALS = {"ALO": "30 s", "EO": "30 s", "FILE_LOADS": "120 s"}
@@ -1197,6 +1199,15 @@ def test_bigquery_record_boundaries_render(module, mode, records):
         {"mode": "FILE_LOADS", "fileLoads": {"maxOpenDestinations": 10001}},
         {"mode": "FILE_LOADS", "fileLoads": {"maxStagingFileBytes": 2**63}},
         {"mode": "FILE_LOADS", "fileLoads": {"maxPendingFiles": 16}},
+        {"mode": "FILE_LOADS", "fileLoads": {"backgroundStagingUploadEnabled": "true"}},
+        {
+            "mode": "FILE_LOADS",
+            "fileLoads": {
+                "backgroundStagingUploadEnabled": True,
+                "maxInFlightUploadOperations": 0,
+            },
+        },
+        {"mode": "FILE_LOADS", "fileLoads": {"maxInFlightUploadOperations": 2}},
         {"destinations": 50, "records": 99},
         {"records": 0},
         {"records": "100"},
@@ -1227,6 +1238,11 @@ def test_bigquery_rejects_invalid_trial_inputs(module, changes):
         (
             {"mode": "FILE_LOADS", "fileLoads": {"maxOpenDestinations": 10001}},
             "out of bound <=10000",
+        ),
+        (
+            # The connector refuses the bound with the uploader off.
+            {"mode": "FILE_LOADS", "fileLoads": {"maxInFlightUploadOperations": 2}},
+            "not allowed",
         ),
     ],
 )
@@ -1263,6 +1279,8 @@ def test_bigquery_file_loads_arguments_render_in_order(module):
             "maxConcurrentDestinations": 64,
             "maxStagingFileBytes": 33554432,
             "maxOpenDestinations": 50,
+            "backgroundStagingUploadEnabled": True,
+            "maxInFlightUploadOperations": 3,
         },
     )
     result = cue(module, "cmd", "render", path)
@@ -1279,6 +1297,25 @@ def test_bigquery_file_loads_arguments_render_in_order(module):
         "33554432",
         "--max-open-destinations",
         "50",
+        "--background-staging-upload-enabled",
+        "true",
+        "--max-in-flight-upload-operations",
+        "3",
+    ]
+
+
+def test_bigquery_file_loads_uploader_renders_its_default_bound(module):
+    path = bigquery_leaf(
+        module, mode="FILE_LOADS", fileLoads={"backgroundStagingUploadEnabled": True}
+    )
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    assert app["spec"]["job"]["args"][16:] == [
+        *FILE_LOADS_DEFAULT_ARGS[:-1],
+        "true",
+        "--max-in-flight-upload-operations",
+        "2",
     ]
 
 

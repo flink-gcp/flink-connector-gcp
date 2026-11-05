@@ -25,6 +25,9 @@ bigqueryMode:         *"EO" | "ALO" | "FILE_LOADS" @tag(bigquery_mode)
 bigqueryDestinations: *10 | 50                     @tag(bigquery_destinations,type=int)
 // The fault a trial runs in place of one of the two recoveries every trial has run, or none.
 bigqueryFault: *"none" | or([for kind, _ in faultKinds if kind != defaultFault {kind}]) @tag(bigquery_fault)
+// Whether a FILE_LOADS trial runs the background staging uploader; a Storage Write mode
+// refuses it, because the application package refuses any FILE_LOADS knob there.
+bigqueryUploader: *false | true @tag(bigquery_uploader,type=bool)
 
 // The writers' parallelism of each phase, the fault kind's; a trial without a fault keeps the
 // default kind's. Indexed, because with the package sources on standard input, as every render
@@ -45,6 +48,7 @@ if scenario == "bigquery-recovery" {
 			delivery: resources: app: (bigquery.#Application & {
 				run: {id: runID, image: applicationImage, phase: trialPhase
 					mode: bigqueryMode, destinations: bigqueryDestinations, parallelism: _bigqueryParallelism[trialPhase]
+					if bigqueryUploader {fileLoads: backgroundStagingUploadEnabled: true}
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

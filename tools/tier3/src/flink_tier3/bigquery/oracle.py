@@ -33,8 +33,10 @@ ROW_BYTES = {"ALO": 64 * 1024, "EO": 1024, "FILE_LOADS": 1024}
 # jobs whose ids are derived from those files, so a retried commit re-attaches
 # rather than loading twice: the connector claims exactly-once for it.
 EXACTLY_ONCE = frozenset({"EO", "FILE_LOADS"})
-# The FILE_LOADS sink inputs a trial renders, at the connector's defaults and in
-# the order `pkg/bigquery.#Application` renders them. No trial varies them.
+# The FILE_LOADS sink inputs every trial renders at the connector's defaults, in
+# the order `pkg/bigquery.#Application` renders them, then the uploader's, the
+# one input a trial varies (#2030); with the uploader on, its bound on in-flight
+# upload operations keeps its default.
 FILE_LOADS_ARGS = (
     "--staging-format",
     "AVRO",
@@ -47,6 +49,15 @@ FILE_LOADS_ARGS = (
     "--max-open-destinations",
     "16",
 )
+UPLOADER_ARGS = {
+    False: ("--background-staging-upload-enabled", "false"),
+    True: (
+        "--background-staging-upload-enabled",
+        "true",
+        "--max-in-flight-upload-operations",
+        "2",
+    ),
+}
 # The faults a trial may run in place of one of the two recoveries: every
 # shared kind but the one a trial without a fault runs, the savepoint upgrade
 # and the JobManager failover.
@@ -72,6 +83,7 @@ class Trial:
     destinations: int
     records: int
     fault: str | None = None
+    uploader: bool = False
 
     def __post_init__(self):
         if not isinstance(self.run_id, str) or not re.fullmatch(
@@ -90,6 +102,10 @@ class Trial:
             not isinstance(self.fault, str) or self.fault not in FAULTS
         ):
             raise ValueError("fault must be one of " + ", ".join(FAULTS))
+        if type(self.uploader) is not bool or (
+            self.uploader and self.mode != "FILE_LOADS"
+        ):
+            raise ValueError("uploader must be a boolean, and true only for FILE_LOADS")
 
     @property
     def kind(self):
@@ -140,7 +156,11 @@ class Trial:
             str(self.parallelism(phase)),
             "--require-restored",
             "true" if phase == "upgrade" else "false",
-            *(FILE_LOADS_ARGS if self.mode == "FILE_LOADS" else ()),
+            *(
+                (*FILE_LOADS_ARGS, *UPLOADER_ARGS[self.uploader])
+                if self.mode == "FILE_LOADS"
+                else ()
+            ),
         ]
 
 
