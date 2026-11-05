@@ -251,7 +251,8 @@ class FileLoadsOptionsTest {
         setBuilderField(oldBuilder, "destinationIdleTimeout", null);
         setBuilderField(oldBuilder, "maxSerializedRowBytes", 0L);
         setBuilderField(oldBuilder, "tempTableExpiration", null);
-        FileLoadsOptions restored = oldBuilder.build();
+        FileLoadsOptions restored = withField(oldBuilder.build(), "avroCompression", null);
+        restored = withField(restored, "zstdLevel", null);
         FileLoadsOptions defaults = base().build();
 
         assertThat(restored.getMaxOpenDestinations()).isEqualTo(16);
@@ -261,8 +262,22 @@ class FileLoadsOptionsTest {
         assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
         assertThat(restored.getTempTableExpiration()).isEqualTo(Duration.ofDays(1));
+        assertThat(restored.getAvroCompression()).isEqualTo(AvroCompression.ZSTD);
+        assertThat(restored.getZstdLevel()).isEqualTo(3);
         assertThat(restored).isEqualTo(defaults).hasSameHashCodeAs(defaults);
         assertThat(restored.toString()).isEqualTo(defaults.toString());
+    }
+
+    /**
+     * The options with one field as Java deserialization leaves it when the serialized form
+     * predates the field: the builder supplies a default, so only the built instance can carry it.
+     */
+    private static FileLoadsOptions withField(FileLoadsOptions options, String name, Object value)
+            throws Exception {
+        java.lang.reflect.Field field = FileLoadsOptions.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(options, value);
+        return options;
     }
 
     private static void setBuilderField(FileLoadsOptions.Builder builder, String name, Object value)
@@ -329,6 +344,80 @@ class FileLoadsOptionsTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("parquetCompression")
                 .hasMessageContaining("PARQUET");
+    }
+
+    @Test
+    void stagingCodecDefaultsAreZstandardAtItsDefaultLevel() {
+        FileLoadsOptions options = base().build();
+
+        assertThat(options.getAvroCompression()).isEqualTo(AvroCompression.ZSTD);
+        assertThat(options.getZstdLevel()).isEqualTo(3);
+        assertThat(options.toString()).contains("avroCompression=zstd").contains("zstdLevel=3");
+        assertThat(base().zstdLevel(-3).build()).isNotEqualTo(options);
+        assertThat(base().avroCompression(AvroCompression.NONE).build()).isNotEqualTo(options);
+    }
+
+    @Test
+    void theLowestLevelIsTheBundledZstandardsFastest() {
+        // A zstd-jni bump that moves its range fails here rather than clamping silently.
+        assertThat(FileLoadsOptions.MIN_ZSTD_LEVEL)
+                .isEqualTo(com.github.luben.zstd.Zstd.minCompressionLevel());
+        assertThat(FileLoadsOptions.MAX_ZSTD_LEVEL)
+                .isLessThan(com.github.luben.zstd.Zstd.maxCompressionLevel());
+    }
+
+    @Test
+    void zstdLevelAcceptsTheRangeBelowUltraExceptZero() {
+        for (int level :
+                new int[] {
+                    FileLoadsOptions.MIN_ZSTD_LEVEL, -3, -1, 1, 19, FileLoadsOptions.MAX_ZSTD_LEVEL
+                }) {
+            assertThat(base().zstdLevel(level).build().getZstdLevel()).isEqualTo(level);
+        }
+        for (int level :
+                new int[] {
+                    FileLoadsOptions.MIN_ZSTD_LEVEL - 1, 0, FileLoadsOptions.MAX_ZSTD_LEVEL + 1, 22
+                }) {
+            assertThatThrownBy(() -> FileLoadsOptions.builder().zstdLevel(level))
+                    .as("level %s", level)
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("zstdLevel must be from");
+        }
+    }
+
+    @Test
+    void avroCompressionIsRejectedUnderParquet() {
+        // Every value, the default included: setting it at all is what the rule refuses.
+        for (AvroCompression codec : AvroCompression.values()) {
+            assertThatThrownBy(
+                            () ->
+                                    base().stagingFormat(StagingFormat.PARQUET)
+                                            .avroCompression(codec)
+                                            .build())
+                    .as("%s", codec)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageStartingWith(
+                            "avroCompression is only accepted with stagingFormat(AVRO)");
+        }
+    }
+
+    @Test
+    void zstdLevelIsRejectedWhenTheSelectedCodecIsNone() {
+        assertThatThrownBy(() -> base().avroCompression(AvroCompression.NONE).zstdLevel(5).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("zstdLevel")
+                .hasMessageContaining("AVRO staging codec is NONE");
+        assertThatThrownBy(
+                        () ->
+                                base().stagingFormat(StagingFormat.PARQUET)
+                                        .parquetCompression(ParquetCompression.NONE)
+                                        .zstdLevel(5)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("PARQUET staging codec is NONE");
+        // The level is about the format in use, not about a codec of the other one.
+        assertThat(base().stagingFormat(StagingFormat.PARQUET).zstdLevel(5).build().getZstdLevel())
+                .isEqualTo(5);
     }
 
     @Test

@@ -20,7 +20,8 @@ import org.apache.flink.annotation.Public;
 
 /**
  * How {@link StagingFormat#PARQUET} staging files are compressed. Rejected when the staging format
- * is {@link StagingFormat#AVRO}, whose codec is not configurable.
+ * is {@link StagingFormat#AVRO}, whose codec {@link AvroCompression} sets. The zstandard level is
+ * set separately and is shared with Avro.
  *
  * <p>The choice exists for one reason, and it is a dependency reason rather than a tuning one: only
  * {@link #NONE} can be written without Hadoop classes on the runtime classpath. Everything else in

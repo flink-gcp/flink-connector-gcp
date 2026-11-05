@@ -285,11 +285,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   copy an empty table, losing rows silently. Laid-out loads and copies are `CREATE_NEVER`, and a
   destination whose final copy succeeded under either id (`LoadJobRunner.copySucceeded`, DONE only,
   not RUNNING) skips preparation and loads, laid out or not: ask before the layout guard.
-- **Staging files are zstandard, and the reason is CPU — never size.** Measured with this
-  writer: deflate 11,436 ms against zstandard 3,182 ms for 2M rows, and 1.8% *more* bytes, so a
-  size win must not be reintroduced from #283's 1,000-row probe (17% is a small-file artifact).
-  Level 3 is Avro's `DEFAULT_ZSTANDARD_LEVEL`; level 1 measured slower *and* larger, so there is
-  nothing below to trade for, and `CodecFactory.zstandardCodec()` has no no-arg overload. The
+- **Staging files default to zstandard level 3, and the reason is CPU — never size.** Measured
+  with this writer: deflate 11,436 ms against zstandard 3,182 ms for 2M rows, and 1.8% *more*
+  bytes, so a size win must not be reintroduced from #283's 1,000-row probe (17% is a small-file
+  artifact). `avroCompression(ZSTD | NONE)` and the shared `zstdLevel` make the trade-off
+  configurable (`docs/adr/0196`); level 1 measured no faster than 3, so the CPU-saving points are
+  the negative levels and `NONE`. Do not add snappy or deflate without engaging ADR-0196: zstandard
+  matched or beat each on CPU and bytes, and snappy needs native libraries in the uber-jar.
+  `CodecFactory.zstandardCodec()` has no no-arg overload. The
   library is `com.github.luben:zstd-jni`, which Avro declares `optional` — hence the explicit
   runtime-scope declaration — and the uber-jar relocates its classes while **leaving its native
   libraries unrelocated at the jar root**, which is safe only because `Native.resourceName()`

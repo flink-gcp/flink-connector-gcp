@@ -188,6 +188,8 @@ where the daily job and destination-table limits that shape `minCheckpointInterv
 | `maxSerializedRowBytes` | 15,000,000 B | Largest serialized protobuf row accepted before Avro conversion. A larger row is routed to the failure handler without opening a destination file |
 | `stagingFormat` | `AVRO` | The file format rows are staged in. `PARQUET` is opt-in and needs dependencies this connector does not ship — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) before selecting it |
 | `parquetCompression` | `ZSTD` | How Parquet staging files are compressed. Rejected under `AVRO`. `NONE` is the only value needing no Hadoop runtime, and stages more bytes than Avro does |
+| `avroCompression` | `ZSTD` | How Avro staging files are compressed. Rejected under `PARQUET`. `NONE` spends the least writer CPU and stages the most bytes — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) for the measured trade-off |
+| `zstdLevel` | 3 | zstandard level of every staging file written with zstandard, Avro or Parquet, from -131,072 to 19 but not 0. Negative levels trade bytes for CPU; higher levels allocate a larger native compression context per Avro block or Parquet page. Rejected when the selected codec is `NONE` |
 | `loadJobPollInitialBackoff` | 1 s | First backoff between polls of a submitted load, copy, or terminal query job |
 | `loadJobPollMaxBackoff` | 30 s | Cap of that backoff, before jitter. There is deliberately no attempt cap |
 | `schemaReconcileInitialBackoff` | 500 ms | First backoff after losing an etag race while reconciling a table's schema |

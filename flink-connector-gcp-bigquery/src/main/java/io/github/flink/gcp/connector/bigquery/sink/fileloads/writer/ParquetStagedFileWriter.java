@@ -52,6 +52,10 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
     private final TableDestination destination;
     private final String uri;
     private final CountingOutputStream countingStream;
+
+    /** parquet-hadoop's {@code ZstandardCodec.PARQUET_COMPRESS_ZSTD_LEVEL}. */
+    private static final String ZSTD_LEVEL_KEY = "parquet.compression.codec.zstd.level";
+
     private final ParquetWriter<GenericRecord> parquetWriter;
     private long rowCount;
     private long lastRowGroupBytes;
@@ -63,6 +67,7 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
             Schema schema,
             OutputStream stream,
             ParquetCompression compression,
+            int zstdLevel,
             long maxStagingFileBytes)
             throws IOException {
         this.flinkJobId = flinkJobId;
@@ -91,6 +96,9 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
                         // BigQuery's enableListInference reads the standard annotation, and a
                         // two-level list would load as an empty array without an error.
                         .config(AvroWriteSupport.WRITE_OLD_LIST_STRUCTURE, "false")
+                        // Read by parquet-hadoop's ZstandardCodec from the Hadoop configuration
+                        // its CodecFactory derives from this one; ignored by UNCOMPRESSED.
+                        .config(ZSTD_LEVEL_KEY, Integer.toString(zstdLevel))
                         .build();
     }
 

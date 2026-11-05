@@ -2335,6 +2335,25 @@ and 2,134 ms with no codec at all, so the compression itself costs 9,302 ms agai
 is a wash — zstandard came out 1.8% *larger* here — so it is not a reason to expect smaller staged
 objects or a smaller bill.
 
+The codec still trades the writer's CPU against the bytes uploaded to Cloud Storage and read by the
+load job, and the right point depends on which a job is short of. `avroCompression(NONE)` turns
+compression off, and `zstdLevel(...)` moves zstandard along the line for Avro and Parquet staging
+alike. Measured on a nested row of about 9.5 KB with 120 repeated sub-messages and three additional
+fields, per record on one writer thread:
+
+| Avro codec | CPU per record | Staged bytes per record |
+|---|---:|---:|
+| `NONE` | 111-115 µs | 8,745 |
+| zstandard, `zstdLevel(-3)` | 122-124 µs | 6,021 |
+| zstandard, level 3 (default) | 135-136 µs | 4,778 |
+| zstandard, `zstdLevel(6)` | 176-181 µs | 4,752 |
+
+A job whose task threads are busy and whose upload has headroom gains from a negative level or
+`NONE`. A job uploading across regions, or short of bandwidth, keeps the default: levels above it
+cost much more CPU for almost no size, and every Avro block or Parquet page allocates a larger
+native compression context, about 90 MiB at 19, the highest level accepted. Snappy and deflate are not offered, because on that row
+zstandard at some level matched or beat each of them on both counts (ADR-0196).
+
 This puts `com.github.luben:zstd-jni` on the connector's runtime classpath. Avro declares it
 `optional`, so it is declared here explicitly; a deployment assembling its own dependency set needs
 it present, and the SQL uber-jar bundles it with its per-platform native libraries left at the jar
