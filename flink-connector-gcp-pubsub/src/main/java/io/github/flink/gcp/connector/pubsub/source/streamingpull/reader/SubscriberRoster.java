@@ -237,8 +237,8 @@ final class SubscriberRoster {
      * resumes, and the buffer grows for as long as the pause lasts (measured by {@code
      * PubSubPausedSplitBufferITCase}: one flow-control window per period, indefinitely). An
      * indefinite pause is ordinary — an aligned group holds its slowest member's watermark, so one
-     * quiet subscription pauses every other split until the strategy's idleness lets it go — which
-     * makes this a memory hazard rather than a stall.
+     * quiet subscription pauses every other split for as long as it stays quiet — which makes this
+     * a memory hazard rather than a stall.
      *
      * <p>Stopping the client is the response because the alternatives are worse where it counts.
      * Refusing messages in the receiver callback means either blocking a client-library thread,
@@ -297,12 +297,11 @@ final class SubscriberRoster {
                                 + " its Pub/Sub subscriber is being stopped and its messages"
                                 + " returned for redelivery; a fresh subscriber opens when the"
                                 + " split resumes. The split is paused by watermark alignment, and"
-                                + " a pause this long usually means an aligned source has gone idle"
-                                + " without withIdleness(...) on its watermark strategy: add it, or"
-                                + " bring the aligned group's slow member forward. (On Flink"
-                                + " versions affected by FLINK-40234, idleness can drop records as"
-                                + " late while the subtask is busy; the Pub/Sub source docs"
-                                + " describe the idle timeout to choose.) Raising"
+                                + " a pause this long usually means an aligned subscription has gone"
+                                + " quiet: read it from a source without watermark alignment, or"
+                                + " bring the aligned group's slow member forward. Do not add"
+                                + " withIdleness(...) for it, as FLINK-40234 can drop records as"
+                                + " late. Raising"
                                 + " pausedSplitBufferMaxMessages or pausedSplitBufferMaxBytes only"
                                 + " holds more memory for a split nothing is consuming, so prefer"
                                 + " it only for a pause you expect to end.",

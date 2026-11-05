@@ -428,9 +428,10 @@ limit stops being consumed until the rest catch up. Splits, not subscriptions �
 and Pub/Sub balances its stream across whichever are still pulling, so that subscription only stops
 being consumed once all of its splits are paused. Alignment is therefore most predictable when
 subscriptions are at least as many as the parallelism, and exact under `PER_KEY`, where the mapping
-is one split per subscription. Nothing is paused at all if
-`pipeline.watermark-alignment.allow-unaligned-source-splits` is `true`: Flink then aligns whole
-subtasks and never asks a source to pause a split.
+is one split per subscription. Setting `pipeline.watermark-alignment.allow-unaligned-source-splits`
+to `true` does not stop this: Flink still asks the reader to pause a split, and the option only lets
+a source that cannot pause one run without failing. This source can, so its splits are paused
+either way.
 
 A streaming-pull connection cannot itself be paused, so a paused split is simply not drained.
 
@@ -488,32 +489,31 @@ delivers at once (measured at 104 and 121 buffered against a bound of 60 over tw
 The reader-wide hard bound does not overshoot: the crossing delivery is rejected before retention.
 
 **An indefinite pause is still a problem, just no longer a memory one.** An aligned group holds its
-slowest member's watermark, so a subscription that goes quiet holds every other split paused forever
-unless the strategy carries `withIdleness(...)` — and a split that stays parked consumes nothing
-while its subscription's backlog grows, until Pub/Sub's message retention begins dropping it.
+slowest member's watermark, so a subscription that goes quiet holds every other split paused for as
+long as it stays quiet — and a split that stays parked consumes nothing while its subscription's
+backlog grows, until Pub/Sub's message retention begins dropping it.
 `parkedSplits` is the signature to alert on, but one nonzero sample does not by itself prove an
 indefinite pause. The per-split bound normally takes about one `maxAckExtensionPeriod` of continuous
 pause to reach, while the reader-wide hard bound can park every split immediately when a finite
 pause crosses its message or byte cap. Alert on a sustained parked value or repeated `splitsParked`
 increments alongside subscription backlog, then distinguish an alignment problem from a limit that
-is too small for ordinary bursts. For the former, add `withIdleness(...)`, bring the slow member
-forward, or widen the drift limit. For the latter, raising the bound holds more memory for splits
+is too small for ordinary bursts. For the former, read a subscription that can go quiet from a
+source without watermark alignment, bring the slow member forward, or widen the drift limit for a
+quiet period you know is bounded. For the latter, raising the bound holds more memory for splits
 nobody is consuming, so do it only for a pause you know is bounded and have the heap for.
 `splitsParked` counts the parks themselves, which is what a park and its resume falling between two
 scrapes would otherwise hide.
 
-**`withIdleness(...)` can drop records under a busy subtask.**
+**Do not release a quiet subscription with `withIdleness(...)`.** It can lose records:
 [FLINK-40234](https://issues.apache.org/jira/browse/FLINK-40234) reports that it can mark a split
 idle while the split still has records.
 The idleness timer sees a record only when the subtask thread reaches it, so a split whose records
 wait behind slow per-record processing or a window firing looks quiet for that long.
 If that wait exceeds the idle timeout, the split is marked idle, the watermark can advance past its
-waiting records, and an event-time operator downstream drops them as late.
+waiting records, and an event-time operator downstream drops them as late, with no failure and no
+log line.
 The issue lists Flink 2.2.1 and 2.3.0 as affected and is open with no fix version; the timer it
 describes is the same in Flink 1.20.
-The advice above still holds for a quiet subscription, but on an affected version choose an idle
-timeout well above the longest the subtask thread can be busy, and watch for late-record drops
-after adding it (a window operator counts them as `numLateRecordsDropped`).
 
 **A paused split is still watched.** If its subscriber fails permanently while paused, the job
 fails, exactly as it would for a split that was being consumed

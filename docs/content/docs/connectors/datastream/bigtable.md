@@ -506,7 +506,10 @@ missing partition would not prove Flink's non-early watermark contract.
 The estimate remains checkpoint progress and a reader metric for lag monitoring.
 
 An application can replace `WatermarkStrategy.noWatermarks()` with its own bounded-out-of-orderness
-and idleness policy over the commit timestamps attached to emitted records.
+policy over the commit timestamps attached to emitted records.
+Do not add `withIdleness(...)` to it: [FLINK-40234](https://issues.apache.org/jira/browse/FLINK-40234)
+can mark a split idle while it still has records, the watermark can then pass them, and an
+event-time operator downstream drops them as late.
 That policy is an application-owned completeness/latency trade-off rather than a Bigtable guarantee:
 the service publishes no finite maximum lateness, and connector concurrency can leave a partition
 queued or unassigned before Flink has a split output for it.
