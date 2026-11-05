@@ -17,10 +17,14 @@
 package io.github.flink.gcp.connector.pubsub.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.table.api.ValidationException;
 
 import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.table.PubSubConnectorOptions;
 
 /**
@@ -103,6 +107,49 @@ public final class SubscriberOptionsMapper {
                 PubSubConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
                 builder::firstCheckpointTimeout);
 
+        rejectBudgetBelowFlowControl(config);
         return builder.build();
+    }
+
+    /**
+     * The check {@link PubSubSubscriberOptions.Builder#build()} runs on an explicit
+     * subscriber-buffer budget, named in the keys the DDL spells. It takes the four settings as
+     * parameters, since restating it here would need a second copy of the SDK's flow-control
+     * defaults, and runs before {@code build()} so the builder's spelling is never what a table
+     * user reads (ADR-0133).
+     */
+    private static void rejectBudgetBelowFlowControl(ReadableConfig config) {
+        try {
+            SubscriberBufferLimits.checkCoversFlowControl(
+                    config.getOptional(PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_MESSAGES)
+                            .orElse(null),
+                    config.getOptional(PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_BYTES)
+                            .map(MemorySize::getBytes)
+                            .orElse(null),
+                    config.getOptional(
+                                    PubSubConnectorOptions
+                                            .SCAN_FLOW_CONTROL_MAX_OUTSTANDING_ELEMENT_COUNT)
+                            .orElse(null),
+                    config.getOptional(
+                                    PubSubConnectorOptions
+                                            .SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES)
+                            .map(MemorySize::getBytes)
+                            .orElse(null),
+                    new SubscriberBufferLimits.Names(
+                            quoted(PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_MESSAGES),
+                            quoted(PubSubConnectorOptions.SCAN_SUBSCRIBER_BUFFER_MAX_BYTES),
+                            quoted(
+                                    PubSubConnectorOptions
+                                            .SCAN_FLOW_CONTROL_MAX_OUTSTANDING_ELEMENT_COUNT),
+                            quoted(
+                                    PubSubConnectorOptions
+                                            .SCAN_FLOW_CONTROL_MAX_OUTSTANDING_REQUEST_BYTES)));
+        } catch (IllegalArgumentException e) {
+            throw new ValidationException(e.getMessage(), e);
+        }
+    }
+
+    private static String quoted(ConfigOption<?> option) {
+        return "'" + option.key() + "'";
     }
 }

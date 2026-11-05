@@ -114,7 +114,7 @@ class SubscriberOptionsMapperTest {
         options.put(key("flowControlMaxOutstandingElementCount"), "500");
         options.put(key("flowControlMaxOutstandingRequestBytes"), "7 mb");
         options.put(key("subscriberBufferMaxMessages"), "1200");
-        options.put(key("subscriberBufferMaxBytes"), "13 mb");
+        options.put(key("subscriberBufferMaxBytes"), "15 mb");
         options.put(key("pausedSplitBufferMaxMessages"), "900");
         options.put(key("pausedSplitBufferMaxBytes"), "11 mb");
         options.put(key("parallelPullCount"), "3");
@@ -133,7 +133,7 @@ class SubscriberOptionsMapperTest {
         assertThat(mapped.getFlowControlMaxOutstandingElementCount()).isEqualTo(500L);
         assertThat(mapped.getFlowControlMaxOutstandingRequestBytes()).isEqualTo(7L * 1024 * 1024);
         assertThat(mapped.getSubscriberBufferMaxMessages()).isEqualTo(1_200L);
-        assertThat(mapped.getSubscriberBufferMaxBytes()).isEqualTo(13L * 1024 * 1024);
+        assertThat(mapped.getSubscriberBufferMaxBytes()).isEqualTo(15L * 1024 * 1024);
         assertThat(mapped.getPausedSplitBufferMaxMessages()).isEqualTo(900L);
         assertThat(mapped.getPausedSplitBufferMaxBytes()).isEqualTo(11L * 1024 * 1024);
         assertThat(mapped.getParallelPullCount()).isEqualTo(3);
@@ -189,5 +189,45 @@ class SubscriberOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.subscriber-buffer.max-bytes' is invalid")
                 .hasMessageContaining("subscriberBufferMaxBytes must be positive");
+    }
+
+    @Test
+    void namesTheOptionKeysWhenABudgetIsBelowItsFlowControlShare() {
+        Map<String, String> messageOptions = new HashMap<>();
+        messageOptions.put("scan.flow-control.max-outstanding-element-count", "3000000");
+        messageOptions.put("scan.subscriber-buffer.max-messages", "10000");
+
+        // The builder runs the same check under its setter names; the mapper must win the race,
+        // so a table user reads the keys the DDL spells and never the builder's.
+        assertThatThrownBy(() -> SubscriberOptionsMapper.map(Configuration.fromMap(messageOptions)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'scan.subscriber-buffer.max-messages' (10000)")
+                .hasMessageContaining("'scan.flow-control.max-outstanding-element-count' (3000000)")
+                .hasMessageContaining("at least 6000000")
+                .hasMessageNotContaining("subscriberBufferMaxMessages")
+                .hasMessageNotContaining("flowControlMaxOutstandingElementCount");
+
+        Map<String, String> byteOptions = new HashMap<>();
+        byteOptions.put("scan.subscriber-buffer.max-bytes", "64 mb");
+
+        // Against the SDK's own 100 MiB default when flow control is not set at all.
+        assertThatThrownBy(() -> SubscriberOptionsMapper.map(Configuration.fromMap(byteOptions)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'scan.subscriber-buffer.max-bytes' (67108864)")
+                .hasMessageContaining(
+                        "'scan.flow-control.max-outstanding-request-bytes' (104857600)")
+                .hasMessageNotContaining("subscriberBufferMaxBytes");
+
+        Map<String, String> configuredBytes = new HashMap<>();
+        configuredBytes.put("scan.flow-control.max-outstanding-request-bytes", "7 mb");
+        configuredBytes.put("scan.subscriber-buffer.max-bytes", "13 mb");
+
+        // Against a configured flow-control byte limit, in bytes on both sides.
+        assertThatThrownBy(
+                        () -> SubscriberOptionsMapper.map(Configuration.fromMap(configuredBytes)))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'scan.subscriber-buffer.max-bytes' (13631488)")
+                .hasMessageContaining("'scan.flow-control.max-outstanding-request-bytes' (7340032)")
+                .hasMessageContaining("at least 14680064");
     }
 }

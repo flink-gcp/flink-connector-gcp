@@ -179,8 +179,10 @@ class PubSubSplitEnumeratorTest {
                 .hasMessageContaining("split-a")
                 .hasMessageContaining("101 messages")
                 .hasMessageContaining("65 bytes")
-                .hasMessageContaining("subscriberBufferMaxMessages=100")
-                .hasMessageContaining("subscriberBufferMaxBytes=64")
+                .hasMessageContaining("budget of 100 messages or 64 bytes")
+                .hasMessageContaining("subscriberBufferMaxMessages")
+                .hasMessageContaining("subscriberBufferMaxBytes")
+                .hasMessageContaining("maxAckExtensionPeriod")
                 .hasMessageContaining("scan.subscriber-buffer.max-messages")
                 .hasMessageContaining("scan.subscriber-buffer.max-bytes");
     }

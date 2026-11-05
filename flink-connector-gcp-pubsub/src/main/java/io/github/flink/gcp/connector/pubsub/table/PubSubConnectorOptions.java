@@ -182,7 +182,9 @@ public final class PubSubConnectorOptions {
 
     /**
      * The hard aggregate message cap for subscriber buffers in one source reader. A reader whose
-     * assigned splits are all paused parks them at the cap; otherwise the source fails the job.
+     * assigned splits are all paused parks them at the cap; otherwise the source fails the job. A
+     * value below twice the effective 'scan.flow-control.max-outstanding-element-count' is
+     * rejected.
      */
     public static final ConfigOption<Long> SCAN_SUBSCRIBER_BUFFER_MAX_MESSAGES =
             ConfigOptions.key("scan.subscriber-buffer.max-messages")
@@ -191,12 +193,16 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The hard aggregate message cap for subscriber buffers in one source"
                                     + " reader. A reader whose assigned splits are all paused parks"
-                                    + " them at the cap; otherwise the source fails the job.");
+                                    + " them at the cap; otherwise the source fails the job. A"
+                                    + " value below twice the effective"
+                                    + " 'scan.flow-control.max-outstanding-element-count' is"
+                                    + " rejected.");
 
     /**
      * The hard aggregate serialized-byte cap corresponding to
      * 'scan.subscriber-buffer.max-messages'. Whichever cap would be crossed first controls the
-     * response.
+     * response. A value below twice the effective 'scan.flow-control.max-outstanding-request-bytes'
+     * is rejected.
      */
     public static final ConfigOption<MemorySize> SCAN_SUBSCRIBER_BUFFER_MAX_BYTES =
             ConfigOptions.key("scan.subscriber-buffer.max-bytes")
@@ -205,7 +211,10 @@ public final class PubSubConnectorOptions {
                     .withDescription(
                             "The hard aggregate serialized-byte cap corresponding to"
                                     + " 'scan.subscriber-buffer.max-messages'. Whichever cap would"
-                                    + " be crossed first controls the response.");
+                                    + " be crossed first controls the response. A value below twice"
+                                    + " the effective"
+                                    + " 'scan.flow-control.max-outstanding-request-bytes' is"
+                                    + " rejected.");
 
     /**
      * How many messages a split paused by watermark alignment may buffer before its subscriber is

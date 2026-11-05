@@ -27,6 +27,7 @@ import org.apache.flink.connector.base.source.reader.splitreader.SplitsRemoval;
 
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
 import org.slf4j.Logger;
@@ -78,10 +79,7 @@ public class PubSubSplitReader implements SplitReader<PubsubMessage, Subscriptio
                 options,
                 checkpointDetector,
                 metrics,
-                new SubscriberBufferBudget(
-                        options.getSubscriberBufferMaxMessages(),
-                        options.getSubscriberBufferMaxBytes(),
-                        failureReporter));
+                new SubscriberBufferBudget(SubscriberBufferLimits.of(options), failureReporter));
     }
 
     PubSubSplitReader(

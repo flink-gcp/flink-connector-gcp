@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0066: Pub/Sub subscriber buffers are bounded independently of SDK flow control
 
 - Status: Accepted
-- Date: 2026-08-08, refined 2026-08-09 ([#377], [#440]) and 2026-08-29 ([#1138])
-- Issues: [#357], [#377], [#440], [#1138]
+- Date: 2026-08-08, refined 2026-08-09 ([#377], [#440]) and 2026-08-29 ([#1138]); revised by
+  [#2020] (2026-11-04)
+- Issues: [#357], [#377], [#440], [#1138], [#2020]
 - Modules: pubsub (source)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (§ Subscriber options,
   Metrics and Watermark alignment); `docs/content/docs/reference/pubsub.md` for the four knobs
@@ -37,6 +38,15 @@ fetcher still needs `pollNext()` to reach the job.
 [#1138] closes that remaining pre-1.0 OOM gap with a callback-visible response and a coordinator
 event that does not depend on the task or fetcher polling.
 
+[#2020] found that #1138's fixed default fails healthy jobs.
+A downstream that drains more slowly than Pub/Sub delivers lets a subscriber's buffer fill until
+its flow control stops the client, and the documented sizing rule puts that flow-control window far
+above 10000 messages.
+The observed job, with 2-minute checkpoints and a 3,000,000-message flow-control limit in front of
+a BigQuery `FILE_LOADS` sink, crossed the budget after about three minutes.
+Nothing had been acknowledged, so every restart met a larger backlog and failed again within
+seconds, for 80 minutes, until the budget was raised to the flow-control limits.
+
 ## Decision
 
 **When a paused split's buffer passes its bound, the reader stops that split's SDK client and
@@ -45,7 +55,9 @@ opens a fresh one when the split resumes.** The bound is two new `PubSubSubscrib
 flow-control limit it shadows.
 
 **Every source reader also owns one hard aggregate budget across all of its subscriber deques.**
-`subscriberBufferMaxMessages` defaults to 10000 and `subscriberBufferMaxBytes` defaults to 64 MiB.
+`subscriberBufferMaxMessages` and `subscriberBufferMaxBytes` default to twice the effective
+flow-control limits for every subscriber the reader holds (2000 messages and 200 MiB for one
+subscriber at the SDK defaults), the same per-subscriber share the paused-split bound defaults to.
 The callback reserves both dimensions before adding the delivery to `PubSubAckTracker` or the
 deque, so the delivery that would cross either bound is NACKed and never retained.
 
@@ -65,10 +77,34 @@ deque, so the delivery that would cross either bound is NACKed and never retaine
   `SourceCoordinator.runInEventLoop` turns that exception into `context.failJob(...)`.
   This path stays live when complete downstream backpressure has stopped both `pollNext()` and
   `PubSubSplitReader.fetch()`.
-- **The defaults are independent of split cardinality.** They bound one reader's subscriber
-  aggregate rather than multiplying a per-subscriber allowance by the number of assigned splits.
-  A constrained 256 MiB child-JVM probe holds the default 10000 messages with 4 KiB payloads and
-  rejects the next delivery.
+- **The default is derived from flow control, so flow control is what holds a backpressured
+  reader back** ([#2020]). Below one flow-control window, ordinary backpressure crosses the budget;
+  at twice it, as for the paused-split bound below, only the lease lapse does.
+  The byte share is never less than twice the largest message the reader has received: gax admits
+  one message larger than the byte limit once its window is free (below), so a derived cap of twice
+  a small limit would otherwise reject a healthy delivery and, since Pub/Sub redelivers it, fail
+  every restart. The widening is bounded by the service's own message size, and an explicit cap is
+  not widened.
+  The share also counts a subscriber that has reserved before its registration landed, in every
+  reservation rather than only its own, since its bytes are already in the aggregate.
+  An explicit paused-split bound above twice the limit raises the share to it, or the reader-wide
+  response would pre-empt the per-split park the operator configured: a paused split beside an
+  active one would fail the job at the reader-wide cap before reaching its own bound.
+  The share is per subscriber because each has its own flow controller, and is evaluated against
+  the subscribers registered or starting at each reservation. `parallelPullCount` does not multiply it: the client shares one
+  flow controller across a subscriber's streams (`Subscriber` builds one `FlowController` and hands
+  it to every streaming connection, read in `google-cloud-pubsub` 1.158.0).
+- **An explicit budget is the reader's, is not scaled, and is checked against one subscriber's
+  share.** `PubSubSubscriberOptions.Builder.build()` rejects a budget below twice the effective
+  flow-control limit it shadows, and the table layer runs the same parameterized check under the
+  DDL keys first (ADR-0133's shape for a cross-field check against a vendor default). A reader that
+  holds several subscribers is known only at run time, so a reader whose subscribers' combined
+  share passes an explicit budget logs one warning when it registers them, rather than failing.
+- **The public getters keep their `long` signatures.** `PubSubSubscriberOptions` is `@Public` and
+  published, so `getSubscriberBufferMaxMessages()` / `getSubscriberBufferMaxBytes()` return the
+  explicit cap or, when unset, the one-subscriber cap; whether a cap was set reaches the `@Internal`
+  resolver through package-private accessors, and equality compares the configured fields, since an
+  explicit cap equal to its derived value still behaves differently with several subscribers.
 - **Flink-owned fetcher retention remains a separate envelope and now has separate gauges.**
   `fetcherBufferedMessages` and `fetcherBufferedBytes` count batches after they leave subscriber
   deques and before `SourceReaderBase` takes them.
@@ -283,6 +319,24 @@ This fixes the conflated test deadlines; the original log does not establish why
   the measurement above: the growth has no ceiling, and the deployments most exposed are the ones
   that followed the page's own advice to size `flowControlMaxOutstandingElementCount` to
   peak-rate × checkpoint interval.
+- **Keep #1138's fixed default and document a relation to flow control** ([#2020]). Smallest
+  change. Declined because the relation is not advice: every deployment that follows the sizing
+  rule is past the fixed default, and the failure it then produces is a restart loop that grows the
+  backlog it fails on.
+- **Derive the default but leave an explicit budget below the lapse bound unchecked.** Declined
+  because a budget below one window does not survive a slow downstream, and one between one and two
+  windows has none of the headroom the paused-split bound was measured to need; the only thing
+  leaving it unchecked changes is whether the
+  operator learns that at build time or from a restart loop. To hold less in memory, the operator
+  lowers the flow-control limits, which is the lever that also governs intake.
+- **Park a merely backpressured reader instead of failing it** ([#2020]'s second question). It
+  would distinguish a slow downstream from a stopped one. Declined because a park NACKs its
+  buffered messages and, through `NACK_IMMEDIATELY`, everything emitted under a checkpoint still in
+  flight: under sustained backpressure the reader would cycle through park, resume and refill, each
+  cycle spending a dead-letter policy's `maxDeliveryAttempts` and duplicating a checkpoint
+  interval's records — the NACK loop the next alternative declines, at a slower period. With the
+  derived default, flow control already stops intake before the budget, so there is nothing for
+  the park to absorb.
 - **Keep the client alive and NACK everything after the buffer is full.** Bounds memory and keeps
   [#348]'s watching.
   Declined because an immediate redelivery would loop continuously, spend a dead-letter policy's
@@ -325,6 +379,14 @@ This fixes the conflated test deadlines; the original log does not establish why
   checkpoints *and* whose splits are aligned-paused it fires later or not at all. It is the
   detector behaving as specified — the state it exists to catch is a reader *holding* messages with
   no checkpoint coming, and a parked reader holds none — but it is a narrower guard than before.
+- **The flow-control byte limit is the subscriber-side memory bound** ([#2020]). A backpressured
+  subscriber holds up to one flow-control window of serialized messages (or one message, where a
+  single message is larger than the window), and up to twice that after a lease lapse, so the
+  default byte bound of a one-subscriber reader rose from 64 MiB to 200 MiB,
+  and a deployment that sizes flow control far above one checkpoint cycle of downstream consumption
+  holds that much heap while it drains a backlog. The docs state the sizing rule against the
+  downstream's drain rate and the checkpoint cycle, which is also the throughput rule: below it,
+  flow control idles the downstream between checkpoints.
 - **`pendingAcks` stops being the alerting signal** the docs named for this: it climbs and then
   falls at each park. `parkedSplits` replaces it there.
 - The same lapse reaches a split held back by sustained downstream **backpressure**, where a
@@ -335,12 +397,37 @@ This fixes the conflated test deadlines; the original log does not establish why
   `bufferedMessages` / `bufferedBytes` report the bounded subscriber aggregate, while
   `fetcherBufferedMessages` / `fetcherBufferedBytes` report the separate Flink-owned footprint.
 
+Verified 2026-11-04 for [#2020] by `PubSubSubscriberOptionsTest`, `SubscriberOptionsMapperTest`,
+`SubscriberBufferBudgetTest`, `SubscriberBufferMemoryBoundaryTest` and the emulator
+`PubSubSourceBacklogDrainITCase`.
+
+- **A backlog larger than the flow-control window drains behind a slow, checkpoint-stalling
+  downstream.** The ITCase publishes 40,000 messages behind a 30,000-message flow-control limit,
+  with a map that is slower than delivery and holds its task thread for 500 ms at every snapshot,
+  as a `FILE_LOADS` writer does in `prepareCommit()`. With the derived budget it consumed the whole
+  backlog with checkpoints completing in 49 s. With the reader's budget built from the former
+  fixed defaults instead, the same run failed through the coordinator after 20 s and 12
+  checkpoints with `the attempted aggregate subscriber buffer was 10001 messages`, the #2020
+  failure. The flow-control limit is three times the former cap so that this margin does not
+  depend on how fast the host drains.
+- **An explicit paused-split bound raises each subscriber's share.** Removing that term fails
+  `anExplicitPausedSplitBoundRaisesEachSubscribersShare`; the slow `PubSubPausedSplitBufferITCase`
+  passes either way, so it is not evidence for the term.
+- **A subscriber not yet registered counts its share, for its peers' reservations too.** Counting
+  it only in its own reservation fails `aStartingSubscribersShareCountsForItsPeersReservations`;
+  not counting it at all also fails `aReservationArrivingBeforeItsRegistrationCountsItsSubscriber`.
+- **A message larger than the byte limit widens the derived byte cap.** Removing the widening
+  fails `aMessageLargerThanTheFlowControlByteLimitWidensTheDerivedByteCap`.
+- **The standalone probe now asserts the derived default.** The 256 MiB child JVM retains 2000
+  messages of 4 KiB, twice the SDK's default flow-control count, and rejects the next.
+
 [#348]: https://github.com/flink-gcp/flink-connector-gcp/issues/348
 [#356]: https://github.com/flink-gcp/flink-connector-gcp/issues/356
 [#357]: https://github.com/flink-gcp/flink-connector-gcp/issues/357
 [#377]: https://github.com/flink-gcp/flink-connector-gcp/issues/377
 [#440]: https://github.com/flink-gcp/flink-connector-gcp/issues/440
 [#1138]: https://github.com/flink-gcp/flink-connector-gcp/issues/1138
+[#2020]: https://github.com/flink-gcp/flink-connector-gcp/issues/2020
 [Weekly run 33336508126]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/33336508126
 [E2E run 35425056265]: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35425056265
 [#1345]: https://github.com/flink-gcp/flink-connector-gcp/issues/1345

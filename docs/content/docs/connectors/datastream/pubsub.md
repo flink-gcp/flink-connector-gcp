@@ -132,7 +132,9 @@ Both share the reader-wide hard `subscriberBufferMaxMessages` / `subscriberBuffe
 A paused group is also governed by the per-split `pausedSplitBufferMaxMessages` /
 `pausedSplitBufferMaxBytes` policy described under [Watermark alignment](#watermark-alignment).
 
-The hard budget is aggregate across every subscriber assigned to one source reader.
+The hard budget is aggregate across every subscriber assigned to one source reader, and left unset
+it is derived from flow control so that ordinary backpressure never reaches it (see
+[Tuning](#tuning)).
 The delivery that would cross either limit is NACKed before it enters the acknowledgement tracker
 or subscriber deque, and every subscriber in that reader is asked to stop asynchronously.
 When every assigned split is paused by watermark alignment, the reader parks those subscribers and
@@ -168,18 +170,48 @@ serialization is per streaming-pull connection, so a second connection breaks pe
 
 #### Tuning
 
-The connector's reader-wide hard defaults are 10000 subscriber-buffer messages and 64 MiB of
-serialized message data, whichever would be crossed first.
-They are aggregate per source reader rather than multiplied by its assigned splits, and the default
-message cap is regression-tested with 4 KiB messages in a 256 MiB JVM.
-Raise either only when ordinary delivery bursts reach it and the TaskManager has room for the
-corresponding retained data.
-Lower them when a smaller failure domain matters more than absorbing bursts.
+**Flow control is what holds a backpressured subscriber back, and the hard budget is derived from
+it.**
+Because acknowledgements wait for a checkpoint, a subscriber whose downstream drains more slowly
+than Pub/Sub delivers fills its buffer until its flow control stops the client, which takes up to
+one flow-control window.
+Left unset, `subscriberBufferMaxMessages` and `subscriberBufferMaxBytes` are twice the effective
+flow-control limits for every subscriber the reader holds, which is 2000 messages and 200 MiB for
+one subscriber at the SDK defaults.
+The byte share is never less than twice the largest message the reader has received, because the
+client admits one message larger than its byte limit once its window is free.
+An explicit `pausedSplitBufferMaxMessages` or `pausedSplitBufferMaxBytes` larger than that raises
+each subscriber's share to it, so that the per-split park under
+[Watermark alignment](#watermark-alignment) stays reachable before the reader-wide response.
+That window never reaches them; only a downstream stopped for longer than `maxAckExtensionPeriod`
+does, since the client then lets leases lapse and keeps receiving.
+`parallelPullCount` does not multiply the budget, because the client shares one flow controller
+across a subscriber's streams.
+
+An explicit budget is the reader's and is not scaled.
+The builder rejects one below twice the effective flow-control limit
+([#2020]({{< param BookRepo >}}/issues/2020)): below one window ordinary backpressure crosses it,
+and below two it leaves too little headroom for the deliveries that pass the window (an oversized
+message, a dead-letter attribute added after the client reserves, a redelivery held beside its
+superseded copy).
+The failure that rule prevents was observed with the former fixed 10000-message budget beside a
+flow-control limit sized for a two-minute checkpoint: a slow downstream filled the buffer past the
+budget within minutes, nothing was acknowledged, and every restart failed again within seconds over
+the backlog the failures left.
+How many subscribers a reader holds is known only at run time, so a reader whose subscribers'
+combined share passes an explicit budget logs a warning when it registers them.
+
+**The flow-control byte limit is therefore also the memory bound.**
+A backpressured subscriber holds up to `flowControlMaxOutstandingRequestBytes` of serialized
+messages, or one message where a single message is larger, and up to twice that after a lease
+lapse, or up to an explicit `pausedSplitBufferMaxBytes` that is larger.
+To hold less, lower the flow-control limits; lowering the budget below them only turns
+backpressure into a job failure.
 
 The complete message-count envelope for one reader is:
 
 ```text
-subscriberBufferMaxMessages
+subscriberBufferMaxMessages (derived or explicit)
   + (source.reader.element.queue.capacity + 2) × maxRecordsPerFetch × assigned splits
 ```
 
@@ -202,19 +234,31 @@ Where Google *is* specific:
 - **Lower the flow-control limits if you see duplicate or expired deliveries** — that is Google's
   documented remedy for a subscriber holding more than it can acknowledge in time.
 
-The connector-specific sizing rule is that **acknowledgement waits for a checkpoint**, so
-outstanding messages accumulate for a whole checkpoint interval:
+The connector-specific sizing rule is that **acknowledgement waits for a checkpoint**, so everything
+a reader consumes between two checkpoint completions holds a flow-control permit:
 
 ```text
-flowControlMaxOutstandingElementCount ≳ peak messages/s × checkpoint interval
+flowControlMaxOutstandingElementCount ≳ downstream messages/s × (checkpoint interval + checkpoint duration)
+flowControlMaxOutstandingRequestBytes ≳ downstream bytes/s × (checkpoint interval + checkpoint duration)
 ```
 
-Below that, the client stops pulling before each checkpoint completes and throughput is capped by
-the checkpoint interval rather than by Pub/Sub.
-Above it, SDK flow control no longer constrains normal in-flight retention before the connector's
-hard budget.
-Raising the limits also raises what a failure replays and what a reader holds in memory, so the
-byte limit should stay within the TaskManager's memory budget. `maxAckExtensionPeriod` is the other
+The rate is what the downstream can consume per source reader while it drains a backlog, not the
+topic's publish rate.
+Sized to the publish rate, a job catching up after an outage is held to that rate by its own flow
+control.
+Below the rule, the client stops pulling before a checkpoint completes, and once downstream has
+consumed what is buffered it waits for the acknowledgements.
+At or above it, a downstream that works in batches always finds the next one buffered when it
+resumes; a `FILE_LOADS` BigQuery sink is one, since it holds its task thread at every checkpoint
+while it finishes its staged files.
+
+Because the byte limit is also the memory bound, the rule sets the heap a reader needs as well:
+about one checkpoint cycle of what the downstream consumes.
+At 1,000 messages/s of 5 KB per reader, a two-minute interval and checkpoints taking ten seconds,
+that is about 130,000 messages and 650 MB.
+Larger limits buy no throughput, and they raise what a reader holds while backpressured and what a
+failure replays.
+`maxAckExtensionPeriod` is the other
 half: it must exceed the checkpoint interval by a comfortable margin (see
 [Delivery guarantees](#delivery-guarantees)).
 

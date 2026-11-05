@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.time.Duration;
@@ -38,9 +39,7 @@ final class SubscriberBufferMemoryProbe {
         AtomicInteger stops = new AtomicInteger();
         SubscriberBufferBudget budget =
                 new SubscriberBufferBudget(
-                        options.getSubscriberBufferMaxMessages(),
-                        options.getSubscriberBufferMaxBytes(),
-                        event -> rejected.incrementAndGet());
+                        SubscriberBufferLimits.of(options), event -> rejected.incrementAndGet());
         PubSubAckTracker ackTracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
         StreamingPullSubscriber subscriber =
                 new StreamingPullSubscriber(

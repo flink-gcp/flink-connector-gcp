@@ -16,7 +16,11 @@
 
 package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
+import io.github.flink.gcp.connector.testutils.LogCapture;
+import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
@@ -45,6 +49,165 @@ class SubscriberBufferBudgetTest {
         SubscriberBufferBudget.Admission second = budget.tryReserve("split-a", 1);
 
         assertThat(first).isSameAs(second);
+    }
+
+    /** Flow control of two messages and 1000 bytes, so a subscriber's share is 4 and 2000. */
+    private static SubscriberBufferLimits limits(PubSubSubscriberOptions.Builder builder) {
+        return SubscriberBufferLimits.of(
+                builder.flowControlMaxOutstandingElementCount(2)
+                        .flowControlMaxOutstandingRequestBytes(1_000)
+                        .build());
+    }
+
+    @Test
+    void aDerivedCapScalesWithTheRegisteredSubscribers() {
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(limits(PubSubSubscriberOptions.builder()), events::add);
+        budget.register("split-a", () -> {});
+        budget.register("split-b", () -> {});
+
+        for (int i = 0; i < 8; i++) {
+            assertThat(budget.tryReserve(i % 2 == 0 ? "split-a" : "split-b", 1).isAdmitted())
+                    .isTrue();
+        }
+        SubscriberBufferBudget.Admission rejected = budget.tryReserve("split-a", 1);
+        rejected.respond();
+
+        assertThat(rejected.isAdmitted()).isFalse();
+        assertThat(events)
+                .singleElement()
+                .satisfies(
+                        event -> {
+                            assertThat(event.maxMessages()).isEqualTo(8);
+                            assertThat(event.maxBytes()).isEqualTo(4_000);
+                        });
+        assertThat(budget.coverageWarned()).isFalse();
+    }
+
+    @Test
+    void aReservationArrivingBeforeItsRegistrationCountsItsSubscriber() {
+        // The roster starts a subscriber before it registers it, so a delivery can find the
+        // registry without it. Its share still counts: split-b fills two shares beside split-a.
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(limits(PubSubSubscriberOptions.builder()), event -> {});
+        budget.register("split-a", () -> {});
+
+        for (int i = 0; i < 8; i++) {
+            assertThat(budget.tryReserve("split-b", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("split-b", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void aStartingSubscribersShareCountsForItsPeersReservations() {
+        // split-b reserves before its registration lands. split-a's reservations in that window
+        // must count split-b's share, since split-b's bytes are already in the aggregate.
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(limits(PubSubSubscriberOptions.builder()), event -> {});
+        budget.register("split-a", () -> {});
+
+        assertThat(budget.tryReserve("split-b", 1).isAdmitted()).isTrue();
+        for (int i = 0; i < 7; i++) {
+            assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void aMessageLargerThanTheFlowControlByteLimitWidensTheDerivedByteCap() {
+        // The client admits one message larger than its byte limit once its window is free, so a
+        // derived cap of twice the 1000-byte limit must not reject a healthy 3000-byte delivery.
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(limits(PubSubSubscriberOptions.builder()), events::add);
+        budget.register("split-a", () -> {});
+
+        assertThat(budget.tryReserve("split-a", 3_000).isAdmitted()).isTrue();
+        // Twice the largest message, as the lapse bound is twice the window.
+        assertThat(budget.tryReserve("split-a", 3_000).isAdmitted()).isTrue();
+        SubscriberBufferBudget.Admission rejected = budget.tryReserve("split-a", 1);
+        rejected.respond();
+
+        assertThat(rejected.isAdmitted()).isFalse();
+        assertThat(events)
+                .singleElement()
+                .satisfies(e -> assertThat(e.maxBytes()).isEqualTo(6_000));
+    }
+
+    @Test
+    void anExplicitByteCapIsNotWidenedByALargeMessage() {
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(
+                        limits(PubSubSubscriberOptions.builder().subscriberBufferMaxBytes(2_000)),
+                        event -> {});
+        budget.register("split-a", () -> {});
+
+        assertThat(budget.tryReserve("split-a", 3_000).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void anExplicitCapWarnsOnceWhenItsSubscribersOutgrowIt() {
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(
+                        limits(
+                                PubSubSubscriberOptions.builder()
+                                        .subscriberBufferMaxMessages(4)
+                                        .subscriberBufferMaxBytes(1_000_000)),
+                        event -> {});
+
+        List<String> warnings;
+        try (LogCapture capture = LogCapture.of(SubscriberBufferBudget.class)) {
+            budget.register("split-a", () -> {});
+            assertThat(capture.getMessages()).isEmpty();
+            budget.register("split-b", () -> {});
+            budget.register("split-c", () -> {});
+            warnings = capture.getMessages();
+        }
+
+        // Once, at the registration that outgrew the cap, naming what two subscribers derive.
+        assertThat(warnings)
+                .singleElement(InstanceOfAssertFactories.STRING)
+                .contains("holds 2 subscribers")
+                .contains("would be 8 messages and 4000 bytes")
+                .contains("subscriberBufferMaxMessages=4");
+        assertThat(budget.coverageWarned()).isTrue();
+
+        // An explicit cap is the operator's number and is not scaled to more subscribers.
+        for (int i = 0; i < 4; i++) {
+            assertThat(budget.tryReserve("split-b", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("split-b", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void aDerivedCapShrinksWhenASubscriberUnregisters() {
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(limits(PubSubSubscriberOptions.builder()), event -> {});
+        budget.register("split-a", () -> {});
+        budget.register("split-b", () -> {});
+        budget.unregister("split-b");
+
+        for (int i = 0; i < 4; i++) {
+            assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void anExplicitPausedSplitBoundRaisesEachSubscribersShare() {
+        // A paused-split bound of 10 above the lapse bound of 4: the reader-wide response must not
+        // pre-empt the per-split park the operator configured.
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(
+                        limits(PubSubSubscriberOptions.builder().pausedSplitBufferMaxMessages(10)),
+                        event -> {});
+        budget.register("split-a", () -> {});
+
+        for (int i = 0; i < 10; i++) {
+            assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isFalse();
     }
 
     @Test

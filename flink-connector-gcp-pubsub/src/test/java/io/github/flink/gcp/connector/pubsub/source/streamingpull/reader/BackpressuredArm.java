@@ -208,8 +208,10 @@ final class BackpressuredArm {
         // As the source does: the gauges read the tracker, so they exist only once it is bound.
         metrics.metrics().bindAckTracker(ackTracker);
 
-        PubSubSubscriberOptions options =
-                options(subscriberBufferMaxMessages, subscriberBufferMaxBytes);
+        PubSubSubscriberOptions options = options();
+        // The arm's budget is handed to the reader directly rather than through the options: a
+        // cap below twice the flow-control window is what the hard-limit arms measure, and the
+        // options builder rejects one (#2020).
         SubscriberBufferBudget bufferBudget =
                 new SubscriberBufferBudget(
                         subscriberBufferMaxMessages,
@@ -259,16 +261,9 @@ final class BackpressuredArm {
 
     /** The options every arm runs under; the paused-split bound is held out of the way. */
     static PubSubSubscriberOptions options() {
-        return options(Long.MAX_VALUE, Long.MAX_VALUE);
-    }
-
-    private static PubSubSubscriberOptions options(
-            long subscriberBufferMaxMessages, long subscriberBufferMaxBytes) {
         return PubSubSubscriberOptions.builder()
                 .flowControlMaxOutstandingElementCount(FLOW_CONTROL_MESSAGES)
                 .maxAckExtensionPeriod(MAX_ACK_EXTENSION_PERIOD)
-                .subscriberBufferMaxMessages(subscriberBufferMaxMessages)
-                .subscriberBufferMaxBytes(subscriberBufferMaxBytes)
                 // Moot as well as held out of the way: no split here is ever paused, and the bound
                 // reads a paused split alone.
                 .pausedSplitBufferMaxMessages(Long.MAX_VALUE)
