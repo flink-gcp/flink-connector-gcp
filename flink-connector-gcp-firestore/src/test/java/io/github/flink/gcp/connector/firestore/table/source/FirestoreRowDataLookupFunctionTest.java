@@ -75,7 +75,11 @@ class FirestoreRowDataLookupFunctionTest {
 
     private static RowDataDeserializationSchema deserializer(TypeMismatchPolicy policy) {
         return new RowDataDeserializationSchema(
-                SCHEMA, new int[] {0, 1}, List.of(), policy, InternalTypeInfo.of(TYPE));
+                SCHEMA,
+                RowDataDeserializationSchema.topLevel(0, 1),
+                List.of(),
+                policy,
+                InternalTypeInfo.of(TYPE));
     }
 
     private DocumentSnapshot document(String id, Object n) {

@@ -66,7 +66,8 @@ class RowDataDeserializationSchemaTest {
     private static RowDataDeserializationSchema schema(
             int[] columns, List<String> metadata, TypeMismatchPolicy policy) {
         TypeInformation<RowData> type = InternalTypeInfo.of(TYPE);
-        return new RowDataDeserializationSchema(SCHEMA, columns, metadata, policy, type);
+        return new RowDataDeserializationSchema(
+                SCHEMA, RowDataDeserializationSchema.topLevel(columns), metadata, policy, type);
     }
 
     private static List<RowData> read(RowDataDeserializationSchema schema, DocumentSnapshot doc)
@@ -162,7 +163,7 @@ class RowDataDeserializationSchemaTest {
                 RowDataDeserializationSchema deserializer =
                         new RowDataDeserializationSchema(
                                 schema,
-                                new int[] {1},
+                                RowDataDeserializationSchema.topLevel(1),
                                 List.of(),
                                 policy,
                                 InternalTypeInfo.of(type));
@@ -194,7 +195,7 @@ class RowDataDeserializationSchemaTest {
                 RowDataDeserializationSchema deserializer =
                         new RowDataDeserializationSchema(
                                 schema,
-                                new int[] {1},
+                                RowDataDeserializationSchema.topLevel(1),
                                 List.of(),
                                 policy,
                                 InternalTypeInfo.of(type));
@@ -236,7 +237,7 @@ class RowDataDeserializationSchemaTest {
                                     read(
                                             new RowDataDeserializationSchema(
                                                     schema,
-                                                    new int[] {1},
+                                                    RowDataDeserializationSchema.topLevel(1),
                                                     List.of(),
                                                     TypeMismatchPolicy.FAIL,
                                                     InternalTypeInfo.of(type)),
@@ -248,7 +249,7 @@ class RowDataDeserializationSchemaTest {
                             read(
                                     new RowDataDeserializationSchema(
                                             schema,
-                                            new int[] {1},
+                                            RowDataDeserializationSchema.topLevel(1),
                                             List.of(),
                                             TypeMismatchPolicy.NULL,
                                             InternalTypeInfo.of(type)),
@@ -273,7 +274,7 @@ class RowDataDeserializationSchemaTest {
         RowDataDeserializationSchema deserializer =
                 new RowDataDeserializationSchema(
                         schema,
-                        new int[] {1},
+                        RowDataDeserializationSchema.topLevel(1),
                         List.of(),
                         TypeMismatchPolicy.FAIL,
                         InternalTypeInfo.of(type));

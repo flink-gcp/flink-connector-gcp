@@ -36,6 +36,7 @@ import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
+import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
@@ -167,6 +168,40 @@ class FirestoreDynamicTableSourceFactoryTest {
         }
         assertThat(dynamic.copy()).isEqualTo(dynamic);
         assertThat(dynamic).isNotEqualTo(FactoryMocks.createTableSource(KEYED, options()));
+    }
+
+    @Test
+    void aNestedProjectionReadsItsPathAndComparesByIt() throws Exception {
+        ResolvedSchema nested =
+                new ResolvedSchema(
+                        List.of(
+                                Column.physical("id", DataTypes.STRING().notNull()),
+                                Column.physical(
+                                        "r",
+                                        DataTypes.ROW(
+                                                DataTypes.FIELD("a", DataTypes.STRING()),
+                                                DataTypes.FIELD("b", DataTypes.STRING())))),
+                        List.of(),
+                        UniqueConstraint.primaryKey("pk", List.of("id")));
+        DataType produced = DataTypes.ROW(DataTypes.FIELD("r_a", DataTypes.STRING()));
+        FirestoreDynamicSource ra =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(nested, options());
+        FirestoreDynamicSource same =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(nested, options());
+        FirestoreDynamicSource rb =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(nested, options());
+        ra.applyProjection(new int[][] {{1, 0}}, produced);
+        same.applyProjection(new int[][] {{1, 0}}, produced);
+        rb.applyProjection(new int[][] {{1, 1}}, produced);
+
+        assertThat(ra.supportsNestedProjection()).isTrue();
+        assertThat(same).isEqualTo(ra).hasSameHashCodeAs(ra);
+        assertThat(rb).isNotEqualTo(ra);
+        try (Firestore client = TestDocuments.offlineClient("my-project")) {
+            assertThat(config(runtimeSource(ra)).getQueryFactory().create(client))
+                    .isEqualTo(
+                            client.collection("users/alice/orders").select(FieldPath.of("r", "a")));
+        }
     }
 
     @Test

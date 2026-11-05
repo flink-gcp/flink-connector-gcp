@@ -33,14 +33,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FirestoreCollectionQueryFactoryTest {
 
     @Test
-    void selectsLiteralNamesOrOnlyTheDocumentName() throws Exception {
+    void selectsEncodedPathsOrOnlyTheDocumentName() throws Exception {
         try (Firestore client = TestDocuments.offlineClient("p")) {
             assertThat(
                             new FirestoreCollectionQueryFactory(
-                                            "c", new String[] {"a.b", "x"}, List.of())
+                                            "c", new String[] {"`a.b`", "x", "r.`p.q`"}, List.of())
                                     .create(client))
                     .isEqualTo(
-                            client.collection("c").select(FieldPath.of("a.b"), FieldPath.of("x")));
+                            client.collection("c")
+                                    .select(
+                                            FieldPath.of("a.b"),
+                                            FieldPath.of("x"),
+                                            FieldPath.of("r", "p.q")));
             assertThat(
                             new FirestoreCollectionQueryFactory("c", new String[0], List.of())
                                     .create(client))

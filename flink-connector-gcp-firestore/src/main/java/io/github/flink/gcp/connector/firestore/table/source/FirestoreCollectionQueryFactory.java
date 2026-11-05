@@ -47,8 +47,9 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
      * Creates the factory.
      *
      * @param collection the collection path
-     * @param fields the field names to read; an empty array reads none, as for a table or a
-     *     projection of only the key and metadata
+     * @param fields the field paths to read, each in the client library's encoded form ({@code
+     *     FieldPath.toString()}); an empty array reads none, as for a table or a projection of only
+     *     the key and metadata
      * @param equalities the pushed equality filters, each a necessary condition Flink evaluates
      *     again. An equality adds no ordering, so the query stays in document-name order and its
      *     field need not be in the projection for a cursor to resume it
@@ -68,7 +69,7 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
         }
         FieldPath[] paths = new FieldPath[fields.length];
         for (int i = 0; i < fields.length; i++) {
-            paths[i] = FieldPath.of(fields[i]);
+            paths[i] = FieldPath.fromServerFormat(fields[i]);
         }
         // An empty selection reads only each document's name.
         return query.select(paths);

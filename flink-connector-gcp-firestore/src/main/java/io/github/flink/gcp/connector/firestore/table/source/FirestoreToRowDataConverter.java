@@ -210,6 +210,47 @@ abstract class FirestoreToRowDataConverter implements Serializable {
         }
     }
 
+    /**
+     * Creates the converter of the field a projected index path names, which reads the value of the
+     * path's top-level field and descends through the ROW fields the path names. Each field on the
+     * way is read as {@code create} reads it, so a missing or null field, a value that is not a
+     * map, and the policy behave as they do for that field inside the whole column; the fields the
+     * path does not name are neither read nor checked.
+     *
+     * @param schema the checked schema, which knows the markers
+     * @param path the index path: a top-level column, then a field of each ROW in turn
+     * @param policy what a mismatch does
+     * @return the converter
+     */
+    static FirestoreToRowDataConverter createPath(
+            FirestoreTableSchema schema, int[] path, TypeMismatchPolicy policy) {
+        String[] names = new String[path.length];
+        String[] paths = new String[path.length];
+        LogicalType[] types = new LogicalType[path.length];
+        LogicalType type = schema.getRowType();
+        for (int i = 0; i < path.length; i++) {
+            RowType row = (RowType) type;
+            names[i] = row.getFieldNames().get(path[i]);
+            paths[i] = i == 0 ? names[i] : paths[i - 1] + "." + names[i];
+            type = row.getTypeAt(path[i]);
+            types[i] = type;
+        }
+        int last = path.length - 1;
+        // A geographical point's fields are DOUBLEs, so only the last ROW on a path can be one.
+        int parent = last - 1;
+        FirestoreToRowDataConverter converter;
+        if (parent >= 0 && schema.isGeoPoint(paths[parent])) {
+            converter = new FromGeoPointField(paths[parent], types[parent], policy, path[last]);
+            parent--;
+        } else {
+            converter = create(schema, paths[last], types[last], policy);
+        }
+        for (int i = parent; i >= 0; i--) {
+            converter = new FromMapField(paths[i], types[i], policy, names[i + 1], converter);
+        }
+        return converter;
+    }
+
     private static final class FromString extends FirestoreToRowDataConverter {
         private static final long serialVersionUID = 1L;
 
@@ -365,6 +406,52 @@ abstract class FirestoreToRowDataConverter implements Serializable {
                 return GenericRowData.of(point.getLatitude(), point.getLongitude());
             }
             throw mismatch(value, "a geographical point");
+        }
+    }
+
+    /** One field of a marked ROW: the latitude (index 0) or the longitude of a point. */
+    private static final class FromGeoPointField extends FirestoreToRowDataConverter {
+        private static final long serialVersionUID = 1L;
+        private final int index;
+
+        FromGeoPointField(String path, LogicalType type, TypeMismatchPolicy policy, int index) {
+            super(path, type, policy);
+            this.index = index;
+        }
+
+        @Override
+        Object convertNonNull(Object value) throws Mismatch {
+            if (value instanceof GeoPoint) {
+                GeoPoint point = (GeoPoint) value;
+                return index == 0 ? point.getLatitude() : point.getLongitude();
+            }
+            throw mismatch(value, "a geographical point");
+        }
+    }
+
+    /** One field of a map read into a ROW, converted by the field's own converter. */
+    private static final class FromMapField extends FirestoreToRowDataConverter {
+        private static final long serialVersionUID = 1L;
+        private final String name;
+        private final FirestoreToRowDataConverter field;
+
+        FromMapField(
+                String path,
+                LogicalType type,
+                TypeMismatchPolicy policy,
+                String name,
+                FirestoreToRowDataConverter field) {
+            super(path, type, policy);
+            this.name = name;
+            this.field = field;
+        }
+
+        @Override
+        Object convertNonNull(Object value) throws Mismatch {
+            if (!(value instanceof Map)) {
+                throw mismatch(value, "a map");
+            }
+            return field.convert(((Map<?, ?>) value).get(name));
         }
     }
 
