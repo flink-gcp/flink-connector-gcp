@@ -24,8 +24,9 @@ limitations under the License.
   revised by [#598] (2026-08-13); data-only replacement revised by [#646] (2026-08-14);
   writer lifecycle revised by [#1128] (2026-08-28); destination commit concurrency revised by
   [#1129] (2026-08-29); writer checkpoint finalization concurrency revised by [#1164]
-  (2026-08-30); laid-out temporary tables revised by [#1671] (2026-10-09)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671]
+  (2026-08-30); laid-out temporary tables revised by [#1671] (2026-10-09); staging upload revised
+  by [#2021] (2026-11-04)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -191,8 +192,9 @@ limitations under the License.
   `maxSerializedRowBytes` defaults to 15,000,000 bytes and routes a larger serialized protobuf row
   to the failure policy before parsing and Avro conversion.
   The active limit is tunable because heap availability and destination locality are workload
-  properties; the 4 MiB GCS upload chunk remains internal because multiplying it by the active
-  limit already exposes the workload axis without another coupled knob.
+  properties. The GCS upload chunk (`stagingUploadChunkBytes`, 4 MiB by default) is a separate
+  knob since [#2021]; every open file holds one, so the writer's upload buffers are the chunk times
+  the active limit.
 - **Checkpoint finalization is serial by default and bounded when enabled** ([#1164],
   [ADR-0146](0146-file-loads-bounds-writer-checkpoint-finalization-concurrency.md)).
   `maxConcurrentCheckpointFinalizations` defaults to 1 and accepts 1 through 8 per writer.
@@ -201,9 +203,12 @@ limitations under the License.
   return on success, ordinary failure, or interruption. A JVM-fatal worker failure instead wakes
   the task thread and cancels its peers so an earlier stalled close cannot hide the fatal failure.
   Appends, size rolls, capacity evictions and idle closes remain serial, and one open file gains no
-  concurrency.
+  concurrency. They wait on the task thread unless the writer enables the opt-in background staging uploader
+  ([#2021], [ADR-0195](0195-file-loads-offers-an-opt-in-background-staging-uploader.md)), whose single
+  thread runs upload operations, sending full chunks and finalizing rolled, evicted and idle files,
+  in submission order.
   The bound comes from real-GCS measurements across 1, 10 and 50 objects on both sides of the
-  client's 4 MiB upload chunk; ADR-0146 keeps the measurements, declined full-upload lanes and
+  client's default 4 MiB upload chunk; ADR-0146 keeps the measurements, declined full-upload lanes and
   in-region confirmation.
 - **Committer schedules are knobs** ([#198]): `loadJobPoll*` and `schemaReconcile*` on
   `FileLoadsOptions`, mapped by `toLoadJobPollSchedule()` / `toSchemaReconcileSchedule()`. Both
@@ -341,4 +346,5 @@ are the ones this record's decisions rest on:
 [#1128]: https://github.com/flink-gcp/flink-connector-gcp/issues/1128
 [#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
+[#2021]: https://github.com/flink-gcp/flink-connector-gcp/issues/2021
 [#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671

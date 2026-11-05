@@ -64,8 +64,9 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.math.BigInteger;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -818,7 +819,7 @@ class FileLoadsWriterTest {
     }
 
     /** Parquet input over a byte array: the read side of the no-filesystem argument. */
-    private static final class BytesInputFile implements InputFile {
+    static final class BytesInputFile implements InputFile {
 
         private final byte[] bytes;
 
@@ -1861,31 +1862,33 @@ class FileLoadsWriterTest {
         private final AtomicInteger maximumActiveCloses = new AtomicInteger();
 
         @Override
-        public OutputStream createObject(String gcsUri) {
-            return new ByteArrayOutputStream() {
-                private final AtomicBoolean closed = new AtomicBoolean();
+        public WritableByteChannel createObject(String gcsUri, int chunkBytes) {
+            return Channels.newChannel(
+                    new ByteArrayOutputStream() {
+                        private final AtomicBoolean closed = new AtomicBoolean();
 
-                @Override
-                public void close() throws IOException {
-                    if (!closed.compareAndSet(false, true)) {
-                        return;
-                    }
-                    int active = activeCloses.incrementAndGet();
-                    maximumActiveCloses.accumulateAndGet(active, Math::max);
-                    allCloses.countDown();
-                    try {
-                        if (!release.await(5, TimeUnit.SECONDS)) {
-                            throw new IOException("Timed out waiting to release staged files");
+                        @Override
+                        public void close() throws IOException {
+                            if (!closed.compareAndSet(false, true)) {
+                                return;
+                            }
+                            int active = activeCloses.incrementAndGet();
+                            maximumActiveCloses.accumulateAndGet(active, Math::max);
+                            allCloses.countDown();
+                            try {
+                                if (!release.await(5, TimeUnit.SECONDS)) {
+                                    throw new IOException(
+                                            "Timed out waiting to release staged files");
+                                }
+                                super.close();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                throw new IOException("Staging close interrupted", e);
+                            } finally {
+                                activeCloses.decrementAndGet();
+                            }
                         }
-                        super.close();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        throw new IOException("Staging close interrupted", e);
-                    } finally {
-                        activeCloses.decrementAndGet();
-                    }
-                }
-            };
+                    });
         }
 
         @Override
@@ -1913,14 +1916,15 @@ class FileLoadsWriterTest {
         private final List<Thread> closeThreads = new ArrayList<>();
 
         @Override
-        public OutputStream createObject(String gcsUri) {
-            return new ByteArrayOutputStream() {
-                @Override
-                public void close() throws IOException {
-                    closeThreads.add(Thread.currentThread());
-                    super.close();
-                }
-            };
+        public WritableByteChannel createObject(String gcsUri, int chunkBytes) {
+            return Channels.newChannel(
+                    new ByteArrayOutputStream() {
+                        @Override
+                        public void close() throws IOException {
+                            closeThreads.add(Thread.currentThread());
+                            super.close();
+                        }
+                    });
         }
 
         @Override

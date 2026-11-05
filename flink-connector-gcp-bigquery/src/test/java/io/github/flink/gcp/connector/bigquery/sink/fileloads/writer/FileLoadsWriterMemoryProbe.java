@@ -23,8 +23,8 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.FileLoadsWri
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 
-import java.io.IOException;
-import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 import java.util.Collection;
 import java.util.List;
 
@@ -70,20 +70,24 @@ final class FileLoadsWriterMemoryProbe {
         private static final long serialVersionUID = 1L;
 
         @Override
-        public OutputStream createObject(String gcsUri) {
-            return new OutputStream() {
+        public WritableByteChannel createObject(String gcsUri, int chunkBytes) {
+            // A plain channel, so the probe models no transfer buffer the real client lacks.
+            return new WritableByteChannel() {
                 private byte[] chunk = touchedChunk();
 
                 @Override
-                public void write(int value) throws IOException {
-                    chunk[0] = (byte) value;
+                public int write(ByteBuffer source) {
+                    int length = source.remaining();
+                    if (length > 0) {
+                        chunk[0] = source.get(source.position());
+                    }
+                    source.position(source.limit());
+                    return length;
                 }
 
                 @Override
-                public void write(byte[] bytes, int offset, int length) throws IOException {
-                    if (length > 0) {
-                        chunk[0] = bytes[offset];
-                    }
+                public boolean isOpen() {
+                    return chunk != null;
                 }
 
                 @Override

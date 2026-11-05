@@ -20,7 +20,8 @@ import org.apache.flink.util.ExceptionUtils;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,18 +55,25 @@ public final class InMemoryStagingStorage implements StagingStorage {
 
     private int closeCount;
 
+    /**
+     * The channel may be closed on the writer's staging uploader, so the object map is guarded; the
+     * scripted failure fields are set before a writer runs.
+     */
     @Override
-    public OutputStream createObject(String gcsUri) {
-        return new ByteArrayOutputStream() {
-            @Override
-            public void close() throws IOException {
-                super.close();
-                objects.put(gcsUri, toByteArray());
-                if (closeFailure != null) {
-                    ExceptionUtils.rethrow(closeFailure);
-                }
-            }
-        };
+    public WritableByteChannel createObject(String gcsUri, int chunkBytes) {
+        return Channels.newChannel(
+                new ByteArrayOutputStream() {
+                    @Override
+                    public void close() throws IOException {
+                        super.close();
+                        synchronized (objects) {
+                            objects.put(gcsUri, toByteArray());
+                        }
+                        if (closeFailure != null) {
+                            ExceptionUtils.rethrow(closeFailure);
+                        }
+                    }
+                });
     }
 
     @Override
@@ -95,7 +103,9 @@ public final class InMemoryStagingStorage implements StagingStorage {
     }
 
     Map<String, byte[]> getObjects() {
-        return objects;
+        synchronized (objects) {
+            return new LinkedHashMap<>(objects);
+        }
     }
 
     public List<String> getDeleted() {

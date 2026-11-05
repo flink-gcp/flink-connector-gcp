@@ -76,6 +76,15 @@ class FileLoadsOptionsMapperTest {
         SETTER_TO_OPTION.put(
                 "maxPendingFiles", BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES);
         SETTER_TO_OPTION.put(
+                "stagingUploadChunkBytes",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_UPLOAD_CHUNK_BYTES);
+        SETTER_TO_OPTION.put(
+                "backgroundStagingUploadEnabled",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_BACKGROUND_STAGING_UPLOAD_ENABLED);
+        SETTER_TO_OPTION.put(
+                "maxInFlightUploadOperations",
+                BigQueryConnectorOptions.SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS);
+        SETTER_TO_OPTION.put(
                 "destinationIdleTimeout",
                 BigQueryConnectorOptions.SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT);
         SETTER_TO_OPTION.put(
@@ -195,6 +204,9 @@ class FileLoadsOptionsMapperTest {
         options.put(key("maxStagingFileBytes"), "64 mb");
         options.put(key("maxOpenDestinations"), "8");
         options.put(key("maxPendingFiles"), "5000");
+        options.put(key("stagingUploadChunkBytes"), "8 mb");
+        options.put(key("backgroundStagingUploadEnabled"), "true");
+        options.put(key("maxInFlightUploadOperations"), "3");
         options.put(key("destinationIdleTimeout"), "30 s");
         options.put(key("maxSerializedRowBytes"), "12 mb");
         options.put(key("stagingFormat"), "parquet");
@@ -215,6 +227,9 @@ class FileLoadsOptionsMapperTest {
         assertThat(mapped.getMaxStagingFileBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(mapped.getMaxOpenDestinations()).isEqualTo(8);
         assertThat(mapped.getMaxPendingFiles()).isEqualTo(5000);
+        assertThat(mapped.getStagingUploadChunkBytes()).isEqualTo(8L * 1024 * 1024);
+        assertThat(mapped.isBackgroundStagingUploadEnabled()).isTrue();
+        assertThat(mapped.getMaxInFlightUploadOperations()).isEqualTo(3);
         assertThat(mapped.getDestinationIdleTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(mapped.getMaxSerializedRowBytes()).isEqualTo(12L * 1024 * 1024);
         assertThat(mapped.getStagingFormat()).isEqualTo(StagingFormat.PARQUET);
@@ -343,12 +358,57 @@ class FileLoadsOptionsMapperTest {
                 .hasMessageContaining("Option '" + key("maxSerializedRowBytes") + "' is invalid")
                 .hasMessageContaining("maxSerializedRowBytes must be positive");
 
+        Map<String, String> chunk = staged();
+        chunk.put(key("stagingUploadChunkBytes"), "100 kb");
+        assertThatThrownBy(() -> map(chunk))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("stagingUploadChunkBytes") + "' is invalid")
+                .hasMessageContaining(
+                        "stagingUploadChunkBytes must be a positive multiple of 262144");
+
+        Map<String, String> inFlight = staged();
+        inFlight.put(key("backgroundStagingUploadEnabled"), "true");
+        inFlight.put(key("maxInFlightUploadOperations"), "0");
+        assertThatThrownBy(() -> map(inFlight))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "Option '" + key("maxInFlightUploadOperations") + "' is invalid")
+                .hasMessageContaining("maxInFlightUploadOperations must be positive");
+
         Map<String, String> expiration = staged();
         expiration.put(key("tempTableExpiration"), "59 min");
         assertThatThrownBy(() -> map(expiration))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option '" + key("tempTableExpiration") + "' is invalid")
                 .hasMessageContaining("tempTableExpiration must be at least 1 hour");
+    }
+
+    @Test
+    void anUploadDepthWithoutTheUploaderNamesBothTableOptionKeys() {
+        Map<String, String> options = staged();
+        options.put(key("maxInFlightUploadOperations"), "2");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("maxInFlightUploadOperations") + "'")
+                .hasMessageContaining(
+                        "option '" + key("backgroundStagingUploadEnabled") + "' = true");
+
+        options.put(key("backgroundStagingUploadEnabled"), "false");
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option '" + key("maxInFlightUploadOperations") + "'")
+                .hasMessageContaining(
+                        "option '" + key("backgroundStagingUploadEnabled") + "' = true");
+
+        // Checked before the value is applied, so a depth of 0 without the uploader is reported for
+        // the missing uploader rather than for its value.
+        Map<String, String> zero = staged();
+        zero.put(key("maxInFlightUploadOperations"), "0");
+        assertThatThrownBy(() -> map(zero))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "option '" + key("backgroundStagingUploadEnabled") + "' = true");
     }
 
     @Test

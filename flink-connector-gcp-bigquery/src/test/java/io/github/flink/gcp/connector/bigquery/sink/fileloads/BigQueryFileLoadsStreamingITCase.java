@@ -46,6 +46,7 @@ import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
+import java.util.SplittableRandom;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,6 +71,8 @@ class BigQueryFileLoadsStreamingITCase {
     private static final String RUN_ID = TestNames.runId();
     private static final String TABLE_A = "file_loads_stream_it_a_" + RUN_ID;
     private static final String TABLE_B = "file_loads_stream_it_b_" + RUN_ID;
+    private static final String UPLOADER_TABLE_A = "file_loads_stream_it_ua_" + RUN_ID;
+    private static final String UPLOADER_TABLE_B = "file_loads_stream_it_ub_" + RUN_ID;
     private static final String STAGING_PREFIX = "flink-file-loads-stream-it/" + RUN_ID;
 
     private static final long RECORD_COUNT = 40;
@@ -111,12 +114,60 @@ class BigQueryFileLoadsStreamingITCase {
     @AfterAll
     static void cleanUp() throws Exception {
         Closers.closeAll(
-                () -> RealBigQuery.deleteTables(TABLE_A, TABLE_B),
+                () ->
+                        RealBigQuery.deleteTables(
+                                TABLE_A, TABLE_B, UPLOADER_TABLE_A, UPLOADER_TABLE_B),
                 () -> RealGcs.deletePrefix(STAGING_PREFIX));
     }
 
     @Test
     void checkpointTriggeredLoadsAcrossTwoTables() throws Exception {
+        String prefix = STAGING_PREFIX + "/default";
+        loadAcrossTwoTables(
+                TABLE_A, TABLE_B, "file-loads-streaming-it", prefix, 0, options(prefix));
+    }
+
+    /**
+     * The same job with the background staging uploader on, a 256 KiB upload chunk, rows of about
+     * 600 KiB of random text and a one-byte roll threshold. Every record therefore rolls its file
+     * after sending at least one full chunk, so the real client takes full chunks and closes the
+     * way the uploader hands them over, and real checkpoints drain the uploader before their
+     * committables leave the writer. The loads must still carry each record exactly once.
+     *
+     * <p>Which thread finalized a file is not observable from here; the writer's unit tests pin
+     * that. This case holds what they cannot: the real client and real load jobs behind it.
+     */
+    @Test
+    void uploaderFinalizedFilesLoadExactlyOnceAcrossCheckpoints() throws Exception {
+        String prefix = STAGING_PREFIX + "/uploader";
+        loadAcrossTwoTables(
+                UPLOADER_TABLE_A,
+                UPLOADER_TABLE_B,
+                "file-loads-streaming-uploader-it",
+                prefix,
+                600 * 1024,
+                options(prefix)
+                        .backgroundStagingUploadEnabled(true)
+                        .maxInFlightUploadOperations(2)
+                        .stagingUploadChunkBytes(256L * 1024)
+                        .maxStagingFileBytes(1));
+    }
+
+    private static FileLoadsOptions.Builder options(String prefix) {
+        return FileLoadsOptions.builder()
+                .stagingPath(RealGcs.uri(prefix))
+                // Explicit opt-in to fast checkpoints for this short-lived test job.
+                .minCheckpointInterval(Duration.ofSeconds(1));
+    }
+
+    private static void loadAcrossTwoTables(
+            String tableA,
+            String tableB,
+            String jobName,
+            String prefix,
+            int paddingChars,
+            FileLoadsOptions.Builder options)
+            throws Exception {
         // With checkpointing enabled Flink defaults to endless fixed-delay restarts; a
         // permanently failing load would loop until the test times out instead of failing fast.
         Configuration configuration = new Configuration();
@@ -131,9 +182,10 @@ class BigQueryFileLoadsStreamingITCase {
                 new DataGeneratorSource<>(
                         (GeneratorFunction<Long, String>)
                                 index ->
-                                        (index % 2 == 0 ? TABLE_A : TABLE_B)
+                                        (index % 2 == 0 ? tableA : tableB)
                                                 + "|row"
                                                 + index
+                                                + padding(index, paddingChars)
                                                 + "|"
                                                 + index,
                         RECORD_COUNT,
@@ -149,31 +201,40 @@ class BigQueryFileLoadsStreamingITCase {
                                                 RealTables.destination(
                                                         element.substring(0, element.indexOf('|'))))
                                 .serializer(new RowSerializer())
-                                .fileLoadsOptions(
-                                        FileLoadsOptions.builder()
-                                                .stagingPath(RealGcs.uri(STAGING_PREFIX))
-                                                // Explicit opt-in to fast checkpoints for this
-                                                // short-lived test job.
-                                                .minCheckpointInterval(Duration.ofSeconds(1))
-                                                .build())
+                                .fileLoadsOptions(options.build())
                                 .build());
 
-        env.execute("file-loads-streaming-it");
+        env.execute(jobName);
 
-        String tableAPath = RealBigQuery.tablePath(TABLE_A);
-        String tableBPath = RealBigQuery.tablePath(TABLE_B);
+        String tableAPath = RealBigQuery.tablePath(tableA);
+        String tableBPath = RealBigQuery.tablePath(tableB);
         assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + tableAPath))
                 .containsExactly(RECORD_COUNT / 2);
         assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + tableBPath))
                 .containsExactly(RECORD_COUNT / 2);
-        // Every record landed exactly once: the per-table sums match the generator's indexes.
+        // Every record landed exactly once: as many distinct values as rows, all from the
+        // generator's indexes (their sums match), so none is missing and none repeated.
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(DISTINCT value) FROM " + tableAPath))
+                .containsExactly(RECORD_COUNT / 2);
+        assertThat(RealBigQuery.queryLongs("SELECT COUNT(DISTINCT value) FROM " + tableBPath))
+                .containsExactly(RECORD_COUNT / 2);
         assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + tableAPath))
                 .containsExactly(sumOfIndexes(0));
         assertThat(RealBigQuery.queryLongs("SELECT SUM(value) FROM " + tableBPath))
                 .containsExactly(sumOfIndexes(1));
 
         // Staged objects of every checkpoint were deleted after their loads succeeded.
-        assertThat(RealGcs.list(STAGING_PREFIX)).isEmpty();
+        assertThat(RealGcs.list(prefix)).isEmpty();
+    }
+
+    /** Random printable text, seeded by the index, that Zstandard shrinks only a little. */
+    private static String padding(long index, int chars) {
+        SplittableRandom random = new SplittableRandom(index);
+        StringBuilder text = new StringBuilder(chars);
+        for (int i = 0; i < chars; i++) {
+            text.append((char) ('!' + random.nextInt(90)));
+        }
+        return text.toString();
     }
 
     private static long sumOfIndexes(int parity) {

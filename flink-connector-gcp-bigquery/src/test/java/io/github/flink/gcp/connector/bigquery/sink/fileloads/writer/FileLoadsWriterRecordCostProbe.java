@@ -38,7 +38,8 @@ import io.github.flink.gcp.connector.bigquery.testproto.benchmark.BenchmarkSingl
 import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 
-import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.WritableByteChannel;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,9 +63,12 @@ import java.util.UUID;
  * them; it excludes compressing the last Avro block and finishing the file, which for the one-field
  * arms is all of their compression.
  *
- * <p>It uses only API that predates #2019, so this file and {@code benchmark.proto}, copied onto
- * the earlier code, measure it too. Compare the two in alternating JVM runs with the same heap
- * settings, since the change also cuts allocation.
+ * <p>Apart from its staging double, it uses only API that predates #2019, so this file and {@code
+ * benchmark.proto}, copied onto the earlier code, measure it too. The double implements the channel
+ * {@code StagingStorage.createObject(String, int)} that #2021 introduced; on code before #2021, use
+ * this file as of commit {@code e7c00487}, whose double returns an {@code OutputStream} from {@code
+ * createObject(String)}. Compare the two in alternating JVM runs with the same heap settings, since
+ * the change also cuts allocation.
  */
 final class FileLoadsWriterRecordCostProbe {
 
@@ -252,16 +256,27 @@ final class FileLoadsWriterRecordCostProbe {
         private long bytes;
 
         @Override
-        public OutputStream createObject(String gcsUri) {
-            return new OutputStream() {
+        public WritableByteChannel createObject(String gcsUri, int chunkBytes) {
+            // A plain channel, so the probe adds no transfer buffer of its own to the measurement.
+            return new WritableByteChannel() {
+                private boolean open = true;
+
                 @Override
-                public void write(int value) {
-                    bytes++;
+                public int write(ByteBuffer source) {
+                    int length = source.remaining();
+                    source.position(source.limit());
+                    bytes += length;
+                    return length;
                 }
 
                 @Override
-                public void write(byte[] buffer, int offset, int length) {
-                    bytes += length;
+                public boolean isOpen() {
+                    return open;
+                }
+
+                @Override
+                public void close() {
+                    open = false;
                 }
             };
         }

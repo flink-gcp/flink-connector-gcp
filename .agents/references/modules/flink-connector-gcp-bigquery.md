@@ -356,6 +356,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Storage.delete(BlobId...)`, which the gRPC client rejects as HTTP-only.
   Finalization does not parallelize appends, size rolls, capacity evictions, or idle closes
   (`docs/adr/0146`).
+  `backgroundStagingUploadEnabled` (default false) is the separate opt-in for those, sized by
+  `maxInFlightUploadOperations` (default 2, rejected with the uploader off): one upload
+  thread per writer runs upload operations (a full chunk, or a rolled, evicted or idle file's close
+  with its last chunk) in submission order, bounded by permits per writer and deliberately uncapped
+  (the name follows ADR-0137's connector-owned `inFlight` ledger); committables are released only after the uploader finalizes,
+  uploader finalizations count towards `maxPendingFiles`, `prepareCommit()` drains the uploader and
+  detaches the open files before the ADR-0146 finalization, and `close()` stops it without waiting
+  (`docs/adr/0195`). A full chunk must reach the client uncopied, which is why
+  `stagingUploadChunkBytes` must be a multiple of 256 KiB (the client aligns its buffer to that);
+  do not let the uploader submit partial or misaligned chunks except as a file's last. The writer warns
+  once at start when (open destinations + uploader operations) x chunk exceeds a quarter of the max
+  heap; it never fails on that.
   `maxPendingFiles` separately bounds the finished and open file metadata retained until the next
   commit; reaching it fails before another file opens, and `pendingFiles` reports the current
   count.
@@ -366,7 +378,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `maxSerializedRowBytes` applies to the row's encoded size before Avro conversion, computed
   without encoding a row the serializer handed over as a message; larger rows follow the failure
   policy without creating state, and only they are encoded, for their `FailedRow`.
-  The documented Avro sizing baseline starts with one 4 MiB GCS chunk per active destination, but
+  The documented Avro sizing baseline starts with one `stagingUploadChunkBytes` GCS chunk (4 MiB by
+  default) per active destination, but
   Parquet also budgets one `maxStagingFileBytes` row group per active destination.
 
 ## Exactly-once (`docs/adr/0022`)

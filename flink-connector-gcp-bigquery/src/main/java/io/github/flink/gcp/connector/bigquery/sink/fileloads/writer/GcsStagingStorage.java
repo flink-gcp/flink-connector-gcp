@@ -31,16 +31,16 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.util.List;
 
 /**
  * {@link StagingStorage} over the Cloud Storage client with configured credentials or ADC.
  *
- * <p>GCS resumable uploads buffer one chunk in memory per open object; the chunk size is lowered
- * from the client default (16 MiB) to bound the writer's footprint, which grows with the number of
- * concurrently open destinations.
+ * <p>GCS resumable uploads buffer one chunk in memory per open object. The writer passes {@code
+ * FileLoadsOptions#getStagingUploadChunkBytes()}, whose 4 MiB default is lower than the client's 16
+ * MiB to bound the writer's footprint, which grows with the number of concurrently open
+ * destinations.
  *
  * <p>The client is created lazily so instances can be constructed on the client side, serialized
  * into the job graph, and only connect once running.
@@ -51,8 +51,6 @@ public final class GcsStagingStorage implements StagingStorage {
     private static final long serialVersionUID = 1L;
 
     private static final Logger LOG = LoggerFactory.getLogger(GcsStagingStorage.class);
-
-    private static final int UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 
     /** Objects per batched delete request (the GCS batch API accepts up to 100 operations). */
     private static final int DELETE_BATCH_SIZE = 100;
@@ -78,11 +76,16 @@ public final class GcsStagingStorage implements StagingStorage {
     }
 
     @Override
-    public OutputStream createObject(String gcsUri) throws IOException {
+    public WritableByteChannel createObject(String gcsUri, int chunkBytes) throws IOException {
         BlobInfo blobInfo = BlobInfo.newBuilder(BlobId.fromGsUtilUri(gcsUri)).build();
         WriteChannel channel = storage().writer(blobInfo);
-        channel.setChunkSize(UPLOAD_CHUNK_BYTES);
-        return Channels.newOutputStream(channel);
+        // The writer's staging uploader relies on this client's behaviour: it aligns its buffer to
+        // 256 KiB, which FileLoadsOptions already requires, so the buffer is exactly one chunk, and
+        // a full chunk written while the buffer is empty is sent without being copied. The buffer
+        // is
+        // allocated only by a write that leaves a remainder, such as a file's last, partial chunk.
+        channel.setChunkSize(chunkBytes);
+        return channel;
     }
 
     @Override

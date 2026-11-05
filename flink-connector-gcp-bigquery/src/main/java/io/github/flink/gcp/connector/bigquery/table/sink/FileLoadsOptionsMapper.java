@@ -66,6 +66,9 @@ public final class FileLoadsOptionsMapper {
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_STAGING_FILE_BYTES,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_OPEN_DESTINATIONS,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_UPLOAD_CHUNK_BYTES,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_BACKGROUND_STAGING_UPLOAD_ENABLED,
+                    BigQueryConnectorOptions.SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_SERIALIZED_ROW_BYTES,
                     BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_FORMAT,
@@ -112,6 +115,10 @@ public final class FileLoadsOptionsMapper {
                             BigQueryConnectorOptions.SINK_WRITE_METHOD.key(),
                             WriteMethod.FILE_LOADS));
         }
+        // Before the setters, as the Firestore mapper does, so a depth given without the uploader
+        // is
+        // named for that rather than for its value.
+        rejectUploadDepthWithoutUploader(config);
         FileLoadsOptions.Builder builder = FileLoadsOptions.builder();
         OptionSetters.accept(
                 BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_PATH.key(),
@@ -146,6 +153,20 @@ public final class FileLoadsOptionsMapper {
                 config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_MAX_PENDING_FILES,
                 builder::maxPendingFiles);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_STAGING_UPLOAD_CHUNK_BYTES,
+                size -> builder.stagingUploadChunkBytes(size.getBytes()));
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_BACKGROUND_STAGING_UPLOAD_ENABLED,
+                builder::backgroundStagingUploadEnabled);
+        // Applied unconditionally, so the builder's "only with the uploader" rule holds; the check
+        // above restates it in option keys, which a cross-field build() failure cannot name.
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS,
+                builder::maxInFlightUploadOperations);
         OptionSetters.apply(
                 config,
                 BigQueryConnectorOptions.SINK_FILE_LOADS_DESTINATION_IDLE_TIMEOUT,
@@ -219,5 +240,29 @@ public final class FileLoadsOptionsMapper {
         }
 
         return builder.build();
+    }
+
+    /** The builder's background-staging-upload check, in option keys. */
+    private static void rejectUploadDepthWithoutUploader(ReadableConfig config) {
+        boolean enabled =
+                config.getOptional(
+                                BigQueryConnectorOptions
+                                        .SINK_FILE_LOADS_BACKGROUND_STAGING_UPLOAD_ENABLED)
+                        .orElse(FileLoadsOptions.DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED);
+        if (!enabled
+                && config.getOptional(
+                                BigQueryConnectorOptions
+                                        .SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS)
+                        .isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' sizes the background staging uploader, so it requires"
+                                    + " option '%s' = true.",
+                            BigQueryConnectorOptions.SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS
+                                    .key(),
+                            BigQueryConnectorOptions
+                                    .SINK_FILE_LOADS_BACKGROUND_STAGING_UPLOAD_ENABLED
+                                    .key()));
+        }
     }
 }

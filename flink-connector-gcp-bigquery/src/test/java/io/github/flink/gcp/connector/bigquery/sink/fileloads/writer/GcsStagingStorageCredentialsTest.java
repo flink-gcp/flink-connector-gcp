@@ -37,7 +37,7 @@ class GcsStagingStorageCredentialsTest {
         String missingPath = tempDir.resolve("missing-gcs-staging-secret.json").toString();
         GcsStagingStorage storage = new GcsStagingStorage(missingPath);
 
-        assertThatThrownBy(() -> storage.createObject("gs://bucket/object"))
+        assertThatThrownBy(() -> storage.createObject("gs://bucket/object", 4 * 1024 * 1024))
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessage("Failed to load the configured BigQuery service-account key file.")
                 .hasNoCause()
