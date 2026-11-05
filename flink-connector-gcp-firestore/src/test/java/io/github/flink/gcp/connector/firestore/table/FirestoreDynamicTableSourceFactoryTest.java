@@ -28,7 +28,13 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.factories.utils.FactoryMocks;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
 import com.google.cloud.firestore.FieldPath;
@@ -137,6 +143,53 @@ class FirestoreDynamicTableSourceFactoryTest {
             assertThat(config(runtimeSource(dynamic)).getQueryFactory().create(client))
                     .isEqualTo(client.collection("users/alice/orders").select(FieldPath.of("a.b")));
         }
+    }
+
+    @Test
+    void anAcceptedEqualityReachesTheQueryAndEveryPredicateStaysResidual() throws Exception {
+        FirestoreDynamicSource dynamic =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
+        ResolvedExpression pushed = equals("a.b", 2, "x");
+        ResolvedExpression declined = equals("id", 0, "k");
+
+        SupportsFilterPushDown.Result result = dynamic.applyFilters(List.of(pushed, declined));
+
+        assertThat(result.getAcceptedFilters()).containsExactly(pushed);
+        assertThat(result.getRemainingFilters()).containsExactly(pushed, declined);
+        try (Firestore client = TestDocuments.offlineClient("my-project")) {
+            assertThat(config(runtimeSource(dynamic)).getQueryFactory().create(client))
+                    .isEqualTo(
+                            client.collection("users/alice/orders")
+                                    .whereEqualTo(FieldPath.of("a.b"), "x")
+                                    .select(FieldPath.of("name"), FieldPath.of("a.b")));
+            assertThat(config(runtimeSource(dynamic.copy())).getQueryFactory().create(client))
+                    .isEqualTo(config(runtimeSource(dynamic)).getQueryFactory().create(client));
+        }
+        assertThat(dynamic.copy()).isEqualTo(dynamic);
+        assertThat(dynamic).isNotEqualTo(FactoryMocks.createTableSource(KEYED, options()));
+    }
+
+    @Test
+    void aCollectionGroupScanAcceptsNoFilter() {
+        FirestoreDynamicSource dynamic =
+                (FirestoreDynamicSource)
+                        FactoryMocks.createTableSource(
+                                UNKEYED, options("scan.collection-group", "true"));
+        ResolvedExpression filter = equals("name", 0, "x");
+
+        SupportsFilterPushDown.Result result = dynamic.applyFilters(List.of(filter));
+
+        assertThat(result.getAcceptedFilters()).isEmpty();
+        assertThat(result.getRemainingFilters()).containsExactly(filter);
+    }
+
+    private static ResolvedExpression equals(String column, int index, String value) {
+        return CallExpression.permanent(
+                BuiltInFunctionDefinitions.EQUALS,
+                List.of(
+                        new FieldReferenceExpression(column, DataTypes.STRING(), 0, index),
+                        new ValueLiteralExpression(value)),
+                DataTypes.BOOLEAN());
     }
 
     @Test
