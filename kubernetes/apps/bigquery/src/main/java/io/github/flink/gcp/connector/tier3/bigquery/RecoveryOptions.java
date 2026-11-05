@@ -94,7 +94,9 @@ final class RecoveryOptions implements Serializable {
                     "max-concurrent-checkpoint-finalizations",
                     "max-concurrent-destinations",
                     "max-staging-file-bytes",
-                    "max-open-destinations");
+                    "max-open-destinations",
+                    "background-staging-upload-enabled",
+                    "max-in-flight-upload-operations");
     private static final Set<String> ARGUMENTS =
             Stream.concat(
                             Stream.of(
@@ -210,6 +212,20 @@ final class RecoveryOptions implements Serializable {
                                 args.getInt(
                                         "max-open-destinations",
                                         FileLoadsOptions.DEFAULT_MAX_OPEN_DESTINATIONS));
+        String uploader =
+                args.get(
+                        "background-staging-upload-enabled",
+                        Boolean.toString(
+                                FileLoadsOptions.DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED));
+        if (!Set.of("true", "false").contains(uploader)) {
+            throw new IllegalArgumentException(
+                    "--background-staging-upload-enabled must be true or false");
+        }
+        builder.backgroundStagingUploadEnabled(Boolean.parseBoolean(uploader));
+        if (args.has("max-in-flight-upload-operations")) {
+            // Set only when given: the connector refuses it while the uploader is off.
+            builder.maxInFlightUploadOperations(args.getInt("max-in-flight-upload-operations"));
+        }
         if (target.checkpointInterval != null) {
             // Only the gated test shortens the interval; the deployed trial keeps the default.
             builder.minCheckpointInterval(target.checkpointInterval);
@@ -274,6 +290,10 @@ final class RecoveryOptions implements Serializable {
                 + "/"
                 + fileLoads.getMaxStagingFileBytes()
                 + "/"
-                + fileLoads.getMaxOpenDestinations();
+                + fileLoads.getMaxOpenDestinations()
+                + "/"
+                + fileLoads.isBackgroundStagingUploadEnabled()
+                + "/"
+                + fileLoads.getMaxInFlightUploadOperations();
     }
 }

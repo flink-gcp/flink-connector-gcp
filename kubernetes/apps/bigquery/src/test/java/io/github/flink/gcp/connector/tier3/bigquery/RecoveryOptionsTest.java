@@ -75,6 +75,8 @@ class RecoveryOptionsTest {
         "max-concurrent-destinations,8",
         "max-staging-file-bytes,16777216",
         "max-open-destinations,16",
+        "background-staging-upload-enabled,false",
+        "max-in-flight-upload-operations,2",
         "phase,other",
         "phase,upgrade",
         "require-restored,yes",
@@ -91,7 +93,9 @@ class RecoveryOptionsTest {
     @CsvSource({
         "staging-format,ORC",
         "max-concurrent-checkpoint-finalizations,one",
-        "max-staging-file-bytes,16MiB"
+        "max-staging-file-bytes,16MiB",
+        "background-staging-upload-enabled,yes",
+        "background-staging-upload-enabled,TRUE"
     })
     void rejectsUnparseableFileLoadsArguments(String name, String value) {
         assertThatThrownBy(
@@ -99,6 +103,22 @@ class RecoveryOptionsTest {
                                 RecoveryOptions.parse(
                                         arguments("--mode", "FILE_LOADS", "--" + name, value)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsAnUnparseableUploadOperationBound() {
+        // With the uploader on, so the refusal is the parse and not the connector's.
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        arguments(
+                                                "--mode",
+                                                "FILE_LOADS",
+                                                "--background-staging-upload-enabled",
+                                                "true",
+                                                "--max-in-flight-upload-operations",
+                                                "two")))
+                .isInstanceOf(NumberFormatException.class);
     }
 
     @Test
@@ -121,6 +141,10 @@ class RecoveryOptionsTest {
                 .isEqualTo(defaults.getMaxConcurrentDestinations());
         assertThat(sink.getMaxStagingFileBytes()).isEqualTo(defaults.getMaxStagingFileBytes());
         assertThat(sink.getMaxOpenDestinations()).isEqualTo(defaults.getMaxOpenDestinations());
+        assertThat(sink.isBackgroundStagingUploadEnabled())
+                .isEqualTo(defaults.isBackgroundStagingUploadEnabled());
+        assertThat(sink.getMaxInFlightUploadOperations())
+                .isEqualTo(defaults.getMaxInFlightUploadOperations());
         assertThat(RecoveryOptions.parse(arguments("--mode", "ALO")).checkpointInterval)
                 .isEqualTo(RecoveryOptions.parse(arguments()).checkpointInterval)
                 .isEqualTo(Duration.ofSeconds(30));
@@ -142,7 +166,11 @@ class RecoveryOptionsTest {
                                         "--max-staging-file-bytes",
                                         "8388608",
                                         "--max-open-destinations",
-                                        "7"))
+                                        "7",
+                                        "--background-staging-upload-enabled",
+                                        "true",
+                                        "--max-in-flight-upload-operations",
+                                        "3"))
                         .fileLoads;
         // Building PARQUET options passes the connector's probe for parquet-avro and Hadoop, on
         // the test classpath; the image's runtime classpath is the copied runtime dependencies.
@@ -151,6 +179,8 @@ class RecoveryOptionsTest {
         assertThat(sink.getMaxConcurrentDestinations()).isEqualTo(5);
         assertThat(sink.getMaxStagingFileBytes()).isEqualTo(8388608);
         assertThat(sink.getMaxOpenDestinations()).isEqualTo(7);
+        assertThat(sink.isBackgroundStagingUploadEnabled()).isTrue();
+        assertThat(sink.getMaxInFlightUploadOperations()).isEqualTo(3);
     }
 
     @Test
@@ -173,6 +203,26 @@ class RecoveryOptionsTest {
                                                 "--max-open-destinations",
                                                 "10001")))
                 .hasMessageContaining("maxPendingFiles must be >= maxOpenDestinations");
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        arguments(
+                                                "--mode",
+                                                "FILE_LOADS",
+                                                "--max-in-flight-upload-operations",
+                                                "2")))
+                .hasMessageContaining("maxInFlightUploadOperations is only accepted with");
+        assertThatThrownBy(
+                        () ->
+                                RecoveryOptions.parse(
+                                        arguments(
+                                                "--mode",
+                                                "FILE_LOADS",
+                                                "--background-staging-upload-enabled",
+                                                "true",
+                                                "--max-in-flight-upload-operations",
+                                                "0")))
+                .hasMessageContaining("maxInFlightUploadOperations must be positive");
     }
 
     @Test
@@ -184,6 +234,9 @@ class RecoveryOptionsTest {
         assertThat(FileLoadsOptions.DEFAULT_MAX_CONCURRENT_DESTINATIONS).isEqualTo(8);
         assertThat(FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES).isEqualTo(16777216);
         assertThat(FileLoadsOptions.DEFAULT_MAX_OPEN_DESTINATIONS).isEqualTo(16);
+        assertThat(FileLoadsOptions.DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED).isFalse();
+        // Rendered only with the uploader on, which the connector requires of it.
+        assertThat(FileLoadsOptions.DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS).isEqualTo(2);
         // The application does not expose maxPendingFiles, so it caps maxOpenDestinations.
         assertThat(FileLoadsOptions.DEFAULT_MAX_PENDING_FILES).isEqualTo(10000);
         assertThat(RecoveryOptions.parse(arguments()).fileLoads).isNull();
@@ -283,12 +336,14 @@ class RecoveryOptionsTest {
         "max-concurrent-checkpoint-finalizations,2",
         "max-concurrent-destinations,9",
         "max-staging-file-bytes,8388608",
-        "max-open-destinations,17"
+        "max-open-destinations,17",
+        "background-staging-upload-enabled,true"
     })
     void everyFileLoadsArgumentIsPartOfTheIdentity(String name, String value) {
         var initial = RecoveryOptions.parse(arguments("--mode", "FILE_LOADS"));
         assertThat(initial.identity())
-                .isEqualTo("v1/bigquery-it/FILE_LOADS/10/1843200/1048576/AVRO/1/8/16777216/16");
+                .isEqualTo(
+                        "v1/bigquery-it/FILE_LOADS/10/1843200/1048576/AVRO/1/8/16777216/16/false/2");
         var upgrade =
                 RecoveryOptions.parse(
                         arguments(
@@ -303,5 +358,23 @@ class RecoveryOptionsTest {
                         RecoveryOptions.parse(arguments("--mode", "FILE_LOADS", "--" + name, value))
                                 .identity())
                 .isNotEqualTo(initial.identity());
+    }
+
+    @Test
+    void theUploadOperationBoundIsPartOfTheIdentity() {
+        String enabled = "--background-staging-upload-enabled";
+        var uploader = RecoveryOptions.parse(arguments("--mode", "FILE_LOADS", enabled, "true"));
+        assertThat(uploader.identity()).endsWith("/true/2");
+        assertThat(
+                        RecoveryOptions.parse(
+                                        arguments(
+                                                "--mode",
+                                                "FILE_LOADS",
+                                                enabled,
+                                                "true",
+                                                "--max-in-flight-upload-operations",
+                                                "3"))
+                                .identity())
+                .isNotEqualTo(uploader.identity());
     }
 }

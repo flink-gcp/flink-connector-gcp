@@ -729,6 +729,15 @@ def test_a_file_loads_application_renders_its_sink_inputs():
         "16777216",
         "--max-open-destinations",
         "16",
+        "--background-staging-upload-enabled",
+        "false",
+    ]
+    uploader = Trial("lifecycle-1312", "FILE_LOADS", 10, 23, uploader=True)
+    assert uploader.arguments("initial")[-4:] == [
+        "--background-staging-upload-enabled",
+        "true",
+        "--max-in-flight-upload-operations",
+        "2",
     ]
 
 

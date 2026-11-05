@@ -1549,6 +1549,12 @@ In the deployed trial the first request was refused that way, and the job asked 
 Synthetic runs drive every fault through both modes, and the deployed `eo-10` trials ran each once, as [their findings](#bigquery-taskmanager-replacement-and-rescale-trial-findings) record.
 The three `eo-10` fault trials are preregistered in the [BigQuery fault trial preregistration](evidence/0165-bigquery-fault-trials-preregistration-1779.md) ([#1783](https://github.com/flink-gcp/flink-connector-gcp/issues/1783)); the owner chose on 2026-10-14 not to run the `fl-10` ones.
 
+Refined under [#2030](https://github.com/flink-gcp/flink-connector-gcp/issues/2030): a third cell, `fl-10-uploader`, runs `fl-10` with the FILE_LOADS background staging uploader on, together with its three fault trials, because [ADR-0195](0195-file-loads-offers-an-opt-in-background-staging-uploader.md) keeps the uploader's default off until it has run across the recoveries this scenario exercises.
+The application takes `--background-staging-upload-enabled` and `--max-in-flight-upload-operations` as two more FILE_LOADS arguments, bound into the checkpointed input identity like the other five.
+The CUE package defines the bound only while the uploader is on, because the connector refuses it otherwise, so a delivery that sets it with the uploader off fails the render as an unknown knob would.
+A trial with the uploader names it in its trial shape, every other trial's shape stays as it was, and every proposal's resource plan gains an `uploader` field, false outside the new cells; the lifecycle delivery's `bigquery_uploader` tag renders the uploader at its default bound of two, and the proposal checks both phases' arguments against the trial as it does the other knobs.
+A run of any FILE_LOADS trial now needs an application image that accepts the two arguments, because the package renders `--background-staging-upload-enabled false` for `fl-10` as well.
+
 ### Cloud Tasks fault kinds and measurement windows
 
 The `cloudtasks-recovery` scenario takes the shared exercise's fault kinds and the measurements the BigQuery trials read ([#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777)), so a Cloud Tasks trial takes the same measurement set as the other connectors' trials.

@@ -33,7 +33,7 @@ on:
         type: string
         default: ''
       trial:
-        description: 'BigQuery only: delivery method and destination count, and the fault that replaces one recovery, if any'
+        description: 'BigQuery only: delivery method and destination count, -uploader for FILE_LOADS with the background staging uploader on, and the fault that replaces one recovery, if any'
         required: false
         type: choice
         default: 'none'
@@ -44,12 +44,16 @@ on:
           - 'alo-50'
           - 'eo-50'
           - 'fl-10'
+          - 'fl-10-uploader'
           - 'eo-10-tm-replacement'
           - 'eo-10-rescale-out'
           - 'eo-10-rescale-in'
           - 'fl-10-tm-replacement'
           - 'fl-10-rescale-out'
           - 'fl-10-rescale-in'
+          - 'fl-10-uploader-tm-replacement'
+          - 'fl-10-uploader-rescale-out'
+          - 'fl-10-uploader-rescale-in'
       pubsub_trial:
         description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false

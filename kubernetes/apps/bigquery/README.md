@@ -57,8 +57,10 @@ It writes run-unique tables into `BQ_IT_DATASET` and stages under `BQ_IT_GCS_BUC
 | `--max-concurrent-destinations` | FILE_LOADS only: the connector's default, 8 |
 | `--max-staging-file-bytes` | FILE_LOADS only: the connector's default, 16,777,216 |
 | `--max-open-destinations` | FILE_LOADS only: the connector's default, 16 |
+| `--background-staging-upload-enabled` | FILE_LOADS only: `false`, the connector's default, or `true` |
+| `--max-in-flight-upload-operations` | FILE_LOADS only, and only with the uploader on: the connector's default, 2 |
 
-The Storage Write modes refuse the five FILE_LOADS arguments, and the connector's `FileLoadsOptions` builder checks their ranges as the arguments are parsed.
+The Storage Write modes refuse the seven FILE_LOADS arguments, and the connector's `FileLoadsOptions` builder checks their ranges as the arguments are parsed, including its refusal of `--max-in-flight-upload-operations` while the uploader is off.
 The application leaves `maxPendingFiles` at the connector's 10,000, which the builder requires to be at least `--max-open-destinations`.
 They are part of the checkpointed input identity in FILE_LOADS mode, so an upgrade cannot change them.
 
@@ -78,7 +80,7 @@ Writer and buffered-stream options retain their production defaults; this worklo
 The FILE_LOADS sink appends to the provisioned tables and stages under `gs://flink-gcp-tier3-bigquery/runs/<run-id>/staging`, inside the run prefix that the state IAM condition, the bucket lifecycle rule and cleanup already cover.
 Staged files therefore also count against the 10,000 objects cleanup lists under the run prefix.
 At the 1 MiB/s offered rate and the 120-second interval a checkpoint stages roughly 120 MiB before conversion, and its commit deletes those files; the `fl-10` trial's [findings](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) record no commit backlog and no peak state-prefix size.
-Its five arguments above default to the connector's values.
+Its seven arguments above default to the connector's values, and the uploader trials alone turn the background staging uploader on.
 The FILE_LOADS sink also names the dataset's location, `us-central1`, so its committer never reads dataset metadata: without a location it looks each destination dataset up to place its load jobs, which would need `bigquery.datasets.get`.
 The Storage Write modes leave the location unset, as before.
 Submitting the load jobs needs project-wide `bigquery.jobs.create`, which the workload identity holds through a custom role added under [issue #1550](https://github.com/flink-gcp/flink-connector-gcp/issues/1550); as their creator it can read them without `bigquery.jobs.get`.
@@ -94,8 +96,8 @@ The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap
 
 [`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator 1.15.0 schema and Flink 2.2.1 application image.
 A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
-A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`), whose defaults and ranges are the connector's, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders all five as arguments, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
-The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, and its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it.
+A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`, `backgroundStagingUploadEnabled`, and `maxInFlightUploadOperations` only when the uploader is on), whose defaults and ranges are the connector's, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders each knob that exists as an argument, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
+The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, and its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it.
 Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
 The offered rate is fixed at 1 MiB/s.
 The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
@@ -134,11 +136,12 @@ A proposal is not an approval: dispatch admits this scenario only through the [p
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
-Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, one delivery method at one destination count.
-`fl-10` is the one FILE_LOADS trial, at 10 destinations with the five sink inputs at the connector's defaults: it asks whether finalization survives the two recoveries, not how it scales.
+Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one delivery method at one destination count.
+`fl-10` is the FILE_LOADS trial at 10 destinations with the sink inputs at the connector's defaults: it asks whether finalization survives the two recoveries, not how it scales.
+`fl-10-uploader` is the same trial with the background staging uploader on at its default of two in-flight upload operations ([#2030](https://github.com/flink-gcp/flink-connector-gcp/issues/2030)), because ADR-0195 keeps the uploader's default off until it has run across these recoveries.
 These run a savepoint upgrade and a JobManager failover, with the writers at parallelism two in both phases.
 
-The `eo-10` and `fl-10` cells also name a fault that takes the place of one of those recoveries ([#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779)), as the [shared recovery exercise](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#shared-recovery-exercise-fault-kinds) runs it:
+The `eo-10`, `fl-10` and `fl-10-uploader` cells also name a fault that takes the place of one of those recoveries ([#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779)), as the [shared recovery exercise](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#shared-recovery-exercise-fault-kinds) runs it:
 
 | Trial | Upgrade | Failover | Writers and TaskManagers, initial then upgrade |
 | --- | --- | --- | --- |
@@ -574,7 +577,7 @@ The `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector
 
 | Input | Contract |
 | --- | --- |
-| `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50` or `fl-10`, or one of the `eo-10` and `fl-10` fault trials above; the default `none` is refused |
+| `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, or one of the `eo-10`, `fl-10` and `fl-10-uploader` fault trials above; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 
 The owner approves the run's estimate before dispatching it; dispatching is the approval.
