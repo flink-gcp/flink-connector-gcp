@@ -168,6 +168,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `type-mismatch-policy` and the markers carry no `scan.` prefix because the lookup reads
   through the same converter (`FirestoreToRowDataConverter`).
 
+## Native-mode Table API filter pushdown (`docs/adr/0197`)
+
+- **A pushed equality is a necessary condition; every predicate stays a residual**
+  (`FirestoreFilterPushDown`, owner 2026-11-05). The service matches `5` to `5.0` and NaN to NaN,
+  so never remove a predicate from the residual, and never push a shape whose filter could drop a
+  document Flink keeps. A new type or operator needs its matching measured on the emulator, a
+  Standard- and an Enterprise-edition database (the editions differ for `!=`) before it is pushed.
+- Declined on purpose: the key column, reference-marked columns, CHAR/BINARY, TIMESTAMP_LTZ below
+  precision 6 (the converter truncates), `IS NULL` (a missing field matches nothing), strings or
+  bytes over 1,500 bytes, inequalities, OR/IN, and collection-group scans (Standard needs a
+  collection-group index; `PartitionQuery` takes no filter).
+- Both `type-mismatch-policy` values push; a mismatch in an excluded document does not fail the scan.
+- `FirestoreTableFilterPushDownITCase` compares against a collection-group table of the same
+  documents, which pushes nothing; keep that oracle when adding shapes.
+
 ## Native-mode Table API lookup (`docs/adr/0179`, lookup section)
 
 - **Only the document id addresses a lookup**; a keyless table (every collection-group table) is

@@ -22,14 +22,17 @@ import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import io.github.flink.gcp.connector.firestore.source.FirestoreQueryFactory;
+import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldEquality;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 
 /**
  * The query of a {@code firestore} table that scans its one collection: every document directly in
- * it, projected to the fields of the columns read. Each field name is one literal path segment, so
- * a name containing a dot projects that field.
+ * it that the pushed equality filters admit, projected to the fields of the columns read. Each
+ * field name is one literal path segment, so a name containing a dot projects, or filters on, that
+ * field.
  */
 @Internal
 final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
@@ -38,6 +41,7 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
 
     private final String collection;
     private final String[] fields;
+    private final List<FieldEquality> equalities;
 
     /**
      * Creates the factory.
@@ -45,15 +49,23 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
      * @param collection the collection path
      * @param fields the field names to read; an empty array reads none, as for a table or a
      *     projection of only the key and metadata
+     * @param equalities the pushed equality filters, each a necessary condition Flink evaluates
+     *     again. An equality adds no ordering, so the query stays in document-name order and its
+     *     field need not be in the projection for a cursor to resume it
      */
-    FirestoreCollectionQueryFactory(String collection, String[] fields) {
+    FirestoreCollectionQueryFactory(
+            String collection, String[] fields, List<FieldEquality> equalities) {
         this.collection = collection;
         this.fields = fields.clone();
+        this.equalities = List.copyOf(equalities);
     }
 
     @Override
     public Query create(Firestore firestore) {
         Query query = firestore.collection(collection);
+        for (FieldEquality equality : equalities) {
+            query = query.whereEqualTo(FieldPath.of(equality.field()), equality.value());
+        }
         FieldPath[] paths = new FieldPath[fields.length];
         for (int i = 0; i < fields.length; i++) {
             paths[i] = FieldPath.of(fields[i]);
@@ -71,11 +83,13 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
             return false;
         }
         FirestoreCollectionQueryFactory that = (FirestoreCollectionQueryFactory) o;
-        return collection.equals(that.collection) && Arrays.equals(fields, that.fields);
+        return collection.equals(that.collection)
+                && Arrays.equals(fields, that.fields)
+                && equalities.equals(that.equalities);
     }
 
     @Override
     public int hashCode() {
-        return 31 * Objects.hash(collection) + Arrays.hashCode(fields);
+        return 31 * Objects.hash(collection, equalities) + Arrays.hashCode(fields);
     }
 }

@@ -126,7 +126,7 @@ Both read a consistent snapshot at `scan.read-time` (truncated to the microsecon
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="scan" >}}
 
 A scan reads only the fields of the columns it produces: the declared columns, or the projected ones when the planner pushes a projection down, each named as one literal field, so a document's undeclared top-level fields never travel; a `ROW` or `MAP` column's field is read whole, with any nested keys the `ROW` does not declare.
-Filters are not pushed down.
+Equality predicates are pushed into a scan of one collection; [Filter pushdown](#filter-pushdown) gives the boundary.
 
 A collection-group scan reads documents of many collections, whose ids repeat across them, so its table cannot declare a PRIMARY KEY: the planner trusts a declared key to be unique and removes a `GROUP BY` or a `DISTINCT` over it, so repeated ids would come back unaggregated.
 The `document-path` metadata column, which is unique, identifies a document instead.
@@ -143,6 +143,23 @@ A scan or a lookup can read four metadata columns:
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="collection-group" >}}
 
 The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#source) describes the snapshot's time window, paging and recovery.
+
+### Filter pushdown
+
+A scan of one collection hands the service the equality predicates it can evaluate, so documents that cannot match are not returned; a Standard-edition database bills only the documents a query returns.
+A predicate is pushed when it compares a top-level column with a literal (`s = 'x'`), or is a `BOOLEAN` column or its `NOT`, and the column is `STRING`/`VARCHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY`, or `TIMESTAMP_LTZ` of precision 6 or more.
+Under `AND`, each conjunct that qualifies is pushed.
+Everything else is evaluated by Flink alone: the PRIMARY KEY column, a column `reference-field-paths` names, `CHAR` and `BINARY` columns, a coarser `TIMESTAMP_LTZ`, `IS NULL` (the service matches only a stored null, never a missing field), inequalities, `OR`, `IN`, a string or bytes literal over 1,500 bytes, and an `ARRAY`, `MAP` or `ROW` column.
+
+A pushed filter narrows what is read; it does not replace Flink's evaluation, so every predicate still runs in Flink afterwards.
+The service compares numbers across types, so `n = 5` also reads a document holding `5.0`, and the conversion and Flink's filter then decide that document as they would without pushdown.
+A document whose value has another type, or lacks the field, matches no filter, so it is not read: under `type-mismatch-policy = 'fail'` a mismatched value in a document the filter excludes no longer fails the scan, and under either policy neither does a `NOT NULL` column that such a document lacks.
+Type checking covers the documents read, as it already covers only the columns read.
+
+A collection-group scan pushes nothing.
+A Standard-edition database serves a filtered collection-group query only through an index of collection-group scope, which it does not create by itself, and refuses the query with `FAILED_PRECONDITION` without one.
+On one collection, a Standard-edition database answered equalities on two and on three fields through the single-field indexes it creates by itself, without a composite index.
+Should a pushed query still need an index the database lacks, for example on a field exempted from indexing, it fails when the job starts, not partway through the read: the read is planned with a one-document query of the same filters.
 
 ## Lookup
 
@@ -283,5 +300,6 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 
 ## Design decisions and testing
 
-The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md).
+The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md), and filter pushdown, with the service's matching measured on both editions, in [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md).
 The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups; the uber-jar's tests write through its relocated classes.
+A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing; the gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database.

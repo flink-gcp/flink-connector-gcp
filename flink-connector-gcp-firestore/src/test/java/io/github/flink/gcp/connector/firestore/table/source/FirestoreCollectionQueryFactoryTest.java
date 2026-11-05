@@ -18,10 +18,15 @@ package io.github.flink.gcp.connector.firestore.table.source;
 
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.cloud.Timestamp;
+import com.google.cloud.firestore.Blob;
 import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import io.github.flink.gcp.connector.firestore.TestDocuments;
+import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldEquality;
 import org.junit.jupiter.api.Test;
+
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,23 +36,60 @@ class FirestoreCollectionQueryFactoryTest {
     void selectsLiteralNamesOrOnlyTheDocumentName() throws Exception {
         try (Firestore client = TestDocuments.offlineClient("p")) {
             assertThat(
-                            new FirestoreCollectionQueryFactory("c", new String[] {"a.b", "x"})
+                            new FirestoreCollectionQueryFactory(
+                                            "c", new String[] {"a.b", "x"}, List.of())
                                     .create(client))
                     .isEqualTo(
                             client.collection("c").select(FieldPath.of("a.b"), FieldPath.of("x")));
-            assertThat(new FirestoreCollectionQueryFactory("c", new String[0]).create(client))
+            assertThat(
+                            new FirestoreCollectionQueryFactory("c", new String[0], List.of())
+                                    .create(client))
                     .isEqualTo(client.collection("c").select(FieldPath.documentId()));
         }
     }
 
     @Test
-    void comparesByCollectionAndFieldsAndSurvivesJavaSerialization() throws Exception {
+    void addsEachEqualityOnItsLiteralFieldBeforeTheSelection() throws Exception {
+        Timestamp time = Timestamp.ofTimeSecondsAndNanos(1, 2_000);
+        Blob bytes = Blob.fromBytes(new byte[] {1});
+        try (Firestore client = TestDocuments.offlineClient("p")) {
+            assertThat(
+                            new FirestoreCollectionQueryFactory(
+                                            "c",
+                                            new String[] {"x"},
+                                            List.of(
+                                                    new FieldEquality("a.b", "v"),
+                                                    new FieldEquality("n", 5L),
+                                                    new FieldEquality("t", time),
+                                                    new FieldEquality("bytes", bytes)))
+                                    .create(client))
+                    .isEqualTo(
+                            client.collection("c")
+                                    .whereEqualTo(FieldPath.of("a.b"), "v")
+                                    .whereEqualTo(FieldPath.of("n"), 5L)
+                                    .whereEqualTo(FieldPath.of("t"), time)
+                                    .whereEqualTo(FieldPath.of("bytes"), bytes)
+                                    .select(FieldPath.of("x")));
+        }
+    }
+
+    @Test
+    void comparesByCollectionFieldsAndEqualitiesAndSurvivesJavaSerialization() throws Exception {
+        List<FieldEquality> equalities =
+                List.of(
+                        new FieldEquality("s", "v"),
+                        new FieldEquality("b", Blob.fromBytes(new byte[] {1})),
+                        new FieldEquality("t", Timestamp.ofTimeSecondsAndNanos(1, 0)));
         FirestoreCollectionQueryFactory factory =
-                new FirestoreCollectionQueryFactory("c", new String[] {"a"});
+                new FirestoreCollectionQueryFactory("c", new String[] {"a"}, equalities);
 
         assertThat(InstantiationUtil.clone(factory)).isEqualTo(factory).hasSameHashCodeAs(factory);
         assertThat(factory)
-                .isNotEqualTo(new FirestoreCollectionQueryFactory("d", new String[] {"a"}))
-                .isNotEqualTo(new FirestoreCollectionQueryFactory("c", new String[] {"b"}));
+                .isNotEqualTo(
+                        new FirestoreCollectionQueryFactory("d", new String[] {"a"}, equalities))
+                .isNotEqualTo(
+                        new FirestoreCollectionQueryFactory("c", new String[] {"b"}, equalities))
+                .isNotEqualTo(
+                        new FirestoreCollectionQueryFactory("c", new String[] {"a"}, List.of()));
     }
 }

@@ -24,6 +24,7 @@ import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
@@ -32,6 +33,7 @@ import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheT
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
@@ -65,12 +67,15 @@ import java.util.Objects;
  * every collection with its id is read as a partitioned collection-group scan. A lookup reads one
  * document of the collection by its id. Each reads only the fields of the columns it produces, each
  * named as one literal field: the declared columns, or the projected ones when the planner pushed a
- * projection down.
+ * projection down. A single-collection scan also adds the equality filters {@link
+ * FirestoreFilterPushDown} translates, each a necessary condition that Flink evaluates again; a
+ * collection-group scan pushes none ({@code docs/adr/0197}).
  */
 @Internal
 public final class FirestoreDynamicSource
         implements ScanTableSource,
                 LookupTableSource,
+                SupportsFilterPushDown,
                 SupportsProjectionPushDown,
                 SupportsReadingMetadata {
 
@@ -88,6 +93,7 @@ public final class FirestoreDynamicSource
     private int[] columns;
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
+    private FirestoreFilterPushDown.State filterState = FirestoreFilterPushDown.State.empty();
 
     /**
      * Creates the source over every physical column and no metadata.
@@ -158,7 +164,9 @@ public final class FirestoreDynamicSource
             builder.collectionGroup(collectionId(collection))
                     .select(paths.length == 0 ? new FieldPath[] {FieldPath.documentId()} : paths);
         } else {
-            builder.query(new FirestoreCollectionQueryFactory(collection, fields));
+            builder.query(
+                    new FirestoreCollectionQueryFactory(
+                            collection, fields, filterState.equalities()));
         }
         scanConfig.applyTo(builder);
         if (emulatorEndpoint != null) {
@@ -262,6 +270,17 @@ public final class FirestoreDynamicSource
     }
 
     @Override
+    public Result applyFilters(List<ResolvedExpression> filters) {
+        // A collection-group query on a filtered field needs a collection-group index the service
+        // does not create, and PartitionQuery partitions the unfiltered group (docs/adr/0197).
+        filterState =
+                scanConfig.isCollectionGroup()
+                        ? FirestoreFilterPushDown.State.declined(filters)
+                        : FirestoreFilterPushDown.translate(schema, filters);
+        return filterState.result();
+    }
+
+    @Override
     public Map<String, DataType> listReadableMetadata() {
         return ReadableMetadata.listAll();
     }
@@ -291,6 +310,7 @@ public final class FirestoreDynamicSource
         copy.columns = columns.clone();
         copy.metadataKeys = metadataKeys;
         copy.producedDataType = producedDataType;
+        copy.filterState = filterState;
         return copy;
     }
 
@@ -320,7 +340,8 @@ public final class FirestoreDynamicSource
                 && Objects.equals(lineage, that.lineage)
                 && Arrays.equals(columns, that.columns)
                 && metadataKeys.equals(that.metadataKeys)
-                && producedDataType.equals(that.producedDataType);
+                && producedDataType.equals(that.producedDataType)
+                && filterState.equals(that.filterState);
     }
 
     @Override
@@ -338,6 +359,7 @@ public final class FirestoreDynamicSource
                 lineage,
                 Arrays.hashCode(columns),
                 metadataKeys,
-                producedDataType);
+                producedDataType,
+                filterState);
     }
 }
