@@ -296,8 +296,10 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   a broken `relref` or a missing shortcode fails the build) and preview it.
   `mise.toml` pins hugo-extended and Go; the shared design module and its Hugo Book dependency
   resolve through `docs/go.mod` and `docs/go.sum`. Regenerate palettes in flink-gcp-dev-tools,
-  then update this site's module pin. A pin that moves Hugo Book fails `just docs` until the
-  site licenses page documents the new version (see Licensing and provenance). These build the
+  then update this site's module pin to the same commit as `dev_tools_revision`. The module
+  owns the Hugo Book import, the excluded theme features and the theme notices; its
+  `theme-notices` shortcode fails `just docs` when the site resolves another Hugo Book version,
+  imports Hugo Book before the module, or replaces it (flink-gcp-dev-tools ADR-0002). These build the
   hand-written pages only; the generated half is `just docs-javadoc` (below), which the docs
   workflow runs first
 - `just docs-javadoc` — the aggregated JavaDoc that ships as the site's API reference (#88;
@@ -489,8 +491,11 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 
 ## Workflow rules
 
-- Four workflow skills are installed by `just skills-sync` from the full dev-tools commit pinned
-  in the justfile. They contain the full push/review procedures and original exceptions.
+- Four workflow skills and `scripts/central-portal.py` are installed by `just dev-tools-sync`
+  from the full dev-tools commit pinned in the justfile. The skills contain the full push/review
+  procedures and original exceptions. A behavior change to `central-portal.py` goes to
+  flink-gcp-dev-tools, because the next sync replaces a committed local edit; this repository
+  keeps the release workflow's use of it and `scripts/tests/test_release_workflow.py`.
   This guide supplies connector verification commands and compatibility requirements.
   The other skills remain locally owned.
 - **One git worktree per PR** under `/tmp/worktrees/flink-connector-gcp/`; never switch branches
@@ -958,11 +963,12 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   from how much has changed, and where the audit leaves room for judgement the notice stays;
   `docs/adr/0123` records that audit, the four files it retired and why
   the rest keep theirs
-- **The documentation site carries notices for the theme files it publishes.** A change that
-  publishes another third-party file on the site, enables a Hugo Book feature the site excludes,
-  or moves Hugo Book updates `docs/content/docs/licenses.md` by the procedure in the contributing
-  guide's shared-development-assets section; ADR-0164 records why the KaTeX, Mermaid and
-  asciinema-player bundles are not published
+- **The documentation site carries notices for the theme files it publishes.** The shared design
+  module decides which Hugo Book files are published and renders their notices through
+  `{{% theme-notices %}}` on `docs/content/docs/licenses.md`; enabling an excluded Hugo Book
+  feature or moving Hugo Book is a flink-gcp-dev-tools change under its ADR-0002, followed by a
+  module pin update here. A change that publishes another third-party file from this site's own
+  sources adds its notice to that page; ADR-0164 records the notice scope
 - Files written for this project carry the plain Apache-2.0 header. Files copied from Apache
   projects keep their ASF header.
   Apache RAT enforces the approved licence families over the whole tree (configuration overridden

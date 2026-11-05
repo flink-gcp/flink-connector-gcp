@@ -75,37 +75,38 @@ asked version-specific questions resolved from this repository's POM and BOM.
 
 ## Shared development assets
 
-The four push/review skills are maintained in [flink-gcp-dev-tools](https://github.com/flink-gcp/flink-gcp-dev-tools).
-This repository tracks their copies under `.agents/skills/`; the other skills remain local.
+The four push/review skills and the Central Portal tool `scripts/central-portal.py` are maintained in [flink-gcp-dev-tools](https://github.com/flink-gcp/flink-gcp-dev-tools).
+This repository tracks their copies under `.agents/skills/` and `scripts/`; the other skills and scripts remain local.
 The shared skills retain the original detailed procedures, decision conditions, examples and exceptions.
 Connector verification commands and compatibility requirements live in
 [`.agents/references/repository-guide.md`]({{< param BookRepo >}}/blob/main/.agents/references/repository-guide.md).
 Ordinary builds and agent sessions use the committed copies without downloading them.
 
-To update the skills, choose a reviewed commit from dev-tools main, set its full SHA as
-`dev_tools_revision` in `justfile`, and run `just skills-sync` from the repository root.
+To update them, choose a reviewed commit from dev-tools main, set its full SHA as
+`dev_tools_revision` in `justfile`, and run `just dev-tools-sync` from the repository root.
 The installer requires Bash, Git, `gh`, tar and just.
-It preserves unrelated skills and refuses to replace differing uncommitted content in managed directories.
-Review and commit the pin and skill changes together; use an earlier pin to roll back.
-Keep `dev-tools.just` aligned with `examples/skills.just` at that commit when the upstream recipe changes.
-Project-specific policy belongs outside those four skill directories.
+It preserves unrelated skills and scripts and refuses to replace differing uncommitted content at a managed path.
+A committed local edit is not protected: the next sync replaces it, so send a behavior change to `central-portal.py` upstream.
+This repository keeps the tool's credentials, the release workflow that calls it, and `scripts/tests/test_release_workflow.py`; the tool's own behavior tests live upstream.
+Review and commit the pin and the installed changes together; use an earlier pin to roll back.
+Keep `dev-tools.just` aligned with `examples/dev-tools.just` at that commit when the upstream recipe changes.
+Project-specific policy belongs outside the managed paths.
 The WHAT/WHY PR template remains a deliberate copy, updated separately when needed.
 
 The site's design is the shared repository's Hugo module, pinned in `docs/go.mod` and `docs/go.sum`.
 Update it from the `docs/` directory with
-`hugo mod get github.com/flink-gcp/flink-gcp-dev-tools/hugo@<full commit SHA>` and review both files.
+`hugo mod get github.com/flink-gcp/flink-gcp-dev-tools/hugo@<full commit SHA>`, using the same commit as `dev_tools_revision`, and review both files.
 Keep `markup.highlight.noClasses = false` in this site's configuration.
 Palette and theme-control changes belong in dev-tools, including its `just docs-chroma` recipe.
 The shared repository also maintains the search readiness guard and its regression test; typed input is searched once the index finishes loading.
 This repository owns its content, source-snippet mounts and shortcodes, Javadoc, version assembly and Pages workflow.
 Validate a module update with `just docs` and compare the affected pages in both color schemes.
 Local assets or partials override module files, so avoid reintroducing copies of the shared theme files.
-`docs/hugo.toml` ignores the design module's own imports, imports Hugo Book after it, and publishes from Hugo Book's `static/` directory only the two favicons and the Fuse.js module.
-Hugo Book's KaTeX, Mermaid and asciinema-player features are excluded, so their shortcodes fail the build; enabling one means mounting its files and adding every notice its bundle owes first, including those of the dependencies it compiles in.
-The hidden [site licenses]({{< relref "docs/licenses" >}}) page carries the notices for what the site publishes and names the Hugo Book version it documents; `just docs` fails when the site resolves another version or a replacement.
-When the design module pin moves, check that its `hugo.toml` still imports nothing but Hugo Book, and that its templates reference no Hugo Book static file beyond those published.
-When Hugo Book moves, compare its `assets/`, `layouts/`, `i18n/` and published static files between the two tags, update each affected section of the page from the upstream license at the new version, and then change the version the page names.
-A third-party file that the design module adds itself needs a section too, which no check catches.
+The module owns the Hugo Book import: it publishes from Hugo Book's `static/` directory only the two favicons and the Fuse.js module, and it excludes the KaTeX, Mermaid and asciinema-player features, so their shortcodes fail the build.
+`docs/hugo.toml` imports the module without `ignoreImports` and does not import Hugo Book itself, because the first import of a module decides its mounts.
+The hidden [site licenses]({{< relref "docs/licenses" >}}) page states the license of the site's own sources and renders the module's notices with `{{%/* theme-notices */%}}`; `just docs` fails when the site resolves another Hugo Book version, imports it before the module, or replaces it.
+The notice policy and the Hugo Book update procedure are [flink-gcp-dev-tools ADR-0002](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/40a3a0e54466d290422d5aeeac346dfad5091de4/docs/adr/0002-the-design-module-owns-the-theme-files-and-their-notices.md).
+Moving Hugo Book, or adding a third-party file to the design module, is a flink-gcp-dev-tools change that updates the module's notices by that procedure; this site then moves the module pin.
 
 ## Licensing and attribution
 

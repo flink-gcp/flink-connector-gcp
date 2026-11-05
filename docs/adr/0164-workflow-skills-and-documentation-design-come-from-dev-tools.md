@@ -17,14 +17,14 @@ limitations under the License.
 # ADR-0164: Workflow skills and documentation design come from dev-tools
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01) and [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990) (2026-11-01)
-- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990)
+- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990) (2026-11-01) and [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018) (2026-11-05)
+- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990), [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018)
 - Modules: all (workflow), docs
 - Current behavior: [Contributing](../content/docs/development/contributing.md#shared-development-assets)
 
 ## Decision
 
-Adopt the shared workflow skills, installation recipe and Hugo design module from
+Adopt the shared workflow skills, the Central Portal tool, the installation recipe and the Hugo design module from
 [flink-gcp-dev-tools](https://github.com/flink-gcp/flink-gcp-dev-tools).
 The initial Hugo pin is its merged commit `f33d4549a3be1790ef26650ba9cc35a94a44b49f`, following the
 [shared-source decision](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/f33d4549a3be1790ef26650ba9cc35a94a44b49f/docs/adr/0001-share-development-assets.md).
@@ -32,9 +32,14 @@ The original shared assets are first-party flink-gcp sources under Apache-2.0, e
 the protobuf library; Hugo Book remains an external module dependency.
 The shared search override adapts Hugo Book v0.14.0 and retains its upstream MIT notice.
 
-Keep the four skill directories, including their Codex metadata, as tracked copies selected by
-`dev_tools_revision` in the justfile.
-`just skills-sync` installs that commit, and updates land as reviewed diffs with their pin.
+Keep the four skill directories, including their Codex metadata, and `scripts/central-portal.py` as tracked
+copies selected by `dev_tools_revision` in the justfile.
+`just dev-tools-sync` installs that commit, and updates land as reviewed diffs with their pin.
+The tool is shared under flink-gcp-dev-tools' [ADR-0001 amendment](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/40a3a0e54466d290422d5aeeac346dfad5091de4/docs/adr/0001-share-development-assets.md#amendment-share-standard-library-repository-tools): it imports only the Python standard
+library and carries no connector policy.
+A behavior change to it goes upstream, because the next sync replaces a committed local edit; its behavior
+tests live upstream, and this repository keeps its credentials, the release workflow that calls it and
+`scripts/tests/test_release_workflow.py`.
 Keep the copied `dev-tools.just` recipe aligned with that upstream revision.
 Its shebang body is the explicit exception to the local one-command-per-recipe-line convention:
 `just lint` extracts the body and checks it with ShellCheck, preserving the reason for that convention.
@@ -64,22 +69,25 @@ Palette generation, theme-control changes and search initialization belong in de
 source-backed snippets, Javadoc, documentation version assembly and Pages deployment.
 
 Publish only the theme files the site uses.
-`docs/hugo.toml` ignores the design module's own imports, which today are only Hugo Book, and imports Hugo
-Book after it, so the design module's layouts and assets still take precedence.
-From Hugo Book's `static/` directory the site publishes the two favicons and the Fuse.js module, and it
-excludes the KaTeX, Mermaid and asciinema-player shortcodes and code-block hooks, so a page that tries one
-of those features fails the build or renders plain code rather than linking a file that is not published.
+The design module owns that choice under flink-gcp-dev-tools' [ADR-0002](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/40a3a0e54466d290422d5aeeac346dfad5091de4/docs/adr/0002-the-design-module-owns-the-theme-files-and-their-notices.md), which records the notice
+policy and the Hugo Book update procedure.
+It imports Hugo Book with restricted mounts: from Hugo Book's `static/` directory the site publishes the two
+favicons and the Fuse.js module, and the KaTeX, Mermaid and asciinema-player shortcodes and code-block
+hooks are excluded, so a page that tries one of those features fails the build or renders plain code rather
+than linking a file that is not published.
 No page used those features, and their files carry no notice: KaTeX's fonts are under the SIL Open Font
 License 1.1, and the Mermaid and asciinema-player bundles compile in third-party dependencies.
-The hidden site licenses page carries the notices for what is published, and its `hugo-book-version`
-shortcode fails the build when the resolved Hugo Book version differs from the documented one or when a
-module replacement or vendored copy substitutes other files.
-The page lists the notices of what the site distributes directly: the theme and the components it ships as
-their own files or compiled styles, each checked against its own license.
-It does not follow those components further, so code compiled inside one, output that a tool generates,
-and values a component borrows stay off the page, such as the Lodash helpers inside Fuse.js, the Chroma
-styles Hugo generates the code palettes from, the scripts the JDK's javadoc bundles with the API
-reference, and the Nord colours in Hugo Book's dark theme; that trail has no natural end.
+`docs/hugo.toml` imports the module without `ignoreImports` and does not import Hugo Book itself, because
+the first import of a module decides its mounts.
+The hidden site licenses page states the license of the site's own sources and renders the module's
+notices with its `theme-notices` shortcode, which fails the build when the resolved Hugo Book version differs
+from the documented one, when the site or another module imports Hugo Book before the design module, or when a module replacement or vendored
+copy substitutes other files.
+Pin the module in `docs/go.mod` at the same flink-gcp-dev-tools commit as `dev_tools_revision`.
+The theme's notices cover what the site distributes directly and stop there, under the scope that
+[ADR-0002](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/40a3a0e54466d290422d5aeeac346dfad5091de4/docs/adr/0002-the-design-module-owns-the-theme-files-and-their-notices.md) records.
+A third-party file this site publishes from its own sources follows the same scope and gets its own section
+on the page; the scripts the JDK's javadoc bundles with the API reference stay off it as tool output.
 Release lines built from earlier tags keep their full theme `static/` directory until they leave the
 retention window.
 
@@ -98,7 +106,7 @@ configuration removed 68 published files (KaTeX 63, of which 60 are fonts; ascii
 `favicon.svg` was restored afterwards because the web app manifest that Hugo Book renders names it.
 The Mermaid 11.14.0 package lists 21 direct dependencies, and its bundle retains license comments for only
 some of them; asciinema-player 3.15.1 embeds SolidJS; the `name` table of every KaTeX font declares OFL 1.1.
-The shortcode guard was probed six ways: the pinned version passes, while a different documented version,
+The local `hugo-book-version` shortcode guard, since replaced by the module's `theme-notices`, was probed six ways: the pinned version passes, while a different documented version,
 a `go.mod` replace, a `HUGO_MODULE_REPLACEMENTS` replacement, a Hugo workspace and `hugo mod vendor` each
 fail the build.
 
@@ -108,12 +116,12 @@ fail the build.
   versions of the dependencies compiled into each bundle are recoverable only from each project's lockfile
   at the bundled release, and that inventory would be re-derived on every theme update for features no
   page uses.
-- **Reduce the mount inside the design module instead.** Not done here: it would change
-  flink-datastream-protobuf's site in the same step, which tracks the same problem in
+- **Reduce the mount inside the design module instead.** Not done in the 2026-11-01 revision: it would have
+  changed flink-datastream-protobuf's site in the same step, which tracked the same problem in
   [flink-gcp/flink-datastream-protobuf#190](https://github.com/flink-gcp/flink-datastream-protobuf/issues/190).
-  The local configuration copies no theme file, so the rule above about local precedence still holds;
-  the contributing guide asks a design module update to check that the module imports nothing but Hugo
-  Book.
+  [flink-gcp/flink-gcp-dev-tools#7](https://github.com/flink-gcp/flink-gcp-dev-tools/pull/7) then moved the
+  reduced mount and the notices into the module for both sites, and [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018)
+  adopted it, replacing this site's own import and version guard.
 - **Remove the bundles from retained release lines when the site is assembled.** Declined by the
   maintainer on 2026-11-01: the 1.2 and 1.3 lines, built from tags that predate this decision, stay as
   built and leave the site as later minors are released.
@@ -122,6 +130,6 @@ fail the build.
 
 Ordinary agent use reads committed skills without a network request or a separate checkout.
 Hugo uses its normal module dependency resolution and cache.
-Updates to either shared unit remain explicit and reviewable; the two pins can be updated separately.
+Updates to either shared unit remain explicit and reviewable; the two pins name the same commit.
 The local recipe is visible and maintained through deliberate upstream copies.
 No Git submodule, shared Java runtime dependency or new template-management tool is introduced.

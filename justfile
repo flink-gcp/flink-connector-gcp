@@ -47,7 +47,8 @@ import 'dev-tools.just'
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-dev_tools_revision := "c3784bce1f95dc75848b1fc2de0f370e5c0a09ea"
+# docs/go.mod pins the shared Hugo module at the same flink-gcp-dev-tools commit.
+dev_tools_revision := "40a3a0e54466d290422d5aeeac346dfad5091de4"
 
 mvn := "./mvnw -ntp"
 
@@ -55,8 +56,8 @@ mvn := "./mvnw -ntp"
 default:
     @just --list
 
-# Refresh the four shared workflow skills from the reviewed upstream commit.
-skills-sync: (install-skills dev_tools_revision)
+# Install the shared skills and central-portal.py from dev_tools_revision.
+dev-tools-sync: (install-dev-tools dev_tools_revision)
 
 # `just help` would otherwise be read as a recipe name and fail with "justfile
 # does not contain recipe `help`", which is a poor answer to someone asking what
@@ -448,7 +449,7 @@ sweep-e2e *args:
 lint:
     mise x shellcheck -- shellcheck --version
     mise x shellcheck -- shellcheck scripts/*.sh
-    just --justfile dev-tools.just --show install-skills | sed -n '/^[[:space:]]*#!/,$p' | sed 's/^    //' | mise x shellcheck -- shellcheck -
+    just --justfile dev-tools.just --show install-dev-tools | sed -n '/^[[:space:]]*#!/,$p' | sed 's/^    //' | mise x shellcheck -- shellcheck -
     mise x ruff -- ruff --version
     mise x ruff -- ruff check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
