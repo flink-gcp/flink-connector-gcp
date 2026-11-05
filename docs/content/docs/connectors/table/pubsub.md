@@ -261,6 +261,15 @@ When the topic has topic-level message retention, however, `scan.startup.mode` =
 `earliest-retained` or a retained `timestamp` can seek it back to messages published before it
 existed.
 
+A newly created subscription can briefly answer `NOT_FOUND` to the first streaming pull, although
+its creation has already succeeded.
+The source treats `NOT_FOUND` as a permanent failure, so it fails at startup when it meets one.
+This is rare (no occurrence in 40 measured creations, [#2027]({{< param BookRepo >}}/issues/2027)),
+and a restart strategy recovers from it: an attempt that starts once the service serves the
+subscription consumes it as created.
+A job running with `restart-strategy.type` = `none` stays failed, so create the subscription before
+starting such a job.
+
 ### Ordering and parallelism
 
 `scan.ordering-mode = per-key` requires subscriptions created with message ordering enabled and
