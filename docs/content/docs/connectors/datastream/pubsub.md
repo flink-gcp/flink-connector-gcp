@@ -323,6 +323,13 @@ subscription need no coordination. It is **not** an update — an existing subsc
 settings, and these are neither applied to it nor compared against it. Existing subscriptions cost
 one `GetSubscription` each at startup and nothing after.
 
+A newly created subscription can briefly answer `NOT_FOUND` to the first streaming pull, although
+its creation has already succeeded. The source treats `NOT_FOUND` as a permanent failure, so it fails
+at startup when it meets one. This is rare (no occurrence in 40 measured creations,
+[#2027]({{< param BookRepo >}}/issues/2027)), and a restart strategy recovers from it: an attempt
+that starts once the service serves the subscription consumes it as created. A job running with
+restart strategy `none` stays failed, so create the subscription before starting such a job.
+
 Caveat: by default, a newly created subscription has no backlog from before its creation. A topic
 with topic-level message retention is the exception: `earliestRetained()` or a retained
 `fromTimestamp(...)` can seek the new subscription back to messages published before it existed.
