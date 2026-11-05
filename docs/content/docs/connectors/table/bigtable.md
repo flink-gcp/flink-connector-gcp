@@ -430,8 +430,9 @@ with a cell in a read family appear. A keys-only query is the SQL shape that see
 row.
 
 **The latest version of each cell is read.** Bigtable stores timestamped versions; the scan takes
-the newest per qualifier. A qualifier the declared family holds but the DDL does not name is
-ignored.
+the newest per qualifier, and the read filter asks the server for that version only, so older
+versions are not transferred. Scans, lookups and the FULL-cache loader all read this way. A
+qualifier the declared family holds but the DDL does not name is ignored.
 
 ### Filter pushdown
 
@@ -475,9 +476,12 @@ decoded value and applies its null semantics.
 necessary positive existence test stay entirely with Flink.
 
 The connector deliberately does not push raw cell-value comparisons.
-Bigtable compares encoded bytes rather than decoded SQL values, an empty or sentinel cell may
-decode as `NULL`, and a row may hold several timestamped versions while SQL sees only the latest.
+Bigtable compares encoded bytes rather than decoded SQL values, and an empty or sentinel cell may
+decode as `NULL`.
 Those differences make a raw value filter unsafe as the final SQL answer.
+The existence prefilter runs after the server keeps only the latest version of each cell, so it
+tests the same version SQL reads; for an existence test this changes no result, because a cell
+has a latest version exactly when it has any version.
 The existence prefilter is composed with projection through a Bigtable conditional row filter;
 Google documents conditional filters as non-atomic and warns that they can perform poorly.
 Treat this pushdown as an opportunity to reduce returned rows, not as a guarantee that every
@@ -1435,8 +1439,9 @@ service validate it remains the default.
 ([ADR-0092]({{< param BookRepo >}}/blob/main/docs/adr/0092-the-bigtable-table-source-serves-projection-as-a-family-filter.md)).
 Bigtable's read API takes a filter per scan, so a projection is a filter to build rather than an
 index list to apply client-side; the edge the ADR pins is the projection retaining no family,
-which must become a keys-only chain and not an empty filter. Qualifier-level pruning and a
-latest-version filter are compatible follow-ups the ADR names.
+which must become a keys-only chain and not an empty filter. A read that retains a family also
+asks for the latest version of each cell only. Qualifier-level pruning is a compatible follow-up
+the ADR names.
 
 ## Testing
 

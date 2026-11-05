@@ -18,6 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-11; refined by ADR-0172 ([#1215](https://github.com/flink-gcp/flink-connector-gcp/issues/1215), 2026-09-27)
+  and by [#1841](https://github.com/flink-gcp/flink-connector-gcp/issues/1841) (2026-11-05)
 - Issues: [#459](https://github.com/flink-gcp/flink-connector-gcp/issues/459),
   [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217); ADR-0086 holds the
@@ -89,12 +90,11 @@ everything into `Serializable` state at construction because the schema itself i
 
 **What a row decodes into on the way out:**
 
-- **The latest version of a cell wins, chosen by the converter, not pushed as a filter.** The
-  client documents a row's cells ordered by family, qualifier, then timestamp descending, so the
-  first cell seen per qualifier is the latest. Pushing `cellsPerColumn(1)` instead would spare the
-  server sending older versions and was deferred: the projection filter is about *which columns*, a
-  version filter is about *depth of history*, and conflating them in one change hides which one a
-  wire regression came from. It remains a compatible follow-up (an added chain link).
+- **The latest version of a cell wins, chosen by the converter.** The client documents a row's
+  cells ordered by family, qualifier, then timestamp descending, so the first cell seen per
+  qualifier is the latest. The server-side `cellsPerColumn(1)` link the version-limit refinement
+  below adds only stops older versions from being sent; the converter keeps choosing the first
+  cell, so a read without the link decodes the same row.
 - **A family none of whose declared qualifiers has a cell reads as a null field** — the mirror of
   the sink, whose null family writes no cells, so a sink round trip restores what was written.
   A `MAP` family declares every qualifier, so it reads as a null field exactly when it has no
@@ -164,11 +164,48 @@ The source accepts such an expression on a best-effort basis and also returns it
 The Bigtable condition can reject a row with no matching family or qualifier, while Flink retains
 authority over decoded values, nulls and the latest visible version.
 Raw value filters are not pushed: lexicographic encoded bytes do not implement every SQL
-comparison, the codec maps some bytes to null, and Bigtable may test a version SQL would not expose.
+comparison, and the codec maps some bytes to null.
+When this was written Bigtable could also test a version SQL would not expose; the version-limit
+refinement below removed that reason, and the other two still hold on their own.
 The existence predicate becomes the condition and the existing projection filter its true branch,
 so predicate evaluation never replaces the columns the residual operation needs.
 The service documents conditional row filters as non-atomic and potentially poor-performing; the
 user documentation presents the optimization as best effort rather than a latency guarantee.
+
+### Version-limit refinement (Issue #1841)
+
+**Every read that retains a family starts with `limit().cellsPerColumn(1)`.**
+The filter is `chain(cellsPerColumn(1), F)`, where `F` is the projection filter, or the conditional
+whose true branch is the projection filter when a cell predicate was pushed.
+The bounded scan, the point lookups and the FULL-cache loader take that one filter from
+`BigtableDynamicSource`, so all of them carry the limit.
+The converter still chooses the latest version, so the rows a query returns are unchanged; the
+server stops sending the versions the converter discarded.
+
+**The limit is the first link, ahead of the predicate.**
+In a chain, the conditional's predicate tests the output of the earlier links, so it tests the
+latest version of each column, which is the version SQL sees.
+For today's existence-only predicate the placement changes no answer: a column has a latest version
+exactly when it has any version.
+The placement keeps the predicate's input equal to the converter's input, so a later pushed
+predicate cannot match on a version the query never sees.
+Placing the limit inside the true branch would spare the same transfer and was declined for that
+reason.
+
+**The keys-only chain takes no limit.**
+It already returns one stripped cell per row through `cellsPerRow(1)`, so a version limit would
+add a link and change no response.
+Its wire shape stays pinned as before.
+
+**No other read path takes the limit.**
+The Change Streams scan reads mutations, not stored cell versions, and builds no row filter
+(ADR-0106).
+The DataStream scan source applies only the filter its user configures (ADR-0080).
+No table source mode reads history on purpose: a `MAP` family reads the latest version per
+qualifier, and the GoogleSQL `with_history` shape is rejected.
+The `with_history` follow-up ADR-0172 names would have to exempt its families from this limit.
+An aggregate family read through the catalog maps the latest aggregate cell, which is the cell the
+limit keeps.
 
 ## Evidence
 
@@ -198,6 +235,29 @@ file):
   emulator suite checks the returned rows and configured-range intersection.
   The gated suite verifies that real Bigtable accepts the condition/projection composition with SQL
   row-key bounds.
+- **The version limit removes the older versions from the response** — measured 2026-11-05
+  against `google-cloud-cli:591.0.0-emulators` and `google-cloud-bigtable` 2.86.0 with a
+  throwaway reader over 100 rows, each holding 2 qualifiers in each of 2 declared families and
+  1 undeclared family at 10 versions; versions 1 to 9 hold a 101-byte value and the newest
+  version a 102-byte one.
+  The declared-family projection returned 4,000 cells and 420,400 bytes of family, qualifier and
+  value before, and 400 cells and 42,400 bytes after; the conditional form with a qualifier
+  predicate returned the same pair.
+  Each response's first cell was the newest version.
+  `BigtableDynamicSourceTest` pins the chain for the scan and the FULL-cache loader, and
+  `BigtableTableSourceITCase` reads unchanged rows from multi-version tables through the scan with
+  and without a predicate and through every lookup mode.
+- **The service accepts the chain, aggregate families included** — run 2026-11-05 against
+  ephemeral real Bigtable instances: `BigtableCatalogRealGcpITCase` reads sum, min, max and HLL
+  aggregate families through the catalog, `BigtableAggregateTableRealGcpITCase` reads aggregate
+  state through `ROW` and `MAP` DDLs, and `BigtableTableSourceRealGcpITCase` reads the
+  condition/projection composition with SQL row-key bounds, all under the limit and all passing.
+  The emulator models no aggregate families, so this is the only evidence for them.
+- **The placement rests on the documented filter semantics**: the pinned `data.proto` (2.86.0)
+  says a chain processes the input row as `in row -> f(0) -> intermediate row -> f(1)`, and a
+  condition evaluates its predicate and its true filter on its input row.
+  So a condition placed after the limit sees only the latest version, in its predicate and in its
+  projection alike.
 - **Binary bounds are pinned without the service**: decoder golden vectors cover zero and non-UTF-8
   bytes and every rejected Base64 form; factory tests inspect exact `ByteStringRange` values; and
   the emulator suite reads binary keys through a bounded scan and every lookup cache mode.
@@ -214,12 +274,17 @@ file):
   the naive mapping the keys-only chain exists to replace.
 - **`HBaseSerde`'s row-of-nulls for a cell-less family** — erases the sink's own distinction
   between "family written as null" and "family written with null cells".
-- **Pushing `cellsPerColumn(1)`** — deferred, not rejected; see the decision.
+- **Pushing `cellsPerColumn(1)` in the projection change itself** — deferred so that a wire
+  regression would name either the projection or the version limit; adopted later by the
+  version-limit refinement.
+- **The version limit inside the conditional's true branch** — spares the same transfer, but
+  leaves the existence predicate testing every version; see the refinement.
 - **Pre-validating the DDL's families against the table** — a metadata read on every scan to
   soften an error the service reports precisely (ADR-0080's reasoning, unchanged by SQL).
 - **A `ScanOptionsMapper`** — ADR-0080 records the scan source has no options object, so there is
   nothing for a mapper to build; the factory reads the four keys inline.
-- **Raw cell-value filters** — unsafe across codec nulls, byte ordering and multiple cell versions.
+- **Raw cell-value filters** — unsafe across codec nulls and byte ordering (and, before the
+  version-limit refinement, multiple cell versions).
 - **Claiming a conditional existence filter is always faster** — the service explicitly warns that
   conditional filters can perform poorly.
 
