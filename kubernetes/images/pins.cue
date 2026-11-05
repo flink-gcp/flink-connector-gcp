@@ -15,12 +15,12 @@
 package images
 
 // First published by https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704; the current
-// GAR version was recreated by https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40916550826.
+// GAR version was recreated by https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42057831971.
 // Recheck availability: every GAR version becomes deletion-eligible after seven days.
 flink: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink@sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd"
 
-// Spanner recovery publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40916550826.
-lifecycleTools: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/lifecycle-tools@sha256:d487ae2e859d392ed7caf9d419c236e475cfaa519f0954a3da28af3badf9d362"
+// BigQuery uploader trial publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42057831971.
+lifecycleTools: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/lifecycle-tools@sha256:3ecd5d8572105d7502ac9ba71940627d6299ac7b63d8bf4fd69d919184471dfb"
 
-// Spanner recovery publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40916550826.
-smoke: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@sha256:ae4abbbead79b9950552cdb43ebf5ff05d18caa656484cf7f072300289e3b706"
+// BigQuery uploader trial publication: https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42057831971.
+smoke: "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/smoke@sha256:6d54d8e6886627cb18ee9a92ec1a51275eef23e50502a4cbe773db973ff65e67"

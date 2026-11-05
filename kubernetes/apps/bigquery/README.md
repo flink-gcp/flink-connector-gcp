@@ -150,7 +150,7 @@ The `eo-10`, `fl-10` and `fl-10-uploader` cells also name a fault that takes the
 | `<cell>-rescale-in` | Savepoint rescale in | JobManager | 2, 1 |
 
 A rescale stays inside the namespace's three-Pod quota, the one the estimate charges for every trial, so the estimate is the same; the three `eo-10` ones are preregistered as [Production dispatch](#production-dispatch) lists.
-That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation inside the recovery's 300-second deadline; in the deployed trial the refused request came while the job was restarting and delayed nothing measurable, as the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#taskmanager-replacement) record.
+That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation inside the recovery's 600-second deadline; in the deployed trial the refused request came while the job was restarting and delayed nothing measurable, as the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#taskmanager-replacement) record.
 Every trial now renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the mode's 30-minute-equivalent input above.
@@ -184,7 +184,7 @@ It does not separately price occupancy of the shared policy's extra Operator rep
 The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubernetes-engine/pricing) and [BigQuery on-demand pricing](https://cloud.google.com/bigquery/pricing), checked on 2026-09-20; the proposal records that date as the estimate's basis.
 It assumes on-demand query billing and takes no free-tier, Spot or commitment discount.
 The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
-The generated observation plan records one minute of warm-up, five minutes each of baseline observation, observation after the upgrade and observation after the failover, ten-minute startup/visibility limits and a five-minute limit per recovery.
+The generated observation plan records one minute of warm-up, five minutes each of baseline observation, observation after the upgrade and observation after the failover, ten-minute startup/visibility limits and a ten-minute limit per recovery.
 [Internal recovery execution](#internal-recovery-execution) describes the clocks the exercise enforces from them, and [production dispatch](#production-dispatch) is the only path that runs it.
 
 ## Table and row identity
@@ -612,7 +612,9 @@ A failed or ambiguous provisioning call prevents workload admission and retains 
 The BigQuery exercise shares the smoke exercise's UID-scoped mutations and checkpoint/savepoint proof checks, using the BigQuery namespace, state bucket, input sizes, and the JobManager and the initial phase's TaskManagers as its topology.
 Within 1200 seconds of the approved start, it requires input progress, a completed checkpoint and all of those Pods running before starting 60 seconds of warmup followed by a 300-second baseline window.
 It then requires a checkpoint triggered after that window, within 270 seconds of its end (two FILE_LOADS checkpoint intervals and a poll each), and fresh, unfinished input before applying the approved upgrade.
-Each recovery has its own 300-second deadline, capped by the absolute cleanup start.
+Each recovery has its own 600-second deadline, capped by the absolute cleanup start.
+It was 300 seconds until `bq2034-fl-10-uploader-a1`, whose upgraded TaskManagers waited 75 seconds for a new node and ran 207 seconds after the upgrade began, so the first checkpoint after the restore, up to a 120-second FILE_LOADS interval later, missed it; Bigtable's deadline had grown the same way.
+The source pauses with the job, so the longer deadline takes no input from the windows, but a recovery still spends wall-clock time: two recoveries that each ran near 600 seconds, after input that started late, could leave the row query less than its ten minutes before the cleanup start caps it.
 The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint.
 The proved upgrade then runs for a 300-second window before a single JobManager deletion, which must not restore behind the latest checkpoint triggered since that window opened.
 The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
