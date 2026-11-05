@@ -137,9 +137,11 @@ green; use the clean-state procedures in that guide for such changes.
 
 ## GitHub workflow
 
-- The four push/review skills are tracked copies from `flink-gcp/flink-gcp-dev-tools` at the
-  `dev_tools_revision` pin in `justfile`; `just skills-sync` updates only those directories.
-  They retain the original detailed procedures, examples and exceptions.
+- The four push/review skills and `scripts/central-portal.py` are tracked copies from
+  `flink-gcp/flink-gcp-dev-tools` at the `dev_tools_revision` pin in `justfile`; `just
+  dev-tools-sync` updates only those paths. Change `central-portal.py` upstream: the next sync
+  replaces a committed local edit.
+  The skills retain the original detailed procedures, examples and exceptions.
   Read `.agents/references/repository-guide.md` for this repository's verification commands and
   compatibility requirements; keep those bindings outside the managed skill directories.
 - Use one dedicated worktree per PR under `/tmp/worktrees/flink-connector-gcp/`; never switch the

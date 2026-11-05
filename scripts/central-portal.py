@@ -13,13 +13,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Capture staging IDs and publish or drop Central Portal deployments (ADR-0147).
+"""Capture staging IDs and publish or drop Central Portal deployments.
 
 `capture ID_FILE COMMAND ...` streams the command's output and saves each upload
 ID immediately, even when Maven subsequently fails validation. `publish ID ID`
 checks both deployments before publishing either and waits for both to be PUBLISHED.
-It also resumes the same IDs after an interrupted publish. `drop ID ...` attempts
-every requested deletion; PUBLISHING and PUBLISHED deployments cannot be dropped.
+It also resumes the same IDs after an interrupted publish or an expired wait.
+`drop ID ...` attempts every requested deletion; PUBLISHING and PUBLISHED
+deployments cannot be dropped.
+
+Shared from flink-gcp/flink-gcp-dev-tools. Consumers install this file at a pinned
+commit and keep its credentials, release workflow and workflow tests themselves.
+Change it upstream: the next sync replaces a committed local edit.
+Issue and run references below name the consumer that observed them.
 """
 
 from __future__ import annotations
@@ -40,7 +46,7 @@ from pathlib import Path
 ID_PATTERN = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 # central-publishing-maven-plugin 0.11.0, unchanged in 0.12.0's ArtifactUploaderImpl; also observed
-# in release runs 33323702321 and 39003308300.
+# in flink-connector-gcp release runs 33323702321 and 39003308300.
 UPLOAD = re.compile(
     r"\[INFO\] Uploaded bundle successfully, deployment name: .*?, deploymentId: "
     rf"({ID_PATTERN})\. Deployment will require manual publishing"
@@ -48,9 +54,12 @@ UPLOAD = re.compile(
 STATES = {"PENDING", "VALIDATING", "VALIDATED", "PUBLISHING", "PUBLISHED", "FAILED"}
 BASE_URL = "https://central.sonatype.com/api/v1/publisher"
 REQUEST_TIMEOUT = 30
-# v1.3.0's two deployments stayed PUBLISHING for about 2.5 hours (#1968), 1.1.0's for about
-# 14 minutes. A longer publication fails the release workflow's publish job, which
-# "Re-run failed jobs" resumes with the same IDs (#1980).
+# flink-connector-gcp v1.3.0's two deployments stayed PUBLISHING for about 2.5 hours
+# (flink-gcp/flink-connector-gcp#1968), 1.1.0's for about 14 minutes. Repo1 served
+# flink-datastream-protobuf v1.0.0 about 2 h 41 min after the Publish request
+# (flink-gcp/flink-datastream-protobuf#181). A longer publication fails the release
+# workflow's publish job, which "Re-run failed jobs" resumes with the same IDs
+# (flink-gcp/flink-connector-gcp#1980).
 WAIT_TIMEOUT = 3 * 60 * 60
 POLL_INTERVAL = 5
 
