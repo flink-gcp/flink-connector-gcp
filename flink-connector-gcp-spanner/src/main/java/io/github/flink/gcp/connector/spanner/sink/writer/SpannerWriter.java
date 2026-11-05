@@ -243,6 +243,14 @@ public class SpannerWriter<T> implements SinkWriter<T> {
             metrics.recordSkipped();
             return;
         }
+        // Ahead of the weights, the size estimate and the primary keys, which all read a table, its
+        // columns and its values: a queue mutation has none of them, and failing inside that
+        // accounting would hand the handler a message that says nothing about queues.
+        String unsupported = unsupportedOperation(mutation);
+        if (unsupported != null) {
+            route(mutation, unsupported, null);
+            return;
+        }
         PendingMutation pending;
         try {
             pending =
@@ -356,8 +364,46 @@ public class SpannerWriter<T> implements SinkWriter<T> {
         }
     }
 
+    /**
+     * Returns why the sink refuses the mutation's operation, or {@code null} for a table operation
+     * it writes.
+     *
+     * <p>The queue operations {@code SEND} and {@code ACK} are refused because the sink writes
+     * tables only: it has never been run against a queue, and their mutations carry no table,
+     * columns or values for the batch accounting to read. An operation the client library adds
+     * later is refused for the same reason: nothing here knows what it addresses.
+     */
+    @Nullable
+    private static String unsupportedOperation(Mutation mutation) {
+        Mutation.Op operation = mutation.getOperation();
+        String target;
+        switch (operation) {
+            case INSERT:
+            case UPDATE:
+            case INSERT_OR_UPDATE:
+            case REPLACE:
+            case DELETE:
+                return null;
+            case SEND:
+            case ACK:
+                target =
+                        "the queue operation "
+                                + operation
+                                + " on queue '"
+                                + mutation.getQueue()
+                                + "'";
+                break;
+            default:
+                target = "the mutation operation " + operation;
+                break;
+        }
+        return "The Spanner sink writes tables only and does not support "
+                + target
+                + ". Build an insert, update, insertOrUpdate, replace or delete mutation instead.";
+    }
+
     /** Hands one record to the failure handler, counting it on the way. */
-    private void route(@Nullable Mutation mutation, String message, Throwable cause)
+    private void route(@Nullable Mutation mutation, String message, @Nullable Throwable cause)
             throws IOException {
         metrics.mutationFailed();
         failedMutationHandler.handle(FailedMutation.of(database, mutation, message, cause));

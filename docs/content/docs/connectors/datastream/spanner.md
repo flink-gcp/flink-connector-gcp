@@ -416,6 +416,13 @@ Returning `null` from the serializer **skips** the record: it is written nowhere
 never reaches the failure handler, and is counted by `recordsSkipped`. Throwing marks the record as
 failed and routes it instead. This is the same contract every connector here follows.
 
+### Supported mutation operations
+
+The sink writes tables only, so the serializer's mutation must be an `insert`, `update`, `insertOrUpdate`, `replace` or `delete`.
+The queue operations `SEND` and `ACK`, built with `Mutation.newSendBuilder` and `Mutation.newAckBuilder`, are refused: the sink has never been run against a queue, and their mutations carry no table, columns or values for the writer's batch limits to measure.
+The writer refuses such a mutation before it reaches a request and routes it to the failure handler, with a message that names the operation and the queue.
+An operation a later client library adds is refused the same way.
+
 ## Delivery guarantee, and why the mutation operation is your decision
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)

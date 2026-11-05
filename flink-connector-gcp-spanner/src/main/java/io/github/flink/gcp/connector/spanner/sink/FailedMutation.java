@@ -114,7 +114,7 @@ public final class FailedMutation implements FailedElement {
 
     /**
      * Returns the table the mutation applies to, or {@code null} when the record could not be
-     * serialized.
+     * serialized or the mutation is a queue operation, which names a queue and no table.
      */
     @Nullable
     public String getTable() {
@@ -128,11 +128,12 @@ public final class FailedMutation implements FailedElement {
 
     /**
      * Returns the destination as {@code projects/P/instances/I/databases/D/tables/T}, or without
-     * the table segment when the record could not be serialized.
+     * the table segment when the record could not be serialized or the mutation names no table.
      */
     @Override
     public String describeDestination() {
-        return mutation == null ? database.toString() : database + "/tables/" + mutation.getTable();
+        String table = getTable();
+        return table == null ? database.toString() : database + "/tables/" + table;
     }
 
     /**

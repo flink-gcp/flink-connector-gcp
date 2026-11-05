@@ -22,10 +22,12 @@ import org.apache.flink.api.connector.sink2.SinkWriter;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ErrorCode;
+import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerExceptionFactory;
+import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
@@ -103,6 +105,60 @@ class SpannerWriterTest {
         assertThat(metrics.counterValue("numRecordsSendErrors")).isEqualTo(1);
         // No status to classify, so nothing lands in the error-class breakdown.
         assertThat(metrics.hasMetric("errorClass", "UNCLASSIFIED", "errors")).isFalse();
+    }
+
+    @Test
+    void aQueueSendIsRefusedWithAMessageThatNamesIt() throws Exception {
+        assertQueueMutationIsRefused(
+                Mutation.newSendBuilder("Events")
+                        .setKey(Key.of(7L))
+                        .setPayload(Value.string("payload"))
+                        .build(),
+                "SEND");
+    }
+
+    @Test
+    void aQueueAckIsRefusedWithAMessageThatNamesIt() throws Exception {
+        assertQueueMutationIsRefused(
+                Mutation.newAckBuilder("Events").setKey(Key.of(7L)).build(), "ACK");
+    }
+
+    /**
+     * Writes the queue mutation and then a table row under {@link OrderingMode#PER_KEY}, the mode
+     * in which every table-based inspector — weights, size estimate and primary keys — reads a
+     * mutation.
+     */
+    private void assertQueueMutationIsRefused(Mutation queueMutation, String operation)
+            throws Exception {
+        access.withPrimaryKeys(ORDERS_KEY);
+        RecordingHandler handler = new RecordingHandler();
+        SinkWriter<String> writer =
+                writer(
+                        (element, context) ->
+                                element.equals("queue")
+                                        ? queueMutation
+                                        : keyed().serialize(element, context),
+                        perKey(),
+                        handler);
+
+        write(writer, "queue", "1:a");
+        writer.flush(false);
+
+        assertThat(handler.handled).hasSize(1);
+        FailedMutation failure = handler.handled.get(0);
+        assertThat(failure.getMutation()).isSameAs(queueMutation);
+        assertThat(failure.getErrorMessage())
+                .contains("writes tables only")
+                .contains("queue operation " + operation)
+                .contains("'Events'");
+        // Refused before any accounting ran, not by an exception thrown inside it.
+        assertThat(failure.getCause()).isNull();
+        assertThat(failure.getTable()).isNull();
+        assertThat(failure.describeDestination()).isEqualTo(DATABASE.toString());
+        assertThat(metrics.counterValue("numRecordsSendErrors")).isEqualTo(1);
+        // The refusal neither reached the request nor made the writer read the keys again.
+        assertThat(sentNames()).containsExactly(List.of("1:a"));
+        assertThat(access.primaryKeyReads()).hasSize(1);
     }
 
     // ---------------------------------------------------------------- batching

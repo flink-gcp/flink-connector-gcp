@@ -20,6 +20,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The table sink writes no metadata** (`docs/adr/0138`): a mutation carries only declared
   column values, so there is no out-of-band per-record field for a `WritableMetadata` column to
   write, and `SpannerDynamicSink` stays a plain `DynamicTableSink`.
+- **The sink writes table operations only** (#2016). `SpannerWriter.unsupportedOperation` routes a
+  queue `SEND`/`ACK`, or any `Mutation.Op` added later, before the cell weights, the size estimate
+  or the primary keys read it — those all assume a table, columns and values. Supporting queues
+  starts from a real-service measurement of whether `BatchWrite` accepts them, not from widening
+  that switch.
 - **One mutation per `MutationGroup`.** The group is the unit `BatchWriteResponse` reports a
   status for; anything else gives up per-record failure routing, which is the whole reason this
   sink uses `batchWriteAtLeastOnce` rather than a commit. Measured, not assumed: every rejection
