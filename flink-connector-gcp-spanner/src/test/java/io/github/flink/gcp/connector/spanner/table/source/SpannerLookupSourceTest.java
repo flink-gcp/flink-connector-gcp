@@ -22,13 +22,17 @@ import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource.LookupContext;
 import org.apache.flink.table.connector.source.LookupTableSource.LookupRuntimeProvider;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
+import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger;
+import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
@@ -57,9 +61,11 @@ import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
+import com.google.cloud.spanner.TimestampBound;
 import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.ClosedEmulator;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
@@ -86,6 +92,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -408,6 +415,18 @@ class SpannerLookupSourceTest {
                                 "lookup.partial-cache.expire-after-write",
                                 "1 min"))
                 .isNotEqualTo(base);
+        String[][] fullKnobs = {
+            {"lookup.full-cache.reload-strategy", "timed"},
+            {"lookup.full-cache.periodic-reload.interval", "1 h"},
+            {"lookup.full-cache.periodic-reload.schedule-mode", "FIXED_RATE"},
+            {"lookup.full-cache.timed-reload.iso-time", "10:15"},
+            {"lookup.full-cache.timed-reload.interval-in-days", "2"}
+        };
+        for (String[] knob : fullKnobs) {
+            assertThat(configOf("lookup.partial-cache.max-rows", "10", knob[0], knob[1]))
+                    .as(knob[0])
+                    .isNotEqualTo(base);
+        }
     }
 
     @Test
@@ -467,10 +486,158 @@ class SpannerLookupSourceTest {
     }
 
     @Test
-    void rejectsFullCacheAndNegativeRetryBudgetsDuringPlanning() {
-        assertThatThrownBy(() -> configOf("lookup.cache", "full"))
+    void fullCacheLoadsThroughTheBoundedScanOnAnyTopLevelScalarKey() throws Exception {
+        for (int[][] keys : new int[][][] {{{2}}, {{0}}, {{2}, {1}, {0}}}) {
+            FullCachingLookupProvider provider =
+                    (FullCachingLookupProvider)
+                            provider(
+                                    config(
+                                            "lookup.cache",
+                                            "full",
+                                            "lookup.full-cache.periodic-reload.interval",
+                                            "1 h",
+                                            "scan.data-boost-enabled",
+                                            "true",
+                                            "scan.timestamp-bound.exact-staleness",
+                                            "10 s"),
+                                    keys);
+
+            assertThat(provider.getCacheReloadTrigger())
+                    .isInstanceOf(PeriodicCacheReloadTrigger.class);
+            SpannerFullCacheInputFormat format =
+                    (SpannerFullCacheInputFormat)
+                            ((InputFormatProvider) provider.getScanRuntimeProvider())
+                                    .createInputFormat();
+            SpannerSourceConfig<RowData> scan = format.getConfig();
+            assertThat(scan.getReadOperation().getTable()).isEqualTo("people");
+            assertThat(scan.getReadOperation().getColumns())
+                    .containsExactly("region", "account", "name");
+            assertThat(scan.isDataBoostEnabled()).isTrue();
+            assertThat(scan.getTimestampBound())
+                    .isEqualTo(
+                            TimestampBound.ofExactStaleness(10_000_000_000L, TimeUnit.NANOSECONDS));
+        }
+        assertThat(
+                        ((FullCachingLookupProvider)
+                                        provider(
+                                                config(
+                                                        "lookup.cache",
+                                                        "full",
+                                                        "lookup.full-cache.reload-strategy",
+                                                        "timed",
+                                                        "lookup.full-cache.timed-reload.iso-time",
+                                                        "10:15"),
+                                                new int[][] {{2}}))
+                                .getCacheReloadTrigger())
+                .isInstanceOf(TimedCacheReloadTrigger.class);
+    }
+
+    @Test
+    void fullCacheRefusesKeysItsIndexWouldCompareDifferentlyFromSql() {
+        DataType physical =
+                DataTypes.ROW(
+                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()),
+                        DataTypes.FIELD("score", DataTypes.DOUBLE()),
+                        DataTypes.FIELD("ratio", DataTypes.FLOAT()),
+                        DataTypes.FIELD("tags", DataTypes.ARRAY(DataTypes.STRING())),
+                        DataTypes.FIELD("payload", DataTypes.BYTES()));
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        (RowType) physical.getLogicalType(),
+                        new int[] {0},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        SpannerDynamicSource source =
+                new SpannerDynamicSource(
+                        schema,
+                        DatabaseDestination.of("p", "i", "d"),
+                        "scores",
+                        physical,
+                        config(
+                                "lookup.cache",
+                                "full",
+                                "lookup.full-cache.periodic-reload.interval",
+                                "1 h"));
+
+        assertThat(source.getLookupRuntimeProvider(context(new int[][] {{4}})))
+                .isInstanceOf(FullCachingLookupProvider.class);
+        for (String column : new String[] {"score", "ratio", "tags"}) {
+            int index = ((RowType) physical.getLogicalType()).getFieldIndex(column);
+            assertThatThrownBy(
+                            () ->
+                                    source.getLookupRuntimeProvider(
+                                            context(new int[][] {{0}, {index}})))
+                    .as(column)
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining("other than FLOAT and DOUBLE")
+                    .hasMessageContaining("'" + column + "'");
+        }
+        assertThatThrownBy(() -> source.getLookupRuntimeProvider(context(new int[][] {{3, 0}})))
                 .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("does not support FULL");
+                .hasMessageContaining("nested key path");
+    }
+
+    @Test
+    void fullCacheRefusesAsyncLookupsAndAFixedReadTimestampDuringPlanning() {
+        assertThatThrownBy(
+                        () ->
+                                configOf(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "1 h",
+                                        "lookup.async",
+                                        "true"))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'lookup.async' cannot be true when 'lookup.cache' is FULL");
+        assertThatThrownBy(
+                        () ->
+                                configOf(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "999 micros"))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "lookup.full-cache.periodic-reload.interval must be at least 1"
+                                + " millisecond");
+        configOf("lookup.cache", "full", "lookup.full-cache.periodic-reload.interval", "1 ms");
+        assertThatThrownBy(() -> configOf("lookup.cache", "full"))
+                .as("Flink's own trigger validation runs while the DDL is planned")
+                .hasMessageContaining("lookup.full-cache.periodic-reload.interval");
+        assertThatThrownBy(
+                        () ->
+                                provider(
+                                        config(
+                                                "lookup.cache",
+                                                "full",
+                                                "lookup.full-cache.periodic-reload.interval",
+                                                "1 h",
+                                                "scan.timestamp-bound.read-timestamp",
+                                                "2026-01-01T00:00:00Z"),
+                                        new int[][] {{2}}))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'scan.timestamp-bound.read-timestamp' cannot be set")
+                .hasMessageContaining("'scan.timestamp-bound.exact-staleness'");
+        // Only the lookup is refused: a scan of the same table may still read a fixed snapshot.
+        new SpannerDynamicSource(
+                SCHEMA,
+                DatabaseDestination.of("p", "i", "d"),
+                "people",
+                PHYSICAL,
+                config(
+                        "lookup.cache",
+                        "full",
+                        "lookup.full-cache.periodic-reload.interval",
+                        "1 h",
+                        "scan.timestamp-bound.read-timestamp",
+                        "2026-01-01T00:00:00Z"));
+    }
+
+    @Test
+    void rejectsNegativeRetryBudgetsDuringPlanning() {
         assertThatThrownBy(() -> configOf("lookup.max-retries", "-1"))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("zero or greater");

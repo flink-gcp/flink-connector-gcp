@@ -298,13 +298,38 @@ The following example uses an `order_events` input with `event_id`, `order_id`, 
 {{< sql-snippet file="flink/SpannerTableReference.sql" tag="lookup-equality" >}}
 
 `lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
-Flink's standard `lookup.cache = NONE` and `PARTIAL` modes are supported; `FULL` is rejected because it would require a scan-backed cache with different snapshot and refresh semantics.
+Flink's standard `lookup.cache` modes `NONE`, `PARTIAL`, and `FULL` are supported.
 The standard partial-cache expiry, size, and missing-key options apply unchanged.
 The cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same primary key have separate entries.
 An additional equality that fails follows the configured missing-key cache policy.
 `lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
 Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this option is what buys a second attempt at the other two.
 `RESOURCE_EXHAUSTED` is not retried here because the client already retries it whenever the server asks for a delay, and waits that delay; re-issuing the read at once would spend the budget against the wait rather than observe it.
+
+### Full lookup cache
+
+`lookup.cache = FULL` loads the whole table into memory through the bounded scan and answers every lookup from that copy, so a cache hit costs no Spanner read.
+A load is one batch read: it plans the scan's partitions in a new read-only transaction at the `scan.timestamp-bound.*` bound, so all rows of one load come from one snapshot, and the next load reads a newer one.
+The load applies everything a bounded scan of the same table would: the projection, pushed filters, `scan.index`, the partition hints, `scan.data-boost-enabled`, and `scan.rpc-priority`.
+A `FULL` lookup join is rejected at planning when `scan.timestamp-bound.read-timestamp` is set, because a fixed timestamp would reload the same rows until it falls outside the database's version retention period and the load fails; a scan of the same table still accepts the option, and `scan.timestamp-bound.exact-staleness` is accepted for both.
+A load reads its partitions one after another at its snapshot's timestamp, so a load that runs longer than the version retention period fails on the partitions it reaches after that.
+
+Flink indexes the loaded rows by the join's lookup keys, so the keys need not include the primary key, and a key that matches several rows joins all of them.
+Each key must be a top-level physical column of a scalar type other than `FLOAT` and `DOUBLE`.
+The cache compares Flink values with Java equality, which tells `-0.0` from `0.0` and matches `NaN` to itself, unlike SQL `=`; `ARRAY` keys are rejected because their binary and generic Flink forms do not compare equal.
+A row with a null key value is never matched, as SQL equality requires.
+A UUID column loads as its lowercase canonical string and matches as a string, so a probe in upper case, which a primary-key point read under `NONE` or `PARTIAL` accepts, finds no row under `FULL`.
+
+`lookup.full-cache.reload-strategy` selects `PERIODIC`, which needs `lookup.full-cache.periodic-reload.interval`, or `TIMED`, which needs `lookup.full-cache.timed-reload.iso-time`.
+`lookup.async = true` is rejected with `FULL` because Flink has no asynchronous full-cache provider.
+`lookup.max-retries` does not apply to a load; the Spanner client's own retry settings cover the batch read, as they do for a bounded scan.
+
+The cost moves from lookups to loads.
+Each TaskManager holds one copy of the table for each lookup join that uses it, shared by that join's subtasks, and reads the whole table on every load; while a reload builds its new copy, the old copy keeps serving lookups, so a reload briefly needs memory for both.
+The first load blocks lookups until it completes.
+If a load fails, Flink keeps no partial result and fails the lookups that follow, so the job restarts and loads again.
+`FULL` pays off when the table is small enough to hold twice per TaskManager and is joined far more often than it changes; for a large table, or one that must be read fresh on each lookup, `PARTIAL` reads only the keys the job asks for.
+The loader runs with no Flink metric group, so `client-metrics.export-to-flink` reports nothing for it, while Flink's own cache metrics still report the load count and the latest load time.
 
 UUID, JSON, protocol buffers, and enums share carrier types with ordinary columns, so the DDL marks them explicitly:
 
@@ -410,7 +435,7 @@ The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#
 | `table` | **required** | Table receiving or supplying rows; one canonical quoted or unquoted identifier component when `named-schema` is set |
 | `emulator-endpoint` | *unset ⇒ the real service* | `host:port` of a Spanner emulator; setting it also stops credential discovery. Parsed when a statement over the table is planned — not at `CREATE TABLE`, which registers the options without calling the connector — so a malformed value fails on the client for every direction, whether the table is written to, scanned, watched as a Change Stream, or joined as a lookup dimension. The rejection names `emulator-endpoint`, the key written in the DDL |
 | `service-account-key-file` | *unset ⇒ ADC for the real service* | Service-account JSON key-file path shared by the sink, bounded scan, Change Streams scan, and lookup paths; rejected with `emulator-endpoint` |
-| `client-metrics.export-to-flink` | `false` | `exportClientMetricsToFlink(...)`: reports the client's own per-method RPC metrics as `rpcMethod.METHOD.*` on the metric group of the sink writer, the scan's enumerator and readers, or the lookup function; see [Client-library metrics]({{< relref "docs/connectors/datastream/spanner" >}}#client-library-metrics). Against the emulator they stay at zero |
+| `client-metrics.export-to-flink` | `false` | `exportClientMetricsToFlink(...)`: reports the client's own per-method RPC metrics as `rpcMethod.METHOD.*` on the metric group of the sink writer, the scan's enumerator and readers, or the lookup function; a `FULL` lookup cache's loader has no metric group and reports nothing. See [Client-library metrics]({{< relref "docs/connectors/datastream/spanner" >}}#client-library-metrics). Against the emulator they stay at zero |
 | `client-metrics.export-to-cloud-monitoring` | `true` | `exportClientMetricsToCloudMonitoring(...)`: whether the same clients take part in the client's built-in export to Cloud Monitoring, a process-wide exporter. `false` keeps them out of it; it does not stop an exporter another client started |
 | `json-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to Spanner JSON |
 | `uuid-field-paths` | empty | Semicolon-separated physical field paths whose `STRING` carriers map to native Spanner UUID |
@@ -443,12 +468,17 @@ The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#
 | `scan.timestamp-bound.exact-staleness` | *unset ⇒ strong read* | Exact age of the snapshot; mutually exclusive with read timestamp |
 | `scan.parallelism` | *unset ⇒ operator parallelism* | Flink's standard source parallelism override |
 | `lookup.async` | `false` | Use asynchronous `readRowAsync` point reads instead of synchronous `readRow` |
-| `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
+| `lookup.cache` | `NONE` | Flink's standard lookup cache mode: `NONE`, `PARTIAL`, or `FULL`. See [Full lookup cache](#full-lookup-cache) |
 | `lookup.max-retries` | `3` | Retries after the initial point read, for transient failures only |
 | `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
 | `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | `true` | Whether partial cache records lookup misses |
 | `lookup.partial-cache.max-rows` | *unset* | Maximum rows retained by the partial cache. The source rejects negative values at planning, regardless of cache mode |
+| `lookup.full-cache.reload-strategy` | `PERIODIC` | Flink's standard full-cache reload strategy: `PERIODIC` or `TIMED` |
+| `lookup.full-cache.periodic-reload.interval` | *unset* | Interval between periodic full-cache loads; required by `PERIODIC`, and at least 1 ms, because Flink schedules it in whole milliseconds |
+| `lookup.full-cache.periodic-reload.schedule-mode` | `FIXED_DELAY` | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
+| `lookup.full-cache.timed-reload.iso-time` | *unset* | Local ISO time of a timed full-cache load; required by `TIMED` |
+| `lookup.full-cache.timed-reload.interval-in-days` | `1` | Days between timed full-cache loads |
 | `sink.buffer-flush.max-cells` | `5000` | Maps to `maxBatchCells` |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations` |
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |

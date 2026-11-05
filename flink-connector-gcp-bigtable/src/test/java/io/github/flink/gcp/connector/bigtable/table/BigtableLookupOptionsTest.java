@@ -145,6 +145,22 @@ class BigtableLookupOptionsTest {
     }
 
     @Test
+    void rejectsAPeriodicReloadIntervalBelowOneMillisecondWhileTheDdlIsPlanned() {
+        assertThatThrownBy(
+                        () ->
+                                options(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "999 micros"))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(
+                        "lookup.full-cache.periodic-reload.interval must be at least 1"
+                                + " millisecond");
+        options("lookup.cache", "full", "lookup.full-cache.periodic-reload.interval", "1 ms");
+    }
+
+    @Test
     void rejectsANegativeRetryCount() {
         assertThatThrownBy(() -> options("lookup.max-retries", "-1"))
                 .isInstanceOf(ValidationException.class)

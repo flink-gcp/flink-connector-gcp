@@ -17,11 +17,12 @@ limitations under the License.
 # ADR-0095: The Bigtable lookup source is row-key-only, and Flink owns its caches
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-10-04
+- Date: 2026-08-11, revised 2026-10-04 and 2026-11-05
 - Issues: [#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460),
   [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217)),
   [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643),
+  [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845),
   [#248](https://github.com/flink-gcp/flink-connector-gcp/issues/248)
 - Modules: bigtable, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
@@ -67,7 +68,10 @@ Every standard `LookupOptions` cache key is imported unchanged. PARTIAL uses
 accepts an `InputFormatProvider` or `SourceFunctionProvider`, not the connector's modern
 `SourceProvider`, so FULL has a single-split bounded `InputFormat` loader over the same projected
 Bigtable query. `lookup.async = true` with FULL is rejected because Flink exposes no asynchronous
-full-cache provider.
+full-cache provider. The periodic reload interval must be at least one millisecond
+(`OptionChecks.checkAtLeastOneMilli`, ADR-0068): Flink's trigger checks only that it is positive and
+then schedules it in whole milliseconds, so a shorter interval would plan and then fail as the job
+starts (issue #1845, which found the gap on Spanner).
 
 Point lookups make one exception to the connector-wide rule that client libraries own retries.
 `lookup.max-retries`, a standard Flink option defaulting to 3, retries only

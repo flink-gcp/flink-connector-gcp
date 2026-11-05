@@ -44,12 +44,20 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 import static io.github.flink.gcp.connector.spanner.table.UnboundedQueryRows.firstRows;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** End-to-end bounded SQL scan coverage against both emulator dialects. */
 class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
@@ -559,6 +567,163 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                                     table,
                                     "SELECT f.id, s.name FROM expected_names AS f JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id AND f.expected = s.name"))
                     .containsExactlyInAnyOrder(Row.of(1L, "Ada"), Row.of(1L, "Ada"));
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void aFullCacheJoinsOnPrimaryAndNonPrimaryKeysInBothDialects(Dialect dialect) throws Exception {
+        DatabaseDestination database = lookupDatabase(dialect);
+        client(database)
+                .write(
+                        List.of(
+                                lookupRecord(1L, 7L, "Ada"),
+                                lookupRecord(2L, 8L, "Bob"),
+                                lookupRecord(3L, 9L, "Ada")));
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(fullCacheLookupTableDdl(database, dialect, false, "1 h"));
+        table.executeSql(
+                "CREATE TEMPORARY VIEW facts AS SELECT id, tenant, PROCTIME() AS t FROM (VALUES (CAST(1 AS BIGINT), CAST(7 AS BIGINT)), (CAST(2 AS BIGINT), CAST(8 AS BIGINT)), (CAST(2 AS BIGINT), CAST(9 AS BIGINT))) AS v(id,tenant)");
+        table.executeSql(
+                "CREATE TEMPORARY VIEW names AS SELECT name, PROCTIME() AS t FROM (VALUES ('Ada'), ('Zed')) AS v(name)");
+
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT f.id, f.tenant, s.name FROM facts AS f LEFT JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id"))
+                .containsExactlyInAnyOrder(
+                        Row.of(1L, 7L, "Ada"), Row.of(2L, 8L, "Bob"), Row.of(2L, 9L, null));
+        // No primary-key column in the join: the cache indexes every loaded row by name and
+        // keeps both rows that share one.
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT n.name, s.id FROM names AS n LEFT JOIN lookup_source FOR SYSTEM_TIME AS OF n.t AS s ON n.name = s.name"))
+                .containsExactlyInAnyOrder(
+                        Row.of("Ada", 1L), Row.of("Ada", 3L), Row.of("Zed", null));
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT n.name, s.id FROM names AS n JOIN lookup_source FOR SYSTEM_TIME AS OF n.t AS s ON n.name = s.name AND s.tenant = 9"))
+                .containsExactly(Row.of("Ada", 3L));
+    }
+
+    @Test
+    void aPeriodicFullCacheReloadObservesAChangedRow() throws Exception {
+        Dialect dialect = Dialect.GOOGLE_STANDARD_SQL;
+        DatabaseDestination database = lookupDatabase(dialect);
+        client(database).write(List.of(lookupRecord(1L, 7L, "Ada")));
+        TableEnvironment table =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(fullCacheLookupTableDdl(database, dialect, false, "1 s"));
+        table.executeSql(
+                "CREATE TABLE ticks (id BIGINT, tenant AS CAST(7 AS BIGINT), t AS PROCTIME())"
+                        + " WITH ('connector'='datagen', 'rows-per-second'='20',"
+                        + " 'fields.id.min'='1', 'fields.id.max'='2')");
+        List<Row> seen = Collections.synchronizedList(new ArrayList<>());
+
+        try (CloseableIterator<Row> rows =
+                table.executeSql(
+                                "SELECT k.id, s.name FROM ticks AS k JOIN lookup_source FOR SYSTEM_TIME AS OF k.t AS s ON k.id = s.id AND k.tenant = s.tenant")
+                        .collect()) {
+            awaitRow(rows, row -> "Ada".equals(row.getField(1)), seen);
+            client(database).write(List.of(lookupRecord(1L, 7L, "Grace")));
+            awaitRow(rows, row -> "Grace".equals(row.getField(1)), seen);
+        }
+    }
+
+    @Test
+    void aFullCacheRefusesAsynchronousLookupsWhileTheJoinIsPlanned() throws Exception {
+        Dialect dialect = Dialect.GOOGLE_STANDARD_SQL;
+        DatabaseDestination database = lookupDatabase(dialect);
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.executeSql(fullCacheLookupTableDdl(database, dialect, true, "1 h"));
+        table.executeSql(
+                "CREATE TEMPORARY VIEW facts AS SELECT id, tenant, PROCTIME() AS t FROM (VALUES (CAST(1 AS BIGINT), CAST(7 AS BIGINT))) AS v(id,tenant)");
+
+        assertThatThrownBy(
+                        () ->
+                                table.explainSql(
+                                        "SELECT f.id, s.name FROM facts AS f JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id"))
+                .hasStackTraceContaining(
+                        "'lookup.async' cannot be true when 'lookup.cache' is FULL");
+    }
+
+    private static Mutation lookupRecord(long id, long tenant, String name) {
+        return Mutation.newInsertOrUpdateBuilder("lookup_records")
+                .set("id")
+                .to(id)
+                .set("tenant")
+                .to(tenant)
+                .set("name")
+                .to(name)
+                .build();
+    }
+
+    private static String fullCacheLookupTableDdl(
+            DatabaseDestination database, Dialect dialect, boolean async, String reloadInterval) {
+        String ddl = lookupTableDdl(database, dialect, async);
+        String full =
+                ddl.replace(
+                        "'connector' = 'spanner',",
+                        "'connector' = 'spanner', 'lookup.cache' = 'FULL',"
+                                + " 'lookup.full-cache.periodic-reload.interval' = '"
+                                + reloadInterval
+                                + "',");
+        // Without FULL the reload test would pass on uncached point reads.
+        assertThat(full).as("the FULL options reached the DDL").isNotEqualTo(ddl);
+        return full;
+    }
+
+    /**
+     * Reads an unbounded query's rows until one matches, within {@link #ROW_DEADLINE}. The iterator
+     * stays open for the caller's next wait; the caller closes it, which cancels the job and ends a
+     * read still blocked past the deadline.
+     */
+    private static void awaitRow(CloseableIterator<Row> rows, Predicate<Row> match, List<Row> seen)
+            throws Exception {
+        ExecutorService reader =
+                Executors.newSingleThreadExecutor(
+                        runnable -> {
+                            Thread thread = new Thread(runnable, "it-await-row");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+        try {
+            Future<?> reading =
+                    reader.submit(
+                            () -> {
+                                while (rows.hasNext()) {
+                                    Row row = rows.next();
+                                    seen.add(row);
+                                    if (match.test(row)) {
+                                        return;
+                                    }
+                                }
+                                throw new AssertionError(
+                                        "The query ended after "
+                                                + seen.size()
+                                                + " rows without a matching row");
+                            });
+            try {
+                reading.get(ROW_DEADLINE.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException e) {
+                throw new AssertionError(
+                        "No matching row within "
+                                + ROW_DEADLINE
+                                + " after "
+                                + seen.size()
+                                + " rows; the last was "
+                                + (seen.isEmpty() ? "none" : seen.get(seen.size() - 1)),
+                        e);
+            }
+        } finally {
+            reader.shutdownNow();
         }
     }
 

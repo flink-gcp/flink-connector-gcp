@@ -31,6 +31,8 @@ import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCach
 import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger.ScheduleMode;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
+
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
@@ -103,6 +105,19 @@ public final class BigtableLookupConfig implements Serializable {
         if (cacheType == LookupCacheType.PARTIAL) {
             createPartialCache();
         } else if (cacheType == LookupCacheType.FULL) {
+            if (fullReloadStrategy == ReloadStrategy.PERIODIC
+                    && fullPeriodicReloadInterval != null) {
+                // Flink's trigger checks only that the interval is positive and then schedules it
+                // in whole milliseconds, so a sub-millisecond interval would plan and then fail as
+                // the job starts.
+                try {
+                    OptionChecks.checkAtLeastOneMilli(
+                            fullPeriodicReloadInterval,
+                            LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL.key());
+                } catch (IllegalArgumentException e) {
+                    throw new ValidationException(e.getMessage(), e);
+                }
+            }
             createFullReloadTrigger();
         }
     }

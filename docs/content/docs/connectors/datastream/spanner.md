@@ -39,7 +39,7 @@ The connector serializes only the path into the job graph and reads the file in 
 The sink reads it on each TaskManager when a writer starts.
 The bounded source reads it on the JobManager when a fresh or restored enumerator starts and on each TaskManager when a reader starts.
 The Change Streams source reads it on the JobManager when its coordinator initializes and on each TaskManager when a reader opens.
-Table lookup functions read it on their TaskManager when the synchronous or asynchronous lookup function opens, including lookup providers with a partial cache.
+Table lookup functions read it on their TaskManager when the synchronous or asynchronous lookup function opens, including lookup providers with a partial cache; a full lookup cache reads it on the TaskManager at the start of every load.
 A deployment must therefore mount the same configured path in every applicable JobManager and TaskManager container.
 Restart and restore load the mounted file again instead of retaining credential material in checkpointed state.
 

@@ -23,13 +23,16 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
@@ -39,6 +42,7 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.Timestamp;
@@ -54,6 +58,7 @@ import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
+import io.github.flink.gcp.connector.spanner.source.batch.SpannerBatchReadSource;
 import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
 import io.github.flink.gcp.connector.spanner.table.SpannerLookupConfig;
@@ -69,7 +74,10 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
-/** A bounded table scan and primary-key point-lookup source for Spanner tables. */
+/**
+ * A bounded table scan and lookup source for Spanner tables: primary-key point reads, or Flink's
+ * full cache loaded through the bounded scan.
+ */
 @Internal
 public final class SpannerDynamicSource
         implements ScanTableSource,
@@ -251,6 +259,16 @@ public final class SpannerDynamicSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         TypeInformation<RowData> producedType = context.createTypeInformation(producedDataType);
+        Source<RowData, ?, ?> source = scanBuilder(producedType).build();
+        return SourceProvider.of(
+                lineage == null ? source : lineage.source(source, producedType), parallelism);
+    }
+
+    /**
+     * The bounded scan's builder, shared by the scan and the full lookup cache's loader so that a
+     * full-cache load reads exactly what a scan of the same table would.
+     */
+    private SpannerSourceBuilder<RowData> scanBuilder(TypeInformation<RowData> producedType) {
         SpannerSourceBuilder<RowData> builder =
                 SpannerSource.<RowData>builder()
                         .database(database)
@@ -290,9 +308,7 @@ public final class SpannerDynamicSource
         }
         clientMetrics.applyTo(
                 builder::exportClientMetricsToFlink, builder::exportClientMetricsToCloudMonitoring);
-        Source<RowData, ?, ?> source = builder.build();
-        return SourceProvider.of(
-                lineage == null ? source : lineage.source(source, producedType), parallelism);
+        return builder;
     }
 
     private SpannerReadOperation readOperation() {
@@ -350,6 +366,9 @@ public final class SpannerDynamicSource
 
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
+        if (lookupConfig.getCacheType() == LookupCacheType.FULL) {
+            return fullCachingProvider(context);
+        }
         LookupKeyFilter equalityKeys = lookupKeys(context);
         int[] keyPositions = equalityKeys.addressingPositions();
         if (equalityKeys.hasAdditionalKeys()) {
@@ -395,6 +414,86 @@ public final class SpannerDynamicSource
                 ? PartialCachingLookupProvider.of(
                         function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                 : LookupFunctionProvider.of(function);
+    }
+
+    /**
+     * Flink's full cache over the bounded scan.
+     *
+     * <p>Flink indexes the loaded rows by the planner's lookup keys and keeps every row of a key,
+     * so the keys need not include the primary key. They must be top-level columns whose Flink
+     * values compare under {@code equals} as SQL equality does, because that is how the cache index
+     * matches them.
+     */
+    private LookupRuntimeProvider fullCachingProvider(LookupContext context) {
+        if (timestampBound.getMode() == TimestampBound.Mode.READ_TIMESTAMP) {
+            throw new ValidationException(
+                    String.format(
+                            "'%s' cannot be set when '%s' is FULL: every full-cache load reads a"
+                                    + " fresh snapshot, and a fixed read timestamp would reload the"
+                                    + " same rows until the timestamp leaves the database's version"
+                                    + " retention period and the load fails. Use '%s' to read"
+                                    + " older data.",
+                            SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_READ_TIMESTAMP.key(),
+                            LookupOptions.CACHE_TYPE.key(),
+                            SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_EXACT_STALENESS.key()));
+        }
+        RowType producedType = (RowType) producedDataType.getLogicalType();
+        int[][] keys = context.getKeys();
+        if (keys.length == 0) {
+            throw new ValidationException(FULL_CACHE_KEY_REQUIREMENT);
+        }
+        for (int[] key : keys) {
+            if (key.length != 1) {
+                throw new ValidationException(
+                        FULL_CACHE_KEY_REQUIREMENT + " A nested key path is not supported.");
+            }
+            LogicalType type = producedType.getTypeAt(key[0]);
+            if (!fullCacheKeyType(type)) {
+                throw new ValidationException(
+                        FULL_CACHE_KEY_REQUIREMENT
+                                + " Lookup column '"
+                                + producedType.getFieldNames().get(key[0])
+                                + "' has unsupported equality type "
+                                + type.asSummaryString()
+                                + ".");
+            }
+        }
+        SpannerBatchReadSource<RowData> scan =
+                (SpannerBatchReadSource<RowData>)
+                        scanBuilder(context.createTypeInformation(producedDataType)).build();
+        return FullCachingLookupProvider.of(
+                InputFormatProvider.of(new SpannerFullCacheInputFormat(scan.getConfig())),
+                lookupConfig.createFullReloadTrigger());
+    }
+
+    private static final String FULL_CACHE_KEY_REQUIREMENT =
+            "A Spanner lookup with '"
+                    + LookupOptions.CACHE_TYPE.key()
+                    + "' = 'FULL' requires equality predicates on top-level columns of a scalar"
+                    + " type other than FLOAT and DOUBLE, whose Java equality differs from SQL's.";
+
+    /**
+     * Whether a key type's Flink values match in the full cache's index exactly when SQL equality
+     * holds, among the types {@code SpannerTableSchemaConverter} maps. {@code FLOAT} and {@code
+     * DOUBLE} do not: their boxed {@code equals} tells {@code -0.0} from {@code 0.0} and matches
+     * {@code NaN} to itself. {@code ARRAY} does not either, because its binary and generic forms
+     * are not equal to each other.
+     */
+    private static boolean fullCacheKeyType(LogicalType type) {
+        switch (type.getTypeRoot()) {
+            case BOOLEAN:
+            case BIGINT:
+            case DECIMAL:
+            case CHAR:
+            case VARCHAR:
+            case BINARY:
+            case VARBINARY:
+            case DATE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                return true;
+            default:
+                return false;
+        }
     }
 
     private LookupKeyFilter lookupKeys(LookupContext context) {

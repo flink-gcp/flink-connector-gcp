@@ -100,24 +100,26 @@ public final class TestSources {
      * Applies a planner-factory seam to a builder, reaching the package-private setter for a
      * subpackage.
      *
+     * @param <T> the record type the builder produces
      * @param builder the builder
      * @param plannerFactory the factory the source mints one planner per enumerator from
      * @return the builder
      */
-    public static SpannerSourceBuilder<Long> withPlannerFactory(
-            SpannerSourceBuilder<Long> builder, PartitionPlannerFactory plannerFactory) {
+    public static <T> SpannerSourceBuilder<T> withPlannerFactory(
+            SpannerSourceBuilder<T> builder, PartitionPlannerFactory plannerFactory) {
         return builder.plannerFactory(plannerFactory);
     }
 
     /**
      * Applies an opener seam to a builder, reaching the package-private setter for a subpackage.
      *
+     * @param <T> the record type the builder produces
      * @param builder the builder
      * @param opener the opener
      * @return the builder
      */
-    public static SpannerSourceBuilder<Long> withOpener(
-            SpannerSourceBuilder<Long> builder, StructStreamOpener opener) {
+    public static <T> SpannerSourceBuilder<T> withOpener(
+            SpannerSourceBuilder<T> builder, StructStreamOpener opener) {
         return builder.opener(opener);
     }
 
