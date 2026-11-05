@@ -49,6 +49,9 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
@@ -56,6 +59,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The FILE_LOADS {@link org.apache.flink.api.connector.sink2.SinkWriter}: encodes records in the
@@ -72,9 +76,11 @@ import java.util.UUID;
  * Avro holds one upload chunk plus one unflushed block, while Parquet buffers a whole row group,
  * sized from {@code maxStagingFileBytes} for the correctness reason {@code ParquetStagedFileWriter}
  * records — so a task manager is sized for the format in use. In streaming execution the
- * inter-checkpoint bulk-data buffer therefore <em>is</em> GCS. Files are rolled at {@link
- * FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load throughput and bounded by the
- * per-load-job URI cap — see that option's default for both.
+ * inter-checkpoint bulk-data buffer therefore <em>is</em> GCS. With {@link
+ * FileLoadsOptions#isBackgroundStagingUploadEnabled()} on, full chunks and the finalization of
+ * rolled, evicted and idle files run on a {@code StagingUploader} instead of this thread. Files are
+ * rolled at {@link FileLoadsOptions#getMaxStagingFileBytes()}, which is sized for load throughput
+ * and bounded by the per-load-job URI cap — see that option's default for both.
  *
  * <p>Staging object names include the Flink job id, subtask index, attempt number and a random
  * component, so files written by failed attempts can neither collide with live ones nor be loaded:
@@ -110,6 +116,7 @@ public final class FileLoadsWriter<T>
     private final int maxOpenDestinations;
     private final int maxPendingFiles;
     private final int maxConcurrentCheckpointFinalizations;
+    private final int stagingUploadChunkBytes;
     private final long destinationIdleTimeoutMillis;
     private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
@@ -124,6 +131,16 @@ public final class FileLoadsWriter<T>
             new LinkedHashMap<>(16, 0.75f, true);
 
     private final List<FileLoadsCommittable> finishedFiles = new ArrayList<>();
+
+    /**
+     * Files closed on the staging uploader whose finalization has not been collected yet, in close
+     * order. A committable moves to {@code finishedFiles} only once its object is finalized.
+     */
+    private final ArrayDeque<PendingFinalization> pendingFinalizations = new ArrayDeque<>();
+
+    /** The background staging uploader, or {@code null} when uploads run on the task thread. */
+    @Nullable private final StagingUploader uploader;
+
     private long nextFileSequence;
     private long nextIdleSweepTimestamp = Long.MAX_VALUE;
     private boolean capacityWarningLogged;
@@ -166,6 +183,20 @@ public final class FileLoadsWriter<T>
         this.maxPendingFiles = options.getMaxPendingFiles();
         this.maxConcurrentCheckpointFinalizations =
                 options.getMaxConcurrentCheckpointFinalizations();
+        // FileLoadsOptions bounds the chunk to what an int can express.
+        this.stagingUploadChunkBytes = Math.toIntExact(options.getStagingUploadChunkBytes());
+        this.uploader =
+                options.isBackgroundStagingUploadEnabled()
+                        ? new StagingUploader(
+                                stagingUploadChunkBytes,
+                                options.getMaxInFlightUploadOperations(),
+                                "FileLoadsWriter staging uploader " + filePrefix)
+                        : null;
+        // Without the uploader no upload operation queues, so none counts towards the warning; the
+        // open files' chunks count either way.
+        warnIfUploadBuffersExceedHeapShare(
+                uploader == null ? 0 : options.getMaxInFlightUploadOperations(),
+                Runtime.getRuntime().maxMemory());
         this.destinationIdleTimeoutMillis = options.getDestinationIdleTimeout().toMillis();
         this.maxSerializedRowBytes = options.getMaxSerializedRowBytes();
         this.stagingFormat = options.getStagingFormat();
@@ -179,6 +210,56 @@ public final class FileLoadsWriter<T>
         // which is what "best-effort" means for a gauge over live writer state.
         this.metrics.bindWriterState(
                 (Gauge<Integer>) destinations::size, (Gauge<Integer>) this::pendingFileCount);
+    }
+
+    /**
+     * The upload buffers this writer may hold at once: one chunk per open destination file plus one
+     * per upload operation the uploader may hold, saturating rather than overflowing. Parquet row
+     * groups, Avro blocks and the client's copy of a closing file's last chunk come on top.
+     */
+    static long plannedUploadBufferBytes(
+            int maxOpenDestinations, int maxInFlightOperations, long chunkBytes) {
+        long chunks = (long) maxOpenDestinations + maxInFlightOperations;
+        return chunks > Long.MAX_VALUE / chunkBytes ? Long.MAX_VALUE : chunks * chunkBytes;
+    }
+
+    /**
+     * Whether one writer's planned upload buffers exceed a quarter of the maximum heap. The limits
+     * are valid one by one, so this warns rather than fails: only the TaskManager knows its heap,
+     * and the share left for the rest of the task is the operator's call.
+     *
+     * <p>The quarter is a round heuristic, not a measurement. It leaves room for the format
+     * buffers, the clients and the rest of the task, and it is per writer: every FILE_LOADS writer
+     * subtask in the TaskManager holds its own buffers, so several slots can exhaust the heap
+     * without any one of them crossing it.
+     *
+     * @param maxHeapBytes {@link Runtime#maxMemory()}, which is {@link Long#MAX_VALUE} when the JVM
+     *     has no limit
+     */
+    static boolean uploadBuffersExceedHeapShare(long plannedBytes, long maxHeapBytes) {
+        return maxHeapBytes != Long.MAX_VALUE && plannedBytes > maxHeapBytes / 4;
+    }
+
+    private void warnIfUploadBuffersExceedHeapShare(int maxInFlightOperations, long maxHeapBytes) {
+        long plannedBytes =
+                plannedUploadBufferBytes(
+                        maxOpenDestinations, maxInFlightOperations, stagingUploadChunkBytes);
+        if (!uploadBuffersExceedHeapShare(plannedBytes, maxHeapBytes)) {
+            return;
+        }
+        LOG.warn(
+                "This FILE_LOADS writer alone may hold {} bytes of staging upload buffers, more"
+                        + " than a quarter of the JVM's {}-byte maximum heap: {}"
+                        + " maxOpenDestinations plus {} maxInFlightUploadOperations, each up to one"
+                        + " {}-byte stagingUploadChunkBytes chunk. Every FILE_LOADS writer subtask"
+                        + " in this TaskManager holds its own. Lower one of them or give the"
+                        + " TaskManager more heap; Parquet staging also buffers a row group per open"
+                        + " file.",
+                plannedBytes,
+                maxHeapBytes,
+                maxOpenDestinations,
+                maxInFlightOperations,
+                stagingUploadChunkBytes);
     }
 
     /** Finds the next active destination deadline after an idle sweep changed the active set. */
@@ -323,6 +404,7 @@ public final class FileLoadsWriter<T>
             return;
         }
         // From here on, failures are staging I/O errors and fail the job.
+        collectFinalizedFiles();
         if (newlyActive) {
             ensurePendingFileCapacity();
             evictForCapacity();
@@ -341,6 +423,7 @@ public final class FileLoadsWriter<T>
         if (state.file.isFull(maxStagingFileBytes)) {
             finishFile(state);
             destinations.remove(destination);
+            collectFinalizedFiles();
         }
     }
 
@@ -354,8 +437,20 @@ public final class FileLoadsWriter<T>
     }
 
     @Override
-    public Collection<FileLoadsCommittable> prepareCommit() throws IOException {
+    public Collection<FileLoadsCommittable> prepareCommit()
+            throws IOException, InterruptedException {
         int activeDestinations = destinations.size();
+        if (uploader != null) {
+            // Every upload operation submitted so far runs first, so the committables keep their
+            // close order and each remaining open file's channel is idle before it is detached and
+            // finalized below, serially or by the checkpoint finalizer, exactly as without an
+            // uploader.
+            uploader.drain();
+            collectFinalizedFiles();
+            for (DestinationState state : destinations.values()) {
+                state.detachStream();
+            }
+        }
         if (activeDestinations < 2 || maxConcurrentCheckpointFinalizations == 1) {
             Iterator<DestinationState> iterator = destinations.values().iterator();
             while (iterator.hasNext()) {
@@ -383,6 +478,12 @@ public final class FileLoadsWriter<T>
     @Override
     public void close() throws Exception {
         closed = true;
+        // First, so that no uploader task finalizes a file this method then aborts. Waits for
+        // nothing.
+        if (uploader != null) {
+            uploader.close();
+        }
+        pendingFinalizations.clear();
         // Closers.closeAll, not sequential closes: the handler must be closed on the failure path
         // too. Aborting a staged file closes nothing and does not fail, so the handler is the
         // first entry that can.
@@ -390,7 +491,11 @@ public final class FileLoadsWriter<T>
         for (DestinationState state : destinations.values()) {
             StagedFileWriter file = state.file;
             state.file = null;
-            closeables.add(file::abort);
+            state.stream = null;
+            // Null when a finish failed after handing the file over; nothing is left to abort.
+            if (file != null) {
+                closeables.add(file::abort);
+            }
         }
         // The map backs the openDestinations gauge, which a reporter may still sample between this
         // call and the metric group's own close; the conversion state is dead once the files are
@@ -405,11 +510,47 @@ public final class FileLoadsWriter<T>
         Closers.closeAll(closeables);
     }
 
-    /** Finalizes the destination's open file, collecting its committable and counting its bytes. */
+    /**
+     * Finishes the destination's open file and collects its committable once the object is
+     * finalized: here, or later from the staging uploader, in close order either way.
+     */
     private void finishFile(DestinationState state) throws IOException {
         FileLoadsCommittable committable = state.file.finish();
         state.file = null;
-        recordFinishedFile(committable);
+        StagingUploader.UploadOutputStream stream = state.stream;
+        state.stream = null;
+        if (stream == null) {
+            recordFinishedFile(committable);
+            return;
+        }
+        // Collected by the caller once the destination is out of the map: an uploader failure that
+        // surfaces here must not leave a destination whose file is already gone.
+        pendingFinalizations.add(new PendingFinalization(committable, stream.finalized()));
+    }
+
+    /**
+     * Records, in close order, every uploader finalization that has completed, and reports an
+     * uploader failure. Stops at the first one still running so that a later file never overtakes
+     * it.
+     */
+    private void collectFinalizedFiles() throws IOException {
+        if (uploader == null) {
+            return;
+        }
+        uploader.checkFailure();
+        while (!pendingFinalizations.isEmpty()) {
+            PendingFinalization next = pendingFinalizations.peekFirst();
+            if (!next.finalized.isDone()) {
+                return;
+            }
+            if (next.finalized.isCompletedExceptionally()) {
+                // The uploader records its failure before completing the file, so this reports it.
+                uploader.checkFailure();
+                throw new IOException("A staging file was not finalized on the staging uploader");
+            }
+            pendingFinalizations.removeFirst();
+            recordFinishedFile(next.committable);
+        }
     }
 
     /**
@@ -454,6 +595,7 @@ public final class FileLoadsWriter<T>
         Map.Entry<TableDestination, DestinationState> eldest = iterator.next();
         finishFile(eldest.getValue());
         iterator.remove();
+        collectFinalizedFiles();
         metrics.capacityEvicted();
         if (!capacityWarningLogged) {
             capacityWarningLogged = true;
@@ -479,6 +621,7 @@ public final class FileLoadsWriter<T>
             iterator.remove();
             metrics.idleEvicted();
         }
+        collectFinalizedFiles();
     }
 
     private long currentProcessingTime() {
@@ -486,7 +629,9 @@ public final class FileLoadsWriter<T>
     }
 
     private int pendingFileCount() {
-        return Math.addExact(finishedFiles.size(), destinations.size());
+        return Math.addExact(
+                Math.addExact(finishedFiles.size(), pendingFinalizations.size()),
+                destinations.size());
     }
 
     /**
@@ -522,17 +667,23 @@ public final class FileLoadsWriter<T>
                         + "-"
                         + sequence
                         + state.format.getExtension();
-        return StagedFileWriter.open(
-                state.format,
-                parquetCompression,
-                avroCompression,
-                zstdLevel,
-                flinkJobId,
-                destination,
-                uri,
-                state.avroSchema,
-                storage.createObject(uri),
-                maxStagingFileBytes);
+        WritableByteChannel channel = storage.createObject(uri, stagingUploadChunkBytes);
+        StagingUploader.UploadOutputStream stream =
+                uploader == null ? null : uploader.open(channel);
+        StagedFileWriter file =
+                StagedFileWriter.open(
+                        state.format,
+                        parquetCompression,
+                        avroCompression,
+                        zstdLevel,
+                        flinkJobId,
+                        destination,
+                        uri,
+                        state.avroSchema,
+                        stream == null ? Channels.newOutputStream(channel) : stream,
+                        maxStagingFileBytes);
+        state.stream = stream;
+        return file;
     }
 
     /**
@@ -589,6 +740,13 @@ public final class FileLoadsWriter<T>
         private final ProtoToAvroConverter converter;
         private final StagingFormat format;
         private StagedFileWriter file;
+
+        /**
+         * The open file's uploader stream, or {@code null} without an uploader or once it is
+         * finished.
+         */
+        @Nullable private StagingUploader.UploadOutputStream stream;
+
         private long lastAccessMillis;
 
         DestinationState(
@@ -602,6 +760,25 @@ public final class FileLoadsWriter<T>
             this.avroSchema = avroSchema;
             this.converter = converter;
             this.format = format;
+        }
+
+        /** Moves the open file off the drained uploader so it can be finalized on any thread. */
+        void detachStream() {
+            if (stream != null) {
+                stream.detach();
+                stream = null;
+            }
+        }
+    }
+
+    /** A file closed on the staging uploader, with the committable its finalization releases. */
+    private static final class PendingFinalization {
+        private final FileLoadsCommittable committable;
+        private final CompletableFuture<Void> finalized;
+
+        PendingFinalization(FileLoadsCommittable committable, CompletableFuture<Void> finalized) {
+            this.committable = committable;
+            this.finalized = finalized;
         }
     }
 }

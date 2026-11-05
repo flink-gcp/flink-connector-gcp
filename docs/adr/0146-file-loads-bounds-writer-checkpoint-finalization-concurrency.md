@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0146: FILE_LOADS bounds writer checkpoint finalization concurrency
 
 - Status: Accepted
-- Date: 2026-08-30; revised by [#1532] (2026-09-26)
+- Date: 2026-08-30; revised by [#1532] (2026-09-26); refined by [ADR-0195] (2026-11-04)
 - Issues: [#1164] (measurement), [#38] (follow-up, carried out in-region by [#1313]), [#1532]
   (abandoning the batch after a fatal failure), [#1313] (in-region confirmation through Flink
   checkpoints)
@@ -56,7 +56,9 @@ destinations distribute across subtasks.
 When TaskManager or slot count must remain fixed, `maxConcurrentCheckpointFinalizations` lets each
 writer finalize independent open files concurrently at a checkpoint or end of input.
 The option defaults to 1, accepts 1 through 8, and has no effect when a writer holds only one file.
-Size-based rolls, capacity evictions, and idle closes remain on the task thread.
+Size-based rolls, capacity evictions, and idle closes remain on the task thread unless the writer
+enables the opt-in background staging uploader of [ADR-0195], a single thread that serves the
+few-destination case this record's measurements did not cover.
 No full-upload pool is added.
 
 A bounded real-GCS probe on 2026-08-30 compared four shapes from a local client to the existing
@@ -228,3 +230,4 @@ Upload density alone therefore does not reopen the Avro default or the automatic
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
 [#1313]: https://github.com/flink-gcp/flink-connector-gcp/issues/1313
 [#1532]: https://github.com/flink-gcp/flink-connector-gcp/issues/1532
+[ADR-0195]: 0195-file-loads-offers-an-opt-in-background-staging-uploader.md

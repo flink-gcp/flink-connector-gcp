@@ -130,6 +130,32 @@ public final class FileLoadsOptions implements Serializable {
 
     private static final int MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS = 8;
 
+    /**
+     * Default for {@link Builder#stagingUploadChunkBytes(long)}: 4 MiB, the upload chunk every open
+     * destination file holds, chosen to bound writer memory under many open destinations.
+     */
+    public static final long DEFAULT_STAGING_UPLOAD_CHUNK_BYTES = 4L * 1024 * 1024;
+
+    /** The granularity Cloud Storage resumable uploads require of every chunk but the last. */
+    private static final long STAGING_UPLOAD_CHUNK_GRANULARITY = 256L * 1024;
+
+    /** The largest chunk the storage client's {@code int} chunk size can express. */
+    private static final long MAX_STAGING_UPLOAD_CHUNK_BYTES =
+            Integer.MAX_VALUE / STAGING_UPLOAD_CHUNK_GRANULARITY * STAGING_UPLOAD_CHUNK_GRANULARITY;
+
+    /**
+     * Default for {@link Builder#backgroundStagingUploadEnabled(boolean)}: off, so uploads run on
+     * the task thread.
+     */
+    public static final boolean DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED = false;
+
+    /**
+     * Default for {@link Builder#maxInFlightUploadOperations(int)}: 2, the smallest value that
+     * measured as fast as 4, with the task thread waiting for a permit a few percent of the time at
+     * most against 9-14% at 1 (ADR-0195).
+     */
+    public static final int DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS = 2;
+
     /** Default for {@link Builder#maxConcurrentDestinations(int)}. */
     public static final int DEFAULT_MAX_CONCURRENT_DESTINATIONS = 8;
 
@@ -186,6 +212,11 @@ public final class FileLoadsOptions implements Serializable {
     private final int maxOpenDestinations;
     private final int maxPendingFiles;
     private final int maxConcurrentCheckpointFinalizations;
+    // Zero in an instance serialized before the option existed; the getter supplies the default.
+    private final long stagingUploadChunkBytes;
+    private final boolean backgroundStagingUploadEnabled;
+    // Zero in an instance serialized before the option existed; the getter supplies the default.
+    private final int maxInFlightUploadOperations;
     private final int maxConcurrentDestinations;
     @Nullable private final Duration destinationIdleTimeout;
     private final long maxSerializedRowBytes;
@@ -217,6 +248,14 @@ public final class FileLoadsOptions implements Serializable {
         this.maxOpenDestinations = builder.maxOpenDestinations;
         this.maxPendingFiles = builder.maxPendingFiles;
         this.maxConcurrentCheckpointFinalizations = builder.maxConcurrentCheckpointFinalizations;
+        this.stagingUploadChunkBytes = builder.stagingUploadChunkBytes;
+        this.backgroundStagingUploadEnabled = builder.backgroundStagingUploadEnabled;
+        // Zero when unset, like an instance serialized before the option existed: the getter
+        // supplies the default for both.
+        this.maxInFlightUploadOperations =
+                builder.maxInFlightUploadOperations == null
+                        ? 0
+                        : builder.maxInFlightUploadOperations;
         this.maxConcurrentDestinations = builder.maxConcurrentDestinations;
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
         this.maxSerializedRowBytes = builder.maxSerializedRowBytes;
@@ -297,6 +336,28 @@ public final class FileLoadsOptions implements Serializable {
         return maxConcurrentCheckpointFinalizations == 0
                 ? DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS
                 : maxConcurrentCheckpointFinalizations;
+    }
+
+    /** Returns the size of the upload chunk each open staging file buffers. */
+    public long getStagingUploadChunkBytes() {
+        return stagingUploadChunkBytes == 0
+                ? DEFAULT_STAGING_UPLOAD_CHUNK_BYTES
+                : stagingUploadChunkBytes;
+    }
+
+    /** Returns whether each writer uploads its staging files on a background staging uploader. */
+    public boolean isBackgroundStagingUploadEnabled() {
+        return backgroundStagingUploadEnabled;
+    }
+
+    /**
+     * Returns how many upload operations each writer's background staging uploader may hold, queued
+     * or running. Meaningful only while {@link #isBackgroundStagingUploadEnabled()}.
+     */
+    public int getMaxInFlightUploadOperations() {
+        return maxInFlightUploadOperations == 0
+                ? DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS
+                : maxInFlightUploadOperations;
     }
 
     /** Returns the maximum destination actions this committer executes concurrently. */
@@ -418,6 +479,9 @@ public final class FileLoadsOptions implements Serializable {
                 && getMaxPendingFiles() == that.getMaxPendingFiles()
                 && getMaxConcurrentCheckpointFinalizations()
                         == that.getMaxConcurrentCheckpointFinalizations()
+                && getStagingUploadChunkBytes() == that.getStagingUploadChunkBytes()
+                && backgroundStagingUploadEnabled == that.backgroundStagingUploadEnabled
+                && getMaxInFlightUploadOperations() == that.getMaxInFlightUploadOperations()
                 && getMaxConcurrentDestinations() == that.getMaxConcurrentDestinations()
                 && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
                 && getMaxSerializedRowBytes() == that.getMaxSerializedRowBytes()
@@ -445,6 +509,9 @@ public final class FileLoadsOptions implements Serializable {
                 getMaxOpenDestinations(),
                 getMaxPendingFiles(),
                 getMaxConcurrentCheckpointFinalizations(),
+                getStagingUploadChunkBytes(),
+                backgroundStagingUploadEnabled,
+                getMaxInFlightUploadOperations(),
                 getMaxConcurrentDestinations(),
                 getDestinationIdleTimeout(),
                 getMaxSerializedRowBytes(),
@@ -480,6 +547,12 @@ public final class FileLoadsOptions implements Serializable {
                 + getMaxPendingFiles()
                 + ", maxConcurrentCheckpointFinalizations="
                 + getMaxConcurrentCheckpointFinalizations()
+                + ", stagingUploadChunkBytes="
+                + getStagingUploadChunkBytes()
+                + ", backgroundStagingUploadEnabled="
+                + backgroundStagingUploadEnabled
+                + ", maxInFlightUploadOperations="
+                + getMaxInFlightUploadOperations()
                 + ", maxConcurrentDestinations="
                 + getMaxConcurrentDestinations()
                 + ", destinationIdleTimeout="
@@ -523,6 +596,11 @@ public final class FileLoadsOptions implements Serializable {
         private int maxPendingFiles = DEFAULT_MAX_PENDING_FILES;
         private int maxConcurrentCheckpointFinalizations =
                 DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS;
+        private long stagingUploadChunkBytes = DEFAULT_STAGING_UPLOAD_CHUNK_BYTES;
+        private boolean backgroundStagingUploadEnabled = DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED;
+        // Null until set, so build() can reject a depth given while the uploader is off rather
+        // than silently ignoring it.
+        @Nullable private Integer maxInFlightUploadOperations;
         private int maxConcurrentDestinations = DEFAULT_MAX_CONCURRENT_DESTINATIONS;
         private Duration destinationIdleTimeout = DEFAULT_DESTINATION_IDLE_TIMEOUT;
         private long maxSerializedRowBytes = DEFAULT_MAX_SERIALIZED_ROW_BYTES;
@@ -731,6 +809,91 @@ public final class FileLoadsOptions implements Serializable {
                     MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS,
                     maxConcurrentCheckpointFinalizations);
             this.maxConcurrentCheckpointFinalizations = maxConcurrentCheckpointFinalizations;
+            return this;
+        }
+
+        /**
+         * Sets the size of the Cloud Storage upload chunk each open staging file buffers before
+         * sending it. Every open destination file holds one chunk, so a writer's upload buffers
+         * grow with this value times {@code maxOpenDestinations}. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_STAGING_UPLOAD_CHUNK_BYTES}.
+         *
+         * <p>A larger chunk sends a file in fewer resumable-upload requests, which saves their
+         * round trips but not the time spent transferring bytes. A chunk larger than every file the
+         * writer stages defers the whole upload to the file's close; matching {@code
+         * maxStagingFileBytes} is not enough for Avro, whose file finishes only once its bytes
+         * reach that size, a block later, while Parquet usually closes within about half a row
+         * group of it when its row groups are of similar size.
+         *
+         * @param stagingUploadChunkBytes the chunk size in bytes, a positive multiple of 256 KiB
+         *     that the storage client's {@code int} chunk size can express
+         * @return this builder
+         */
+        public Builder stagingUploadChunkBytes(long stagingUploadChunkBytes) {
+            Preconditions.checkArgument(
+                    stagingUploadChunkBytes > 0
+                            && stagingUploadChunkBytes % STAGING_UPLOAD_CHUNK_GRANULARITY == 0,
+                    "stagingUploadChunkBytes must be a positive multiple of %s: %s",
+                    STAGING_UPLOAD_CHUNK_GRANULARITY,
+                    stagingUploadChunkBytes);
+            Preconditions.checkArgument(
+                    stagingUploadChunkBytes <= MAX_STAGING_UPLOAD_CHUNK_BYTES,
+                    "stagingUploadChunkBytes must be at most %s: %s",
+                    MAX_STAGING_UPLOAD_CHUNK_BYTES,
+                    stagingUploadChunkBytes);
+            this.stagingUploadChunkBytes = stagingUploadChunkBytes;
+            return this;
+        }
+
+        /**
+         * Sets whether each writer subtask uploads its staging files on a background staging
+         * uploader. Defaults to {@link FileLoadsOptions#DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED},
+         * which sends every chunk and finalizes every size-rolled, evicted, or idle file on the
+         * task thread.
+         *
+         * <p>Enabled, each writer starts one upload thread, which runs upload operations in the
+         * order the task thread submits them while the task thread keeps encoding into the next
+         * chunk. An upload operation is one full upload chunk, or the close of a size-rolled,
+         * evicted, or idle file together with its last chunk, if any. A checkpoint or end of input
+         * waits for the uploader to drain before it finalizes the remaining open files, which
+         * {@code maxConcurrentCheckpointFinalizations} still governs. The uploader moves the upload
+         * wait, not encoding or compression, off the task thread.
+         *
+         * <p>It helps most where data crosses upload chunks or rolls files between checkpoints. A
+         * writer with many destinations, whose files mostly upload at the checkpoint, gains from it
+         * only together with {@code maxConcurrentCheckpointFinalizations}.
+         *
+         * @param backgroundStagingUploadEnabled whether to start the background staging uploader
+         * @return this builder
+         */
+        public Builder backgroundStagingUploadEnabled(boolean backgroundStagingUploadEnabled) {
+            this.backgroundStagingUploadEnabled = backgroundStagingUploadEnabled;
+            return this;
+        }
+
+        /**
+         * Sets how many upload operations each writer subtask's background staging uploader may
+         * hold, queued or running. Accepted only with {@link
+         * #backgroundStagingUploadEnabled(boolean)} on. Defaults to {@link
+         * FileLoadsOptions#DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS}.
+         *
+         * <p>Once this many operations are queued or running, the task thread blocks until one
+         * completes. One already lets encoding overlap one upload but measured the task thread
+         * waiting for the permit; a larger value only lets more work queue, since the uploader
+         * never uploads in parallel. The uploader adds at most this many chunks of upload payload
+         * per writer, independent of the number of open destinations; the open files' own chunks
+         * are separate. No upper bound is imposed, because the value adds no thread or client, only
+         * that heap.
+         *
+         * @param maxInFlightUploadOperations the per-writer operation bound, positive
+         * @return this builder
+         */
+        public Builder maxInFlightUploadOperations(int maxInFlightUploadOperations) {
+            Preconditions.checkArgument(
+                    maxInFlightUploadOperations > 0,
+                    "maxInFlightUploadOperations must be positive: %s",
+                    maxInFlightUploadOperations);
+            this.maxInFlightUploadOperations = maxInFlightUploadOperations;
             return this;
         }
 
@@ -984,6 +1147,11 @@ public final class FileLoadsOptions implements Serializable {
                     "loadJobPollMaxBackoff must be >= loadJobPollInitialBackoff: %s < %s",
                     loadJobPollMaxBackoff,
                     loadJobPollInitialBackoff);
+            Preconditions.checkState(
+                    backgroundStagingUploadEnabled || maxInFlightUploadOperations == null,
+                    "maxInFlightUploadOperations is only accepted with"
+                            + " backgroundStagingUploadEnabled(true): without the uploader nothing"
+                            + " queues.");
             Preconditions.checkState(
                     stagingFormat == StagingFormat.PARQUET || parquetCompression == null,
                     "parquetCompression is only accepted with stagingFormat(PARQUET): use"

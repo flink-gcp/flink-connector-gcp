@@ -19,8 +19,8 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 import org.apache.flink.annotation.Internal;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.Serializable;
+import java.nio.channels.WritableByteChannel;
 import java.util.List;
 
 /**
@@ -33,13 +33,17 @@ public interface StagingStorage extends Serializable, AutoCloseable {
 
     /**
      * Opens a new staging object for writing. The object becomes visible atomically when the
-     * returned stream is closed; a stream abandoned without closing creates no visible object.
+     * returned channel is closed; a channel abandoned without closing creates no visible object.
+     *
+     * <p>The channel buffers up to {@code chunkBytes} and sends each full chunk as it fills. It may
+     * be used from one thread at a time, not necessarily the one that opened it.
      *
      * @param gcsUri the object URI ({@code gs://bucket/name})
-     * @return the stream to write the object contents to
+     * @param chunkBytes the upload chunk size, a positive multiple of 256 KiB
+     * @return the channel to write the object contents to
      * @throws IOException if the object cannot be opened
      */
-    OutputStream createObject(String gcsUri) throws IOException;
+    WritableByteChannel createObject(String gcsUri, int chunkBytes) throws IOException;
 
     /**
      * Deletes the given staging objects, best-effort: failures (including already-deleted objects)

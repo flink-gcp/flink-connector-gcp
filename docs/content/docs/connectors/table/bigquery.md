@@ -988,6 +988,9 @@ default, and required by the write method rather than by the connector — and l
 | `sink.file-loads.max-staging-file-bytes` | MemorySize | `maxStagingFileBytes(...)`, the size at which an open staging file is finished and the next one opened. The default is measured — see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) — and raising it matters mainly for a very large volume to one destination, since the 10,000-URI per-load-job cap is a file count |
 | `sink.file-loads.max-open-destinations` | Integer | `maxOpenDestinations(...)`, the maximum destination files each writer subtask holds open. The default is 16; opening another finishes the least recently used file |
 | `sink.file-loads.max-pending-files` | Integer | `maxPendingFiles(...)`, the maximum finished and open staging files each writer subtask retains for the next commit. It must be at least `sink.file-loads.max-open-destinations`. The default is 10,000; reaching it fails the task before another file is opened |
+| `sink.file-loads.staging-upload-chunk-bytes` | MemorySize | `stagingUploadChunkBytes(...)`, the Cloud Storage upload chunk each open staging file buffers; a multiple of 256 KiB. The default is 4 MiB |
+| `sink.file-loads.background-staging-upload.enabled` | Boolean | `backgroundStagingUploadEnabled(...)`, whether each writer uploads its staging files on a background staging uploader. The default is `false`; see [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) |
+| `sink.file-loads.in-flight.max-upload-operations` | Integer | `maxInFlightUploadOperations(...)`, the upload operations (a full chunk, or a closing file's finalization with its last chunk) the background staging uploader may hold, queued or running. Accepted only with `sink.file-loads.background-staging-upload.enabled` = `true`; the default is 2 |
 | `sink.file-loads.destination-idle-timeout` | Duration | `destinationIdleTimeout(...)`, after which a destination that received no records is finished and released. The default is 1 minute |
 | `sink.file-loads.max-serialized-row-bytes` | MemorySize | `maxSerializedRowBytes(...)`, the serialized protobuf row limit before Avro conversion. The default is 15,000,000 bytes; larger rows go to the failure handler without opening a file |
 | `sink.file-loads.staging-format` | Enum | `stagingFormat(...)` — `avro` (default) or `parquet`. Parquet needs `parquet-avro`, and a Hadoop runtime unless the compression is `none`, on the cluster's classpath; a destination whose schema has a `JSON` column stages Avro whatever this says |
@@ -1004,6 +1007,8 @@ default, and required by the write method rather than by the connector — and l
 A Table API sink has one fixed destination, so it exposes neither the DataStream API's
 `maxConcurrentDestinations(...)` nor `maxConcurrentCheckpointFinalizations(...)` control: one
 destination has no committer or writer-finalization work to distribute.
+It does expose the staging-upload options, because one busy destination is the case
+`sink.file-loads.background-staging-upload.enabled` is for.
 
 ## Delivery guarantees
 

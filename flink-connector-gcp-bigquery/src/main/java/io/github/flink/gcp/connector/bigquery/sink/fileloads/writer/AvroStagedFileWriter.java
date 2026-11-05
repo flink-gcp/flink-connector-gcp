@@ -41,12 +41,13 @@ final class AvroStagedFileWriter implements StagedFileWriter {
      * Maps the options to an Avro codec: zstandard at the configured level, or none.
      *
      * <p><b>The zstandard default is chosen for CPU, not for size.</b> Compression runs on the task
-     * thread, the same one streaming into the GCS upload while the job processes records, so its
-     * cost is subtracted from throughput directly. Measured 2026-08-08 with this writer, 2,000,000
-     * rows of a realistic mix, five passes after a warm-up, single-threaded on OpenJDK 21
-     * (aarch64): deflate 11,436 ms, zstandard level 3 3,182 ms, and 2,134 ms with no codec at all,
-     * so the compression itself costs 9,302 ms against 1,048 ms, a factor of 8.9. Size is a wash
-     * against deflate there (zstandard 1.8% larger), so it must not be quoted as a reason.
+     * thread, which without the opt-in background staging uploader is the same one streaming into
+     * the GCS upload while the job processes records, so its cost is subtracted from throughput
+     * directly. Measured 2026-08-08 with this writer, 2,000,000 rows of a realistic mix, five
+     * passes after a warm-up, single-threaded on OpenJDK 21 (aarch64): deflate 11,436 ms, zstandard
+     * level 3 3,182 ms, and 2,134 ms with no codec at all, so the compression itself costs 9,302 ms
+     * against 1,048 ms, a factor of 8.9. Size is a wash against deflate there (zstandard 1.8%
+     * larger), so it must not be quoted as a reason.
      *
      * <p>Deflate and snappy are not offered (#2022). On a nested row of about 9.5 KB, zstandard at
      * level -3 matched snappy's CPU with 4% fewer bytes, and deflate was slower and larger than

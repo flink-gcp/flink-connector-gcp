@@ -162,6 +162,13 @@ class FileLoadsOptionsTest {
         assertThat(base().maxPendingFiles(20_000).build()).isNotEqualTo(defaults);
         assertThat(base().maxConcurrentCheckpointFinalizations(4).build()).isNotEqualTo(defaults);
         assertThat(base().maxConcurrentDestinations(4).build()).isNotEqualTo(defaults);
+        assertThat(base().stagingUploadChunkBytes(8L * 1024 * 1024).build()).isNotEqualTo(defaults);
+        assertThat(base().backgroundStagingUploadEnabled(true).build()).isNotEqualTo(defaults);
+        assertThat(
+                        base().backgroundStagingUploadEnabled(true)
+                                .maxInFlightUploadOperations(3)
+                                .build())
+                .isNotEqualTo(base().backgroundStagingUploadEnabled(true).build());
         assertThat(base().destinationIdleTimeout(Duration.ofSeconds(30)).build())
                 .isNotEqualTo(defaults);
         assertThat(base().maxSerializedRowBytes(12_000_000).build()).isNotEqualTo(defaults);
@@ -180,6 +187,9 @@ class FileLoadsOptionsTest {
                 .contains("maxOpenDestinations=16")
                 .contains("maxPendingFiles=10000")
                 .contains("maxConcurrentCheckpointFinalizations=1")
+                .contains("stagingUploadChunkBytes=4194304")
+                .contains("backgroundStagingUploadEnabled=false")
+                .contains("maxInFlightUploadOperations=2")
                 .contains("maxConcurrentDestinations=8")
                 .contains("destinationIdleTimeout=PT1M")
                 .contains("maxSerializedRowBytes=15000000");
@@ -248,6 +258,8 @@ class FileLoadsOptionsTest {
         setBuilderField(oldBuilder, "maxPendingFiles", 0);
         setBuilderField(oldBuilder, "maxConcurrentCheckpointFinalizations", 0);
         setBuilderField(oldBuilder, "maxConcurrentDestinations", 0);
+        setBuilderField(oldBuilder, "stagingUploadChunkBytes", 0L);
+        setBuilderField(oldBuilder, "maxInFlightUploadOperations", null);
         setBuilderField(oldBuilder, "destinationIdleTimeout", null);
         setBuilderField(oldBuilder, "maxSerializedRowBytes", 0L);
         setBuilderField(oldBuilder, "tempTableExpiration", null);
@@ -259,6 +271,9 @@ class FileLoadsOptionsTest {
         assertThat(restored.getMaxPendingFiles()).isEqualTo(10_000);
         assertThat(restored.getMaxConcurrentCheckpointFinalizations()).isEqualTo(1);
         assertThat(restored.getMaxConcurrentDestinations()).isEqualTo(8);
+        assertThat(restored.getStagingUploadChunkBytes()).isEqualTo(4L * 1024 * 1024);
+        assertThat(restored.isBackgroundStagingUploadEnabled()).isFalse();
+        assertThat(restored.getMaxInFlightUploadOperations()).isEqualTo(2);
         assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
         assertThat(restored.getTempTableExpiration()).isEqualTo(Duration.ofDays(1));
@@ -266,6 +281,15 @@ class FileLoadsOptionsTest {
         assertThat(restored.getZstdLevel()).isEqualTo(3);
         assertThat(restored).isEqualTo(defaults).hasSameHashCodeAs(defaults);
         assertThat(restored.toString()).isEqualTo(defaults.toString());
+    }
+
+    @Test
+    void anOptionsInstanceSerializedBeforeTheUploaderReadsItsDefaultDepth() throws Exception {
+        // Deserialization skips the constructor, so a missing int field arrives as 0.
+        FileLoadsOptions options = withField(base().build(), "maxInFlightUploadOperations", 0);
+
+        assertThat(options.getMaxInFlightUploadOperations()).isEqualTo(2);
+        assertThat(options).isEqualTo(base().build()).hasSameHashCodeAs(base().build());
     }
 
     /**
@@ -285,6 +309,67 @@ class FileLoadsOptionsTest {
         java.lang.reflect.Field field = FileLoadsOptions.Builder.class.getDeclaredField(name);
         field.setAccessible(true);
         field.set(builder, value);
+    }
+
+    @Test
+    void stagingUploadOptionsAreKeptAndBounded() {
+        FileLoadsOptions defaults = base().build();
+        assertThat(defaults.isBackgroundStagingUploadEnabled()).isFalse();
+        assertThat(defaults.getMaxInFlightUploadOperations()).isEqualTo(2);
+        FileLoadsOptions options =
+                base().stagingUploadChunkBytes(256L * 1024)
+                        .backgroundStagingUploadEnabled(true)
+                        .maxInFlightUploadOperations(1)
+                        .build();
+        assertThat(options.getStagingUploadChunkBytes()).isEqualTo(256L * 1024);
+        assertThat(options.isBackgroundStagingUploadEnabled()).isTrue();
+        assertThat(options.getMaxInFlightUploadOperations()).isOne();
+
+        // The largest multiple of 256 KiB that the storage client's int chunk size can hold.
+        long largest = 2L * 1024 * 1024 * 1024 - 256L * 1024;
+        assertThat(base().stagingUploadChunkBytes(largest).build().getStagingUploadChunkBytes())
+                .isEqualTo(largest);
+        assertThatThrownBy(() -> base().stagingUploadChunkBytes(largest + 256L * 1024))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("stagingUploadChunkBytes must be at most " + largest);
+        // The client would silently round these up, so the writer's buffers would not match.
+        assertThatThrownBy(() -> base().stagingUploadChunkBytes(4L * 1024 * 1024 + 1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("stagingUploadChunkBytes must be a positive multiple of");
+        assertThatThrownBy(() -> base().stagingUploadChunkBytes(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("stagingUploadChunkBytes must be a positive multiple of");
+        // Deliberately uncapped: the value adds no thread or client, only payload heap (ADR-0195).
+        assertThat(
+                        base().backgroundStagingUploadEnabled(true)
+                                .maxInFlightUploadOperations(Integer.MAX_VALUE)
+                                .build()
+                                .getMaxInFlightUploadOperations())
+                .isEqualTo(Integer.MAX_VALUE);
+        assertThatThrownBy(() -> base().maxInFlightUploadOperations(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maxInFlightUploadOperations must be positive");
+        // A depth with the uploader off would be silently ignored, so it is refused, in either
+        // setter order; the explicit default 2 included.
+        assertThatThrownBy(() -> base().maxInFlightUploadOperations(2).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "maxInFlightUploadOperations is only accepted with"
+                                + " backgroundStagingUploadEnabled(true)");
+        assertThatThrownBy(
+                        () ->
+                                base().backgroundStagingUploadEnabled(true)
+                                        .maxInFlightUploadOperations(2)
+                                        .backgroundStagingUploadEnabled(false)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("maxInFlightUploadOperations is only accepted with");
+        assertThat(
+                        base().maxInFlightUploadOperations(3)
+                                .backgroundStagingUploadEnabled(true)
+                                .build()
+                                .getMaxInFlightUploadOperations())
+                .isEqualTo(3);
     }
 
     @Test

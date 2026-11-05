@@ -949,6 +949,56 @@ public final class BigQueryConnectorOptions {
                                     + " least recently used file.");
 
     /**
+     * The size of the Cloud Storage upload chunk each open staging file buffers before sending it.
+     * Every open destination file holds one chunk, and a larger chunk saves resumable-upload round
+     * trips but not transfer time. The value must be a multiple of 256 KiB.
+     */
+    public static final ConfigOption<MemorySize> SINK_FILE_LOADS_STAGING_UPLOAD_CHUNK_BYTES =
+            ConfigOptions.key("sink.file-loads.staging-upload-chunk-bytes")
+                    .memoryType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The size of the Cloud Storage upload chunk each open staging"
+                                    + " file buffers before sending it. Every open destination file"
+                                    + " holds one chunk, and a larger chunk saves resumable-upload"
+                                    + " round trips but not transfer time. The value must be a"
+                                    + " multiple of 256 KiB.");
+
+    /**
+     * Whether each writer subtask uploads its staging files on a background staging uploader: one
+     * thread per writer that sends full upload chunks and finalizes size-rolled, evicted and idle
+     * files in order while the task thread keeps encoding.
+     */
+    public static final ConfigOption<Boolean> SINK_FILE_LOADS_BACKGROUND_STAGING_UPLOAD_ENABLED =
+            ConfigOptions.key("sink.file-loads.background-staging-upload.enabled")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether each writer subtask uploads its staging files on a"
+                                    + " background staging uploader: one thread per writer that"
+                                    + " sends full upload chunks and finalizes size-rolled, evicted"
+                                    + " and idle files in order while the task thread keeps"
+                                    + " encoding.");
+
+    /**
+     * How many upload operations each writer subtask's background staging uploader may hold, queued
+     * or running; the task thread blocks once this many are. An operation is one full upload chunk,
+     * or a closing file's finalization with its last chunk. Accepted only with
+     * sink.file-loads.background-staging-upload.enabled.
+     */
+    public static final ConfigOption<Integer> SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS =
+            ConfigOptions.key("sink.file-loads.in-flight.max-upload-operations")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How many upload operations each writer subtask's background"
+                                    + " staging uploader may hold, queued or running; the task thread"
+                                    + " blocks once this many are. An operation is one full upload"
+                                    + " chunk, or a closing file's finalization with its last chunk."
+                                    + " Accepted only with"
+                                    + " sink.file-loads.background-staging-upload.enabled.");
+
+    /**
      * The maximum number of staging files each writer subtask retains for the next commit,
      * including files that are still open. It must be at least
      * sink.file-loads.max-open-destinations. Reaching the limit fails the task before another file
