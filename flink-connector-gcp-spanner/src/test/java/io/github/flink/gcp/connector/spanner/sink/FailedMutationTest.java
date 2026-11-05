@@ -110,6 +110,24 @@ class FailedMutationTest {
     }
 
     @Test
+    void aQueueMutationNamesNoTableAndKeepsItsPayload() throws Exception {
+        // A queue mutation names a queue and no table, so the destination stops at the database
+        // rather than ending in "tables/null".
+        Mutation mutation = Mutation.newAckBuilder("Events").setKey(Key.of(7L)).build();
+
+        FailedMutation failure = FailedMutation.of(DATABASE, mutation, "refused", null);
+
+        assertThat(failure.getTable()).isNull();
+        assertThat(failure.describeDestination()).isEqualTo("projects/p/instances/i/databases/d");
+        ByteString payload = failure.getPayloadBytes();
+        assertThat(payload).isNotNull();
+        try (ObjectInputStream in =
+                new ObjectInputStream(new ByteArrayInputStream(payload.toByteArray()))) {
+            assertThat(in.readObject()).isEqualTo(mutation);
+        }
+    }
+
+    @Test
     void rejectsMissingRequiredParts() {
         Mutation mutation = Mutation.delete("Orders", Key.of(7L));
 
