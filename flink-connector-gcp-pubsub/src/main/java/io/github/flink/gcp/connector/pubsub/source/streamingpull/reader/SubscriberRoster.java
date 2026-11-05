@@ -299,7 +299,10 @@ final class SubscriberRoster {
                                 + " split resumes. The split is paused by watermark alignment, and"
                                 + " a pause this long usually means an aligned source has gone idle"
                                 + " without withIdleness(...) on its watermark strategy: add it, or"
-                                + " bring the aligned group's slow member forward. Raising"
+                                + " bring the aligned group's slow member forward. (On Flink"
+                                + " versions affected by FLINK-40234, idleness can drop records as"
+                                + " late while the subtask is busy; the Pub/Sub source docs"
+                                + " describe the idle timeout to choose.) Raising"
                                 + " pausedSplitBufferMaxMessages or pausedSplitBufferMaxBytes only"
                                 + " holds more memory for a split nothing is consuming, so prefer"
                                 + " it only for a pause you expect to end.",

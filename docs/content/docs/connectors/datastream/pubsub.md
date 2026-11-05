@@ -502,6 +502,19 @@ nobody is consuming, so do it only for a pause you know is bounded and have the 
 `splitsParked` counts the parks themselves, which is what a park and its resume falling between two
 scrapes would otherwise hide.
 
+**`withIdleness(...)` can drop records under a busy subtask.**
+[FLINK-40234](https://issues.apache.org/jira/browse/FLINK-40234) reports that it can mark a split
+idle while the split still has records.
+The idleness timer sees a record only when the subtask thread reaches it, so a split whose records
+wait behind slow per-record processing or a window firing looks quiet for that long.
+If that wait exceeds the idle timeout, the split is marked idle, the watermark can advance past its
+waiting records, and an event-time operator downstream drops them as late.
+The issue lists Flink 2.2.1 and 2.3.0 as affected and is open with no fix version; the timer it
+describes is the same in Flink 1.20.
+The advice above still holds for a quiet subscription, but on an affected version choose an idle
+timeout well above the longest the subtask thread can be busy, and watch for late-record drops
+after adding it (a window operator counts them as `numLateRecordsDropped`).
+
 **A paused split is still watched.** If its subscriber fails permanently while paused, the job
 fails, exactly as it would for a split that was being consumed
 ([#348]({{< param BookRepo >}}/issues/348)) — worth stating because the opposite is the natural
