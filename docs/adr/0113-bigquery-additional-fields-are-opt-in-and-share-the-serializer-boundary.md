@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0113: BigQuery additional fields are opt-in and share the serializer boundary
 
 - Status: Accepted
-- Date: 2026-08-14; refined 2026-10-31 ([#1950], [#1954]) and 2026-11-04 ([#2019])
-- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950], [#1954], [#2019]
+- Date: 2026-08-14; refined 2026-10-31 ([#1950], [#1954]), 2026-11-04 ([#2019]) and 2026-11-06 ([#2047])
+- Issues: [#641](https://github.com/flink-gcp/flink-connector-gcp/issues/641), [#1950], [#1954], [#2019], [#2047]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#additional-physical-fields`
 
@@ -233,6 +233,48 @@ The alternatives were weighed as follows.
 - **Encode the appended fields by hand rather than through a tail message.**
   Setting a field on the tail is what checks a provider's value against the field's type and names the field when it is wrong; hand encoding would have to repeat that check for every supported type.
 
+## Revision: a custom serializer can hand over its row message (2026-11-06)
+
+[#2047] measured what the internal interface cost a serializer outside the connector.
+A job routing each Pub/Sub message to one of several `ProtoMessageSerializationSchema` instances by a message attribute could not reach the message path, because the wrapper was not a built-in serializer.
+With the same job and input as [#2019], the wrapper processed about 1,350 records per consumed vCPU on the byte path and about 1,870 when it also implemented the interface and forwarded to its delegate, roughly 38% more.
+
+**`ProtoRowMessageProvider` is `@PublicEvolving`.**
+A serializer implements it next to `BigQueryProtoSerializationSchema`, so the `@Public` class gains no method and a serializer that does not implement the interface keeps the byte contract unchanged.
+The built-in serializers' implementations lose their `@Internal` marking, so a wrapper can forward to them as it forwards `serialize`.
+The sink calls either method depending on the write method and on whether fields are appended, so the contract requires the two to produce the same row.
+The descriptor-identity rule the interface already stated becomes part of its contract: a message is used as it is only when its descriptor is the instance `getDescriptor` returns for the destination, and any other message is encoded and its bytes are handled as that serializer's bytes would be.
+A serializer whose top-level descriptors drift apart therefore loses the saving, and its row is accepted or refused as its bytes would be.
+A message used as it is was never parsed, and `FILE_LOADS` would have read a `required` field it leaves unset as that field's default value where parsing its bytes refuses the row.
+The converter therefore refuses such a message itself, with the parse failure the byte path reports, by checking presence only for the fields the descriptor declares `required`.
+Checking the message with `isInitialized()` instead was measured at about 8 µs per row for the probe's nested message, against a per-record cost of about 134 µs, because it recurses through every nested message whether or not a field is required; the presence check costs nothing for a descriptor without `required` fields, the default mode of every built-in serializer.
+A message carrying an unknown field is parsed from its bytes as well, because an unknown field can carry a declared field's number, and its encoding, which places it after the declared value, decodes to the unknown field's value where the message reads the declared one.
+Neither check reaches below the top level.
+Nested messages must be of the descriptor's own nested types, which a message built through that descriptor's builders satisfies, and should carry no unknown field; `FILE_LOADS` fails a row whose nested message has another descriptor through the failure handler.
+Checking every level per row was not worth what it would cost every serializer.
+
+**A handed-over message is checked rather than trusted.**
+The engine used to skip the well-formedness walk for every message, on the ground that a built-in serializer's message carries only fields of its own descriptor.
+A message from outside the connector need not: it can carry an unknown field, or belong to another descriptor whose own field takes an appended number.
+Concatenating a tail after such a message would produce the two discrepancies the previous revision describes.
+The walk is now skipped only for a message of the serializer's descriptor instance that carries no unknown field.
+That is enough because the appended numbers are chosen outside the descriptor's fields and extension ranges, so only an unknown field could carry one.
+Any other message is encoded, its bytes are walked as a byte-path row's would be, and the encoding is kept for the row.
+For the built-in serializers the check adds an identity comparison and an empty-map test per extended row; it was not measured separately.
+The previous revision's custom serializer that "keeps the byte contract" now may leave it by implementing the interface.
+
+The alternatives were weighed as follows.
+
+- **Keep the interface internal and ship a public routing serializer.**
+  A router needs two selections, one from an element to its delegate for `serialize` and one from a destination to its delegate for the schema, the descriptor and the fingerprint, and keeping them consistent stays the user's job either way.
+  It would also leave every non-routing serializer that builds its own message on the byte path.
+  Implementing the public interface makes such a router a few forwarding methods.
+- **A public abstract subclass whose `serialize` encodes `serializeToMessage`.**
+  It would tie the type arguments together and remove the agreement the contract asks for, but a serializer would have to change its superclass to take the path, and the interface keeps the shape the built-in `@Public` serializers already have.
+- **Promote the interface and keep trusting messages.**
+  A user serializer returning a message with a stray appended number would then write a row that decodes differently under `FILE_LOADS` from the Storage Write API paths, without a failure.
+
 [#1950]: https://github.com/flink-gcp/flink-connector-gcp/issues/1950
 [#1954]: https://github.com/flink-gcp/flink-connector-gcp/issues/1954
 [#2019]: https://github.com/flink-gcp/flink-connector-gcp/issues/2019
+[#2047]: https://github.com/flink-gcp/flink-connector-gcp/issues/2047

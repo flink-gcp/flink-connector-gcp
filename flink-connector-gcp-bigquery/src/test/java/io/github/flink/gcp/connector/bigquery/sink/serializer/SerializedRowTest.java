@@ -24,6 +24,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Message;
+import com.google.protobuf.UnknownFieldSet;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -62,6 +63,33 @@ class SerializedRowTest {
         assertThat(fromMessage.toByteString()).isEqualTo(base.toByteString());
         assertThat(fromBytes.getDescriptorForType()).isSameAs(readers);
         assertThat(fromBytes.toByteString()).isEqualTo(base.toByteString());
+    }
+
+    /**
+     * An unknown field under a declared number is encoded after the declared value, so the bytes
+     * decode to the unknown field's value; the base must be the row the bytes encode (#2047).
+     */
+    @Test
+    void parsesAMessageWhoseUnknownFieldCarriesADeclaredNumber() throws Exception {
+        Descriptors.Descriptor descriptor = descriptor(BASE);
+        int id = descriptor.findFieldByName("id").getNumber();
+        DynamicMessage base =
+                base(descriptor).toBuilder()
+                        .setUnknownFields(
+                                UnknownFieldSet.newBuilder()
+                                        .addField(
+                                                id,
+                                                UnknownFieldSet.Field.newBuilder()
+                                                        .addVarint(9L)
+                                                        .build())
+                                        .build())
+                        .build();
+
+        Message read = SerializedRow.ofMessage(base).getBase(descriptor);
+
+        assertThat(base.getField(descriptor.findFieldByName("id"))).isEqualTo(7L);
+        assertThat(read.getField(descriptor.findFieldByName("id"))).isEqualTo(9L);
+        assertThat(read).isEqualTo(DynamicMessage.parseFrom(descriptor, base.toByteString()));
     }
 
     @Test
@@ -140,12 +168,64 @@ class SerializedRowTest {
 
     @Test
     void reportsWhetherWellFormedBaseBytesCarryAGivenNumber() throws Exception {
-        ByteString bytes = base(descriptor(BASE)).toByteString();
+        Descriptors.Descriptor descriptor = descriptor(BASE);
+        ByteString bytes = base(descriptor).toByteString();
 
-        assertThat(SerializedRow.ofBytes(bytes).checkWellFormed(new int[] {9, 2})).isTrue();
-        assertThat(SerializedRow.ofBytes(bytes).checkWellFormed(new int[] {9, 10})).isFalse();
-        assertThat(SerializedRow.ofMessage(base(descriptor(BASE))).checkWellFormed(new int[] {1}))
+        assertThat(SerializedRow.ofBytes(bytes).checkWellFormed(descriptor, new int[] {9, 2}))
+                .isTrue();
+        assertThat(SerializedRow.ofBytes(bytes).checkWellFormed(descriptor, new int[] {9, 10}))
                 .isFalse();
+    }
+
+    /**
+     * A message of the serializer's own descriptor instance without unknown fields can carry no
+     * number chosen outside that descriptor, so it is not walked; the numbers given here are the
+     * descriptor's own only to show that the walk did not run.
+     */
+    @Test
+    void trustsAMessageOfTheSerializersOwnDescriptorWithoutUnknownFields() throws Exception {
+        Descriptors.Descriptor descriptor = descriptor(BASE);
+
+        assertThat(
+                        SerializedRow.ofMessage(base(descriptor))
+                                .checkWellFormed(descriptor, new int[] {1}))
+                .isFalse();
+    }
+
+    /**
+     * A serializer outside the connector may hand over a message of another descriptor, whose own
+     * fields can use a number the tail will set; that message is walked as its bytes would be.
+     */
+    @Test
+    void walksAMessageOfAnotherDescriptorInstance() throws Exception {
+        Descriptors.Descriptor serializers = descriptor(BASE);
+        DynamicMessage base = base(descriptor(BASE));
+
+        assertThat(SerializedRow.ofMessage(base).checkWellFormed(serializers, new int[] {9, 2}))
+                .isTrue();
+        assertThat(SerializedRow.ofMessage(base).checkWellFormed(serializers, new int[] {9, 10}))
+                .isFalse();
+    }
+
+    /** An unknown field of the serializer's own descriptor can carry a number the tail will set. */
+    @Test
+    void walksAMessageThatCarriesUnknownFields() throws Exception {
+        Descriptors.Descriptor descriptor = descriptor(BASE);
+        DynamicMessage base =
+                base(descriptor).toBuilder()
+                        .setUnknownFields(
+                                UnknownFieldSet.newBuilder()
+                                        .addField(
+                                                9,
+                                                UnknownFieldSet.Field.newBuilder()
+                                                        .addVarint(1L)
+                                                        .build())
+                                        .build())
+                        .build();
+        SerializedRow row = SerializedRow.ofMessage(base);
+
+        assertThat(row.checkWellFormed(descriptor, new int[] {9})).isTrue();
+        assertThat(row.checkWellFormed(descriptor, new int[] {10})).isFalse();
     }
 
     /**

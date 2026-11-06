@@ -68,7 +68,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `*DeserializationSchema` vocabulary (`docs/adr/0140`). `JsonDocumentOptions` names the JSON
   conversion policy because a JSON document carries no schema of its own. The package remains
   `serializer`, and internal helpers keep `Serializer` or `Deserializer` where that word names
-  their implementation role.
+  their implementation role. A public one-method SPI that is not the whole-record conversion takes
+  `*Provider`, as `ProtoRowMessageProvider` does (`docs/adr/0140`, revision for #2047).
 - A configured service-account key remains a path in the job graph and is loaded only when a
   runtime component creates its client.
   Every client in one write method must receive it; `FILE_LOADS` uses the same identity for
@@ -104,7 +105,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   occurrence wins, and because `SerializedRow.checkWellFormed` refuses serializer bytes a tail
   could be read into and reports bytes that already carry an appended number, which the engine
   then builds the old way and splits; do not admit a message or repeated appended field without
-  replacing the concatenation, and do not drop the check. A new built-in serializer implements `ProtoRowMessageSerializer`, so that
+  replacing the concatenation, and do not drop the check. `ProtoRowMessageProvider` is
+  `@PublicEvolving` (#2047), so `checkWellFormed` trusts a handed-over message only for the
+  serializer's descriptor instance without unknown fields, `getBase` hands over only such a
+  message, and `ProtoToAvroConverter` refuses a base leaving a `required` field unset; do not
+  widen either trust. A new built-in serializer implements `ProtoRowMessageProvider`, so that
   `FILE_LOADS` converts its message instead of parsing its bytes, and that writer reads the base
   and the tail through `SerializedRow`, which tolerates a descriptor instance other than its own.
 - **The protobuf mapping is normative for every serializer**; `NULLABLE` is the default mode and

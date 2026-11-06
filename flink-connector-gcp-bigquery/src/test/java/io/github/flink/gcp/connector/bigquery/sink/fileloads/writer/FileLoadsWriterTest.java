@@ -44,7 +44,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldNul
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFieldType;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaAdvancingSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.testutils.LogCapture;
@@ -238,7 +238,7 @@ class FileLoadsWriterTest {
      */
     private static final class MessageTestRowSerializer
             extends BigQueryProtoSerializationSchema<TestRow>
-            implements ProtoRowMessageSerializer<TestRow> {
+            implements ProtoRowMessageProvider<TestRow> {
         private static final long serialVersionUID = 1L;
 
         private final TestRowSerializer rows;
@@ -275,7 +275,7 @@ class FileLoadsWriterTest {
      */
     private static final class AliasedHugeRowSerializer
             extends BigQueryProtoSerializationSchema<TestRow>
-            implements ProtoRowMessageSerializer<TestRow> {
+            implements ProtoRowMessageProvider<TestRow> {
         private static final long serialVersionUID = 1L;
 
         private static final TableSchema BLOBS =

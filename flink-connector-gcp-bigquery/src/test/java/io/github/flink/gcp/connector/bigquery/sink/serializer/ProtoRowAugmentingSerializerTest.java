@@ -32,6 +32,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.Message;
+import com.google.protobuf.UnknownFieldSet;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField.SchemaOwnership;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField.WriteOnlyField;
@@ -463,6 +464,78 @@ class ProtoRowAugmentingSerializerTest {
         assertThat(decoded.getField(descriptor.findFieldByName("source"))).isEqualTo("u");
         assertThat(serializer.serializeRow(new TestRecord(-1, "skip", Instant.EPOCH), DESTINATION))
                 .isNull();
+    }
+
+    /**
+     * A serializer outside the connector can hand over a message the connector did not build: one
+     * carrying an appended number as an unknown field, or one of another descriptor instance whose
+     * own field uses it. Either is walked as its bytes would be, so the row is the parse-and-set
+     * row and its tail carries what {@code FILE_LOADS} reads, including a value kept for a {@code
+     * null} provider, which a tail concatenated after a trusted message would leave behind.
+     */
+    @Test
+    void walksAHandedOverMessageThatCarriesAnAppendedNumber() throws Exception {
+        AdditionalField<TestRecord> omitted =
+                AdditionalField.of(
+                        "omitted_value",
+                        AdditionalFieldType.STRING,
+                        AdditionalFieldNullPolicy.NULLABLE,
+                        record -> null);
+        int number =
+                serializer(new MessageSerializer(), options(omitted))
+                        .getDescriptor(DESTINATION)
+                        .findFieldByName("omitted_value")
+                        .getNumber();
+        Descriptors.Descriptor other =
+                descriptor(
+                        BASE_SCHEMA.toBuilder()
+                                .addFields(
+                                        field(
+                                                "stray",
+                                                TableFieldSchema.Type.STRING,
+                                                TableFieldSchema.Mode.NULLABLE))
+                                .build());
+        Descriptors.Descriptor renumbered =
+                Descriptors.FileDescriptor.buildFrom(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("renumbered.proto")
+                                        .addMessageType(
+                                                other.toProto().toBuilder()
+                                                        .setField(
+                                                                1,
+                                                                other
+                                                                        .toProto()
+                                                                        .getField(1)
+                                                                        .toBuilder()
+                                                                        .setNumber(number)
+                                                                        .build()))
+                                        .build(),
+                                new Descriptors.FileDescriptor[0])
+                        .findMessageTypeByName(other.getName());
+
+        for (StrayMessageSerializer delegate :
+                Arrays.asList(
+                        new StrayMessageSerializer(number, null),
+                        new StrayMessageSerializer(number, renumbered))) {
+            ProtoRowAugmentingSerializer<TestRecord> serializer =
+                    serializer(delegate, options(omitted));
+            Descriptors.Descriptor descriptor = serializer.getDescriptor(DESTINATION);
+            Descriptors.FieldDescriptor omittedField = descriptor.findFieldByName("omitted_value");
+            TestRecord record = new TestRecord(3, "unused", Instant.EPOCH);
+
+            SerializedRow row = serializer.serializeRow(record, DESTINATION);
+            DynamicMessage expected =
+                    DynamicMessage.newBuilder(descriptor)
+                            .mergeFrom(delegate.last.toByteString())
+                            .buildPartial();
+
+            String shape = delegate.describe();
+            assertThat(DynamicMessage.parseFrom(descriptor, row.toByteString()))
+                    .as(shape)
+                    .isEqualTo(expected);
+            assertThat(row.getTail(descriptor).getField(omittedField)).as(shape).isEqualTo("stale");
+            assertThat(row.getSerializedSize()).as(shape).isEqualTo(row.toByteString().size());
+        }
     }
 
     @Test
@@ -930,7 +1003,7 @@ class ProtoRowAugmentingSerializerTest {
     /** Hands its row message over; encoding it through {@link #serialize} is a test failure. */
     private static final class MessageSerializer
             extends BigQueryProtoSerializationSchema<TestRecord>
-            implements ProtoRowMessageSerializer<TestRecord> {
+            implements ProtoRowMessageProvider<TestRecord> {
         private static final long serialVersionUID = 1L;
 
         private transient Descriptors.Descriptor descriptor;
@@ -964,6 +1037,80 @@ class ProtoRowAugmentingSerializerTest {
             last =
                     DynamicMessage.newBuilder(rowDescriptor)
                             .setField(rowDescriptor.findFieldByName("id"), element.id)
+                            .build();
+            return last;
+        }
+    }
+
+    /**
+     * Hands over a message carrying {@code "stale"} under {@code number}: as an unknown field of
+     * its own descriptor, or, given {@code messageDescriptor}, as that descriptor's second field,
+     * which {@code messageDescriptor} numbers {@code number}.
+     */
+    private static final class StrayMessageSerializer
+            extends BigQueryProtoSerializationSchema<TestRecord>
+            implements ProtoRowMessageProvider<TestRecord> {
+        private static final long serialVersionUID = 1L;
+
+        private final int number;
+        @Nullable private final transient Descriptors.Descriptor messageDescriptor;
+        private transient Descriptors.Descriptor descriptor;
+        private transient Message last;
+
+        private StrayMessageSerializer(
+                int number, @Nullable Descriptors.Descriptor messageDescriptor) {
+            this.number = number;
+            this.messageDescriptor = messageDescriptor;
+        }
+
+        @Override
+        public TableSchema getTableSchema(TableDestination destination) {
+            return BASE_SCHEMA;
+        }
+
+        @Override
+        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
+            if (descriptor == null) {
+                descriptor = descriptor(BASE_SCHEMA);
+            }
+            return descriptor;
+        }
+
+        @Override
+        public ByteString serialize(TestRecord element) {
+            return serializeToMessage(element).toByteString();
+        }
+
+        String describe() {
+            return messageDescriptor == null
+                    ? "an unknown field of the serializer's descriptor"
+                    : "a field of another descriptor";
+        }
+
+        @Override
+        public Message serializeToMessage(TestRecord element) {
+            if (messageDescriptor != null) {
+                last =
+                        DynamicMessage.newBuilder(messageDescriptor)
+                                .setField(messageDescriptor.findFieldByName("id"), element.id)
+                                .setField(messageDescriptor.findFieldByNumber(number), "stale")
+                                .build();
+                return last;
+            }
+            Descriptors.Descriptor rowDescriptor = getDescriptor(DESTINATION);
+            last =
+                    DynamicMessage.newBuilder(rowDescriptor)
+                            .setField(rowDescriptor.findFieldByName("id"), element.id)
+                            .setUnknownFields(
+                                    UnknownFieldSet.newBuilder()
+                                            .addField(
+                                                    number,
+                                                    UnknownFieldSet.Field.newBuilder()
+                                                            .addLengthDelimited(
+                                                                    ByteString.copyFromUtf8(
+                                                                            "stale"))
+                                                            .build())
+                                            .build())
                             .build();
             return last;
         }

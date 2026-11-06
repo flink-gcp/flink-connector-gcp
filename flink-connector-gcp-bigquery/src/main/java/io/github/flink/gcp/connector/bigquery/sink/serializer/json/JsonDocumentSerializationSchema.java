@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.serializer.json;
 
-import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
@@ -29,7 +28,7 @@ import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
 import org.json.JSONObject;
@@ -60,7 +59,7 @@ import java.io.IOException;
  */
 @Public
 public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializationSchema<String>
-        implements ProtoRowMessageSerializer<String> {
+        implements ProtoRowMessageProvider<String> {
 
     private static final long serialVersionUID = 1L;
 
@@ -151,14 +150,13 @@ public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializ
     /**
      * Converts a record into its protobuf row message, the row {@link #serialize} encodes.
      *
-     * <p>Internal: the sink calls this to hand the row to a write method that walks the message
-     * rather than its bytes.
+     * <p>The sink calls this to hand the row to a write method that walks the message rather than
+     * its bytes. A serializer that delegates to this one forwards it to take the same path.
      *
      * @param element the record
      * @return the row message
      * @throws IOException if the record cannot be converted
      */
-    @Internal
     @Override
     public Message serializeToMessage(String element) throws IOException {
         Preconditions.checkNotNull(element, "element must not be null");

@@ -29,7 +29,7 @@ import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import javax.annotation.Nullable;
@@ -57,7 +57,7 @@ import java.io.IOException;
  */
 @Internal
 final class RowDataSerializationSchema extends BigQueryProtoSerializationSchema<RowData>
-        implements ProtoRowMessageSerializer<RowData> {
+        implements ProtoRowMessageProvider<RowData> {
 
     private static final long serialVersionUID = 1L;
 

@@ -131,9 +131,9 @@ class AdditionalFieldsBuiltInSerializersTest {
             T record,
             BigQuerySinkConfig<T> config)
             throws IOException {
-        assertThat(serializer).isInstanceOf(ProtoRowMessageSerializer.class);
+        assertThat(serializer).isInstanceOf(ProtoRowMessageProvider.class);
         Message message =
-                ((ProtoRowMessageSerializer<? super T>) serializer).serializeToMessage(record);
+                ((ProtoRowMessageProvider<? super T>) serializer).serializeToMessage(record);
         Descriptors.Descriptor own = serializer.getDescriptor(DESTINATION);
 
         assertThat(message.getDescriptorForType()).isSameAs(own);
