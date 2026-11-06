@@ -72,7 +72,14 @@ BIGQUERY_OBSERVATIONS = {
     # JobManager and the TaskManagers in turn; pilot bq1312-alo-10-a4 needed
     # about ten minutes for that and missed the startup budget by seconds.
     "input_seconds": 1200,
-    "recovery_seconds": 300,
+    # A recovery may wait for a new node, as for Bigtable, and a FILE_LOADS
+    # proof then waits up to a 120-second interval for the first checkpoint
+    # after the restore: bq2034-fl-10-uploader-a1's upgraded TaskManagers
+    # waited 75 s for a scale-up, ran 207 s after the upgrade began, and 300 s
+    # ran out before that checkpoint. The source pauses with the job, so the
+    # budget takes no input from the windows; it does take wall-clock time
+    # from the visibility query, which the cleanup start caps.
+    "recovery_seconds": 600,
     "visibility_seconds": 600,
     # FILE_LOADS deletes the JobManager only once a listing shows a load job
     # of the run RUNNING, after the window that follows the upgrade. A commit
