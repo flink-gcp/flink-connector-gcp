@@ -31,7 +31,7 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.AdditionalFields;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentationField;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowAugmentingSerializer;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SchemaDerivationException;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.SerializedRow;
 
@@ -204,8 +204,8 @@ public final class BigQuerySinkConfig<T> implements Serializable {
      * row rather than sending its bytes.
      *
      * <p>The row's base is the serializer's own: the message it built when it is a {@link
-     * ProtoRowMessageSerializer}, and its bytes otherwise. Configured additional or write-only
-     * fields are the row's tail. {@link SerializedRow#toByteString()} returns what {@link
+     * ProtoRowMessageProvider}, and its bytes otherwise. Configured additional or write-only fields
+     * are the row's tail. {@link SerializedRow#toByteString()} returns what {@link
      * #serialize(Object, TableDestination)} would.
      *
      * @throws SchemaDerivationException as {@link #serialize(Object, TableDestination)} does

@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0140: BigQuery serialization APIs use Flink's schema vocabulary
 
 - Status: Accepted
-- Date: 2026-08-23
-- Issues: [#1048](https://github.com/flink-gcp/flink-connector-gcp/issues/1048)
+- Date: 2026-08-23; refined 2026-11-06 ([#2047])
+- Issues: [#1048](https://github.com/flink-gcp/flink-connector-gcp/issues/1048), [#2047]
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` sections
   "Protobuf messages", "Avro records", "JSON records", and "Deserialization"
@@ -87,3 +87,23 @@ ADR-0055's package skeleton remains coherent: the packages group record conversi
 Repository source, tests, documentation, and examples use the new names together.
 The change does not alter row conversion, schema derivation, skip behavior, failure handling, or connector-managed checkpoint layouts.
 Source code written against an unpublished checkout must update imports and type names; no released job can contain the removed classes.
+
+## Revision: a public SPI that is not the record conversion takes `*Provider` (2026-11-06)
+
+[#2047] made public an interface the sink detects on a `BigQueryProtoSerializationSchema` and uses to take the row message it builds before encoding it.
+The interface converts a record, but it is not the record-conversion contract the `*SerializationSchema` suffix names: it has no effect on its own, and a class implements it next to the schema that `serializer(...)` receives.
+
+**A public one-method SPI that is not the whole-record conversion takes `*Provider`, so the interface is `ProtoRowMessageProvider`.**
+That is the suffix this module's public SPIs of the same shape already use, from a record or context to a value: `AdditionalFieldValueProvider`, `CdcSequenceNumberProvider` and `CdcTableOptionsProvider`.
+The rule above is unchanged for the conversion contracts and facades, and `Serializer` stays an internal helper's word: the interface had been the internal `ProtoRowMessageSerializer`, and keeping that name would have made it this module's only public `*Serializer`.
+
+The alternatives were weighed as follows.
+
+- **`ProtoRowMessageSerializationSchema`.**
+  It would read as a standalone schema, and it differs by one word from the `ProtoMessageSerializationSchema` facade in the same module.
+- **A `Supports*` ability name.**
+  Every `Supports*` type this repository uses is Flink's own ability interface, either a Table planner ability on a table source or sink or a Sink V2 ability such as `SupportsCommitter` on the sink itself; the repository defines none, and none sits on a serialization schema, so the name would read as a Flink interface the sink runtime checks.
+
+The existing `*Provider` types are callbacks a user supplies separately, through `AdditionalField.of(...)` or the CDC options, rather than interfaces implemented beside a schema, so the interface's Javadoc opens by saying where it is implemented.
+
+[#2047]: https://github.com/flink-gcp/flink-connector-gcp/issues/2047

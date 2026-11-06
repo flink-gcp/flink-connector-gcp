@@ -63,7 +63,7 @@ public final class SerializedRow {
 
     /**
      * Serializes a record with the given serializer, keeping the message it builds when it is a
-     * {@link ProtoRowMessageSerializer} and its bytes otherwise.
+     * {@link ProtoRowMessageProvider}, whether built in or not, and its bytes otherwise.
      *
      * @return the row, without a tail, or {@code null} when the serializer skips the record
      * @throws IOException as the serializer does
@@ -72,9 +72,9 @@ public final class SerializedRow {
     @SuppressWarnings("unchecked")
     public static <T> SerializedRow serialize(
             BigQueryProtoSerializationSchema<? super T> serializer, T element) throws IOException {
-        if (serializer instanceof ProtoRowMessageSerializer) {
+        if (serializer instanceof ProtoRowMessageProvider) {
             Message message =
-                    ((ProtoRowMessageSerializer<? super T>) serializer).serializeToMessage(element);
+                    ((ProtoRowMessageProvider<? super T>) serializer).serializeToMessage(element);
             return message == null ? null : ofMessage(message);
         }
         ByteString bytes = serializer.serialize(element);
@@ -97,19 +97,28 @@ public final class SerializedRow {
      *
      * <p>A base whose last field declares more bytes than remain, or that leaves a group open,
      * would read the tail's bytes as part of that field: the concatenation could then decode as
-     * some other row instead of failing. The check walks the encoding without building anything. A
-     * base the serializer handed over as a message is well-formed by construction and carries only
-     * fields of its own descriptor.
+     * some other row instead of failing. The check walks the encoding without building anything.
      *
+     * <p>A base the serializer handed over as a message is well-formed by construction, and is not
+     * walked when its descriptor is the given instance and it carries no unknown field: the tail's
+     * numbers are chosen outside that descriptor's fields and extension ranges, so only an unknown
+     * field could carry one of them. Any other message, which a serializer outside the connector
+     * may return, is encoded and walked as its bytes would be; the encoding is kept for the row.
+     *
+     * @param descriptor the serializer's descriptor for the row's destination, which the tail's
+     *     numbers were chosen against
      * @param numbers the field numbers the tail will set
-     * @return whether the base's bytes already carry a value under one of those numbers
+     * @return whether the base already carries a value under one of those numbers
      * @throws InvalidProtocolBufferException if the base's bytes are not a well-formed encoding
      */
-    boolean checkWellFormed(int[] numbers) throws InvalidProtocolBufferException {
-        if (baseMessage != null) {
+    boolean checkWellFormed(Descriptors.Descriptor descriptor, int[] numbers)
+            throws InvalidProtocolBufferException {
+        if (baseMessage != null
+                && baseMessage.getDescriptorForType() == descriptor
+                && baseMessage.getUnknownFields().asMap().isEmpty()) {
             return false;
         }
-        CodedInputStream input = baseBytes.newCodedInput();
+        CodedInputStream input = baseBytes().newCodedInput();
         boolean carries = false;
         try {
             for (int tag = input.readTag(); tag != 0; tag = input.readTag()) {
@@ -163,7 +172,16 @@ public final class SerializedRow {
 
     /**
      * Returns the base as a message of the given descriptor: the serializer's own message when it
-     * has exactly that descriptor, and otherwise the base's bytes parsed against it.
+     * has exactly that descriptor and carries no unknown field, and otherwise the base's bytes
+     * parsed against it.
+     *
+     * <p>An unknown field can carry a declared field's number, which its encoding places after the
+     * declared value, so parsing the bytes reads the unknown field's value where the message reads
+     * the declared one. Such a message is parsed, so the row is the one its bytes encode.
+     *
+     * <p>A message returned as it is was never parsed, so a {@code required} field it leaves unset
+     * is not refused here; a reader that relies on such a field checks it, as {@code FILE_LOADS}
+     * does.
      *
      * @param descriptor the serializer's descriptor for the row's destination
      * @return the base message
@@ -171,7 +189,9 @@ public final class SerializedRow {
      */
     public Message getBase(Descriptors.Descriptor descriptor)
             throws InvalidProtocolBufferException {
-        if (baseMessage != null && baseMessage.getDescriptorForType() == descriptor) {
+        if (baseMessage != null
+                && baseMessage.getDescriptorForType() == descriptor
+                && baseMessage.getUnknownFields().asMap().isEmpty()) {
             return baseMessage;
         }
         return DynamicMessage.parseFrom(descriptor, baseBytes());

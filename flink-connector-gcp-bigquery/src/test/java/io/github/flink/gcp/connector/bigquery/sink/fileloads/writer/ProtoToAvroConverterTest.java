@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
+import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
@@ -74,6 +75,56 @@ class ProtoToAvroConverterTest {
      * the base's field descriptors; an added column is paired by name case-insensitively, as every
      * column is.
      */
+    /**
+     * A serializer that hands over its message is never parsed, so a {@code required} field it
+     * leaves unset, at the top level or inside a record, is refused here as parsing its bytes would
+     * refuse it, rather than staged as the field's default value (#2047).
+     */
+    @Test
+    void refusesAMessageThatLeavesARequiredFieldUnset() throws Exception {
+        TableSchema schema =
+                schemaOf(
+                        field("id", TableFieldSchema.Type.INT64, TableFieldSchema.Mode.REQUIRED),
+                        TableFieldSchema.newBuilder()
+                                .setName("item")
+                                .setType(TableFieldSchema.Type.STRUCT)
+                                .setMode(TableFieldSchema.Mode.NULLABLE)
+                                .addFields(
+                                        field(
+                                                "sku",
+                                                TableFieldSchema.Type.STRING,
+                                                TableFieldSchema.Mode.REQUIRED))
+                                .build());
+        Setup setup = new Setup(schema);
+        Descriptors.Descriptor item = setup.field("item").getMessageType();
+        DynamicMessage completeItem =
+                DynamicMessage.newBuilder(item).setField(item.findFieldByName("sku"), "s").build();
+
+        DynamicMessage complete =
+                DynamicMessage.newBuilder(setup.descriptor)
+                        .setField(setup.field("id"), 7L)
+                        .setField(setup.field("item"), completeItem)
+                        .build();
+        DynamicMessage missingTop =
+                DynamicMessage.newBuilder(setup.descriptor)
+                        .setField(setup.field("item"), completeItem)
+                        .buildPartial();
+        DynamicMessage missingNested =
+                DynamicMessage.newBuilder(setup.descriptor)
+                        .setField(setup.field("id"), 7L)
+                        .setField(
+                                setup.field("item"), DynamicMessage.newBuilder(item).buildPartial())
+                        .buildPartial();
+
+        assertThat(setup.converter.convert(complete).get("id")).isEqualTo(7L);
+        assertThatThrownBy(() -> setup.converter.convert(missingTop))
+                .isInstanceOf(InvalidProtocolBufferException.class)
+                .hasMessageContaining("id");
+        assertThatThrownBy(() -> setup.converter.convert(missingNested))
+                .isInstanceOf(InvalidProtocolBufferException.class)
+                .hasMessageContaining("sku");
+    }
+
     @Test
     void convertsABaseAndATailAsTheMergedRow() throws Exception {
         TableSchema base =

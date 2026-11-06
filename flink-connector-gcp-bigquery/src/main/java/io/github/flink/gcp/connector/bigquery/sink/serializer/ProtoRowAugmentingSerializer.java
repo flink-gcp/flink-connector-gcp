@@ -112,9 +112,9 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         return base.toBuilder().addAllFields(physical).build();
     }
 
-    private Descriptors.Descriptor augmentedDescriptor(TableDestination destination) {
+    private Descriptors.Descriptor augmentedDescriptor(Descriptors.Descriptor base) {
         return ProtoDescriptorAugmenter.augment(
-                delegate.getDescriptor(destination),
+                base,
                 fields.stream()
                         .map(ProtoRowAugmentationField::getDescriptorField)
                         .collect(Collectors.toList()),
@@ -139,7 +139,7 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
      * contract.
      *
      * <p>The delegate's row is kept as it came back, as a message when the delegate is a {@link
-     * ProtoRowMessageSerializer} and as bytes otherwise, and the augmentation fields are set on a
+     * ProtoRowMessageProvider} and as bytes otherwise, and the augmentation fields are set on a
      * separate tail message; see {@link SerializedRow} for why the two encode as one row.
      *
      * @throws SchemaDerivationException when the destination's schema, derived again after the
@@ -166,7 +166,8 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         // The delegate's bytes are not parsed, but a tail must not follow an encoding that is not
         // well-formed. Checked where the parse used to fail: after the destination's derivation,
         // whose failure outranks the record's, and before any provider runs.
-        boolean carriesAppendedNumbers = base.checkWellFormed(surfaces.augmentationNumbers);
+        boolean carriesAppendedNumbers =
+                base.checkWellFormed(surfaces.baseDescriptor, surfaces.augmentationNumbers);
         // Only the augmentation fields are set here. The delegate's row is not parsed into this
         // builder: SerializedRow encodes it ahead of the tail, which decodes as the same row.
         DynamicMessage.Builder tail = DynamicMessage.newBuilder(surfaces.descriptor);
@@ -268,14 +269,19 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         // The table schema first: a name a destination already carries is reported as the column
         // collision it is, rather than as the descriptor collision it also causes.
         TableSchema augmentedTableSchema = augmentedTableSchema(destination);
-        Descriptors.Descriptor descriptor = augmentedDescriptor(destination);
+        Descriptors.Descriptor baseDescriptor = delegate.getDescriptor(destination);
+        Descriptors.Descriptor descriptor = augmentedDescriptor(baseDescriptor);
         List<Descriptors.FieldDescriptor> augmentationFields = augmentationFields(descriptor);
         if (fingerprint != null) {
             checkNumbersKept(destination, augmentationFields);
         }
         SchemaSurfaces derived =
                 new SchemaSurfaces(
-                        fingerprint, augmentedTableSchema, descriptor, augmentationFields);
+                        fingerprint,
+                        augmentedTableSchema,
+                        baseDescriptor,
+                        descriptor,
+                        augmentationFields);
         cache().put(destination, derived);
         return derived;
     }
@@ -366,6 +372,7 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
     private static final class SchemaSurfaces {
         private final Object fingerprint;
         private final TableSchema tableSchema;
+        private final Descriptors.Descriptor baseDescriptor;
         private final Descriptors.Descriptor descriptor;
         private final List<Descriptors.FieldDescriptor> augmentationFields;
         private final int[] augmentationNumbers;
@@ -373,10 +380,12 @@ public final class ProtoRowAugmentingSerializer<T> implements Serializable {
         private SchemaSurfaces(
                 Object fingerprint,
                 TableSchema tableSchema,
+                Descriptors.Descriptor baseDescriptor,
                 Descriptors.Descriptor descriptor,
                 List<Descriptors.FieldDescriptor> augmentationFields) {
             this.fingerprint = fingerprint;
             this.tableSchema = tableSchema;
+            this.baseDescriptor = baseDescriptor;
             this.descriptor = descriptor;
             this.augmentationFields = augmentationFields;
             this.augmentationNumbers = new int[augmentationFields.size()];

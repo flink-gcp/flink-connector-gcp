@@ -108,6 +108,20 @@ API notes:
   record would otherwise leave an empty table under a green job. The destination is resolved
   *before* the serializer runs, so a record the serializer would skip still needs either a
   `TableDestination` or an explicit `UnroutableRecord` result.
+- A custom serializer that builds a protobuf message can also implement
+  `ProtoRowMessageProvider`, with the serializer's own type argument, and return that message
+  from `serializeToMessage`. `FILE_LOADS` then converts the message directly instead of parsing
+  the bytes `serialize` would return. The built-in serializers implement the interface, so a
+  serializer that delegates to one of them, for example one picking a
+  `ProtoMessageSerializationSchema` per message type, forwards `serializeToMessage` as it forwards
+  `serialize`. Which of the two methods the sink calls depends on the write method and on whether
+  additional or write-only fields are configured, so both must produce the same row, and `null`
+  skips the record from either. The message is used as it is only when its descriptor is the very
+  instance `getDescriptor` returns for the destination and it carries no unknown field, so a
+  wrapper forwards `getDescriptor` too. Any other message is encoded and its bytes are handled as
+  the byte path handles them, which costs the saving. A message that leaves unset a field its
+  protobuf descriptor declares `required` is refused as its bytes would be. A serializer that only
+  produces bytes keeps the byte path.
 - `DestinationResolver.resolve(element, context)` receives the writer context (event timestamp,
   watermark) so time-based routing such as daily tables is expressible. Resolvers run per record:
   cache and reuse `TableDestination` instances. A deterministic record-specific routing failure

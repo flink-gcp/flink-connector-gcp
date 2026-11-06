@@ -26,6 +26,7 @@ import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
+import com.google.protobuf.InvalidProtocolBufferException;
 import com.google.protobuf.MessageOrBuilder;
 import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
@@ -165,6 +166,8 @@ public final class ProtoToAvroConverter {
      *
      * @param message the row, parsed against the serializer's descriptor
      * @return the equivalent Avro record
+     * @throws InvalidProtocolBufferException if the serializer's row leaves a field its descriptor
+     *     declares {@code required} unset, as parsing its bytes would report
      * @throws IOException if a value cannot be represented in the destination column
      */
     public GenericRecord convert(MessageOrBuilder message) throws IOException {
@@ -178,6 +181,8 @@ public final class ProtoToAvroConverter {
      * @param tail the added fields, a message of the augmented descriptor, or {@code null} when
      *     this converter was built without one
      * @return the equivalent Avro record
+     * @throws InvalidProtocolBufferException if the serializer's row leaves a field its descriptor
+     *     declares {@code required} unset, as parsing its bytes would report
      * @throws IOException if a value cannot be represented in the destination column
      */
     public GenericRecord convert(MessageOrBuilder base, @Nullable MessageOrBuilder tail)
@@ -446,6 +451,7 @@ public final class ProtoToAvroConverter {
         private final Kind kind;
         private final boolean repeated;
         private final boolean nullable;
+        private final boolean required;
         private final RecordPlan nested;
         private final int decimalScale;
         private final String path;
@@ -466,6 +472,10 @@ public final class ProtoToAvroConverter {
             this.kind = kind;
             this.repeated = repeated;
             this.nullable = nullable;
+            // A message the serializer hands over was never parsed, so nothing has refused one
+            // that leaves a required field unset; parsing its bytes would have. An appended field
+            // the tail must carry is set before the row gets here, so the check never fires there.
+            this.required = protoField.isRequired();
             this.nested = nested;
             this.decimalScale = decimalScale;
             this.path = path;
@@ -480,6 +490,10 @@ public final class ProtoToAvroConverter {
                     values.add(convertValue(message.getRepeatedField(protoField, i)));
                 }
                 return values;
+            }
+            if (required && !message.hasField(protoField)) {
+                throw new InvalidProtocolBufferException(
+                        "Message missing required fields: " + path);
             }
             if (nullable && !message.hasField(protoField)) {
                 return null;
