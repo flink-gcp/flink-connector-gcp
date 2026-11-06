@@ -356,7 +356,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `Storage.delete(BlobId...)`, which the gRPC client rejects as HTTP-only.
   Finalization does not parallelize appends, size rolls, capacity evictions, or idle closes
   (`docs/adr/0146`).
-  `backgroundStagingUploadEnabled` (default false) is the separate opt-in for those, sized by
+  `backgroundStagingUploadEnabled` (default true since #2034, ADR-0195) is the separate switch for those, sized by
   `maxInFlightUploadOperations` (default 2, rejected with the uploader off): one upload
   thread per writer runs upload operations (a full chunk, or a rolled, evicted or idle file's close
   with its last chunk) in submission order, bounded by permits per writer and deliberately uncapped

@@ -983,8 +983,8 @@ public final class BigQueryConnectorOptions {
     /**
      * How many upload operations each writer subtask's background staging uploader may hold, queued
      * or running; the task thread blocks once this many are. An operation is one full upload chunk,
-     * or a closing file's finalization with its last chunk. Accepted only with
-     * sink.file-loads.background-staging-upload.enabled.
+     * or a closing file's finalization with its last chunk. Rejected when
+     * sink.file-loads.background-staging-upload.enabled is false.
      */
     public static final ConfigOption<Integer> SINK_FILE_LOADS_IN_FLIGHT_MAX_UPLOAD_OPERATIONS =
             ConfigOptions.key("sink.file-loads.in-flight.max-upload-operations")
@@ -995,8 +995,9 @@ public final class BigQueryConnectorOptions {
                                     + " staging uploader may hold, queued or running; the task thread"
                                     + " blocks once this many are. An operation is one full upload"
                                     + " chunk, or a closing file's finalization with its last chunk."
-                                    + " Accepted only with"
-                                    + " sink.file-loads.background-staging-upload.enabled.");
+                                    + " Rejected when"
+                                    + " sink.file-loads.background-staging-upload.enabled is"
+                                    + " false.");
 
     /**
      * The maximum number of staging files each writer subtask retains for the next commit,

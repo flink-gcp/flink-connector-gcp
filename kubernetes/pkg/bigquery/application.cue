@@ -20,11 +20,15 @@ import (
 	flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 )
 
-// The FILE_LOADS sink inputs at the connector's FileLoadsOptions defaults and ranges; the
-// connector's builder checks them again when the job starts. The application does not expose
+// The FILE_LOADS sink inputs at the connector's FileLoadsOptions defaults and ranges, except
+// backgroundStagingUploadEnabled below; the connector's builder checks them again when the job
+// starts. The application does not expose
 // maxPendingFiles, so its default of 10,000 also caps maxOpenDestinations. The connector
 // refuses maxInFlightUploadOperations while the background staging uploader is off, so the
 // knob exists, and renders, only with the uploader on.
+// backgroundStagingUploadEnabled is the one knob whose default is not the connector's: the
+// connector turns the uploader on by default, and the package keeps it off so that only the
+// -uploader trials run it and fl-10 keeps measuring the task-thread uploads it always has.
 #FileLoads: {
 	stagingFormat:                        *"AVRO" | "PARQUET"
 	maxConcurrentCheckpointFinalizations: *1 | (int & >=1 & <=8)

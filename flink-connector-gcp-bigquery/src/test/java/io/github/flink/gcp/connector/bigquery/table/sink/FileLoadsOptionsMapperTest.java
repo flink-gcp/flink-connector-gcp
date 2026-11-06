@@ -384,15 +384,20 @@ class FileLoadsOptionsMapperTest {
     }
 
     @Test
-    void anUploadDepthWithoutTheUploaderNamesBothTableOptionKeys() {
+    void theUploaderSwitchMapsOff() {
+        // true is the default, so the full mapping above cannot tell whether the key was read.
         Map<String, String> options = staged();
-        options.put(key("maxInFlightUploadOperations"), "2");
+        options.put(key("backgroundStagingUploadEnabled"), "false");
+        assertThat(map(options).isBackgroundStagingUploadEnabled()).isFalse();
+        assertThat(map(staged()).isBackgroundStagingUploadEnabled()).isTrue();
+    }
 
-        assertThatThrownBy(() -> map(options))
-                .isInstanceOf(ValidationException.class)
-                .hasMessageContaining("Option '" + key("maxInFlightUploadOperations") + "'")
-                .hasMessageContaining(
-                        "option '" + key("backgroundStagingUploadEnabled") + "' = true");
+    @Test
+    void anUploadDepthWithoutTheUploaderNamesBothTableOptionKeys() {
+        // The uploader is on by default, so a depth alone is accepted.
+        Map<String, String> options = staged();
+        options.put(key("maxInFlightUploadOperations"), "3");
+        assertThat(map(options).getMaxInFlightUploadOperations()).isEqualTo(3);
 
         options.put(key("backgroundStagingUploadEnabled"), "false");
         assertThatThrownBy(() -> map(options))
@@ -404,6 +409,7 @@ class FileLoadsOptionsMapperTest {
         // Checked before the value is applied, so a depth of 0 without the uploader is reported for
         // the missing uploader rather than for its value.
         Map<String, String> zero = staged();
+        zero.put(key("backgroundStagingUploadEnabled"), "false");
         zero.put(key("maxInFlightUploadOperations"), "0");
         assertThatThrownBy(() -> map(zero))
                 .isInstanceOf(ValidationException.class)

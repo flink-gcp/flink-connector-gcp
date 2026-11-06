@@ -2056,16 +2056,18 @@ Measure close-time heap and CPU before raising the concurrency for Parquet.
 
 Checkpoint finalization does not help a writer with one or two busy destinations, because most of its upload work happens between checkpoints.
 Each open file sends a resumable-upload request every time its upload chunk fills, and a destination that reaches `maxStagingFileBytes` finalizes its file at that roll.
-Both wait on the task thread by default, so a writer that crosses chunks every few seconds spends part of each one blocked on Cloud Storage rather than encoding records.
-`backgroundStagingUploadEnabled(true)` starts a background staging uploader, one upload thread per writer: the task thread submits each full chunk, and each size-rolled, evicted or idle file's close together with its last chunk, to that thread as one upload operation and keeps encoding the next chunk.
+With the uploader off both wait on the task thread, so a writer that crosses chunks every few seconds spends part of each one blocked on Cloud Storage rather than encoding records.
+The background staging uploader, on by default, is one upload thread per writer: the task thread submits each full chunk, and each size-rolled, evicted or idle file's close together with its last chunk, to that thread as one upload operation and keeps encoding the next chunk.
 The thread runs the operations in submission order, so a file's chunks stay in order and its close follows its last chunk, and a committable is released only after its file is finalized.
-`maxInFlightUploadOperations`, 2 by default and accepted only with the uploader on, counts operations queued or running, closes without a remaining chunk included; once that many are, the task thread blocks until one completes.
+`maxInFlightUploadOperations`, 2 by default and rejected with the uploader off, counts operations queued or running, closes without a remaining chunk included; once that many are, the task thread blocks until one completes.
 One already lets encoding overlap one upload but left the task thread waiting for the permit 9–14% of the time in the measurements below, and a value above 2 only lets more work queue, because the thread never uploads in parallel.
 The uploader therefore adds at most that many chunks of upload payload per writer however many destinations are open, on top of the chunk each open file holds, and the connector imposes no upper bound because the value adds no thread or client, only that heap.
 A checkpoint or end of input first waits for the thread to finish what it holds, then finalizes the remaining open files on the task thread or through `maxConcurrentCheckpointFinalizations`, as without the uploader.
 An upload failure on the thread fails the next write that stages a row, the next idle close, or the checkpoint, whichever comes first, and a JVM-fatal error is rethrown as itself.
 When the writer closes before a checkpoint has drained the thread, after a failure or on cancellation, it waits for nothing: queued files are never finalized, and a close already running may finalize an object that no committable references, which is left like a failed attempt's other staging leftovers to the bucket lifecycle rule this page recommends.
 The uploader moves the upload wait, not the encoding and compression, off the task thread, so it helps a writer that waits on Cloud Storage and does nothing for one that is CPU-bound.
+`backgroundStagingUploadEnabled(false)` turns the uploader off: the writer then starts no thread and keeps every upload on the task thread.
+With the uploader on, deployed recovery trials covering a savepoint upgrade, JobManager and TaskManager replacements and rescales in both directions each loaded every record exactly once ([findings]({{< param BookRepo >}}/blob/main/docs/adr/evidence/0195-fileloads-uploader-recovery-2034.md)).
 
 The uploader and checkpoint finalization take different parts of the wait, so which helps depends on where a writer's uploads happen.
 A writer with one or two busy destinations rolls files and crosses chunks between checkpoints, so the uploader takes most of its wait.
@@ -2105,8 +2107,8 @@ The following sequence keeps upload, load, and quota tuning separate.
 |---|---|---|
 | Writer-side checkpoint time grows with destinations and slots are available | Raise sink parallelism and verify that destinations distribute across subtasks | More subtasks can create more files and multiply writer memory bounds |
 | Several destination files reach one writer and TaskManager or slot count must stay fixed | Raise `maxConcurrentCheckpointFinalizations` from 1 toward 8 | Each active close adds a worker thread and Cloud Storage finalization request; Parquet can concurrently encode and compress buffered row groups; one open file does not benefit |
-| A writer with one or two busy destinations is busy while its task thread waits on Cloud Storage uploads | Set `backgroundStagingUploadEnabled(true)` and keep `maxInFlightUploadOperations` at 2 | One upload thread and up to two chunks of upload payload per writer, multiplied across writers; encoding and compression stay on the task thread |
-| A writer with many destinations waits on Cloud Storage at every checkpoint | Raise `maxConcurrentCheckpointFinalizations` toward 8, then also enable the uploader | The finalization workers' threads and requests, plus the uploader's thread and two chunks |
+| A writer with one or two busy destinations is busy while its task thread waits on Cloud Storage uploads | Keep the default uploader on and `maxInFlightUploadOperations` at 2 | One upload thread and up to two chunks of upload payload per writer, multiplied across writers; encoding and compression stay on the task thread |
+| A writer with many destinations waits on Cloud Storage at every checkpoint | Raise `maxConcurrentCheckpointFinalizations` toward 8, keeping the uploader on | The finalization workers' threads and requests, plus the uploader's thread and two chunks |
 | `capacityEvictions` grows while heap has measured headroom | Raise `maxOpenDestinations` | Each Avro destination adds a `stagingUploadChunkBytes` upload chunk baseline, 4 MiB by default; Parquet also adds a row group |
 | `pendingFiles` approaches `maxPendingFiles` | Reduce destination churn or per-checkpoint volume; raise the bound only with heap headroom | Every finished and open file stays in the checkpoint committable set |
 | Size-based rolls push one destination toward 10,000 staged files in a commit | Raise `maxStagingFileBytes` or reduce commit volume | Overflow adds partition loads, temporary tables, and copy jobs |
@@ -2280,11 +2282,12 @@ destination.
 The implementation's `-Xmx256m` regression probe sends 1,000 distinct destinations while the
 default keeps exactly 16 active and completes all 1,000 files.
 
-Use `16 × 4 MiB = 64 MiB` of upload chunks per subtask as the Avro baseline, then leave room for
-Avro blocks, schemas, rows in conversion, the GCS client and the rest of the task.
-Raising the option to 32 makes that baseline about 128 MiB per subtask.
-The baseline scales with `stagingUploadChunkBytes`, and the uploader, when enabled, adds
-`maxInFlightUploadOperations` chunks per subtask on top of it.
+Use `(16 + 2) × 4 MiB = 72 MiB` of upload chunks per subtask as the Avro baseline, the open files'
+chunks and the default uploader's two, then leave room for Avro blocks, schemas, rows in conversion,
+the GCS client and the rest of the task.
+Raising the option to 32 makes that baseline about 136 MiB per subtask.
+The baseline scales with `stagingUploadChunkBytes`; the uploader's share is
+`maxInFlightUploadOperations` chunks per subtask, and none with the uploader off.
 With the uploader, closing a file briefly holds one more chunk, because the client copies the last,
 partial chunk into a buffer of its own; that happens one file at a time on the upload thread, or
 once per file finalizing concurrently at a checkpoint.
