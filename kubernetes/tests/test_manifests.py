@@ -1016,7 +1016,8 @@ def bigquery_leaf(module, **changes):
     return path
 
 
-# The FILE_LOADS arguments at the connector's defaults; the Storage Write modes take none.
+# The FILE_LOADS arguments at the package's defaults, the connector's except the uploader, which
+# the package keeps off; the Storage Write modes take none.
 FILE_LOADS_DEFAULT_ARGS = [
     "--staging-format",
     "AVRO",

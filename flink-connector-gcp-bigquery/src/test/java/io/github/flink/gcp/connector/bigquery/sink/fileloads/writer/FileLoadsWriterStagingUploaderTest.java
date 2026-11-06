@@ -41,10 +41,12 @@ import java.nio.channels.WritableByteChannel;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -107,7 +109,8 @@ class FileLoadsWriterStagingUploaderTest {
                         withoutUploader,
                         FileLoadsOptions.builder()
                                 .stagingPath("gs://bucket/prefix")
-                                .stagingUploadChunkBytes(CHUNK));
+                                .stagingUploadChunkBytes(CHUNK)
+                                .backgroundStagingUploadEnabled(false));
         for (TestRow row : rows) {
             serialWriter.write(row, CONTEXT);
         }
@@ -313,6 +316,9 @@ class FileLoadsWriterStagingUploaderTest {
         RecordingStorage storage = new RecordingStorage();
         // Ignores the interrupt close() sends, so only a close that waited could see it end.
         storage.holdClosesUninterruptibly();
+        // Other tests' writers that were never closed keep their uploader threads, now that the
+        // uploader is on by default, so only this writer's are awaited.
+        Set<Thread> earlier = uploaderThreads(UPLOADER);
         FileLoadsWriter<TestRow> writer = writer(storage, uploaderOptions().maxStagingFileBytes(1));
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.write(new TestRow("t2", "b", 2L), CONTEXT);
@@ -324,7 +330,7 @@ class FileLoadsWriterStagingUploaderTest {
         storage.release();
         assertThat(storage.awaitExited()).isTrue();
         // Once the thread has ended, a queued close that had survived the close would have run.
-        awaitUploaderThreadsEnded(UPLOADER);
+        awaitUploaderThreadsEnded(UPLOADER, earlier);
         // Only the close that was already running finalized; the queued one never ran.
         assertThat(storage.closedUris())
                 .singleElement()
@@ -335,7 +341,11 @@ class FileLoadsWriterStagingUploaderTest {
     void withoutAnUploaderTheDefaultChunkReachesTheStorage() throws Exception {
         RecordingStorage storage = new RecordingStorage();
         FileLoadsWriter<TestRow> writer =
-                writer(storage, FileLoadsOptions.builder().stagingPath("gs://bucket/prefix"));
+                writer(
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .backgroundStagingUploadEnabled(false));
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         String caller = Thread.currentThread().getName();
 
@@ -394,7 +404,7 @@ class FileLoadsWriterStagingUploaderTest {
                                 Math.max(openFiles, FileLoadsOptions.DEFAULT_MAX_PENDING_FILES));
 
         try (LogCapture capture = LogCapture.of(FileLoadsWriter.class)) {
-            writer(new RecordingStorage(), options).close();
+            writer(new RecordingStorage(), options.backgroundStagingUploadEnabled(false)).close();
             assertThat(capture.getMessages()).noneMatch(m -> m.contains("staging upload buffers"));
 
             writer(
@@ -412,13 +422,26 @@ class FileLoadsWriterStagingUploaderTest {
         }
     }
 
-    /**
-     * Waits for every uploader thread with this name prefix to end, so that anything a stopped
-     * uploader still ran has happened before the assertions that follow.
-     */
-    private static void awaitUploaderThreadsEnded(String prefix) throws InterruptedException {
+    /** The live uploader threads with this name prefix. */
+    private static Set<Thread> uploaderThreads(String prefix) {
+        Set<Thread> threads = new HashSet<>();
         for (Thread thread : Thread.getAllStackTraces().keySet()) {
             if (thread.getName().startsWith(prefix)) {
+                threads.add(thread);
+            }
+        }
+        return threads;
+    }
+
+    /**
+     * Waits for every uploader thread with this name prefix, other than those already running
+     * before the writer under test, to end, so that anything a stopped uploader still ran has
+     * happened before the assertions that follow.
+     */
+    private static void awaitUploaderThreadsEnded(String prefix, Set<Thread> earlier)
+            throws InterruptedException {
+        for (Thread thread : uploaderThreads(prefix)) {
+            if (!earlier.contains(thread)) {
                 thread.join(TimeUnit.SECONDS.toMillis(5));
                 assertThat(thread.isAlive()).as(thread.getName()).isFalse();
             }

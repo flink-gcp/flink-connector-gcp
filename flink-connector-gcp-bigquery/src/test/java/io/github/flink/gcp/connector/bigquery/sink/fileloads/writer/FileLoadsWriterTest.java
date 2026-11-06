@@ -400,6 +400,13 @@ class FileLoadsWriterTest {
         return sink.getConfig();
     }
 
+    /** Options that keep every upload and finalization on the task thread. */
+    private static FileLoadsOptions.Builder taskThreadOptions() {
+        return FileLoadsOptions.builder()
+                .stagingPath("gs://bucket/prefix")
+                .backgroundStagingUploadEnabled(false);
+    }
+
     private static FileLoadsWriter<TestRow> writer(
             BigQuerySinkConfig<TestRow> config, StagingStorage storage, FileLoadsOptions options) {
         return writer(
@@ -985,8 +992,8 @@ class FileLoadsWriterTest {
     void stagesOneFilePerDestination() throws Exception {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         BigQuerySinkConfig<TestRow> config = config(FailureHandler.failJob());
-        FileLoadsWriter<TestRow> writer =
-                writer(config, storage, FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+        // On the task thread, which the uploader's own tests mirror for the uploader.
+        FileLoadsWriter<TestRow> writer = writer(config, storage, taskThreadOptions().build());
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.write(new TestRow("t1", "b", null), CONTEXT);
@@ -1286,7 +1293,12 @@ class FileLoadsWriterTest {
     @Test
     void rollsFilesAtMaxSize() throws Exception {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
-        FileLoadsWriter<TestRow> writer = writer(config(FailureHandler.failJob()), storage, 1);
+        // Rolled on the task thread; FileLoadsWriterStagingUploaderTest rolls on the uploader.
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        taskThreadOptions().maxStagingFileBytes(1).build());
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.write(new TestRow("t1", "b", 2L), CONTEXT);
@@ -1497,10 +1509,9 @@ class FileLoadsWriterTest {
                 writer(
                         config(FailureHandler.failJob()),
                         storage,
-                        FileLoadsOptions.builder()
-                                .stagingPath("gs://bucket/prefix")
-                                .maxOpenDestinations(2)
-                                .build(),
+                        // On the task thread, so the evicted file is in storage once the write
+                        // that evicted it returns.
+                        taskThreadOptions().maxOpenDestinations(2).build(),
                         new ManualProcessingTimeService(),
                         metrics);
 
@@ -1607,6 +1618,7 @@ class FileLoadsWriterTest {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
         TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
         ManualProcessingTimeService timers = new ManualProcessingTimeService();
+        // On the task thread, so the idle close has finalized its object when the timer returns.
         FileLoadsWriter<TestRow> writer =
                 writer(
                         config(FailureHandler.failJob()),
@@ -1614,6 +1626,7 @@ class FileLoadsWriterTest {
                         FileLoadsOptions.builder()
                                 .stagingPath("gs://bucket/prefix")
                                 .destinationIdleTimeout(java.time.Duration.ofMinutes(1))
+                                .backgroundStagingUploadEnabled(false)
                                 .build(),
                         timers,
                         metrics);
@@ -1772,10 +1785,7 @@ class FileLoadsWriterTest {
                 writer(
                         config(FailureHandler.failJob()),
                         storage,
-                        FileLoadsOptions.builder()
-                                .stagingPath("gs://bucket/prefix")
-                                .maxOpenDestinations(2)
-                                .build());
+                        taskThreadOptions().maxOpenDestinations(2).build());
         writer.write(new TestRow("a", "row", 1L), CONTEXT);
         writer.write(new TestRow("b", "row", 2L), CONTEXT);
         Thread caller = Thread.currentThread();
@@ -1837,13 +1847,46 @@ class FileLoadsWriterTest {
     }
 
     @Test
-    void closeWithoutPrepareCommitLeavesNoCommittables() throws Exception {
+    void anIdleCloseOnTheUploaderIsCommittedOnceTheCheckpointDrainsIt() throws Exception {
         InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        TestSinkWriterMetricGroup metrics = TestSinkWriterMetricGroup.create();
+        ManualProcessingTimeService timers = new ManualProcessingTimeService();
         FileLoadsWriter<TestRow> writer =
                 writer(
                         config(FailureHandler.failJob()),
                         storage,
-                        FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES);
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .destinationIdleTimeout(java.time.Duration.ofMinutes(1))
+                                .backgroundStagingUploadEnabled(true)
+                                .build(),
+                        timers,
+                        metrics);
+
+        writer.write(new TestRow("a", "a1", 1L), CONTEXT);
+        timers.advanceTo(60_000);
+        assertThat(metrics.counterValue("idleEvictions")).isEqualTo(1);
+        assertThat(metrics.<Integer>gaugeValue("openDestinations")).isZero();
+
+        Collection<FileLoadsCommittable> committables = writer.prepareCommit();
+        assertThat(committables).singleElement();
+        assertThat(storage.getObjects()).containsOnlyKeys(committables.iterator().next().getUri());
+        writer.close();
+    }
+
+    @Test
+    void closeWithoutPrepareCommitLeavesNoCommittables() throws Exception {
+        InMemoryStagingStorage storage = new InMemoryStagingStorage();
+        // The task-thread path: with the uploader a prepareCommit after close is refused instead,
+        // and its abort is FileLoadsWriterStagingUploaderTest's.
+        FileLoadsWriter<TestRow> writer =
+                writer(
+                        config(FailureHandler.failJob()),
+                        storage,
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .backgroundStagingUploadEnabled(false)
+                                .build());
 
         writer.write(new TestRow("t1", "a", 1L), CONTEXT);
         writer.close();

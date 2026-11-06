@@ -14,16 +14,17 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# ADR-0195: FILE_LOADS offers an opt-in background staging uploader
+# ADR-0195: FILE_LOADS runs a background staging uploader by default
 
 - Status: Accepted
-- Date: 2026-11-04
-- Issues: [#2021], [#1164], [#1127], [#2019]
+- Date: 2026-11-04; revised by [#2034] (2026-11-05: the uploader is on by default)
+- Issues: [#2021], [#1164], [#1127], [#2019], [#2034]
 - Modules: bigquery (`sink.fileloads`, `table`)
 - Refines: [ADR-0146] (size rolls, capacity evictions and idle closes may now leave the task
   thread)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
-- Evidence: [in-region measurements](evidence/0195-fileloads-staging-uploader-2021.md)
+- Evidence: [in-region measurements](evidence/0195-fileloads-staging-uploader-2021.md),
+  [deployed recovery trials](evidence/0195-fileloads-uploader-recovery-2034.md)
 
 ## Context
 
@@ -57,12 +58,14 @@ objects, so an abandoned file would no longer create no object, which [ADR-0146]
 
 ## Decision
 
-**FILE_LOADS exposes both shapes as options and enables neither by default.**
+**FILE_LOADS exposes both shapes as options and turns the uploader on by default; the chunk stays
+4 MiB.**
 `stagingUploadChunkBytes` (`sink.file-loads.staging-upload-chunk-bytes`) sets the chunk, 4 MiB by
 default.
 `backgroundStagingUploadEnabled` (`sink.file-loads.background-staging-upload.enabled`) defaults to
-false, which keeps every upload on the task thread as before; true starts one upload thread per
-writer.
+true, which starts one upload thread per writer; false keeps every upload on the task thread, as
+the writer did before the uploader existed.
+The default was false until [#2034], as Consequences records.
 `maxInFlightUploadOperations` (`sink.file-loads.in-flight.max-upload-operations`) sizes that
 uploader, 2 by default, and is rejected when set with the uploader off, as `parquetCompression` is
 under Avro and the Firestore sink's rates are with throttling off, because an ignored value is worse
@@ -158,15 +161,32 @@ the uploader together with concurrent checkpoint finalization for a writer with 
 With the uploader off the writer wraps the client channel in the same stream as before and starts no
 thread.
 The one change on that path is the start-up warning, which counts the open files' chunks with or
-without the uploader, so the defaults' 16 files of 4 MiB warn on a maximum heap under 256 MiB.
+without the uploader, so 16 files of 4 MiB warn on a maximum heap under 256 MiB with the uploader
+off, and with the default two operations on, under 288 MiB.
 The storage SPI now returns the channel and takes the chunk size, which is internal.
 
 The measurements show the gain and no material regression with many destinations, but they ran
 the writer alone, not a Flink job.
-The switch therefore stays off until the uploader has also run through real Flink checkpoints,
-loads and recovery: the real-GCP streaming test that finalizes every file on the uploader, and the
-deployed recovery scenario with the uploader on.
-Turning it on by default revises this record with those results.
+The switch therefore stayed off until the uploader had also run through real Flink checkpoints,
+loads and recovery: the real-GCP streaming test that finalizes every file on the uploader, which
+passed in [#2021], and the deployed recovery scenario with the uploader on.
+
+That scenario ran under [#2034] on 2026-11-05: `fl-10` with the uploader at two operations, its
+savepoint upgrade and JobManager replacement, then the same with a TaskManager replacement, a
+rescale out and a rescale in in place of one recovery.
+All four were `usable`, and each loaded its 1,843,200 records into 10 tables exactly once, with no
+duplicate, missing or invalid row.
+In a sample of the first trial's load jobs its staged files were about 5.8 MiB after compression,
+so each sent a full 4 MiB chunk through the uploader every checkpoint; the uploader itself is not metered, so that is shown by size rather
+than observed.
+The [findings](evidence/0195-fileloads-uploader-recovery-2034.md) carry every attempt, including
+one that ran out of recovery time while Autopilot provisioned a node, which raised the scenario's
+deadline rather than implicating the uploader.
+The uploader is therefore on by default.
+A writer that is CPU-bound, or that must not start a thread, sets it to false; its cost is one
+thread and up to two chunks per writer.
+An options instance serialized before the option existed reads the default, as every other
+FILE_LOADS option added after its first release does.
 The uploader moves only the upload wait; encoding and compression stay on the task thread, which
 [#2019] addresses separately.
 
@@ -175,4 +195,5 @@ The uploader moves only the upload wait; encoding and compression stay on the ta
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
 [#2019]: https://github.com/flink-gcp/flink-connector-gcp/issues/2019
 [#2021]: https://github.com/flink-gcp/flink-connector-gcp/issues/2021
+[#2034]: https://github.com/flink-gcp/flink-connector-gcp/issues/2034
 [ADR-0137]: 0137-a-cross-connector-name-diverges-only-to-name-a-real-difference.md

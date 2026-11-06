@@ -203,7 +203,7 @@ limitations under the License.
   return on success, ordinary failure, or interruption. A JVM-fatal worker failure instead wakes
   the task thread and cancels its peers so an earlier stalled close cannot hide the fatal failure.
   Appends, size rolls, capacity evictions and idle closes remain serial, and one open file gains no
-  concurrency. They wait on the task thread unless the writer enables the opt-in background staging uploader
+  concurrency. They wait on the task thread unless the writer runs the background staging uploader, on by default
   ([#2021], [ADR-0195](0195-file-loads-offers-an-opt-in-background-staging-uploader.md)), whose single
   thread runs upload operations, sending full chunks and finalizing rolled, evicted and idle files,
   in submission order.

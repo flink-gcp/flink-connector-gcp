@@ -123,8 +123,14 @@ class BigQueryFileLoadsStreamingITCase {
     @Test
     void checkpointTriggeredLoadsAcrossTwoTables() throws Exception {
         String prefix = STAGING_PREFIX + "/default";
+        // Uploads on the task thread, so the case below is the uploader's and this one is not.
         loadAcrossTwoTables(
-                TABLE_A, TABLE_B, "file-loads-streaming-it", prefix, 0, options(prefix));
+                TABLE_A,
+                TABLE_B,
+                "file-loads-streaming-it",
+                prefix,
+                0,
+                options(prefix).backgroundStagingUploadEnabled(false));
     }
 
     /**

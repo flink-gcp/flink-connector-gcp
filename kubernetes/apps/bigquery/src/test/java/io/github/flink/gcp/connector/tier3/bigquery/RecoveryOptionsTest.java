@@ -209,6 +209,8 @@ class RecoveryOptionsTest {
                                         arguments(
                                                 "--mode",
                                                 "FILE_LOADS",
+                                                "--background-staging-upload-enabled",
+                                                "false",
                                                 "--max-in-flight-upload-operations",
                                                 "2")))
                 .hasMessageContaining("maxInFlightUploadOperations is only accepted with");
@@ -228,13 +230,16 @@ class RecoveryOptionsTest {
     @Test
     void connectorDefaultsAreTheOnesTheCuePackageRenders() {
         // kubernetes/pkg/bigquery/application.cue writes these as #FileLoads defaults, and its
-        // render tests pin them; a connector default that moves must move there as well.
+        // render tests pin them; a connector default that moves must move there as well, except
+        // the uploader's, below.
         assertThat(FileLoadsOptions.DEFAULT_STAGING_FORMAT).isEqualTo(StagingFormat.AVRO);
         assertThat(FileLoadsOptions.DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS).isEqualTo(1);
         assertThat(FileLoadsOptions.DEFAULT_MAX_CONCURRENT_DESTINATIONS).isEqualTo(8);
         assertThat(FileLoadsOptions.DEFAULT_MAX_STAGING_FILE_BYTES).isEqualTo(16777216);
         assertThat(FileLoadsOptions.DEFAULT_MAX_OPEN_DESTINATIONS).isEqualTo(16);
-        assertThat(FileLoadsOptions.DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED).isFalse();
+        // The one knob whose package default is not the connector's: the package keeps the
+        // uploader off so that only the -uploader trials name it, and fl-10 keeps its meaning.
+        assertThat(FileLoadsOptions.DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED).isTrue();
         // Rendered only with the uploader on, which the connector requires of it.
         assertThat(FileLoadsOptions.DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS).isEqualTo(2);
         // The application does not expose maxPendingFiles, so it caps maxOpenDestinations.
@@ -337,13 +342,13 @@ class RecoveryOptionsTest {
         "max-concurrent-destinations,9",
         "max-staging-file-bytes,8388608",
         "max-open-destinations,17",
-        "background-staging-upload-enabled,true"
+        "background-staging-upload-enabled,false"
     })
     void everyFileLoadsArgumentIsPartOfTheIdentity(String name, String value) {
         var initial = RecoveryOptions.parse(arguments("--mode", "FILE_LOADS"));
         assertThat(initial.identity())
                 .isEqualTo(
-                        "v1/bigquery-it/FILE_LOADS/10/1843200/1048576/AVRO/1/8/16777216/16/false/2");
+                        "v1/bigquery-it/FILE_LOADS/10/1843200/1048576/AVRO/1/8/16777216/16/true/2");
         var upgrade =
                 RecoveryOptions.parse(
                         arguments(

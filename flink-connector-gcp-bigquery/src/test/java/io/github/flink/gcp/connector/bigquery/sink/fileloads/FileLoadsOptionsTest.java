@@ -163,7 +163,8 @@ class FileLoadsOptionsTest {
         assertThat(base().maxConcurrentCheckpointFinalizations(4).build()).isNotEqualTo(defaults);
         assertThat(base().maxConcurrentDestinations(4).build()).isNotEqualTo(defaults);
         assertThat(base().stagingUploadChunkBytes(8L * 1024 * 1024).build()).isNotEqualTo(defaults);
-        assertThat(base().backgroundStagingUploadEnabled(true).build()).isNotEqualTo(defaults);
+        assertThat(base().backgroundStagingUploadEnabled(false).build()).isNotEqualTo(defaults);
+        assertThat(base().backgroundStagingUploadEnabled(true).build()).isEqualTo(defaults);
         assertThat(
                         base().backgroundStagingUploadEnabled(true)
                                 .maxInFlightUploadOperations(3)
@@ -188,7 +189,7 @@ class FileLoadsOptionsTest {
                 .contains("maxPendingFiles=10000")
                 .contains("maxConcurrentCheckpointFinalizations=1")
                 .contains("stagingUploadChunkBytes=4194304")
-                .contains("backgroundStagingUploadEnabled=false")
+                .contains("backgroundStagingUploadEnabled=true")
                 .contains("maxInFlightUploadOperations=2")
                 .contains("maxConcurrentDestinations=8")
                 .contains("destinationIdleTimeout=PT1M")
@@ -265,6 +266,7 @@ class FileLoadsOptionsTest {
         setBuilderField(oldBuilder, "tempTableExpiration", null);
         FileLoadsOptions restored = withField(oldBuilder.build(), "avroCompression", null);
         restored = withField(restored, "zstdLevel", null);
+        restored = withField(restored, "backgroundStagingUploadEnabled", null);
         FileLoadsOptions defaults = base().build();
 
         assertThat(restored.getMaxOpenDestinations()).isEqualTo(16);
@@ -272,7 +274,7 @@ class FileLoadsOptionsTest {
         assertThat(restored.getMaxConcurrentCheckpointFinalizations()).isEqualTo(1);
         assertThat(restored.getMaxConcurrentDestinations()).isEqualTo(8);
         assertThat(restored.getStagingUploadChunkBytes()).isEqualTo(4L * 1024 * 1024);
-        assertThat(restored.isBackgroundStagingUploadEnabled()).isFalse();
+        assertThat(restored.isBackgroundStagingUploadEnabled()).isTrue();
         assertThat(restored.getMaxInFlightUploadOperations()).isEqualTo(2);
         assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
         assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
@@ -314,8 +316,10 @@ class FileLoadsOptionsTest {
     @Test
     void stagingUploadOptionsAreKeptAndBounded() {
         FileLoadsOptions defaults = base().build();
-        assertThat(defaults.isBackgroundStagingUploadEnabled()).isFalse();
+        assertThat(defaults.isBackgroundStagingUploadEnabled()).isTrue();
         assertThat(defaults.getMaxInFlightUploadOperations()).isEqualTo(2);
+        assertThat(base().maxInFlightUploadOperations(3).build().getMaxInFlightUploadOperations())
+                .isEqualTo(3);
         FileLoadsOptions options =
                 base().stagingUploadChunkBytes(256L * 1024)
                         .backgroundStagingUploadEnabled(true)
@@ -351,7 +355,11 @@ class FileLoadsOptionsTest {
                 .hasMessageContaining("maxInFlightUploadOperations must be positive");
         // A depth with the uploader off would be silently ignored, so it is refused, in either
         // setter order; the explicit default 2 included.
-        assertThatThrownBy(() -> base().maxInFlightUploadOperations(2).build())
+        assertThatThrownBy(
+                        () ->
+                                base().maxInFlightUploadOperations(2)
+                                        .backgroundStagingUploadEnabled(false)
+                                        .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining(
                         "maxInFlightUploadOperations is only accepted with"

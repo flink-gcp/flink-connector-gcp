@@ -57,8 +57,8 @@ When TaskManager or slot count must remain fixed, `maxConcurrentCheckpointFinali
 writer finalize independent open files concurrently at a checkpoint or end of input.
 The option defaults to 1, accepts 1 through 8, and has no effect when a writer holds only one file.
 Size-based rolls, capacity evictions, and idle closes remain on the task thread unless the writer
-enables the opt-in background staging uploader of [ADR-0195], a single thread that serves the
-few-destination case this record's measurements did not cover.
+runs the background staging uploader of [ADR-0195], on by default since [#2034], a single thread
+that serves the few-destination case this record's measurements did not cover.
 No full-upload pool is added.
 
 A bounded real-GCS probe on 2026-08-30 compared four shapes from a local client to the existing
@@ -231,3 +231,4 @@ Upload density alone therefore does not reopen the Avro default or the automatic
 [#1313]: https://github.com/flink-gcp/flink-connector-gcp/issues/1313
 [#1532]: https://github.com/flink-gcp/flink-connector-gcp/issues/1532
 [ADR-0195]: 0195-file-loads-offers-an-opt-in-background-staging-uploader.md
+[#2034]: https://github.com/flink-gcp/flink-connector-gcp/issues/2034

@@ -144,10 +144,11 @@ public final class FileLoadsOptions implements Serializable {
             Integer.MAX_VALUE / STAGING_UPLOAD_CHUNK_GRANULARITY * STAGING_UPLOAD_CHUNK_GRANULARITY;
 
     /**
-     * Default for {@link Builder#backgroundStagingUploadEnabled(boolean)}: off, so uploads run on
-     * the task thread.
+     * Default for {@link Builder#backgroundStagingUploadEnabled(boolean)}: on, so each writer
+     * uploads full chunks and finalizes size-rolled, evicted and idle files on one background
+     * thread (ADR-0195).
      */
-    public static final boolean DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED = false;
+    public static final boolean DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED = true;
 
     /**
      * Default for {@link Builder#maxInFlightUploadOperations(int)}: 2, the smallest value that
@@ -214,7 +215,8 @@ public final class FileLoadsOptions implements Serializable {
     private final int maxConcurrentCheckpointFinalizations;
     // Zero in an instance serialized before the option existed; the getter supplies the default.
     private final long stagingUploadChunkBytes;
-    private final boolean backgroundStagingUploadEnabled;
+    // Null in an instance serialized before the option existed; the getter supplies the default.
+    @Nullable private final Boolean backgroundStagingUploadEnabled;
     // Zero in an instance serialized before the option existed; the getter supplies the default.
     private final int maxInFlightUploadOperations;
     private final int maxConcurrentDestinations;
@@ -347,7 +349,9 @@ public final class FileLoadsOptions implements Serializable {
 
     /** Returns whether each writer uploads its staging files on a background staging uploader. */
     public boolean isBackgroundStagingUploadEnabled() {
-        return backgroundStagingUploadEnabled;
+        return backgroundStagingUploadEnabled == null
+                ? DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED
+                : backgroundStagingUploadEnabled;
     }
 
     /**
@@ -480,7 +484,7 @@ public final class FileLoadsOptions implements Serializable {
                 && getMaxConcurrentCheckpointFinalizations()
                         == that.getMaxConcurrentCheckpointFinalizations()
                 && getStagingUploadChunkBytes() == that.getStagingUploadChunkBytes()
-                && backgroundStagingUploadEnabled == that.backgroundStagingUploadEnabled
+                && isBackgroundStagingUploadEnabled() == that.isBackgroundStagingUploadEnabled()
                 && getMaxInFlightUploadOperations() == that.getMaxInFlightUploadOperations()
                 && getMaxConcurrentDestinations() == that.getMaxConcurrentDestinations()
                 && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
@@ -510,7 +514,7 @@ public final class FileLoadsOptions implements Serializable {
                 getMaxPendingFiles(),
                 getMaxConcurrentCheckpointFinalizations(),
                 getStagingUploadChunkBytes(),
-                backgroundStagingUploadEnabled,
+                isBackgroundStagingUploadEnabled(),
                 getMaxInFlightUploadOperations(),
                 getMaxConcurrentDestinations(),
                 getDestinationIdleTimeout(),
@@ -550,7 +554,7 @@ public final class FileLoadsOptions implements Serializable {
                 + ", stagingUploadChunkBytes="
                 + getStagingUploadChunkBytes()
                 + ", backgroundStagingUploadEnabled="
-                + backgroundStagingUploadEnabled
+                + isBackgroundStagingUploadEnabled()
                 + ", maxInFlightUploadOperations="
                 + getMaxInFlightUploadOperations()
                 + ", maxConcurrentDestinations="
@@ -847,9 +851,9 @@ public final class FileLoadsOptions implements Serializable {
 
         /**
          * Sets whether each writer subtask uploads its staging files on a background staging
-         * uploader. Defaults to {@link FileLoadsOptions#DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED},
-         * which sends every chunk and finalizes every size-rolled, evicted, or idle file on the
-         * task thread.
+         * uploader. Defaults to {@link FileLoadsOptions#DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED}.
+         * Disabled, the writer starts no thread and sends every chunk and finalizes every
+         * size-rolled, evicted, or idle file on the task thread.
          *
          * <p>Enabled, each writer starts one upload thread, which runs upload operations in the
          * order the task thread submits them while the task thread keeps encoding into the next
@@ -873,9 +877,8 @@ public final class FileLoadsOptions implements Serializable {
 
         /**
          * Sets how many upload operations each writer subtask's background staging uploader may
-         * hold, queued or running. Accepted only with {@link
-         * #backgroundStagingUploadEnabled(boolean)} on. Defaults to {@link
-         * FileLoadsOptions#DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS}.
+         * hold, queued or running. Rejected with {@link #backgroundStagingUploadEnabled(boolean)}
+         * off. Defaults to {@link FileLoadsOptions#DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS}.
          *
          * <p>Once this many operations are queued or running, the task thread blocks until one
          * completes. One already lets encoding overlap one upload but measured the task thread

@@ -46,8 +46,8 @@ QUERY_USD_PER_TIB = Decimal("6.25")
 RESERVE_USD = Decimal("1.00")
 # The dispatchable trials; the query budget above is every trial's. FILE_LOADS
 # has two cells at ten destinations, one with the sink inputs at the connector's
-# defaults and one that turns the background staging uploader on (#2030),
-# which is off by default: they ask whether
+# defaults but the background staging uploader off, and one that turns it on
+# (#2030), as the connector now does by default: they ask whether
 # finalization is correct across recovery, not how it scales. The exactly-once
 # cells at ten destinations also run each fault the shared exercise offers in
 # place of one recovery (#1779), named `<cell>-<fault>`; the owner chooses which
