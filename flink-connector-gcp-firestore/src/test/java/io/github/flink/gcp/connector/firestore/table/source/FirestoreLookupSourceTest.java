@@ -152,7 +152,7 @@ class FirestoreLookupSourceTest {
                 .isNotInstanceOf(PartialCachingLookupProvider.class);
         FirestoreCollectionDocumentLookup lookup = documentLookup(provider);
         assertThat(lookup.collection()).isEqualTo("users/alice/orders");
-        assertThat(lookup.fields()).containsExactly("name", "a.b");
+        assertThat(lookup.fields()).containsExactly("name", "`a.b`");
         assertThat(lookup.serviceAccountKeyFile()).isEqualTo("/keys/sa.json");
     }
 
@@ -256,7 +256,7 @@ class FirestoreLookupSourceTest {
                         DataTypes.FIELD("id", DataTypes.STRING().notNull())));
 
         assertThat(documentLookup(source.getLookupRuntimeProvider(context(new int[] {1}))).fields())
-                .containsExactly("a.b");
+                .containsExactly("`a.b`");
         assertThatThrownBy(() -> source.getLookupRuntimeProvider(context(new int[] {0})))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("requires an equality predicate on the PRIMARY KEY column");
@@ -351,9 +351,11 @@ class FirestoreLookupSourceTest {
     }
 
     @Test
-    void theMaskNamesEachFieldLiterallyAndOnlyTheNameWhenThereIsNone() {
-        assertThat(FirestoreCollectionDocumentLookup.maskPaths(new String[] {"a.b", "n"}))
-                .containsExactly(FieldPath.of("a.b"), FieldPath.of("n"));
+    void theMaskDecodesEachPathAndNamesOnlyTheNameWhenThereIsNone() {
+        assertThat(
+                        FirestoreCollectionDocumentLookup.maskPaths(
+                                new String[] {"`a.b`", "n", "r.`x.y`"}))
+                .containsExactly(FieldPath.of("a.b"), FieldPath.of("n"), FieldPath.of("r", "x.y"));
         assertThat(FirestoreCollectionDocumentLookup.maskPaths(new String[0]))
                 .containsExactly(FieldPath.documentId());
     }

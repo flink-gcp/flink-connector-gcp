@@ -125,7 +125,8 @@ Both read a consistent snapshot at `scan.read-time` (truncated to the microsecon
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="scan" >}}
 
-A scan reads only the fields of the columns it produces: the declared columns, or the projected ones when the planner pushes a projection down, each named as one literal field, so a document's undeclared top-level fields never travel; a `ROW` or `MAP` column's field is read whole, with any nested keys the `ROW` does not declare.
+A scan reads only the fields of the columns it produces: the declared columns, or the projected ones when the planner pushes a projection down, so a document's undeclared top-level fields never travel.
+A query that reads a field of a `ROW` column can read that field alone; [Projection pushdown](#projection-pushdown) gives the boundary.
 Equality predicates are pushed into a scan of one collection; [Filter pushdown](#filter-pushdown) gives the boundary.
 
 A collection-group scan reads documents of many collections, whose ids repeat across them, so its table cannot declare a PRIMARY KEY: the planner trusts a declared key to be unique and removes a `GROUP BY` or a `DISTINCT` over it, so repeated ids would come back unaggregated.
@@ -143,6 +144,24 @@ A scan or a lookup can read four metadata columns:
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="collection-group" >}}
 
 The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#source) describes the snapshot's time window, paging and recovery.
+
+### Projection pushdown
+
+A query that reads only some fields of a `ROW` column asks the service for those fields, not for the whole map.
+`SELECT r.a FROM t` reads `r.a` from each document, so a document whose `r` holds a wide map transfers one value instead of the map; against a Standard- and an Enterprise-edition database, a query for `r.a` over 100 documents each holding a 5,000-key map took a quarter to a fifth of the time of the same query for `r`.
+A field is named by its path segments, so a column or `ROW` field whose name contains a dot is read as one segment.
+This applies to a scan of one collection and to a collection-group scan; a lookup reads whole columns.
+
+The scan asks for a nested field only as far as the answer reads the same as the whole column would.
+It does not descend into a `ROW` that `geo-point-field-paths` marks, because a geographical point is not a map, and it stops at a `NOT NULL` field: the service returns a nested field only when every field on its path is a map holding the next, so a missing field and a missing parent look alike, and only a nullable field reads the same in both cases.
+Below where the path stops, the scan reads the rest of the path from the value the service returned.
+A table that declares a `NOT NULL` field inside a nullable `ROW` reads whole columns: Flink would declare that field `NOT NULL` in the projected row although its `ROW` can be NULL, and would then evaluate `r.a IS NULL` as false for a document without `r`.
+Flink 1.20 drops a `NOT NULL` that SQL DDL declares on a `ROW`'s field, so there only a table defined through the Table API keeps such a field, and a DDL table projects nested fields as nullable ones.
+An `ARRAY` or `MAP` column is always read whole.
+
+Type checking covers the fields read, as it already covers only the columns read.
+The fields of a `ROW` that a query does not name are not checked, so a value in one of them no longer fails the scan: a mismatched value under `type-mismatch-policy = 'fail'`, and under either policy a missing or mismatched value in a `NOT NULL` field.
+A value of another type at the field a query names is still seen, and follows the policy as it does in the whole column (under `fail` it fails the scan), but a value that is not a map on the way there is not seen: for `SELECT r.a`, a document whose `r` holds the string `"hello"` reads `r.a` as NULL under either policy, as a document without `r` does.
 
 ### Filter pushdown
 

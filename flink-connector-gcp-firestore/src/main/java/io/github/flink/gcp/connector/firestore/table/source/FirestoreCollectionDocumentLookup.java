@@ -56,7 +56,8 @@ final class FirestoreCollectionDocumentLookup implements FirestoreDocumentLookup
      *
      * @param database the database
      * @param collection the collection path
-     * @param fields the field names to read, each one literal segment; an empty array reads none
+     * @param fields the field paths to read, each in the client library's encoded form ({@code
+     *     FieldPath.toString()}); an empty array reads none
      * @param emulatorEndpoint the emulator endpoint, or {@code null} for the service
      * @param serviceAccountKeyFile the key file, or {@code null} for application default ones
      */
@@ -79,7 +80,7 @@ final class FirestoreCollectionDocumentLookup implements FirestoreDocumentLookup
         return collection;
     }
 
-    /** Returns the field names a read asks for. */
+    /** Returns the encoded field paths a read asks for. */
     @VisibleForTesting
     String[] fields() {
         return fields.clone();
@@ -116,8 +117,8 @@ final class FirestoreCollectionDocumentLookup implements FirestoreDocumentLookup
     }
 
     /**
-     * The field mask of a read: each name one literal segment, so a name containing a dot is one
-     * field. A read of no field asks for the document's name alone.
+     * The field mask of a read: each encoded path decoded, so a name containing a dot stays one
+     * segment. A read of no field asks for the document's name alone.
      */
     @VisibleForTesting
     static FieldPath[] maskPaths(String[] fields) {
@@ -126,7 +127,7 @@ final class FirestoreCollectionDocumentLookup implements FirestoreDocumentLookup
         }
         FieldPath[] paths = new FieldPath[fields.length];
         for (int i = 0; i < fields.length; i++) {
-            paths[i] = FieldPath.of(fields[i]);
+            paths[i] = FieldPath.fromServerFormat(fields[i]);
         }
         return paths;
     }

@@ -157,10 +157,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   string rendering; widening the mapping is a decision, recorded in ADR-0179.
 - **A failure's remedy follows `Mismatch.readableAsNull()`**: offer `type-mismatch-policy = 'null'`
   only when a nullable field lies around the value, which a `NOT NULL` column can still contain.
-- **Every field is selected as a literal `FieldPath`**: the single collection's
-  `FirestoreCollectionQueryFactory`, and the collection-group scan through the builder's
-  `select(FieldPath...)`, whose field mask holds encoded paths read back with
-  `FieldPath.fromServerFormat`. Never pass a column name to `select(String...)`, which splits dots.
+- **Every field is selected as a segment-wise `FieldPath`** in its encoded form
+  (`FieldPath.toString()`, read back with `FieldPath.fromServerFormat`): the single collection's
+  `FirestoreCollectionQueryFactory`, the lookup, and the collection-group scan through the builder's
+  `select(FieldPath...)`. Never pass a column name to `select(String...)`, which splits dots.
+- **Nested projection** (ADR-0179 revision, #1839): `FirestoreDynamicSource.fieldMask` selects a
+  projected `ROW` field's path only as deep as every field on it is nullable, never into a
+  geo-point `ROW`; `FirestoreToRowDataConverter.createPath` reads the rest. A table with a `NOT NULL`
+  field inside a nullable `ROW` answers `supportsNestedProjection()` false: Flink would produce that
+  field `NOT NULL` and fold `IS NULL` to false. Both policies push (owner): a non-map value on the
+  path reads as NULL even under `fail`. `FirestoreTableNestedProjectionITCase` compares projected
+  rows with the whole column's fields; keep that oracle when changing the converter.
 - **A collection-group table declares no PRIMARY KEY** (ids repeat across the group, and the planner
   trusts a key to be unique); `document-path` identifies a document there.
 - **The emulator can run a collection-group scan only with `scan.partition.max-partitions = 1`**:

@@ -39,8 +39,9 @@ import java.util.Objects;
 /**
  * Turns a document into the row a {@code firestore} table scan produces: the read physical columns
  * in the planner's order, then the read metadata. The PRIMARY KEY column is the document id; every
- * other column is the top-level field of its name, NULL when the document has none. A stored value
- * the column cannot represent is handled by the table's {@link TypeMismatchPolicy}.
+ * other column is the top-level field of its name, NULL when the document has none, or, under a
+ * nested projection, the field of a ROW column the planner's index path names. A stored value the
+ * column cannot represent is handled by the table's {@link TypeMismatchPolicy}.
  */
 @Internal
 final class RowDataDeserializationSchema
@@ -50,7 +51,7 @@ final class RowDataDeserializationSchema
 
     private final FirestoreTableSchema schema;
     private final TypeMismatchPolicy policy;
-    private final int[] columns;
+    private final int[][] columns;
     private final int keyIndex;
     private final String[] names;
     private final FirestoreToRowDataConverter[] converters;
@@ -64,36 +65,54 @@ final class RowDataDeserializationSchema
      * Creates the schema.
      *
      * @param schema the checked table schema
-     * @param columns the physical columns to read, by index, in the produced order
+     * @param columns the physical fields to read, by index path, in the produced order: a top-level
+     *     column, then a field of each ROW in turn. {@link #topLevel(int...)} names whole columns
      * @param metadataKeys the metadata keys to read after them
      * @param policy what a mismatched value does
      * @param producedType the produced row's type information
      */
     RowDataDeserializationSchema(
             FirestoreTableSchema schema,
-            int[] columns,
+            int[][] columns,
             List<String> metadataKeys,
             TypeMismatchPolicy policy,
             TypeInformation<RowData> producedType) {
         RowType rowType = schema.getRowType();
         this.schema = schema;
         this.policy = policy;
-        this.columns = columns.clone();
+        this.columns = new int[columns.length][];
         this.keyIndex = schema.getKeyIndex();
         this.names = new String[columns.length];
         this.converters = new FirestoreToRowDataConverter[columns.length];
         for (int i = 0; i < columns.length; i++) {
-            int column = columns[i];
-            names[i] = rowType.getFieldNames().get(column);
-            if (column != keyIndex) {
-                converters[i] =
-                        FirestoreToRowDataConverter.create(
-                                schema, names[i], rowType.getTypeAt(column), policy);
+            this.columns[i] = columns[i].clone();
+            names[i] = rowType.getFieldNames().get(columns[i][0]);
+            if (!isKey(columns[i])) {
+                converters[i] = FirestoreToRowDataConverter.createPath(schema, columns[i], policy);
             }
         }
         this.metadata =
                 metadataKeys.stream().map(ReadableMetadata::of).toArray(ReadableMetadata[]::new);
         this.producedType = producedType;
+    }
+
+    /**
+     * Returns the index paths of whole columns.
+     *
+     * @param columns the columns, by index
+     * @return one single-index path per column
+     */
+    static int[][] topLevel(int... columns) {
+        int[][] paths = new int[columns.length][];
+        for (int i = 0; i < columns.length; i++) {
+            paths[i] = new int[] {columns[i]};
+        }
+        return paths;
+    }
+
+    /** Whether the index path names the document id, which only a whole key column is. */
+    private boolean isKey(int[] path) {
+        return path[0] == keyIndex;
     }
 
     @Override
@@ -123,12 +142,13 @@ final class RowDataDeserializationSchema
         }
         GenericRowData row = new GenericRowData(columns.length + metadata.length);
         for (int i = 0; i < columns.length; i++) {
-            if (columns[i] == keyIndex) {
+            if (isKey(columns[i])) {
                 row.setField(i, StringData.fromString(document.getId()));
                 continue;
             }
             try {
-                // A missing field reads as null, like a field that holds null.
+                // A missing field reads as null, like a field that holds null; a nested path's
+                // converter descends from its top-level field.
                 row.setField(i, converters[i].convert(document.get(paths[i])));
             } catch (FirestoreToRowDataConverter.Mismatch mismatch) {
                 throw new IOException(
@@ -169,13 +189,14 @@ final class RowDataDeserializationSchema
         RowDataDeserializationSchema that = (RowDataDeserializationSchema) o;
         return schema.equals(that.schema)
                 && policy == that.policy
-                && Arrays.equals(columns, that.columns)
+                && Arrays.deepEquals(columns, that.columns)
                 && Arrays.equals(metadata, that.metadata)
                 && producedType.equals(that.producedType);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(schema, policy, Arrays.hashCode(columns), Arrays.hashCode(metadata));
+        return Objects.hash(
+                schema, policy, Arrays.deepHashCode(columns), Arrays.hashCode(metadata));
     }
 }

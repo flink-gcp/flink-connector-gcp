@@ -47,7 +47,7 @@ class FirestoreCollectionDocumentLookupITCase extends AbstractFirestoreEmulatorI
                 .get();
         FirestoreCollectionDocumentLookup lookup =
                 new FirestoreCollectionDocumentLookup(
-                        database(), collection, new String[] {"a.b"}, emulatorEndpoint(), null);
+                        database(), collection, new String[] {"`a.b`"}, emulatorEndpoint(), null);
         lookup.open();
         try {
             DocumentSnapshot snapshot = read(lookup, "d");

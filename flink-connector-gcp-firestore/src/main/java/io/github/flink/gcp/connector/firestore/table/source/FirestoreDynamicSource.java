@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.firestore.table.source;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -37,6 +38,7 @@ import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
@@ -55,9 +57,11 @@ import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * The {@code firestore} table's bounded scan, backed by the DataStream {@code FirestoreSource}, and
@@ -65,11 +69,12 @@ import java.util.Objects;
  *
  * <p>The table's collection is read as one query, one split; under {@code scan.collection-group}
  * every collection with its id is read as a partitioned collection-group scan. A lookup reads one
- * document of the collection by its id. Each reads only the fields of the columns it produces, each
- * named as one literal field: the declared columns, or the projected ones when the planner pushed a
- * projection down. A single-collection scan also adds the equality filters {@link
- * FirestoreFilterPushDown} translates, each a necessary condition that Flink evaluates again; a
- * collection-group scan pushes none ({@code docs/adr/0197}).
+ * document of the collection by its id. Each reads only the fields of the columns it produces: the
+ * declared columns, or the projected ones when the planner pushed a projection down, a projected
+ * field of a ROW column read as its nested path where {@code fieldMask} says so. A
+ * single-collection scan also adds the equality filters {@link FirestoreFilterPushDown} translates,
+ * each a necessary condition that Flink evaluates again; a collection-group scan pushes none
+ * ({@code docs/adr/0197}).
  */
 @Internal
 public final class FirestoreDynamicSource
@@ -90,7 +95,9 @@ public final class FirestoreDynamicSource
     @Nullable private final Integer parallelism;
     @Nullable private final FirestoreTableLineage lineage;
 
-    private int[] columns;
+    /** The produced physical fields, by index path: a top-level column, then ROW fields. */
+    private int[][] columns;
+
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
     private FirestoreFilterPushDown.State filterState = FirestoreFilterPushDown.State.empty();
@@ -133,10 +140,11 @@ public final class FirestoreDynamicSource
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
         this.lineage = lineage;
-        this.columns = new int[schema.getRowType().getFieldCount()];
-        for (int i = 0; i < columns.length; i++) {
-            columns[i] = i;
+        int[] all = new int[schema.getRowType().getFieldCount()];
+        for (int i = 0; i < all.length; i++) {
+            all[i] = i;
         }
+        this.columns = RowDataDeserializationSchema.topLevel(all);
         this.producedDataType = physicalDataType;
     }
 
@@ -154,11 +162,11 @@ public final class FirestoreDynamicSource
                         .deserializer(
                                 new RowDataDeserializationSchema(
                                         schema, columns, metadataKeys, policy, producedType));
-        String[] fields = fieldsRead();
+        String[] fields = fieldMask(schema, columns);
         if (scanConfig.isCollectionGroup()) {
             FieldPath[] paths = new FieldPath[fields.length];
             for (int i = 0; i < paths.length; i++) {
-                paths[i] = FieldPath.of(fields[i]);
+                paths[i] = FieldPath.fromServerFormat(fields[i]);
             }
             // No field read selects each document's name alone.
             builder.collectionGroup(collectionId(collection))
@@ -195,7 +203,7 @@ public final class FirestoreDynamicSource
                 new FirestoreCollectionDocumentLookup(
                         database,
                         collection,
-                        fieldsRead(),
+                        fieldMask(schema, columns),
                         emulatorEndpoint,
                         serviceAccountKeyFile);
         int maxRetries = lookupConfig.getMaxRetries();
@@ -220,6 +228,12 @@ public final class FirestoreDynamicSource
     }
 
     private LookupKeyFilter lookupKeys(int[][] keys) {
+        // The top-level column of each produced field: a nested path starts at a ROW column,
+        // which is never the document id.
+        int[] physical = new int[columns.length];
+        for (int i = 0; i < physical.length; i++) {
+            physical[i] = columns[i][0];
+        }
         String requirement =
                 schema.hasPrimaryKey()
                         ? "A Firestore lookup requires an equality predicate on the PRIMARY KEY column '"
@@ -229,22 +243,60 @@ public final class FirestoreDynamicSource
         return LookupKeyFilter.of(
                 (RowType) producedDataType.getLogicalType(),
                 keys,
-                columns,
+                physical,
                 schema.hasPrimaryKey() ? new int[] {schema.getKeyIndex()} : new int[0],
                 false,
                 requirement);
     }
 
     /**
-     * The names of the fields the produced columns read: every column but the document id. A
-     * document's undeclared fields are never read.
+     * The field mask of the produced fields, each path in the client library's encoded form ({@code
+     * FieldPath.toString()}, read back with {@code FieldPath.fromServerFormat}): every field but
+     * the document id, and none a document does not declare. An equal path is selected once. A path
+     * may extend another only if the planner asked for both, which it does not (it asks for the
+     * whole ROW alone); the service accepts such a mask.
+     *
+     * <p>A projected field of a ROW column is read as its nested path only as deep as every field
+     * on the path, itself included, is nullable, and not into a geographical point, which is no
+     * map. The service returns a nested path only where each field on it is a map holding the next,
+     * so a field that is missing, null, or no map reads alike, as missing; each of those reads as
+     * NULL only when every field down to it is nullable. Past a NOT NULL field the mask stops, and
+     * the converter reads the rest of the path from the value the mask returned. Below a nullable
+     * top-level column no field is NOT NULL when nested projection is on ({@code
+     * supportsNestedProjection}), so the stop matters for a NOT NULL column; the rule is kept whole
+     * so that the mask stays right by itself.
+     *
+     * @param schema the checked table schema
+     * @param columns the produced physical fields, by index path
+     * @return the encoded paths to select, empty when no field is read
      */
-    private String[] fieldsRead() {
-        List<String> fields = new ArrayList<>();
-        for (int column : columns) {
-            if (column != schema.getKeyIndex()) {
-                fields.add(schema.getRowType().getFieldNames().get(column));
+    @VisibleForTesting
+    static String[] fieldMask(FirestoreTableSchema schema, int[][] columns) {
+        // Equal paths collapse here; the produced order is kept.
+        Set<String> fields = new LinkedHashSet<>();
+        for (int[] column : columns) {
+            if (column.length == 1 && column[0] == schema.getKeyIndex()) {
+                continue;
             }
+            RowType row = schema.getRowType();
+            String name = row.getFieldNames().get(column[0]);
+            LogicalType type = row.getTypeAt(column[0]);
+            List<String> segments = new ArrayList<>(List.of(name));
+            String dotted = name;
+            for (int i = 1; i < column.length; i++) {
+                if (!type.isNullable() || schema.isGeoPoint(dotted)) {
+                    break;
+                }
+                RowType parent = (RowType) type;
+                type = parent.getTypeAt(column[i]);
+                if (!type.isNullable()) {
+                    break;
+                }
+                name = parent.getFieldNames().get(column[i]);
+                segments.add(name);
+                dotted = dotted + "." + name;
+            }
+            fields.add(FieldPath.of(segments.toArray(new String[0])).toString());
         }
         return fields.toArray(new String[0]);
     }
@@ -256,14 +308,43 @@ public final class FirestoreDynamicSource
 
     @Override
     public boolean supportsNestedProjection() {
+        // The planner types a projected nested field as the field is declared, so a NOT NULL
+        // field of a nullable ROW would be produced NOT NULL although its ROW may be NULL, and
+        // Flink would then fold `IS NULL` to FALSE. Such a table reads whole columns.
+        RowType row = schema.getRowType();
+        for (int i = 0; i < row.getFieldCount(); i++) {
+            if (hasNotNullFieldUnderNullableRow(row.getTypeAt(i), false)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a ROW reachable through ROW fields alone holds a NOT NULL field below a nullable one.
+     */
+    private static boolean hasNotNullFieldUnderNullableRow(
+            LogicalType type, boolean underNullable) {
+        if (underNullable && !type.isNullable()) {
+            return true;
+        }
+        if (!(type instanceof RowType)) {
+            return false;
+        }
+        for (LogicalType field : ((RowType) type).getChildren()) {
+            if (hasNotNullFieldUnderNullableRow(field, underNullable || type.isNullable())) {
+                return true;
+            }
+        }
         return false;
     }
 
     @Override
     public void applyProjection(int[][] projectedFields, DataType producedDataType) {
-        int[] projected = new int[projectedFields.length];
+        // The planner's paths are its own plan state; keep a copy.
+        int[][] projected = new int[projectedFields.length][];
         for (int i = 0; i < projected.length; i++) {
-            projected[i] = projectedFields[i][0];
+            projected[i] = projectedFields[i].clone();
         }
         this.columns = projected;
         this.producedDataType = producedDataType;
@@ -307,7 +388,7 @@ public final class FirestoreDynamicSource
                         serviceAccountKeyFile,
                         parallelism,
                         lineage);
-        copy.columns = columns.clone();
+        copy.columns = columns;
         copy.metadataKeys = metadataKeys;
         copy.producedDataType = producedDataType;
         copy.filterState = filterState;
@@ -338,7 +419,7 @@ public final class FirestoreDynamicSource
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(parallelism, that.parallelism)
                 && Objects.equals(lineage, that.lineage)
-                && Arrays.equals(columns, that.columns)
+                && Arrays.deepEquals(columns, that.columns)
                 && metadataKeys.equals(that.metadataKeys)
                 && producedDataType.equals(that.producedDataType)
                 && filterState.equals(that.filterState);
@@ -357,7 +438,7 @@ public final class FirestoreDynamicSource
                 serviceAccountKeyFile,
                 parallelism,
                 lineage,
-                Arrays.hashCode(columns),
+                Arrays.deepHashCode(columns),
                 metadataKeys,
                 producedDataType,
                 filterState);
