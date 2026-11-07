@@ -34,8 +34,8 @@ webhook:
   create: false
 image:
   repository: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator
-  tag: "1.15.0"
-  digest: "sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78"
+  tag: "1.16.1"
+  digest: "sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d"
 operatorServiceAccount:
   create: true
   name: flink-operator

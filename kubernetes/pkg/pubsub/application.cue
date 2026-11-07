@@ -92,9 +92,9 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 				resources: containerResources
 			}]
 			if run.reactive {
-				// In standalone application mode the Operator 1.15.0 mounts an empty volume over
-				// /opt/flink/usrlib whenever pipeline.classpaths is set, hiding the relay's JAR and
-				// dependencies the image installs there, so the JobManager cannot load the entry
+				// In standalone application mode the Operator (1.15.0 and 1.16.1) mounts an empty
+				// volume over /opt/flink/usrlib whenever pipeline.classpaths is set, hiding the relay's
+				// JAR and dependencies the image installs there, so the JobManager cannot load the entry
 				// class. Its UserLibMountDecorator leaves a container alone that already mounts a
 				// path under /opt/flink/usrlib, which this empty mount is for.
 				jobManager: podTemplate: spec: {

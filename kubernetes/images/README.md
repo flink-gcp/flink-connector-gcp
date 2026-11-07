@@ -23,7 +23,7 @@ The [publication workflow](../../.github/workflows/tier3-images.yaml) supplies t
 
 | GAR package | Source and bundled dependencies | Publication |
 | --- | --- | --- |
-| `operator` | [Flink Kubernetes Operator 1.15.0](https://github.com/apache/flink-kubernetes-operator/tree/release-1.15.0), Java and Operator/standalone JARs | Copy the AMD64 digest pinned in the workflow |
+| `operator` | [Flink Kubernetes Operator 1.16.1](https://github.com/apache/flink-kubernetes-operator/tree/release-1.16.1), Java and Operator/standalone JARs | Copy the AMD64 digest pinned in the workflow |
 | `flink` | [Flink 2.2.1, Scala 2.12, Java 17](https://github.com/apache/flink-docker/tree/983be3455636eb12cd1d3dee1efc8e32c4b875db/2.2/scala_2.12-java17-ubuntu), including `opt/flink-gs-fs-hadoop-2.2.1.jar` | Copy the AMD64 digest pinned in the workflow |
 | `lifecycle-tools` | [Python 3.12.14 slim-bookworm](https://github.com/docker-library/python/tree/688a0b86bb44289df16a363e9f41d90514c1a5f9/3.12/slim-bookworm), CA certificates, kubectl 1.35.7 and the [locked official Python SDKs](../../tools/tier3/pyproject.toml) | Export the Tier-3 member dependencies, then build [the Dockerfile](lifecycle/Dockerfile) for AMD64 with its pinned base and kubectl checksum |
 | `bigquery-recovery` | Reviewed Flink 2.2.1/Java 17 base, the [BigQuery recovery application](../apps/bigquery/README.md) and unmodified runtime dependency JARs | Verify the application reactor, then build its Dockerfile for AMD64; publication requires separate approval |

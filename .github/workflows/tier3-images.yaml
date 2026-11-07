@@ -50,10 +50,10 @@ jobs:
       id-token: write
     env:
       GAR: us-central1-docker.pkg.dev/flink-gcp/flink-tier3
-      OPERATOR_IMAGE: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator:1.15.0
+      OPERATOR_IMAGE: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator:1.16.1
       FLINK_IMAGE: us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink:2.2.1
-      # Single-platform linux/amd64 manifests: Operator 1.15.0 and Flink 2.2.1, Java 17.
-      OPERATOR_SOURCE: docker.io/apache/flink-kubernetes-operator@sha256:2c667a1c14bdb7365f16811dd98a576d6e4993ccbcc369dc53fb75081116ee78
+      # Single-platform linux/amd64 manifests: Operator 1.16.1 and Flink 2.2.1, Java 17.
+      OPERATOR_SOURCE: docker.io/apache/flink-kubernetes-operator@sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d
       FLINK_SOURCE: docker.io/library/flink@sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd
     steps:
       - name: Check the reviewed revision
