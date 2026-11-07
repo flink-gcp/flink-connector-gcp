@@ -1807,9 +1807,10 @@ exactly-once producer behaves the same way), not specific to this connector.
 **The sink cannot detect this situation** — a writer restored with no state is indistinguishable
 from a brand-new job — so the guard belongs in deployment tooling. Redeploy through savepoints
 (`stop-with-savepoint`, then `flink run -s`); with the Flink Kubernetes Operator use
-`upgradeMode: savepoint` (or `last-state`) and never `stateless`. When state has to be dropped,
-rewind the source behind the last completed checkpoint so a potential loss becomes a duplicate,
-and make duplicates harmless downstream (an idempotent key plus `MERGE` or
+`upgradeMode: savepoint` (or `last-state`) and never `stateless`, as for
+[connector upgrades]({{< relref "docs/connectors#upgrading-the-connector" >}}). When state has
+to be dropped, rewind the source behind the last completed checkpoint so a potential loss becomes a
+duplicate, and make duplicates harmless downstream (an idempotent key plus `MERGE` or
 `QUALIFY ROW_NUMBER()`).
 
 **Checkpoints on Cloud Storage.** By default Flink's `gs://` file system writes each checkpoint and

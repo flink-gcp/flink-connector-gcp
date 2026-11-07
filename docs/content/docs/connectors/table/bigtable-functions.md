@@ -28,7 +28,8 @@ These functions return the result of one atomic Bigtable row operation to a SQL 
 Both are available in **Flink 2.x streaming mode**, including bounded streaming queries.
 The Flink 1.20 artifacts do not contain these classes; use the [DataStream request APIs]({{< relref "docs/connectors/datastream/bigtable" >}}) when that version needs results.
 
-Put the matching [`flink-sql-connector-gcp-bigtable` jar]({{< relref "docs/connectors/table/bigtable" >}}#getting-the-connector-onto-the-classpath) on the SQL Client or SQL Gateway and cluster classpaths.
+Put the [`flink-sql-connector-gcp-bigtable` jar]({{< relref "docs/connectors/table/bigtable" >}}#getting-the-connector-onto-the-classpath) built for the cluster's Flink version on the SQL Client or SQL Gateway and cluster classpaths.
+Both must load the same connector release, as [Upgrading the connector]({{< relref "docs/connectors#upgrading-the-connector" >}}) explains.
 Register the function with `CREATE TEMPORARY SYSTEM FUNCTION`, configure a named request through `SET`, and call it in a query.
 The SQL aliases below are chosen at registration.
 Create the destination table, its families, and a single-cluster application profile with single-row transactions enabled before running the examples.

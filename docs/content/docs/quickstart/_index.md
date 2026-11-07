@@ -91,7 +91,9 @@ from source is covered by [Development]({{< relref "docs/development" >}}).
 uber-jar instead. Each bundles one connector with its runtime tree and can be dropped into Flink's
 `lib/` or added with `ADD JAR`; the jars are on Maven Central and attached to the
 [GitHub releases]({{< param BookRepo >}}/releases). The `ADD JAR` examples throughout these docs
-name the 2.x jar — a Flink 1.20 job loads the `-1.20` jar instead. The connector-specific Table
+name the 2.x jar — a Flink 1.20 job loads the `-1.20` jar instead. A SQL Client or SQL Gateway that
+loads the jar from its own `lib/` needs the same connector release as the cluster's `lib/`, as
+[Upgrading the connector]({{< relref "docs/connectors#upgrading-the-connector" >}}) explains. The connector-specific Table
 API pages document the artifact and installation details. The jars can share one `lib/`, which is why each relocates the linked
 third-party Java packages that could conflict; only documented annotation-only packages and
 optional native-library carriers remain unrelocated.

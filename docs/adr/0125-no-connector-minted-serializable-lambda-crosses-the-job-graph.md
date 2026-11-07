@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0125: No connector-minted serializable lambda crosses the job graph
 
 - Status: Accepted
-- Date: 2026-08-18 (measured 2026-08-18); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: reachability premise corrected)
+- Date: 2026-08-18 (measured 2026-08-18); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: reachability premise corrected); revised by [#2098](https://github.com/flink-gcp/flink-connector-gcp/issues/2098) (2026-11-07: kept on the unsupported version-skew layouts)
 - Issues: [#822](https://github.com/flink-gcp/flink-connector-gcp/issues/822),
   [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777),
-  [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
+  [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071),
+  [#2098](https://github.com/flink-gcp/flink-connector-gcp/issues/2098)
 - Modules: bigquery, bigtable, cloudtasks (rule applies to all)
 - Current behavior: no user-visible change
 
@@ -41,6 +42,18 @@ operator's `last-state` upgrade as replaying a graph serialized by the old image
 premise false, because the operator deletes the persisted job graph before it deploys an
 application cluster, and records that a job graph is read only by the connector version that
 wrote it.
+
+**Where a graph still crosses versions.** [#2098] asked whether that correction leaves the rule
+without a path, and found two layouts, both recorded in ADR-0200. An Operator session cluster whose
+spec changes is redeployed with its HA data kept, so a changed image recovers each running job's
+persisted graph under the connector in the new image's `lib/`. And a client that loads the
+connector from its own `lib/` builds the graph with that copy, while the cluster reads it with its
+own. The documentation declares both unsupported, but neither Flink nor the Operator detects them.
+In either layout an options class misreads only the fields that changed: a reference field it lacks
+fails where it is used, and a primitive one reads as its default. A run of same-hash lambdas
+misreads a job whose configuration did not change at all, and does so without an error. [#2098]
+therefore kept the rule rather than superseding it: every site is already converted, and each new
+one costs a named class or an enum constant.
 
 **What a serialized lambda's identity actually is.** Measured, not assumed. javac names a
 serializable lambda `lambda$<enclosingMethod>$<hash>$<index>`. Two lambdas share the hash when they
@@ -126,3 +139,4 @@ so converting them is consistency and independence from a compiler detail, not a
 families it set aside were the defect.
 
 [#822]: https://github.com/flink-gcp/flink-connector-gcp/issues/822
+[#2098]: https://github.com/flink-gcp/flink-connector-gcp/issues/2098

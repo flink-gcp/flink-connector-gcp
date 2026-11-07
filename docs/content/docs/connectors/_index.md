@@ -77,3 +77,41 @@ Everything else about a name is the service's answer, including whether the reso
 whether the name is one that service accepts. Its rejection names the resource it refused. A copy
 of those naming rules kept here would go stale in the direction that hurts, refusing a name the
 service would have taken.
+
+## Upgrading the connector
+
+Upgrade the connector by restoring the job's state into a job graph that the new connector release
+builds.
+Stop the job with a savepoint and resubmit it with `-s`, or, with the Flink Kubernetes Operator,
+deploy the application with `upgradeMode: savepoint` or `last-state`.
+Each of these builds a new job graph from the new jar.
+The connectors' checkpoint state is versioned, so the new release reads the state the old one
+wrote, and `upgradeMode: stateless` is never needed for a connector upgrade.
+Discarding state is also unsafe for some sinks, such as the
+[BigQuery exactly-once sink]({{< relref "docs/connectors/datastream/bigquery#delivery-guarantees-and-state" >}}).
+
+A JobManager that recovers its persisted job graph after the connector under it has changed is not
+supported.
+That graph was serialized by the old release and is read by the new one.
+Examples are `kubectl set image` on the JobManager deployment, recreating a cluster under the same
+cluster id with its high-availability ConfigMaps kept, and changing the image of an Operator session
+cluster while jobs run on it.
+With high availability enabled, the Operator redeploys a session cluster with its
+high-availability data kept, so each running job resumes from its old graph.
+Stop each job on a session cluster with a savepoint before changing the connector in its image or
+`lib/`, then resubmit the jobs.
+A JobManager in this state may fail to deserialize the graph.
+It may also run the job with a setting the old release did not have read as `false` or `0` rather
+than its documented default.
+Resubmitting from a savepoint or the latest retained checkpoint recovers the job.
+
+Run the same connector release wherever a job graph is built and run.
+Outside application mode, the CLI, SQL Client or SQL Gateway builds the job graph, and the cluster
+deserializes it.
+When both load the connector from their own `lib/` directories, Flink does not check that the two
+copies are the same release.
+A mismatch has the effects above, and a cluster older than the client also ignores any setting it
+does not have.
+Shipping the connector with the job instead of placing it in `lib/` (inside the job jar, with the
+SQL Client's `--jar`, or with `ADD JAR`), or running in application mode, leaves one copy, so the
+question does not arise.

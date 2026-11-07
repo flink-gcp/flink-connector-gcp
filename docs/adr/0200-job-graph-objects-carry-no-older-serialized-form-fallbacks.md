@@ -17,10 +17,12 @@ limitations under the License.
 # ADR-0200: Job-graph objects carry no fallback for a form serialized by an older connector version
 
 - Status: Accepted
-- Date: 2026-11-07
-- Issues: [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
+- Date: 2026-11-07; revised by [#2098](https://github.com/flink-gcp/flink-connector-gcp/issues/2098) (2026-11-07: two unsupported version-skew layouts named, silent defaults recorded)
+- Issues: [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071),
+  [#2098](https://github.com/flink-gcp/flink-connector-gcp/issues/2098)
 - Modules: all connectors
-- Current behavior: none on the documentation site; the rule binds connector code
+- Current behavior: [Upgrading the connector](../content/docs/connectors/_index.md#upgrading-the-connector);
+  the rest of the rule binds connector code
 
 ## Context
 
@@ -59,9 +61,28 @@ The ZooKeeper deletion is absent from 1.0.0 and present from 1.4.0.
 A `last-state` upgrade therefore restores the checkpoint under a graph that the new image's user
 code built, which is the same graph a savepoint resubmission builds.
 
-No other upgrade path carries a serialized graph to a new connector version.
-A session-cluster submission and a savepoint restore both build the graph from user code.
+A savepoint resubmission also builds the graph from the new user code, so neither upgrade path
+carries a serialized graph to a new connector version.
 Within one connector version, the HA JobGraph store hands a graph back to the jar that wrote it.
+
+Two layouts outside those paths do let one connector version read a graph that another wrote.
+This record first said that no other path did; [#2098](https://github.com/flink-gcp/flink-connector-gcp/issues/2098)
+found both, read on 2026-11-07.
+
+- **A session cluster changed under its running jobs.**
+  The Operator's `SessionReconciler.reconcileSpecChange` deletes the session cluster with
+  `deleteHaData` set to `false` and redeploys it through `submitSessionCluster`, which performs none
+  of the job-graph deletion above.
+  Nothing on that path checks for running jobs; only deleting the `FlinkDeployment` does.
+  This holds in Operator 1.13.0, 1.16.1 and `main`.
+  When the connector sits in the image's `lib/`, as the SQL connector pages recommend, a changed
+  image therefore recovers each persisted graph under the new connector version.
+- **A client and a cluster that load different connector jars.**
+  Outside application mode, the CLI, the SQL Client or the SQL Gateway builds the graph and ships it
+  with the jars registered for the job (`pipeline.jars`, which `--jar` and `ADD JAR` fill).
+  A connector the client loads from its own `lib/` is not among them, and the cluster resolves the
+  graph's classes against its own `lib/` copy.
+  Flink neither documents nor checks that the two copies match.
 
 What crosses versions is checkpoint and savepoint state.
 Every connector writes that state through its own `SimpleVersionedSerializer`, and none of those
@@ -76,8 +97,12 @@ source; only the Tier-3 test applications under `kubernetes/apps` use one, for t
 **A job graph is read only by the connector version that wrote it.**
 Moving a job to another connector version means a new graph: a savepoint or checkpoint restore
 from a resubmission, or an Operator upgrade, which regenerates the graph.
-A JobManager that recovers a persisted graph after its image or classpath changed underneath it,
-outside the Operator, is not a supported upgrade path.
+A JobManager that recovers a persisted graph after its image or classpath changed underneath it is
+not a supported upgrade path, whether the change came from outside the Operator or from a session
+cluster's spec change.
+Nor is a client that builds the graph with a connector release other than the cluster's.
+The documentation states both: stop a session cluster's jobs with a savepoint before changing its
+image, and run one connector release wherever a graph is built and run.
 
 **An object that travels only in the job graph has no fallback for an older serialized form.**
 Its fields are set by its builder or constructor and are non-null where the builder never leaves
@@ -110,11 +135,17 @@ The Pub/Sub publisher's progress-budget re-check now goes through the shared
 `OptionChecks.checkPositive`, so a forged null budget fails with a `NullPointerException` naming
 the option instead of an `IllegalArgumentException` saying it must be positive.
 
-A JobManager in the unsupported path above may fail to start the job, with a deserialization error
+A JobManager in an unsupported layout above may fail to start the job, with a deserialization error
 or a `NullPointerException` from a field the older form did not carry.
+It does not always fail.
+A primitive field, such as `DatastoreScanConfig.filterPushDown` or
+`BigQuerySourceConfig.materializeViews`, reads as `0` or `false` with no error when the older form
+lacks it, and a field the reading build does not declare is dropped.
 Before this change the same JobManager read most added fields as defaults, but not all: ADR-0024
 and ADR-0125 already recorded serialized-form changes that it could not read.
 
-ADR-0125's rule, that no connector-minted serializable lambda crosses the job graph, is not
-revisited here.
-Its reachability paragraph is corrected to point to this record.
+ADR-0125's rule, that no connector-minted serializable lambda crosses the job graph, stays.
+Its reachability paragraph points to this record.
+[#2098](https://github.com/flink-gcp/flink-connector-gcp/issues/2098) weighed superseding it and
+kept it, because the layouts above are reachable even though they are unsupported, and in them a
+run of same-hash lambdas rebinds every job's codec without any field having changed.
