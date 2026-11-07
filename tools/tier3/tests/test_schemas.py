@@ -27,6 +27,9 @@ import yaml
 from flink_tier3 import repository
 from flink_tier3 import schemas as SCHEMAS
 
+ARCHIVE = "https://archive.apache.org/dist/flink/operator/chart.tgz"
+CDN = "https://dlcdn.apache.org/flink/operator/chart.tgz"
+
 
 def chart_bytes(
     *, version="1.15.0", app_version="1.15.0", identity=None, link=False, missing=False
@@ -156,19 +159,6 @@ def test_each_crd_identity_field_is_checked(location, value):
         SCHEMAS.read_chart(data, pin(data))
 
 
-@pytest.mark.parametrize("length", [7, 8, 9])
-def test_download_limit_is_distinct_from_a_hash_error(monkeypatch, length):
-    monkeypatch.setattr(SCHEMAS, "MAX_CHART_BYTES", 8)
-    monkeypatch.setattr(
-        SCHEMAS.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(b"a" * length)
-    )
-    if length <= 8:
-        assert SCHEMAS.download_chart("https://example.org/chart") == b"a" * length
-    else:
-        with pytest.raises(ValueError, match="exceeds the 8-byte limit"):
-            SCHEMAS.download_chart("https://example.org/chart")
-
-
 @pytest.fixture
 def cli(tmp_path, monkeypatch):
     chart = tmp_path / "chart.tgz"
@@ -181,6 +171,11 @@ def cli(tmp_path, monkeypatch):
         + "\n".join(f"{key} = {json.dumps(value)}" for key, value in pin(data).items())
     )
     monkeypatch.setattr(repository, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        SCHEMAS.operator_chart.urllib.request,
+        "urlopen",
+        lambda *a, **kw: pytest.fail("--chart must not download"),
+    )
     expected = {
         Path("v1beta1/resource.cue"): b"package v1beta1\n#Resource: {}\n",
     }
@@ -299,3 +294,69 @@ def test_crd_payload_changes_are_detected_and_refreshable(cli, change):
     assert {p.name: p.read_bytes() for p in directory.glob("*.yaml")} == changed
     invoke("refresh")
     assert {p.name: p.read_bytes() for p in directory.glob("*.yaml")} == original
+
+
+def test_fetch_writes_the_verified_chart_without_generating(
+    tmp_path, monkeypatch, capsys
+):
+    data = chart_bytes()
+    module = tmp_path / "kubernetes"
+    module.mkdir()
+    upstream = {**pin(data), "urls": [CDN, ARCHIVE]}
+    (module / "upstream.toml").write_text(
+        "[operator]\n"
+        + "\n".join(f"{key} = {json.dumps(value)}" for key, value in upstream.items())
+    )
+    monkeypatch.setattr(repository, "ROOT", tmp_path)
+    requested = []
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        if url == ARCHIVE:
+            return io.BytesIO(data)
+        raise SCHEMAS.operator_chart.urllib.error.URLError("unreachable")
+
+    monkeypatch.setattr(SCHEMAS.operator_chart.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        SCHEMAS, "generate", lambda *a: pytest.fail("fetch must not generate")
+    )
+    destination = tmp_path / "cache/operator-chart.tgz"
+    SCHEMAS.main(["fetch", "--chart", str(destination)])
+    assert requested == [CDN, ARCHIVE]
+    assert destination.read_bytes() == data
+    assert "Downloaded the Operator" in capsys.readouterr().out
+
+
+def test_fetch_requires_a_destination(tmp_path, monkeypatch):
+    module = tmp_path / "kubernetes"
+    module.mkdir()
+    (module / "upstream.toml").write_text(
+        "[operator]\n"
+        + "\n".join(f"{key} = {json.dumps(value)}" for key, value in pin(b"x").items())
+    )
+    monkeypatch.setattr(repository, "ROOT", tmp_path)
+    with pytest.raises(SystemExit) as error:
+        SCHEMAS.main(["fetch"])
+    assert error.value.code == 2
+
+
+def test_check_without_a_chart_downloads_through_the_url_list(cli, monkeypatch):
+    _invoke, actual, expected = cli
+    upstream = repository.ROOT / "kubernetes/upstream.toml"
+    data = (repository.ROOT / "chart.tgz").read_bytes()
+    upstream.write_text(
+        upstream.read_text() + f"\nurls = {json.dumps([CDN, ARCHIVE])}\n"
+    )
+    requested = []
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        if url == ARCHIVE:
+            return io.BytesIO(data)
+        raise SCHEMAS.operator_chart.urllib.error.URLError("unreachable")
+
+    monkeypatch.setattr(SCHEMAS.operator_chart.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(sys, "argv", ["tier3-schemas.py", "check"])
+    SCHEMAS.main()
+    assert requested == [CDN, ARCHIVE]
+    assert SCHEMAS.generated_files(actual) == expected

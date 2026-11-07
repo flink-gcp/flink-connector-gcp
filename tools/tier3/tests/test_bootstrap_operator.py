@@ -24,6 +24,7 @@ import tarfile
 import pytest
 import yaml
 from flink_tier3 import bootstrap as operator
+from flink_tier3 import chart as CHART
 
 IMAGE_REPOSITORY = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/operator"
 IMAGE_DIGEST = "sha256:" + "a" * 64
@@ -159,7 +160,7 @@ def prepare_inputs(monkeypatch, tmp_path, data=None):
         data = archive_bytes()
     pin = {
         "version": "1.15.0",
-        "url": "https://example.invalid/operator.tgz",
+        "urls": ["https://example.invalid/operator.tgz"],
         "sha512": hashlib.sha512(data).hexdigest(),
     }
     (tmp_path / "upstream.yaml").write_text(yaml.safe_dump(pin))
@@ -172,7 +173,7 @@ def prepare_inputs(monkeypatch, tmp_path, data=None):
         )
     )
     monkeypatch.setattr(
-        operator.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(data)
+        CHART.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(data)
     )
     return pin
 
@@ -269,7 +270,7 @@ def test_cached_chart_is_reverified_without_network(monkeypatch, tmp_path, tampe
     cache.mkdir()
     (cache / "operator-chart.tgz").write_bytes(b"corrupt" if tampered else data)
     monkeypatch.setattr(
-        operator.urllib.request,
+        CHART.urllib.request,
         "urlopen",
         lambda *a, **k: pytest.fail("Post-apply verification must not download"),
     )
@@ -315,6 +316,35 @@ def test_bad_chart_never_reaches_helm(monkeypatch, tmp_path, case):
     with pytest.raises(ValueError, match=message):
         operator.prepare_operator_chart(tmp_path)
     assert not (tmp_path / ".terraform").exists()
+
+
+def test_chart_download_falls_back_to_the_next_pinned_url(monkeypatch, tmp_path):
+    data = archive_bytes()
+    pin = prepare_inputs(monkeypatch, tmp_path, data)
+    pin["urls"] = [
+        "https://dlcdn.apache.org/flink/operator/chart.tgz",
+        "https://archive.apache.org/dist/flink/operator/chart.tgz",
+    ]
+    (tmp_path / "upstream.yaml").write_text(yaml.safe_dump(pin))
+    requested = []
+
+    def urlopen(url, timeout):
+        requested.append(url)
+        if url == pin["urls"][1]:
+            return io.BytesIO(data)
+        raise CHART.urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(CHART.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        operator,
+        "run",
+        lambda _: subprocess.CompletedProcess(
+            [], 0, yaml.safe_dump_all(documents()), ""
+        ),
+    )
+    operator.prepare_operator_chart(tmp_path)
+    assert requested == pin["urls"]
+    assert (tmp_path / ".terraform/operator-chart.tgz").read_bytes() == data
 
 
 @pytest.mark.parametrize(

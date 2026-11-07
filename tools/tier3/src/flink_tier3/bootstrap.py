@@ -16,7 +16,6 @@
 """Authenticate and manage the idle Tier-3 bootstrap and Operator roots."""
 
 import argparse
-import hashlib
 import io
 import json
 import os
@@ -26,11 +25,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import urllib.request
 from pathlib import Path
 
 import yaml
 
+from . import chart as operator_chart
 from . import repository
 
 CONTEXT = "gke_flink-gcp_us-central1_flink-tier3"
@@ -51,7 +50,6 @@ OPERATOR_WATCH_NAMESPACES = {
     "tier3-bigtable",
     "tier3-spanner",
 }
-MAX_CHART_BYTES = 2 * 1024 * 1024
 OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
 CRDS = tuple(
     name + ".flink.apache.org"
@@ -192,18 +190,17 @@ def operator_documents(source, expected_image):
 
 def prepare_operator_chart(root, *, download=True):
     """Use the same verified archive and values for rendering and the Helm provider."""
-    pin = yaml.safe_load((root / "upstream.yaml").read_text())
+    pin_file = str(root / "upstream.yaml")
+    pin = yaml.safe_load(Path(pin_file).read_text())
     cache = root / ".terraform"
     archive = cache / "operator-chart.tgz"
     if download:
-        with urllib.request.urlopen(pin["url"], timeout=60) as response:
-            data = response.read(MAX_CHART_BYTES + 1)
+        data = operator_chart.download(
+            operator_chart.pinned_urls(pin, pin_file), pin["sha512"], pin_file
+        )
     else:
         data = archive.read_bytes()
-    if len(data) > MAX_CHART_BYTES:
-        raise ValueError(f"Operator chart exceeds the {MAX_CHART_BYTES}-byte limit")
-    if hashlib.sha512(data).hexdigest() != pin["sha512"]:
-        raise ValueError("Operator chart SHA-512 does not match the root pin")
+        operator_chart.check_bytes(data, pin["sha512"], pin_file)
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as chart:
         entry = chart.getmember("flink-kubernetes-operator/Chart.yaml")
         if not entry.isfile():
