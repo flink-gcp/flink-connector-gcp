@@ -49,6 +49,8 @@ BIGTABLE = _policy["environment"]["bigtable"]
 BIGTABLE_STATE = _policy["environment"]["bigtable_state"]
 SPANNER = _policy["environment"]["spanner"]
 SPANNER_STATE = _policy["environment"]["spanner_state"]
+FIRESTORE = _policy["environment"]["firestore"]
+FIRESTORE_STATE = _policy["environment"]["firestore_state"]
 
 BIGQUERY_OBSERVATIONS = {
     # The measurement windows: a baseline after a warm-up, one after the
@@ -167,6 +169,30 @@ SPANNER_OBSERVATIONS = {
     "measure_seconds": 60,
 }
 
+FIRESTORE_OBSERVATIONS = {
+    # From admission to the application's creation, as for Spanner: here the
+    # run's two databases created and read back and both seeds written, 432
+    # commits of at most 500 writes each, which nothing has measured yet.
+    "startup_seconds": 600,
+    "input_seconds": 1200,
+    "recovery_seconds": 600,
+    # The oracles read about 400,000 documents or entities from each
+    # database, some 800,000 in all against a Spanner run's 600,000 rows, in
+    # pages of 2,000 rather than 5,000; the read rate is unmeasured, so the
+    # window is twice Spanner's. It still ends before the cleanup start: the
+    # slowest job finishes about 3,100 seconds into the window
+    # (firestore/plan.py).
+    "visibility_seconds": 1200,
+    # The measurement windows equal Spanner's, kept as Firestore's own so that
+    # a later change there does not move a preregistered Firestore trial.
+    "warmup_seconds": 60,
+    "baseline_seconds": 300,
+    "post_upgrade_seconds": 300,
+    "post_recovery_seconds": 300,
+    "upgrade_wait_seconds": 120,
+    "measure_seconds": 60,
+}
+
 PUBSUB_ADMISSION = {
     # From admission to the application's creation. Beyond the supervisor and
     # Operator readiness every scenario waits for, Pub/Sub admission creates
@@ -178,6 +204,8 @@ PUBSUB_ADMISSION = {
 
 
 # Application namespaces first, then the control namespace.
+# The Firestore namespace joins once it exists (#2083): every run's preflight
+# reads each namespace listed here.
 NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, BIGTABLE, SPANNER, SYSTEM)
 
 

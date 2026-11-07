@@ -39,6 +39,8 @@ bigtable = 'tier3-bigtable'
 bigtable_state = 'flink-gcp-tier3-bigtable'
 spanner = 'tier3-spanner'
 spanner_state = 'flink-gcp-tier3-spanner'
+firestore = 'tier3-firestore'
+firestore_state = 'flink-gcp-tier3-firestore'
 
 # Conservative normal-capacity rates, including for Spot.
 # Exceed published Iowa Autopilot prices reviewed on 2026-09-14.
@@ -56,6 +58,7 @@ pubsub-recovery = 3600
 cloudtasks-recovery = 5400
 bigtable-recovery = 5400
 spanner-recovery = 5400
+firestore-recovery = 5400
 
 # The last seconds of every window, reserved for cleanup.
 [cleanup]

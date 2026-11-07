@@ -88,7 +88,7 @@ class Fault:
     ``initial`` and ``upgrade`` are the sink or writers' parallelism of each
     phase, one subtask per single-slot TaskManager. A rescale moves it between
     one and two, inside the three-Pod quota of the BigQuery, Cloud Tasks,
-    Bigtable and Spanner namespaces, and every other kind keeps two.
+    Bigtable, Spanner and Firestore namespaces, and every other kind keeps two.
     """
 
     failover: str

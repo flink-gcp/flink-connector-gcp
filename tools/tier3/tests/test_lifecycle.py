@@ -3270,7 +3270,8 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
         r"\$\{\{ \(inputs\.scenario == 'bigquery-recovery' \|\| "
         r"inputs\.scenario == 'cloudtasks-recovery' \|\| "
         r"inputs\.scenario == 'bigtable-recovery' \|\| "
-        r"inputs\.scenario == 'spanner-recovery'\) && (\d+) \|\| (\d+) \}\}",
+        r"inputs\.scenario == 'spanner-recovery' \|\| "
+        r"inputs\.scenario == 'firestore-recovery'\) && (\d+) \|\| (\d+) \}\}",
         str(timeout),
     )
     assert match, timeout
@@ -3281,6 +3282,7 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
         "cloudtasks-recovery",
         "bigtable-recovery",
         "spanner-recovery",
+        "firestore-recovery",
     ):
         trial = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS[scenario])
         assert trial.serial_budget <= trial_minutes * 60
@@ -3301,6 +3303,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     from flink_tier3.bigtable import trial as bigtable_trial
     from flink_tier3.cloudtasks import trial as cloudtasks_trial
     from flink_tier3.exercise import FAULTS
+    from flink_tier3.firestore import trial as firestore_trial
     from flink_tier3.spanner import trial as spanner_trial
 
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
@@ -3315,10 +3318,18 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     assert inputs["bigtable_trial"]["default"] == "none"
     assert inputs["spanner_trial"]["options"] == ["none", *spanner_trial.KINDS]
     assert inputs["spanner_trial"]["default"] == "none"
+    assert inputs["firestore_trial"]["options"] == ["none", *firestore_trial.KINDS]
+    assert inputs["firestore_trial"]["default"] == "none"
     # The descriptions list the shared kinds, which name the Pub/Sub files too.
     *first, last = FAULTS
     kinds = "(" + ", ".join(first) + " or " + last + ")"
-    for name in ("pubsub_trial", "cloudtasks_trial", "bigtable_trial", "spanner_trial"):
+    for name in (
+        "pubsub_trial",
+        "cloudtasks_trial",
+        "bigtable_trial",
+        "spanner_trial",
+        "firestore_trial",
+    ):
         assert inputs[name]["description"].endswith(kinds), name
     # Dispatching is the approval: no phrase, expiry or second copy of the
     # commit is typed.
@@ -3332,6 +3343,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "cloudtasks_trial",
         "bigtable_trial",
         "spanner_trial",
+        "firestore_trial",
         "campaign",
         "repeats",
     }
@@ -3786,6 +3798,7 @@ def test_reviewed_policy_preserves_the_fixed_windows_and_shapes():
         "cloudtasks-recovery": 5400,
         "bigtable-recovery": 5400,
         "spanner-recovery": 5400,
+        "firestore-recovery": 5400,
     }
     assert CLEANUP_SECONDS == 900
     assert STATE_OBJECTS == 10000
@@ -4189,6 +4202,12 @@ WORKFLOW_INPUTS = {
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
+    "firestore-recovery": [
+        "--firestore-trial",
+        "rescale-in",
+        "--application-digest",
+        "sha256:" + "d" * 64,
+    ],
 }
 
 
@@ -4225,6 +4244,7 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
         "cloudtasks-recovery",
         "bigtable-recovery",
         "spanner-recovery",
+        "firestore-recovery",
     }
     # Each flag with the workflow input it carries, not only its name.
     expected = {
@@ -4246,6 +4266,10 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
         ],
         "spanner-recovery": [
             ("--spanner-trial", "SPANNER_TRIAL"),
+            ("--application-digest", "APPLICATION_DIGEST"),
+        ],
+        "firestore-recovery": [
+            ("--firestore-trial", "FIRESTORE_TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
         ],
     }
