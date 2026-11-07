@@ -17,7 +17,7 @@
 import math
 
 from ..common import INCONCLUSIVE, USABLE
-from ..exercise import REPLACEMENT_KINDS, RESCALE_KINDS
+from ..exercise import FAULTS, REPLACEMENT_KINDS, RESCALE_KINDS
 from ..metrics import coverage_reasons, fold_coverage, metric_name
 from .observe import FAMILIES
 
@@ -27,6 +27,46 @@ COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "pubsub-measurement"
 REPLACEMENTS = tuple(REPLACEMENT_KINDS.values())
 RESCALES = tuple(RESCALE_KINDS.values())
+# The reactive-mode kinds (#2055), which only the Pub/Sub scenario runs: the
+# application runs in the Operator's standalone mode under Flink's reactive
+# scheduler, which restarts the job from its latest checkpoint whenever its
+# TaskManagers change. `fault` is what the exercise does, `initial` and
+# `recovery` the TaskManagers before and after it: a scale patches the
+# replica count, which the Operator applies in place, and an eviction deletes
+# a TaskManager Pod that its Deployment then replaces.
+# `kubernetes/lifecycle/pubsub.cue` renders the same sizes, and a test holds
+# it to this table.
+REACTIVE = {
+    "reactive-scale-out": {"fault": "scale", "initial": 2, "recovery": 3},
+    "reactive-scale-in": {"fault": "scale", "initial": 3, "recovery": 2},
+    "reactive-tm-eviction": {"fault": "evict", "initial": 3, "recovery": 3},
+}
+# The reactive kinds' delay per replay-cohort input and flow-control limit,
+# which keep the task thread busy while the fault lands; the Pub/Sub
+# application README's "Reactive trials" section gives the reasons.
+REACTIVE_REPLAY_DELAY_MILLIS = 100
+REACTIVE_MAX_OUTSTANDING = 100000
+# The flow-control limit every other kind renders: the SDK's default.
+MAX_OUTSTANDING = 1000
+
+
+def sizes(kind):
+    """The TaskManagers of a kind's initial and recovery manifests."""
+    if kind in REACTIVE:
+        return REACTIVE[kind]["initial"], REACTIVE[kind]["recovery"]
+    return FAULTS[kind].initial, FAULTS[kind].upgrade
+
+
+def application_pods(kind):
+    """The Pods admission lets a kind's application hold at once.
+
+    The JobManager, the most TaskManagers either manifest runs, and one
+    replacement: a terminating Pod holds its quota until it is gone, so a
+    replaced Pod and its replacement overlap.
+    """
+    return 2 + max(sizes(kind))
+
+
 # The windows a sample counts toward. The stages before the fault are one
 # window, because the first of them can end within a poll of the job starting,
 # before its operators have registered anything; the window after recovery is
@@ -97,6 +137,16 @@ def _replay(kind, recovery, after):
     replay-cohort output from the attempts it started leaves it inconclusive.
     """
     replay = recovery.get("replay")
+    if kind in REACTIVE:
+        # A reactive restart restores a checkpoint, so what it displaced is
+        # redelivered and the oracle's completeness counts it; what the
+        # restored checkpoint already covered is the oracle's covered count.
+        # The record carries the size the exercise read, which an offline
+        # recomputation checks again.
+        resized = recovery.get("parallelism")
+        if type(resized) is not int or resized != REACTIVE[kind]["recovery"]:
+            return ["rescale-unproven"]
+        return []
     if kind in RESCALES:
         reasons = [] if replay == "not-expected" else ["replay-unexpected"]
         replayed = after.get("replay_by_new_attempts")
@@ -126,13 +176,13 @@ def _replay(kind, recovery, after):
 def started_by_fault(attempt, restored, phase, before, kind):
     """Whether an attempt is one the fault started, from restored state.
 
-    A replacement restarts attempts in the same phase; a rescale's are the
-    upgraded job's. The exercise and the offline analysis ask the same thing.
+    A replacement or a reactive restart starts attempts in the same phase; a
+    savepoint rescale's are the upgraded job's. The exercise and the offline analysis ask the same thing.
     """
     return (
         attempt not in before
         and restored is True
-        and (kind in REPLACEMENTS or phase == "upgrade")
+        and (kind in REPLACEMENTS or kind in REACTIVE or phase == "upgrade")
     )
 
 

@@ -42,7 +42,11 @@ class PubSubRecoveryReportTest {
                 options,
                 RecoveryPayload.input(options, input, 0) + "|" + RecoveryPayload.encode(message),
                 UUID.randomUUID().toString(),
-                false);
+                false,
+                0,
+                0,
+                0,
+                0);
     }
 
     /** One case of the file the Python port in tools/tier3 reads too. */
@@ -82,7 +86,7 @@ class PubSubRecoveryReportTest {
                 }
             }
         }
-        assertThat(cases).hasSize(headers).hasSize(24);
+        assertThat(cases).hasSize(headers).hasSize(38);
         return cases;
     }
 
@@ -124,7 +128,8 @@ class PubSubRecoveryReportTest {
         report.accept("output-e", observation(1, "input-a"));
         assertThat(report.complete())
                 .isEqualTo(
-                        "logical_inputs=2 input_publication_duplicates=1 repeated_input_processing=1 output_publication_duplicates=1 repeated_output_delivery=1");
+                        "logical_inputs=2 input_publication_duplicates=1 repeated_input_processing=1 output_publication_duplicates=1 repeated_output_delivery=1"
+                                + " covered_redeliveries=0");
     }
 
     @Test
@@ -142,6 +147,9 @@ class PubSubRecoveryReportTest {
                 .hasMessageContaining("run");
         String[] fields = first.split("\\|", -1);
         fields[8] = "true";
+        fields[9] = "1";
+        fields[10] = "1";
+        fields[12] = "1";
         assertThatThrownBy(() -> report.accept("b", String.join("|", fields)))
                 .hasMessageContaining("conflicting");
         assertThatThrownBy(() -> new PubSubRecoveryReport(options).accept("", first))
@@ -163,6 +171,9 @@ class PubSubRecoveryReportTest {
         String[] changed = observation(1, "b").split("\\|", -1);
         changed[5] = first.split("\\|", -1)[5];
         changed[8] = "true";
+        changed[9] = "1";
+        changed[10] = "1";
+        changed[12] = "1";
         assertThatThrownBy(() -> report.accept("other", String.join("|", changed)))
                 .hasMessageContaining("conflicting");
         assertThatThrownBy(() -> new PubSubRecoveryReport(options).accept("id", "x".repeat(2049)))

@@ -21,11 +21,15 @@ import org.apache.flink.annotation.Internal;
 import java.io.BufferedReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 
 /** Offline completeness and duplicate accounting over independently collected output messages. */
@@ -37,6 +41,8 @@ public final class PubSubRecoveryReport {
     private final Map<String, String> attempts = new HashMap<>();
     private final Map<String, String> inputMessages = new HashMap<>();
     private final Set<String> logicalInputs = new HashSet<>();
+    // Each input message's distinct observations as {origin, epoch, subtask, attempt number}.
+    private final Map<String, List<long[]>> processing = new HashMap<>();
     private int lines;
 
     PubSubRecoveryReport(RecoveryOptions options) {
@@ -52,10 +58,17 @@ public final class PubSubRecoveryReport {
                     "Evidence exceeds its bound or lacks an output message ID");
         }
         String[] fields = payload.split("\\|", -1);
-        if (fields.length != 9
+        if (fields.length != 13
                 || !Set.of("initial", "upgrade").contains(fields[7])
                 || !Set.of("true", "false").contains(fields[8])
                 || (fields[7].equals("upgrade") && !fields[8].equals("true"))) {
+            throw new IllegalArgumentException("Invalid output observation");
+        }
+        long origin = RecoveryPayload.count(fields[9]);
+        long epoch = RecoveryPayload.count(fields[10]);
+        long subtask = RecoveryPayload.count(fields[11]);
+        long number = RecoveryPayload.count(fields[12]);
+        if ((origin == 0) == fields[8].equals("true") || epoch < origin) {
             throw new IllegalArgumentException("Invalid output observation");
         }
         String logical = String.join("|", fields[0], fields[1], fields[2], fields[3]);
@@ -69,8 +82,17 @@ public final class PubSubRecoveryReport {
             }
         }
         consistent(outputMessages, outputMessageId, payload);
-        consistent(observations, fields[6], payload);
-        consistent(attempts, fields[5], fields[7] + "|" + fields[8]);
+        if (observations.putIfAbsent(fields[6], payload) == null) {
+            processing
+                    .computeIfAbsent(id[0] + "|" + fields[4], key -> new ArrayList<>())
+                    .add(new long[] {origin, epoch, subtask, number});
+        } else {
+            consistent(observations, fields[6], payload);
+        }
+        consistent(
+                attempts,
+                fields[5],
+                String.join("|", fields[7], fields[8], fields[9], fields[11], fields[12]));
         consistent(inputMessages, id[0] + "|" + fields[4], logical);
         logicalInputs.add(logical);
     }
@@ -81,6 +103,60 @@ public final class PubSubRecoveryReport {
             throw new IllegalArgumentException("One evidence identity names conflicting records");
         }
     }
+
+    /**
+     * Input messages a restored attempt processed again although its restored checkpoint covered
+     * them, so their acknowledgement was lost rather than never due.
+     *
+     * <p>An earlier processing is covered when its attempt's origin is below the later attempt's
+     * and its epoch is below the end of its own run. A run ends at the first restart after it: the
+     * next origin above its own, since restores only move forward and a reactive restart restarts
+     * every subtask, or the same subtask's next attempt, since Flink numbers a subtask's attempts
+     * upwards across restarts and so two restores of one checkpoint are two runs. A subtask a
+     * scale-in removed and a later restore brought back is bounded by the origin above, not by its
+     * own next attempt; when the restore that removed it restored the same checkpoint again,
+     * neither bound sees it, and the count is an upper bound. A region failover that leaves some
+     * subtasks running reads their runs as ending at it, so the count can miss coverage there, and
+     * attempts that wrote no output are unseen, so a run they ended reads as longer.
+     */
+    int coveredRedeliveries() {
+        TreeSet<Long> origins = new TreeSet<>();
+        Map<Long, TreeSet<List<Long>>> runs = new HashMap<>();
+        for (String state : attempts.values()) {
+            String[] parts = state.split("\\|", -1);
+            long origin = Long.parseLong(parts[2]);
+            origins.add(origin);
+            runs.computeIfAbsent(Long.parseLong(parts[3]), key -> new TreeSet<>(RUN_ORDER))
+                    .add(List.of(origin, Long.parseLong(parts[4])));
+        }
+        int covered = 0;
+        for (List<long[]> seen : processing.values()) {
+            boolean found = false;
+            for (long[] later : seen) {
+                for (long[] earlier : seen) {
+                    if (earlier[0] < later[0]) {
+                        List<Long> next =
+                                runs.get(earlier[2]).higher(List.of(earlier[0], earlier[3]));
+                        Long above = origins.higher(earlier[0]);
+                        long end = later[0];
+                        if (next != null) {
+                            end = Math.min(end, next.get(0));
+                        }
+                        if (above != null) {
+                            end = Math.min(end, above);
+                        }
+                        found |= earlier[1] < end;
+                    }
+                }
+            }
+            covered += found ? 1 : 0;
+        }
+        return covered;
+    }
+
+    private static final Comparator<List<Long>> RUN_ORDER =
+            Comparator.<List<Long>, Long>comparing(run -> run.get(0))
+                    .thenComparing(run -> run.get(1));
 
     int distinctInputs() {
         return logicalInputs.size();
@@ -103,7 +179,9 @@ public final class PubSubRecoveryReport {
                 + " output_publication_duplicates="
                 + (outputMessages.size() - observations.size())
                 + " repeated_output_delivery="
-                + (lines - outputMessages.size());
+                + (lines - outputMessages.size())
+                + " covered_redeliveries="
+                + coveredRedeliveries();
     }
 
     /** Reads bounded UTF-8 lines containing base64url output message ID, tab, base64url payload. */

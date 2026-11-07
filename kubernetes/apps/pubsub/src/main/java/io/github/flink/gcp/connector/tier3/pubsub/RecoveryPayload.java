@@ -96,7 +96,14 @@ final class RecoveryPayload {
     }
 
     static String observation(
-            RecoveryOptions options, String taggedInput, String attempt, boolean restored) {
+            RecoveryOptions options,
+            String taggedInput,
+            String attempt,
+            boolean restored,
+            long origin,
+            long epoch,
+            int subtask,
+            int attemptNumber) {
         String[] fields = taggedInput.split("\\|", -1);
         if (fields.length != 5 || decode(fields[4]).isEmpty()) {
             throw new IllegalArgumentException("Input message ID is required");
@@ -110,6 +117,23 @@ final class RecoveryPayload {
                 + "|"
                 + options.phase
                 + "|"
-                + restored;
+                + restored
+                + "|"
+                + origin
+                + "|"
+                + epoch
+                + "|"
+                + subtask
+                + "|"
+                + attemptNumber;
+    }
+
+    /** A canonical non-negative decimal: a checkpoint id, subtask index or attempt number. */
+    static long count(String text) {
+        long value = Long.parseLong(text);
+        if (value < 0 || !Long.toString(value).equals(text)) {
+            throw new IllegalArgumentException("Payload counts must be canonical decimals");
+        }
+        return value;
     }
 }

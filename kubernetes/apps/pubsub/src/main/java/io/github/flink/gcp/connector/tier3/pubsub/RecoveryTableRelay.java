@@ -61,6 +61,10 @@ final class RecoveryTableRelay {
                         + options.input(1)
                         + "', 'scan.parallelism' = '"
                         + options.parallelism
+                        + "', 'scan.restore-deduplication.enabled' = '"
+                        + options.restoreDeduplication
+                        + "', 'scan.flow-control.max-outstanding-element-count' = '"
+                        + options.maxOutstandingMessages
                         + "')");
         tables.executeSql(
                 "CREATE TABLE pubsub_output (payload STRING) WITH ("

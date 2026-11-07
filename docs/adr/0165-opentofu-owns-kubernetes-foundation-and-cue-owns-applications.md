@@ -1253,7 +1253,7 @@ This replaces the reviewed trial file and the phrase bound to its cost in the pr
 A BigQuery trial therefore chooses only what differs between trials, its delivery method and destination count, and dispatch takes it as a workflow choice (`alo-10`, `eo-10`, `alo-50`, `eo-50`, and `fl-10` since [#1551](https://github.com/flink-gcp/flink-connector-gcp/issues/1551)) rather than as a reviewed file; the query budget is the scenario's, fixed in code.
 A reviewed file per dispatch existed chiefly to carry the per-trial cost, and keeping those numbers beside a preregistration record needed a test to hold the two together.
 The proposal also drops the repeated-trial ordinal the recovery application section binds: nothing consumed it, and a repetition is a separate run ID.
-The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), and, refined under [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433), USD 1.987 per Pub/Sub trial (`pubsub_plan.estimate`), which their rendered proposals carry.
+The estimates the owner approves are USD 0.81 for a smoke or generic-recovery hour (`estimated_cost`), the session's `estimated_session_cost`, which its preregistration states, USD 2.35 per BigQuery trial (`bigquery_plan.estimate`), and, refined under [#1433](https://github.com/flink-gcp/flink-connector-gcp/issues/1433), USD 1.987 per Pub/Sub trial (`pubsub_plan.estimate`), and USD 2.128 per reactive one since [#2055](https://github.com/flink-gcp/flink-connector-gcp/issues/2055), which their rendered proposals carry.
 The BigQuery campaign, its estimate, stop conditions and cleanup checks are preregistered in the [BigQuery trial preregistration](evidence/0165-bigquery-trial-preregistration-1312.md).
 The FILE_LOADS trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552) has its own, the [BigQuery FILE_LOADS trial preregistration](evidence/0165-bigquery-fileloads-preregistration-1313.md), which also prices what that mode adds outside `bigquery_plan.estimate` — free load jobs and short-lived staged objects, expected to fit the estimate's reserve.
 
@@ -1680,6 +1680,26 @@ Flink's default of zero failed the job on that single storage failure, and the r
 Flink 2.2.1's `CheckpointFailureManager` counts consecutive failures from I/O, asynchronous, declined, expired and finalization errors, fails the job only once the count exceeds the tolerance, and resets the count on the next completed checkpoint, so a third consecutive failure still restarts the job and this rule still stops the run.
 A tolerated failure restarts nothing, so the restore count the exercise reads is unchanged, and the next completed checkpoint comes an interval later.
 The owner chose two over one, which would absorb the measured single failure but not a second in the next interval, and a bounded tolerance over an unlimited one, which would hide a checkpoint storage that had stopped working.
+
+### Reactive Pub/Sub trials
+
+[#2055](https://github.com/flink-gcp/flink-connector-gcp/issues/2055) adds three reactive kinds to the Pub/Sub scenario, so that the source's restore deduplication ([ADR-0198](0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md)) can be compared with the setting off and on where Pods are really replaced ([#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054)).
+The case that setting exists for is a reactive restart that cancels the job before a completed checkpoint's notification reaches the source, and a savepoint upgrade never loses that notification.
+The kinds therefore depart from two rules above, for the Pub/Sub scenario only.
+
+The `pkg/pubsub` package now renders the Operator's standalone mode under `scheduler-mode: reactive` for these kinds, beside the native runtime the other kinds keep, and runs up to three TaskManagers.
+A third subtask makes two readers share a subscription, which the ledger relay has to reach.
+The `tier3-pubsub` run policy admits a job parallelism of three for them, and their admission quota holds five Pods in that namespace instead of four, which makes their estimate USD 2.128.
+Their recovery manifest differs from the initial one only in the TaskManager replica count, which the Operator applies in place, and an eviction deletes a TaskManager Pod that the Deployment replaces.
+
+The unplanned-restart rule keeps its expected count everywhere except inside a reactive recovery, where every restore is accepted and recorded.
+The reactive scheduler keeps its JobMaster and restarts the job whenever its TaskManagers change: once for a scale and twice for an eviction, and a lost TaskManager may also fail the job before its slots are released, which would add one that no fixed count predicts.
+A restore before the fault or after the recovery is proven still stops the run.
+
+The race needs the task thread busy when the scale-out's checkpoint completes, and in the local reproduction an idle thread processed the notification first every time.
+The relay therefore sleeps 100 ms for each input of the replay cohort only, and the fault is injected as soon as that cohort is published, so it is still in flight through a node's provisioning and the wait for a checkpoint.
+A delay on every input was declined: the first and last cohorts would outlast their stage deadlines, and lengthening those for every kind would change trials that need no delay.
+The oracle separates the redeliveries that matter here with four payload fields, the checkpoint an attempt restored, the latest barrier it had passed, and its subtask and attempt number, which bound each run, because counting repeated processing alone mixes them with the ordinary at-least-once replay of what no checkpoint covered.
 
 ### Cloud Tasks workload names
 

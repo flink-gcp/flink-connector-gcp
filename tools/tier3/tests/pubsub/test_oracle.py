@@ -68,17 +68,22 @@ def test_each_shared_case_is_decided_as_the_java_report_decides_it(case):
 def test_the_shared_cases_cover_every_refusal_and_every_counter():
     cases = [param.values[0] for param in shared_cases()]
     results = {case["result"] for case in cases}
-    assert len(cases) == len({case["name"] for case in cases}) == 24
+    assert len(cases) == len({case["name"] for case in cases}) == 38
     rejections = {result for result in results if result.startswith("reject ")}
-    assert len(rejections) == 11
+    assert len(rejections) == 12
     counted = [result for result in results if "duplicates=1" in result]
-    assert counted and all(f"{name}=1" in counted[0].split() for name in COUNTERS[1:])
+    assert any(
+        all(f"{name}=1" in result.split() for name in COUNTERS[1:5])
+        for result in counted
+    )
+    assert any("covered_redeliveries=1" in result.split() for result in results)
 
 
 def payload(index=0, sequence=0, attempt=ATTEMPT, observation=None, message="aW4"):
     observation = observation or f"b{index:07d}-0000-4000-8000-{sequence:012d}"
     return (
-        f"v1|oracle|{index}|{sequence}|{message}|{attempt}|{observation}|initial|false"
+        f"v1|oracle|{index}|{sequence}|{message}|{attempt}|{observation}"
+        "|initial|false|0|0|0|0"
     )
 
 
@@ -101,6 +106,7 @@ def test_reconcile_reports_what_is_missing_without_refusing():
         "repeated_input_processing": 0,
         "output_publication_duplicates": 0,
         "repeated_output_delivery": 0,
+        "covered_redeliveries": 0,
     }
 
 
@@ -168,7 +174,7 @@ def test_the_line_bound_holds_across_accepted_lines():
     ],
 )
 def test_input_identity_parses_as_integer_parse_int_does(sequence, message):
-    text = payload().replace("|0|0|", f"|0|{sequence}|")
+    text = payload().replace("|0|0|", f"|0|{sequence}|", 1)
     with pytest.raises(Failure, match=message):
         Report("oracle", 1).accept("o-1", text)
 

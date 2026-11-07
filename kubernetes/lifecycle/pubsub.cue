@@ -22,9 +22,21 @@ import (
 )
 
 // The reviewed trial's inputs, which dispatch and the offline renderer supply.
-pubsubTrial: *defaultFault | or([for kind, _ in faultKinds {kind}]) @tag(pubsub_trial)
-pubsubRecords:    *1000 | (int & >=2 & <=10000) @tag(pubsub_records,type=int)
-pubsubEntryPoint: *"datastream" | "table"       @tag(pubsub_entry_point)
+// The reactive-mode kinds only this scenario runs (#2055), as `flink_tier3/pubsub/verdict.py`
+// declares them in its `REACTIVE` table, which a test holds this to: the TaskManagers of the
+// initial and recovery manifests. Their per-record delay and flow-control limit are the same
+// table's constants.
+pubsubReactiveKinds: {
+	"reactive-scale-out": {initial: 2, recovery: 3}
+	"reactive-scale-in": {initial: 3, recovery: 2}
+	"reactive-tm-eviction": {initial: 3, recovery: 3}
+}
+pubsubReactiveReplayDelayMillis: 100
+pubsubReactiveMaxOutstanding:    100000
+pubsubTrial: *defaultFault | or([for kind, _ in faultKinds {kind}, for kind, _ in pubsubReactiveKinds {kind}]) @tag(pubsub_trial)
+pubsubRecords:              *1000 | (int & >=2 & <=10000) @tag(pubsub_records,type=int)
+pubsubEntryPoint:           *"datastream" | "table"       @tag(pubsub_entry_point)
+pubsubRestoreDeduplication: *false | bool                 @tag(pubsub_restore_deduplication,type=bool)
 // The workload access probe's test plan and program, from `pubsub_plan.prepare`,
 // which checks the rendered Pod against both.
 pubsubProbe:       *"{}" | string @tag(pubsub_probe)
@@ -36,10 +48,23 @@ if scenario == "pubsub-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-pubsub", image: applicationImage}
 			delivery: resources: app: (pubsub.#Application & {
 				run: {
-					id: runID, image: applicationImage, recordsPerSubscription: pubsubRecords, entryPoint: pubsubEntryPoint
-					// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the upgrade phase.
-					parallelism: faultKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
-					phase: [if recovery && faultKinds[pubsubTrial].rescale != null {"upgrade"}, "initial"][0]
+					id:                   runID, image: applicationImage, recordsPerSubscription: pubsubRecords, entryPoint: pubsubEntryPoint
+					restoreDeduplication: pubsubRestoreDeduplication
+					// An unknown kind takes this branch, whose index refuses it.
+					if pubsubReactiveKinds[pubsubTrial] == _|_ {
+						// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the upgrade phase.
+						parallelism: faultKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
+						phase: [if recovery && faultKinds[pubsubTrial].rescale != null {"upgrade"}, "initial"][0]
+					}
+					if pubsubReactiveKinds[pubsubTrial] != _|_ {
+						// Both manifests run the same job; the recovery manifest changes only the
+						// TaskManagers, which the Operator applies in place.
+						reactive:               true
+						parallelism:            pubsubReactiveKinds[pubsubTrial].initial
+						taskManagers:           pubsubReactiveKinds[pubsubTrial][[if recovery {"recovery"}, "initial"][0]]
+						replayDelayMillis:      pubsubReactiveReplayDelayMillis
+						maxOutstandingMessages: pubsubReactiveMaxOutstanding
+					}
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

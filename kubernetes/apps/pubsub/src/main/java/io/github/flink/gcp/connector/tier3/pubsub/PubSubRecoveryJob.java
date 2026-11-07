@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 /** Internal DataStream or Table relay for independently supervised Pub/Sub recovery trials. */
@@ -62,7 +63,13 @@ public final class PubSubRecoveryJob {
                                         RecoveryOptions.PROJECT, options.input(0)),
                                 SubscriptionDestination.of(
                                         RecoveryOptions.PROJECT, options.input(1)))
-                        .deserializer(new RecoveryDeserializer(options));
+                        .deserializer(new RecoveryDeserializer(options))
+                        .restoreDeduplication(options.restoreDeduplication)
+                        .subscriberOptions(
+                                PubSubSubscriberOptions.builder()
+                                        .flowControlMaxOutstandingElementCount(
+                                                options.maxOutstandingMessages)
+                                        .build());
         var sink =
                 PubSubSink.<String>builder()
                         .topic(TopicDestination.of(RecoveryOptions.PROJECT, options.output()))

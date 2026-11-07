@@ -542,7 +542,9 @@ def relayed(run_id, index, sequence, *, attempt=None, phase="initial", restored=
             attempt or str(uuid.uuid4()),
             str(uuid.uuid4()),
             phase,
-            "true" if restored else "false",
+            *(("true", "3", "4") if restored else ("false", "0", "0")),
+            "1",
+            "2",
         ]
     )
 
@@ -555,6 +557,8 @@ def test_parse_accepts_only_this_relay_s_output():
     assert parsed["input_message_id"] == "input-1"
     assert parsed["attempt"] == attempt and parsed["restored"] is True
     assert parsed["output_message_id"] == "out-1" and parsed["phase"] == "upgrade"
+    assert parsed["origin"] == 3 and parsed["epoch"] == 4
+    assert parsed["subtask"] == 1 and parsed["attempt_number"] == 2
     fields = good.split("|")
     for index, value in [
         (0, "v2"),
@@ -566,6 +570,14 @@ def test_parse_accepts_only_this_relay_s_output():
         (5, "attempt"),
         (7, "final"),
         (8, "yes"),
+        # A restored attempt names its checkpoint, and its epoch is not below it.
+        (9, "0"),
+        (9, "03"),
+        (9, "-1"),
+        (10, "2"),
+        (10, "4.0"),
+        (11, "-1"),
+        (12, "01"),
     ]:
         changed = list(fields)
         changed[index] = value

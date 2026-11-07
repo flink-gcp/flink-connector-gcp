@@ -23,8 +23,12 @@ import pytest
 from flink_tier3.common import INCONCLUSIVE
 from flink_tier3.policy import PUBSUB, PUBSUB_STATE
 from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
-from flink_tier3.pubsub.observe import SINK_METRICS, SOURCE_METRICS
-from flink_tier3.pubsub.verdict import MEASUREMENT_EVENT
+from flink_tier3.pubsub.observe import (
+    DEDUPLICATION_METRICS,
+    SINK_METRICS,
+    SOURCE_METRICS,
+)
+from flink_tier3.pubsub.verdict import MEASUREMENT_EVENT, REACTIVE
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, rt
@@ -45,10 +49,11 @@ INTERVAL = 120
 )
 def trial(request):
     return {
-        "version": 5,
+        "version": 6,
         "trial": request.param,
         "entry_point": "datastream",
         "records_per_subscription": RECORDS,
+        "restore_deduplication": False,
     }
 
 
@@ -80,6 +85,7 @@ class Relay:
         ignore_delete=False,
         savepoint_acks=True,
         pull_limit=None,
+        lose_notification=False,
     ):
         self.a, self.kube, self.clock = a, a.environment.kube, a.environment.clock
         self.approval = a.environment.approval
@@ -100,6 +106,17 @@ class Relay:
         # An immediate pull answers at most this many, as the service's
         # answer holds what it has ready at once rather than the backlog.
         self.pull_limit = pull_limit
+        # A reactive restart cancels the job before the latest completed
+        # checkpoint's notification acknowledged what it covered (#2049).
+        self.lose_notification = lose_notification
+        self.last_covered = []
+        # Each attempt's restored checkpoint, and the latest checkpoint
+        # barrier the job has passed.
+        self.origins = {}
+        self.epoch = 0
+        # Each attempt's subtask and attempt number, and each subtask's last.
+        self.numbers = {}
+        self.subtask_attempts = {}
         # Output messages the collector has been given, for redelivering one.
         self.delivered = []
         # A checkpoint triggered and not yet completed, with what it covers.
@@ -107,7 +124,14 @@ class Relay:
         # Deleted Pods still terminating, and when they go.
         self.terminating = []
         self.jm_down = False
-        self.parallelism = 1 if self.kind == "rescale-out" else 2
+        self.reactive = REACTIVE.get(self.kind)
+        self.parallelism = (
+            self.reactive["initial"]
+            if self.reactive
+            else 1
+            if self.kind == "rescale-out"
+            else 2
+        )
         self.phase = "initial"
         self.pending = {0: [], 1: []}
         # Processed and not yet acknowledged: (message, attempt).
@@ -133,6 +157,8 @@ class Relay:
         self.listed = (*SOURCE_METRICS, *SINK_METRICS)
         # The vertex metrics endpoints alone answer 503.
         self.metrics_down = False
+        # The job plan answers 503 this many more times.
+        self.plan_down = 0
         # The value query answers no id, as Flink's store does for metrics it
         # does not hold yet.
         self.values_held = True
@@ -256,6 +282,10 @@ class Relay:
             attempt = str(uuid.uuid4())
             manager = managers[index % len(managers)]
             self.attempts[index] = attempt
+            self.origins[attempt] = self.restored.get("id", 0) if restored else 0
+            # Flink numbers each subtask's attempts upwards across restarts.
+            self.subtask_attempts[index] = self.subtask_attempts.get(index, -1) + 1
+            self.numbers[attempt] = (str(index), str(self.subtask_attempts[index]))
             if restored:
                 self.restored_attempts.add(attempt)
             line = (
@@ -289,6 +319,7 @@ class Relay:
         }
         self.next_id += 1
         self.history.append(cp)
+        self.epoch = cp["id"]
         # The barrier covers what was processed before it.
         self.inflight = (cp, list(self.unacked))
 
@@ -301,12 +332,15 @@ class Relay:
             end_to_end_duration=900,
         )
         self.completed = dict(cp)
+        self.last_covered = list(covered)
         # Completion acknowledges what the checkpoint covers, nothing later.
         self.unacked = [item for item in self.unacked if item not in covered]
 
     def process(self):
         for index in (0, 1):
-            attempt = self.attempts.get(index if self.parallelism == 2 else 0)
+            attempt = self.attempts.get(index if self.parallelism >= 2 else 0)
+            origin = self.origins.get(attempt, 0)
+            epoch = max(origin, self.epoch)
             for message in self.pending[index]:
                 fields = message["payload"].split("|")
                 data = "|".join(
@@ -317,6 +351,9 @@ class Relay:
                         str(uuid.uuid4()),
                         self.phase,
                         "true" if attempt in self.restored_attempts else "false",
+                        str(origin),
+                        str(epoch),
+                        *self.numbers[attempt],
                     ]
                 )
                 self.output.append({"messageId": uuid.uuid4().hex, "data": data})
@@ -343,8 +380,9 @@ class Relay:
         if self.restart_at is not None:
             if now < self.restart_at:
                 return
-            self.restart()
-            self.restart_at = self.restart = None
+            # A restart may schedule the next one.
+            restart, self.restart_at, self.restart = self.restart, None, None
+            restart()
             return
         if state != "RUNNING":
             return
@@ -378,6 +416,7 @@ class Relay:
         # job adds this restore to its count.
         self.restores = self.restores + 1 if kept else 1
         cp = savepoint or self.completed
+        self.epoch = cp["id"]
         self.restored = {
             "id": cp["id"],
             "is_savepoint": savepoint is not None,
@@ -398,6 +437,9 @@ class Relay:
                 self.kube.put(current)
                 self.terminating.append((current, self.clock() + 45))
             restored = self.restored_flag
+            if self.reactive and component == "taskmanager":
+                self.reactive_restart(self.parallelism - 1, then=self.parallelism)
+                return True
             if component == "jobmanager":
                 # The Operator has not noticed yet, and the REST API is gone
                 # with the JobManager.
@@ -457,6 +499,44 @@ class Relay:
         app["status"]["jobStatus"]["state"] = "RUNNING"
         self.kube.put(app)
 
+    def reactive_restart(self, size, *, then=None):
+        """The reactive scheduler restarting the job from its latest checkpoint.
+
+        The TaskManagers change to ``size``, and every attempt restarts
+        restored; ``then`` is the size a replaced Pod's Deployment brings it
+        back to in a second restart.
+        """
+        lost = set(self.attempts.values())
+
+        def restart():
+            managers = [
+                p for p in self.managers() if not p["metadata"].get("deletionTimestamp")
+            ]
+            for pod in managers[size:]:
+                self.original_delete(pod)
+            for _ in range(size - len(managers)):
+                self.pod("taskmanager")
+            if self.lose_notification:
+                # The notification was cancelled: what the restored
+                # checkpoint covered comes back as well.
+                self.unacked = self.last_covered + self.unacked
+                self.last_covered = []
+            self.requeue(lost)
+            self.restore(kept=True)
+            self.parallelism = size
+            self.attempts = {}
+            self.start_attempts(range(size), restored=self.restored_flag)
+            current = self.app()
+            current["status"].update(
+                observedGeneration=current["metadata"]["generation"],
+                reconciliationStatus={"state": "DEPLOYED"},
+            )
+            self.kube.put(current)
+            if then is not None:
+                self.reactive_restart(then)
+
+        self.restart_at, self.restart = self.clock() + 30, restart
+
     def patch(self, value, changes, subresource="", before_repeat=None):
         if value["kind"] != "FlinkDeployment":
             return self.original_patch(
@@ -471,6 +551,12 @@ class Relay:
                 target = target[key]
             target[leaf] = change["value"]
         app["metadata"].update(generation=2, resourceVersion="2")
+        if self.reactive:
+            # The Operator scales the TaskManager Deployment in place.
+            app["status"]["reconciliationStatus"] = {"state": "DEPLOYED"}
+            self.kube.put(app)
+            self.reactive_restart(app["spec"]["taskManager"]["replicas"])
+            return app
         # Stop with a savepoint: it completes and acknowledges what it covers.
         savepoint = {
             "id": self.next_id,
@@ -550,8 +636,19 @@ class Relay:
                 {"id": i, "min": 0, "max": 0, "sum": values.get(i.rsplit(".")[-1], 0)}
                 for i in ids
             ]
+        if "/" not in suffix and self.plan_down:
+            self.plan_down -= 1
+            raise rt.ApiError(503, method, path)
         if "/" not in suffix:
-            return {"vertices": [{"id": "relay", "name": "Source: Pub/Sub input"}]}
+            return {
+                "vertices": [
+                    {
+                        "id": "relay",
+                        "name": "Source: Pub/Sub input",
+                        "parallelism": self.parallelism,
+                    }
+                ]
+            }
         raise AssertionError(path)
 
 
@@ -1442,3 +1539,83 @@ def test_a_stage_that_expired_during_its_own_reads_does_not_advance(
     control = world.run()
     assert late and "deadline expired: boundary" in control.reason
     assert not [e for e in world.relay.events if e[0] == "delete"]
+
+
+@pytest.mark.parametrize("lost", [False, True], ids=["notified", "notification-lost"])
+@pytest.mark.parametrize("trial", list(REACTIVE), indirect=True)
+def test_each_reactive_trial_restores_a_checkpoint_and_counts_covered_redeliveries(
+    admitting, monkeypatch, lost
+):
+    world = World(admitting, monkeypatch, lose_notification=lost)
+    control = world.run()
+    kind = world.relay.kind
+    sizes = REACTIVE[kind]
+    assert control.recovery["stage"] == "complete", control.reason
+    assert control.pubsub["stage"] == "cleaned"
+    outcomes = control.recovery["outcomes"]
+    recovery, fault = outcomes["recovery"], outcomes["fault"]
+    assert recovery["replay"] == "restored-checkpoint"
+    assert recovery["parallelism"] == world.relay.parallelism == sizes["recovery"]
+    assert recovery["restored"]["is_savepoint"] is False
+    # An eviction restarts twice: down when the Pod goes, up when it returns.
+    assert recovery["restores"] == (2 if sizes["fault"] == "evict" else 1)
+    if sizes["fault"] == "scale":
+        assert ("patch", ["/spec/taskManager/replicas"]) in world.relay.events
+        assert fault["pod"] is None
+    else:
+        assert ("delete", "taskmanager", fault["pod"]) in world.relay.events
+    assert control.recovery["verdict"] == rt.USABLE, control.recovery["reasons"]
+    oracle = control.recovery["oracle"]
+    assert oracle["rejected"] is None and oracle["missing_inputs"] == 0
+    # A lost notification redelivers what the restored checkpoint covered,
+    # which only the covered count separates from an ordinary replay.
+    assert (oracle["covered_redeliveries"] > 0) is lost
+
+
+@one("reactive-scale-out")
+def test_a_restart_after_a_reactive_recovery_is_still_unplanned(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    fired = []
+
+    def restart():
+        if stage(world) == "after" and not fired:
+            fired.append(True)
+            world.relay.reactive_restart(world.relay.parallelism)
+
+    world.relay.hooks.append(restart)
+    control = world.run()
+    assert control.recovery["stage"] != "complete"
+    assert "Unplanned job restart" in control.reason
+
+
+@one("reactive-scale-out")
+def test_a_transient_plan_read_while_recovering_waits_for_the_next_poll(
+    admitting, monkeypatch
+):
+    world = World(admitting, monkeypatch)
+    failed = []
+
+    def unavailable():
+        if stage(world) == "recovering" and not failed:
+            failed.append(True)
+            world.relay.plan_down = 3
+
+    world.relay.hooks.append(unavailable)
+    control = world.run()
+    assert failed and world.relay.plan_down == 0
+    assert control.recovery["stage"] == "complete", control.reason
+
+
+@one("reactive-scale-out")
+def test_restore_deduplication_readings_are_sampled_when_listed(admitting, monkeypatch):
+    world = World(admitting, monkeypatch)
+    world.relay.listed = (*world.relay.listed, *DEDUPLICATION_METRICS)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    names = {
+        item["id"].rsplit(".")[-1]
+        for m in world.evidence(MEASUREMENT_EVENT)
+        for vertex in m["payload"]["vertices"]
+        for item in vertex["metrics"]
+    }
+    assert set(DEDUPLICATION_METRICS) <= names
