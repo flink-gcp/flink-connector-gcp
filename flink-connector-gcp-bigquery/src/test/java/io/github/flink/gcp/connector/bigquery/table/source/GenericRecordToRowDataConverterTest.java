@@ -283,7 +283,7 @@ class GenericRecordToRowDataConverterTest {
     @Test
     void projectionUsesPhysicalNamesAndProducesTheProjectedOrder() {
         GenericRecordToRowDataConverter converter =
-                new GenericRecordToRowDataConverter(TYPE, new int[] {10, 0});
+                new GenericRecordToRowDataConverter(TYPE, new int[][] {{10}, {0}});
 
         RowData row = converter.convert(record(ByteBuffer.wrap(new byte[] {1})));
 
@@ -296,7 +296,7 @@ class GenericRecordToRowDataConverterTest {
     @Test
     void emptyProjectionProducesAZeroColumnRow() {
         GenericRecordToRowDataConverter converter =
-                new GenericRecordToRowDataConverter(TYPE, new int[0]);
+                new GenericRecordToRowDataConverter(TYPE, new int[0][]);
 
         assertThat(converter.convert(record(ByteBuffer.wrap(new byte[] {1}))).getArity()).isZero();
     }
@@ -691,6 +691,149 @@ class GenericRecordToRowDataConverterTest {
         count.put("value", 2L);
         record.put("counts", Collections.singletonList(count));
         return record;
+    }
+
+    // The shape Storage Read returned on 2026-11-07 for selected fields "r.a" and "r.c.e": the
+    // STRUCTs keep their nesting and hold only the selected fields, and a NULL STRUCT stays NULL.
+    private static final Schema NESTED_SESSION_SCHEMA =
+            new Schema.Parser()
+                    .parse(
+                            "{\"type\":\"record\",\"name\":\"root_nested\",\"fields\":["
+                                    + "{\"name\":\"r\",\"type\":[\"null\",{\"type\":\"record\","
+                                    + "\"name\":\"r_record\",\"fields\":["
+                                    + "{\"name\":\"a\",\"type\":[\"null\",\"long\"]},"
+                                    + "{\"name\":\"c\",\"type\":[\"null\",{\"type\":\"record\","
+                                    + "\"name\":\"c_record\",\"fields\":["
+                                    + "{\"name\":\"e\",\"type\":[\"null\",\"string\"]}]}]}]}]}]}");
+
+    private static final RowType NESTED_TYPE =
+            (RowType)
+                    DataTypes.ROW(
+                                    DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                    DataTypes.FIELD(
+                                            "r",
+                                            DataTypes.ROW(
+                                                    DataTypes.FIELD("a", DataTypes.BIGINT()),
+                                                    DataTypes.FIELD("b", DataTypes.STRING()),
+                                                    DataTypes.FIELD(
+                                                            "c",
+                                                            DataTypes.ROW(
+                                                                    DataTypes.FIELD(
+                                                                            "d",
+                                                                            DataTypes.BIGINT()),
+                                                                    DataTypes.FIELD(
+                                                                            "e",
+                                                                            DataTypes.STRING()))))))
+                            .getLogicalType();
+
+    @Test
+    void nestedPathsReadFieldsInProducedOrderAndNullUnderANullStruct() throws Exception {
+        GenericRecordToRowDataConverter converter =
+                InstantiationUtil.clone(
+                        new GenericRecordToRowDataConverter(
+                                NESTED_TYPE, new int[][] {{1, 2, 1}, {1, 0}}));
+        Schema rSchema = NESTED_SESSION_SCHEMA.getField("r").schema().getTypes().get(1);
+        Schema cSchema = rSchema.getField("c").schema().getTypes().get(1);
+
+        GenericRecord present = new GenericData.Record(NESTED_SESSION_SCHEMA);
+        GenericRecord r = new GenericData.Record(rSchema);
+        GenericRecord c = new GenericData.Record(cSchema);
+        c.put("e", "e5");
+        r.put("a", 5L);
+        r.put("c", c);
+        present.put("r", r);
+        RowData row = converter.convert(present);
+        assertThat(row.getArity()).isEqualTo(2);
+        assertThat(row.getString(0).toString()).isEqualTo("e5");
+        assertThat(row.getLong(1)).isEqualTo(5L);
+
+        GenericRecord nullStruct = new GenericData.Record(NESTED_SESSION_SCHEMA);
+        nullStruct.put("r", null);
+        RowData nulls = converter.convert(nullStruct);
+        assertThat(nulls.isNullAt(0)).isTrue();
+        assertThat(nulls.isNullAt(1)).isTrue();
+
+        GenericRecord nullInner = new GenericData.Record(NESTED_SESSION_SCHEMA);
+        GenericRecord withoutC = new GenericData.Record(rSchema);
+        withoutC.put("a", 4L);
+        withoutC.put("c", null);
+        nullInner.put("r", withoutC);
+        RowData partial = converter.convert(nullInner);
+        assertThat(partial.isNullAt(0)).isTrue();
+        assertThat(partial.getLong(1)).isEqualTo(4L);
+    }
+
+    @Test
+    void aPathBelowARangeShapedRowReadsTheEndpointFromTheWholeRecord() {
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "span",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("start", DataTypes.DATE()),
+                                                        DataTypes.FIELD("end", DataTypes.DATE()))))
+                                .getLogicalType();
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"root_range\",\"fields\":["
+                                        + "{\"name\":\"span\",\"type\":[\"null\",{\"type\":\"record\","
+                                        + "\"name\":\"range_record\",\"fields\":["
+                                        + "{\"name\":\"start\",\"type\":[\"null\",{\"type\":\"int\","
+                                        + "\"logicalType\":\"date\"}]},"
+                                        + "{\"name\":\"end\",\"type\":[\"null\",{\"type\":\"int\","
+                                        + "\"logicalType\":\"date\"}]}]}]}]}");
+        GenericRecord span = recordFor(schema.getField("span").schema());
+        span.put("start", 20454);
+        span.put("end", null);
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("span", span);
+
+        RowData row =
+                new GenericRecordToRowDataConverter(type, new int[][] {{0, 1}, {0, 0}})
+                        .convert(record);
+
+        assertThat(row.isNullAt(0)).isTrue();
+        assertThat(row.getInt(1)).isEqualTo(20454);
+    }
+
+    @Test
+    void aPathIntoBigQueryIntervalIsRejectedRatherThanExposingAComponent() {
+        Schema schema =
+                new Schema.Parser()
+                        .parse(
+                                "{\"type\":\"record\",\"name\":\"root_interval_path\",\"fields\":["
+                                        + "{\"name\":\"span\",\"type\":[\"null\",{\"type\":\"record\","
+                                        + "\"namespace\":\"google.sqlType\",\"name\":\"INTERVAL\","
+                                        + "\"fields\":[{\"name\":\"months\",\"type\":\"int\"},"
+                                        + "{\"name\":\"days\",\"type\":\"int\"},{\"name\":\"microseconds\","
+                                        + "\"type\":\"long\"}]}]}]}");
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD(
+                                                "span",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("months", DataTypes.INT()),
+                                                        DataTypes.FIELD("days", DataTypes.INT()),
+                                                        DataTypes.FIELD(
+                                                                "microseconds",
+                                                                DataTypes.BIGINT()))))
+                                .getLogicalType();
+        GenericRecord span = recordFor(schema.getField("span").schema());
+        span.put("months", 1);
+        span.put("days", 2);
+        span.put("microseconds", 3L);
+        GenericRecord record = new GenericData.Record(schema);
+        record.put("span", span);
+
+        assertThatThrownBy(
+                        () ->
+                                new GenericRecordToRowDataConverter(type, new int[][] {{0, 0}})
+                                        .convert(record))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Column span.months reads BigQuery INTERVAL");
     }
 
     private static GenericRecord recordFor(Schema schema) {

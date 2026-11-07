@@ -38,7 +38,7 @@ final class RowDataDeserializationSchema implements BigQueryRowDeserializationSc
 
     RowDataDeserializationSchema(
             RowType physicalRowType,
-            @Nullable int[] projectedFields,
+            @Nullable int[][] projectedFields,
             TypeInformation<RowData> producedType) {
         this.converter = new GenericRecordToRowDataConverter(physicalRowType, projectedFields);
         this.producedType = producedType;

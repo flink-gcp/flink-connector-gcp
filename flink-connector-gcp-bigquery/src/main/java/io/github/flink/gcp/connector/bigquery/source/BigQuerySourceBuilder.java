@@ -325,7 +325,14 @@ public class BigQuerySourceBuilder<T> {
      * <p>Optional; defaults to every column. The projection is applied by BigQuery when the read
      * session is created, so unread columns are neither scanned nor billed.
      *
-     * @param fields the column names
+     * <p>A field of a {@code STRUCT} column is named by its dotted path, such as {@code
+     * address.city}; the session then returns the {@code STRUCT} with only the named fields, and
+     * still returns {@code NULL} where the {@code STRUCT} itself is {@code NULL}. A path cannot
+     * descend into an {@code ARRAY} or a {@code RANGE}. A path below another named field, such as
+     * {@code address} with {@code address.city}, reads the whole field. Where the source
+     * materializes a view, the generated query selects the path's top-level column.
+     *
+     * @param fields the column names or dotted field paths
      * @return this builder
      */
     public BigQuerySourceBuilder<T> selectedFields(String... fields) {

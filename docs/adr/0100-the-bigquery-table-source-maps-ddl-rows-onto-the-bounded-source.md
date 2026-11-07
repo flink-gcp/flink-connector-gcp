@@ -18,13 +18,16 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-12; BigQuery read-side option keys migrated by
-  [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047) (2026-08-23)
+  [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047) (2026-08-23); nested
+  projection and nested-field restrictions added by
+  [#1840](https://github.com/flink-gcp/flink-connector-gcp/issues/1840) (2026-11-07)
 - Issues: [#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542),
   [#566](https://github.com/flink-gcp/flink-connector-gcp/issues/566),
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047),
   [#1233](https://github.com/flink-gcp/flink-connector-gcp/issues/1233),
   [#1234](https://github.com/flink-gcp/flink-connector-gcp/issues/1234),
-  [#1252](https://github.com/flink-gcp/flink-connector-gcp/issues/1252)
+  [#1252](https://github.com/flink-gcp/flink-connector-gcp/issues/1252),
+  [#1840](https://github.com/flink-gcp/flink-connector-gcp/issues/1840)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -60,7 +63,36 @@ The converter addresses the returned Avro record by physical field name and emit
 order, so DDL order and projection order do not become an accidental positional contract.
 When a query needs no output column, Flink retains the first physical column as a carrier; the
 source reads and emits that one-field row, and the remaining planner projection discards it.
-Nested projection is not advertised.
+
+**A projected field of a ROW column becomes a dotted Storage Read path.**
+Storage Read documents `selected_fields` entries such as `struct_field.string_field1` and returns
+the enclosing record holding only the selected fields.
+The converter follows the planner's path through the returned records by name and yields `NULL`
+where any record on the path is `NULL`, which is how Flink evaluates a field access under a `NULL`
+row.
+Equal paths collapse, and a path below another selected path is dropped because the shorter one
+already returns the whole field.
+A path stops at a ROW that declares only fields named `start` or `end`, because planning does not
+fetch the schema and such a ROW may be a BigQuery `RANGE`, read whole or by one endpoint, which
+Storage Read cannot descend into; it also stops at a ROW declaring only fields of the measured
+`INTERVAL` record, so that the converter's rejection still applies.
+The converter reads the rest of a stopped path from the whole field.
+A view's generated `SELECT` folds a path to its top-level column, keeping the STRUCT's shape and
+its `NULL`s in the result, and the read session over the result receives the path itself.
+
+The source does not advertise nested projection when a ROW reachable through ROW fields declares a
+`NOT NULL` field below a nullable one.
+Flink types a projected nested field as it is declared, so such a field would be produced
+`NOT NULL` although its row may be `NULL`, and Flink's `NOT NULL` enforcer would then fail the
+query ([#2050](https://github.com/flink-gcp/flink-connector-gcp/issues/2050), the defect the
+Firestore source records under ADR-0179).
+
+Flink pushes nested paths only for a query without a `WHERE` clause.
+Every predicate remains a residual (below), so a filtered query keeps a filtering `Calc` above the
+scan, and the planner then pushes whole top-level columns: `SELECT r.a FROM t WHERE id = 1` reads
+all of `r`.
+This held identically on Flink 1.20.5, 2.2.1 and 2.3.0, and `BigQueryTablePlanTest` pins it so that
+a planner change shows up there.
 
 **The table layer converts the Storage Read API's documented Avro shapes directly to Flink's
 internal values.**
@@ -140,8 +172,21 @@ The planner does not fetch the BigQuery schema, so a Flink `STRING` declaration 
 ordinary `STRING` from `JSON` or `GEOGRAPHY`; a generated string restriction against an unsupported
 physical type can be rejected when the Storage Read session is created.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-Fixed-length character columns, nested fields,
-complex types, field-to-field comparisons, casts, and functions remain only with Flink.
+
+**A field of a ROW column follows the scalar matrix of its leaf type.**
+Flink delivers such a reference as a `NestedFieldReferenceExpression`, `@PublicEvolving` on every
+supported version, whether or not nested projection is advertised.
+The source renders it as a path of separately quoted identifiers, such as `` `r`.`a` ``, which
+Storage Read evaluates as a STRUCT field access that is `NULL` under a `NULL` STRUCT.
+Flink evaluates `r.a` the same way, so `IS NULL`, `IS NOT NULL` and the `NULL` outcome of every
+comparison agree when every field on the path is nullable.
+A path where a `NOT NULL` field follows a nullable one stays with Flink, because Flink treats that
+field as never `NULL` while BigQuery reads `NULL` for it under a `NULL` row, and a pushed
+`IS NOT NULL` would then exclude rows Flink keeps.
+A path through a ROW that may be a `RANGE` also stays with Flink, because Storage Read rejects a
+restriction that accesses a field of a `RANGE`.
+Fixed-length character columns, other complex types, fields inside an `ARRAY` or `MAP`,
+field-to-field comparisons, casts, and functions remain only with Flink.
 
 An `AND` may push any translatable child because each child is necessary when the whole predicate
 is true.
@@ -178,6 +223,24 @@ A query source leaves the configured query untouched and applies both restrictio
 Read session over its materialized result.
 
 ## Evidence
+
+- `NestedFieldPathsTest`, `BigQueryDynamicSourceNestedProjectionTest` and the nested cases of the
+  converter, filter and `QuerySpec` tests hold the path rules, the dotted selected fields, `NULL`
+  under a `NULL` record, the `RANGE` and `INTERVAL` stops, and the view fold.
+- `BigQueryTablePlanTest` pins that a query without `WHERE` pushes nested paths, that a filtered
+  query pushes whole columns while its nested predicates reach the source, and that a predicate on
+  a `RANGE`-shaped field stays residual.
+- `BigQueryNestedPushDownRealGcpITCase` reads a `NULL` STRUCT, a `NULL` field, a `NULL` inner STRUCT,
+  a `NULL` `RANGE` and an unbounded `RANGE` start through a direct table, a `scan.query` source and a
+  materialized view.
+  It compares nested projection with the same fields taken from whole columns, and each pushed
+  nested predicate with Flink evaluating it over the same rows read without a predicate.
+  Removing the `RANGE` stop makes both cases fail with the service's rejection.
+- A real Storage Read probe on 2026-11-07 returned `r` holding only `a` for `r.a`, kept a `NULL`
+  `r` distinct from a `NULL` `a` (27 serialized Avro bytes for six rows against 5,071 for the whole
+  STRUCT), returned the whole STRUCT for `r` together with `r.a`, and accepted a repeated path.
+  It rejected `rng.start` on a `RANGE` ("do not exist"), `arr.x` on an `ARRAY<STRUCT>`, and the
+  single identifier `` `r.a` `` in a restriction ("Unrecognized name").
 
 - Factory tests cover direct-table, query, and view modes; every source option; projection and the
   zero-column carrier; source copying and serialization; credential propagation to JobManager and
@@ -305,6 +368,16 @@ A local Flink execution test checks the emitted integer/null/Boolean composition
   result.
 - **Read every column after projection**: Storage Read charges for scanned bytes, so losing
   projection at the Table boundary would be a material cost regression.
+- **Drop translated nested predicates from the residual so that nested projection survives a
+  `WHERE`**: the generated restrictions are necessary conditions, not exact ones, so removing the
+  residual would return rows Flink rejects; the projection cost is accepted instead.
+- **Rebuild a nested path in a view's generated `SELECT` as a STRUCT constructor**: `STRUCT(r.a AS
+  a)` is not `NULL` when `r` is, and guarding it with a conditional expression would make the
+  generated SQL depend on the column's declared fields; selecting the top-level column keeps the
+  result exact and lets the read session narrow the transfer.
+- **Fetch the BigQuery schema at planning to tell a `RANGE` from a STRUCT**: planning does not read
+  the live schema anywhere else, and a STRUCT that declares only `start` or `end` fields reading
+  its column whole costs only the transfer of its other fields.
 - **Map BigQuery `INTERVAL` to either Flink interval family**: choosing year-month discards the
   day-time components, while choosing day-time discards months and rounds microseconds to
   milliseconds.

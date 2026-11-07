@@ -219,6 +219,63 @@ class BigQueryTablePlanTest {
         assertResidual(table, "CAST(fixed_binary AS VARBINARY(1)) < X'80'", "CAST");
     }
 
+    @Test
+    void nestedFieldsAreProjectedWithoutAWhereAndFilteredInsideTheSource() {
+        TableEnvironment table = tableEnvironment();
+        table.executeSql(
+                "CREATE TABLE nested (id BIGINT, r ROW<a BIGINT, b STRING, c ROW<d BIGINT, e STRING>>,"
+                        + " span ROW<`start` DATE, `end` DATE>) WITH ("
+                        + "'connector'='bigquery', 'project'='p', 'dataset'='d', 'table'='t')");
+
+        assertThat(table.explainSql("SELECT r.c.e, r.a, id FROM nested"))
+                .contains("project=[r_c_e, r_a, id]");
+
+        // Every predicate stays residual, so the planner keeps a filtering Calc above the scan and
+        // then pushes whole top-level columns: nested projection reaches the source only for a
+        // query without WHERE (measured identically on Flink 1.20.5, 2.2.1 and 2.3.0).
+        assertThat(table.explainSql("SELECT r.b FROM nested WHERE r.a = 5 AND r.c.d IS NULL"))
+                .containsPattern("filter=\\[[^\\]]*=\\(r\\.a, 5")
+                .containsPattern("filter=\\[[^\\]]*IS NULL\\(r\\.c\\.d\\)")
+                .contains("project=[r]")
+                .contains("Calc(select=[r.b AS b], where=[AND(=(r.a, 5), IS NULL(r.c.d))])");
+
+        assertThat(table.explainSql("SELECT id FROM nested WHERE span.`start` IS NULL"))
+                .contains("filter=[]")
+                .contains("where=[IS NULL(span.start)]");
+    }
+
+    @Test
+    void nestedPredicatesReachASourceThatDoesNotAdvertiseNestedProjection() {
+        // A descriptor, not DDL: Flink 1.20 drops NOT NULL from a ROW field declared in DDL.
+        TableEnvironment table = tableEnvironment();
+        table.createTemporaryTable(
+                "guarded",
+                TableDescriptor.forConnector("bigquery")
+                        .schema(
+                                Schema.newBuilder()
+                                        .column(
+                                                "r",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD("a", DataTypes.BIGINT())))
+                                        .column(
+                                                "loose",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD(
+                                                                "a", DataTypes.BIGINT().notNull())))
+                                        .build())
+                        .option("project", "p")
+                        .option("dataset", "d")
+                        .option("table", "t")
+                        .build());
+
+        assertThat(table.explainSql("SELECT r.a FROM guarded")).contains("project=[r]");
+        assertThat(table.explainSql("SELECT r.a FROM guarded WHERE r.a = 5"))
+                .containsPattern("filter=\\[[^\\]]*=\\(r\\.a, 5");
+        // loose.a is NOT NULL under a nullable ROW, so its predicate stays with Flink.
+        assertThat(table.explainSql("SELECT r.a FROM guarded WHERE loose.a = 5"))
+                .contains("filter=[]");
+    }
+
     private static TableEnvironment tableEnvironment() {
         return TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
     }

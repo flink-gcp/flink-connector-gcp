@@ -54,7 +54,7 @@ final class BinaryFilterOracle {
                                         DataTypes.FIELD("binary_value", binaryType))
                                 .getLogicalType();
         GenericRecordToRowDataConverter converter =
-                new GenericRecordToRowDataConverter(physical, new int[] {0, 1});
+                new GenericRecordToRowDataConverter(physical, new int[][] {{0}, {1}});
         RowType inputType =
                 (RowType)
                         DataTypes.ROW(

@@ -74,32 +74,54 @@ final class GenericRecordToRowDataConverter implements Serializable {
     }
 
     private final RowType physicalRowType;
-    @Nullable private final int[] projectedFields;
-    private transient List<FieldPlan> fields;
+    @Nullable private final int[][] projectedFields;
+    private transient List<PathPlan> fields;
 
-    GenericRecordToRowDataConverter(RowType physicalRowType, @Nullable int[] projectedFields) {
+    /**
+     * Creates a converter for the planner's projection.
+     *
+     * @param physicalRowType the physical row type
+     * @param projectedFields the produced fields as paths of field indices, or {@code null} for
+     *     every physical field; a path longer than one names a field nested in ROWs
+     */
+    GenericRecordToRowDataConverter(RowType physicalRowType, @Nullable int[][] projectedFields) {
         this.physicalRowType =
                 Preconditions.checkNotNull(physicalRowType, "physicalRowType must not be null");
-        this.projectedFields = projectedFields == null ? null : projectedFields.clone();
+        this.projectedFields = projectedFields == null ? null : deepCopy(projectedFields);
         initializeFields();
+    }
+
+    private static int[][] deepCopy(int[][] paths) {
+        int[][] copy = new int[paths.length][];
+        for (int i = 0; i < paths.length; i++) {
+            copy[i] = paths[i].clone();
+        }
+        return copy;
     }
 
     private void initializeFields() {
         this.fields = new ArrayList<>();
         if (projectedFields == null) {
-            for (RowType.RowField field : physicalRowType.getFields()) {
-                fields.add(
-                        new FieldPlan(
-                                field.getName(), converter(field.getType(), field.getName())));
+            for (int i = 0; i < physicalRowType.getFieldCount(); i++) {
+                fields.add(plan(new int[] {i}));
             }
         } else {
-            for (int index : projectedFields) {
-                RowType.RowField field = physicalRowType.getFields().get(index);
-                fields.add(
-                        new FieldPlan(
-                                field.getName(), converter(field.getType(), field.getName())));
+            for (int[] path : projectedFields) {
+                fields.add(plan(path));
             }
         }
+    }
+
+    private PathPlan plan(int[] path) {
+        String[] names = new String[path.length];
+        LogicalType type = physicalRowType;
+        for (int i = 0; i < path.length; i++) {
+            RowType row = (RowType) type;
+            names[i] = row.getFieldNames().get(path[i]);
+            type = row.getTypeAt(path[i]);
+        }
+        String dotted = String.join(".", names);
+        return new PathPlan(names, converter(type, dotted), dotted);
     }
 
     private void readObject(ObjectInputStream input) throws IOException, ClassNotFoundException {
@@ -110,12 +132,7 @@ final class GenericRecordToRowDataConverter implements Serializable {
     RowData convert(GenericRecord record) {
         GenericRowData row = new GenericRowData(fields.size());
         for (int i = 0; i < fields.size(); i++) {
-            FieldPlan field = fields.get(i);
-            row.setField(
-                    i,
-                    field.converter.convert(
-                            record.get(field.name),
-                            record.getSchema().getField(field.name).schema()));
+            row.setField(i, fields.get(i).read(record));
         }
         return row;
     }
@@ -196,38 +213,38 @@ final class GenericRecordToRowDataConverter implements Serializable {
     }
 
     private static ValueConverter row(RowType type, String path) {
-        List<FieldPlan> nested = new ArrayList<>();
+        List<PathPlan> nested = new ArrayList<>();
         for (RowType.RowField field : type.getFields()) {
+            String fieldPath = path + "." + field.getName();
             nested.add(
-                    new FieldPlan(
-                            field.getName(),
-                            converter(field.getType(), path + "." + field.getName())));
+                    new PathPlan(
+                            new String[] {field.getName()},
+                            converter(field.getType(), fieldPath),
+                            fieldPath));
         }
         return (value, schema) -> {
-            Schema recordSchema = nonNull(schema);
-            if (isBigQueryInterval(recordSchema)) {
-                throw new IllegalArgumentException(
-                        "Column "
-                                + path
-                                + " reads BigQuery INTERVAL, which has no lossless Flink Table"
-                                + " source mapping; use a query source that casts it to STRING if"
-                                + " its text form is sufficient");
-            }
+            checkNotInterval(nonNull(schema), path);
             if (value == null) {
                 return null;
             }
             GenericRecord record = (GenericRecord) value;
             GenericRowData row = new GenericRowData(nested.size());
             for (int i = 0; i < nested.size(); i++) {
-                FieldPlan field = nested.get(i);
-                row.setField(
-                        i,
-                        field.converter.convert(
-                                record.get(field.name),
-                                record.getSchema().getField(field.name).schema()));
+                row.setField(i, nested.get(i).read(record));
             }
             return row;
         };
+    }
+
+    private static void checkNotInterval(Schema schema, String path) {
+        if (isBigQueryInterval(schema)) {
+            throw new IllegalArgumentException(
+                    "Column "
+                            + path
+                            + " reads BigQuery INTERVAL, which has no lossless Flink Table"
+                            + " source mapping; use a query source that casts it to STRING if"
+                            + " its text form is sufficient");
+        }
     }
 
     private static boolean isBigQueryInterval(Schema schema) {
@@ -448,14 +465,40 @@ final class GenericRecordToRowDataConverter implements Serializable {
         return value;
     }
 
-    private static final class FieldPlan implements Serializable {
+    /**
+     * Reads one field: the field at the end of a path through nested records, which is a produced
+     * field of the planner's projection or one field of a whole ROW.
+     *
+     * <p>A NULL record on the way makes the field NULL, as Flink evaluates a nested field access
+     * under a NULL ROW. The path is followed in the returned record whether Storage Read was asked
+     * for the whole path or for a prefix of it, so the two read alike.
+     */
+    private static final class PathPlan implements Serializable {
         private static final long serialVersionUID = 1L;
-        private final String name;
+        private final String[] names;
         private final ValueConverter converter;
+        private final String dotted;
 
-        private FieldPlan(String name, ValueConverter converter) {
-            this.name = name;
+        private PathPlan(String[] names, ValueConverter converter, String dotted) {
+            this.names = names;
             this.converter = converter;
+            this.dotted = dotted;
+        }
+
+        @Nullable
+        private Object read(GenericRecord record) {
+            GenericRecord current = record;
+            for (int i = 0; i < names.length - 1; i++) {
+                Object value = current.get(names[i]);
+                checkNotInterval(nonNull(current.getSchema().getField(names[i]).schema()), dotted);
+                if (value == null) {
+                    return null;
+                }
+                current = (GenericRecord) value;
+            }
+            String leaf = names[names.length - 1];
+            return converter.convert(
+                    current.get(leaf), current.getSchema().getField(leaf).schema());
         }
     }
 }

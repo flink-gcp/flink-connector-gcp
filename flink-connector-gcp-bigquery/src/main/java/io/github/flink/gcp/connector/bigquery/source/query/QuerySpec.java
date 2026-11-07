@@ -95,10 +95,12 @@ public final class QuerySpec {
      * decides how the push-down knobs are treated. {@code selectedFields} is folded into the {@code
      * SELECT}, because a view's {@code SELECT *} scans every column and the query is billed for
      * what it scans — leaving the projection to the read session would prune the transfer after
-     * paying for the scan. {@code rowRestriction} is <b>not</b> folded: it is BigQuery's
-     * restriction syntax, which is not the same language as a SQL {@code WHERE}, so folding it
-     * would give one knob two meanings depending on what the source was pointed at. It stays on the
-     * read session, where a table source applies it too.
+     * paying for the scan. A nested path such as {@code r.a} folds as its top-level column {@code
+     * r}: selecting the STRUCT keeps its shape, and the read session over the result still narrows
+     * the transfer to the nested field. {@code rowRestriction} is <b>not</b> folded: it is
+     * BigQuery's restriction syntax, which is not the same language as a SQL {@code WHERE}, so
+     * folding it would give one knob two meanings depending on what the source was pointed at. It
+     * stays on the read session, where a table source applies it too.
      *
      * @param view the view to materialize
      * @param selectedFields the columns to read, or empty for every column
@@ -121,6 +123,8 @@ public final class QuerySpec {
                 selectedFields.isEmpty()
                         ? "*"
                         : selectedFields.stream()
+                                .map(QuerySpec::topLevelColumn)
+                                .distinct()
                                 .map(QuerySpec::quoteIdentifier)
                                 .collect(Collectors.joining(", "));
         String sql =
@@ -134,6 +138,13 @@ public final class QuerySpec {
                         + view.getTable()
                         + "`";
         return new QuerySpec(sql, project, location, resultDataset);
+    }
+
+    // A nested path such as "r.a" selects the whole top-level column in the generated SELECT; the
+    // read session over the result still receives the path and returns only the nested field.
+    private static String topLevelColumn(String selectedField) {
+        int dot = selectedField.indexOf('.');
+        return dot < 0 ? selectedField : selectedField.substring(0, dot);
     }
 
     /**
