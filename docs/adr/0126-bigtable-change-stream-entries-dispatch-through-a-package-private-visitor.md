@@ -97,6 +97,12 @@ package-private constructor is what keeps unsupported variants away from the wri
 `Entry` is only ever built by this connector and the visitor is there for the compile-time
 exhaustiveness alone.
 
+The japicmp runs above are the record of the gate as it stood.
+[ADR-0199](0199-public-api-compatibility-follows-the-google-cloud-libraries.md) removed that gate,
+so a public abstract addition now costs a release-notes entry at a minor release, whatever the
+type's tier. The package-private visitor stays for its compile-time break at every handler, which
+never depended on japicmp.
+
 ## Alternatives declined
 
 - **Leave the `instanceof` chains and add a tripwire test** pinning the subtype sets. Cheaper, and

@@ -90,13 +90,18 @@ The [Java API reference]({{< api-docs-url >}}) is generated from the source of e
 goes live with the rest of the site ([#93]({{< param BookRepo >}}/issues/93)).
 
 Flink's API stability annotations mark what is safe to depend on, and this project applies them to
-its own types. `@Public` marks the frozen surface — entry classes, builders, and the
-interfaces user code implements — which does not change incompatibly within a major version; the
-build holds that promise by comparing each connector jar against the latest published release
-(japicmp).
-`@PublicEvolving` marks supported API that may still change at a minor release, announced in the
-release notes, and never at a patch release. `@Experimental` marks a type still taking shape, and
-`@Internal` implementation detail that may change or disappear in any release. The reference
+its own types.
+`@Public` marks the surface the project intends to keep: entry classes, builders, and the
+interfaces user code implements.
+`@PublicEvolving` marks supported API that is still expected to move.
+Either may change incompatibly at a minor release, and the release notes name every such change;
+neither changes at a patch release.
+This follows the Google Cloud client libraries the connectors are built on: many public signatures
+name their types, and each minor release carries the new `libraries-bom` versions published since
+the previous one, so the project cannot promise more than those libraries do
+([ADR-0199]({{< param BookRepo >}}/blob/main/docs/adr/0199-public-api-compatibility-follows-the-google-cloud-libraries.md)).
+`@Experimental` marks a type still taking shape, and `@Internal` implementation detail that may
+change or disappear in any release. The reference
 documents the internals rather than hiding them — the annotation appears on the class page, so a
 type's tier is visible at the point where someone is deciding whether to depend on it.
 
@@ -104,7 +109,7 @@ The API reference describes the same connector version as the selected documenta
 Development follows the unreleased source on `main`.
 See [documentation versions]({{< relref "docs/versions" >}}) for the retention policy.
 
-The youngest surfaces sit below the frozen tier, each for a recorded reason
+The youngest surfaces sit below the `@Public` tier, each for a recorded reason
 ([ADR-0141]({{< param BookRepo >}}/blob/main/docs/adr/0141-a-surfaces-stability-tier-is-set-by-what-can-reshape-its-inputs-and-outputs.md)):
 the Bigtable and Spanner Change Streams sources are `@PublicEvolving` — Bigtable's record model
 mirrors a vendor model that is still growing, and neither source has yet survived a release under

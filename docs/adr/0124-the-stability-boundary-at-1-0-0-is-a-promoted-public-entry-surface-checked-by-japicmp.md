@@ -16,7 +16,7 @@ limitations under the License.
 
 # ADR-0124: The stability boundary at 1.0.0 is a promoted @Public entry surface checked by japicmp
 
-- Status: Accepted
+- Status: Superseded by ADR-0199
 - Date: 2026-08-16 (measured 2026-08-16); revised by
   [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783) (2026-08-23); revised by
   [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728) (2026-08-31: published-1.0.0

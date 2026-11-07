@@ -24,8 +24,6 @@ Repository checks, release helpers and shell programs live in `scripts/`, and th
 | `maven/` | Checkstyle configuration (`checkstyle.xml`, `suppressions.xml`) taken from the Apache Flink connectors and used by the Maven build's Checkstyle check |
 | `tier3/` | `flink-tier3`, the Tier-3 package for foundation authentication, schemas and bounded workload lifecycle |
 
-The japicmp check writes its reports to `japicmp-output/`, which is ignored by Git.
-
 ## Python workspace
 
 The repository root owns one uv workspace and one `uv.lock`.

@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-30; revised by [#1185] (2026-09-06), [#1818] (2026-10-17), [#1971]
-  (2026-10-31) and [#1980] (2026-11-01)
-- Issues: [#724], [#39], [#29], [#1185], [#1818], [#1971], [#1980]
+  (2026-10-31), [#1980] (2026-11-01) and [#2068] (2026-11-07)
+- Issues: [#724], [#39], [#29], [#1185], [#1818], [#1971], [#1980], [#2068]
 - Modules: all (build and release engineering)
 - Current behavior: `justfile` § `stage-release` and § `rehearse-release`,
   `scripts/rehearse-release.py`, `scripts/central-portal.py`, `scripts/release-assets.py`,
@@ -46,7 +46,7 @@ irreversibility of a first Central release, not about feasibility.
 Its `workflow_dispatch` trigger rehearses the same pair from a bare `X.Y.Z` input.
 By default it builds and inspects both bundles without uploading them; `mode: validate` uploads both and drops them after validation.
 The recipe re-versions the reactor with `versions:set` and runs
-`deploy -Drelease -DskipTests -Djapicmp.skip=true`. `-Drelease` activates two profiles at once:
+`deploy -Drelease -DskipTests`. `-Drelease` activates two profiles at once:
 the connector parent's `release` (GPG signing at verify, the javadoc jar, the enforcer floor) and
 this project's `central-release` (the sources jar the parent profile does not attach, a compiler
 re-pin, and `central-publishing-maven-plugin` with `autoPublish=false` and
@@ -98,8 +98,7 @@ after an irreversible publish. The refusal is layered, because argument inspecti
 `versions:set` touches the tree, and the `enforce-version-line-toolchain` enforcer rule in the
 `central-release` profile re-checks the same invariant inside the release build against its
 final effective model — the only place no probe/deploy divergence can exist.
-`japicmp.referenceVersion` tracks the bare line only; the LTS
-jar keeps ADR-0054's per-major stance, and no cross-major binary claim is added.
+The LTS jar keeps ADR-0054's per-major stance, and no cross-major binary claim is added.
 
 **The published set per line is the parent POM, `flink-connector-gcp-base`, and each connector
 module with its SQL uber-jar**: 12 artifacts in 1.0.0 and 1.1.0, and 14 from 1.2.0, which adds
@@ -123,14 +122,10 @@ structure removed. Signing uses maven-gpg-plugin 3.x's Bouncy Castle signer read
 `MAVEN_GPG_KEY` / `MAVEN_GPG_PASSPHRASE`, so CI needs neither a gpg binary nor a keyring import —
 the parent's pinned 1.4 predates all of that and is overridden.
 
-**The release build carries three deliberate flags.** `versions:set` from the tag keeps the tree
+**The release build carries two deliberate flags.** `versions:set` from the tag keeps the tree
 at `<next>-SNAPSHOT` with no release commit (the tagged tree is what CI verified; only the
 version differs). `-DskipTests` because the staged commit already passed every CI lane and the
-staging build's job is packaging, signing and upload. `-Djapicmp.skip=true` unconditionally:
-every verify lane runs the real check, and for a release whose version equals
-`japicmp.referenceVersion` — the 1.0.0 case — the skip is also load-bearing, because Maven
-resolves the reference from the reactor itself and japicmp reads the old side's whole compile
-classpath as old API (ADR-0124).
+staging build's job is packaging, signing and upload.
 
 **Every tag is preceded by a rehearsal that uploads nothing ([#1818]).**
 The first `v1.2.0` tag run failed Central validation: Maven 3.10.0 wrote local-repository files into the plugin's staging directory, and plugin 0.11.0 bundled them ([#1812]).
@@ -253,4 +248,5 @@ A tag cut on the wrong commit remains correctable only before Publish; afterward
 [#1971]: https://github.com/flink-gcp/flink-connector-gcp/issues/1971
 [#1968]: https://github.com/flink-gcp/flink-connector-gcp/issues/1968
 [#1980]: https://github.com/flink-gcp/flink-connector-gcp/issues/1980
+[#2068]: https://github.com/flink-gcp/flink-connector-gcp/issues/2068
 [Portal API]: https://central.sonatype.org/publish/publish-portal-api/

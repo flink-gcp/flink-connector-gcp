@@ -56,7 +56,7 @@ FLOOR_PATTERN = re.compile(r"<flink\.version>([^<]+)</flink\.version>")
 
 # The deploy line's fixed properties, mirrored so a profile keyed on any of
 # them (e.g. `release` in settings.xml) is active for the measurement too.
-FIXED_FLAGS = ("-Drelease", "-DskipTests", "-Djapicmp.skip=true")
+FIXED_FLAGS = ("-Drelease", "-DskipTests")
 
 
 def classify(version: str) -> str | None:

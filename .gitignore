@@ -7,7 +7,6 @@ target/
 .settings/
 .DS_Store
 *.log
-tools/japicmp-output/
 
 # scripts/*.py. .ruff_cache/ needs no entry: ruff writes a self-ignoring
 # .gitignore inside it. .venv is the uv-managed environment behind

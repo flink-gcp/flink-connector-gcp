@@ -174,13 +174,9 @@ jobs:
       # resolve with implicitDescendants=false, ~/.m2/repository itself is the
       # manifest entry, and tar archives it recursively — a subdirectory
       # negation removes nothing. That is currently harmless in both
-      # directions: no verify lane installs this group (nothing writes a
-      # SNAPSHOT to exclude), and the one thing that does land there — the
-      # released japicmp reference, downloaded during the run —
-      # is immutable and exactly what ADR-0124's deferred cache decision
-      # wanted kept (issue #728 records the measurement; since #1887 the mirror serves it,
-      # and only the saving lane's own references reach the entry). If a lane ever
-      # gains an install step, this negation will not protect it.
+      # directions: no verify lane installs this group, so nothing writes a
+      # SNAPSHOT there to exclude (issue #728 records the measurement). If a
+      # lane ever gains an install step, this negation will not protect it.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: maven_cache
         with:
@@ -292,8 +288,7 @@ jobs:
       # restore, and the Bigtable and Pub/Sub Tier-3 lanes 25 each. Before saving a new entry, this
       # lane therefore also packages the whole reactor and every Tier-3 application without tests,
       # which resolves their compile, test and packaging dependencies (about three minutes locally
-      # against a warm repository, so longer here). Each other lane's japicmp reference, resolved at
-      # verify, still comes through the mirror. It runs last because `clean` removes the targets the
+      # against a warm repository, so longer here). It runs last because `clean` removes the targets the
       # steps above read, and only when the key has no entry: after a pom, wrapper or CI settings
       # change, or an eviction. A failure here must not redden main, so the save still keeps what
       # was resolved. Its own timeout leaves room in the job's for the save: a job that reaches

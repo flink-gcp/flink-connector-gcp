@@ -66,12 +66,7 @@ class ConnectorEnumOptionSpellingTest {
         assertSpellings(StagingFormat.class, "avro", "parquet");
         assertSpellings(ParquetCompression.class, "zstd", "none");
         assertSpellings(AvroCompression.class, "zstd", "none");
-        // Pinned here because nothing else holds this vocabulary: the enum is @Experimental
-        // since ADR-0141, so neither japicmp profile compares its constants, while the
-        // sink.cdc.table-reconciliation option that resolves them stays @PublicEvolving.
         assertSpellings(CdcTableReconciliationPolicy.class, "verify-only", "reconcile");
-        // Same reason: OrderingMode is @Experimental, a closure stop on the @Public
-        // DefaultStreamOptions (ADR-0124).
         assertSpellings(OrderingMode.class, "none", "per-table");
     }
 

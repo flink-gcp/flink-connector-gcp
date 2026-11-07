@@ -129,7 +129,6 @@ them empty and the shade plugin carrying nothing but its own relocations.
   Each list stays derived from its own module's `runtime-classpath.txt`.
 - **The surefire `integration-tests` override**, whose `classpathDependencyExcludes` names the
   module's own connector artifact.
-- **`japicmp.skip`**, which is a property rather than plugin configuration.
 
 **Why the exclude list may be shared when the relocation list may not, since the two look alike
 and the answer is mechanical rather than a judgment.** Three kinds of per-bundle list appear here,
@@ -277,7 +276,7 @@ The estimate held except where it was measured beforehand: the BigQuery bundle r
 third-party artifacts against the **114** the connector's own runtime tree shows, and needed
 **four** new pinned texts. No new `licenseMerges`, as predicted. Paying it twice is what moved the
 shared configuration to the root pom, so a third module's pom is now its dependency block, its
-surefire override, `japicmp.skip` and three plugin declarations of which only the shade one carries
+surefire override and three plugin declarations of which only the shade one carries
 configuration — its relocations. Everything else it inherits.
 
 **`javax.annotation-api` is referenced by nothing** (measured 2026-08-08, offline): across every

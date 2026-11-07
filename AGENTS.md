@@ -101,10 +101,11 @@ green; use the clean-state procedures in that guide for such changes.
 
 - Production packages use `io.github.flink.gcp.connector.<product>`; each top-level main-tree type
   carries the appropriate Flink API annotation, held by `just check-declared-api-tiers` (a nested
-  type inherits its enclosing tier). `@Public` types are frozen by the japicmp gate once
-  `1.0.0` is published — breaking or demoting one is then a deliberate act with an exclusion and
-  a release-notes entry (ADR-0124). Before the tag, a tier re-examination may still move a type
-  down without either artifact, under ADR-0141's clauses, recorded in ADR-0124's revision.
+  type inherits its enclosing tier). A `@Public` or `@PublicEvolving` type may change
+  incompatibly at a minor release, never at a patch, and every such change gets a release-notes
+  entry (ADR-0199). Change a `@Public` type only when a dependency or service forces it or it no
+  longer does what it says; `@PublicEvolving` is the tier for API still expected to move. Remove API that does nothing or can no longer be supported instead of keeping
+  a `@Deprecated` shim. A new type's tier follows ADR-0141's clauses and the signature closure.
 - Do not introduce Guava, Mockito, PowerMock, Lombok, or AutoValue. Use Flink preconditions,
   `javax.annotation`, and hand-written `Fake*` test doubles.
 - A **sink** serialization schema returning `null` means skip, not failure; a wrapped Flink

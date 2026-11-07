@@ -17,10 +17,11 @@ limitations under the License.
 # ADR-0141: A surface's stability tier is set by what can reshape its inputs and outputs
 
 - Status: Accepted
-- Date: 2026-08-23 (measured 2026-08-23)
+- Date: 2026-08-23 (measured 2026-08-23); revised by [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068) (2026-11-07)
 - Issues: [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783),
   [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728),
-  [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706)
+  [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706),
+  [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068)
 - Modules: all
 - Current behavior: `docs/content/_index.md` § API reference
 
@@ -71,7 +72,7 @@ the annotations on the vendor clients it calls through.** Five clauses decide a 
   API.
 - A surface that has **not yet survived a published release under real use** may be held at
   `@PublicEvolving` even when no other clause applies. Youth never forces a demotion — it only
-  permits holding a new surface one tier below the freeze until its first release — and the
+  permits holding a new surface one tier below `@Public` until its first release — and the
   choice is recorded per surface, here or in the adopting ADR, so the next reader sees a decision
   rather than a precedent.
 
@@ -84,7 +85,7 @@ referrer may go down to `@PublicEvolving` whole.
 | Surface | Tier | Reason |
 | --- | --- | --- |
 | BigQuery CDC (`CdcOptions`, `CdcChangeType(Provider)`, `CdcSequenceNumberProvider` + 4 implementations, `SpannerCdcSequenceNumber`, `CdcTableOptions(Provider)`, `CdcTableReconciliationPolicy`) | `@Experimental` | [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706) is open and its resolution shapes what the sequence-number providers receive; the surface is named by `@Public` `BigQuerySinkBuilder` setters, so `@Experimental` is the closure-coherent way down |
-| Bigtable change stream (`BigtableChangeStreamSource(Builder)`, the deserialization schemas, `BigtableChangeStreamMutation` and its nested types) | `@PublicEvolving` | our record model mirrors the vendor's `@InternalApi` change-stream model, which is still growing (`AddToCell`/`MergeToCell` are recent, the aggregate `Value` is `@BetaApi`), and a new abstract accessor on a `@Public` type is a japicmp break ([ADR-0126](0126-bigtable-change-stream-entries-dispatch-through-a-package-private-visitor.md)) |
+| Bigtable change stream (`BigtableChangeStreamSource(Builder)`, the deserialization schemas, `BigtableChangeStreamMutation` and its nested types) | `@PublicEvolving` | our record model mirrors the vendor's `@InternalApi` change-stream model, which is still growing (`AddToCell`/`MergeToCell` are recent, the aggregate `Value` is `@BetaApi`), and growing our model with the vendor's can change its public shape ([ADR-0126](0126-bigtable-change-stream-entries-dispatch-through-a-package-private-visitor.md)) |
 | Spanner change stream (`SpannerChangeStreamSource(Builder)`, the deserialization schema, `DataChangeRecord`, `Mod`, `ModType`, `ValueCaptureType`) | `@PublicEvolving` | the youth clause, alone: the service is GA and no vendor API is involved, but the surface is weeks old, has not survived a release under real use, and its record model is documented as governed together with Bigtable's |
 | Everything else ADR-0124 promoted, including `BigQuerySinkBuilder`, `BigQuerySink`, `BigtableSource`, `SpannerSource` and the Storage Read source surface | `@Public` (unchanged) | the services are GA and the Beta client surfaces underneath are internal calls, which the fourth clause keeps out of the tier decision |
 
@@ -167,14 +168,14 @@ Final Stage 2 acceptance can still constrain the unreleased configuration surfac
 
 - 24 main-tree files flip annotations (12 change-stream files to `@PublicEvolving`, 12 CDC files
   to `@Experimental`); the ADR-0124 revision carries the census deltas and the new closure stops.
-- Neither japicmp profile compares the `@Experimental` CDC types themselves, and the
-  change-stream surfaces remain only patch-checked, so within 1.x the change-stream shapes may
-  move at minors with release-notes entries and the CDC members may follow
-  [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706) — but not freely: the four
-  frozen `BigQuerySinkBuilder` setters still name `CdcOptions`, `CdcTableOptions`,
-  `CdcTableOptionsProvider` and `CdcTableReconciliationPolicy`, so renaming one of those types,
-  or changing a setter's signature, trips japicmp through the frozen builder (the narrowed
-  latitude ADR-0124's closure stops record).
+- The tiers are guidance, not a build check: since
+  [ADR-0199](0199-public-api-compatibility-follows-the-google-cloud-libraries.md) removed the
+  japicmp gate, any public type may change at a minor release with a release-notes entry, and the
+  tier tells a user how likely that is. The change-stream shapes and the CDC members may follow
+  [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706) on that footing. The four
+  `@Public` `BigQuerySinkBuilder` setters still name `CdcOptions`, `CdcTableOptions`,
+  `CdcTableOptionsProvider` and `CdcTableReconciliationPolicy`, so renaming one of those types
+  also changes a `@Public` signature and owes the same release-notes entry.
 - `docs/content/_index.md` § API reference states the rule's user-facing half, so a reader can
   predict a surface's tier from what it exposes.
 - Adopting a Preview/Beta service feature now carries a tier decision at introduction time, in
