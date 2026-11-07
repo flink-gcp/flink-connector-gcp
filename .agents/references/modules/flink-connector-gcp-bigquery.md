@@ -231,6 +231,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   metadata on existing tables was built and removed by owner decision — do not reintroduce it
   without reading ADR-0182's declined alternative.
 
+## Iceberg managed tables (`docs/adr/0202`)
+
+- The sink writes an Iceberg managed table as an ordinary existing table: do not add a
+  `biglakeConfiguration` check, a per-method refusal or Iceberg creation without engaging ADR-0202.
+  Every path the service refuses (truncating or `WRITE_EMPTY` loads, schema update options, the
+  overflow copy and query, change data capture) fails with the service's own message.
+- `BigQueryIcebergManagedTableRealGcpITCase` asserts two of those refusals; when one fails because
+  the write went through, the service changed, and the docs table and ADR-0202 change with it.
+
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`, `0183`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the
