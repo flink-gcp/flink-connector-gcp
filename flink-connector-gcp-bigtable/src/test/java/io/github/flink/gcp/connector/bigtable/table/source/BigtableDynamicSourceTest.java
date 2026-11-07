@@ -45,6 +45,8 @@ import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContex
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
+import com.google.bigtable.v2.RowFilter;
+import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
@@ -182,6 +184,14 @@ class BigtableDynamicSourceTest {
                 .isNotEqualTo(configOf(endsAtStar).getRanges());
     }
 
+    /**
+     * The read filter's expected wire shape when a family is read: {@code cellsPerColumn(1)} as the
+     * first link, ahead of the predicate and the projection.
+     */
+    private static RowFilter latestVersionOf(Filters.Filter read) {
+        return FILTERS.chain().filter(FILTERS.limit().cellsPerColumn(1)).filter(read).toProto();
+    }
+
     private static BigtableSourceConfig<?> configOf(BigtableDynamicSource source) {
         SourceProvider provider =
                 (SourceProvider) source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
@@ -232,10 +242,10 @@ class BigtableDynamicSourceTest {
 
         assertThat(config.getFilter().toProto())
                 .isEqualTo(
-                        FILTERS.interleave()
-                                .filter(FILTERS.family().exactMatch("cf1"))
-                                .filter(FILTERS.family().exactMatch("cf2"))
-                                .toProto());
+                        latestVersionOf(
+                                FILTERS.interleave()
+                                        .filter(FILTERS.family().exactMatch("cf1"))
+                                        .filter(FILTERS.family().exactMatch("cf2"))));
     }
 
     @Test
@@ -244,7 +254,27 @@ class BigtableDynamicSourceTest {
         source.applyProjection(new int[][] {{0}, {2}}, projectedType("rowkey", "cf2"));
 
         assertThat(configOf(source).getFilter().toProto())
-                .isEqualTo(FILTERS.family().exactMatch("cf2").toProto());
+                .isEqualTo(latestVersionOf(FILTERS.family().exactMatch("cf2")));
+    }
+
+    @Test
+    void theLatestVersionLimitLeadsTheChainAheadOfThePredicate() {
+        // The converter decodes only the latest version, so the server sends only that version,
+        // and the existence predicate tests the version SQL sees rather than an older one.
+        BigtableDynamicSource source = minimal().build();
+        source.applyFilters(
+                java.util.Collections.singletonList(
+                        call(BuiltInFunctionDefinitions.EQUALS, qualifier(), literal("alice"))));
+
+        RowFilter filter = configOf(source).getFilter().toProto();
+
+        // The shape itself, so a refactor of the expectation cannot drift with the code.
+        assertThat(filter.hasChain())
+                .as("cellsPerColumn(1) must lead a top-level chain, ahead of the condition")
+                .isTrue();
+        assertThat(filter.getChain().getFiltersList()).hasSize(2);
+        assertThat(filter.getChain().getFilters(0).getCellsPerColumnLimitFilter()).isEqualTo(1);
+        assertThat(filter.getChain().getFilters(1).hasCondition()).isTrue();
     }
 
     @Test
@@ -353,10 +383,10 @@ class BigtableDynamicSourceTest {
         assertThat(result.getRemainingFilters()).containsExactly(filter);
         assertThat(configOf(source).getFilter().toProto())
                 .isEqualTo(
-                        FILTERS.interleave()
-                                .filter(FILTERS.family().exactMatch("cf1"))
-                                .filter(FILTERS.family().exactMatch("cf2"))
-                                .toProto());
+                        latestVersionOf(
+                                FILTERS.interleave()
+                                        .filter(FILTERS.family().exactMatch("cf1"))
+                                        .filter(FILTERS.family().exactMatch("cf2"))));
     }
 
     @Test
@@ -375,10 +405,10 @@ class BigtableDynamicSourceTest {
         assertThat(result.getRemainingFilters()).containsExactly(filter);
         assertThat(configOf(source).getFilter().toProto())
                 .isEqualTo(
-                        FILTERS.interleave()
-                                .filter(FILTERS.family().exactMatch("cf1"))
-                                .filter(FILTERS.family().exactMatch("cf2"))
-                                .toProto());
+                        latestVersionOf(
+                                FILTERS.interleave()
+                                        .filter(FILTERS.family().exactMatch("cf1"))
+                                        .filter(FILTERS.family().exactMatch("cf2"))));
     }
 
     @Test
@@ -921,15 +951,19 @@ class BigtableDynamicSourceTest {
                 .containsExactly("[b, z)");
         assertThat(inputFormat.getFilter().toProto())
                 .isEqualTo(
-                        FILTERS.condition(
-                                        FILTERS.chain()
-                                                .filter(FILTERS.family().exactMatch("cf1"))
-                                                .filter(FILTERS.qualifier().exactMatch("a")))
-                                .then(
-                                        FILTERS.interleave()
-                                                .filter(FILTERS.family().exactMatch("cf1"))
-                                                .filter(FILTERS.family().exactMatch("cf2")))
-                                .toProto());
+                        latestVersionOf(
+                                FILTERS.condition(
+                                                FILTERS.chain()
+                                                        .filter(FILTERS.family().exactMatch("cf1"))
+                                                        .filter(
+                                                                FILTERS.qualifier()
+                                                                        .exactMatch("a")))
+                                        .then(
+                                                FILTERS.interleave()
+                                                        .filter(FILTERS.family().exactMatch("cf1"))
+                                                        .filter(
+                                                                FILTERS.family()
+                                                                        .exactMatch("cf2")))));
     }
 
     @Test

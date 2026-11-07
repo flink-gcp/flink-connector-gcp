@@ -782,7 +782,12 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   narrowed `BigtableTableSchema` — `of()` rejects the rowkey-less and empty shapes a projection
   legitimately produces. A family none of whose declared qualifiers has a cell reads as a `null`
   field (the sink's mirror; `HBaseSerde`'s row-of-nulls declined), and the latest cell version is
-  chosen by the converter — `cellsPerColumn(1)` pushdown is a deferred follow-up, not a gap.
+  chosen by the converter. Every read retaining a family also starts its filter with
+  `cellsPerColumn(1)`, ahead of the existence conditional so the predicate tests the latest
+  version; the keys-only chain takes none (#1841). Keep the converter's choice: the link saves
+  transfer and is not what makes today's answer right. Keep the link first too: it holds the
+  predicate's input equal to the converter's, so a later pushed predicate cannot match on a
+  version SQL never sees.
   Range keys default to UTF-8; `scan.row-key-encoding=BASE64` accepts only canonical padded RFC
   4648 standard Base64 and retains the decoded `ByteString` across scans and every lookup cache
   mode. `scan.row-ranges` is a semicolon-separated union of `[start,end)` entries with backslash

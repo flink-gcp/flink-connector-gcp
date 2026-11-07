@@ -800,6 +800,78 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
     }
 
     @Test
+    void aPushedPredicateOverMultiVersionRowsReturnsTheLatestRow() throws Exception {
+        // Rows are unchanged by the version limit: the residual SQL predicate and the converter
+        // decide on the latest version with or without it. This cannot see the limit itself,
+        // because the pushed predicate tests existence only; BigtableDynamicSourceTest pins the
+        // wire shape. A wrong limit kind (cellsPerRow) would drop now-alice's cf2 and fail here.
+        TableDestination destination = createTable("sql-versions-filter", "cf1", "cf2");
+        writeCell(destination, "now-alice", "cf1", "name", 1_000_000L, "bob");
+        writeCell(destination, "now-alice", "cf1", "name", 2_000_000L, "alice");
+        writeCell(destination, "now-alice", "cf2", "outcome", 1_000_000L, "stale");
+        writeCell(destination, "now-alice", "cf2", "outcome", 2_000_000L, "match");
+        writeCell(destination, "was-alice", "cf1", "name", 1_000_000L, "alice");
+        writeCell(destination, "was-alice", "cf1", "name", 2_000_000L, "bob");
+        writeCell(destination, "was-alice", "cf2", "outcome", 2_000_000L, "no-match");
+        TableEnvironment tEnv = streamingTableEnvironment();
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  cf2 ROW<outcome STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions("sql-versions-filter"));
+
+        assertThat(collect(tEnv, "SELECT rowkey, cf2.outcome FROM bt WHERE cf1.name = 'alice'"))
+                .containsExactly(Row.of("now-alice", "match"));
+        assertThat(collect(tEnv, "SELECT * FROM bt"))
+                .containsExactlyInAnyOrder(
+                        Row.of("now-alice", Row.of("alice"), Row.of("match")),
+                        Row.of("was-alice", Row.of("bob"), Row.of("no-match")));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("pointLookupModes")
+    void everyLookupModeReadsTheLatestVersion(String mode, String[] lookupOptions)
+            throws Exception {
+        // Point lookups and the FULL-cache loader take the same read filter as the scan. The
+        // out-of-order writes show the latest version is chosen by timestamp, not write order.
+        String tableId = "sql-lookup-versions-" + mode;
+        TableDestination destination = createTable(tableId, "cf1");
+        writeCell(destination, "r1", "cf1", "name", 1_000_000L, "old");
+        writeCell(destination, "r1", "cf1", "name", 3_000_000L, "new");
+        writeCell(destination, "r1", "cf1", "name", 2_000_000L, "middle");
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        StreamTableEnvironment tEnv = StreamTableEnvironment.create(env);
+        tEnv.createTemporaryView(
+                "facts",
+                tEnv.fromDataStream(
+                        env.fromData("r1", "missing"),
+                        Schema.newBuilder()
+                                .column("f0", DataTypes.STRING())
+                                .columnByExpression("event_time", "PROCTIME()")
+                                .build()));
+        tEnv.executeSql(
+                "CREATE TABLE bt (\n"
+                        + "  rowkey STRING,\n"
+                        + "  cf1 ROW<name STRING>,\n"
+                        + "  PRIMARY KEY (rowkey) NOT ENFORCED\n"
+                        + ") "
+                        + withOptions(tableId, lookupOptions));
+
+        assertThat(
+                        collect(
+                                tEnv,
+                                "SELECT f.f0, b.cf1.name FROM facts AS f "
+                                        + "LEFT JOIN bt FOR SYSTEM_TIME AS OF f.event_time AS b "
+                                        + "ON f.f0 = b.rowkey"))
+                .containsExactlyInAnyOrder(Row.of("r1", "new"), Row.of("missing", null));
+    }
+
+    @Test
     void aRowKeyOnlyTableReadsItsKeys() throws Exception {
         // The table the sink refuses to write is read through the same DDL: the deliberate
         // asymmetry, end to end. Every row has cells — Bigtable has no other kind — and the

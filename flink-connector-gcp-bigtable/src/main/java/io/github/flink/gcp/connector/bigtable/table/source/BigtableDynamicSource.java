@@ -80,7 +80,9 @@ import java.util.Objects;
  * whether or not a projection was pushed: an unprojected scan retains every declared family, which
  * keeps families the physical table has but the DDL does not declare off the wire, and makes the
  * documented failure mode — a filter naming a column family the table lacks fails the read with
- * {@code NOT_FOUND} — the same in both cases.
+ * {@code NOT_FOUND} — the same in both cases. A read that retains a family starts the filter with
+ * {@code cellsPerColumn(1)}: the converter decodes only the latest version of each cell, so the
+ * server sends only that version.
  *
  * <p><b>Filter pushdown is exact for safe row-key predicates and best-effort for cells.</b> Exact
  * row-key ranges are intersected with the configured range union and need no residual operation. A
@@ -384,16 +386,32 @@ public final class BigtableDynamicSource
         return pushed == null ? configured : RowRanges.intersect(configured, pushed);
     }
 
-    /** Preserves the projection while a best-effort predicate decides row membership. */
+    /**
+     * Preserves the projection while a best-effort predicate decides row membership, behind a
+     * latest-version limit whenever a family is read.
+     *
+     * <p>The converter decodes only the latest version of each cell, so {@code cellsPerColumn(1)}
+     * as the chain's first link spares the server sending the versions it would discard. As the
+     * first link, it also makes the predicate test the same version SQL sees. The keys-only chain
+     * already returns one stripped cell per row, so it takes no limit.
+     */
     private Filters.Filter readFilter(boolean noRows) {
         if (noRows) {
             return Filters.FILTERS.block();
         }
-        Filters.Filter projection = FamilyProjectionFilter.of(retainedFamilies());
+        List<String> families = retainedFamilies();
+        Filters.Filter projection = FamilyProjectionFilter.of(families);
         Filters.Filter predicate = filterState.cellPredicate();
-        return predicate == null
-                ? projection
-                : Filters.FILTERS.condition(predicate).then(projection);
+        Filters.Filter read =
+                predicate == null
+                        ? projection
+                        : Filters.FILTERS.condition(predicate).then(projection);
+        return families.isEmpty()
+                ? read
+                : Filters.FILTERS
+                        .chain()
+                        .filter(Filters.FILTERS.limit().cellsPerColumn(1))
+                        .filter(read);
     }
 
     private ValidationException lookupKeyException() {
