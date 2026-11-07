@@ -95,7 +95,8 @@ class RecoveryOptionsTest {
         "native-database,sp1360-firestore-it",
         "native-database,fs1879-",
         "native-database,fs1879-Upper",
-        "native-database,fs1879-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "native-database,fs1879-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "native-database,fs1879-trailing-",
         "native-database,(default)",
         "native-database,projects/flink-gcp/databases/fs1879-firestore-it-n",
         "native-database,fs1879-firestore-it-d",
@@ -134,12 +135,12 @@ class RecoveryOptionsTest {
                                 .recordsPerSecond)
                 .isEqualTo(100);
         assertThat(RecoveryOptions.parse(arguments("--run-id", "a".repeat(40))).runId).hasSize(40);
-        // 47 characters, within Firestore's 63.
+        // Firestore's 63 characters, which the rig's fs1879-<run-id>-n reaches at most 49 of.
         assertThat(
                         RecoveryOptions.parse(
-                                        arguments("--native-database", "fs1879-" + "a".repeat(40)))
+                                        arguments("--native-database", "fs1879-" + "a".repeat(56)))
                                 .nativeDatabase)
-                .hasSize(47);
+                .hasSize(63);
         assertThat(
                         RecoveryOptions.parse(arguments("--seed-records-per-second", "200"))
                                 .seedRecordsPerSecond)

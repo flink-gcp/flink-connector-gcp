@@ -62,6 +62,10 @@ final class RecoveryOptions implements Serializable {
     private static final int MAX_TRIAL_PARALLELISM = 2;
 
     private static final String LABEL = "[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?";
+    // Firestore's database ID grammar within its 63 characters: a lowercase letter first, then
+    // lowercase letters, digits and hyphens, ending in a letter or digit. The fs1879- prefix
+    // supplies the letter and is what the trial's IAM grants match.
+    private static final String DATABASE = "fs1879-[a-z0-9]([a-z0-9-]{0,54}[a-z0-9])?";
     private static final Set<String> ARGUMENTS =
             Set.of(
                     "run-id",
@@ -213,9 +217,7 @@ final class RecoveryOptions implements Serializable {
 
     private static String database(Map<String, String> args, String name) {
         String value = required(args, name);
-        // A label keeps the ID within Firestore's 63 characters and its grammar: a lowercase
-        // letter first, then lowercase letters, digits and hyphens, ending in a letter or digit.
-        if (!value.matches("fs1879-" + LABEL)) {
+        if (!value.matches(DATABASE)) {
             throw new IllegalArgumentException("--" + name + " must be an fs1879- database ID");
         }
         return value;

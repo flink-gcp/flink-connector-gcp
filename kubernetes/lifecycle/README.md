@@ -26,6 +26,7 @@ lifecycle/
   cloudtasks.cue     # Cloud Tasks trial inputs and applications
   bigtable.cue       # Bigtable trial inputs and applications
   spanner.cue        # Spanner trial inputs and applications
+  firestore.cue      # Firestore trial inputs and applications
   pubsub-trials/     # Reviewed Pub/Sub trial files
 ```
 
@@ -100,7 +101,7 @@ The owner approves the scenario, a unique run ID and the run's cost estimate bef
 The estimate is `estimated_cost` over the window for smoke, and `bigquery_plan.estimate`, `pubsub_plan.estimate` or `cloudtasks_plan.estimate` for a service trial, which their rendered proposals carry.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
-The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks, Bigtable or Spanner trial 90 minutes after it.
+The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
 
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
@@ -128,6 +129,10 @@ The [`spanner-recovery`](spanner.cue) delivery of the Spanner recovery trials of
 Its `spanner_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `sp1360-<run-id>`, which a run ID of the full 40 characters keeps within Spanner's 64-character instance IDs.
 Dispatch renders it at the dispatched kind, the input and seed pace every kind shares and a change-stream end 3,900 seconds into the run's window, and the [recovery trial runbook](../apps/spanner/README.md#recovery-trial) describes the instance and its database, the exercise and the verdict ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
 Every run's inventory lists `tier3-spanner`.
+
+The [`firestore-recovery`](firestore.cue) delivery of the Firestore recovery trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) renders its initial and upgrade phases in `tier3-firestore` from the optional `firestore_records` and `firestore_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, and the optional `firestore_seed_records_per_second` tag, each seed copy's pace per reading subtask, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass.
+Its `firestore_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, which a run ID of the full 40 characters keeps within Firestore's 63-character database IDs.
+Dispatch does not offer it yet: [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084) adds the rig scenario that creates the databases, seeds them, admits the delivery and judges the trial, and the namespace it renders into follows in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083).
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.

@@ -28,7 +28,7 @@ It also says nothing about workload identity, how the service plans a read's spl
 
 ## Database layout
 
-The rig's runner creates two Standard-edition databases per run in project `flink-gcp`, one in Native mode and one in Datastore mode, each named `fs1879-` followed by a label, and passes them as `--native-database` and `--datastore-database`.
+The rig's runner creates two Standard-edition databases per run in project `flink-gcp`, one in Native mode and one in Datastore mode, named `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, and passes them as `--native-database` and `--datastore-database`.
 Both databases use the same names, as collections in the Native-mode database and as kinds in the Datastore-mode one:
 
 | Collection or kind | Contents |
@@ -76,7 +76,7 @@ Progress lines use the `firestore-progress` event in the shape the shared recove
 | Argument | Meaning |
 | --- | --- |
 | `--run-id` | The Tier-3 run label. |
-| `--native-database` | The run's Native-mode database ID, `fs1879-` followed by a label. |
+| `--native-database` | The run's Native-mode database ID: `fs1879-` and a lowercase name of letters, digits and hyphens that ends in a letter or digit, at most 63 characters in all. |
 | `--datastore-database` | The run's Datastore-mode database ID, of the same form and different from the Native-mode one. |
 | `--records` | Records in the input, 2 to 360,000. |
 | `--records-per-second` | Offered input rate, 1 to 100. |
@@ -88,4 +88,4 @@ Progress lines use the `firestore-progress` event in the shape the shared recove
 The run, both databases and the input form the trial identity that the restored input state must match; the phase, parallelism and seed pace may change in an upgrade.
 The check runs only while the input is active: once the input has finished, Flink restores its vertex as finished without initializing its state, so a later restore is not checked.
 
-The grants, namespace and Operator watch set follow in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083), and the trial scenario in [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084).
+The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`firestore-recovery`](../../lifecycle/firestore.cue) delivery are in place; the namespace and Operator watch set follow in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083), and the trial scenario in [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084).
