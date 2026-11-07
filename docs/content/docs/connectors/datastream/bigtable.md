@@ -1016,9 +1016,9 @@ no-op. The no-op is Bigtable's storage model absorbing the duplicate, not the si
 sink tracks or rejects a replayed record, and the
 [delivery-guarantees guide]({{< relref "docs/connectors/delivery-guarantees" >}}#bigtable) says
 where the effect ends. Note that a cell timestamp is in microseconds but a table's granularity is
-milliseconds, so
-the value must be a multiple of 1000 — `context.timestamp()`, which is in milliseconds, has to be
-multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
+milliseconds by default (a table created with microsecond granularity accepts any value), so on a
+default table the value must be a multiple of 1000 — `context.timestamp()`, which is in
+milliseconds, has to be multiplied rather than passed through. Bigtable answers a violation with `INVALID_ARGUMENT`
 (*"Timestamp granularity mismatch. Expected a multiple of 1000 (millisecond granularity)"*), which
 makes it a [row-level failure](#error-handling) and so droppable — measured against the service, not
 inferred. Worth reading before running a dropping policy: a job that multiplies the timestamp
@@ -1530,12 +1530,24 @@ with nothing in flight, which would make a fits-predicate a task hang rather tha
 **The client's own flow controller is why raising the bounds has a ceiling.** It permits 20,000
 outstanding entries and 100 MiB of accumulated size, and when either is reached it *blocks* the
 calling thread — which is Flink's task thread, the one that has to stay free to run mailbox mails
-and checkpoint barriers. Its static limits are not settable through the client's public API (only
-latency-based throttling can be turned on and off), so the sink's answer is to keep its own bounds
-below them: the defaults are, and a much larger `maxInFlightEntries` simply moves the effective
-bound into the client, where it stalls instead of backpressuring. This is the same defect class the
+and checkpoint barriers. The client accepts other limits only through its `@BetaApi` batching
+settings (`BigtableBatchingCallSettings`), and a larger budget would block just the same once
+reached, so the connector leaves them at their defaults and the sink's answer is to keep its own
+bounds below them: the defaults are, and a much larger
+`maxInFlightEntries` simply moves the effective bound into the client, where it stalls instead of backpressuring. This is the same defect class the
 Pub/Sub sink removed its SDK flow-control knobs over
 ([#85]({{< param BookRepo >}}/issues/85)).
+
+The client has two switches that throttle on other signals, and the sink exposes neither.
+Latency-based throttling shrinks the flow controller's budget when RPC latency exceeds a target,
+which blocks the thread that adds an entry; `setBulkMutationFlowControl` rate-limits each
+`MutateRows` call by the rate the cluster signals back, which blocks the thread that sends a batch.
+Here both can be the task thread, so either would bring back the stall that
+[ADR-0041]({{< param BookRepo >}}/blob/main/docs/adr/0041-the-bigtable-sink-is-implemented-on-four-checked-sdk-facts.md)
+and
+[ADR-0074]({{< param BookRepo >}}/blob/main/docs/adr/0074-the-bigtable-writer-pools-a-batcher-per-table-over-a-client-per-instance.md)
+keep out of it. The second switch is also marked `@InternalApi`, intended for Google's Dataflow
+connectors.
 
 **It is also where the batch thresholds' ceilings come from — 19,999 entries and 100 MiB − 1
 byte.** The client's settings builder requires each threshold to stay *strictly* below the matching

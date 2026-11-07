@@ -106,7 +106,8 @@ Moving the range means editing, in this order:
                                      minor
   3. docs/content/_index.md          the Supported versions table
   4. README.md                       the supported-range claim under Supported versions
-  5. AGENTS.md                       the Version policy section
+  5. .agents/references/repository-guide.md
+                                     the Version policy section
 
 Then re-run the binary-compatibility measurement against the new ceiling before
 claiming the range — the old measurement says nothing about the new pair:

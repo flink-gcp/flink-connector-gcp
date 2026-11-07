@@ -898,9 +898,10 @@ A Flink recovery serializes the record again, however, and therefore takes a new
 Use a stable event timestamp from the record when the same version must be addressed across job
 replay.
 
-Bigtable stores timestamps as epoch microseconds but accepts values only at millisecond granularity.
+Bigtable stores timestamps as epoch microseconds, and a table's timestamp granularity decides which values it accepts.
+A table with millisecond granularity, the default, accepts only multiples of 1000; a table created with microsecond granularity accepts any value.
 By default, `sink.cell-timestamp.truncate-to-millis` is `false`: the connector sends the explicit
-microsecond value unchanged and lets Bigtable reject a value whose last three digits are nonzero.
+microsecond value unchanged and lets a millisecond-granularity table reject a value whose last three digits are nonzero.
 Set the option to `true` to opt into dropping those three digits before the mutation is sent.
 This is truncation, not rounding; every cell written by the row receives the same truncated value.
 
@@ -1319,7 +1320,7 @@ DataStream builder.
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never` |
 | `sink.insert-only-input-mode` | Enum | Planner mode for an input containing inserts alone: `upsert` (default) exposes Flink conflict strategies; `insert-only` keeps a plain insert portable but makes `ON CONFLICT` unavailable to that statement. Accepted with `upsert` and `keep-latest`; rejected in other write modes |
 | `sink.map-family.update-mode` | Enum | What a write does with a `MAP` family's qualifiers the written map does not contain: `merge` (default) leaves them, `replace` deletes the family first in the same row mutation. Accepted with `upsert` and `keep-latest` on a table that declares a `MAP` family; rejected otherwise. See [Map column families](#map-column-families) |
-| `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates its millisecond granularity |
+| `sink.cell-timestamp.truncate-to-millis` | Boolean | Whether the connector drops the sub-millisecond part of writable `timestamp` metadata before sending it; defaults to `false`. Disabled, the connector preserves the value and Bigtable validates it against the table's timestamp granularity |
 | `sink.batching.element-count-threshold` | Long | `BigtableWriterOptions.batchElementCountThreshold(...)`. Counts **entries** — one row's mutations — not mutations |
 | `sink.batching.request-byte-threshold` | MemorySize | `BigtableWriterOptions.batchRequestByteThreshold(...)` |
 | `sink.in-flight.max-entries` | Integer | `BigtableWriterOptions.maxInFlightEntries(...)` |
@@ -1428,9 +1429,9 @@ connector's own code, which would pass while the interop was broken.
 
 **The writable metadata surface contains only the cell timestamp.** It applies one value to every
 cell of the row and deliberately does not timestamp deletes.
-The opt-in truncation option exists because the SQL type can carry microseconds while Bigtable
-accepts only millisecond-aligned values; preserving the user's explicit value and letting the
-service validate it remains the default.
+The opt-in truncation option exists because the SQL type can carry microseconds while a table with
+millisecond granularity, the default, accepts only millisecond-aligned values; preserving the
+user's explicit value and letting the service validate it remains the default.
 
 **Per-record table routing has no SQL surface.** A DDL names one table. Writing to several is a
 `STATEMENT SET` of `INSERT`s, one per table, which is what SQL already offers.

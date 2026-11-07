@@ -751,8 +751,8 @@ public final class BigtableConnectorOptions {
 
     /**
      * Whether a writable 'timestamp' metadata value loses its sub-millisecond part before being
-     * sent. The connector never changes an explicit timestamp without an opt-in, and Bigtable
-     * rejects a value that does not match its millisecond granularity.
+     * sent. The connector never changes an explicit timestamp without an opt-in, and a table with
+     * millisecond granularity, the default, rejects a value with a sub-millisecond part.
      */
     public static final ConfigOption<Boolean> SINK_CELL_TIMESTAMP_TRUNCATE_TO_MILLIS =
             ConfigOptions.key("sink.cell-timestamp.truncate-to-millis")
@@ -762,8 +762,8 @@ public final class BigtableConnectorOptions {
                             "Whether a writable 'timestamp' metadata value loses its"
                                     + " sub-millisecond part before being sent. The connector"
                                     + " never changes an explicit timestamp without an opt-in,"
-                                    + " and Bigtable rejects a value that does not match its"
-                                    + " millisecond granularity.");
+                                    + " and a table with millisecond granularity, the default,"
+                                    + " rejects a value with a sub-millisecond part.");
 
     /**
      * What a write does with the qualifiers of a MAP column family that the written map does not

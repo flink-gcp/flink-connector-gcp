@@ -122,7 +122,8 @@ are under [Tuning]({{< relref "docs/connectors/datastream/bigtable" >}}#tuning).
 
 **Raising `maxInFlightEntries` far above its default does not raise the effective bound; it moves
 it.** The client has a flow controller of its own — 20,000 outstanding entries and 100 MiB, and it
-*blocks* the calling thread when either is reached — whose limits its public API does not expose.
+*blocks* the calling thread when either is reached — whose limits the connector leaves at their
+defaults.
 While the sink's own bounds are the tighter pair, a full writer yields to the task mailbox, which is
 what keeps checkpoint barriers moving; past them, the task thread stalls inside the client instead.
 The reasoning is under

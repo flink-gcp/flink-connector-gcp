@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-08-02 (design settled on [#33], which holds the full comparison), revised by [#236]
   (2026-08-08), by [#436] (2026-08-10, the flow controller's figures), and by [#1175]
   (2026-09-05, protobuf wrappers for aggregate state), and by [#1622] (2026-10-04, the admin path
-  moved to the protobuf client)
-- Issues: [#33], [#216], [#217], [#232], [#236], [#436], [#1175], [#1622]
+  moved to the protobuf client), and by [#2015] (2026-11-07, the flow controller's limits are
+  settable through a beta API)
+- Issues: [#33], [#216], [#217], [#232], [#236], [#436], [#1175], [#1622], [#2015]
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md`
 
@@ -49,9 +50,11 @@ rather than assumed:
   called rather than `Batcher.flush()`: the blocking one would stall the task thread while the
   completion mails the writer's state is mutated by pile up behind it.
 - The client's bulk-mutation path has a **flow controller of its own** — 20,000 outstanding
-  entries, 100 MiB, `LimitExceededBehavior.Block` — whose static limits its public API does not
-  expose. So `Batcher.add()` *can* block the task thread, and keeping the writer's own bounds
-  below the client's is the only available way to preserve the [#85] property that a full writer
+  entries, 100 MiB, `LimitExceededBehavior.Block` — whose static limits the connector leaves at
+  their defaults. The client accepts other limits only through its `@BetaApi`
+  `BigtableBatchingCallSettings` (this record said until [#2015] that it accepted none). So
+  `Batcher.add()` *can* block the task thread, and keeping the writer's own bounds below the
+  client's is how the connector preserves the [#85] property that a full writer
   yields to the mailbox rather than blocking. The defaults (1000 / 64 MiB) do; that is why the
   reference page documents raising `maxInFlightEntries` as *moving* the bound rather than
   raising it, and why exposing the client's flow-control knobs is not the fix (it is the [#85]
@@ -302,3 +305,4 @@ Concerns the fourth SDK fact only ([#236]); the rest of this ADR's alternatives 
 [#1175]: https://github.com/flink-gcp/flink-connector-gcp/issues/1175
 [#1204]: https://github.com/flink-gcp/flink-connector-gcp/issues/1204
 [#1622]: https://github.com/flink-gcp/flink-connector-gcp/issues/1622
+[#2015]: https://github.com/flink-gcp/flink-connector-gcp/issues/2015

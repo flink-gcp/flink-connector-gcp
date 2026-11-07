@@ -28,7 +28,7 @@ forms of the Default column are explained
 [here]({{< relref "docs/reference" >}}#what-a-default-means).
 
 **There are no rate knobs here.**
-`maxDispatchesPerSecond`, `maxConcurrentDispatches` and the retry policy are *queue* configuration,
+`maxDispatchesPerSecond`, `maxConcurrentDispatches` and the default retry policy are *queue* configuration,
 applied by whoever creates the queue — the sink writes tasks and the queue decides how fast they
 execute. That inversion is the connector's whole reason for existing, and it is set out under
 [What this connector is for]({{< relref "docs/connectors/datastream/cloudtasks" >}}#what-this-connector-is-for).

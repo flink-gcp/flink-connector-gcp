@@ -320,7 +320,7 @@ See [Lineage]({{< relref "docs/connectors/lineage" >}}) for listener integration
 
 This queue and runtime behavior applies to both DataStream and Table jobs.
 
-`maxDispatchesPerSecond`, `maxConcurrentDispatches` and the dispatch retry policy are queue
+`maxDispatchesPerSecond`, `maxConcurrentDispatches` and the default dispatch retry policy are queue
 configuration, applied by whoever creates the queue.
 The sink options do not change how quickly Cloud Tasks delivers requests or retries a failed
 handler invocation.
@@ -676,7 +676,9 @@ sink's own commit protocol, which no external destination can be enrolled in.
 Note what a dropped task means here, and that it is not what Cloud Tasks calls a failure: this is a
 task the service never accepted, so it never entered the queue and the queue's own retry
 configuration never applies to it. A task that *is* created and whose request target then fails is
-retried by Cloud Tasks under the queue's `retryConfig`, entirely outside this sink's view.
+retried by Cloud Tasks, entirely outside this sink's view. The queue's `retryConfig` is the
+default, and a task may carry its own `retry_config`: a custom `CloudTasksSerializationSchema` can
+set `Task.retry_config`, and the sink forwards the task with only its name assigned.
 
 ### Dead-lettering to a Pub/Sub topic
 
