@@ -94,7 +94,7 @@ The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap
 
 ## Deployment definition
 
-[`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator 1.15.0 schema and Flink 2.2.1 application image.
+[`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator schema and Flink 2.2.1 application image.
 A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
 A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`, `backgroundStagingUploadEnabled`, and `maxInFlightUploadOperations` only when the uploader is on), whose defaults and ranges are the connector's except that `backgroundStagingUploadEnabled` defaults to `false`, so that only the uploader trials run it, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders each knob that exists as an argument, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
 The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, and its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it.

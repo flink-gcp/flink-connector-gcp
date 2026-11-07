@@ -195,7 +195,7 @@ The pin lists `dlcdn.apache.org` before the permanent `archive.apache.org` copy.
 The CDN serves only the releases the Flink project still distributes; once the project removes the pinned release from distribution, only the archive serves it.
 `just tier3-schemas fetch --chart <path>` writes the verified chart, and `check` or `refresh` with `--chart <path>` reads it without downloading.
 The Tier-3 lint job caches that file under a key derived from `upstream.toml` and downloads the chart only when no cache entry for that key is available.
-The 1.15.0 archive's FlinkVersion enum ends at `v2_2`; the planned runtime is Flink 2.2.1 on Java 17.
+The 1.16.1 archive's FlinkVersion enum ends at `v2_4`; the runtime is Flink 2.2.1 on Java 17, enum `v2_2`.
 
 `just tier3-schemas refresh` verifies the archive hash and chart version, then runs `cue get crd` over all four CRD documents.
 It also writes complete CRD YAML to `opentofu/tier3-bootstrap/crds/` for the Kubernetes provider.
