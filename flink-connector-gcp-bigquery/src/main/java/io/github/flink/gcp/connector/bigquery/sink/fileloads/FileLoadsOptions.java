@@ -205,29 +205,23 @@ public final class FileLoadsOptions implements Serializable {
 
     private final String stagingPath;
     @Nullable private final String tempDataset;
-    // Null in an instance serialized before the option existed; the getter supplies the default.
-    @Nullable private final Duration tempTableExpiration;
+    private final Duration tempTableExpiration;
     private final WriteDisposition writeDisposition;
     private final Duration minCheckpointInterval;
     private final long maxStagingFileBytes;
     private final int maxOpenDestinations;
     private final int maxPendingFiles;
     private final int maxConcurrentCheckpointFinalizations;
-    // Zero in an instance serialized before the option existed; the getter supplies the default.
     private final long stagingUploadChunkBytes;
-    // Null in an instance serialized before the option existed; the getter supplies the default.
-    @Nullable private final Boolean backgroundStagingUploadEnabled;
-    // Zero in an instance serialized before the option existed; the getter supplies the default.
+    private final boolean backgroundStagingUploadEnabled;
     private final int maxInFlightUploadOperations;
     private final int maxConcurrentDestinations;
-    @Nullable private final Duration destinationIdleTimeout;
+    private final Duration destinationIdleTimeout;
     private final long maxSerializedRowBytes;
     private final StagingFormat stagingFormat;
     private final ParquetCompression parquetCompression;
-    // Null in an instance serialized before the option existed; the getter supplies the default.
-    @Nullable private final AvroCompression avroCompression;
-    // Null in an instance serialized before the option existed; the getter supplies the default.
-    @Nullable private final Integer zstdLevel;
+    private final AvroCompression avroCompression;
+    private final int zstdLevel;
     private final Duration loadJobPollInitialBackoff;
     private final Duration loadJobPollMaxBackoff;
     private final Duration schemaReconcileInitialBackoff;
@@ -252,11 +246,9 @@ public final class FileLoadsOptions implements Serializable {
         this.maxConcurrentCheckpointFinalizations = builder.maxConcurrentCheckpointFinalizations;
         this.stagingUploadChunkBytes = builder.stagingUploadChunkBytes;
         this.backgroundStagingUploadEnabled = builder.backgroundStagingUploadEnabled;
-        // Zero when unset, like an instance serialized before the option existed: the getter
-        // supplies the default for both.
         this.maxInFlightUploadOperations =
                 builder.maxInFlightUploadOperations == null
-                        ? 0
+                        ? DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS
                         : builder.maxInFlightUploadOperations;
         this.maxConcurrentDestinations = builder.maxConcurrentDestinations;
         this.destinationIdleTimeout = builder.destinationIdleTimeout;
@@ -302,7 +294,7 @@ public final class FileLoadsOptions implements Serializable {
      * destination lives after a commit attempt creates it or extends it.
      */
     public Duration getTempTableExpiration() {
-        return tempTableExpiration == null ? DEFAULT_TEMP_TABLE_EXPIRATION : tempTableExpiration;
+        return tempTableExpiration;
     }
 
     /** Returns how loaded rows land in a destination table that already contains data. */
@@ -325,33 +317,27 @@ public final class FileLoadsOptions implements Serializable {
 
     /** Returns the maximum number of destination files held open by each writer subtask. */
     public int getMaxOpenDestinations() {
-        return maxOpenDestinations == 0 ? DEFAULT_MAX_OPEN_DESTINATIONS : maxOpenDestinations;
+        return maxOpenDestinations;
     }
 
     /** Returns the maximum staging files retained for the next commit by each writer subtask. */
     public int getMaxPendingFiles() {
-        return maxPendingFiles == 0 ? DEFAULT_MAX_PENDING_FILES : maxPendingFiles;
+        return maxPendingFiles;
     }
 
     /** Returns how many open files each writer may finalize concurrently at a checkpoint. */
     public int getMaxConcurrentCheckpointFinalizations() {
-        return maxConcurrentCheckpointFinalizations == 0
-                ? DEFAULT_MAX_CONCURRENT_CHECKPOINT_FINALIZATIONS
-                : maxConcurrentCheckpointFinalizations;
+        return maxConcurrentCheckpointFinalizations;
     }
 
     /** Returns the size of the upload chunk each open staging file buffers. */
     public long getStagingUploadChunkBytes() {
-        return stagingUploadChunkBytes == 0
-                ? DEFAULT_STAGING_UPLOAD_CHUNK_BYTES
-                : stagingUploadChunkBytes;
+        return stagingUploadChunkBytes;
     }
 
     /** Returns whether each writer uploads its staging files on a background staging uploader. */
     public boolean isBackgroundStagingUploadEnabled() {
-        return backgroundStagingUploadEnabled == null
-                ? DEFAULT_BACKGROUND_STAGING_UPLOAD_ENABLED
-                : backgroundStagingUploadEnabled;
+        return backgroundStagingUploadEnabled;
     }
 
     /**
@@ -359,30 +345,22 @@ public final class FileLoadsOptions implements Serializable {
      * or running. Meaningful only while {@link #isBackgroundStagingUploadEnabled()}.
      */
     public int getMaxInFlightUploadOperations() {
-        return maxInFlightUploadOperations == 0
-                ? DEFAULT_MAX_IN_FLIGHT_UPLOAD_OPERATIONS
-                : maxInFlightUploadOperations;
+        return maxInFlightUploadOperations;
     }
 
     /** Returns the maximum destination actions this committer executes concurrently. */
     public int getMaxConcurrentDestinations() {
-        return maxConcurrentDestinations == 0
-                ? DEFAULT_MAX_CONCURRENT_DESTINATIONS
-                : maxConcurrentDestinations;
+        return maxConcurrentDestinations;
     }
 
     /** Returns how long an inactive destination file remains open. */
     public Duration getDestinationIdleTimeout() {
-        return destinationIdleTimeout == null
-                ? DEFAULT_DESTINATION_IDLE_TIMEOUT
-                : destinationIdleTimeout;
+        return destinationIdleTimeout;
     }
 
     /** Returns the largest serialized protobuf row accepted by the staging writer. */
     public long getMaxSerializedRowBytes() {
-        return maxSerializedRowBytes == 0
-                ? DEFAULT_MAX_SERIALIZED_ROW_BYTES
-                : maxSerializedRowBytes;
+        return maxSerializedRowBytes;
     }
 
     /**
@@ -403,12 +381,12 @@ public final class FileLoadsOptions implements Serializable {
      * for a destination with a {@code JSON} column, which are always zstandard.
      */
     public AvroCompression getAvroCompression() {
-        return avroCompression == null ? DEFAULT_AVRO_COMPRESSION : avroCompression;
+        return avroCompression;
     }
 
     /** Returns the zstandard level of every staging file written with zstandard. */
     public int getZstdLevel() {
-        return zstdLevel == null ? DEFAULT_ZSTD_LEVEL : zstdLevel;
+        return zstdLevel;
     }
 
     /** Returns the first backoff between load- or copy-job completion polls. */
@@ -475,24 +453,23 @@ public final class FileLoadsOptions implements Serializable {
         FileLoadsOptions that = (FileLoadsOptions) o;
         return stagingPath.equals(that.stagingPath)
                 && Objects.equals(tempDataset, that.tempDataset)
-                && getTempTableExpiration().equals(that.getTempTableExpiration())
+                && tempTableExpiration.equals(that.tempTableExpiration)
                 && writeDisposition == that.writeDisposition
                 && minCheckpointInterval.equals(that.minCheckpointInterval)
                 && maxStagingFileBytes == that.maxStagingFileBytes
-                && getMaxOpenDestinations() == that.getMaxOpenDestinations()
-                && getMaxPendingFiles() == that.getMaxPendingFiles()
-                && getMaxConcurrentCheckpointFinalizations()
-                        == that.getMaxConcurrentCheckpointFinalizations()
-                && getStagingUploadChunkBytes() == that.getStagingUploadChunkBytes()
-                && isBackgroundStagingUploadEnabled() == that.isBackgroundStagingUploadEnabled()
-                && getMaxInFlightUploadOperations() == that.getMaxInFlightUploadOperations()
-                && getMaxConcurrentDestinations() == that.getMaxConcurrentDestinations()
-                && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
-                && getMaxSerializedRowBytes() == that.getMaxSerializedRowBytes()
+                && maxOpenDestinations == that.maxOpenDestinations
+                && maxPendingFiles == that.maxPendingFiles
+                && maxConcurrentCheckpointFinalizations == that.maxConcurrentCheckpointFinalizations
+                && stagingUploadChunkBytes == that.stagingUploadChunkBytes
+                && backgroundStagingUploadEnabled == that.backgroundStagingUploadEnabled
+                && maxInFlightUploadOperations == that.maxInFlightUploadOperations
+                && maxConcurrentDestinations == that.maxConcurrentDestinations
+                && destinationIdleTimeout.equals(that.destinationIdleTimeout)
+                && maxSerializedRowBytes == that.maxSerializedRowBytes
                 && stagingFormat == that.stagingFormat
                 && parquetCompression == that.parquetCompression
-                && getAvroCompression() == that.getAvroCompression()
-                && getZstdLevel() == that.getZstdLevel()
+                && avroCompression == that.avroCompression
+                && zstdLevel == that.zstdLevel
                 && loadJobPollInitialBackoff.equals(that.loadJobPollInitialBackoff)
                 && loadJobPollMaxBackoff.equals(that.loadJobPollMaxBackoff)
                 && schemaReconcileInitialBackoff.equals(that.schemaReconcileInitialBackoff)
@@ -506,23 +483,23 @@ public final class FileLoadsOptions implements Serializable {
         return Objects.hash(
                 stagingPath,
                 tempDataset,
-                getTempTableExpiration(),
+                tempTableExpiration,
                 writeDisposition,
                 minCheckpointInterval,
                 maxStagingFileBytes,
-                getMaxOpenDestinations(),
-                getMaxPendingFiles(),
-                getMaxConcurrentCheckpointFinalizations(),
-                getStagingUploadChunkBytes(),
-                isBackgroundStagingUploadEnabled(),
-                getMaxInFlightUploadOperations(),
-                getMaxConcurrentDestinations(),
-                getDestinationIdleTimeout(),
-                getMaxSerializedRowBytes(),
+                maxOpenDestinations,
+                maxPendingFiles,
+                maxConcurrentCheckpointFinalizations,
+                stagingUploadChunkBytes,
+                backgroundStagingUploadEnabled,
+                maxInFlightUploadOperations,
+                maxConcurrentDestinations,
+                destinationIdleTimeout,
+                maxSerializedRowBytes,
                 stagingFormat,
                 parquetCompression,
-                getAvroCompression(),
-                getZstdLevel(),
+                avroCompression,
+                zstdLevel,
                 loadJobPollInitialBackoff,
                 loadJobPollMaxBackoff,
                 schemaReconcileInitialBackoff,
@@ -538,7 +515,7 @@ public final class FileLoadsOptions implements Serializable {
                 + ", tempDataset="
                 + tempDataset
                 + ", tempTableExpiration="
-                + getTempTableExpiration()
+                + tempTableExpiration
                 + ", writeDisposition="
                 + writeDisposition
                 + ", minCheckpointInterval="
@@ -546,31 +523,31 @@ public final class FileLoadsOptions implements Serializable {
                 + ", maxStagingFileBytes="
                 + maxStagingFileBytes
                 + ", maxOpenDestinations="
-                + getMaxOpenDestinations()
+                + maxOpenDestinations
                 + ", maxPendingFiles="
-                + getMaxPendingFiles()
+                + maxPendingFiles
                 + ", maxConcurrentCheckpointFinalizations="
-                + getMaxConcurrentCheckpointFinalizations()
+                + maxConcurrentCheckpointFinalizations
                 + ", stagingUploadChunkBytes="
-                + getStagingUploadChunkBytes()
+                + stagingUploadChunkBytes
                 + ", backgroundStagingUploadEnabled="
-                + isBackgroundStagingUploadEnabled()
+                + backgroundStagingUploadEnabled
                 + ", maxInFlightUploadOperations="
-                + getMaxInFlightUploadOperations()
+                + maxInFlightUploadOperations
                 + ", maxConcurrentDestinations="
-                + getMaxConcurrentDestinations()
+                + maxConcurrentDestinations
                 + ", destinationIdleTimeout="
-                + getDestinationIdleTimeout()
+                + destinationIdleTimeout
                 + ", maxSerializedRowBytes="
-                + getMaxSerializedRowBytes()
+                + maxSerializedRowBytes
                 + ", stagingFormat="
                 + stagingFormat
                 + ", parquetCompression="
                 + parquetCompression
                 + ", avroCompression="
-                + getAvroCompression()
+                + avroCompression
                 + ", zstdLevel="
-                + getZstdLevel()
+                + zstdLevel
                 + ", loadJobPollInitialBackoff="
                 + loadJobPollInitialBackoff
                 + ", loadJobPollMaxBackoff="

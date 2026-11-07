@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0195: FILE_LOADS runs a background staging uploader by default
 
 - Status: Accepted
-- Date: 2026-11-04; revised by [#2034] (2026-11-05: the uploader is on by default)
-- Issues: [#2021], [#1164], [#1127], [#2019], [#2034]
+- Date: 2026-11-04; revised by [#2034] (2026-11-05: the uploader is on by default); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Issues: [#2021], [#1164], [#1127], [#2019], [#2034], [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery (`sink.fileloads`, `table`)
 - Refines: [ADR-0146] (size rolls, capacity evictions and idle closes may now leave the task
   thread)
@@ -185,8 +185,6 @@ deadline rather than implicating the uploader.
 The uploader is therefore on by default.
 A writer that is CPU-bound, or that must not start a thread, sets it to false; its cost is one
 thread and up to two chunks per writer.
-An options instance serialized before the option existed reads the default, as every other
-FILE_LOADS option added after its first release does.
 The uploader moves only the upload wait; encoding and compression stay on the task thread, which
 [#2019] addresses separately.
 

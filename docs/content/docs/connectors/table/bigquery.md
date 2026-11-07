@@ -532,8 +532,6 @@ The two options combine as follows:
 If a table carries the matching connector-owned pending label, either policy resumes that partial
 attempt, which may apply the required maximum-staleness DDL before completing the label.
 
-A job restored from a job graph serialized before CDC auto-creation existed keeps that pre-created
-behavior until it is redeployed from a new plan.
 See
 [ADR-0112]({{< param BookRepo >}}/blob/main/docs/adr/0112-bigquery-cdc-auto-creation-combines-the-tables-api-with-verified-ddl.md)
 for the service evidence, recovery protocol, and ownership boundary.

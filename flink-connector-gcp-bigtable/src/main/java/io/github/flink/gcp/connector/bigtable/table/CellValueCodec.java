@@ -30,6 +30,7 @@ import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.TimeType;
 import org.apache.flink.table.types.logical.TimestampType;
+import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
@@ -450,10 +451,7 @@ public final class CellValueCodec {
      */
     private static FieldDecoder fixedWidth(
             TrailingBytes trailingBytes, int width, FieldDecoder delegate) {
-        // Compared against REJECT rather than IGNORE so an absent value resolves the documented
-        // default: a TypedFieldDecoder serialized before the policy existed deserializes with a
-        // null field, and readObject re-resolves through this method.
-        if (trailingBytes != TrailingBytes.REJECT) {
+        if (trailingBytes == TrailingBytes.IGNORE) {
             return delegate;
         }
         return value -> {
@@ -565,13 +563,15 @@ public final class CellValueCodec {
 
         TypedFieldDecoder(LogicalType type, TrailingBytes trailingBytes) {
             this.type = type;
-            this.trailingBytes = trailingBytes;
+            this.trailingBytes =
+                    Preconditions.checkNotNull(trailingBytes, "trailingBytes must not be null");
             this.delegate = resolveDecoder(type, trailingBytes);
         }
 
         private void readObject(ObjectInputStream input)
                 throws IOException, ClassNotFoundException {
             input.defaultReadObject();
+            Preconditions.checkNotNull(trailingBytes, "trailingBytes must not be null");
             this.delegate = resolveDecoder(type, trailingBytes);
         }
 

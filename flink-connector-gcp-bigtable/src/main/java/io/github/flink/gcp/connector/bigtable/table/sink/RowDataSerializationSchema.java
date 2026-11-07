@@ -101,19 +101,12 @@ final class RowDataSerializationSchema implements BigtableSerializationSchema<Ro
     private final boolean keepLatest;
     private final boolean deleteDeclaredFamilies;
 
-    /**
-     * Whether a {@code MAP} family's write deletes the family first. A field added after 1.0.0 that
-     * a restored job graph lacks restores as {@code false}, which is the merge that graph wrote.
-     */
+    /** Whether a {@code MAP} family's write deletes the family first. */
     private final boolean replaceMapFamilies;
 
     /**
-     * Transient and restored in {@link #readObject}, not because it holds lambdas but because it is
-     * a field added after 1.0.0. A job graph written by 1.0.0 does not carry it, and a
-     * non-transient reference would restore as {@code null} and fail the first writer-clock record
-     * on a last-state upgrade — the shape ADR-0125 requires an upgrade path for after the tag.
-     * Restoring it unconditionally also means a graph carrying a test clock comes back on the
-     * production one, which is the right way round.
+     * Transient and restored in {@link #readObject} on the production clock, so a graph that
+     * captured a test clock does not keep it.
      */
     private transient CellClock clock;
 

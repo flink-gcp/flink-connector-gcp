@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0196: FILE_LOADS staging compression is a zstandard level or none
 
 - Status: Accepted
-- Date: 2026-11-05
+- Date: 2026-11-05; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
 - Issues: [#2022], [#283] (the zstandard default), [#2019] (the conversion passes whose removal made
-  compression a larger share of a record)
+  compression a larger share of a record), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery (`sink.fileloads`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads, Compression
 
@@ -39,7 +39,7 @@ Only zstandard is on this connector's classpath as a native codec; deflate is in
 ## Decision
 
 **Avro staging offers `avroCompression(ZSTD | NONE)`, and one `zstdLevel` applies to every staging file written with zstandard.**
-`ZSTD` at level 3 remains the default for both formats, so existing jobs and their serialized options behave as before; an options instance serialized before these fields existed restores them as the defaults.
+`ZSTD` at level 3 remains the default for both formats, so a job that sets neither option compresses as before.
 The level accepts -131,072 (zstandard's fastest negative level) to 19, except 0, which zstandard reads as its default level and which 3 states plainly.
 19 is the highest level zstandard offers without its "ultra" opt-in, and the cap is about memory rather than CPU.
 Avro's `ZstandardCodec` builds a new compression stream for every block, and parquet-hadoop's compressor one for every page, so each block or page allocates a fresh zstandard context.

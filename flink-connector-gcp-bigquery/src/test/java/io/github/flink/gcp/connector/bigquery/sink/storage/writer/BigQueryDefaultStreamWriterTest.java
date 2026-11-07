@@ -600,48 +600,6 @@ class BigQueryDefaultStreamWriterTest {
     }
 
     @Test
-    void oldJobGraphsKeepTheirPreCreatedCdcTableBehavior() throws Exception {
-        RecordingCdcTableAdmin admin = new RecordingCdcTableAdmin();
-        FakeAppenderFactory factory = new FakeAppenderFactory();
-        BigQueryDefaultStreamSink<String> sink =
-                (BigQueryDefaultStreamSink<String>)
-                        BigQuerySink.<String>builder()
-                                .table(TableDestination.of("p", "d", "t"))
-                                .serializer(new CdcStringSerializer())
-                                .cdcOptions(
-                                        CdcOptions.<String>builder(
-                                                        CdcChangeTypeProvider.upsertOnly())
-                                                .sequenceNumberProvider(ignored -> "1")
-                                                .build())
-                                .cdcTableOptions(
-                                        CdcTableOptions.builder()
-                                                .primaryKeyColumns(
-                                                        java.util.Collections.singletonList(
-                                                                "value"))
-                                                .build())
-                                .build();
-        BigQuerySinkConfig<String> config = sink.getConfig();
-        java.lang.reflect.Field field =
-                BigQuerySinkConfig.class.getDeclaredField("manageCdcTableCreation");
-        field.setAccessible(true);
-        field.setBoolean(config, false);
-        BigQueryDefaultStreamWriter<String> writer =
-                new BigQueryDefaultStreamWriter<>(
-                        config,
-                        factory,
-                        admin,
-                        TestSinkWriterMetricGroup.create(),
-                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
-                        fastSchedule(3),
-                        fastSchedule(3));
-
-        writer.write("value", CONTEXT);
-
-        assertThat(admin.ensured).isEmpty();
-        assertThat(factory.appenders).hasSize(1);
-    }
-
-    @Test
     void rejectsCdcDescriptorConflictsBeforeRowFailureHandling() {
         FakeAppenderFactory factory = new FakeAppenderFactory();
         ConflictingCdcSerializer serializer = new ConflictingCdcSerializer();

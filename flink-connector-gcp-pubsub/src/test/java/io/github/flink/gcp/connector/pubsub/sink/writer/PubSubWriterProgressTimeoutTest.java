@@ -550,15 +550,17 @@ class PubSubWriterProgressTimeoutTest {
         PubSubPublisherOptions options = PubSubPublisherOptions.builder().build();
         Field field = PubSubPublisherOptions.class.getDeclaredField("publishProgressTimeout");
         field.setAccessible(true);
-        // null is the value that matters: the field was added under an unchanged
-        // serialVersionUID, so an older stream carries no value for it and the builder never ran.
-        for (Duration forged : new Duration[] {Duration.ZERO, Duration.ofSeconds(-1), null}) {
+        for (Duration forged : new Duration[] {Duration.ZERO, Duration.ofSeconds(-1)}) {
             field.set(options, forged);
             assertThatThrownBy(() -> newWriter(options))
                     .as("forged %s", forged)
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("publishProgressTimeout");
         }
+        field.set(options, null);
+        assertThatThrownBy(() -> newWriter(options))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("publishProgressTimeout must not be null");
 
         assertThat(PubSubPublisherOptions.defaults())
                 .as("the shared defaults() singleton was not the thing forged")

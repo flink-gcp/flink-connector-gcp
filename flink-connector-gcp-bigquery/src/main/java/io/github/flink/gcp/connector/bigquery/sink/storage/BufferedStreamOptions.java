@@ -144,12 +144,7 @@ public final class BufferedStreamOptions implements Serializable {
 
     /** Returns how long a clean destination may stay idle before its local writer is evicted. */
     public Duration getDestinationIdleTimeout() {
-        // A job graph serialized before this field existed restores it as null because this
-        // options type deliberately retains serialVersionUID 1. Preserve the behavior that version
-        // would have received after upgrading: the new default, rather than an NPE at task start.
-        return destinationIdleTimeout == null
-                ? DEFAULT_DESTINATION_IDLE_TIMEOUT
-                : destinationIdleTimeout;
+        return destinationIdleTimeout;
     }
 
     /** Returns the first backoff of the connector-driven recovery schedule. */
@@ -216,7 +211,7 @@ public final class BufferedStreamOptions implements Serializable {
         }
         BufferedStreamOptions that = (BufferedStreamOptions) o;
         return maxAppendRequestBytes == that.maxAppendRequestBytes
-                && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout())
+                && destinationIdleTimeout.equals(that.destinationIdleTimeout)
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
@@ -231,7 +226,7 @@ public final class BufferedStreamOptions implements Serializable {
     public int hashCode() {
         return Objects.hash(
                 maxAppendRequestBytes,
-                getDestinationIdleTimeout(),
+                destinationIdleTimeout,
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
@@ -247,7 +242,7 @@ public final class BufferedStreamOptions implements Serializable {
         return "BufferedStreamOptions{maxAppendRequestBytes="
                 + maxAppendRequestBytes
                 + ", destinationIdleTimeout="
-                + getDestinationIdleTimeout()
+                + destinationIdleTimeout
                 + ", recoveryInitialBackoff="
                 + recoveryInitialBackoff
                 + ", recoveryMaxBackoff="

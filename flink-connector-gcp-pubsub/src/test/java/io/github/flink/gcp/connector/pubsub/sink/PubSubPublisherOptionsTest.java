@@ -589,25 +589,6 @@ class PubSubPublisherOptionsTest {
         }
     }
 
-    @Test
-    void serializedInstancesPredatingLifecycleFieldsUseCurrentDefaults() throws Exception {
-        PubSubPublisherOptions legacyShape = PubSubPublisherOptions.builder().build();
-        setField(legacyShape, "maxActivePublishers", 0);
-        setField(legacyShape, "destinationIdleTimeout", null);
-
-        byte[] bytes = InstantiationUtil.serializeObject(legacyShape);
-        PubSubPublisherOptions copy =
-                InstantiationUtil.deserializeObject(bytes, getClass().getClassLoader());
-
-        assertThat(copy.getMaxActivePublishers()).isEqualTo(100);
-        assertThat(copy.getDestinationIdleTimeout()).isEqualTo(Duration.ofHours(1));
-        assertThat(copy).isEqualTo(PubSubPublisherOptions.defaults());
-        assertThat(copy).hasSameHashCodeAs(PubSubPublisherOptions.defaults());
-        assertThat(PubSubPublisherOptions.defaults())
-                .as("the shared defaults() singleton was not the thing forged")
-                .isEqualTo(PubSubPublisherOptions.builder().build());
-    }
-
     /**
      * The knobs an ordering-enabled SDK publisher would overwrite are refused rather than accepted
      * and ignored (#310). Both orders of application, since a builder is a call sequence and the
@@ -686,12 +667,5 @@ class PubSubPublisherOptionsTest {
     private static PubSubPublisherOptions variedBy(
             UnaryOperator<PubSubPublisherOptions.Builder> variation) {
         return variation.apply(fullyPopulatedBuilder()).build();
-    }
-
-    private static void setField(PubSubPublisherOptions options, String name, Object value)
-            throws ReflectiveOperationException {
-        Field field = PubSubPublisherOptions.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(options, value);
     }
 }

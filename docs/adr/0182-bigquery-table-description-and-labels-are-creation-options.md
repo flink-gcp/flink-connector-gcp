@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0182: BigQuery table description and labels are creation options
 
 - Status: Accepted
-- Date: 2026-10-08
-- Issues: [#1668](https://github.com/flink-gcp/flink-connector-gcp/issues/1668)
+- Date: 2026-10-08; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Issues: [#1668](https://github.com/flink-gcp/flink-connector-gcp/issues/1668), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery, docs-validation
 - Current behavior: [Table metadata](../content/docs/connectors/datastream/bigquery.md#table-metadata),
   [Table creation (SQL)](../content/docs/connectors/table/bigquery.md#table-creation)
@@ -58,9 +58,6 @@ timing.
 The key `flink_gcp_cdc` is refused, because CDC table provisioning owns it and a configured value
 would either be overwritten or break that protocol, the same reason ADR-0127 gives for the reserved
 Cloud Tasks headers.
-
-`TableCreateOptions` keeps `serialVersionUID = 1L`, and an instance serialized before the labels
-existed reads them as empty rather than `null`, as `BufferedStreamOptions` does for its later field.
 
 ## Evidence
 

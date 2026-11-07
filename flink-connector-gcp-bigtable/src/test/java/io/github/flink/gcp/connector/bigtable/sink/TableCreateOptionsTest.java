@@ -144,22 +144,17 @@ class TableCreateOptionsTest {
                                 .build()
                                 .getColumnFamilyTypes())
                 .containsEntry("cf", ColumnFamilyType.RAW);
+        TableCreateOptions redeclared =
+                TableCreateOptions.builder()
+                        .columnFamily("first", ColumnFamilyType.INT64_SUM, null)
+                        .columnFamily("second")
+                        .columnFamily("first")
+                        .build();
+        assertThat(redeclared.getColumnFamilyTypes().keySet())
+                .containsExactlyElementsOf(redeclared.getColumnFamilies().keySet())
+                .containsExactly("first", "second");
         assertThatThrownBy(() -> TableCreateOptions.builder().columnFamily("cf", null, null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("valueType");
-    }
-
-    @Test
-    void absentTypesFromOlderGraphsMeanRaw() throws Exception {
-        TableCreateOptions old = TableCreateOptions.builder().columnFamily("cf").build();
-        java.lang.reflect.Field types =
-                TableCreateOptions.class.getDeclaredField("columnFamilyTypes");
-        types.setAccessible(true);
-        types.set(old, null);
-        TableCreateOptions restored =
-                InstantiationUtil.deserializeObject(
-                        InstantiationUtil.serializeObject(old), getClass().getClassLoader());
-        assertThat(restored).isEqualTo(TableCreateOptions.builder().columnFamily("cf").build());
-        assertThat(restored.getColumnFamilyTypes()).containsEntry("cf", ColumnFamilyType.RAW);
     }
 }

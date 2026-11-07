@@ -304,9 +304,9 @@ class InFlightTrackerTest {
     void bothCapsAreCheckedWhereTheyAreReliedOn() {
         // The builder rejects a non-positive cap too, with the same message — so passing one
         // through the builder would test the builder and never reach this constructor. These
-        // guards exist for the instance the builder never ran on: an old serialized stream. The
-        // field has to be forged to reach them, exactly as PubSubWriterProgressTimeoutTest does
-        // for the budget.
+        // guards exist for the instance the builder never ran on: a deserialized one. The field
+        // has to be forged to reach them, exactly as PubSubWriterProgressTimeoutTest does for the
+        // budget.
         assertThatThrownBy(() -> tracker(forge("maxInFlightMessages", 0)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("maxInFlightMessages must be positive");
@@ -315,7 +315,7 @@ class InFlightTrackerTest {
                 .hasMessage("maxInFlightBytes must be positive");
     }
 
-    /** Sets a field past the builder, as an options instance predating it would carry. */
+    /** Sets a field past the builder, as a forged serialized options instance could carry. */
     private static PubSubPublisherOptions forge(String name, Object value) {
         PubSubPublisherOptions options =
                 PubSubPublisherOptions.builder()

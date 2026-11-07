@@ -167,24 +167,6 @@ class BigtableWriterOptionsTest {
     }
 
     @Test
-    void anAbsentMaxActiveInstancesFieldUsesTheNewDefault() throws Exception {
-        BigtableWriterOptions restored = BigtableWriterOptions.builder().build();
-        java.lang.reflect.Field field =
-                BigtableWriterOptions.class.getDeclaredField("maxActiveInstances");
-        field.setAccessible(true);
-        // Java deserialization bypasses the constructor and leaves a field absent from an older
-        // stream at its JVM default. Set the options object itself to that state rather than the
-        // builder, which an old stream never contained.
-        field.set(restored, 0);
-
-        assertThat(restored.getMaxActiveInstances()).isEqualTo(16);
-        assertThat(restored)
-                .isEqualTo(BigtableWriterOptions.defaults())
-                .hasSameHashCodeAs(BigtableWriterOptions.defaults());
-        assertThat(restored.toString()).isEqualTo(BigtableWriterOptions.defaults().toString());
-    }
-
-    @Test
     void rejectsBatchThresholdsTheClientWouldRefuseToBuildAClientFor() {
         // Without these a job configured past either ceiling submits fine and then dies on a task
         // manager as the writer opens: the client's own settings builder requires each threshold

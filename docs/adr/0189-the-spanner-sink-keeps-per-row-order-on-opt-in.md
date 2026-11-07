@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-10-29 (client library read in google-cloud-spanner 6.124.0; emulator behavior measured
   2026-10-28 against the pinned `gcr.io/cloud-spanner-emulator/emulator` image, three runs; service
   behavior measured 2026-10-29 on an ephemeral 100-processing-unit `STANDARD` instance in
-  `regional-us-central1`), revised by [#1927] (2026-10-30) and [#1928] (2026-10-30)
-- Issues: [#1619], [#1618], [#1556], [#1927], [#1928]
+  `regional-us-central1`), revised by [#1927] (2026-10-30) and [#1928] (2026-10-30); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Issues: [#1619], [#1618], [#1556], [#1927], [#1928], [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: spanner (`sink`, `sink.writer`, `table`, `table.sink`)
 - Current behavior: `docs/content/docs/connectors/datastream/spanner.md` § Order per row;
   `docs/content/docs/connectors/table/spanner.md` § Delivery guarantee;
@@ -117,8 +117,7 @@ risk.
   transaction, and so at one timestamp, so two writes keyed by it may address one row.
 - **The option is `orderingMode(OrderingMode)` on `SpannerWriterOptions` and `sink.ordering-mode` =
   `none` | `per-key` in a `WITH` clause, with `OrderingMode` in this module's `sink` package**
-  ([ADR-0187]'s spelling). The options object reads a `null` field from a form serialized before the
-  field existed as `NONE`, as it does for `batchWriteTimeout`.
+  ([ADR-0187]'s spelling).
 - **No new metric.** The cost is extra requests, which `batchesSent` already counts against
   `numRecordsSend`.
 

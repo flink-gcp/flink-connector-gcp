@@ -72,7 +72,7 @@ public final class CdcTableOptions implements Serializable {
 
     /** Returns the desired primary-key columns, or an empty list when none is declared. */
     public List<String> getPrimaryKeyColumns() {
-        return primaryKeyColumns == null ? Collections.emptyList() : primaryKeyColumns;
+        return primaryKeyColumns;
     }
 
     /** Returns the desired maximum staleness, or {@code null} when not setting a duration. */
@@ -101,19 +101,19 @@ public final class CdcTableOptions implements Serializable {
         }
         CdcTableOptions that = (CdcTableOptions) o;
         return clearMaxStaleness == that.clearMaxStaleness
-                && getPrimaryKeyColumns().equals(that.getPrimaryKeyColumns())
+                && primaryKeyColumns.equals(that.primaryKeyColumns)
                 && Objects.equals(maxStaleness, that.maxStaleness);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(getPrimaryKeyColumns(), maxStaleness, clearMaxStaleness);
+        return Objects.hash(primaryKeyColumns, maxStaleness, clearMaxStaleness);
     }
 
     @Override
     public String toString() {
         return "CdcTableOptions{primaryKeyColumns="
-                + getPrimaryKeyColumns()
+                + primaryKeyColumns
                 + ", maxStaleness="
                 + maxStaleness
                 + ", clearMaxStaleness="

@@ -105,7 +105,7 @@ public final class PubSubPublisherOptions implements Serializable {
     private final int recoveryMaxAttempts;
     private final Duration shutdownTimeout;
     private final int maxActivePublishers;
-    @Nullable private final Duration destinationIdleTimeout;
+    private final Duration destinationIdleTimeout;
     private final boolean perDestinationMetrics;
     private final int maxConsecutiveRejections;
 
@@ -268,16 +268,12 @@ public final class PubSubPublisherOptions implements Serializable {
 
     /** Returns the maximum number of publishers retained by one sink writer subtask. */
     public int getMaxActivePublishers() {
-        // An instance serialized before this field existed carries zero after deserialization.
-        return maxActivePublishers == 0 ? DEFAULT_MAX_ACTIVE_PUBLISHERS : maxActivePublishers;
+        return maxActivePublishers;
     }
 
     /** Returns how long an unused publisher remains active before a checkpoint releases it. */
     public Duration getDestinationIdleTimeout() {
-        // An instance serialized before this field existed carries null after deserialization.
-        return destinationIdleTimeout == null
-                ? DEFAULT_DESTINATION_IDLE_TIMEOUT
-                : destinationIdleTimeout;
+        return destinationIdleTimeout;
     }
 
     /** Returns whether the writer registers per-topic send counters. */
@@ -340,7 +336,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && maxInFlightMessages == that.maxInFlightMessages
                 && maxInFlightBytes == that.maxInFlightBytes
-                && getMaxActivePublishers() == that.getMaxActivePublishers()
+                && maxActivePublishers == that.maxActivePublishers
                 && publishProgressTimeout.equals(that.publishProgressTimeout)
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
@@ -357,7 +353,7 @@ public final class PubSubPublisherOptions implements Serializable {
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
                 && shutdownTimeout.equals(that.shutdownTimeout)
-                && getDestinationIdleTimeout().equals(that.getDestinationIdleTimeout());
+                && destinationIdleTimeout.equals(that.destinationIdleTimeout);
     }
 
     @Override
@@ -382,8 +378,8 @@ public final class PubSubPublisherOptions implements Serializable {
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
                 shutdownTimeout,
-                getMaxActivePublishers(),
-                getDestinationIdleTimeout(),
+                maxActivePublishers,
+                destinationIdleTimeout,
                 perDestinationMetrics,
                 maxConsecutiveRejections);
     }
@@ -429,9 +425,9 @@ public final class PubSubPublisherOptions implements Serializable {
                 + ", shutdownTimeout="
                 + shutdownTimeout
                 + ", maxActivePublishers="
-                + getMaxActivePublishers()
+                + maxActivePublishers
                 + ", destinationIdleTimeout="
-                + getDestinationIdleTimeout()
+                + destinationIdleTimeout
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + ", maxConsecutiveRejections="

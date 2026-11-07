@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0002: A test forges an options object on `builder().build()`, never on `defaults()`
 
 - Status: Accepted
-- Date: 2026-08-06
-- Issues: [#316](https://github.com/flink-gcp/flink-connector-gcp/issues/316)
+- Date: 2026-08-06; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Issues: [#316](https://github.com/flink-gcp/flink-connector-gcp/issues/316), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: all connector modules (test sources)
 
 ## Context
@@ -50,8 +50,8 @@ surefire fork settings become, which is why nothing here proposes changing them.
 The fix was in the test, and the writers' preconditions stay exactly where they are: a forged
 `0` is **not** reachable in production — the builders reject a non-positive value on every
 setter, and Java serialization of the job graph restores the written field values. It becomes
-reachable under serial-form evolution (a field added while `serialVersionUID` stays `1L`, read
-from an older stream), which is precisely what those preconditions and their comments exist for.
+reachable only through a forged or hand-edited serialized form, which is what those preconditions
+exist for; a form written by another connector version is not read at all (ADR-0200).
 
 ## Evidence
 

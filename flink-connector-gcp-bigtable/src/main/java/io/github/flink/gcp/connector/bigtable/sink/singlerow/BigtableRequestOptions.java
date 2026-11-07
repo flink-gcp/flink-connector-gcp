@@ -22,8 +22,6 @@ import org.apache.flink.util.Preconditions;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 
-import javax.annotation.Nullable;
-
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.Objects;
@@ -84,7 +82,7 @@ public final class BigtableRequestOptions implements Serializable {
     private final Duration destinationIdleTimeout;
     private final int maxActiveInstances;
     private final boolean perDestinationMetrics;
-    @Nullable private final OrderingMode orderingMode;
+    private final OrderingMode orderingMode;
 
     private BigtableRequestOptions(Builder builder) {
         this.maxInFlightRequests = builder.maxInFlightRequests;
@@ -150,13 +148,12 @@ public final class BigtableRequestOptions implements Serializable {
     }
 
     /**
-     * Returns the order the sink surface keeps between requests to one row. The {@code null}
-     * fallback preserves the default for options serialized before this field existed.
+     * Returns the order the sink surface keeps between requests to one row.
      *
      * @return the ordering mode
      */
     public OrderingMode getOrderingMode() {
-        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+        return orderingMode;
     }
 
     /**
@@ -177,7 +174,7 @@ public final class BigtableRequestOptions implements Serializable {
         return maxInFlightRequests == that.maxInFlightRequests
                 && maxActiveInstances == that.maxActiveInstances
                 && perDestinationMetrics == that.perDestinationMetrics
-                && getOrderingMode() == that.getOrderingMode()
+                && orderingMode == that.orderingMode
                 && requestTimeout.equals(that.requestTimeout)
                 && destinationIdleTimeout.equals(that.destinationIdleTimeout);
     }
@@ -195,7 +192,7 @@ public final class BigtableRequestOptions implements Serializable {
                 destinationIdleTimeout,
                 maxActiveInstances,
                 perDestinationMetrics,
-                getOrderingMode());
+                orderingMode);
     }
 
     /**
@@ -216,7 +213,7 @@ public final class BigtableRequestOptions implements Serializable {
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + ", orderingMode="
-                + getOrderingMode()
+                + orderingMode
                 + "}";
     }
 

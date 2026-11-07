@@ -159,15 +159,7 @@ final class InFlightTracker {
         this.maxInFlightBytes = options.getMaxInFlightBytes();
         // Checked here for the reason the two caps are: Java deserialization does not run the
         // builder, and a non-positive budget would make every wait expire on its first pass.
-        // Null-tolerant on purpose: this field was added under an unchanged serialVersionUID, so
-        // the stream the guard exists for — an older one, which the builder never ran against —
-        // carries no value for it at all. Without the null check that case is a bare NPE from
-        // isZero() rather than the named failure the two caps give.
-        Preconditions.checkArgument(
-                options.getPublishProgressTimeout() != null
-                        && !options.getPublishProgressTimeout().isZero()
-                        && !options.getPublishProgressTimeout().isNegative(),
-                "publishProgressTimeout must be positive");
+        OptionChecks.checkPositive(options.getPublishProgressTimeout(), "publishProgressTimeout");
         // The ceiling as well as the floor: toNanos() below is the call the builder's own ceiling
         // exists to protect, and this re-check is here precisely for the instance the builder never
         // saw.

@@ -183,7 +183,7 @@ public final class BigtableWriterOptions implements Serializable {
     private final Duration destinationIdleTimeout;
     private final int maxActiveInstances;
     private final boolean perDestinationMetrics;
-    @Nullable private final OrderingMode orderingMode;
+    private final OrderingMode orderingMode;
 
     private BigtableWriterOptions(Builder builder) {
         this.batchElementCountThreshold = builder.batchElementCountThreshold;
@@ -274,13 +274,9 @@ public final class BigtableWriterOptions implements Serializable {
         return destinationIdleTimeout;
     }
 
-    /**
-     * Returns the maximum number of Bigtable instance clients held by one writer subtask.
-     *
-     * <p>The zero fallback preserves the default for options serialized before this field existed.
-     */
+    /** Returns the maximum number of Bigtable instance clients held by one writer subtask. */
     public int getMaxActiveInstances() {
-        return maxActiveInstances == 0 ? DEFAULT_MAX_ACTIVE_INSTANCES : maxActiveInstances;
+        return maxActiveInstances;
     }
 
     /** Returns whether per-table counters are registered beside the writer's totals. */
@@ -288,14 +284,9 @@ public final class BigtableWriterOptions implements Serializable {
         return perDestinationMetrics;
     }
 
-    /**
-     * Returns the order kept between writes to one row.
-     *
-     * <p>The {@code null} fallback preserves the default for options serialized before this field
-     * existed.
-     */
+    /** Returns the order kept between writes to one row. */
     public OrderingMode getOrderingMode() {
-        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+        return orderingMode;
     }
 
     /**
@@ -325,9 +316,9 @@ public final class BigtableWriterOptions implements Serializable {
                 && maxInFlightBytes == that.maxInFlightBytes
                 && maxConsecutiveRejections == that.maxConsecutiveRejections
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
-                && getMaxActiveInstances() == that.getMaxActiveInstances()
+                && maxActiveInstances == that.maxActiveInstances
                 && perDestinationMetrics == that.perDestinationMetrics
-                && getOrderingMode() == that.getOrderingMode()
+                && orderingMode == that.orderingMode
                 && Objects.equals(batchElementCountThreshold, that.batchElementCountThreshold)
                 && Objects.equals(batchRequestByteThreshold, that.batchRequestByteThreshold)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
@@ -347,9 +338,9 @@ public final class BigtableWriterOptions implements Serializable {
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
                 destinationIdleTimeout,
-                getMaxActiveInstances(),
+                maxActiveInstances,
                 perDestinationMetrics,
-                getOrderingMode());
+                orderingMode);
     }
 
     @Override
@@ -373,11 +364,11 @@ public final class BigtableWriterOptions implements Serializable {
                 + ", destinationIdleTimeout="
                 + destinationIdleTimeout
                 + ", maxActiveInstances="
-                + getMaxActiveInstances()
+                + maxActiveInstances
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + ", orderingMode="
-                + getOrderingMode()
+                + orderingMode
                 + "}";
     }
 

@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0146: FILE_LOADS bounds writer checkpoint finalization concurrency
 
 - Status: Accepted
-- Date: 2026-08-30; revised by [#1532] (2026-09-26); refined by [ADR-0195] (2026-11-04)
+- Date: 2026-08-30; revised by [#1532] (2026-09-26); refined by [ADR-0195] (2026-11-04); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
 - Issues: [#1164] (measurement), [#38] (follow-up, carried out in-region by [#1313]), [#1532]
   (abandoning the batch after a fatal failure), [#1313] (in-region confirmation through Flink
-  checkpoints)
+  checkpoints), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 - Evidence: [in-region tuning findings](evidence/0146-fileloads-in-region-tuning-1313.md)
@@ -193,9 +193,6 @@ A flag that was already set before the drain is preserved without changing the s
 checkpoint outcome.
 The pool is not retained beyond that finalization call.
 
-The option adds a serialized configuration field.
-Jobs restored from a previous serialized form see the Java default zero and map it to the
-compatible value 1.
 The pool queues only references to files whose upload buffers already exist, so it does not keep a
 second queue of row bytes.
 Each active close still adds one worker thread and one concurrent Cloud Storage finalization

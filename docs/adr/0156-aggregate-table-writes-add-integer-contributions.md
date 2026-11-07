@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0156: Aggregate Table writes add integer contributions
 
 - Status: Accepted
-- Date: 2026-09-06; refined 2026-09-30 (`MAP` column families, [#1569](https://github.com/flink-gcp/flink-connector-gcp/issues/1569))
-- Issue: [#1176](https://github.com/flink-gcp/flink-connector-gcp/issues/1176)
+- Date: 2026-09-06; refined 2026-09-30 (`MAP` column families, [#1569](https://github.com/flink-gcp/flink-connector-gcp/issues/1569)); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Issues: [#1176](https://github.com/flink-gcp/flink-connector-gcp/issues/1176), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigtable
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -55,7 +55,7 @@ Use a stable bucket timestamp when events should contribute to one time bucket.
 
 The public serializable ColumnFamilyType vocabulary represents raw and the four INT64 aggregate families.
 TableCreateOptions adds a three-argument columnFamily overload accepting a type and nullable GC rule, without creating an ambiguous two-argument overload.
-Existing family/rule getters and overloads remain compatible; a type absent from an old job graph means raw.
+Existing family/rule getters and overloads remain compatible, and a family declared without a type is raw.
 SDK type models never enter the job graph.
 
 SQL aggregate writers inspect the fixed destination during writer creation, before admitting data.

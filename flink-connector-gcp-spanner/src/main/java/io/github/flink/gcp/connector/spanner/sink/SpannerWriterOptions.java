@@ -160,13 +160,12 @@ public final class SpannerWriterOptions implements Serializable {
     @Nullable private final SpannerRpcPriority rpcPriority;
     private final boolean excludeTxnFromChangeStreams;
     @Nullable private final String transactionTag;
-    @Nullable private final Duration batchWriteTimeout;
+    private final Duration batchWriteTimeout;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
     private final int recoveryMaxAttempts;
 
-    /** {@code null} only in a form serialized before this field existed, which reads as NONE. */
-    @Nullable private final OrderingMode orderingMode;
+    private final OrderingMode orderingMode;
 
     private SpannerWriterOptions(Builder builder) {
         this.maxBatchCells = builder.maxBatchCells;
@@ -241,9 +240,7 @@ public final class SpannerWriterOptions implements Serializable {
 
     /** Returns the timeout for one complete batch write attempt. */
     public Duration getBatchWriteTimeout() {
-        // A form serialized before this field existed restores it as null. Keep that form equal to
-        // what an untouched builder produces rather than passing an unbounded attempt to the SDK.
-        return batchWriteTimeout == null ? DEFAULT_BATCH_WRITE_TIMEOUT : batchWriteTimeout;
+        return batchWriteTimeout;
     }
 
     /** Returns the first backoff of the writer's retry loop. */
@@ -263,8 +260,7 @@ public final class SpannerWriterOptions implements Serializable {
 
     /** Returns the order kept between mutations of one row. */
     public OrderingMode getOrderingMode() {
-        // A form serialized before this field existed restores it as null, which meant no order.
-        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+        return orderingMode;
     }
 
     /**
@@ -297,10 +293,10 @@ public final class SpannerWriterOptions implements Serializable {
                 && rpcPriority == that.rpcPriority
                 && excludeTxnFromChangeStreams == that.excludeTxnFromChangeStreams
                 && Objects.equals(transactionTag, that.transactionTag)
-                && getBatchWriteTimeout().equals(that.getBatchWriteTimeout())
+                && batchWriteTimeout.equals(that.batchWriteTimeout)
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
-                && getOrderingMode() == that.getOrderingMode();
+                && orderingMode == that.orderingMode;
     }
 
     @Override
@@ -312,11 +308,11 @@ public final class SpannerWriterOptions implements Serializable {
                 rpcPriority,
                 excludeTxnFromChangeStreams,
                 transactionTag,
-                getBatchWriteTimeout(),
+                batchWriteTimeout,
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
                 recoveryMaxAttempts,
-                getOrderingMode());
+                orderingMode);
     }
 
     @Override
@@ -334,7 +330,7 @@ public final class SpannerWriterOptions implements Serializable {
                 + ", transactionTag="
                 + transactionTag
                 + ", batchWriteTimeout="
-                + getBatchWriteTimeout()
+                + batchWriteTimeout
                 + ", recoveryInitialBackoff="
                 + recoveryInitialBackoff
                 + ", recoveryMaxBackoff="
@@ -342,7 +338,7 @@ public final class SpannerWriterOptions implements Serializable {
                 + ", recoveryMaxAttempts="
                 + recoveryMaxAttempts
                 + ", orderingMode="
-                + getOrderingMode()
+                + orderingMode
                 + "}";
     }
 

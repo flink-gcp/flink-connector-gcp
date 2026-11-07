@@ -63,11 +63,7 @@ public final class PubSubSubscriberOptions implements Serializable {
 
     @Nullable private final Long flowControlMaxOutstandingElementCount;
     @Nullable private final Long flowControlMaxOutstandingRequestBytes;
-    // Null when unset, which derives the budget from flow control. A Java-serialized instance keeps
-    // what it was written with: one from before these fields existed reads them as null and takes
-    // the derived budget, while one written between #1138 and #2020 carries that version's fixed
-    // default as an explicit cap, which build() would now reject and only the reader's warning
-    // reports. Options travel in the job graph, which a resubmission rebuilds through build().
+    // Null when unset, which derives the budget from flow control.
     @Nullable private final Long subscriberBufferMaxMessages;
     @Nullable private final Long subscriberBufferMaxBytes;
     @Nullable private final Long pausedSplitBufferMaxMessages;

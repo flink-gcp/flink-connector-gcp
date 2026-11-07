@@ -290,10 +290,7 @@ class RowDataSerializationSchemaTest {
 
     @Test
     void aRestoredSchemaStampsThroughTheProductionClock() throws Exception {
-        // The clock is transient, so a job graph written before it existed carries no value for it
-        // and a non-transient reference would restore as null — the first writer-clock record on a
-        // last-state upgrade would then fail (ADR-0125 requires the upgrade path after 1.0.0).
-        // Restoring on the production clock is also the right way round: a graph that captured a
+        // The clock is transient and restored on the production clock: a graph that captured a
         // test clock must not keep it.
         RowDataSerializationSchema serializer =
                 new RowDataSerializationSchema(
