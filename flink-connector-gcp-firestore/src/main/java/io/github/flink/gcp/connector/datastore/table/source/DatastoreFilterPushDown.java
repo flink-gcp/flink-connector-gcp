@@ -17,21 +17,14 @@
 package io.github.flink.gcp.connector.datastore.table.source;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
-import org.apache.flink.table.expressions.CallExpression;
-import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
-import org.apache.flink.table.expressions.ValueLiteralExpression;
-import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
-import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.LogicalTypeRoot;
-import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.Timestamp;
 import com.google.datastore.v1.CompositeFilter;
 import com.google.datastore.v1.Filter;
+import com.google.datastore.v1.Key;
 import com.google.datastore.v1.KindExpression;
 import com.google.datastore.v1.PropertyFilter;
 import com.google.datastore.v1.PropertyReference;
@@ -39,48 +32,59 @@ import com.google.datastore.v1.Query;
 import com.google.datastore.v1.Value;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
+import io.github.flink.gcp.connector.firestore.common.table.EqualityMatcher;
+import io.github.flink.gcp.connector.firestore.common.table.EqualityMatcher.Equality;
+import io.github.flink.gcp.connector.firestore.common.table.PushedFilters;
 
 import javax.annotation.Nullable;
 
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Translates the predicates of a {@code datastore} scan into equality filters of its kind query,
- * when the table opts in with {@code scan.filter-push-down.enabled} ({@code docs/adr/0184}).
+ * Translates the equalities {@link EqualityMatcher} finds in the predicates of a {@code datastore}
+ * scan into equality filters of its kind query ({@code docs/adr/0184}).
  *
- * <p>A Datastore filter never matches a value excluded from indexes, so a filter is a necessary
- * condition of its predicate only for the entities whose filtered properties are indexed; enabling
- * the option is the user's assertion that every one is. Beyond that, each filter must never drop an
- * entity Flink would keep, and it may return entities Flink rejects: an equality on an integer also
- * matches an array holding it, and one on a string also matches the same bytes stored as a blob.
- * Every predicate therefore stays a Flink residual. Only these shapes translate:
+ * <p>An equality on the key column becomes a filter on {@code __key__}, which is always indexed, so
+ * it translates whatever the table's options say. A Datastore filter never matches a value excluded
+ * from indexes, so an equality on a property is a necessary condition of its predicate only for the
+ * entities whose filtered properties are indexed: such equalities translate only when the table
+ * opts in with {@code scan.filter-push-down.enabled}, the user's assertion that every one is.
+ *
+ * <p>Beyond that, each filter must never drop an entity Flink would keep, and it may return
+ * entities Flink rejects: an equality on an integer also matches an array holding it, one on a
+ * string also matches the same bytes stored as a blob, and one on a property path also matches a
+ * top-level property whose name is the whole path, dots included. Every predicate therefore stays a
+ * Flink residual. Only these equalities translate:
  *
  * <ul>
- *   <li>{@code column = literal}, either way round, a bare {@code BOOLEAN} column (equal to {@code
- *       TRUE}), and its {@code NOT} (equal to {@code FALSE}), on a top-level physical column other
- *       than the key, whose name holds no {@code .} or backquote and which {@code
- *       sink.unindexed-columns} does not name;
- *   <li>a column of type {@code STRING}/{@code VARCHAR}, {@code BIGINT}, {@code BOOLEAN}, {@code
- *       BYTES}/{@code VARBINARY}, or {@code TIMESTAMP_LTZ} of precision 6 or more, which the
- *       converter reads only from a stored value of that type;
- *   <li>a string or bytes literal of at most 1,500 bytes, the longest value the service indexes,
- *       and a timestamp of whole microseconds the service can represent;
- *   <li>under {@code AND}, every child that translates; an {@code OR} translates to nothing.
+ *   <li>on the key column, a name or an id that can name a root entity of the kind, other than a
+ *       name that begins and ends with two underscores;
+ *   <li>on any other physical column, or a field nested in {@code ROW} columns, one that {@code
+ *       sink.unindexed-columns} does not name and that is not inside a geographical point or a key
+ *       value, the names joined by dots into a property path. The API has no quoting for a filter's
+ *       property, so a name holding a dot reads as a path too, which also matches the property of
+ *       that name;
+ *   <li>of type {@code STRING}/{@code VARCHAR}/{@code CHAR}, {@code BIGINT}, {@code BOOLEAN},
+ *       {@code BYTES}/{@code VARBINARY}/{@code BINARY}, or {@code TIMESTAMP_LTZ} of precision 6 or
+ *       more, which the converter reads only from a stored value of that type, and {@code DOUBLE}
+ *       under a finite literal with a fractional part, which no integer equals;
+ *   <li>with a string or bytes literal of at most 1,500 bytes, the longest value the service
+ *       indexes, and a timestamp of whole microseconds the service can represent.
  * </ul>
  *
- * <p>{@code DOUBLE} is declined: the converter reads a stored integer into it, which an equality on
- * a floating-point value does not match, and the service tells {@code 0.0} from {@code -0.0}. Only
- * equalities translate, so the query stays one the source cuts into key ranges.
+ * <p>A {@code DOUBLE} equality on an integral literal, zero included, is declined: the converter
+ * reads a stored integer into the column, which an equality on a floating-point value does not
+ * match, and the service tells {@code 0.0} from {@code -0.0}. Only equalities translate, so the
+ * query stays one the source cuts into key ranges.
  */
 @Internal
 final class DatastoreFilterPushDown {
+
+    /** The property a filter names to compare entity keys. */
+    private static final String KEY_PROPERTY = "__key__";
 
     /** The bytes of a string or bytes value the service indexes; a longer literal is refused. */
     private static final int MAX_INDEXED_VALUE_BYTES = 1_500;
@@ -94,83 +98,82 @@ final class DatastoreFilterPushDown {
      * Translates the planner's predicates.
      *
      * @param schema the table's schema
+     * @param keys the keys of the table's kind, namespace and database
+     * @param properties whether equalities on properties translate, which {@code
+     *     scan.filter-push-down.enabled} decides
      * @param filters the predicates, each one conjunct of the scan's condition
      * @return the predicates accepted and the filters they translate to; every predicate remains a
      *     residual
      */
-    static State translate(DatastoreTableSchema schema, List<ResolvedExpression> filters) {
-        List<ResolvedExpression> accepted = new ArrayList<>();
-        List<Filter> equalities = new ArrayList<>();
-        for (ResolvedExpression filter : filters) {
-            List<Filter> translated = new ArrayList<>();
-            collect(schema, filter, translated);
-            if (!translated.isEmpty()) {
-                accepted.add(filter);
-                equalities.addAll(translated);
-            }
-        }
-        return new State(accepted, filters, equalities);
+    static PushedFilters<Filter> translate(
+            DatastoreTableSchema schema,
+            DatastoreLookupKeys keys,
+            boolean properties,
+            List<ResolvedExpression> filters) {
+        return EqualityMatcher.translate(
+                schema.getRowType(),
+                filters,
+                equality -> translate(schema, keys, properties, equality));
     }
 
-    private static void collect(
-            DatastoreTableSchema schema, ResolvedExpression expression, List<Filter> out) {
-        if (expression instanceof CallExpression
-                && ((CallExpression) expression)
-                        .getFunctionDefinition()
-                        .equals(BuiltInFunctionDefinitions.AND)) {
-            for (ResolvedExpression child : expression.getResolvedChildren()) {
-                collect(schema, child, out);
-            }
-            return;
+    /**
+     * Returns the query reading the kind under the filters, or {@code null} when there are none and
+     * the scan reads the kind whole.
+     *
+     * @param kind the kind
+     * @param filters the translated filters
+     * @return the query, or {@code null}
+     */
+    @Nullable
+    static Query query(String kind, List<Filter> filters) {
+        if (filters.isEmpty()) {
+            return null;
         }
-        equality(schema, expression).ifPresent(out::add);
+        Filter filter =
+                filters.size() == 1
+                        ? filters.get(0)
+                        : Filter.newBuilder()
+                                .setCompositeFilter(
+                                        CompositeFilter.newBuilder()
+                                                .setOp(CompositeFilter.Operator.AND)
+                                                .addAllFilters(filters))
+                                .build();
+        return Query.newBuilder()
+                .addKind(KindExpression.newBuilder().setName(kind))
+                .setFilter(filter)
+                .build();
     }
 
-    private static Optional<Filter> equality(
-            DatastoreTableSchema schema, ResolvedExpression expression) {
-        if (expression instanceof FieldReferenceExpression) {
-            return column(schema, (FieldReferenceExpression) expression)
-                    .filter(column -> column.type.is(LogicalTypeRoot.BOOLEAN))
-                    .map(column -> equal(column.name, Value.newBuilder().setBooleanValue(true)));
+    private static Optional<Filter> translate(
+            DatastoreTableSchema schema,
+            DatastoreLookupKeys keys,
+            boolean properties,
+            Equality equality) {
+        if (equality.isColumn(schema.getKeyIndex())) {
+            Optional<Key> key =
+                    schema.isKeyId()
+                            ? equality.longValue().map(keys::key)
+                            : equality.valueAs(String.class)
+                                    // The emulator stores a name of four underscores, which
+                                    // DatastoreTableSchema.isReserved lets through; whether the
+                                    // service takes one in a filter is unmeasured.
+                                    .filter(name -> !isUnderscoreBracketed(name))
+                                    .map(keys::key);
+            return key.map(value -> equal(KEY_PROPERTY, Value.newBuilder().setKeyValue(value)));
         }
-        if (!(expression instanceof CallExpression)) {
+        if (!properties || schema.isUnindexed(equality.path().get(0))) {
             return Optional.empty();
         }
-        CallExpression call = (CallExpression) expression;
-        FunctionDefinition function = call.getFunctionDefinition();
-        List<ResolvedExpression> children = call.getResolvedChildren();
-        if (function.equals(BuiltInFunctionDefinitions.NOT)) {
-            if (children.size() != 1 || !(children.get(0) instanceof FieldReferenceExpression)) {
+        int length = equality.path().size();
+        for (int prefix = 1; prefix < length; prefix++) {
+            String path = equality.joinedPath(prefix);
+            // A geographical point and a key value are each one value, not an embedded entity.
+            if (schema.isGeoPoint(path) || schema.isReference(path)) {
                 return Optional.empty();
             }
-            return column(schema, (FieldReferenceExpression) children.get(0))
-                    .filter(column -> column.type.is(LogicalTypeRoot.BOOLEAN))
-                    .map(column -> equal(column.name, Value.newBuilder().setBooleanValue(false)));
         }
-        if (!function.equals(BuiltInFunctionDefinitions.EQUALS) || children.size() != 2) {
-            return Optional.empty();
-        }
-        FieldReferenceExpression field;
-        ValueLiteralExpression literal;
-        if (children.get(0) instanceof FieldReferenceExpression
-                && children.get(1) instanceof ValueLiteralExpression) {
-            field = (FieldReferenceExpression) children.get(0);
-            literal = (ValueLiteralExpression) children.get(1);
-        } else if (children.get(1) instanceof FieldReferenceExpression
-                && children.get(0) instanceof ValueLiteralExpression) {
-            field = (FieldReferenceExpression) children.get(1);
-            literal = (ValueLiteralExpression) children.get(0);
-        } else {
-            return Optional.empty();
-        }
-        if (literal.isNull()) {
-            return Optional.empty();
-        }
-        Optional<Column> column = column(schema, field);
-        if (!column.isPresent()) {
-            return Optional.empty();
-        }
-        return value(column.get().type, literal).map(value -> equal(column.get().name, value));
+        return value(equality.type(), equality)
+                .map(value -> equal(equality.joinedPath(length), value));
     }
 
     private static Filter equal(String property, Value.Builder value) {
@@ -183,81 +186,65 @@ final class DatastoreFilterPushDown {
                 .build();
     }
 
-    /**
-     * The top-level physical column a reference names, unless it is the key, a column written
-     * excluded from indexes, or one whose name the service would read as a path.
-     */
-    private static Optional<Column> column(
-            DatastoreTableSchema schema, FieldReferenceExpression field) {
-        RowType rowType = schema.getRowType();
-        String name = field.getName();
-        int index = rowType.getFieldNames().indexOf(name);
-        if (index < 0
-                || index == schema.getKeyIndex()
-                || schema.isUnindexed(name)
-                || name.indexOf('.') >= 0
-                || name.indexOf('`') >= 0) {
-            return Optional.empty();
-        }
-        return Optional.of(new Column(name, rowType.getTypeAt(index)));
+    private static boolean isUnderscoreBracketed(String name) {
+        return name.length() >= 4 && name.startsWith("__") && name.endsWith("__");
     }
 
-    private static Optional<Value.Builder> value(LogicalType type, ValueLiteralExpression literal) {
-        try {
-            switch (type.getTypeRoot()) {
-                case VARCHAR:
-                    return literal.getValueAs(String.class)
-                            .filter(
-                                    value ->
-                                            value.getBytes(StandardCharsets.UTF_8).length
-                                                    <= MAX_INDEXED_VALUE_BYTES)
-                            .map(value -> Value.newBuilder().setStringValue(value));
-                case BIGINT:
-                    Optional<Long> integer = literal.getValueAs(Long.class);
-                    if (!integer.isPresent()) {
-                        integer =
-                                literal.getValueAs(BigDecimal.class)
-                                        .map(BigDecimal::longValueExact);
-                    }
-                    return integer.map(value -> Value.newBuilder().setIntegerValue(value));
-                case BOOLEAN:
-                    return literal.getValueAs(Boolean.class)
-                            .map(value -> Value.newBuilder().setBooleanValue(value));
-                case VARBINARY:
-                    return literal.getValueAs(byte[].class)
-                            .filter(value -> value.length <= MAX_INDEXED_VALUE_BYTES)
-                            .map(
-                                    value ->
-                                            Value.newBuilder()
-                                                    .setBlobValue(ByteString.copyFrom(value)));
-                case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                    if (((LocalZonedTimestampType) type).getPrecision()
-                            < STORED_TIMESTAMP_PRECISION) {
-                        // The converter truncates a stored timestamp to the column's precision,
-                        // so Flink keeps entities a filter on the literal would not match.
-                        return Optional.empty();
-                    }
-                    return literal.getValueAs(Instant.class)
-                            .filter(DatastoreFilterPushDown::isStorable)
-                            .map(
-                                    value ->
-                                            Value.newBuilder()
-                                                    .setTimestampValue(
-                                                            com.google.protobuf.Timestamp
-                                                                    .newBuilder()
-                                                                    .setSeconds(
-                                                                            value.getEpochSecond())
-                                                                    .setNanos(value.getNano())));
-                default:
-                    // DOUBLE: the converter reads a stored integer, which a floating-point
-                    // equality does not match. CHAR and BINARY: unmeasured, as in Native mode.
-                    // ARRAY, ROW (embedded entities, geographical points, key values) and MAP are
-                    // not scalar.
+    private static Optional<Value.Builder> value(LogicalType type, Equality equality) {
+        switch (type.getTypeRoot()) {
+            case CHAR:
+            case VARCHAR:
+                // The planner presents a CHAR column bare only beside a literal of its length; the
+                // converter reads a stored string unpadded, as under VARCHAR.
+                return equality.valueAs(String.class)
+                        .filter(
+                                value ->
+                                        value.getBytes(StandardCharsets.UTF_8).length
+                                                <= MAX_INDEXED_VALUE_BYTES)
+                        .map(value -> Value.newBuilder().setStringValue(value));
+            case BIGINT:
+                return equality.longValue().map(value -> Value.newBuilder().setIntegerValue(value));
+            case DOUBLE:
+                Optional<Double> number = equality.doubleValue();
+                // The converter reads a stored integer into a DOUBLE column, and the service
+                // matches no integer to a floating-point value, so only a value no integer equals
+                // translates. NaN and the infinities are left out: what the service does with them
+                // in a filter is unmeasured.
+                return number.filter(DatastoreFilterPushDown::isFraction)
+                        .map(value -> Value.newBuilder().setDoubleValue(value));
+            case BOOLEAN:
+                return equality.valueAs(Boolean.class)
+                        .map(value -> Value.newBuilder().setBooleanValue(value));
+            case BINARY:
+            case VARBINARY:
+                return equality.valueAs(byte[].class)
+                        .filter(value -> value.length <= MAX_INDEXED_VALUE_BYTES)
+                        .map(value -> Value.newBuilder().setBlobValue(ByteString.copyFrom(value)));
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                if (((LocalZonedTimestampType) type).getPrecision() < STORED_TIMESTAMP_PRECISION) {
+                    // The converter truncates a stored timestamp to the column's precision, so
+                    // Flink keeps entities a filter on the literal would not match.
                     return Optional.empty();
-            }
-        } catch (ArithmeticException e) {
-            return Optional.empty();
+                }
+                return equality.valueAs(Instant.class)
+                        .filter(DatastoreFilterPushDown::isStorable)
+                        .map(
+                                value ->
+                                        Value.newBuilder()
+                                                .setTimestampValue(
+                                                        com.google.protobuf.Timestamp.newBuilder()
+                                                                .setSeconds(value.getEpochSecond())
+                                                                .setNanos(value.getNano())));
+            default:
+                // ARRAY and ROW (embedded entities, geographical points, key values) are not
+                // scalar.
+                return Optional.empty();
         }
+    }
+
+    /** Whether the value is finite and has a fractional part, so that no integer equals it. */
+    private static boolean isFraction(double value) {
+        return Double.isFinite(value) && value != Math.rint(value);
     }
 
     /**
@@ -269,91 +256,5 @@ final class DatastoreFilterPushDown {
         return instant.getNano() % 1_000 == 0
                 && instant.getEpochSecond() >= Timestamp.MIN_VALUE.getSeconds()
                 && instant.getEpochSecond() <= Timestamp.MAX_VALUE.getSeconds();
-    }
-
-    /** The planner's result and the filters a kind query adds. */
-    static final class State {
-        private static final State EMPTY =
-                new State(
-                        Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
-
-        private final List<ResolvedExpression> accepted;
-        private final List<ResolvedExpression> remaining;
-        private final List<Filter> equalities;
-
-        private State(
-                List<ResolvedExpression> accepted,
-                List<ResolvedExpression> remaining,
-                List<Filter> equalities) {
-            this.accepted = List.copyOf(accepted);
-            this.remaining = List.copyOf(remaining);
-            this.equalities = List.copyOf(equalities);
-        }
-
-        static State empty() {
-            return EMPTY;
-        }
-
-        /** Returns a state that pushes nothing and keeps every predicate. */
-        static State declined(List<ResolvedExpression> filters) {
-            return new State(Collections.emptyList(), filters, Collections.emptyList());
-        }
-
-        SupportsFilterPushDown.Result result() {
-            return SupportsFilterPushDown.Result.of(accepted, remaining);
-        }
-
-        /**
-         * Returns the query reading the kind under the translated filters, or {@code null} when
-         * none translated and the scan reads the kind whole.
-         */
-        @Nullable
-        Query query(String kind) {
-            if (equalities.isEmpty()) {
-                return null;
-            }
-            Filter filter =
-                    equalities.size() == 1
-                            ? equalities.get(0)
-                            : Filter.newBuilder()
-                                    .setCompositeFilter(
-                                            CompositeFilter.newBuilder()
-                                                    .setOp(CompositeFilter.Operator.AND)
-                                                    .addAllFilters(equalities))
-                                    .build();
-            return Query.newBuilder()
-                    .addKind(KindExpression.newBuilder().setName(kind))
-                    .setFilter(filter)
-                    .build();
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            State state = (State) o;
-            return accepted.equals(state.accepted)
-                    && remaining.equals(state.remaining)
-                    && equalities.equals(state.equalities);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(accepted, remaining, equalities);
-        }
-    }
-
-    private static final class Column {
-        private final String name;
-        private final LogicalType type;
-
-        private Column(String name, LogicalType type) {
-            this.name = name;
-            this.type = type;
-        }
     }
 }

@@ -30,7 +30,10 @@ import java.util.Collections;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
-/** What both lookup functions share: which keys can name a document, and the row a read makes. */
+/**
+ * What both lookup functions share: which keys can name a document, which a pushed document-id
+ * equality also asks ({@code FirestoreFilterPushDown}), and the row a read makes.
+ */
 @Internal
 final class FirestoreDocumentLookups {
 
@@ -41,10 +44,8 @@ final class FirestoreDocumentLookups {
 
     /**
      * Returns the document id a lookup key names, or {@code null} when it can name no document of
-     * the collection, so the lookup joins no row without a read: a NULL key, or one the service
-     * never stores as an id (empty, {@code .}, {@code ..}, {@code __...__}, over 1,500 bytes) or
-     * that holds {@code '/'}, which would address a document of another collection ({@code
-     * "a/sub/b"}) or this one under another id ({@code "a/"} reads {@code a}).
+     * the collection, so the lookup joins no row without a read: a NULL key, or one {@link
+     * #isStorableId(String)} refuses.
      */
     @Nullable
     static String documentId(RowData key) {
@@ -52,14 +53,22 @@ final class FirestoreDocumentLookups {
             return null;
         }
         String id = key.getString(0).toString();
-        boolean storable =
-                !id.isEmpty()
-                        && id.indexOf('/') < 0
-                        && !id.equals(".")
-                        && !id.equals("..")
-                        && !(id.length() >= 4 && id.startsWith("__") && id.endsWith("__"))
-                        && id.getBytes(StandardCharsets.UTF_8).length <= MAX_ID_BYTES;
-        return storable ? id : null;
+        return isStorableId(id) ? id : null;
+    }
+
+    /**
+     * Returns whether the id can name a document of the collection: the service never stores an id
+     * that is empty, {@code .}, {@code ..}, {@code __...__} or over 1,500 bytes, and one holding
+     * {@code '/'} would address a document of another collection ({@code "a/sub/b"}) or this one
+     * under another id ({@code "a/"} reads {@code a}).
+     */
+    static boolean isStorableId(String id) {
+        return !id.isEmpty()
+                && id.indexOf('/') < 0
+                && !id.equals(".")
+                && !id.equals("..")
+                && !(id.length() >= 4 && id.startsWith("__") && id.endsWith("__"))
+                && id.getBytes(StandardCharsets.UTF_8).length <= MAX_ID_BYTES;
     }
 
     /** Converts a read: no row for a document that does not exist, else its one row. */

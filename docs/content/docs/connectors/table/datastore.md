@@ -149,7 +149,7 @@ The read time must lie within the past hour, or on a whole minute within the pas
 
 A scan reads whole entities and converts only the columns it produces.
 A column projection is not sent to the service as a Datastore projection query, because such a query returns only the entities that hold an indexed value of every projected property, and one result per value of an array property: a column written through `sink.unindexed-columns` would read as no row at all.
-Predicates reach the service only when the table sets `scan.filter-push-down.enabled`, as [Filter pushdown](#filter-pushdown) describes.
+A key equality always reaches the service, and other predicates only when the table sets `scan.filter-push-down.enabled`, as [Filter pushdown](#filter-pushdown) describes.
 
 A scan or a lookup can read six metadata columns:
 
@@ -171,28 +171,38 @@ A table without a PRIMARY KEY reads the ids the service allocated for its rows t
 
 ### Filter pushdown
 
-A Datastore filter never matches a value excluded from indexes, so a pushed predicate would drop, without an error, every entity whose filtered property is unindexed.
+An equality on the PRIMARY KEY column (`id = 'k'`, or `id = 5` for a `BIGINT` key) is always pushed, as a filter on the entity's key in the table's namespace.
+A key is always indexed, so this filter drops no entity Flink keeps; it reads the root entity of that name or id alone, and leaves out a child entity of the same name, whose key the table could not read.
+A value that names no entity (an empty or reserved name, a name over 1,500 bytes, the id `0`) is not pushed, nor is a name that begins and ends with two underscores, such as `____`, whose handling by the service was not measured.
+
+A Datastore filter never matches a value excluded from indexes, so a pushed predicate on a property would drop, without an error, every entity whose filtered property is unindexed.
 Whether a value is indexed is set per value by whichever client wrote it: this table's `sink.unindexed-columns`, the DataStream sink, or any other writer, and a string or blob over 1,500 bytes is always unindexed.
-The table declaration cannot know which stored values are indexed, so a scan pushes no predicate by default.
+The table declaration cannot know which stored values are indexed, so a scan pushes no predicate on a property by default.
 
 `scan.filter-push-down.enabled` is the user's assertion that every property a pushed predicate filters is indexed on every entity of the kind.
 With it set, the scan hands the service the equality predicates it can evaluate, so entities that cannot match are not read, and a database bills only the entities a query returns.
-A predicate is pushed when it compares a top-level column with a literal (`s = 'x'`), or is a `BOOLEAN` column or its `NOT`, and the column is `STRING`/`VARCHAR`, `BIGINT`, `BOOLEAN`, `BYTES`/`VARBINARY`, or `TIMESTAMP_LTZ` of precision 6 or more.
+A predicate is pushed when it compares a column, or a field of a `ROW` column such as `e.x`, with a literal (`s = 'x'`), or is a `BOOLEAN` one or its `NOT`, and its type is `STRING`/`VARCHAR`/`CHAR`, `BIGINT`, `BOOLEAN`, `BYTES`/`VARBINARY`/`BINARY`, or `TIMESTAMP_LTZ` of precision 6 or more.
+A `DOUBLE` column is pushed under a finite literal with a fractional part, such as `5.5`, which no integer equals.
+Flink hands a `CHAR` or `BINARY` column to the source only beside a literal of the column's length; beside a literal of another length it arrives as a cast, which stays with Flink.
 Under `AND`, each such conjunct is pushed and the rest stay with Flink.
 
 A pushed equality may return entities Flink's predicate rejects, so Flink still evaluates every predicate on the rows read.
 An equality matches an array holding the value, and an equality on a string matches the same bytes stored as a blob; Flink reads either as a type mismatch under `type-mismatch-policy`.
+The API has no quoting for a filter's property, so the names are joined by dots: `e.x = 1` also matches a top-level property named `e.x`, and a column named `a.b` also matches the property `b` of an embedded entity `a`; Flink reads neither as the predicate's value.
+A backquote or a backslash in a name is part of the name.
 Only equalities are pushed, so the scan is still cut into key ranges and read in parallel; the service answers such a query, with a key range added, without a composite index.
 
 These are never pushed, each because the service would drop an entity Flink keeps or because the shape is outside what was measured:
 
-- the PRIMARY KEY column, which is the entity's key and not a property, metadata columns, and a column `sink.unindexed-columns` names;
-- a column whose name holds a `.` or a backquote, which the service would read as a path into an embedded entity;
-- `DOUBLE`, because the scan reads a stored integer into a `DOUBLE` column, and the service's equality on `5.0` does not match the integer `5`;
-- `CHAR` and `BINARY`, whose matching against a stored value was not measured, and `TIMESTAMP_LTZ` below precision 6, which reads a stored timestamp truncated so that Flink keeps entities an equality on the literal would not match;
+- metadata columns, and a column `sink.unindexed-columns` names, or any field of it;
+- `DOUBLE` under an integral literal, zero included, because the scan reads a stored integer into a `DOUBLE` column and the service's equality on `5.0` does not match the integer `5`, and under `NaN` or an infinity, whose matching was not measured;
+- `TIMESTAMP_LTZ` below precision 6, which reads a stored timestamp truncated so that Flink keeps entities an equality on the literal would not match;
+- a field of a geographical point or of a key value, and a `NOT NULL` field under a nullable `ROW`, which Flink takes to be never NULL;
 - `IS NULL`, because a missing property, which Flink reads as `NULL`, matches no filter;
 - a string or bytes literal over 1,500 bytes, which the service refuses in a filter, and a timestamp finer than a microsecond or outside the range the service stores;
-- inequalities, `OR`, `IN`, `LIKE`, and `ARRAY` and `ROW` columns, geographical points and key values included.
+- inequalities, `OR`, `IN`, `LIKE`, and a whole `ARRAY` or `ROW` value.
+
+`ARRAY_CONTAINS` never reaches the source: Flink 1.20 and 2.2 do not offer it for pushdown.
 
 A pushed filter also changes which entities the read checks: an entity the filter excludes is not read, so nothing in it fails the scan.
 That covers a mismatched value under `type-mismatch-policy = 'fail'` and, under either policy, a missing or mismatched value in a `NOT NULL` column, a key of the other form and a key with a parent.
@@ -313,7 +323,7 @@ All of this is streaming behaviour: in batch execution Flink 2.3 plans such a st
 | `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000` |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the entities one request asks for |
-| `scan.filter-push-down.enabled` | `false` | Push equality predicates into the scan's query, asserting that every filtered property is indexed on every entity; see [Filter pushdown](#filter-pushdown) |
+| `scan.filter-push-down.enabled` | `false` | Push equality predicates on properties into the scan's query, asserting that every filtered property is indexed on every entity; a key equality is pushed without it; see [Filter pushdown](#filter-pushdown) |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
 | `lookup.async` | `false` | Run the join as Flink's asynchronous lookup, with several reads in flight per subtask |
 | `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
@@ -352,7 +362,7 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 The table mapping, filter pushdown and the declined alternatives are recorded in [ADR-0184]({{< param BookRepo >}}/blob/main/docs/adr/0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md).
 The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, merge rows into stored entities, replace them and update their declared properties, NULL and mismatched stored values included, fail an update of a missing entity, refuse deletes into an `update` table when planned and fail the delete an upsert materialization still sends, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
 They also read every type back through a SQL scan with its metadata, read the allocated ids of a table without a PRIMARY KEY, fail and read as NULL a mismatched value under each policy, keep every entity under a column projection, and read at a configured read time.
-A scan with `scan.filter-push-down.enabled` is compared with the same predicate over a table without it, missing properties, nulls, mismatched types, arrays and near misses included, and drops an entity whose filtered value is unindexed; the gated suite runs three equalities with a key range against the service, pins the service's matching of an integer under a floating-point equality, of `-0.0`, of a blob under a string equality and of an over-long literal, and holds the same loss there.
+A scan with `scan.filter-push-down.enabled` is compared with the same predicate over a table without it, missing properties, nulls, mismatched types, arrays and near misses included, as well as fractional doubles, fixed-length columns, embedded entities and dotted names, and drops an entity whose filtered value is unindexed; a key equality without the option reads the root entity alone, in the table's namespace; the gated suite runs three equalities with a key range against the service, a key equality with a key range, unquoted dotted, backquoted and nested property names, pins the service's matching of an integer under a floating-point equality, of `-0.0`, of a blob under a string equality and of an over-long literal, and holds the same loss there.
 Blocking and asynchronous lookups join against entities by name and by numeric id, a negative one and one in a namespace included, join no row for the keys that address no entity without failing, read the metadata, filter on an additional equality key under both caches, and read the current entity whatever `scan.read-time` says; the lookup's own client is checked to return exactly the masked properties, names holding a dot, a backquote or a backslash included, and an unindexed value and an array whole.
 Geographical points and key values, with ancestors and in arrays, and a point inside a `ROW` in an array, are written through SQL, read back by the client library and the scan, and looked up, a lookup join on a key value's name included; a key value in another namespace fails the scan or reads as NULL by the policy, and an incomplete one fails the job.
 The gated suite runs the same write, scan and lookup against the service, and pins its answer to a key value outside the entity's partition: it stores one in another namespace and refuses with `INVALID_ARGUMENT` one in another database and one naming a project that does not exist, both of which the emulator stores.

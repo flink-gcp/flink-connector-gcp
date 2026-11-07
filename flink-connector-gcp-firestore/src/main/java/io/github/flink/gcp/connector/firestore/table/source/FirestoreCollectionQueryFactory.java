@@ -65,7 +65,7 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
     public Query create(Firestore firestore) {
         Query query = firestore.collection(collection);
         for (FieldEquality equality : equalities) {
-            query = query.whereEqualTo(FieldPath.of(equality.field()), equality.value());
+            query = query.whereEqualTo(equality.path(), equality.value());
         }
         FieldPath[] paths = new FieldPath[fields.length];
         for (int i = 0; i < fields.length; i++) {

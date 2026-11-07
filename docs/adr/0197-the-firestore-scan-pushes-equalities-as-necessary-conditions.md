@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0197: The Firestore scan pushes equalities as necessary conditions
 
 - Status: Accepted
-- Date: 2026-11-05 (client library facts read in google-cloud-firestore 3.50.0; service behavior measured 2026-11-05 against ephemeral Standard- and Enterprise-edition Native-mode databases, one run each, and against the pinned emulator image)
-- Issues: [#1830], [#1829] (the pushdown umbrella), [#1838] (LIMIT, which depends on this record)
-- Modules: firestore (`io.github.flink.gcp.connector.firestore.table.source`)
+- Date: 2026-11-05 (client library facts read in google-cloud-firestore 3.50.0; service behavior measured 2026-11-05 against ephemeral Standard- and Enterprise-edition Native-mode databases, one run each, and against the pinned emulator image); revised 2026-11-07 by [#2066] (the document id, fields of `ROW` columns, `CHAR` and `BINARY`, and the matcher shared with Datastore mode)
+- Issues: [#1830], [#1829] (the pushdown umbrella), [#1838] (LIMIT, which depends on this record), [#2066]
+- Modules: firestore (`io.github.flink.gcp.connector.firestore.table.source`, `firestore.common.table`)
 - Current behavior: `docs/content/docs/connectors/table/firestore.md` § Filter pushdown
 
 ## Context
@@ -60,17 +60,35 @@ The planner probe of the source (`ClientQueryPlanner`) runs the scan's query wit
 - **A pushed equality is a necessary condition, and every predicate stays a Flink residual** (owner's choice, 2026-11-05), the shape the BigQuery scan takes. The numeric rows of the table above show the service matching more than Flink keeps; an exact contract would have to prove each column type exact, and for `BIGINT` and `DOUBLE` it is not.
 - **Pushed**: `column = literal` either way round, a bare `BOOLEAN` column (`= TRUE`) and its `NOT` (`= FALSE`), on a top-level physical column that is `STRING`/`VARCHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY`, or `TIMESTAMP_LTZ` of precision 6 or more; under `AND`, every conjunct that translates. Each is a `whereEqualTo` on `FieldPath.of(name)`, so a name containing a dot filters that field, as the projection selects it.
 - **Declined**, each for a document the service would drop while Flink keeps it, or for a shape outside the measurements:
-  - the PRIMARY KEY column, which is the document id and not a field;
+  - the PRIMARY KEY column, which is the document id and not a field (pushed as a document-id filter since [#2066]'s revision below);
   - a column `reference-field-paths` names, because a reference never equals a string;
-  - `CHAR` and `BINARY`: the planner presented a `CHAR` comparison as a cast (`=(CAST(c AS VARCHAR(3)), 'ab')`), not a column reference, and the declined branch keeps it that way should a later planner present the column itself, because no measurement covers fixed-length values;
+  - `CHAR` and `BINARY`: the planner presented a `CHAR` comparison as a cast (`=(CAST(c AS VARCHAR(3)), 'ab')`), not a column reference, and the declined branch keeps it that way should a later planner present the column itself, because no measurement covers fixed-length values (pushed beside a literal of the column's length since [#2066]'s revision below);
   - `TIMESTAMP_LTZ` below precision 6, because the converter truncates the stored microseconds to the column's precision, so Flink keeps documents an equality on the literal would not match;
   - `IS NULL`, because a missing field matches no filter;
   - a string or bytes literal over 1,500 bytes: a Standard-edition database considers only that prefix of a value in a query, while an Enterprise-edition one considers the whole value (Google's data-types page), and no longer literal was measured; a timestamp outside the range the service represents;
-  - inequalities, `OR`, `IN`, and `ARRAY`, `MAP` and `ROW` columns, which [#1830] leaves for later and whose matching differs by edition where measured.
+  - inequalities, `OR`, `IN`, and `ARRAY`, `MAP` and `ROW` columns, which [#1830] leaves for later and whose matching differs by edition where measured (a field of a `ROW` column is pushed since [#2066]'s revision below).
 - **Both `type-mismatch-policy` values push** (owner's choice, 2026-11-05). A document whose value has another type matches no equality, so under `fail` a mismatch in a document the filter excludes no longer fails the scan; nor, under either policy, does a `NOT NULL` column missing from a document the filter excludes, because a missing field matches no equality either. The docs state that type checking covers the documents read, which projection pushdown already made true of the columns read.
 - **A collection-group scan pushes nothing** (owner's choice, 2026-11-05): a Standard-edition database refuses the filtered query without a collection-group index it does not create, and `PartitionQuery` would still partition the unfiltered group.
 
 `FirestoreTableFilterPushDownPlanTest` pins the pushed and declined shapes and that the residual stays; `FirestoreTableFilterPushDownITCase` compares each pushed predicate's rows with the same predicate over a collection-group table of the same documents, which pushes nothing, including missing fields, nulls, mismatched types, integers under `DOUBLE`, doubles under `BIGINT` and `-0.0`, checks that the unpushed side keeps the expected rows for every predicate, and holds the `fail`-policy consequence; `FirestoreTableFilterPushDownRealGcpITCase` holds two equalities on a Standard-edition collection, the unfiltered collection-group read there, and, after checking that each is pushed, the Enterprise 32-bit integer match and the refusal of a subtype-0 BSON binary.
+
+### Wider equalities ([#2066], 2026-11-07)
+
+[#2066] asked which of the shapes declined above keep the necessary-condition contract, and moved the search for equalities into `EqualityMatcher` in `firestore.common.table`, which the Datastore-mode scan shares (ADR-0170's refinement, ADR-0184's revision); each mode keeps its own column checks and value mapping.
+The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, the plan tests passing on 1.20.5, 2.2.1 and 2.3.0, and the service's on the pinned emulator once on 2026-11-07 and in `FirestoreTableFilterPushDownRealGcpITCase` against an ephemeral Standard-edition database the same day.
+
+| Shape | What was measured | Decision |
+|---|---|---|
+| `id = 'k'` on the PRIMARY KEY | `whereEqualTo(FieldPath.documentId(), "k")` matched that document alone on the emulator and the Standard edition; the client library refused an empty id and a path (`a/sub/a`) before sending, and the emulator refused `__x__` and `.` with `INVALID_ARGUMENT` | pushed, unless the value cannot be an id in the collection (`FirestoreDocumentLookups.isStorableId`, the lookup's own test) |
+| `e.x = 1` on a field of a `ROW` column | the planner hands it to `applyFilters` as a `NestedFieldReferenceExpression`; `FieldPath.of("e", "x")` matched the map's field, `1.0` included, and neither a top-level field named `e.x` nor a list of maps | pushed, unless a geographical point lies on the path or `reference-field-paths` names the field |
+| a `NOT NULL` field under a nullable `ROW` | Flink takes such a field to be never NULL ([#2050]), so its comparison may evaluate where the document has no value | declined, as BigQuery's `NestedFieldPaths.restrictableLeaf` declines it |
+| `c = 'abc'` on `CHAR(3)`, `bin = x'0102'` on `BINARY(2)` | the planner presents the column bare only beside a literal of its length, and a cast otherwise; the converter reads a stored value unpadded and untruncated; the emulator ITs found Flink's `c = 'ab '` keeping `"ab "` and not `"ab"` | pushed as `VARCHAR` and `VARBINARY` are |
+| `ARRAY_CONTAINS(arr, 'x')` | never reaches `applyFilters` on Flink 1.20.5 or 2.2.1 | nothing to push; the service's `array-contains` (matching `[5]` and `[5.0]`, not a scalar `5`) stays unused |
+
+A name holding a dot or a backquote was already one literal segment of a `FieldPath`, so [#2066]'s quoting item asks nothing of Native mode.
+The id equality adds no ordering, so a cursor still resumes the query by document name.
+
+`FirestoreTableFilterPushDownPlanTest` pins the new pushed and declined shapes, `EqualityMatcherTest` the shared search; `FirestoreTableFilterPushDownITCase` compares each new shape with its oracle, fixed-length near misses and a map holding a double, an array, a non-map value, a list of maps and a dotted top-level field included, and the id with a filter on the document path; the gated class holds an id and a map field's equality on a Standard-edition collection.
 
 ## Consequences
 
@@ -91,3 +109,5 @@ The planner probe of the source (`ClientQueryPlanner`) runs the scan's query wit
 [#1829]: https://github.com/flink-gcp/flink-connector-gcp/issues/1829
 [#1830]: https://github.com/flink-gcp/flink-connector-gcp/issues/1830
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838
+[#2050]: https://github.com/flink-gcp/flink-connector-gcp/issues/2050
+[#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066

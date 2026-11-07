@@ -9,7 +9,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 - **One module, two package roots**: `connector.firestore` (Native mode, `firestore.v1`) and
   `connector.datastore` (Datastore mode, `datastore.v1`). They share nothing beyond
-  `flink-connector-gcp-base`; extract a helper only when its second consumer exists. Each root
+  `flink-connector-gcp-base` and `connector.firestore.common` (ADR-0170's #2066 refinement:
+  `@Internal`, no `firestore.v1`/`datastore.v1` types; owner 2026-11-07, not base, not a third
+  root); extract a helper there only when its second consumer exists. Each root
   carries its own `CrossVersionSink` under `src/main/java-flink1` / `java-flink2`.
 - The design comment and implementation order on #355 settled the sub-issues #1540–#1546; read
   them before starting one. CDC is deferred in ADR-0170 and an exactly-once mode on #355, each
@@ -184,10 +186,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   so never remove a predicate from the residual, and never push a shape whose filter could drop a
   document Flink keeps. A new type or operator needs its matching measured on the emulator, a
   Standard- and an Enterprise-edition database (the editions differ for `!=`) before it is pushed.
-- Declined on purpose: the key column, reference-marked columns, CHAR/BINARY, TIMESTAMP_LTZ below
-  precision 6 (the converter truncates), `IS NULL` (a missing field matches nothing), strings or
-  bytes over 1,500 bytes, inequalities, OR/IN, and collection-group scans (Standard needs a
-  collection-group index; `PartitionQuery` takes no filter).
+- **The search for equalities is shared** (`firestore.common.table.EqualityMatcher`, #2066): `AND`
+  flattening, either-way-round `=`, bare `BOOLEAN`/`NOT`, and nested paths, which it refuses below
+  a nullable `ROW` for a `NOT NULL` field. Column checks and value mapping stay per mode; a shape
+  change that both modes take goes in the matcher, and both plan tests pin it.
+- Pushed since #2066: the document id (`FieldPath.documentId()`, only a value
+  `FirestoreDocumentLookups.isStorableId` accepts), `ROW` fields as `FieldPath.of(segments)`
+  (never through a geo point, never a reference-marked path), and CHAR/BINARY, which the planner
+  presents bare only beside a literal of the column's length.
+- Declined on purpose: reference-marked columns, TIMESTAMP_LTZ below precision 6 (the converter
+  truncates), `IS NULL` (a missing field matches nothing), strings or bytes over 1,500 bytes,
+  inequalities, OR/IN (#2066's undecided list), and collection-group scans (Standard needs a
+  collection-group index; `PartitionQuery` takes no filter). `ARRAY_CONTAINS` never reaches
+  `applyFilters` on Flink 1.20.5 or 2.2.1.
 - Both `type-mismatch-policy` values push; a mismatch in an excluded document does not fail the scan.
 - `FirestoreTableFilterPushDownITCase` compares against a collection-group table of the same
   documents, which pushes nothing; keep that oracle when adding shapes.
@@ -398,8 +409,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (default `false`) is the user's assertion that filtered properties are indexed, because a
   Datastore filter never matches an unindexed value. With it, `DatastoreFilterPushDown` pushes
   equalities as necessary conditions (every predicate stays residual, ADR-0197's shape) and only
-  `EQUAL`, so the query stays splittable. `DOUBLE` is declined: `== 5.0` misses a stored integer
-  the converter reads as `5.0`. Do not push inequalities, `IN` or `OR`: each makes one split.
+  `EQUAL`, so the query stays splittable. `DOUBLE` is pushed only under a finite fractional
+  literal: `== 5.0` misses a stored integer the converter reads as `5.0`. Do not push
+  inequalities, `IN` or `OR` without the owner's decision on #2066's list: each makes one split.
+- **A key equality is pushed without the option** (#2066): `__key__ ==` a key built by
+  `DatastoreLookupKeys` (project, database, namespace; the service refuses another namespace).
+  Property paths are joined by dots unquoted: `PropertyReference` has no quoting, and a dotted
+  name matches both the property of that name and the embedded path (emulator and service), a
+  superset the residual removes. Never route a filter's property through `PropertyPaths`.
 - **Metadata** `key-name`/`key-id`/`version`/`create-time`/`update-time`/`read-time` reach the
   deserializer through the `@Internal` `EntityMetadata` and
   `DatastoreEntityMetadataDeserializationSchema` path (ADR-0177 revision); the public SPI is

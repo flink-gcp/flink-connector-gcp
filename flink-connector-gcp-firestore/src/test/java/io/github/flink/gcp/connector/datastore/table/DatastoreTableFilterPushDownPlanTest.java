@@ -16,7 +16,10 @@
 
 package io.github.flink.gcp.connector.datastore.table;
 
+import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
+import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.TableDescriptor;
 import org.apache.flink.table.api.TableEnvironment;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -28,9 +31,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Pins which predicates the {@code datastore} scan pushes into its query with {@code
- * scan.filter-push-down.enabled}, that it pushes none without it, and that every predicate stays a
- * residual Flink evaluates ({@code docs/adr/0184}). Plans only; the rows are {@code
- * DatastoreTableFilterPushDownITCase}'s.
+ * scan.filter-push-down.enabled}, that it pushes only a key equality without it, and that every
+ * predicate stays a residual Flink evaluates ({@code docs/adr/0184}). Plans only; the rows are
+ * {@code DatastoreTableFilterPushDownITCase}'s.
  */
 class DatastoreTableFilterPushDownPlanTest {
 
@@ -38,13 +41,15 @@ class DatastoreTableFilterPushDownPlanTest {
             "id STRING, s STRING, n BIGINT, d DOUBLE, b BOOLEAN, y BYTES, ts TIMESTAMP_LTZ(6),"
                     + " ts9 TIMESTAMP_LTZ(9), ts5 TIMESTAMP_LTZ(5), c CHAR(3), bin BINARY(2),"
                     + " u STRING, `a.b` STRING, `a``b` STRING, arr ARRAY<STRING>,"
-                    + " e ROW<x BIGINT>, loc ROW<latitude DOUBLE, longitude DOUBLE>,"
-                    + " owner ROW<kind STRING, name STRING, id BIGINT>,"
+                    + " e ROW<x BIGINT, flag BOOLEAN, `y.z` ROW<w STRING>>,"
+                    + " loc ROW<latitude DOUBLE, longitude DOUBLE>,"
+                    + " owner ROW<kind STRING, name STRING, id BIGINT>, ue ROW<x BIGINT>,"
+                    + " `a\\b` STRING,"
                     + " keyName STRING METADATA FROM 'key-name' VIRTUAL";
 
     private static final String COMMON =
             "'connector' = 'datastore', 'project' = 'p', 'kind' = 'K',"
-                    + " 'sink.unindexed-columns' = 'u', 'geo-point-field-paths' = 'loc',"
+                    + " 'sink.unindexed-columns' = 'u;ue', 'geo-point-field-paths' = 'loc',"
                     + " 'reference-field-paths' = 'owner'";
 
     private TableEnvironment table;
@@ -64,6 +69,9 @@ class DatastoreTableFilterPushDownPlanTest {
                         + ", PRIMARY KEY (id) NOT ENFORCED) WITH ("
                         + COMMON
                         + ")");
+        table.executeSql(
+                "CREATE TABLE numbered (id BIGINT, s STRING, PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                        + "'connector' = 'datastore', 'project' = 'p', 'kind' = 'K')");
     }
 
     private String scan(String query) {
@@ -86,7 +94,25 @@ class DatastoreTableFilterPushDownPlanTest {
                 "b = FALSE",
                 "y = x'0102'",
                 "ts = TO_TIMESTAMP_LTZ(1000, 3)",
-                "ts9 = TO_TIMESTAMP_LTZ(1000, 3)"
+                "ts9 = TO_TIMESTAMP_LTZ(1000, 3)",
+                "id = 'k'",
+                // A literal no stored integer equals, which the converter could read as one.
+                "d = 5.5",
+                "d = -0.5",
+                // A fixed-length column beside a literal of its length, which the planner
+                // presents without a cast.
+                "c = 'abc'",
+                "bin = x'0102'",
+                // A name holding a dot reads as a path, which also matches the property of that
+                // name; a backquote is no quoting character in a filter's property.
+                "`a.b` = 'q'",
+                "`a``b` = 'q'",
+                "`a\\b` = 'q'",
+                // A field of an embedded entity, as a property path.
+                "e.x = 1",
+                "e.flag",
+                "NOT e.flag",
+                "e.`y.z`.w = 'q'",
             })
     void anEqualityOnAScalarColumnIsPushedAndStaysAResidual(String predicate) {
         String plan = scan("SELECT id FROM f WHERE " + predicate);
@@ -95,14 +121,8 @@ class DatastoreTableFilterPushDownPlanTest {
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "s = 'x'",
-                "n = 5",
-                "b",
-                "s = 'x' AND n = 5",
-            })
-    void withoutTheOptionNothingIsPushed(String predicate) {
+    @ValueSource(strings = {"s = 'x'", "n = 5", "b", "s = 'x' AND n = 5", "e.x = 1"})
+    void withoutTheOptionNoPropertyIsPushed(String predicate) {
         String plan = scan("SELECT id FROM off WHERE " + predicate);
 
         // Flink 2.4 prints a declined result as an empty filter=[]; earlier versions print none.
@@ -112,19 +132,25 @@ class DatastoreTableFilterPushDownPlanTest {
     @ParameterizedTest
     @ValueSource(
             strings = {
-                // The key is not a property.
-                "id = 'k'",
+                // A key name no root entity of the kind has.
+                "id = ''",
+                "id = '__k__'",
+                // Four underscores: the emulator stores the name, the service is unmeasured.
+                "id = '____'",
+                "id = REPEAT('x', 1501)",
                 // Written excluded from indexes, so no filter on it can match.
                 "u = 'x'",
-                // The service would read the name as a path into an embedded entity.
-                "`a.b` = 'q'",
-                "`a``b` = 'q'",
+                "ue.x = 1",
                 // The converter reads a stored integer into DOUBLE, which 5.0 does not match.
-                "d = 5.5",
                 "d = 5",
-                // Fixed-length types, unmeasured.
+                "d = 0.0",
+                "d = -0.0",
+                // A geographical point and a key value are each one value, not an entity.
+                "loc.latitude = 1.5",
+                "owner.name = 'x'",
+                // The planner presents a fixed-length column beside a shorter literal as a cast.
                 "c = 'ab'",
-                "bin = x'0102'",
+                "bin = x'01'",
                 // The converter truncates a stored timestamp below the service's precision.
                 "ts5 = TO_TIMESTAMP_LTZ(1000, 3)",
                 // A missing property reads as NULL and matches no filter.
@@ -136,8 +162,8 @@ class DatastoreTableFilterPushDownPlanTest {
                 "s IN ('x', 'y')",
                 "n = CAST(d AS BIGINT)",
                 "arr = ARRAY['x']",
-                "e = ROW(1)",
-                "e.x = 1",
+                // The planner presents no ARRAY_CONTAINS to a source.
+                "ARRAY_CONTAINS(arr, 'x')",
                 "s LIKE 'x%'",
                 "keyName = 'k'",
                 // Past the 1,500 bytes the service indexes of a value.
@@ -162,10 +188,32 @@ class DatastoreTableFilterPushDownPlanTest {
                 "s = REPEAT('é', 750)",
                 "ts = TO_TIMESTAMP_LTZ(-62135596800, 0)",
                 "ts = TO_TIMESTAMP_LTZ(253402300799, 0)",
-                "ts9 = CAST(TIMESTAMP '1970-01-01 00:00:01.000001' AS TIMESTAMP_LTZ(9))"
+                "ts9 = CAST(TIMESTAMP '1970-01-01 00:00:01.000001' AS TIMESTAMP_LTZ(9))",
+                "id = REPEAT('x', 1500)",
+                "id = '___'"
             })
     void theBoundaryValuesArePushed(String predicate) {
         assertThat(scan("SELECT id FROM f WHERE " + predicate)).containsPattern("filter=\\[[^\\]]");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"id = 'k'", "'k' = id", "id = 'k' AND s = 'x'"})
+    void aKeyEqualityIsPushedWithoutTheOption(String predicate) {
+        String plan = scan("SELECT id FROM off WHERE " + predicate);
+
+        assertThat(plan)
+                .containsPattern("filter=\\[[^\\]]*\\bid\\b")
+                .doesNotContainPattern("filter=\\[[^\\]]*\\bs\\b")
+                .contains("where=[");
+    }
+
+    @Test
+    void anIdKeyEqualityIsPushedUnlessTheIdNamesNoEntity() {
+        assertThat(scan("SELECT s FROM numbered WHERE id = 5")).containsPattern("filter=\\[[^\\]]");
+        assertThat(scan("SELECT s FROM numbered WHERE id = -5"))
+                .containsPattern("filter=\\[[^\\]]");
+        assertThat(scan("SELECT s FROM numbered WHERE id = 0"))
+                .doesNotContainPattern("filter=\\[[^\\]]");
     }
 
     @Test
@@ -174,6 +222,43 @@ class DatastoreTableFilterPushDownPlanTest {
                 .containsPattern("filter=\\[[^\\]]");
         assertThat(scan("SELECT id FROM f WHERE y = x'" + "00".repeat(1501) + "'"))
                 .doesNotContainPattern("filter=\\[[^\\]]");
+    }
+
+    @Test
+    void aNotNullFieldIsPushedOnlyWhereNoNullableRowLiesAboveIt() {
+        // Flink 1.20.5 drops a ROW field's NOT NULL from DDL, so the table is built from data
+        // types, which every supported version keeps. Flink takes loose.a to be never NULL,
+        // although a NULL loose makes it so; held.a is never NULL in Flink or in the entity.
+        table.createTemporaryTable(
+                "nested",
+                TableDescriptor.forConnector("datastore")
+                        .schema(
+                                Schema.newBuilder()
+                                        .column("id", DataTypes.STRING().notNull())
+                                        .column(
+                                                "loose",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD(
+                                                                "a", DataTypes.BIGINT().notNull())))
+                                        .column(
+                                                "held",
+                                                DataTypes.ROW(
+                                                                DataTypes.FIELD(
+                                                                        "a",
+                                                                        DataTypes.BIGINT()
+                                                                                .notNull()))
+                                                        .notNull())
+                                        .primaryKey("id")
+                                        .build())
+                        .option("project", "p")
+                        .option("kind", "K")
+                        .option("scan.filter-push-down.enabled", "true")
+                        .build());
+
+        assertThat(scan("SELECT id FROM nested WHERE loose.a = 1"))
+                .doesNotContainPattern("filter=\\[[^\\]]");
+        assertThat(scan("SELECT id FROM nested WHERE held.a = 1"))
+                .containsPattern("filter=\\[[^\\]]");
     }
 
     @Test

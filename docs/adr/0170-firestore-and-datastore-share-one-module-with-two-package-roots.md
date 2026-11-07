@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-09-26 (design settled on [#355]); recorded with the first implementation, [#1540];
-  change-stream reopen conditions revised by [#1832] (2026-10-18)
-- Issues: [#355], [#1540], [#1832]
+  change-stream reopen conditions revised by [#1832] (2026-10-18); the first shared helper's package
+  recorded by [#2066] (2026-11-07)
+- Issues: [#355], [#1540], [#1832], [#2066]
 - Modules: firestore
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Scope and provenance
 
@@ -69,6 +70,18 @@ The `mongodb-to-mongodb` template in Google's [DataflowTemplates] reads MongoDB 
 
 Status last checked on 2026-10-18: Change Streams are in Preview, and `google/firestore/v1/firestore.proto` has no change-stream RPC.
 
+### The shared package ([#2066], 2026-11-07)
+
+The decision above lets a helper move into a shared place once it has a second consumer, without saying where.
+The first such helper is the Table API scans' search for pushable equalities (`EqualityMatcher` and `PushedFilters`), which the Native-mode and the Datastore-mode filter pushdowns had each written out (ADR-0197, ADR-0184).
+Both consumers are in this module, so the helper does not go into `flink-connector-gcp-base`, which every connector builds against.
+
+**Code both roots share lives under `io.github.flink.gcp.connector.firestore.common`**, here `firestore.common.table`, and is `@Internal` (owner's choice, 2026-11-07).
+"Firestore" names the product, of which Datastore mode is one mode, so `common` beside the Native root's own packages reads as neither mode's; nothing in it may depend on `firestore.v1` or `datastore.v1` types.
+The package needs no change to the uber jar's relocations or to its packaging test, which leave the `connector.firestore` root unrelocated.
+A third root, such as `connector.firestorecommon`, was declined: it would have needed either a relocation or an entry in that test, and an ADR-0055 product name that names no product.
+A package under the Datastore root, where `PropertyPaths` lives because only Datastore mode uses it, was declined because the Native root would then import from the Datastore one.
+
 ## Consequences
 
 - One uber jar serves both surfaces, so the module adds one shaded artifact per version line to each release; a second module would add two, and the uber jars are the bulk of what a release publishes.
@@ -86,5 +99,6 @@ Status last checked on 2026-10-18: Change Streams are in Preview, and `google/fi
 [#1589]: https://github.com/flink-gcp/flink-connector-gcp/issues/1589
 [#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
 [#1832]: https://github.com/flink-gcp/flink-connector-gcp/issues/1832
+[#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066
 [apache/beam#23551]: https://github.com/apache/beam/issues/23551
 [DataflowTemplates]: https://github.com/GoogleCloudPlatform/DataflowTemplates/tree/main/v2/mongodb-to-mongodb

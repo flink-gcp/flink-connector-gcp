@@ -25,8 +25,10 @@ limitations under the License.
   [#1689] (`scan.read-time` truncated to the microsecond), and 2026-10-11 by [#1717] (the metadata
   kinds' refusal kept), [#1730] (geographical points and key values), [#1729] (`sink.write-mode`,
   a merge by default) and [#1743] (the `update` write mode), 2026-10-12 by [#1719] (the scan
-  reads a statistics kind), and 2026-11-07 by [#1831] (opt-in filter pushdown)
-- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829]
+  reads a statistics kind), and 2026-11-07 by [#1831] (opt-in filter pushdown) and [#2066]
+  (key equalities without the option, `ROW` fields, fractional `DOUBLE`, dotted names, `CHAR`
+  and `BINARY`)
+- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829], [#2066]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`, `datastore.table`, `datastore.table.sink`, `datastore.table.source`, `datastore.source.batch`, `datastore.source.serializer`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/datastore.md`
 
@@ -135,20 +137,48 @@ The client library facts are read in google-cloud-datastore and datastore-v1-pro
 | a string literal over 1,500 bytes | refused, `INVALID_ARGUMENT: The value of property "f" is longer than 1500 bytes.` | |
 | an indexed value excluded from indexes, or one such array element | nothing | **Flink keeps it** |
 
-- **The scan pushes nothing unless `scan.filter-push-down.enabled` is set** (owner's choice, 2026-11-07, over declining pushdown in this record). The option, `false` by default, is the user's assertion that every property a pushed predicate filters is indexed on every entity of the kind; the docs state the loss it accepts. A decline would have left a selective SQL scan reading, and paying for, the whole kind, with the DataStream source's `gqlQuery` as the only way to filter in the service.
+- **The scan pushes nothing unless `scan.filter-push-down.enabled` is set** (owner's choice, 2026-11-07, over declining pushdown in this record; a key equality is pushed without it since [#2066]'s revision below). The option, `false` by default, is the user's assertion that every property a pushed predicate filters is indexed on every entity of the kind; the docs state the loss it accepts. A decline would have left a selective SQL scan reading, and paying for, the whole kind, with the DataStream source's `gqlQuery` as the only way to filter in the service.
 - **With the option, a pushed equality is a necessary condition and every predicate stays a Flink residual**, as in ADR-0197. Pushed: `column = literal` either way round, a bare `BOOLEAN` column and its `NOT`, on a top-level physical column that is `STRING`/`VARCHAR`, `BIGINT`, `BOOLEAN`, `BYTES`/`VARBINARY`, or `TIMESTAMP_LTZ` of precision 6 or more; under `AND`, every conjunct that translates. Each becomes an `EQUAL` property filter of the kind query, and several are combined under `AND`.
 - **Only equalities are pushed, so the scan keeps its key ranges**: `SplittableQueries` cuts a query that filters with `EQUAL` under `AND`, and the service answered three equalities with both `__key__` bounds ANDed on, one split's query, without a composite index. The client library's splitter samples `__scatter__` keys from the kind alone (`QuerySplitterImpl.createScatterQuery` copies only the kind), so sampling needs no index either.
 - **Declined**, each for an entity the service would drop while Flink keeps it, or for a shape outside the measurements:
-  - the PRIMARY KEY column, which is the key and not a property, metadata columns, and a column `sink.unindexed-columns` names, whose values this table writes excluded from indexes;
-  - a column whose name holds a `.` or a backquote, which `PropertyReference` would read as a path;
-  - `DOUBLE`, for the integer the table above shows it missing and for `-0.0`;
-  - `CHAR` and `BINARY`, whose matching is unmeasured, and `TIMESTAMP_LTZ` below precision 6, which the converter truncates, as in ADR-0197;
+  - the PRIMARY KEY column, which is the key and not a property (pushed as a `__key__` filter since [#2066]'s revision below), metadata columns, and a column `sink.unindexed-columns` names, whose values this table writes excluded from indexes;
+  - a column whose name holds a `.` or a backquote, which `PropertyReference` would read as a path (pushed since [#2066]'s revision below, which measured that reading as a superset);
+  - `DOUBLE`, for the integer the table above shows it missing and for `-0.0` (a finite fractional literal is pushed since [#2066]'s revision below);
+  - `CHAR` and `BINARY`, whose matching is unmeasured (pushed since [#2066]'s revision below), and `TIMESTAMP_LTZ` below precision 6, which the converter truncates, as in ADR-0197;
   - `IS NULL`, because a missing property matches no filter;
   - a string or bytes literal over 1,500 bytes, which the service refuses; a timestamp finer than a microsecond, which equals no stored value, or outside the range the service stores;
   - inequalities, `OR` and `IN`, which would read the query as one split, and `ARRAY` and `ROW` columns, geographical points and key values included.
 - **Both `type-mismatch-policy` values push**, as in ADR-0197. An entity the filter excludes is not read, so nothing in it fails the scan: a mismatch under `fail`, and under either policy a missing or mismatched value in a `NOT NULL` column, a key of the other form, or a key with a parent.
 
-`DatastoreTableFilterPushDownPlanTest` pins the pushed and declined shapes, that a table without the option pushes nothing, and that the residual stays; `DatastoreTableFilterPushDownITCase` compares each pushed predicate's rows with the same predicate over a table of the same kind without the option, including missing properties, nulls, mismatched types, arrays and near misses, under a split count the builder refuses for a query it cannot split, checks the rows the unpushed side keeps, pins the missed integer behind declining `DOUBLE`, holds the `fail`-policy consequence and drops an entity whose filtered value is unindexed; `DatastoreTableRealGcpITCase` holds the key-range query and that loss against the service.
+`DatastoreTableFilterPushDownPlanTest` pins the pushed and declined shapes, that a table without the option pushes nothing (since [#2066], no equality on a property), and that the residual stays; `DatastoreTableFilterPushDownITCase` compares each pushed predicate's rows with the same predicate over a table of the same kind without the option, including missing properties, nulls, mismatched types, arrays and near misses, under a split count the builder refuses for a query it cannot split, checks the rows the unpushed side keeps, pins the missed integer behind declining `DOUBLE`, holds the `fail`-policy consequence and drops an entity whose filtered value is unindexed; `DatastoreTableRealGcpITCase` holds the key-range query and that loss against the service.
+
+### Key equalities and wider shapes ([#2066], 2026-11-07)
+
+[#2066] asked which further equalities keep the necessary-condition contract, and moved the search for them into `EqualityMatcher`, shared with the Native-mode scan (ADR-0170's refinement, ADR-0197's revision).
+The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, and the plan tests pass on 1.20.5, 2.2.1 and 2.3.0; the emulator was measured once on 2026-11-07, and `DatastoreTableRealGcpITCase` (`aKeyEqualityAndUnquotedPropertyPathsMatchAsOnTheEmulator`) found the service answering each service-side row below as the emulator did, against the suite's Datastore-mode database the same day.
+
+| Filter | Matched (emulator and service) |
+|---|---|
+| `__key__ == Key(K, "k")` | the root entity `k` alone, not a child entity named `k` |
+| that, `s == 'x'`, `__key__ >= b` and `__key__ < y` | `k`, without a composite index |
+| `e.x == 1`, `a.b == 'q'` and a key range | the entities in the range that match both, without a composite index |
+| `__key__ ==` a key of another namespace than the query's | refused (emulator), `INVALID_ARGUMENT` |
+| `e.x == 1` | the embedded entity's `x` and a top-level property named `e.x`; on the emulator, not a list of embedded entities |
+| `a.b == 'q'` | a property named `a.b` and an embedded entity `a`'s `b` |
+| `` `a.b` == 'q' `` | nothing: a filter's property has no quoting |
+| ``a`b == 'q'``, `a\b == 'q'` | the property of exactly that name |
+| `d == 5.5` (emulator) | the double and an array holding it, no integer |
+
+- **An equality on the PRIMARY KEY column is pushed whatever `scan.filter-push-down.enabled` says**, as an `EQUAL` filter on `__key__` with a key in the table's project, database and namespace (`DatastoreLookupKeys`, the lookup's key builder). A key is always indexed, so the option's assertion is not needed, and an `EQUAL` filter keeps the query splittable. A name or id that names no entity (empty, reserved, over 1,500 bytes, the id `0`) is not pushed, nor is a name that begins and ends with two underscores (`____`, which the emulator stores and `DatastoreTableSchema.isReserved` lets through; the service is unmeasured). The filter leaves out a child entity of the same name and a key of the other form, which the table cannot read: a scan that failed on such an entity now completes when its predicate pins the key, a consequence of the same kind as the mismatches ADR-0197 lets a filter exclude.
+- **With the option, these also push**:
+  - a field of a `ROW` column, as the property path of its names joined by dots, unless `sink.unindexed-columns` names the column or a geographical point or a key value lies on the path. A `NOT NULL` field under a nullable `ROW` is declined, as in ADR-0197's revision;
+  - a column whose name holds a `.`, a backquote or a backslash, under its plain name. `PropertyReference` takes no quoting, so a dotted name also matches the path it spells, which only adds entities Flink's residual rejects;
+  - `DOUBLE` under a finite literal with a fractional part, which no stored integer the converter reads into the column can equal. An integral literal, zero included, stays declined; `NaN` and the infinities are declined too, their matching in a filter unmeasured;
+  - `CHAR` and `BINARY` beside a literal of the column's length, the only shape the planner presents without a cast; the converter reads a stored value unpadded, and Flink's `c = 'ab '` keeps `"ab "` and not `"ab"`.
+- **`ARRAY_CONTAINS` never reaches `applyFilters`** on Flink 1.20.5 or 2.2.1, so the service's matching of an equality against array elements stays unused.
+- **Still to decide** ([#2066] lists them apart): inequalities, `IN`, `OR`, `IS NOT NULL` and a coarse `TIMESTAMP_LTZ` as a range would each make the query one split.
+
+`DatastoreTableFilterPushDownPlanTest` pins the new pushed and declined shapes and a key equality on a table without the option; `DatastoreTableFilterPushDownITCase` compares each new shape with the table without the option, and a key equality, by name and by id, with the expected root entity, near-miss names in the default and the table's namespace, a child entity and a name under a numeric key included, and holds that the unfiltered scan fails on the child entity and on that name.
 
 ## Consequences
 
@@ -156,7 +186,7 @@ The client library facts are read in google-cloud-datastore and datastore-v1-pro
 - A table cannot express an ancestor path of its own rows, a `MAP` or a `DECIMAL`; each is additive later. A key value and a geographical point were added by [#1730], and a key value in another namespace reads as a mismatch until a `namespace` field is added.
 - An over-long value in an indexed column fails the job, with the service's message naming the property; the docs point to `sink.unindexed-columns`.
 - The scan ([#1652]) and the lookup ([#1653]) extend this connector; the type mapping is the contract they read back.
-- With `scan.filter-push-down.enabled`, an entity whose filtered value is unindexed is dropped without an error ([#1831]); a scan without the option reads every entity of the kind, as before.
+- With `scan.filter-push-down.enabled`, an entity whose filtered value is unindexed is dropped without an error ([#1831]); a scan without the option reads every entity of the kind, as before, unless its predicate pins the key: a key equality is pushed without the option ([#2066]), so such a scan reads that root entity alone and no longer fails on a child entity or a key of the other form.
 - [#1838] can push a `LIMIT` only above exactly pushed filters, so a Datastore scan with a pushed filter keeps its limit in Flink.
 - Key ranges are cut from the whole kind's scatter keys, so under a selective filter the ranges hold uneven numbers of matching entities and some hold none.
 
@@ -207,3 +237,4 @@ The client library facts are read in google-cloud-datastore and datastore-v1-pro
 [#1829]: https://github.com/flink-gcp/flink-connector-gcp/issues/1829
 [#1831]: https://github.com/flink-gcp/flink-connector-gcp/issues/1831
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838
+[#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066

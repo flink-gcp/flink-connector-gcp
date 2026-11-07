@@ -151,7 +151,8 @@ class FirestoreDynamicTableSourceFactoryTest {
         FirestoreDynamicSource dynamic =
                 (FirestoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
         ResolvedExpression pushed = equals("a.b", 2, "x");
-        ResolvedExpression declined = equals("id", 0, "k");
+        // An id holding '/' would address another collection, so it names no document here.
+        ResolvedExpression declined = equals("id", 0, "k/x");
 
         SupportsFilterPushDown.Result result = dynamic.applyFilters(List.of(pushed, declined));
 

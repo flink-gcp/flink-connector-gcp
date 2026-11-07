@@ -94,16 +94,18 @@ class FirestoreTableNestedProjectionPlanTest {
     }
 
     @Test
-    void aFilterOnANestedFieldIsNotPushedUnderTheProjectedName() {
+    void aFilterOnANestedFieldIsPushedByItsPathNotUnderTheProjectedName() {
         // The projected field is named r_a. Filters are pushed before the projection, against
-        // the declared columns, so a predicate on r.a is not pushed and one on the column r_a
-        // names that column.
+        // the declared columns, so a predicate on r.a names the path r.a (docs/adr/0197's #2066
+        // revision) and one on the column r_a names that column.
         table.executeSql(
                 "CREATE TABLE h (id STRING, r ROW<a BIGINT>, r_a BIGINT,"
                         + " PRIMARY KEY (id) NOT ENFORCED) WITH ('connector' = 'firestore',"
                         + " 'project' = 'p', 'collection' = 'c')");
 
-        assertThat(scan("SELECT r.a FROM h WHERE r.a = 5")).contains("filter=[]");
+        assertThat(scan("SELECT r.a FROM h WHERE r.a = 5"))
+                .containsPattern("filter=\\[=\\(r\\.a, 5")
+                .doesNotContainPattern("filter=\\[[^\\]]*\\br_a\\b");
         assertThat(scan("SELECT r.a FROM h WHERE r_a = 5"))
                 .containsPattern("filter=\\[=\\(r_a, 5")
                 .containsPattern("project=\\[[^\\]]*\\br_a\\b");

@@ -22,8 +22,10 @@ import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
 import com.google.cloud.firestore.Blob;
+import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Int32Value;
+import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.firestore.admin.v1.Database;
 import com.google.firestore.v1.MapValue;
 import com.google.firestore.v1.Value;
@@ -45,11 +47,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * The {@code firestore} scan's pushed equalities against the service ({@code docs/adr/0197}): what
  * the emulator cannot show. A Standard-edition database answers two equalities on one collection
- * without a composite index, and would refuse the same filter on a collection group, which is why
- * that scan pushes none. An Enterprise-edition database matches its 32-bit integers by the equality
- * a {@code BIGINT} column pushes, and refuses to store a BSON binary of subtype 0, so every value a
- * {@code BYTES} column reads is native bytes, which its pushed equality matches: no row the
- * converter reads is filtered out by the service.
+ * without a composite index, and so is an equality on the document id or on a map's field beside
+ * one, which matches the map's field and not a top-level field named by the whole path; it would
+ * refuse the same filter on a collection group, which is why that scan pushes none. An
+ * Enterprise-edition database matches its 32-bit integers by the equality a {@code BIGINT} column
+ * pushes, and refuses to store a BSON binary of subtype 0, so every value a {@code BYTES} column
+ * reads is native bytes, which its pushed equality matches: no row the converter reads is filtered
+ * out by the service.
  */
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
@@ -113,6 +117,47 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
         // and the read would fail with FAILED_PRECONDITION.
         assertThat(collect(table, "SELECT path FROM grouped" + predicate))
                 .containsExactly(Row.of(collection + "/a"));
+    }
+
+    @Test
+    void aStandardEditionCollectionAnswersAnIdAndAMapFieldEquality() throws Exception {
+        String collection = uniqueCollection();
+        client().document(collection + "/a")
+                .set(Map.of("s", "x", "e", Map.of("x", 1L)))
+                .get(30, TimeUnit.SECONDS);
+        client().document(collection + "/b")
+                .set(Map.of("s", "x", "e", Map.of("x", 1L)))
+                .get(30, TimeUnit.SECONDS);
+        // A field named by the whole path is not the map's field.
+        client().document(collection + "/c")
+                .set(Map.of("s", "x", "e.x", 1L))
+                .get(30, TimeUnit.SECONDS);
+        TableEnvironment table = batch();
+        table.executeSql(
+                "CREATE TABLE keyed (id STRING NOT NULL, s STRING, e ROW<x BIGINT>,"
+                        + " PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(database(), collection, ""));
+
+        for (String predicate : new String[] {"id = 'b'", "e.x = 1 AND s = 'x'"}) {
+            assertThat(table.explainSql("SELECT id FROM keyed WHERE " + predicate))
+                    .containsPattern("filter=\\[[^\\]]");
+        }
+        assertThat(collect(table, "SELECT id FROM keyed WHERE id = 'b' AND s = 'x'"))
+                .containsExactly(Row.of("b"));
+        assertThat(collect(table, "SELECT id FROM keyed WHERE e.x = 1 AND s = 'x'"))
+                .containsExactlyInAnyOrder(Row.of("a"), Row.of("b"));
+        // Flink's residual would remove c either way, so the path's matching is pinned on the
+        // query the scan sends.
+        List<String> ids = new ArrayList<>();
+        for (QueryDocumentSnapshot document :
+                client().collection(collection)
+                        .whereEqualTo(FieldPath.of("e", "x"), 1L)
+                        .get()
+                        .get(30, TimeUnit.SECONDS)
+                        .getDocuments()) {
+            ids.add(document.getId());
+        }
+        assertThat(ids).containsExactlyInAnyOrder("a", "b");
     }
 
     @Test
