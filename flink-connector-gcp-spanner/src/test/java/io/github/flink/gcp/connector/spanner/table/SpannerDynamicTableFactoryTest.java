@@ -358,6 +358,8 @@ class SpannerDynamicTableFactoryTest {
         options.put("sink.buffer-flush.max-size", "2 mb");
         options.put("sink.buffer-flush.max-commit-delay", "25 ms");
         options.put("sink.rpc-priority", "low");
+        options.put("sink.exclude-txn-from-change-streams", "true");
+        options.put("sink.transaction-tag", "flink-backfill");
         options.put("sink.batch-write.timeout", "17 s");
         options.put("sink.recovery.initial-backoff", "2 s");
         options.put("sink.recovery.max-backoff", "8 s");
@@ -375,6 +377,9 @@ class SpannerDynamicTableFactoryTest {
                 .isEqualTo(Duration.ofMillis(25));
         assertThat(sink.getConfig().getWriterOptions().getRpcPriority())
                 .isEqualTo(SpannerRpcPriority.LOW);
+        assertThat(sink.getConfig().getWriterOptions().isExcludeTxnFromChangeStreams()).isTrue();
+        assertThat(sink.getConfig().getWriterOptions().getTransactionTag())
+                .isEqualTo("flink-backfill");
         assertThat(sink.getConfig().getWriterOptions().getBatchWriteTimeout())
                 .isEqualTo(Duration.ofSeconds(17));
         assertThat(sink.getConfig().getWriterOptions().getRecoveryInitialBackoff())
@@ -1300,6 +1305,12 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(SCHEMA, timeout))
                 .hasStackTraceContaining("Option 'sink.batch-write.timeout' is invalid")
                 .hasStackTraceContaining("batchWriteTimeout must be at least 1 millisecond");
+
+        Map<String, String> tag = options();
+        tag.put("sink.transaction-tag", "_backfill");
+        assertThatThrownBy(() -> sink(SCHEMA, tag))
+                .hasStackTraceContaining("Option 'sink.transaction-tag' is invalid")
+                .hasStackTraceContaining("transactionTag must not start with an underscore");
     }
 
     @Test

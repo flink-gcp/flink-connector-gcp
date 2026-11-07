@@ -82,6 +82,34 @@ class DefaultSpannerDatabaseAccessFactoryTest {
     }
 
     @Test
+    void carriesTheChangeStreamExclusionAndTagWhenTheyAreSet() {
+        Options.TransactionOption[] transactionOptions =
+                DefaultSpannerDatabaseAccessFactory.transactionOptions(
+                        SpannerWriterOptions.builder()
+                                .excludeTxnFromChangeStreams(true)
+                                .transactionTag("backfill")
+                                .build());
+
+        // The exclusion is one shared instance in the client library, so it compares by identity;
+        // the tag option has no value equality and is asserted by kind, as above.
+        assertThat(transactionOptions)
+                .hasSize(2)
+                .contains(Options.excludeTxnFromChangeStreams())
+                .anyMatch(option -> option.getClass() == tagKind());
+    }
+
+    @Test
+    void anUnexcludedWriteAddsNoExclusionOption() {
+        // false is the service's default; sending nothing leaves it the service's.
+        assertThat(
+                        DefaultSpannerDatabaseAccessFactory.transactionOptions(
+                                SpannerWriterOptions.builder()
+                                        .excludeTxnFromChangeStreams(false)
+                                        .build()))
+                .isEmpty();
+    }
+
+    @Test
     void injectsWriterRuntimeCredentialsIntoClientSettings() {
         GoogleCredentials credentials =
                 GoogleCredentials.create(new AccessToken("token", new Date(Long.MAX_VALUE)));
@@ -154,6 +182,10 @@ class DefaultSpannerDatabaseAccessFactoryTest {
 
     private static Class<?> commitDelayKind() {
         return Options.maxCommitDelay(Duration.ofMillis(1)).getClass();
+    }
+
+    private static Class<?> tagKind() {
+        return Options.tag("tag").getClass();
     }
 
     private static Class<?> priorityKind() {

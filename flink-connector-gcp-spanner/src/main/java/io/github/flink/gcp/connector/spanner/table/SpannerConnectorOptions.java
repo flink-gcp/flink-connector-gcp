@@ -427,6 +427,22 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("The LOW, MEDIUM, or HIGH priority of sink RPCs.");
 
+    /** Whether the sink's writes are excluded from change streams that set allow_txn_exclusion. */
+    public static final ConfigOption<Boolean> SINK_EXCLUDE_TXN_FROM_CHANGE_STREAMS =
+            ConfigOptions.key("sink.exclude-txn-from-change-streams")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the sink's writes are excluded from change streams that set"
+                                    + " allow_txn_exclusion.");
+
+    /** The transaction tag the sink's writes carry. */
+    public static final ConfigOption<String> SINK_TRANSACTION_TAG =
+            ConfigOptions.key("sink.transaction-tag")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The transaction tag the sink's writes carry.");
+
     /** The timeout for one complete BatchWrite RPC attempt. */
     public static final ConfigOption<Duration> SINK_BATCH_WRITE_TIMEOUT =
             ConfigOptions.key("sink.batch-write.timeout")

@@ -138,6 +138,8 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY,
                         SpannerConnectorOptions.SINK_RPC_PRIORITY,
+                        SpannerConnectorOptions.SINK_EXCLUDE_TXN_FROM_CHANGE_STREAMS,
+                        SpannerConnectorOptions.SINK_TRANSACTION_TAG,
                         SpannerConnectorOptions.SINK_BATCH_WRITE_TIMEOUT,
                         SpannerConnectorOptions.SINK_RECOVERY_INITIAL_BACKOFF,
                         SpannerConnectorOptions.SINK_RECOVERY_MAX_BACKOFF,

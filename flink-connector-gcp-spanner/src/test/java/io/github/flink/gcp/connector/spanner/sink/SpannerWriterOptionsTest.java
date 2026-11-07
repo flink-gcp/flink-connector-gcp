@@ -335,6 +335,9 @@ class SpannerWriterOptionsTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerWriterOptions.builder().rpcPriority(null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("transactionTag must not be null");
         assertThatThrownBy(() -> SpannerWriterOptions.builder().batchWriteTimeout(null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerWriterOptions.builder().orderingMode(null))
@@ -351,6 +354,8 @@ class SpannerWriterOptionsTest {
                         .maxBatchBytes(33)
                         .maxCommitDelay(Duration.ofMillis(44))
                         .rpcPriority(SpannerRpcPriority.LOW)
+                        .excludeTxnFromChangeStreams(true)
+                        .transactionTag("backfill")
                         .batchWriteTimeout(Duration.ofMillis(77))
                         .recoveryInitialBackoff(Duration.ofMillis(55))
                         .recoveryMaxBackoff(Duration.ofMillis(66))
@@ -361,16 +366,90 @@ class SpannerWriterOptionsTest {
         assertThat(options).isNotEqualTo(SpannerWriterOptions.defaults());
         assertThat(SpannerWriterOptions.builder().orderingMode(OrderingMode.PER_KEY).build())
                 .isNotEqualTo(SpannerWriterOptions.defaults());
+        assertThat(SpannerWriterOptions.builder().excludeTxnFromChangeStreams(true).build())
+                .isNotEqualTo(SpannerWriterOptions.defaults());
+        SpannerWriterOptions tagged = SpannerWriterOptions.builder().transactionTag("a").build();
+        assertThat(tagged)
+                .isNotEqualTo(SpannerWriterOptions.defaults())
+                .isNotEqualTo(SpannerWriterOptions.builder().transactionTag("b").build())
+                .isEqualTo(SpannerWriterOptions.builder().transactionTag("a").build())
+                .hasSameHashCodeAs(SpannerWriterOptions.builder().transactionTag("a").build());
         assertThat(options.toString())
                 .contains("maxBatchCells=11")
                 .contains("maxBatchMutations=22")
                 .contains("maxBatchBytes=33")
                 .contains("maxCommitDelay=PT0.044S")
                 .contains("rpcPriority=LOW")
+                .contains("excludeTxnFromChangeStreams=true")
+                .contains("transactionTag=backfill")
                 .contains("batchWriteTimeout=PT0.077S")
                 .contains("recoveryInitialBackoff=PT0.055S")
                 .contains("recoveryMaxBackoff=PT0.066S")
                 .contains("recoveryMaxAttempts=7")
                 .contains("orderingMode=per-key");
+    }
+
+    @Test
+    void acceptsATransactionTagSpannerKeepsUnchanged() {
+        String longest = "a".repeat(SpannerWriterOptions.MAX_TRANSACTION_TAG_LENGTH);
+        assertThat(
+                        SpannerWriterOptions.builder()
+                                .transactionTag(longest)
+                                .build()
+                                .getTransactionTag())
+                .isEqualTo(longest);
+        // Both ends of the accepted range, an inner underscore and inner and trailing spaces.
+        assertThat(
+                        SpannerWriterOptions.builder()
+                                .transactionTag("~ job_a ")
+                                .build()
+                                .getTransactionTag())
+                .isEqualTo("~ job_a ");
+    }
+
+    @Test
+    void rejectsATransactionTagSpannerWouldChangeWithoutAnError() {
+        String tooLong = "a".repeat(SpannerWriterOptions.MAX_TRANSACTION_TAG_LENGTH + 1);
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag(tooLong))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("transactionTag must be at most 50 characters");
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag("_job"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must not start with an underscore");
+        // Spanner replaces each of these with an underscore: one past each end of 32..126, and a
+        // character outside ASCII.
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag("job\u001fid"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ASCII characters 32 to 126")
+                .hasMessageContaining("U+001F at index 3");
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag("job\u007fid"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("U+007F at index 3");
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag("job\u00e9"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("U+00E9 at index 3");
+        assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag("  "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("transactionTag must not be blank");
+    }
+
+    @Test
+    void writesAreRecordedAndUntaggedByDefault() {
+        assertThat(SpannerWriterOptions.defaults().isExcludeTxnFromChangeStreams()).isFalse();
+        assertThat(SpannerWriterOptions.defaults().getTransactionTag()).isNull();
+    }
+
+    @Test
+    void theChangeStreamSettingsSurviveJavaSerialization() throws Exception {
+        SpannerWriterOptions options =
+                SpannerWriterOptions.builder()
+                        .excludeTxnFromChangeStreams(true)
+                        .transactionTag("backfill")
+                        .build();
+
+        SpannerWriterOptions copy = InstantiationUtil.clone(options);
+
+        assertThat(copy.isExcludeTxnFromChangeStreams()).isTrue();
+        assertThat(copy.getTransactionTag()).isEqualTo("backfill");
     }
 }

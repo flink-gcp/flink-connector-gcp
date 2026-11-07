@@ -423,6 +423,22 @@ The queue operations `SEND` and `ACK`, built with `Mutation.newSendBuilder` and 
 The writer refuses such a mutation before it reaches a request and routes it to the failure handler, with a message that names the operation and the queue.
 An operation a later client library adds is refused the same way.
 
+### Change streams and transaction tags
+
+A job that reads a Spanner change stream and writes back into the same database sees its own writes come back as change records, and so does a backfill into a table a change stream watches.
+`SpannerWriterOptions.Builder#excludeTxnFromChangeStreams(true)`, or `sink.exclude-txn-from-change-streams` in a `WITH` clause, keeps the sink's writes out of such a stream.
+The exclusion is the change stream's to honour: Spanner applies it only to a change stream whose `allow_txn_exclusion` option is true, and every other change stream watching the written columns still records the writes.
+`CREATE CHANGE STREAM` sets it in `OPTIONS (...)` in GoogleSQL and `WITH (...)` in PostgreSQL, and `ALTER CHANGE STREAM` turns it on for an existing stream with `SET OPTIONS (...)` and `SET (...)` respectively ([Spanner's change stream management](https://cloud.google.com/spanner/docs/change-streams/manage)).
+The [Change Streams source](#change-streams-source) logs whether the stream it reads allows the exclusion when it starts.
+
+`transactionTag(String)`, or `sink.transaction-tag`, attaches a tag to the sink's writes.
+The tag excludes nothing by itself.
+Spanner reports it in each data record, where the Change Streams source exposes it as `DataChangeRecord#getTransactionTag()` (the `transaction-tag` metadata column in the Table API), and in its transaction and lock statistics tables, which is where a write that contends with serving traffic can be traced back to this job.
+The builder refuses a tag that Spanner would otherwise change without an error: one longer than 50 characters, which Spanner truncates, one with a character outside ASCII 32 to 126, which Spanner replaces with an underscore, and one starting with `_`, which Spanner strips ([Spanner's tag limitations](https://cloud.google.com/spanner/docs/introspection/troubleshooting-with-tags#limitations)).
+
+Both settings travel on every `BatchWrite` request, and the service honours them for a batch write as it does for a commit.
+The gated real-GCP suite asserts both in both dialects: an excluded write is missing from a stream that allows the exclusion and present in one that does not, and a tagged write carries its tag into the change record.
+
 ## Delivery guarantee, and why the mutation operation is your decision
 
 See [Write and key-collision semantics]({{< relref "docs/connectors/delivery-guarantees" >}}#write-and-key-collision-semantics)
@@ -891,6 +907,7 @@ disagree, the service decides. Known deviations, and what covers them instead:
 | Rejection statuses are the emulator's | The table above was measured against the emulator, and **every row of it is now confirmed against the service** (2026-08-10) — same status, same per-group reporting. The gated suite asserts each row, so a change on either side has to be declared |
 | `FLOAT64` / PostgreSQL `FLOAT8` keys accept `NaN` in the emulator | The real service rejects these values in primary and secondary key columns. The float-key emulator test records acceptance in both dialects; the gated float-key read suite checks rejection separately from its numeric-range matrix. PostgreSQL's [type contract](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) states the restriction explicitly |
 | The client records no client metrics in its emulator mode | An emulator job reports every `rpcMethod` series at zero. `SpannerClientMetricsITCase` reaches the emulator outside that mode through a test-only switch, so a reporter observes the real client's series for every component; the emulator sends no front-end timing, so both connectivity-error series equal the attempts there. The gated suite observes the front-end timing the service sends |
+| The emulator records no transaction tag in a change stream | A tag the sink sets, or a commit's, reads back empty from the emulator (measured 2026-11-07). The emulator does honour the change-stream exclusion, so the emulator test asserts the exclusion and the gated suite asserts the tag |
 | Change Stream timing and topology are local approximations | Emulator tests prove both dialect adapters and deterministic failover, but do not establish the service's retention boundary, stream-creation boundary, partition topology, or heartbeat timing. The gated suite verifies those boundaries and restore behavior in both dialects; it observed two service-created child partitions at its 5,000-row scale, which is evidence for that run rather than a guaranteed partition count |
 
 ### The gated real-GCP suite

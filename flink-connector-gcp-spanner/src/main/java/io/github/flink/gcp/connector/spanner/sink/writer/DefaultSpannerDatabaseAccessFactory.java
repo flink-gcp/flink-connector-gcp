@@ -178,12 +178,18 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
      */
     @VisibleForTesting
     static TransactionOption[] transactionOptions(SpannerWriterOptions options) {
-        List<TransactionOption> transactionOptions = new ArrayList<>(2);
+        List<TransactionOption> transactionOptions = new ArrayList<>(4);
         if (options.getMaxCommitDelay() != null) {
             transactionOptions.add(Options.maxCommitDelay(options.getMaxCommitDelay()));
         }
         if (options.getRpcPriority() != null) {
             transactionOptions.add(Options.priority(options.getRpcPriority().toSpanner()));
+        }
+        if (options.isExcludeTxnFromChangeStreams()) {
+            transactionOptions.add(Options.excludeTxnFromChangeStreams());
+        }
+        if (options.getTransactionTag() != null) {
+            transactionOptions.add(Options.tag(options.getTransactionTag()));
         }
         return transactionOptions.toArray(new TransactionOption[0]);
     }

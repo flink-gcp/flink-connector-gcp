@@ -41,6 +41,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   The generated client setting has no retries; `SpannerWriter` owns retries of undecided groups.
   Reads and admin RPCs keep their client-library settings. Revalidated against
   google-cloud-spanner 6.120.0 for `docs/adr/0075`.
+- **Check a transaction option against `BatchWriteRequest`, not against `Options`** (#1992).
+  `transactionOptions` hands every knob to `batchWriteAtLeastOnce`, and the client copies only what
+  the request has a field for: the priority and tag (`request_options`) and the change-stream
+  exclusion. `maxCommitDelay` has no field and is dropped (#2064). The emulator honours the
+  exclusion but records no transaction tag, not even a commit's, so a tag claim is the gated
+  suite's to make.
+- **The transaction tag is checked at the setter** under ADR-0127's third shape: Spanner's
+  tag-limitations page says it truncates past 50 characters, replaces a character outside ASCII
+  32-126 with an underscore, and strips leading underscores, all without an error. Round one of
+  #2065 removed the character check on the proto comment alone; the page is what shows the
+  replacement is silent, so cite it rather than the proto when the check is questioned.
 - **Batch write has no replay protection**, so idempotence is the serializer's to supply; it is
   documented on the SPI and on the sink, never enforced.
 - `SpannerDatabaseAccess` holds its three operations as functional values over the `Spanner`
