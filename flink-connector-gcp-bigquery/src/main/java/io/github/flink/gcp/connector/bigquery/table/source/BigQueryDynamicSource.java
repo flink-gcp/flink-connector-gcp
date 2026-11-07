@@ -28,6 +28,7 @@ import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushD
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
@@ -42,7 +43,6 @@ import javax.annotation.Nullable;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -83,7 +83,7 @@ public final class BigQueryDynamicSource
     @Nullable private final Integer parallelism;
 
     private DataType producedDataType;
-    @Nullable private int[] projectedFields;
+    @Nullable private int[][] projectedFields;
     private BigQueryFilterPushDown.State filterState;
 
     private BigQueryDynamicSource(Builder builder) {
@@ -130,16 +130,26 @@ public final class BigQueryDynamicSource
 
     @Override
     public boolean supportsNestedProjection() {
-        return false;
+        // The planner types a projected nested field as the field is declared, so a NOT NULL
+        // field of a nullable ROW would be produced NOT NULL although its ROW may be NULL, and a
+        // NULL there fails Flink's NOT NULL enforcer, e.g. for COALESCE(r.a, -1) (#2050). Such a
+        // table reads whole columns.
+        for (LogicalType field : physicalRowType.getChildren()) {
+            if (NestedFieldPaths.hasNotNullFieldUnderNullableRow(field)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
     public void applyProjection(int[][] projectedFields, DataType producedDataType) {
-        int[] topLevel = new int[projectedFields.length];
-        for (int i = 0; i < projectedFields.length; i++) {
-            topLevel[i] = projectedFields[i][0];
+        // The planner's paths are its own plan state; keep a copy.
+        int[][] projected = new int[projectedFields.length][];
+        for (int i = 0; i < projected.length; i++) {
+            projected[i] = projectedFields[i].clone();
         }
-        this.projectedFields = topLevel;
+        this.projectedFields = projected;
         this.producedDataType = producedDataType;
     }
 
@@ -236,10 +246,7 @@ public final class BigQueryDynamicSource
         if (projectedFields == null) {
             return names;
         }
-        List<String> selected = new ArrayList<>();
-        for (int field : projectedFields) {
-            selected.add(names.get(field));
-        }
+        List<String> selected = NestedFieldPaths.selectedFields(physicalRowType, projectedFields);
         // An empty selected-fields list means "all fields" to BigQuery. Retain one carrier column
         // if a caller supplies an empty projection directly; Flink's planner normally performs
         // this rewrite itself and discards the carrier above the source.
@@ -313,7 +320,7 @@ public final class BigQueryDynamicSource
                 && Objects.equals(emulatorRestEndpoint, that.emulatorRestEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
                 && producedDataType.equals(that.producedDataType)
-                && Arrays.equals(projectedFields, that.projectedFields)
+                && Arrays.deepEquals(projectedFields, that.projectedFields)
                 && filterState.equals(that.filterState);
     }
 
@@ -341,7 +348,7 @@ public final class BigQueryDynamicSource
                 emulatorRestEndpoint,
                 parallelism,
                 producedDataType,
-                Arrays.hashCode(projectedFields),
+                Arrays.deepHashCode(projectedFields),
                 filterState);
     }
 
@@ -382,7 +389,7 @@ public final class BigQueryDynamicSource
         @Nullable private String emulatorRestEndpoint;
         @Nullable private Integer parallelism;
         @Nullable private DataType producedDataType;
-        @Nullable private int[] projectedFields;
+        @Nullable private int[][] projectedFields;
         private BigQueryFilterPushDown.State filterState = BigQueryFilterPushDown.State.empty();
 
         private Builder() {}
@@ -609,7 +616,8 @@ public final class BigQueryDynamicSource
         }
 
         /** Restores the applied projection when a source is copied. */
-        Builder projectedFields(@Nullable int[] projectedFields) {
+        Builder projectedFields(@Nullable int[][] projectedFields) {
+            // Copies share the immutable path arrays, which applyProjection never mutates.
             this.projectedFields = projectedFields == null ? null : projectedFields.clone();
             return this;
         }

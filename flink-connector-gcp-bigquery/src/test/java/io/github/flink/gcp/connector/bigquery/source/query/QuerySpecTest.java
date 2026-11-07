@@ -49,6 +49,14 @@ class QuerySpecTest {
     }
 
     @Test
+    void foldsANestedPathAsItsTopLevelColumnOnce() {
+        // The read session over the result still receives "r.a" and "r.b"; the query selects the
+        // STRUCT so that its shape, and its NULLs, survive into the result.
+        assertThat(spec(Arrays.asList("r.a", "id", "r.b")).getSql())
+                .isEqualTo("SELECT `r`, `id` FROM `my-project.ds.v`");
+    }
+
+    @Test
     void escapesABacktickInAColumnName() {
         // BigQuery allows one in a flexible column name. Dropping it would name a different
         // column; leaving it unescaped would end the quoted identifier early.

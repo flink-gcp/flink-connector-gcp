@@ -299,13 +299,83 @@ class BigQueryFilterPushDownTest {
     }
 
     @Test
+    void translatesNestedFieldsAsQuotedPaths() {
+        DataType physical =
+                DataTypes.ROW(
+                        DataTypes.FIELD(
+                                "r`x",
+                                DataTypes.ROW(
+                                        DataTypes.FIELD("a", DataTypes.BIGINT()),
+                                        DataTypes.FIELD(
+                                                "c",
+                                                DataTypes.ROW(
+                                                        DataTypes.FIELD(
+                                                                "d", DataTypes.TIMESTAMP(3)))))),
+                        DataTypes.FIELD(
+                                "span",
+                                DataTypes.ROW(
+                                        DataTypes.FIELD("start", DataTypes.DATE()),
+                                        DataTypes.FIELD("end", DataTypes.DATE()))),
+                        DataTypes.FIELD(
+                                "loose",
+                                DataTypes.ROW(DataTypes.FIELD("a", DataTypes.BIGINT().notNull()))));
+        RowType type = (RowType) physical.getLogicalType();
+        NestedFieldReferenceExpression a =
+                new NestedFieldReferenceExpression(
+                        new String[] {"r`x", "a"}, new int[] {0, 0}, DataTypes.BIGINT());
+        NestedFieldReferenceExpression d =
+                new NestedFieldReferenceExpression(
+                        new String[] {"r`x", "c", "d"},
+                        new int[] {0, 1, 0},
+                        DataTypes.TIMESTAMP(3));
+        ResolvedExpression rangeStart =
+                call(
+                        BuiltInFunctionDefinitions.IS_NULL,
+                        new NestedFieldReferenceExpression(
+                                new String[] {"span", "start"},
+                                new int[] {1, 0},
+                                DataTypes.DATE()));
+        ResolvedExpression looseNotNull =
+                call(
+                        BuiltInFunctionDefinitions.IS_NOT_NULL,
+                        new NestedFieldReferenceExpression(
+                                new String[] {"loose", "a"},
+                                new int[] {2, 0},
+                                DataTypes.BIGINT().notNull()));
+        List<ResolvedExpression> filters =
+                Arrays.asList(
+                        equals(a, literal(5)),
+                        call(BuiltInFunctionDefinitions.LESS_THAN, literal(5), a),
+                        call(BuiltInFunctionDefinitions.IS_NULL, a),
+                        // A precision-3 bucket on a nested leaf follows the top-level rule.
+                        equals(
+                                d,
+                                new ValueLiteralExpression(
+                                        LocalDateTime.of(2026, 8, 29, 12, 0, 0, 1_000_000),
+                                        DataTypes.TIMESTAMP(3).notNull())),
+                        rangeStart,
+                        looseNotNull);
+
+        BigQueryFilterPushDown.State state = BigQueryFilterPushDown.translate(type, filters, null);
+
+        assertResult(state.result(), filters.subList(0, 4), filters);
+        assertThat(state.rowRestriction())
+                .isEqualTo(
+                        "((`r\\`x`.`a` = 5) AND (`r\\`x`.`a` > 5) AND (`r\\`x`.`a` IS NULL)"
+                                + " AND ((`r\\`x`.`c`.`d` >= DATETIME '2026-08-29 12:00:00.001000')"
+                                + " AND (`r\\`x`.`c`.`d` <= DATETIME '2026-08-29 12:00:00.001999')))");
+    }
+
+    @Test
     void unsupportedTypesShapesAndNullComparisonsRemainOnlyWithFlink() {
         ResolvedExpression charComparison = equals(field(6), new ValueLiteralExpression("abcd"));
+        // A path the physical type does not declare; resolvable nested paths translate
+        // (translatesNestedFieldsAsQuotedPaths).
         ResolvedExpression nestedComparison =
                 equals(
                         new NestedFieldReferenceExpression(
-                                new String[] {"nested", "value"},
-                                new int[] {7, 0},
+                                new String[] {"nested", "missing"},
+                                new int[] {7, 1},
                                 DataTypes.STRING()),
                         new ValueLiteralExpression("value"));
         ResolvedExpression functionComparison =

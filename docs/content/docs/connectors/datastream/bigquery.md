@@ -189,7 +189,7 @@ TaskManager share that JVM's heap.
 
 Use [`selectedFields`](#push-down) to avoid transferring columns the job does not need and
 [`rowRestriction`](#push-down) to remove rows before the read session sends them.
-Table API projection pushdown maps retained top-level columns to `selectedFields`.
+Table API projection pushdown maps retained columns, and the fields of a `ROW` column a query reads without a `WHERE` clause, to `selectedFields`.
 Table API filter pushdown maps its conservative supported subset to `rowRestriction`, while every
 original predicate remains a Flink residual.
 `scan.row-restriction` remains the explicit BigQuery-native filter surface and is combined with a
@@ -268,7 +268,7 @@ than there are subtasks is how this source gets its elasticity. A `preferredMinS
 
 `selectedFields`, `rowRestriction` and `snapshotTime` are fields of the read session, so BigQuery
 applies them before anything is transferred. What that saves differs between the two:
-`selectedFields` leaves whole columns out of the metered bytes-read usage;
+`selectedFields` leaves whole columns, or the unnamed fields of a `STRUCT` named by a dotted path such as `address.city`, out of the metered bytes-read usage;
 `rowRestriction` always saves the transfer, and saves scanning too where the restriction lands on a
 partitioning or clustering column.
 The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
@@ -373,7 +373,8 @@ for rather than to inherit. Spark and the Dataproc connector spell the same swit
 
 `selectedFields` **is** folded into the generated `SELECT`: a view's `SELECT *` scans every column
 and the query is billed for the scan, so leaving the projection to the read session would prune the
-transfer after paying for it. `rowRestriction` is **not** folded — BigQuery's restriction syntax is
+transfer after paying for it. A dotted path folds as its top-level column, and the read session over
+the result still narrows the transfer to the named field. `rowRestriction` is **not** folded — BigQuery's restriction syntax is
 not a SQL `WHERE`, and folding it would give one knob two meanings depending on what the source was
 pointed at — so it stays on the read session, where a table source applies it too. The rule behind
 both: **this connector folds into SQL it wrote, and never into SQL you wrote.**

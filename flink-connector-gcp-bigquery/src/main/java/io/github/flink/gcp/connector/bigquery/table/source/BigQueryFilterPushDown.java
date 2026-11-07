@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.NestedFieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
@@ -152,10 +153,10 @@ final class BigQueryFilterPushDown {
         List<ResolvedExpression> children = call.getResolvedChildren();
         if (function.equals(BuiltInFunctionDefinitions.IS_NULL)
                 || function.equals(BuiltInFunctionDefinitions.IS_NOT_NULL)) {
-            if (children.size() != 1 || !(children.get(0) instanceof FieldReferenceExpression)) {
+            if (children.size() != 1 || !isFieldReference(children.get(0))) {
                 return Optional.empty();
             }
-            FieldReferenceExpression field = (FieldReferenceExpression) children.get(0);
+            ResolvedExpression field = children.get(0);
             return field(physicalRowType, field)
                     .filter(value -> supportsNullCheck(value.type))
                     .map(
@@ -176,17 +177,17 @@ final class BigQueryFilterPushDown {
         if (comparison == null || children.size() != 2) {
             return Optional.empty();
         }
-        FieldReferenceExpression field;
+        ResolvedExpression field;
         ValueLiteralExpression literal;
         Comparison normalized;
-        if (children.get(0) instanceof FieldReferenceExpression
+        if (isFieldReference(children.get(0))
                 && children.get(1) instanceof ValueLiteralExpression) {
-            field = (FieldReferenceExpression) children.get(0);
+            field = children.get(0);
             literal = (ValueLiteralExpression) children.get(1);
             normalized = comparison;
-        } else if (children.get(1) instanceof FieldReferenceExpression
+        } else if (isFieldReference(children.get(1))
                 && children.get(0) instanceof ValueLiteralExpression) {
-            field = (FieldReferenceExpression) children.get(1);
+            field = children.get(1);
             literal = (ValueLiteralExpression) children.get(0);
             normalized = comparison.reverse();
         } else {
@@ -203,8 +204,19 @@ final class BigQueryFilterPushDown {
                 .filter(value -> value.bytes <= remaining);
     }
 
-    private static Optional<Field> field(RowType physicalRowType, FieldReferenceExpression field) {
-        int index = physicalRowType.getFieldNames().indexOf(field.getName());
+    private static boolean isFieldReference(ResolvedExpression expression) {
+        return expression instanceof FieldReferenceExpression
+                || expression instanceof NestedFieldReferenceExpression;
+    }
+
+    private static Optional<Field> field(RowType physicalRowType, ResolvedExpression field) {
+        if (field instanceof NestedFieldReferenceExpression) {
+            return nestedField(physicalRowType, (NestedFieldReferenceExpression) field);
+        }
+        int index =
+                physicalRowType
+                        .getFieldNames()
+                        .indexOf(((FieldReferenceExpression) field).getName());
         if (index < 0) {
             return Optional.empty();
         }
@@ -212,6 +224,29 @@ final class BigQueryFilterPushDown {
                 new Field(
                         quoteIdentifier(physicalRowType.getFieldNames().get(index)),
                         physicalRowType.getTypeAt(index)));
+    }
+
+    /**
+     * Resolves a field nested in ROWs as a path of separately quoted identifiers, such as {@code
+     * `r`.`a`}, which Storage Read evaluates as a STRUCT field access: NULL under a NULL STRUCT, as
+     * Flink evaluates it. {@link NestedFieldPaths#restrictableLeaf(RowType, String[])} decides
+     * which paths qualify; the leaf then follows the same scalar matrix as a top-level column.
+     */
+    private static Optional<Field> nestedField(
+            RowType physicalRowType, NestedFieldReferenceExpression field) {
+        String[] names = field.getFieldNames();
+        LogicalType leaf = NestedFieldPaths.restrictableLeaf(physicalRowType, names);
+        if (leaf == null) {
+            return Optional.empty();
+        }
+        List<Sql> parts = new ArrayList<>(names.length * 2 - 1);
+        for (int i = 0; i < names.length; i++) {
+            if (i > 0) {
+                parts.add(text("."));
+            }
+            parts.add(quoteIdentifier(names[i]));
+        }
+        return Optional.of(new Field(concat(parts.toArray(new Sql[0])), leaf));
     }
 
     private static Optional<Sql> comparison(

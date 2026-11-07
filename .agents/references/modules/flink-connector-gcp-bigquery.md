@@ -431,9 +431,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `project`; absent, it defaults to `project`.
   The bounded source maps every DDL option onto `BigQuerySource.builder()` and converts Storage
   Read Avro values to `RowData` by physical field name (`docs/adr/0100`).
-- The table source pushes down top-level projection through `selectedFields(...)`, including the
+- The table source pushes down projection through `selectedFields(...)`, including the
   first physical column as a carrier for a zero-column planner projection.
-  It does not advertise nested projection.
+  Nested paths become dotted selected fields (#1840); `NestedFieldPaths` owns the rules the
+  projection, the converter and the filter translator share: stop at a `ROW` declaring only
+  `RANGE` fields (`start`/`end`, either alone) or only fields of the measured `INTERVAL` record, drop a path below a selected one, and
+  do not advertise nested projection when a `NOT NULL` field sits below a nullable `ROW` (#2050).
+  Flink pushes nested paths only for a query without `WHERE`, because every predicate stays
+  residual; a plan test pins that, so a planner change shows up there. A view's generated `SELECT`
+  folds a path to its top-level column (ADR-0100).
   Its filter pushdown is a conservative Storage Read prefilter: literal comparisons for integer,
   date, decimal, float, double, `BYTES` / `VARBINARY`, `BINARY(n)`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns; boolean equality and
   inequality; BigQuery `STRING` equality; and null checks on those supported column types.
@@ -453,7 +459,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `JSON` and `GEOGRAPHY` as plain `STRING`, so a Flink `STRING` column cannot detect those
   unsupported physical types before the Storage Read session is created.
   Collated `STRING` equality may admit extra rows, which the Flink residual removes.
-  `CHAR`, nested fields, complex types, casts,
+  A `NestedFieldReferenceExpression` follows the scalar matrix as a quoted path
+  (`` `r`.`a` ``) unless it passes a `RANGE`-shaped `ROW` or a `NOT NULL` field follows a nullable
+  one. `CHAR`, other complex types, casts,
   functions, and field-to-field comparisons remain residual.
   A generated restriction is admitted only while the explicit-plus-generated UTF-8 text remains
   within Storage Read's 1 MB limit; a predicate that would cross the limit remains residual without

@@ -434,7 +434,7 @@ class BigQueryFilterPushDownRealGcpITCase {
                                         DataTypes.FIELD(column, type))
                                 .getLogicalType();
         GenericRecordToRowDataConverter converter =
-                new GenericRecordToRowDataConverter(physical, new int[] {0, 1});
+                new GenericRecordToRowDataConverter(physical, new int[][] {{0}, {1}});
         // NULL restrictions do not depend on the comparison literal or temporal precision.
         int operatorCount = includeNullChecks ? SCALAR_OPERATORS.length : 6;
         for (int op = 0; op < operatorCount; op++) {

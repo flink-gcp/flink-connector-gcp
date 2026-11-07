@@ -341,12 +341,19 @@ The keys are those of the table options they are carried as, and `project`, `def
 The source is bounded and insert-only. A direct source names `project`, `dataset`, and `table`.
 `scan.query` switches to the query-result path, where either `project` or
 `scan.parent-project` is required. Projection
-pushdown sends the planner's retained top-level column names to the Storage Read session. It prunes
+pushdown sends the planner's retained columns to the Storage Read session. It prunes
 the direct table read and the generated SQL used to materialize a named view. A user-supplied query
 is left unchanged, so projection prunes only its result-table read and does not reduce what the
 query itself scans. A plan needing no output column retains the first physical column as a carrier;
 the planner discards it above the source.
-Nested projection is not advertised.
+
+The source also accepts nested projection, so `SELECT r.a FROM t` reads the field `a` of the `ROW` column `r` rather than the whole column.
+Storage Read returns `r` holding only `a`, and still returns `NULL` where `r` itself is `NULL`, so `r.a` reads `NULL` under a `NULL` row as Flink evaluates it.
+Flink pushes nested paths only when the query has no `WHERE` clause.
+Because every predicate stays with Flink (see below), a filtered query keeps a filtering step above the source, and the planner then pushes whole top-level columns: `SELECT r.a FROM t WHERE id = 1` reads all of `r`.
+A path stops at a `ROW` that may be a BigQuery `RANGE`, one that declares only fields named `start` or `end`, because Storage Read cannot select a field of a `RANGE`; such a column is read whole.
+A materialized view's generated SQL selects the path's top-level column, and the read session over its result then narrows the transfer to the nested field.
+A table that declares a `NOT NULL` field under a nullable `ROW` reads whole columns, because Flink would type that field `NOT NULL` although its row may be `NULL`.
 
 The source also translates a conservative subset of SQL predicates into Storage Read row
 restrictions.
@@ -383,8 +390,11 @@ Planning does not fetch the BigQuery schema, so a Flink `STRING` declaration can
 unsupported `JSON` or `GEOGRAPHY` column before the Storage Read session is created; BigQuery can
 reject the generated restriction at that point.
 A collated `STRING` equality can admit additional rows, which the Flink residual removes.
-Fixed-length `CHAR` columns, nested fields,
-complex types, field-to-field comparisons, casts, and functions stay with Flink.
+A field of a `ROW` column follows the same matrix as a top-level column of its type, so `r.a > 3` becomes `` `r`.`a` > 3 ``.
+BigQuery evaluates such a field as `NULL` under a `NULL` row, as Flink does, so `r.a IS NULL` also admits rows whose `r` is `NULL`.
+A field stays with Flink when the path passes through a `ROW` that may be a BigQuery `RANGE`, or when a `NOT NULL` field follows a nullable one on the path, because Flink treats that field as never `NULL` while BigQuery reads `NULL` for it under a `NULL` row.
+Fixed-length `CHAR` columns, other complex types, fields inside an `ARRAY` or `MAP`,
+field-to-field comparisons, casts, and functions stay with Flink.
 Every generated restriction is a necessary condition for the Flink predicate because residual
 evaluation cannot recover a row BigQuery excluded.
 Every translated predicate also remains above the source, so Flink rejects any returned row that
