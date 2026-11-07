@@ -53,7 +53,7 @@ class FirestoreCollectionQueryFactoryTest {
     }
 
     @Test
-    void addsEachEqualityOnItsLiteralFieldBeforeTheSelection() throws Exception {
+    void addsEachEqualityOnItsLiteralFieldPathBeforeTheSelection() throws Exception {
         Timestamp time = Timestamp.ofTimeSecondsAndNanos(1, 2_000);
         Blob bytes = Blob.fromBytes(new byte[] {1});
         try (Firestore client = TestDocuments.offlineClient("p")) {
@@ -62,14 +62,19 @@ class FirestoreCollectionQueryFactoryTest {
                                             "c",
                                             new String[] {"x"},
                                             List.of(
-                                                    new FieldEquality("a.b", "v"),
-                                                    new FieldEquality("n", 5L),
-                                                    new FieldEquality("t", time),
-                                                    new FieldEquality("bytes", bytes)))
+                                                    FieldEquality.field(List.of("a.b"), "v"),
+                                                    FieldEquality.field(List.of("r", "a.b"), 1L),
+                                                    FieldEquality.documentId("k"),
+                                                    FieldEquality.field(List.of("n"), 5L),
+                                                    FieldEquality.field(List.of("t"), time),
+                                                    FieldEquality.field(List.of("bytes"), bytes)))
                                     .create(client))
                     .isEqualTo(
                             client.collection("c")
                                     .whereEqualTo(FieldPath.of("a.b"), "v")
+                                    .whereEqualTo(FieldPath.of("r", "a.b"), 1L)
+                                    // The client library turns an id into the document's name.
+                                    .whereEqualTo(FieldPath.documentId(), "k")
                                     .whereEqualTo(FieldPath.of("n"), 5L)
                                     .whereEqualTo(FieldPath.of("t"), time)
                                     .whereEqualTo(FieldPath.of("bytes"), bytes)
@@ -81,9 +86,11 @@ class FirestoreCollectionQueryFactoryTest {
     void comparesByCollectionFieldsAndEqualitiesAndSurvivesJavaSerialization() throws Exception {
         List<FieldEquality> equalities =
                 List.of(
-                        new FieldEquality("s", "v"),
-                        new FieldEquality("b", Blob.fromBytes(new byte[] {1})),
-                        new FieldEquality("t", Timestamp.ofTimeSecondsAndNanos(1, 0)));
+                        FieldEquality.field(List.of("s"), "v"),
+                        FieldEquality.field(List.of("r", "a"), 1L),
+                        FieldEquality.documentId("k"),
+                        FieldEquality.field(List.of("b"), Blob.fromBytes(new byte[] {1})),
+                        FieldEquality.field(List.of("t"), Timestamp.ofTimeSecondsAndNanos(1, 0)));
         FirestoreCollectionQueryFactory factory =
                 new FirestoreCollectionQueryFactory("c", new String[] {"a"}, equalities);
 

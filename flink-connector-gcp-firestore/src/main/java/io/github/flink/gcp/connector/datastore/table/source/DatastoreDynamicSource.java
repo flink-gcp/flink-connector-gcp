@@ -40,6 +40,7 @@ import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
+import com.google.datastore.v1.Filter;
 import com.google.datastore.v1.Query;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
@@ -50,6 +51,7 @@ import io.github.flink.gcp.connector.datastore.table.DatastoreScanConfig;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableLineage;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableSchema;
 import io.github.flink.gcp.connector.datastore.table.TypeMismatchPolicy;
+import io.github.flink.gcp.connector.firestore.common.table.PushedFilters;
 
 import javax.annotation.Nullable;
 
@@ -71,9 +73,10 @@ import java.util.Objects;
  * properties through the lookup's property mask instead, which keeps every entity whole in that
  * respect: it returns the entity whatever its indexes, and an array whole.
  *
- * <p>Predicates reach the service only when {@code scan.filter-push-down.enabled} is set, as the
- * equality filters {@link DatastoreFilterPushDown} translates; a filter never matches a value
- * excluded from indexes, so the option asserts that the filtered properties are indexed.
+ * <p>Predicates reach the service as the equality filters {@link DatastoreFilterPushDown}
+ * translates: one on the key always, and those on properties only when {@code
+ * scan.filter-push-down.enabled} is set, because a filter never matches a value excluded from
+ * indexes and the option asserts that the filtered properties are indexed.
  */
 @Internal
 public final class DatastoreDynamicSource
@@ -98,7 +101,7 @@ public final class DatastoreDynamicSource
     private int[] columns;
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
-    private DatastoreFilterPushDown.State filterState = DatastoreFilterPushDown.State.empty();
+    private PushedFilters<Filter> filterState = PushedFilters.empty();
 
     /**
      * Creates the source over every physical column and no metadata.
@@ -168,7 +171,7 @@ public final class DatastoreDynamicSource
                                         metadataKeys,
                                         policy,
                                         producedType));
-        Query filtered = filterState.query(kind);
+        Query filtered = DatastoreFilterPushDown.query(kind, filterState.filters());
         if (filtered != null) {
             builder.query(filtered);
         } else {
@@ -200,8 +203,7 @@ public final class DatastoreDynamicSource
                         metadataKeys,
                         policy,
                         context.createTypeInformation(producedDataType));
-        DatastoreLookupKeys keys =
-                new DatastoreLookupKeys(database, namespace, kind, schema.isKeyId());
+        DatastoreLookupKeys keys = keys();
         DatastoreEntityLookup lookup =
                 new DatastoreKindEntityLookup(
                         database, propertiesRead(), emulatorEndpoint, serviceAccountKeyFile);
@@ -273,18 +275,18 @@ public final class DatastoreDynamicSource
     }
 
     /**
-     * Pushes the equalities {@link DatastoreFilterPushDown} translates when {@code
-     * scan.filter-push-down.enabled} is set, and nothing otherwise; every predicate stays a
-     * residual either way.
+     * Pushes the equalities {@link DatastoreFilterPushDown} translates: one on the key always, and
+     * those on properties when {@code scan.filter-push-down.enabled} is set; every predicate stays
+     * a residual either way.
      */
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {
-        // A filter never matches a value excluded from indexes, so pushing one is safe only on the
-        // user's assertion that the filtered properties are indexed (docs/adr/0184).
+        // A filter never matches a value excluded from indexes, so pushing one on a property is
+        // safe only on the user's assertion that the filtered properties are indexed; a key is
+        // always indexed (docs/adr/0184).
         filterState =
-                scanConfig.isFilterPushDown()
-                        ? DatastoreFilterPushDown.translate(schema, filters)
-                        : DatastoreFilterPushDown.State.declined(filters);
+                DatastoreFilterPushDown.translate(
+                        schema, keys(), scanConfig.isFilterPushDown(), filters);
         return filterState.result();
     }
 
@@ -372,5 +374,10 @@ public final class DatastoreDynamicSource
                 metadataKeys,
                 producedDataType,
                 filterState);
+    }
+
+    /** The root keys the table's PRIMARY KEY values name, for the lookup and the key filter. */
+    private DatastoreLookupKeys keys() {
+        return new DatastoreLookupKeys(database, namespace, kind, schema.isKeyId());
     }
 }

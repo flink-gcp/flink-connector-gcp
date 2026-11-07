@@ -45,6 +45,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.cloud.firestore.FieldPath;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
+import io.github.flink.gcp.connector.firestore.common.table.PushedFilters;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceBuilder;
 import io.github.flink.gcp.connector.firestore.table.FirestoreLookupConfig;
@@ -52,6 +53,7 @@ import io.github.flink.gcp.connector.firestore.table.FirestoreScanConfig;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableLineage;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableSchema;
 import io.github.flink.gcp.connector.firestore.table.TypeMismatchPolicy;
+import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldEquality;
 
 import javax.annotation.Nullable;
 
@@ -100,7 +102,7 @@ public final class FirestoreDynamicSource
 
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
-    private FirestoreFilterPushDown.State filterState = FirestoreFilterPushDown.State.empty();
+    private PushedFilters<FieldEquality> filterState = PushedFilters.empty();
 
     /**
      * Creates the source over every physical column and no metadata.
@@ -173,8 +175,7 @@ public final class FirestoreDynamicSource
                     .select(paths.length == 0 ? new FieldPath[] {FieldPath.documentId()} : paths);
         } else {
             builder.query(
-                    new FirestoreCollectionQueryFactory(
-                            collection, fields, filterState.equalities()));
+                    new FirestoreCollectionQueryFactory(collection, fields, filterState.filters()));
         }
         scanConfig.applyTo(builder);
         if (emulatorEndpoint != null) {
@@ -357,7 +358,7 @@ public final class FirestoreDynamicSource
         // does not create, and PartitionQuery partitions the unfiltered group (docs/adr/0197).
         filterState =
                 scanConfig.isCollectionGroup()
-                        ? FirestoreFilterPushDown.State.declined(filters)
+                        ? PushedFilters.declined(filters)
                         : FirestoreFilterPushDown.translate(schema, filters);
         return filterState.result();
     }

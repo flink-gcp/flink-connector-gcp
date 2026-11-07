@@ -17,58 +17,51 @@
 package io.github.flink.gcp.connector.firestore.table.source;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
-import org.apache.flink.table.expressions.CallExpression;
-import org.apache.flink.table.expressions.FieldReferenceExpression;
 import org.apache.flink.table.expressions.ResolvedExpression;
-import org.apache.flink.table.expressions.ValueLiteralExpression;
-import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
-import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.LogicalTypeRoot;
-import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.Blob;
+import com.google.cloud.firestore.FieldPath;
+import io.github.flink.gcp.connector.firestore.common.table.EqualityMatcher;
+import io.github.flink.gcp.connector.firestore.common.table.EqualityMatcher.Equality;
+import io.github.flink.gcp.connector.firestore.common.table.PushedFilters;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableSchema;
 
 import java.io.Serializable;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
 /**
- * Translates the predicates of a {@code firestore} scan into equality filters of its collection
- * query ({@code docs/adr/0197}).
+ * Translates the equalities {@link EqualityMatcher} finds in the predicates of a {@code firestore}
+ * scan into equality filters of its collection query ({@code docs/adr/0197}).
  *
  * <p>Every filter is a necessary condition of the predicate it came from, never an exact one: the
  * service compares numbers across integer and floating-point types, matches {@code NaN} to {@code
  * NaN}, and treats {@code -0.0} as {@code 0}, so it can return a document Flink's predicate
  * rejects. Every predicate therefore stays a Flink residual, and what each filter must never do is
- * drop a document Flink would keep. That is why only these shapes translate:
+ * drop a document Flink would keep. That is why only these equalities translate:
  *
  * <ul>
- *   <li>{@code column = literal}, either way round, a bare {@code BOOLEAN} column (equal to {@code
- *       TRUE}), and its {@code NOT} (equal to {@code FALSE}), on a top-level physical column other
- *       than the document id;
- *   <li>a column of type {@code STRING}/{@code VARCHAR}, {@code BIGINT}, {@code DOUBLE}, {@code
- *       BOOLEAN}, {@code BYTES}/{@code VARBINARY}, or {@code TIMESTAMP_LTZ} of precision 6 or more,
- *       which the converter reads without changing the stored value;
- *   <li>a string or bytes literal of at most 1,500 bytes, the prefix of a value a Standard-edition
- *       database considers in a query, and a timestamp the service can represent;
- *   <li>under {@code AND}, every child that translates (a conjunction of necessary conditions is
- *       one); an {@code OR} translates to nothing.
+ *   <li>on the document id column, a value the service can store as an id in the collection,
+ *       translated to a filter on the document's name;
+ *   <li>on any other physical column, or a field nested in {@code ROW} columns, one that is not a
+ *       geographical point's field and that the {@code reference-field-paths} marker does not name
+ *       (a reference never equals a string), each name one literal path segment;
+ *   <li>of type {@code STRING}/{@code VARCHAR}/{@code CHAR}, {@code BIGINT}, {@code DOUBLE}, {@code
+ *       BOOLEAN}, {@code BYTES}/{@code VARBINARY}/{@code BINARY}, or {@code TIMESTAMP_LTZ} of
+ *       precision 6 or more, which the converter reads without changing the stored value;
+ *   <li>with a string or bytes literal of at most 1,500 bytes, the prefix of a value a
+ *       Standard-edition database considers in a query, and a timestamp the service can represent.
  * </ul>
  *
- * <p>A column the {@code reference-field-paths} marker names is declined, because a reference never
- * equals a string. {@code IS NULL} is declined because a missing field, which Flink reads as {@code
- * NULL}, matches no filter.
+ * <p>{@code IS NULL} is declined because a missing field, which Flink reads as {@code NULL},
+ * matches no filter.
  */
 @Internal
 final class FirestoreFilterPushDown {
@@ -89,147 +82,73 @@ final class FirestoreFilterPushDown {
      * @return the predicates accepted and the equalities they translate to; every predicate remains
      *     a residual
      */
-    static State translate(FirestoreTableSchema schema, List<ResolvedExpression> filters) {
-        List<ResolvedExpression> accepted = new ArrayList<>();
-        List<FieldEquality> equalities = new ArrayList<>();
-        for (ResolvedExpression filter : filters) {
-            List<FieldEquality> translated = new ArrayList<>();
-            collect(schema, filter, translated);
-            if (!translated.isEmpty()) {
-                accepted.add(filter);
-                equalities.addAll(translated);
-            }
-        }
-        return new State(accepted, filters, equalities);
+    static PushedFilters<FieldEquality> translate(
+            FirestoreTableSchema schema, List<ResolvedExpression> filters) {
+        return EqualityMatcher.translate(
+                schema.getRowType(), filters, equality -> translate(schema, equality));
     }
 
-    private static void collect(
-            FirestoreTableSchema schema, ResolvedExpression expression, List<FieldEquality> out) {
-        if (expression instanceof CallExpression
-                && ((CallExpression) expression)
-                        .getFunctionDefinition()
-                        .equals(BuiltInFunctionDefinitions.AND)) {
-            for (ResolvedExpression child : expression.getResolvedChildren()) {
-                collect(schema, child, out);
-            }
-            return;
+    private static Optional<FieldEquality> translate(
+            FirestoreTableSchema schema, Equality equality) {
+        if (equality.isColumn(schema.getKeyIndex())) {
+            // An id the service cannot store names no document, and the client library refuses
+            // some of them (an empty one, a path) before sending the query.
+            return equality.valueAs(String.class)
+                    .filter(FirestoreDocumentLookups::isStorableId)
+                    .map(FieldEquality::documentId);
         }
-        equality(schema, expression).ifPresent(out::add);
-    }
-
-    private static Optional<FieldEquality> equality(
-            FirestoreTableSchema schema, ResolvedExpression expression) {
-        if (expression instanceof FieldReferenceExpression) {
-            return column(schema, (FieldReferenceExpression) expression)
-                    .filter(column -> column.type.is(LogicalTypeRoot.BOOLEAN))
-                    .map(column -> new FieldEquality(column.name, Boolean.TRUE));
-        }
-        if (!(expression instanceof CallExpression)) {
-            return Optional.empty();
-        }
-        CallExpression call = (CallExpression) expression;
-        FunctionDefinition function = call.getFunctionDefinition();
-        List<ResolvedExpression> children = call.getResolvedChildren();
-        if (function.equals(BuiltInFunctionDefinitions.NOT)) {
-            if (children.size() != 1 || !(children.get(0) instanceof FieldReferenceExpression)) {
+        int length = equality.path().size();
+        for (int prefix = 1; prefix < length; prefix++) {
+            // A geographical point is one value, not a map of a latitude and a longitude.
+            if (schema.isGeoPoint(equality.joinedPath(prefix))) {
                 return Optional.empty();
             }
-            return column(schema, (FieldReferenceExpression) children.get(0))
-                    .filter(column -> column.type.is(LogicalTypeRoot.BOOLEAN))
-                    .map(column -> new FieldEquality(column.name, Boolean.FALSE));
         }
-        if (!function.equals(BuiltInFunctionDefinitions.EQUALS) || children.size() != 2) {
+        if (schema.isReference(equality.joinedPath(length))) {
             return Optional.empty();
         }
-        FieldReferenceExpression field;
-        ValueLiteralExpression literal;
-        if (children.get(0) instanceof FieldReferenceExpression
-                && children.get(1) instanceof ValueLiteralExpression) {
-            field = (FieldReferenceExpression) children.get(0);
-            literal = (ValueLiteralExpression) children.get(1);
-        } else if (children.get(1) instanceof FieldReferenceExpression
-                && children.get(0) instanceof ValueLiteralExpression) {
-            field = (FieldReferenceExpression) children.get(1);
-            literal = (ValueLiteralExpression) children.get(0);
-        } else {
-            return Optional.empty();
-        }
-        if (literal.isNull()) {
-            return Optional.empty();
-        }
-        Optional<Column> column = column(schema, field);
-        if (!column.isPresent()) {
-            return Optional.empty();
-        }
-        return value(column.get().type, literal)
-                .map(value -> new FieldEquality(column.get().name, value));
+        return value(equality.type(), equality)
+                .map(value -> FieldEquality.field(equality.path(), value));
     }
 
-    /** The top-level physical column a reference names, unless it is the id or a reference. */
-    private static Optional<Column> column(
-            FirestoreTableSchema schema, FieldReferenceExpression field) {
-        RowType rowType = schema.getRowType();
-        int index = rowType.getFieldNames().indexOf(field.getName());
-        if (index < 0 || index == schema.getKeyIndex() || schema.isReference(field.getName())) {
-            return Optional.empty();
-        }
-        return Optional.of(new Column(field.getName(), rowType.getTypeAt(index)));
-    }
-
-    private static Optional<Serializable> value(LogicalType type, ValueLiteralExpression literal) {
-        try {
-            switch (type.getTypeRoot()) {
-                case VARCHAR:
-                    return literal.getValueAs(String.class)
-                            .filter(
-                                    value ->
-                                            value.getBytes(StandardCharsets.UTF_8).length
-                                                    <= MAX_INDEXED_VALUE_BYTES)
-                            .map(Serializable.class::cast);
-                case BIGINT:
-                    Optional<Long> integer = literal.getValueAs(Long.class);
-                    if (integer.isPresent()) {
-                        return Optional.of(integer.get());
-                    }
-                    return literal.getValueAs(BigDecimal.class)
-                            .map(BigDecimal::longValueExact)
-                            .map(Serializable.class::cast);
-                case DOUBLE:
-                    Optional<Double> number = literal.getValueAs(Double.class);
-                    if (number.isPresent()) {
-                        return Optional.of(number.get());
-                    }
-                    return literal.getValueAs(BigDecimal.class)
-                            .map(BigDecimal::doubleValue)
-                            .map(Serializable.class::cast);
-                case BOOLEAN:
-                    return literal.getValueAs(Boolean.class).map(Serializable.class::cast);
-                case VARBINARY:
-                    return literal.getValueAs(byte[].class)
-                            .filter(value -> value.length <= MAX_INDEXED_VALUE_BYTES)
-                            .map(Blob::fromBytes);
-                case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                    if (((LocalZonedTimestampType) type).getPrecision()
-                            < STORED_TIMESTAMP_PRECISION) {
-                        // The converter truncates a stored timestamp to the column's precision,
-                        // so Flink keeps documents a filter on the literal would not match.
-                        return Optional.empty();
-                    }
-                    return literal.getValueAs(Instant.class)
-                            .filter(FirestoreFilterPushDown::isRepresentable)
-                            .map(
-                                    value ->
-                                            Timestamp.ofTimeSecondsAndNanos(
-                                                    value.getEpochSecond(), value.getNano()));
-                default:
-                    // CHAR and BINARY: what an equality on a fixed-length value matches is
-                    // unmeasured
-                    // (the planner presented a CHAR comparison as a cast);
-                    // ARRAY, MAP and ROW are not scalar.
+    private static Optional<Serializable> value(LogicalType type, Equality equality) {
+        switch (type.getTypeRoot()) {
+            case CHAR:
+            case VARCHAR:
+                // The planner presents a CHAR column bare only beside a literal of its length;
+                // the converter reads a stored string unpadded, as under VARCHAR.
+                return equality.valueAs(String.class)
+                        .filter(
+                                value ->
+                                        value.getBytes(StandardCharsets.UTF_8).length
+                                                <= MAX_INDEXED_VALUE_BYTES)
+                        .map(Serializable.class::cast);
+            case BIGINT:
+                return equality.longValue().map(Serializable.class::cast);
+            case DOUBLE:
+                return equality.doubleValue().map(Serializable.class::cast);
+            case BOOLEAN:
+                return equality.valueAs(Boolean.class).map(Serializable.class::cast);
+            case BINARY:
+            case VARBINARY:
+                return equality.valueAs(byte[].class)
+                        .filter(value -> value.length <= MAX_INDEXED_VALUE_BYTES)
+                        .map(Blob::fromBytes);
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                if (((LocalZonedTimestampType) type).getPrecision() < STORED_TIMESTAMP_PRECISION) {
+                    // The converter truncates a stored timestamp to the column's precision,
+                    // so Flink keeps documents a filter on the literal would not match.
                     return Optional.empty();
-            }
-        } catch (ArithmeticException e) {
-            return Optional.empty();
+                }
+                return equality.valueAs(Instant.class)
+                        .filter(FirestoreFilterPushDown::isRepresentable)
+                        .map(
+                                value ->
+                                        Timestamp.ofTimeSecondsAndNanos(
+                                                value.getEpochSecond(), value.getNano()));
+            default:
+                // ARRAY, MAP and ROW are not scalar.
+                return Optional.empty();
         }
     }
 
@@ -239,81 +158,38 @@ final class FirestoreFilterPushDown {
                 && instant.getEpochSecond() <= Timestamp.MAX_VALUE.getSeconds();
     }
 
-    /** The planner's result and the equalities a collection query adds. */
-    static final class State {
-        private static final State EMPTY =
-                new State(
-                        Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
-
-        private final List<ResolvedExpression> accepted;
-        private final List<ResolvedExpression> remaining;
-        private final List<FieldEquality> equalities;
-
-        private State(
-                List<ResolvedExpression> accepted,
-                List<ResolvedExpression> remaining,
-                List<FieldEquality> equalities) {
-            this.accepted = List.copyOf(accepted);
-            this.remaining = List.copyOf(remaining);
-            this.equalities = List.copyOf(equalities);
-        }
-
-        static State empty() {
-            return EMPTY;
-        }
-
-        /** Returns a state that pushes nothing and keeps every predicate. */
-        static State declined(List<ResolvedExpression> filters) {
-            return new State(Collections.emptyList(), filters, Collections.emptyList());
-        }
-
-        SupportsFilterPushDown.Result result() {
-            return SupportsFilterPushDown.Result.of(accepted, remaining);
-        }
-
-        List<FieldEquality> equalities() {
-            return equalities;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            State state = (State) o;
-            return accepted.equals(state.accepted)
-                    && remaining.equals(state.remaining)
-                    && equalities.equals(state.equalities);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(accepted, remaining, equalities);
-        }
-    }
-
     /**
-     * One equality filter on a literal field name. The value is a {@code String}, {@code Long},
-     * {@code Double}, {@code Boolean}, {@link Blob} or {@link Timestamp}, each serializable with
-     * the query factory that carries it.
+     * One equality filter, on the document id or on a field path of literal segments. The value is
+     * a {@code String}, {@code Long}, {@code Double}, {@code Boolean}, {@link Blob} or {@link
+     * Timestamp}, each serializable with the query factory that carries it.
      */
     static final class FieldEquality implements Serializable {
 
         private static final long serialVersionUID = 1L;
 
-        private final String field;
+        /** The segments of the field path, or {@code null} for the document id. */
+        private final String[] segments;
+
         private final Serializable value;
 
-        FieldEquality(String field, Serializable value) {
-            this.field = field;
+        private FieldEquality(String[] segments, Serializable value) {
+            this.segments = segments;
             this.value = value;
         }
 
-        String field() {
-            return field;
+        /** Returns an equality on the document id, which the client library takes as a string. */
+        static FieldEquality documentId(String id) {
+            return new FieldEquality(null, id);
+        }
+
+        /** Returns an equality on the field the segments address, outermost first. */
+        static FieldEquality field(List<String> segments, Serializable value) {
+            return new FieldEquality(segments.toArray(new String[0]), value);
+        }
+
+        /** Returns the field path the filter compares. */
+        FieldPath path() {
+            return segments == null ? FieldPath.documentId() : FieldPath.of(segments);
         }
 
         /** Returns the value as the client library takes it. */
@@ -330,27 +206,17 @@ final class FirestoreFilterPushDown {
                 return false;
             }
             FieldEquality that = (FieldEquality) o;
-            return field.equals(that.field) && value.equals(that.value);
+            return Arrays.equals(segments, that.segments) && value.equals(that.value);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(field, value);
+            return 31 * Arrays.hashCode(segments) + Objects.hashCode(value);
         }
 
         @Override
         public String toString() {
-            return field + " == " + value;
-        }
-    }
-
-    private static final class Column {
-        private final String name;
-        private final LogicalType type;
-
-        private Column(String name, LogicalType type) {
-            this.name = name;
-            this.type = type;
+            return path() + " == " + value;
         }
     }
 }

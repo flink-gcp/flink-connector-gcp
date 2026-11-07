@@ -218,6 +218,91 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                 .containsExactlyInAnyOrder(Row.of("a"), Row.of("b"), Row.of("d"), Row.of("e"));
     }
 
+    /**
+     * A key equality and a key range together need no composite index, and admit only the root
+     * entity of the name; nor do equalities on property paths with a key range. A filter's property
+     * is never quoted: a dotted name matches both the property of that name and the embedded
+     * entity's property on the path, and a backquote or a backslash is part of the name. Each is
+     * what the emulator answered, which {@code DatastoreTableFilterPushDownITCase} relies on.
+     */
+    @Test
+    void aKeyEqualityAndUnquotedPropertyPathsMatchAsOnTheEmulator() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        entity(kind, "a").set("s", "x").build(),
+                        entity(kind, "k").set("s", "x").build(),
+                        entity(kind, "z").set("s", "x").build(),
+                        Entity.newBuilder(
+                                        Key.newBuilder(keyIn("Parent", "p").build(), kind, "k")
+                                                .build())
+                                .set("s", "x")
+                                .build());
+        Key k = keyIn(kind, "k").build();
+        assertThat(names(kind, PropertyFilter.eq("__key__", k))).containsExactly("k");
+        assertThat(
+                        names(
+                                kind,
+                                CompositeFilter.and(
+                                        PropertyFilter.eq("s", "x"),
+                                        PropertyFilter.eq("__key__", k),
+                                        PropertyFilter.ge("__key__", keyIn(kind, "b").build()),
+                                        PropertyFilter.lt("__key__", keyIn(kind, "y").build()))))
+                .containsExactly("k");
+
+        String paths = uniqueKind();
+        client().put(
+                        entity(paths, "nested")
+                                .set("e", FullEntity.newBuilder().set("x", 1L).build())
+                                .set("a", FullEntity.newBuilder().set("b", "q").build())
+                                .build(),
+                        entity(paths, "dotted").set("e.x", 1L).set("a.b", "q").build(),
+                        entity(paths, "named").set("a`b", "q").set("a\\b", "q").build());
+        assertThat(names(paths, PropertyFilter.eq("e.x", 1L)))
+                .containsExactlyInAnyOrder("nested", "dotted");
+        assertThat(names(paths, PropertyFilter.eq("a.b", "q")))
+                .containsExactlyInAnyOrder("nested", "dotted");
+        assertThat(names(paths, PropertyFilter.eq("a`b", "q"))).containsExactly("named");
+        assertThat(names(paths, PropertyFilter.eq("a\\b", "q"))).containsExactly("named");
+        assertThat(names(paths, PropertyFilter.eq("`a.b`", "q"))).isEmpty();
+        // Path equalities with a split's key range, as a filtered scan sends them: no composite
+        // index needed. The range admits "named" and "nested", of which only "nested" matches.
+        assertThat(
+                        names(
+                                paths,
+                                CompositeFilter.and(
+                                        PropertyFilter.eq("e.x", 1L),
+                                        PropertyFilter.eq("a.b", "q"),
+                                        PropertyFilter.ge("__key__", keyIn(paths, "e").build()),
+                                        PropertyFilter.lt("__key__", keyIn(paths, "z").build()))))
+                .containsExactly("nested");
+
+        TableEnvironment batch =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        String columns =
+                "(id STRING NOT NULL, e ROW<x BIGINT>, `a.b` STRING, `a``b` STRING,"
+                        + " `a\\b` STRING, PRIMARY KEY (id) NOT ENFORCED) ";
+        batch.executeSql(
+                "CREATE TABLE pushed "
+                        + columns
+                        + with(
+                                paths,
+                                "'scan.filter-push-down.enabled' = 'true'",
+                                "'scan.partition.max-partitions' = '4'"));
+        assertThat(collect(batch, "SELECT id FROM pushed WHERE e.x = 1"))
+                .containsExactly(Row.of("nested"));
+        assertThat(collect(batch, "SELECT id FROM pushed WHERE `a.b` = 'q'"))
+                .containsExactly(Row.of("dotted"));
+        assertThat(collect(batch, "SELECT id FROM pushed WHERE `a``b` = 'q'"))
+                .containsExactly(Row.of("named"));
+        assertThat(collect(batch, "SELECT id FROM pushed WHERE `a\\b` = 'q'"))
+                .containsExactly(Row.of("named"));
+        batch.executeSql(
+                "CREATE TABLE keyed (id STRING NOT NULL, s STRING, PRIMARY KEY (id) NOT ENFORCED) "
+                        + with(kind, "'scan.partition.max-partitions' = '4'"));
+        assertThat(collect(batch, "SELECT id FROM keyed WHERE id = 'k'"))
+                .containsExactly(Row.of("k"));
+    }
+
     private static Entity.Builder entity(String kind, String name) {
         return Entity.newBuilder(keyIn(kind, name).build());
     }

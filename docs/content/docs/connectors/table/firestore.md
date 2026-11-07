@@ -167,9 +167,13 @@ A value of another type at the field a query names is still seen, and follows th
 ### Filter pushdown
 
 A scan of one collection hands the service the equality predicates it can evaluate, so documents that cannot match are not returned; a Standard-edition database bills only the documents a query returns.
-A predicate is pushed when it compares a top-level column with a literal (`s = 'x'`), or is a `BOOLEAN` column or its `NOT`, and the column is `STRING`/`VARCHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY`, or `TIMESTAMP_LTZ` of precision 6 or more.
+A predicate is pushed when it compares a column, or a field of a `ROW` column such as `e.x`, with a literal (`s = 'x'`), or is a `BOOLEAN` one or its `NOT`, and its type is `STRING`/`VARCHAR`/`CHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY`/`BINARY`, or `TIMESTAMP_LTZ` of precision 6 or more.
+A field of a `ROW` column is compared at its path in the map, so a document whose field is named by the whole path (`"e.x"`) does not match `e.x = 1`.
+An equality on the PRIMARY KEY column is pushed as a filter on the document id, unless the value cannot be an id in the collection (empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/`).
+Flink hands a `CHAR` or `BINARY` column to the source only beside a literal of the column's length; beside a literal of another length it arrives as a cast, which stays with Flink.
 Under `AND`, each conjunct that qualifies is pushed.
-Everything else is evaluated by Flink alone: the PRIMARY KEY column, a column `reference-field-paths` names, `CHAR` and `BINARY` columns, a coarser `TIMESTAMP_LTZ`, `IS NULL` (the service matches only a stored null, never a missing field), inequalities, `OR`, `IN`, a string or bytes literal over 1,500 bytes, and an `ARRAY`, `MAP` or `ROW` column.
+Everything else is evaluated by Flink alone: a column or field `reference-field-paths` names, a field of a geographical point, a `NOT NULL` field under a nullable `ROW` (Flink takes it to be never NULL), a coarser `TIMESTAMP_LTZ`, `IS NULL` (the service matches only a stored null, never a missing field), inequalities, `OR`, `IN`, a string or bytes literal over 1,500 bytes, and an `ARRAY`, `MAP` or whole `ROW` value.
+`ARRAY_CONTAINS` never reaches the source: Flink 1.20 and 2.2 do not offer it for pushdown.
 
 A pushed filter narrows what is read; it does not replace Flink's evaluation, so every predicate still runs in Flink afterwards.
 The service compares numbers across types, so `n = 5` also reads a document holding `5.0`, and the conversion and Flink's filter then decide that document as they would without pushdown.
@@ -322,4 +326,4 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 
 The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md), and filter pushdown, with the service's matching measured on both editions, in [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md).
 The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups; the uber-jar's tests write through its relocated classes.
-A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing; the gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database.
+A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing, nested fields and fixed-length columns included, and a document-id equality with a filter on the document path; the gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database, an id and a map field's equality on a Standard-edition one.

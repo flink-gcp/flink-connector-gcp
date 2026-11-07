@@ -29,8 +29,9 @@ import javax.annotation.Nullable;
 import java.io.Serializable;
 
 /**
- * Builds the key a lookup reads from the PRIMARY KEY value: a root key of the table's kind in its
- * namespace, named by a {@code STRING} key column or numbered by a {@code BIGINT} one.
+ * Builds the root key of the table's kind in its namespace that a PRIMARY KEY value names: the key
+ * a lookup reads, and the key a pushed key equality compares with ({@code
+ * DatastoreFilterPushDown}). A {@code STRING} key column names it, a {@code BIGINT} one numbers it.
  */
 @Internal
 final class DatastoreLookupKeys implements Serializable {
@@ -71,23 +72,39 @@ final class DatastoreLookupKeys implements Serializable {
         if (keyRow.isNullAt(0)) {
             return null;
         }
-        Key.PathElement.Builder element = Key.PathElement.newBuilder().setKind(kind);
-        if (id) {
-            long value = keyRow.getLong(0);
-            if (value == 0) {
-                return null;
-            }
-            element.setId(value);
-        } else {
-            String name = keyRow.getString(0).toString();
-            if (name.isEmpty()
-                    || DatastoreTableSchema.isReserved(name)
-                    || DatastoreTableSchema.isTooLong(name)) {
-                return null;
-            }
-            element.setName(name);
+        return id ? key(keyRow.getLong(0)) : key(keyRow.getString(0).toString());
+    }
+
+    /**
+     * Returns the root key numbered by the id, or {@code null} for the id {@code 0}, which names no
+     * entity.
+     */
+    @Nullable
+    Key key(long number) {
+        if (number == 0) {
+            return null;
         }
-        return Key.newBuilder().setPartitionId(partition()).addPath(element).build();
+        return Key.newBuilder()
+                .setPartitionId(partition())
+                .addPath(Key.PathElement.newBuilder().setKind(kind).setId(number))
+                .build();
+    }
+
+    /**
+     * Returns the root key named by the name, or {@code null} for a name that is empty, of the form
+     * {@code __…__} or longer than 1,500 bytes, none of which names an entity.
+     */
+    @Nullable
+    Key key(String name) {
+        if (name.isEmpty()
+                || DatastoreTableSchema.isReserved(name)
+                || DatastoreTableSchema.isTooLong(name)) {
+            return null;
+        }
+        return Key.newBuilder()
+                .setPartitionId(partition())
+                .addPath(Key.PathElement.newBuilder().setKind(kind).setName(name))
+                .build();
     }
 
     /** The partition every key names, built once per instance after deserialization. */
