@@ -28,7 +28,10 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.WriteBatch;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreEmulatorITCase;
+import io.github.flink.gcp.connector.firestore.source.batch.FirestoreBatchSource;
+import io.github.flink.gcp.connector.firestore.source.batch.enumerator.ClientQueryPlanner;
 import io.github.flink.gcp.connector.firestore.source.serializer.FirestoreDocumentDeserializationSchema;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
@@ -102,6 +105,45 @@ class FirestoreSourceEmulatorITCase extends AbstractFirestoreEmulatorITCase {
                                     + String.format("%03d", n));
         }
         return paths;
+    }
+
+    @Test
+    void plansAQueryInTheOrderItsCursorsContinueIt() throws Exception {
+        // The emulator answers an unordered query in name order, as a Standard-edition database
+        // does, so what is read cannot show the ordering; the planned query can (#2088).
+        String collection = uniqueCollection();
+        seed(List.of(collection + "/a", collection + "/b", collection + "/c"));
+        Map<String, FirestoreQueryFactory> queries =
+                Map.of(
+                        "range",
+                        firestore -> firestore.collection(collection).whereGreaterThan("n", 0),
+                        "not null",
+                        firestore -> firestore.collection(collection).whereNotEqualTo("n", null));
+        for (Map.Entry<String, FirestoreQueryFactory> query : queries.entrySet()) {
+            FirestoreSourceConfig<String> config =
+                    ((FirestoreBatchSource<String>)
+                                    FirestoreSource.<String>builder()
+                                            .database(database())
+                                            .deserializer(
+                                                    new TestSources.DocumentPathDeserializer())
+                                            .emulatorEndpoint(emulatorEndpoint())
+                                            .query(query.getValue())
+                                            .build())
+                            .getConfig();
+            try (ClientQueryPlanner planner =
+                    new ClientQueryPlanner(
+                            EmulatorEndpoint.parse(emulatorEndpoint(), "emulatorEndpoint"))) {
+                assertThat(planner.plan(config, 1).getQueries())
+                        .as(query.getKey())
+                        .singleElement()
+                        .satisfies(
+                                request ->
+                                        assertThat(request.getStructuredQuery().getOrderByList())
+                                                .extracting(
+                                                        order -> order.getField().getFieldPath())
+                                                .containsExactly("n", "__name__"));
+            }
+        }
     }
 
     @Test

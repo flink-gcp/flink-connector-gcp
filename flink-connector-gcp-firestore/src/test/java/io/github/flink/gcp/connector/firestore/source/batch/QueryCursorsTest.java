@@ -23,6 +23,7 @@ import com.google.cloud.firestore.BsonTimestamp;
 import com.google.cloud.firestore.Decimal128Value;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.FieldPath;
+import com.google.cloud.firestore.Filter;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Int32Value;
 import com.google.cloud.firestore.MaxKey;
@@ -33,6 +34,7 @@ import com.google.cloud.firestore.VectorValue;
 import com.google.firestore.v1.ArrayValue;
 import com.google.firestore.v1.Cursor;
 import com.google.firestore.v1.MapValue;
+import com.google.firestore.v1.RunQueryRequest;
 import com.google.firestore.v1.StructuredQuery;
 import com.google.firestore.v1.Value;
 import com.google.protobuf.ByteString;
@@ -45,7 +47,9 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -318,5 +322,115 @@ class QueryCursorsTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> QueryCursors.continueAfter(base, document("c/x", Map.of()), -1))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** A document holding every field the ordering cases below filter or order by. */
+    private static DocumentSnapshot orderedFields() {
+        Value nested =
+                Value.newBuilder()
+                        .setMapValue(
+                                MapValue.newBuilder()
+                                        .putFields(
+                                                "n",
+                                                Value.newBuilder().setIntegerValue(4L).build()))
+                        .build();
+        return document("c/x", Map.of("a", 1L, "b", 2L, "k", 3L, "m", nested, "z.y", 5L));
+    }
+
+    static Stream<Arguments> queriesTheLibraryContinues() {
+        Query c = client.collection("c");
+        return Stream.of(
+                Arguments.of("unfiltered", c),
+                Arguments.of("equality", c.whereEqualTo("k", 1L)),
+                Arguments.of("in and array-contains", c.whereIn("k", List.of(1L, 2L))),
+                Arguments.of("range", c.whereGreaterThan("k", 1L)),
+                Arguments.of("two ranges", c.whereLessThan("b", 5L).whereGreaterThan("a", 1L)),
+                Arguments.of(
+                        "range on one field twice",
+                        c.whereGreaterThan("k", 1L).whereLessThan("k", 9L)),
+                Arguments.of(
+                        "nested and dotted paths",
+                        c.whereGreaterThan(FieldPath.of("z.y"), 0L).whereGreaterThan("m.n", 0L)),
+                Arguments.of("not equal", c.whereNotEqualTo("k", 2L)),
+                Arguments.of("not in", c.whereNotIn("k", List.of(2L))),
+                Arguments.of(
+                        "equality beside a range", c.whereEqualTo("b", 2L).whereLessThan("a", 3L)),
+                Arguments.of(
+                        "ranges under OR",
+                        c.where(Filter.or(Filter.greaterThan("b", 1L), Filter.lessThan("a", 0L)))),
+                Arguments.of(
+                        "descending order beside a range",
+                        c.orderBy("b", Query.Direction.DESCENDING).whereGreaterThan("a", 1L)),
+                Arguments.of(
+                        "ordered by the ranged field", c.whereGreaterThan("k", 1L).orderBy("k")),
+                Arguments.of("ordered by name", c.orderBy(FieldPath.documentId())),
+                Arguments.of("name range", c.whereGreaterThan(FieldPath.documentId(), "a")),
+                Arguments.of(
+                        "name range beside a field range",
+                        c.whereGreaterThan(FieldPath.documentId(), "a").whereGreaterThan("k", 1L)),
+                Arguments.of(
+                        "descending name with a range",
+                        c.whereGreaterThan("k", 1L)
+                                .orderBy(FieldPath.documentId(), Query.Direction.DESCENDING)));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("queriesTheLibraryContinues")
+    void ordersAQueryAsTheLibrarysCursorContinuesIt(String shape, Query query) {
+        RunQueryRequest ordered = QueryCursors.withCursorOrder(query.toProto());
+
+        assertThat(ordered.getStructuredQuery().getOrderByList())
+                .isEqualTo(structured(query.startAfter(orderedFields())).getOrderByList());
+        // Nothing else of the query changes, and the library's cursor then keeps the ordering.
+        assertThat(ordered.getStructuredQuery().toBuilder().clearOrderBy().build())
+                .isEqualTo(structured(query).toBuilder().clearOrderBy().build());
+        Query rebuilt = Query.fromProto(client, ordered);
+        assertThat(structured(rebuilt.startAfter(orderedFields())).getOrderByList())
+                .isEqualTo(ordered.getStructuredQuery().getOrderByList());
+    }
+
+    @Test
+    void writesNothingIntoAQueryAlreadyOrderedThatWay() {
+        RunQueryRequest once =
+                QueryCursors.withCursorOrder(
+                        client.collection("c").whereGreaterThan("k", 1L).toProto());
+
+        assertThat(QueryCursors.withCursorOrder(once)).isSameAs(once);
+    }
+
+    @Test
+    void ordersByAFieldFilteredNotNullOrNotNanWhereTheLibraryWouldNot() {
+        // The service orders such a query by the field, as it does any not-equal filter; the
+        // client library 3.50.0 does not count either filter, and its cursor would continue the
+        // query by name alone.
+        Query query =
+                client.collection("c").whereNotEqualTo("k", null).whereNotEqualTo("b", Double.NaN);
+
+        assertThat(
+                        QueryCursors.withCursorOrder(query.toProto())
+                                .getStructuredQuery()
+                                .getOrderByList()
+                                .stream()
+                                .map(order -> order.getField().getFieldPath())
+                                .collect(Collectors.toList()))
+                .containsExactly("b", "k", "__name__");
+        assertThat(structured(query.startAfter(orderedFields())).getOrderByList())
+                .as("the library now orders by these fields; the deliberate difference can go")
+                .extracting(order -> order.getField().getFieldPath())
+                .containsExactly("__name__");
+    }
+
+    @Test
+    void keepsTheQuerysOwnCursorWhenItAddsTheName() {
+        Query query = client.collection("c").orderBy("k").startAt(5L).endBefore(9L);
+
+        StructuredQuery ordered =
+                QueryCursors.withCursorOrder(query.toProto()).getStructuredQuery();
+
+        assertThat(ordered.getOrderByList())
+                .extracting(order -> order.getField().getFieldPath())
+                .containsExactly("k", "__name__");
+        assertThat(ordered.getStartAt()).isEqualTo(structured(query).getStartAt());
+        assertThat(ordered.getEndAt()).isEqualTo(structured(query).getEndAt());
     }
 }
