@@ -155,7 +155,8 @@ This applies to a scan of one collection and to a collection-group scan; a looku
 The scan asks for a nested field only as far as the answer reads the same as the whole column would.
 It does not descend into a `ROW` that `geo-point-field-paths` marks, because a geographical point is not a map, and it stops at a `NOT NULL` field: the service returns a nested field only when every field on its path is a map holding the next, so a missing field and a missing parent look alike, and only a nullable field reads the same in both cases.
 Below where the path stops, the scan reads the rest of the path from the value the service returned.
-A table that declares a `NOT NULL` field inside a nullable `ROW` reads whole columns: Flink would declare that field `NOT NULL` in the projected row although its `ROW` can be NULL, and would then evaluate `r.a IS NULL` as false for a document without `r`.
+A table that declares a `NOT NULL` field inside a nullable `ROW` reads whole columns: Flink would declare that field `NOT NULL` in the projected row although its `ROW` can be NULL, and a query such as `COALESCE(r.a, -1)` would then fail Flink's `NOT NULL` enforcer for a document without `r`.
+Whatever the scan reads, Flink 1.20.5 and 2.2.1 evaluate `r.a IS NULL` on such a field as false for a document without `r`, and `WHERE r.a IS NOT NULL` keeps that document; test `r IS NULL` instead, which both versions evaluate correctly.
 Flink 1.20 drops a `NOT NULL` that SQL DDL declares on a `ROW`'s field, so there only a table defined through the Table API keeps such a field, and a DDL table projects nested fields as nullable ones.
 An `ARRAY` or `MAP` column is always read whole.
 

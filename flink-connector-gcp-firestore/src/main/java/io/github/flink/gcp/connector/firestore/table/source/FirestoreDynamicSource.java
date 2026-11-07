@@ -309,8 +309,9 @@ public final class FirestoreDynamicSource
     @Override
     public boolean supportsNestedProjection() {
         // The planner types a projected nested field as the field is declared, so a NOT NULL
-        // field of a nullable ROW would be produced NOT NULL although its ROW may be NULL, and
-        // Flink would then fold `IS NULL` to FALSE. Such a table reads whole columns.
+        // field of a nullable ROW would be produced NOT NULL although its ROW may be NULL, and a
+        // NULL there fails Flink's NOT NULL enforcer, e.g. for COALESCE(r.a, -1). Such a table
+        // reads whole columns.
         RowType row = schema.getRowType();
         for (int i = 0; i < row.getFieldCount(); i++) {
             if (hasNotNullFieldUnderNullableRow(row.getTypeAt(i), false)) {

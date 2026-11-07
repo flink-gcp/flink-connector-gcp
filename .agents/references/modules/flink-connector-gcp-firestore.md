@@ -165,7 +165,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   projected `ROW` field's path only as deep as every field on it is nullable, never into a
   geo-point `ROW`; `FirestoreToRowDataConverter.createPath` reads the rest. A table with a `NOT NULL`
   field inside a nullable `ROW` answers `supportsNestedProjection()` false: Flink would produce that
-  field `NOT NULL` and fold `IS NULL` to false. Both policies push (owner): a non-map value on the
+  field `NOT NULL`, and `COALESCE(r.a, -1)` then fails the NOT NULL enforcer. Flink 1.20.5, 2.2.1
+  and 2.3.0 fold `r.a IS NULL` to false for such a field whatever the source does (#2050); the
+  guard neither causes nor cures that. Both policies push (owner): a non-map value on the
   path reads as NULL even under `fail`. `FirestoreTableNestedProjectionITCase` compares projected
   rows with the whole column's fields; keep that oracle when changing the converter.
 - **A collection-group table declares no PRIMARY KEY** (ids repeat across the group, and the planner

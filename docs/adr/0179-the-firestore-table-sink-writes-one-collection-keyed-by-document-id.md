@@ -20,8 +20,8 @@ limitations under the License.
 - Date: 2026-10-04 (client library facts read in google-cloud-firestore 3.49.0 through
   libraries-bom 26.90.0; emulator behavior measured 2026-10-04 against the pinned
   `google-cloud-cli` emulators image, one run); revised 2026-10-04 by [#1608] (the scan) and [#1643] (lookup equality keys), and 2026-10-10 by [#1680] (rows of a table without a PRIMARY KEY) and [#1706] (an array
-  directly inside an array), and 2026-10-11 by [#1729] (`merge` the default write mode, `set` renamed `replace`), and 2026-10-17 by [#1819] (a Standard-edition database refuses an array directly inside an array), and 2026-10-24 by [#1895] (it stores one again), and 2026-10-27 by [#1556] (`sink.ordering-mode`, [ADR-0187])
-- Issues: [#1607], [#1608], [#1544], [#355], [#1556], [#1643], [#1680], [#1706], [#1729], [#1819], [#1895]
+  directly inside an array), and 2026-10-11 by [#1729] (`merge` the default write mode, `set` renamed `replace`), and 2026-10-17 by [#1819] (a Standard-edition database refuses an array directly inside an array), and 2026-10-24 by [#1895] (it stores one again), and 2026-10-27 by [#1556] (`sink.ordering-mode`, [ADR-0187]), and 2026-11-06 by [#1839] (nested projection), and 2026-11-07 by [#2052] (why a `NOT NULL` field inside a nullable `ROW` keeps whole-column reads)
+- Issues: [#1607], [#1608], [#1544], [#355], [#1556], [#1643], [#1680], [#1706], [#1729], [#1819], [#1895], [#1839], [#2050], [#2052]
 - Modules: firestore (`io.github.flink.gcp.connector.firestore.table`, `table.sink`, `table.source`); base (`lineage.internal`, `table`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/firestore.md`
 
@@ -124,7 +124,7 @@ Over 100 documents each holding a 5,000-key map in `r`, the client library's que
 Two rules keep the results of the whole-column read.
 
 - **The path stops at a `NOT NULL` field and at a marked geographical point.** Since a missing field and a missing parent look alike in the answer, a path is selected only as deep as every field on it is nullable, so that both read as NULL; below that, the converter reads the rest from the value returned. A geographical point is not a map, so its `ROW` is selected whole.
-- **A table with a `NOT NULL` field inside a nullable `ROW` does not support nested projection.** The produced type the planner passes keeps a projected nested field's declared nullability, measured on Flink 2.2.1 (`Projection`'s nested `project` in `flink-table-common` does the same), so `r_a` would be produced `NOT NULL` although `r` may be NULL. Producing NULL into it was measured on the emulator: `r.a IS NULL` evaluated to false for a document without `r`, and `COALESCE(r.a, -1)` failed Flink's `NOT NULL` enforcer. No source can produce a correct value there, so such a table reads whole columns. Flink 1.20.5 drops a `NOT NULL` that DDL declares on a `ROW`'s field, so there such a table arises only through the Table API (`DataTypes.BIGINT().notNull()`), and the plan test and the oracle of the IT build theirs that way.
+- **A table with a `NOT NULL` field inside a nullable `ROW` does not support nested projection.** The produced type the planner passes keeps a projected nested field's declared nullability, measured on Flink 2.2.1 (`Projection`'s nested `project` in `flink-table-common` does the same), so `r_a` would be produced `NOT NULL` although `r` may be NULL. Producing NULL into it was measured on the emulator: `COALESCE(r.a, -1)` failed Flink's `NOT NULL` enforcer for a document without `r`. The same run saw `r.a IS NULL` evaluate to false, which the revision first attributed to the projection; a standalone reproduction ([#2050]) later showed that Flink 1.20.5, 2.2.1 and 2.3.0 fold that predicate to false in the plan whatever the source produces, so reading whole columns does not change it. No source can produce a correct value there, so such a table reads whole columns. Flink 1.20.5 drops a `NOT NULL` that DDL declares on a `ROW`'s field, so there such a table arises only through the Table API (`DataTypes.BIGINT().notNull()`), and the plan test and the oracle of the IT build theirs that way.
 
 Type checking covers the fields read (owner, 2026-11-06), as it already covers only the columns read and, since [ADR-0197], only the documents read.
 A field of a `ROW` the query does not name is not checked, so a value there that failed the whole-column read no longer does: a mismatch under `type-mismatch-policy = 'fail'`, and under either policy a missing or mismatched value in a `NOT NULL` field, which no policy reads as NULL. A value that is not a map on the selected path is not returned by the service, so under `fail` a document whose `r` holds a string reads `r.a` as NULL where the whole-column read failed.
@@ -162,6 +162,8 @@ A mismatched value at the named field is still seen and follows the policy: it f
 [#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
 [#1895]: https://github.com/flink-gcp/flink-connector-gcp/issues/1895
 [#1839]: https://github.com/flink-gcp/flink-connector-gcp/issues/1839
+[#2050]: https://github.com/flink-gcp/flink-connector-gcp/issues/2050
+[#2052]: https://github.com/flink-gcp/flink-connector-gcp/issues/2052
 [#1830]: https://github.com/flink-gcp/flink-connector-gcp/issues/1830
 [ADR-0197]: 0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md
 [ADR-0187]: 0187-the-firestore-sink-keeps-per-document-order-on-opt-in.md
