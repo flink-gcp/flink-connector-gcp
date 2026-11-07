@@ -614,14 +614,17 @@ the client.
 
 ### Delivery guarantees
 
-The source is **at-least-once**, and holds no message data in Flink state — delivery state lives on
+The source is **at-least-once**, and holds no message data in Flink state (with
+[restore deduplication](#restore-deduplication) on, it holds message ids) — delivery state lives on
 the Pub/Sub server. A received message passes through four states: *pending* (received, not yet
 emitted), *staged* (emitted downstream), *bound to a checkpoint* (that checkpoint is being taken),
 and *acknowledged* (that checkpoint completed). Only the last step tells Pub/Sub the message is
 done, so a failure at any earlier point leaves it unacknowledged and Pub/Sub redelivers it.
 Acknowledging sweeps every checkpoint at or below the completed id, so an aborted checkpoint or a
-lost completion notification is healed by the next successful one. Because checkpoints carry no
-message data, a restore needs no retained checkpoint.
+lost completion notification is healed by the next successful one, as long as the job keeps
+running. A notification lost because the job stopped is not healed this way; see
+[Restore deduplication](#restore-deduplication). Because checkpoints carry no message data, a
+restore needs no retained checkpoint.
 
 **Checkpointing must be enabled** in streaming jobs: without it `notifyCheckpointComplete` never
 fires, nothing is ever acknowledged, and the source stalls once the client library's flow control
@@ -663,6 +666,62 @@ acknowledgements that only arrive at checkpoint completion. Acknowledgement stat
 split, so a split that goes away releases only its own messages. A redelivery arriving before its
 predecessor was settled nacks the superseded handle, which is what releases that delivery's
 flow-control permit inside the client library.
+
+### Restore deduplication
+
+A checkpoint's messages are acknowledged when its completion notification reaches the reader, and Flink delivers that notification on a best-effort basis.
+If the job is cancelled or fails after a checkpoint completes but before the notification arrives, the job restores that checkpoint while Pub/Sub has never received the acknowledgements.
+The reader's close nacks those messages with everything else it holds, Pub/Sub redelivers them, and the restored job processes a whole checkpoint interval a second time, although the restored checkpoint already covers its output.
+
+The AdaptiveScheduler makes this a routine event rather than a rare one.
+It triggers a rescale when a checkpoint completes (`jobmanager.adaptive-scheduler.rescale-trigger.*`), so the cancellation starts in the same instant as the notification, and every rescale in reactive mode or under an autoscaler races it.
+One lost race duplicates a whole checkpoint interval, which is minutes of data for a job that needs long intervals, such as one writing to BigQuery with `FILE_LOADS`.
+
+`restoreDeduplication(true)` (Table API: `'scan.restore-deduplication.enabled' = 'true'`) closes that gap for a restore of the whole source.
+Each checkpoint additionally records the ids of the messages it covers that are not acknowledged yet, per subscription.
+After a restore, a redelivered message whose id is in the restored ledger is acknowledged instead of emitted.
+Nothing is lost by this: a job restores only from a completed checkpoint, so every suppressed message had its records committed by that checkpoint.
+A redelivery the ledger misses, because its entry expired or never reached the reader, is emitted, which is the duplicate the source produces without the setting.
+
+The source cannot store the acknowledgement ids themselves and acknowledge them after the restore, as the Apache connector's legacy source does.
+The client library's streaming-pull subscriber never exposes an acknowledgement id to the application, and stopping the subscriber nacks every message it still leases, so after a cancellation the ids it held are already invalid.
+Pub/Sub keeps the message id across a redelivery, and that id is what the ledger records.
+
+**What a restore does.**
+The ledger lands on the readers in whatever way Flink redistributes their state, while Pub/Sub decides which streaming-pull connection a redelivery reaches.
+So each reader uploads the ledger chunks it was handed to the enumerator, and the enumerator forwards each subscription's ledger to every reader that consumes the subscription under the current plan: all of its readers under `NONE`, its one owner under `PER_KEY`.
+Splits are assigned only after every restored reader has reported its upload, or two minutes after the first of them registers, whichever comes first, so the subscribers start with the ledger already in place.
+A chunk is at most about 1 MiB, so no event approaches Flink's RPC frame size however a rescale redistributes the state.
+
+**Scope.**
+Every AdaptiveScheduler restart is a restore of the whole job, so rescales in both directions and failures under that scheduler are covered.
+The default scheduler's region failover keeps the enumerator running and restores only the subtasks of the failed region; the enumerator then waits for those subtasks' uploads and forwards their ledger to them.
+A region that spans every source subtask, as in any job whose source feeds an all-to-all exchange, is therefore covered like a whole restore.
+Until a checkpoint completes after a restore, the enumerator keeps the ledger it forwarded and sends it again to a subtask that resets on its own, because that subtask restores the same checkpoint but may have been forwarded chunks from another subtask's state.
+When the region leaves some source subtasks running, a redelivery that Pub/Sub routes to one of those is emitted again, because a running reader is not sent a restored ledger; under `PER_KEY` a subscription has a single reader, so this does not arise.
+A stop with a savepoint is not affected by the race in the first place: the task waits for the savepoint's completion notification before it stops.
+
+**Lifetime.**
+The restored ledger is kept in memory, never written into later checkpoints, and dropped once `restoreDeduplicationTtl` (`'scan.restore-deduplication.ttl'`) has passed since the reader's first assignment, at its next lookup or checkpoint.
+The default is the subscriber's `maxAckExtensionPeriod` (1 hour by default), the longest the previous execution could have kept a message leased, capped at the longest duration nanoseconds express; when that extension is disabled, the default is 10 minutes, the longest acknowledgement deadline Pub/Sub accepts.
+A cancellation nacks the messages, so their redelivery usually starts within seconds of the restore; a TaskManager that is lost leaves them leased until their deadline lapses, and a subscription's retry policy or a large backlog delays redelivery further.
+An entry is kept after its first match, so a message redelivered more than once is suppressed every time.
+
+**Costs and caveats.**
+
+- **Checkpoint state**: each checkpoint holds about one checkpoint interval's message ids, front-coded per subscription, and the reader encodes them on the task thread while it takes the snapshot.
+  Measured on 20,000 ids the service assigned to one topic (17-digit decimal strings), the encoding takes about 3.1 bytes per id, and about 3.9 bytes for a random tenth of them, as one of several readers sharing a subscription under `NONE` holds; one million messages per interval is therefore a few megabytes per checkpoint.
+  Encoding 200,000 such ids took about 15 ms on one workstation core, and one million about 75 ms.
+- **Memory and per-record work after a restore**: every reader of a subscription holds the whole subscription's restored ledger until it expires, at about 40 bytes per id of the 17-digit shape the service was measured assigning.
+  While it lives, each delivery costs one hash lookup; once it has expired, a delivery costs a field read.
+- **Downgrade**: a checkpoint taken with the setting on holds ledger chunks that a connector before 1.4.0 cannot read, so it cannot restore that checkpoint. Turn the setting off and let one checkpoint complete before moving to an earlier version; with the setting off the reader's state is empty again.
+- **Restore**: the ledger crosses the network twice, once to the enumerator and once to each reader of its subscription, and consuming starts only after the transfer.
+- **Seek**: a seek during the ledger's lifetime replays messages, and a replayed message that is in the ledger is acknowledged rather than emitted.
+- **Exactly-once delivery** subscriptions stay rejected by the [startup check](#startup-check); this setting does not change that.
+
+The setting suppresses duplicates only from the restore's own redelivery.
+A pipeline that must not see a duplicate at all still needs deduplication downstream, keyed by the message id, which every record can carry.
+`redeliveriesSuppressed`, `ledgerEntriesExpired` and `ledgerEntries` in [Metrics](#metrics) show what a restore suppressed and what expired unmatched.
 
 ### Deserialization failures
 
@@ -723,6 +782,9 @@ now running, including one that a failover or a restart builds:
 | `splitsParked` | counter | times a paused split outgrew its buffer bound and its subscriber was stopped |
 | `subscriberShutdownsAbandoned` | counter | subscriber teardowns whose wait for termination expired. **Not this subtask's, and not this attempt's** — see below |
 | `subscriberFailuresUnreported` | counter | failures a subscriber's teardown was the only report of, so no job failure is coming for them. Process-wide in the same sense as the row above |
+| `redeliveriesSuppressed` | counter | redeliveries the restored deduplication ledger acknowledged instead of emitting; registered only with [restore deduplication](#restore-deduplication) on, like the two rows below |
+| `ledgerEntriesExpired` | counter | restored ledger entries dropped at expiry without a redelivery to suppress |
+| `ledgerEntries` | gauge | restored ledger entries this subtask still holds |
 | `assignedSplits` / `unassignedReaders` | gauge (enumerator) | splits handed out; readers that got none |
 | `numRecordsInErrors` | counter (Flink standard) | deserialization failures |
 

@@ -43,6 +43,7 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreaming
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -75,6 +76,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
     @Nullable private final OrderingMode orderingMode;
     @Nullable private final DeserializationFailurePolicy deserializationFailurePolicy;
     private final PubSubSubscriberOptions subscriberOptions;
+    private final boolean restoreDeduplication;
+    @Nullable private final Duration restoreDeduplicationTtl;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final Integer parallelism;
@@ -100,6 +103,10 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
      * @param deserializationFailurePolicy what to do with an undecodable message, or {@code null}
      *     for the source's own default
      * @param subscriberOptions the subscriber tuning
+     * @param restoreDeduplication whether a restore suppresses redeliveries the restored checkpoint
+     *     covers
+     * @param restoreDeduplicationTtl how long the restored ledger is kept, or {@code null} for the
+     *     source's own default
      * @param serviceAccountKeyFile the service-account JSON key path each reader and the enumerator
      *     load, or {@code null} for application-default credentials
      * @param emulatorEndpoint the emulator to use instead of the service, or {@code null}
@@ -115,6 +122,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
             @Nullable OrderingMode orderingMode,
             @Nullable DeserializationFailurePolicy deserializationFailurePolicy,
             PubSubSubscriberOptions subscriberOptions,
+            boolean restoreDeduplication,
+            @Nullable Duration restoreDeduplicationTtl,
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             @Nullable Integer parallelism) {
@@ -147,6 +156,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         this.deserializationFailurePolicy = deserializationFailurePolicy;
         this.subscriberOptions =
                 Preconditions.checkNotNull(subscriberOptions, "subscriberOptions must not be null");
+        this.restoreDeduplication = restoreDeduplication;
+        this.restoreDeduplicationTtl = restoreDeduplicationTtl;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.parallelism = parallelism;
@@ -236,6 +247,10 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
         if (deserializationFailurePolicy != null) {
             builder.deserializationFailurePolicy(deserializationFailurePolicy);
         }
+        builder.restoreDeduplication(restoreDeduplication);
+        if (restoreDeduplicationTtl != null) {
+            builder.restoreDeduplicationTtl(restoreDeduplicationTtl);
+        }
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
@@ -261,6 +276,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                         orderingMode,
                         deserializationFailurePolicy,
                         subscriberOptions,
+                        restoreDeduplication,
+                        restoreDeduplicationTtl,
                         serviceAccountKeyFile,
                         emulatorEndpoint,
                         parallelism);
@@ -292,6 +309,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                 && orderingMode == that.orderingMode
                 && deserializationFailurePolicy == that.deserializationFailurePolicy
                 && subscriberOptions.equals(that.subscriberOptions)
+                && restoreDeduplication == that.restoreDeduplication
+                && Objects.equals(restoreDeduplicationTtl, that.restoreDeduplicationTtl)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(parallelism, that.parallelism)
@@ -311,6 +330,8 @@ public final class PubSubDynamicSource implements ScanTableSource, SupportsReadi
                 orderingMode,
                 deserializationFailurePolicy,
                 subscriberOptions,
+                restoreDeduplication,
+                restoreDeduplicationTtl,
                 serviceAccountKeyFile,
                 emulatorEndpoint,
                 parallelism,

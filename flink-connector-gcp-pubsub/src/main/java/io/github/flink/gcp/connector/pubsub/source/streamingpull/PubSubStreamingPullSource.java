@@ -53,6 +53,7 @@ import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubRe
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReader;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSourceReaderMetrics;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.PubSubSplitReader;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.RestoredLedger;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.SubscriberFactory;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.PubSubSubscriptionAdmin;
 import io.github.flink.gcp.connector.pubsub.source.subscriptions.SubscriptionAdmin;
@@ -158,6 +159,13 @@ public class PubSubStreamingPullSource<T>
         PubSubAckTracker ackTracker =
                 new PubSubAckTracker(metrics, options.getAwaitAckConfirmation());
         metrics.bindAckTracker(ackTracker);
+        RestoredLedger restoredLedger = null;
+        if (config.getRestoreDeduplicationTtl() != null) {
+            restoredLedger =
+                    new RestoredLedger(
+                            config.getRestoreDeduplicationTtl(), System::nanoTime, metrics);
+            metrics.bindRestoredLedger(restoredLedger);
+        }
         MissingCheckpointDetector checkpointDetector =
                 new MissingCheckpointDetector(
                         options.getFirstCheckpointTimeout(), ackTracker::outstandingAckCount);
@@ -182,11 +190,13 @@ public class PubSubStreamingPullSource<T>
                         deserializationSchema,
                         ackTracker,
                         config.getDeserializationFailurePolicy(),
-                        metrics),
+                        metrics,
+                        restoredLedger),
                 context.getConfiguration(),
                 context,
                 ackTracker,
-                checkpointDetector);
+                checkpointDetector,
+                restoredLedger);
     }
 
     /**
@@ -210,10 +220,7 @@ public class PubSubStreamingPullSource<T>
         if (interval == null || interval.isZero() || interval.isNegative()) {
             return null;
         }
-        Duration maxAckExtension =
-                options.getMaxAckExtensionPeriod() != null
-                        ? options.getMaxAckExtensionPeriod()
-                        : DefaultSubscriberFactory.DEFAULT_MAX_ACK_EXTENSION_PERIOD;
+        Duration maxAckExtension = DefaultSubscriberFactory.effectiveMaxAckExtensionPeriod(options);
         if (maxAckExtension.isZero()) {
             // Reachable since the knob started forwarding the client library's own value for
             // "disable auto deadline extension" (ADR-0068). The headroom sentence would be

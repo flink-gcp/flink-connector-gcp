@@ -405,6 +405,111 @@ class PubSubSourceBuilderTest {
                 .hasMessage("createOptions must not be null");
     }
 
+    @Test
+    void restoreDeduplicationIsOffByDefault() {
+        assertThat(config(builder().subscription(SUB_A).build()).getRestoreDeduplicationTtl())
+                .isNull();
+    }
+
+    @Test
+    void restoreDeduplicationKeepsTheLedgerForTheAckExtensionPeriodByDefault() {
+        assertThat(
+                        config(builder().subscription(SUB_A).restoreDeduplication(true).build())
+                                .getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofMinutes(60));
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .subscriberOptions(
+                                                        PubSubSubscriberOptions.builder()
+                                                                .maxAckExtensionPeriod(
+                                                                        Duration.ofMinutes(90))
+                                                                .build())
+                                                .restoreDeduplication(true)
+                                                .build())
+                                .getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofMinutes(90));
+    }
+
+    @Test
+    void restoreDeduplicationFallsBackToTheLongestAckDeadlineWhenExtensionIsDisabled() {
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .subscriberOptions(
+                                                        PubSubSubscriberOptions.builder()
+                                                                .maxAckExtensionPeriod(
+                                                                        Duration.ZERO)
+                                                                .build())
+                                                .restoreDeduplication(true)
+                                                .build())
+                                .getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofMinutes(10));
+    }
+
+    @Test
+    void anAckExtensionPeriodPastNanosecondsCapsTheDefaultTtl() {
+        // maxAckExtensionPeriod has no upper bound, but the ledger's clock counts in nanoseconds.
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .subscriberOptions(
+                                                        PubSubSubscriberOptions.builder()
+                                                                .maxAckExtensionPeriod(
+                                                                        Duration.ofDays(400_000))
+                                                                .build())
+                                                .restoreDeduplication(true)
+                                                .build())
+                                .getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofNanos(Long.MAX_VALUE));
+    }
+
+    @Test
+    void anExplicitRestoreDeduplicationTtlWins() {
+        assertThat(
+                        config(
+                                        builder()
+                                                .subscription(SUB_A)
+                                                .restoreDeduplication(true)
+                                                .restoreDeduplicationTtl(Duration.ofMinutes(3))
+                                                .build())
+                                .getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofMinutes(3));
+    }
+
+    @Test
+    void rejectsATimeToLiveWithoutRestoreDeduplication() {
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .subscription(SUB_A)
+                                        .restoreDeduplicationTtl(Duration.ofMinutes(3))
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("restoreDeduplicationTtl(PT3M) is set")
+                .hasMessageContaining("restoreDeduplication(true)");
+    }
+
+    @Test
+    void rejectsANonPositiveRestoreDeduplicationTtl() {
+        assertThatThrownBy(() -> builder().restoreDeduplicationTtl(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("restoreDeduplicationTtl must be positive: PT0S");
+        assertThatThrownBy(() -> builder().restoreDeduplicationTtl(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsARestoreDeduplicationTtlTooLargeForNanoseconds() {
+        assertThatThrownBy(
+                        () -> builder().restoreDeduplicationTtl(Duration.ofSeconds(Long.MAX_VALUE)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("restoreDeduplicationTtl");
+    }
+
     private static PubSubSourceBuilder<String> builder() {
         return PubSubSource.<String>builder().deserializer(schema());
     }

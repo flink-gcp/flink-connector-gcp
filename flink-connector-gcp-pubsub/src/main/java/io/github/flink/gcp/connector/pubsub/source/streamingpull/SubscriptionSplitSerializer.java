@@ -30,12 +30,21 @@ import java.io.IOException;
  *
  * <p>Hand-written rather than generated: the split is three strings, so a protobuf schema and its
  * code-generation plugin would cost more than they save (the upstream connector generates one).
+ *
+ * <p>Version 2 adds a kind byte and the ledger-chunk payload. Version 1 holds a consuming split
+ * only and is still read. Nothing in a checkpoint was ever written in version 1 — readers
+ * checkpointed no splits until ledger chunks — so the bump does not change what a job that leaves
+ * restore deduplication off writes.
  */
 @Internal
 public final class SubscriptionSplitSerializer
         implements SimpleVersionedSerializer<SubscriptionSplit> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+
+    private static final byte KIND_CONSUMING = 0;
+
+    private static final byte KIND_LEDGER_CHUNK = 1;
 
     /** Enough for a subscription path and a uid; the serializer grows the buffer if needed. */
     private static final int INITIAL_BUFFER_SIZE = 256;
@@ -51,12 +60,20 @@ public final class SubscriptionSplitSerializer
         out.writeUTF(split.getSubscription().getProject());
         out.writeUTF(split.getSubscription().getSubscription());
         out.writeUTF(split.getUid());
+        if (split.isLedgerChunk()) {
+            byte[] chunk = split.getLedgerChunk();
+            out.writeByte(KIND_LEDGER_CHUNK);
+            out.writeInt(chunk.length);
+            out.write(chunk);
+        } else {
+            out.writeByte(KIND_CONSUMING);
+        }
         return out.getCopyOfBuffer();
     }
 
     @Override
     public SubscriptionSplit deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION) {
+        if (version != 1 && version != VERSION) {
             throw new IOException(
                     "Unsupported subscription split serialization version "
                             + version
@@ -68,6 +85,29 @@ public final class SubscriptionSplitSerializer
         String project = in.readUTF();
         String subscription = in.readUTF();
         String uid = in.readUTF();
-        return new SubscriptionSplit(SubscriptionDestination.of(project, subscription), uid);
+        SubscriptionDestination destination = SubscriptionDestination.of(project, subscription);
+        if (version == 1) {
+            return new SubscriptionSplit(destination, uid);
+        }
+        byte kind = in.readByte();
+        switch (kind) {
+            case KIND_CONSUMING:
+                return new SubscriptionSplit(destination, uid);
+            case KIND_LEDGER_CHUNK:
+                int length = in.readInt();
+                if (length < 0 || length > in.available()) {
+                    throw new IOException(
+                            "Malformed ledger chunk: length "
+                                    + length
+                                    + " with "
+                                    + in.available()
+                                    + " bytes remaining.");
+                }
+                byte[] chunk = new byte[length];
+                in.readFully(chunk);
+                return SubscriptionSplit.ledgerChunk(destination, uid, chunk);
+            default:
+                throw new IOException("Unknown subscription split kind " + kind + ".");
+        }
     }
 }

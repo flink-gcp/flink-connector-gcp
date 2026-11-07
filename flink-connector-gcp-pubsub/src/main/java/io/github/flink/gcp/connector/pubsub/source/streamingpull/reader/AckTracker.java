@@ -18,6 +18,9 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * Tracks the acknowledgement lifecycle of received Pub/Sub messages, which is what makes the source
  * at-least-once.
@@ -106,6 +109,16 @@ public interface AckTracker {
      * @param checkpointId the checkpoint being taken
      */
     void addCheckpoint(long checkpointId);
+
+    /**
+     * Returns the ids of every message bound to a checkpoint that has not been acknowledged yet,
+     * per split, in binding order. Called right after {@link #addCheckpoint(long)}, these are the
+     * messages the checkpoint being taken covers whose acknowledgement could still be lost; a
+     * message received but not yet emitted is never among them.
+     *
+     * @return the message ids per split id
+     */
+    Map<String, List<String>> checkpointedMessageIds();
 
     /**
      * Acknowledges every message bound to a checkpoint at or below the given id. Checkpoints are

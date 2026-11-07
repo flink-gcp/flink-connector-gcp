@@ -389,6 +389,8 @@ default" rule as the [sink](#sink-options); `subscription` is required.
 | `scan.shutdown-timeout` | Duration | `shutdownTimeout` |
 | `scan.max-records-per-fetch` | Integer | `maxRecordsPerFetch` |
 | `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
+| `scan.restore-deduplication.enabled` | Boolean | `restoreDeduplication` |
+| `scan.restore-deduplication.ttl` | Duration, requires `scan.restore-deduplication.enabled` | `restoreDeduplicationTtl` |
 | `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `PubSubStartPosition.of(mode, ...)` |
 | `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `PubSubStartPosition.of(...)` |
 | `scan.auto-create.topics` | Map<String, String> | each subscription key maps to its `topic(...)` — see [Subscription auto-creation](#subscription-auto-creation-maps-every-subscription-to-its-topic) for both accepted syntaxes |

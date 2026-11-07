@@ -160,6 +160,8 @@ class PubSubDynamicSourceTest {
                 null,
                 null,
                 PubSubSubscriberOptions.defaults(),
+                false,
+                null,
                 null,
                 null,
                 null);
@@ -178,6 +180,8 @@ class PubSubDynamicSourceTest {
                         null,
                         null,
                         PubSubSubscriberOptions.builder().build(),
+                        false,
+                        null,
                         null,
                         null,
                         null);
@@ -287,6 +291,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -308,6 +314,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -322,6 +330,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -336,6 +346,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -350,6 +362,8 @@ class PubSubDynamicSourceTest {
                                 OrderingMode.PER_KEY,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -364,6 +378,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 DeserializationFailurePolicy.DROP,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -378,6 +394,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 PubSubSubscriberOptions.builder().parallelPullCount(3).build(),
+                                false,
+                                null,
                                 null,
                                 null,
                                 null))
@@ -395,6 +413,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 "/keys/sa.json",
                                 null,
                                 null))
@@ -409,6 +429,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 "localhost:8085",
                                 null))
@@ -423,6 +445,8 @@ class PubSubDynamicSourceTest {
                                 null,
                                 null,
                                 defaults,
+                                false,
+                                null,
                                 null,
                                 null,
                                 4));
@@ -452,6 +476,8 @@ class PubSubDynamicSourceTest {
                 null,
                 null,
                 PubSubSubscriberOptions.defaults(),
+                false,
+                null,
                 null,
                 null,
                 null);
@@ -476,6 +502,8 @@ class PubSubDynamicSourceTest {
                                         null,
                                         null,
                                         PubSubSubscriberOptions.defaults(),
+                                        false,
+                                        null,
                                         null,
                                         null,
                                         null))
@@ -506,6 +534,8 @@ class PubSubDynamicSourceTest {
                         OrderingMode.PER_KEY,
                         DeserializationFailurePolicy.DROP,
                         PubSubSubscriberOptions.defaults(),
+                        false,
+                        null,
                         null,
                         "localhost:8085",
                         4);
@@ -543,6 +573,8 @@ class PubSubDynamicSourceTest {
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),
+                        false,
+                        null,
                         null,
                         null,
                         null);
@@ -585,6 +617,8 @@ class PubSubDynamicSourceTest {
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),
+                        false,
+                        null,
                         null,
                         null,
                         null);
@@ -614,6 +648,8 @@ class PubSubDynamicSourceTest {
                                                 null,
                                                 null,
                                                 PubSubSubscriberOptions.defaults(),
+                                                false,
+                                                null,
                                                 null,
                                                 null,
                                                 null)
@@ -646,6 +682,8 @@ class PubSubDynamicSourceTest {
                         OrderingMode.PER_KEY,
                         null,
                         PubSubSubscriberOptions.defaults(),
+                        false,
+                        null,
                         null,
                         null,
                         null);
@@ -668,6 +706,8 @@ class PubSubDynamicSourceTest {
                         null,
                         null,
                         PubSubSubscriberOptions.defaults(),
+                        false,
+                        null,
                         null,
                         null,
                         null);

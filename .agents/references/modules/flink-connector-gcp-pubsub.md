@@ -117,8 +117,25 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Source (`docs/adr/0011`, `0012`, `0066`)
 
-- **The reader checkpoints no splits** — the enumerator owns assignment and recomputes the plan
-  on every start (`docs/adr/0011`).
+- **The reader checkpoints no consuming split** — the enumerator owns assignment and recomputes
+  the plan on every start (`docs/adr/0011`). The only split a snapshot may hold is a
+  restore-deduplication ledger chunk, which consumes nothing (`docs/adr/0198`).
+- **Restore deduplication (`docs/adr/0198`) records message ids, never acknowledgement ids** —
+  the streaming-pull `Subscriber` exposes none, and `stop()` nacks every lease. The ledger is
+  `AckTracker.checkpointedMessageIds()` after `addCheckpoint`: bound and unacknowledged only,
+  never a received-but-unemitted message, which would be loss. Message ids are opaque strings;
+  never assume digits: `DecimalMessageIds` packs digit-only ids of up to 17 characters as an
+  optimization, and every path keeps a string fallback for any other id. A restored chunk's split output is released on the next `pollNext`, or it
+  pins the watermark; every reader reports `LedgerUploadedEvent` even with nothing restored; the
+  enumerator forwards chunks before `assignSplits` on the same gateway and only while its restore
+  wait is open. That wait opens on a restored enumerator and on every `addSplitsBack`, because a
+  region failover restores subtask state without recreating the enumerator; its timeout counts
+  from the first registration. Forwarded chunks are kept until a checkpoint completes outside a
+  wait, for a subtask that resets alone before then; the reader takes each restored chunk's
+  payload out of the split, because `SourceOperator` retains restored splits for the execution. Do not route restored chunks through `SupportsSplitReassignmentOnRecovery`: one
+  registration event would carry a reader's whole ledger, and a failed send restarts into the same
+  state. The restored ledger is never written into later checkpoints. With the setting off the
+  reader snapshot stays empty, which is what keeps checkpoint bytes unchanged.
 - The subscriber shutdown mode is not exposed (`NACK_IMMEDIATELY` fixed); the
   running-without-checkpointing guard is `MissingCheckpointDetector`, evaluated from
   `PubSubSplitReader.fetch()`, never the record path; its budget starts at first split

@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -143,6 +144,33 @@ class PubSubRecordEmitterTest {
         ackTracker.addCheckpoint(1L);
         ackTracker.notifyCheckpointComplete(1L);
         assertThat(handle.isAcked()).isTrue();
+    }
+
+    @Test
+    void aRedeliveryTheRestoredLedgerCoversIsAcknowledgedInsteadOfEmitted() throws Exception {
+        RestoredLedger ledger =
+                new RestoredLedger(Duration.ofMinutes(5), () -> 0L, testMetrics.metrics());
+        testMetrics.metrics().bindRestoredLedger(ledger);
+        ledger.add(SPLIT.getSubscription(), List.of("covered"));
+        PubSubRecordEmitter<String> emitter =
+                new PubSubRecordEmitter<>(
+                        PubSubDeserializationSchema.payload(new SimpleStringSchema()),
+                        ackTracker,
+                        DeserializationFailurePolicy.FAIL,
+                        testMetrics.metrics(),
+                        ledger);
+        RecordingAckHandle covered = receive("covered");
+        RecordingAckHandle fresh = receive("fresh");
+
+        emitter.emitRecord(message("covered", "old"), output, SPLIT);
+        emitter.emitRecord(message("fresh", "new"), output, SPLIT);
+
+        assertThat(output.records()).containsExactly("new");
+        // Settled at once, as the lost notification would have done; nothing waits for a
+        // checkpoint.
+        assertThat(covered.isAcked()).isTrue();
+        assertThat(fresh.isUnsettled()).isTrue();
+        assertThat(testMetrics.counter("redeliveriesSuppressed")).isEqualTo(1);
     }
 
     @Test

@@ -321,7 +321,8 @@ class PubSubBackpressuredReaderGuardTest {
                 configuration,
                 new FakeSourceReaderContext(testMetrics.metricGroup(), configuration),
                 ackTracker,
-                checkpointDetector);
+                checkpointDetector,
+                null);
     }
 
     private SplitReader<PubsubMessage, SubscriptionSplit> countingSplitReader(

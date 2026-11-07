@@ -83,6 +83,20 @@ public final class PubSubMetricNames {
     public static final String PENDING_CHECKPOINTS = "pendingCheckpoints";
 
     /**
+     * Restore deduplication (#2049): redeliveries the restored ledger acknowledged instead of
+     * emitting, and ledger entries that expired without a redelivery to suppress. Both stay zero
+     * while the feature is off. A high expiry count beside a low suppression count after a restore
+     * means the notification had reached the reader, so there was nothing to suppress; expiries
+     * while duplicates still arrive mean the TTL is too short.
+     */
+    public static final String REDELIVERIES_SUPPRESSED = "redeliveriesSuppressed";
+
+    public static final String LEDGER_ENTRIES_EXPIRED = "ledgerEntriesExpired";
+
+    /** The restored ledger entries this subtask still holds; zero once the ledger expires. */
+    public static final String LEDGER_ENTRIES = "ledgerEntries";
+
+    /**
      * What this subtask's subscribers are holding that the fetch loop has not taken yet — a
      * <em>state</em>, so a gauge. It is the number the paused-split bound is evaluated against, and
      * the memory a reader that has stopped draining accumulates whether or not any split is paused

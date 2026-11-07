@@ -32,6 +32,8 @@ import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.PubSubStartPosition;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.LedgerChunkEvent;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.LedgerUploadedEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
@@ -43,12 +45,17 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Verifies the subscriptions, then assigns subscription splits to reader subtasks.
@@ -83,6 +90,16 @@ public class PubSubSplitEnumerator
 
     private static final Logger LOG = LoggerFactory.getLogger(PubSubSplitEnumerator.class);
 
+    /**
+     * How long a restore waits, from the first reader that registers, for the other restored
+     * readers to upload their deduplication ledger chunks before assigning splits without the
+     * missing ones. Readers upload as soon as they start, so the wait normally ends within seconds;
+     * the bound only keeps a reader that never comes back from holding the restored readers idle.
+     * Counting from a registration rather than from the enumerator's start keeps slow deployment or
+     * state restore out of it. A reader whose chunks miss it only costs their duplicates.
+     */
+    @VisibleForTesting static final Duration LEDGER_UPLOAD_TIMEOUT = Duration.ofMinutes(2);
+
     private final SplitEnumeratorContext<SubscriptionSplit> context;
     private final PubSubSourceConfig<?> config;
     private final SubscriptionAdmin admin;
@@ -114,6 +131,43 @@ public class PubSubSplitEnumerator
     private final Set<Integer> pendingReaders = new LinkedHashSet<>();
 
     private boolean startupCheckComplete;
+
+    /**
+     * The restored subtasks whose deduplication ledger upload is still awaited (#2049); split
+     * assignment waits while it is non-empty. A restore of the whole source awaits every subtask. A
+     * failover that keeps this enumerator, such as the default scheduler's region failover, adds
+     * each subtask it resets through {@link #addSplitsBack(List, int)}, so a region spanning every
+     * source subtask is deduplicated like a whole restore. Emptied as subtasks report, or when
+     * {@code LEDGER_UPLOAD_TIMEOUT} passes.
+     */
+    private final Set<Integer> awaitedUploads = new TreeSet<>();
+
+    /** Uploaded chunks by split id; keyed so a re-upload after a reader failover is a no-op. */
+    private final Map<String, SubscriptionSplit> uploadedChunks = new LinkedHashMap<>();
+
+    /**
+     * Counts ledger waits, so that a timeout armed for one wait cannot end a later one. A timeout
+     * is armed once per wait, by the first registration while it is open.
+     */
+    private int ledgerWaitGeneration;
+
+    private boolean ledgerTimeoutArmed;
+
+    /**
+     * The chunks to forward with each assignment, by subscription, once the wait ends. Dropped
+     * after the readers waiting at that point are assigned: a reader that registers later was not
+     * part of the wait, and a subtask that kept running is not sent a restored ledger.
+     */
+    @Nullable private Map<SubscriptionDestination, List<SubscriptionSplit>> ledgerToForward;
+
+    /**
+     * Every chunk forwarded since the last wait ended, by split id, kept until a checkpoint
+     * completes after it. Until then a failover of one subtask restores the same checkpoint, but
+     * the chunks that subtask was forwarded may have come from another subtask's state, so the
+     * reset subtask is sent them again. A checkpoint completing afterwards replaces the restore
+     * point, and its own ledger is what a later reset restores.
+     */
+    private final Map<String, SubscriptionSplit> forwardedChunks = new LinkedHashMap<>();
 
     private boolean startPositionApplied;
 
@@ -169,6 +223,19 @@ public class PubSubSplitEnumerator
                     context.currentParallelism(),
                     subscriptions.size(),
                     subscriptions.size());
+        }
+
+        if (deduplicates() && restoredState != null) {
+            for (int subtaskId = 0; subtaskId < context.currentParallelism(); subtaskId++) {
+                awaitedUploads.add(subtaskId);
+            }
+            ledgerWaitGeneration++;
+            LOG.info(
+                    "Restoring with restore deduplication on: splits are assigned once all {}"
+                            + " reader(s) have uploaded their deduplication ledger, or {} after"
+                            + " the first registers.",
+                    context.currentParallelism(),
+                    LEDGER_UPLOAD_TIMEOUT);
         }
 
         startPositionApplied = restoredState != null && restoredState.isStartPositionApplied();
@@ -356,13 +423,86 @@ public class PubSubSplitEnumerator
         }
         startPositionApplied = true;
         startupCheckComplete = true;
+        if (!awaitedUploads.isEmpty()) {
+            LOG.info(
+                    "Pub/Sub subscriptions verified; {} waiting subtask(s) also wait for the"
+                            + " deduplication ledger.",
+                    pendingReaders.size());
+            return;
+        }
         LOG.info(
                 "Pub/Sub subscriptions verified; assigning splits to {} waiting subtask(s).",
                 pendingReaders.size());
+        assignPendingReaders();
+    }
+
+    /** Assigns every parked subtask, once both the startup check and the ledger wait are done. */
+    private void assignPendingReaders() {
+        if (!startupCheckComplete || !awaitedUploads.isEmpty()) {
+            return;
+        }
         for (int subtaskId : pendingReaders) {
             assign(subtaskId);
         }
         pendingReaders.clear();
+        ledgerToForward = null;
+    }
+
+    private boolean deduplicates() {
+        return config.getRestoreDeduplicationTtl() != null;
+    }
+
+    /** Arms the timeout of the open wait, once, when its first reader registers. */
+    private void armLedgerTimeout() {
+        if (ledgerTimeoutArmed) {
+            return;
+        }
+        ledgerTimeoutArmed = true;
+        int generation = ledgerWaitGeneration;
+        long timeoutMillis = LEDGER_UPLOAD_TIMEOUT.toMillis();
+        // callAsync only offers a periodic schedule; an effectively infinite period makes it
+        // one-shot, and the generation check keeps a late run from ending a later wait.
+        context.callAsync(
+                () -> null,
+                (ignored, error) -> onLedgerUploadTimeout(generation),
+                timeoutMillis,
+                Long.MAX_VALUE);
+    }
+
+    private void onLedgerUploadTimeout(int generation) {
+        if (closed || generation != ledgerWaitGeneration || awaitedUploads.isEmpty()) {
+            return;
+        }
+        LOG.warn(
+                "Source subtask(s) {} did not upload their deduplication ledger within {};"
+                        + " assigning splits without it. Messages their chunks covered may be"
+                        + " emitted again.",
+                awaitedUploads,
+                LEDGER_UPLOAD_TIMEOUT);
+        endLedgerWait();
+    }
+
+    /** Groups the uploaded chunks by subscription and releases the parked assignments. */
+    private void endLedgerWait() {
+        awaitedUploads.clear();
+        ledgerTimeoutArmed = false;
+        for (SubscriptionSplit chunk : uploadedChunks.values()) {
+            forwardedChunks.putIfAbsent(chunk.splitId(), chunk);
+        }
+        uploadedChunks.clear();
+        Map<SubscriptionDestination, List<SubscriptionSplit>> bySubscription =
+                new LinkedHashMap<>();
+        for (SubscriptionSplit chunk : forwardedChunks.values()) {
+            bySubscription
+                    .computeIfAbsent(chunk.getSubscription(), key -> new ArrayList<>())
+                    .add(chunk);
+        }
+        ledgerToForward = bySubscription;
+        LOG.info(
+                "Deduplication ledger collected: {} chunk(s) across {} subscription(s).",
+                bySubscription.values().stream().mapToInt(List::size).sum(),
+                bySubscription.size());
+        assignPendingReaders();
     }
 
     /**
@@ -395,6 +535,15 @@ public class PubSubSplitEnumerator
 
     @Override
     public void addReader(int subtaskId) {
+        if (!awaitedUploads.isEmpty()) {
+            armLedgerTimeout();
+            LOG.info(
+                    "Source subtask {} registered while the deduplication ledger is collected; it"
+                            + " waits for the upload to finish.",
+                    subtaskId);
+            pendingReaders.add(subtaskId);
+            return;
+        }
         if (!startupCheckComplete) {
             LOG.info(
                     "Source subtask {} registered before the Pub/Sub subscriptions were verified;"
@@ -427,9 +576,40 @@ public class PubSubSplitEnumerator
             context.signalNoMoreSplits(subtaskId);
             return;
         }
+        forwardLedger(subtaskId, splits);
         LOG.info("Assigning splits {} to source subtask {}.", splits, subtaskId);
         subtasksWithSplits.add(subtaskId);
         context.assignSplits(new SplitsAssignment<>(Collections.singletonMap(subtaskId, splits)));
+    }
+
+    /**
+     * Sends a subtask the ledger chunks of every subscription it is about to consume. Under {@link
+     * OrderingMode#NONE} several subtasks consume one subscription and Pub/Sub may redeliver to any
+     * of them, so each receives that subscription's whole ledger. The chunks precede the assignment
+     * on the same ordered gateway, so the ledger is in place before any subscriber starts.
+     */
+    private void forwardLedger(int subtaskId, List<SubscriptionSplit> splits) {
+        if (ledgerToForward == null || ledgerToForward.isEmpty()) {
+            return;
+        }
+        Set<SubscriptionDestination> consumed = new LinkedHashSet<>();
+        for (SubscriptionSplit split : splits) {
+            consumed.add(split.getSubscription());
+        }
+        int sent = 0;
+        for (SubscriptionDestination subscription : consumed) {
+            for (SubscriptionSplit chunk :
+                    ledgerToForward.getOrDefault(subscription, Collections.emptyList())) {
+                context.sendEventToSourceReader(subtaskId, new LedgerChunkEvent(chunk));
+                sent++;
+            }
+        }
+        if (sent > 0) {
+            LOG.info(
+                    "Forwarded {} deduplication ledger chunk(s) to source subtask {}.",
+                    sent,
+                    subtaskId);
+        }
     }
 
     @Override
@@ -442,6 +622,15 @@ public class PubSubSplitEnumerator
         // Splits carry no progress state and the assignment is deterministic, so the returned
         // splits need no bookkeeping: the restarted subtask re-registers through addReader and is
         // handed exactly the same splits again.
+        if (deduplicates()) {
+            // The subtask restores the checkpoint, ledger chunks included, while this enumerator
+            // keeps running; wait for its upload as a whole restore would.
+            if (awaitedUploads.isEmpty()) {
+                ledgerWaitGeneration++;
+                ledgerTimeoutArmed = false;
+            }
+            awaitedUploads.add(subtaskId);
+        }
         LOG.info(
                 "Source subtask {} returned splits {}; they will be reassigned when it"
                         + " re-registers.",
@@ -456,6 +645,21 @@ public class PubSubSplitEnumerator
 
     @Override
     public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        if (sourceEvent instanceof LedgerChunkEvent) {
+            if (awaitedUploads.contains(subtaskId)) {
+                SubscriptionSplit chunk = ((LedgerChunkEvent) sourceEvent).chunk();
+                uploadedChunks.putIfAbsent(chunk.splitId(), chunk);
+            }
+            // Otherwise the wait already ended without this subtask, and its chunks reach no one;
+            // that costs their duplicates only.
+            return;
+        }
+        if (sourceEvent instanceof LedgerUploadedEvent) {
+            if (awaitedUploads.remove(subtaskId) && awaitedUploads.isEmpty()) {
+                endLedgerWait();
+            }
+            return;
+        }
         if (!(sourceEvent instanceof SubscriberBufferLimitExceededEvent)) {
             SplitEnumerator.super.handleSourceEvent(subtaskId, sourceEvent);
             return;
@@ -485,6 +689,14 @@ public class PubSubSplitEnumerator
                         + " keeps receiving; remove that stall. An explicit budget below that"
                         + " share is crossed by ordinary backpressure: leave it unset, or lower"
                         + " the flow-control limits to hold less in memory.");
+    }
+
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) {
+        if (awaitedUploads.isEmpty()) {
+            // A completed checkpoint is the restore point from now on; it carries its own ledger.
+            forwardedChunks.clear();
+        }
     }
 
     @Override

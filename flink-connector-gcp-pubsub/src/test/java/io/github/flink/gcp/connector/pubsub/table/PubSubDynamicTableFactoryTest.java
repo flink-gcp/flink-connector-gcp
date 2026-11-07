@@ -38,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -244,6 +245,61 @@ class PubSubDynamicTableFactoryTest {
         options.put("subscription", "my-sub");
         options.put("format", "json");
         return options;
+    }
+
+    @Test
+    void mapsRestoreDeduplicationOntoTheBuiltSource() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.restore-deduplication.enabled", "true");
+        options.put("scan.restore-deduplication.ttl", "15 min");
+
+        assertThat(builtSourceConfig(options).getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofMinutes(15));
+        assertThat(builtSourceConfig(minimalSourceOptions()).getRestoreDeduplicationTtl()).isNull();
+    }
+
+    @Test
+    void restoreDeduplicationWithoutATimeToLiveTakesTheSourceDefault() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.restore-deduplication.enabled", "true");
+        options.put("scan.ack.max-extension-period", "40 min");
+
+        assertThat(builtSourceConfig(options).getRestoreDeduplicationTtl())
+                .isEqualTo(Duration.ofMinutes(40));
+    }
+
+    @Test
+    void rejectsARestoreDeduplicationTtlWithoutEnablingIt() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.restore-deduplication.ttl", "15 min");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining(
+                        "Option 'scan.restore-deduplication.ttl' is set but"
+                                + " 'scan.restore-deduplication.enabled' is not 'true'");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenTheRestoreDeduplicationTtlIsRejected() {
+        Map<String, String> options = minimalSourceOptions();
+        options.put("scan.restore-deduplication.enabled", "true");
+        options.put("scan.restore-deduplication.ttl", "0 s");
+
+        assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
+                .isInstanceOf(ValidationException.class)
+                .hasStackTraceContaining("Option 'scan.restore-deduplication.ttl' is invalid")
+                .hasStackTraceContaining("restoreDeduplicationTtl must be positive");
+    }
+
+    private static PubSubSourceConfig<?> builtSourceConfig(Map<String, String> options) {
+        ScanTableSource source = (ScanTableSource) FactoryMocks.createTableSource(SCHEMA, options);
+        return ((PubSubStreamingPullSource<?>)
+                        ((SourceProvider)
+                                        source.getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                                .createSource())
+                .getConfig();
     }
 
     @Test

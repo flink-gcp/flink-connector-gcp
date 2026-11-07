@@ -68,6 +68,7 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
     private final AckTracker ackTracker;
     private final DeserializationFailurePolicy failurePolicy;
     private final PubSubSourceReaderMetrics metrics;
+    @Nullable private final RestoredLedger restoredLedger;
 
     /**
      * Drives the decreasing log rate of messages the failure policy handled; task-thread confined.
@@ -87,16 +88,44 @@ public class PubSubRecordEmitter<T> implements RecordEmitter<PubsubMessage, T, S
             AckTracker ackTracker,
             DeserializationFailurePolicy failurePolicy,
             PubSubSourceReaderMetrics metrics) {
+        this(deserializationSchema, ackTracker, failurePolicy, metrics, null);
+    }
+
+    /**
+     * Creates the emitter.
+     *
+     * @param deserializationSchema converts messages into records
+     * @param ackTracker tracks the acknowledgement lifecycle of received messages
+     * @param failurePolicy what to do with a message the schema cannot convert
+     * @param metrics counts drops and deserialization failures
+     * @param restoredLedger acknowledges, instead of emitting, redeliveries the restored checkpoint
+     *     already covers; {@code null} when restore deduplication is off
+     */
+    public PubSubRecordEmitter(
+            PubSubDeserializationSchema<T> deserializationSchema,
+            AckTracker ackTracker,
+            DeserializationFailurePolicy failurePolicy,
+            PubSubSourceReaderMetrics metrics,
+            @Nullable RestoredLedger restoredLedger) {
         this.deserializationSchema = deserializationSchema;
         this.ackTracker = ackTracker;
         this.failurePolicy = failurePolicy;
         this.metrics = metrics;
+        this.restoredLedger = restoredLedger;
     }
 
     @Override
     public void emitRecord(
             PubsubMessage message, SourceOutput<T> sourceOutput, SubscriptionSplit split)
             throws Exception {
+        if (restoredLedger != null
+                && restoredLedger.suppresses(split.getSubscription(), message.getMessageId())) {
+            // The restored checkpoint already covers this message's records; only its
+            // acknowledgement was lost. Settling it now is what the lost notification would have
+            // done.
+            ackTracker.ackPendingImmediately(split.splitId(), message.getMessageId());
+            return;
+        }
         Consumer<T> timestampedOutput = timestampedOutput(sourceOutput, message);
         try {
             long emittedCount =
