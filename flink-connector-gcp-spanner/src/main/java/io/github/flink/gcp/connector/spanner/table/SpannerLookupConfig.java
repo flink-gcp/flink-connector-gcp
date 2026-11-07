@@ -23,14 +23,10 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
-import org.apache.flink.table.connector.source.lookup.LookupOptions.ReloadStrategy;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.CacheReloadTrigger;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger.ScheduleMode;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 
-import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.base.table.FullCacheReloadConfig;
 
 import javax.annotation.Nullable;
 
@@ -50,11 +46,7 @@ public final class SpannerLookupConfig implements Serializable {
     @Nullable private final Duration expireAfterWrite;
     private final boolean cacheMissingKey;
     @Nullable private final Long maxRows;
-    private final ReloadStrategy fullReloadStrategy;
-    @Nullable private final Duration fullPeriodicReloadInterval;
-    private final ScheduleMode fullPeriodicScheduleMode;
-    @Nullable private final String fullTimedReloadIsoTime;
-    private final int fullTimedReloadIntervalDays;
+    @Nullable private final FullCacheReloadConfig fullReload;
 
     private SpannerLookupConfig(ReadableConfig config) {
         async = config.get(SpannerConnectorOptions.LOOKUP_ASYNC);
@@ -66,15 +58,6 @@ public final class SpannerLookupConfig implements Serializable {
                 config.getOptional(LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE).orElse(null);
         cacheMissingKey = config.get(LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY);
         maxRows = config.getOptional(LookupOptions.PARTIAL_CACHE_MAX_ROWS).orElse(null);
-        fullReloadStrategy = config.get(LookupOptions.FULL_CACHE_RELOAD_STRATEGY);
-        fullPeriodicReloadInterval =
-                config.getOptional(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL).orElse(null);
-        fullPeriodicScheduleMode =
-                config.get(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE);
-        fullTimedReloadIsoTime =
-                config.getOptional(LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME).orElse(null);
-        fullTimedReloadIntervalDays =
-                config.get(LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS);
         if (maxRetries < 0) {
             throw new ValidationException("'lookup.max-retries' must be zero or greater.");
         }
@@ -96,22 +79,9 @@ public final class SpannerLookupConfig implements Serializable {
         // the DDL is planned, not later on a TaskManager.
         if (cacheType == LookupCacheType.PARTIAL) {
             createPartialCache();
-        } else if (cacheType == LookupCacheType.FULL) {
-            if (fullReloadStrategy == ReloadStrategy.PERIODIC
-                    && fullPeriodicReloadInterval != null) {
-                // Flink's trigger checks only that the interval is positive and then schedules it
-                // in whole milliseconds, so a sub-millisecond interval would plan and then fail as
-                // the job starts.
-                try {
-                    OptionChecks.checkAtLeastOneMilli(
-                            fullPeriodicReloadInterval,
-                            LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL.key());
-                } catch (IllegalArgumentException e) {
-                    throw new ValidationException(e.getMessage(), e);
-                }
-            }
-            createFullReloadTrigger();
         }
+        // Read only for FULL, which is the only cache type that consults the reload options.
+        fullReload = cacheType == LookupCacheType.FULL ? FullCacheReloadConfig.from(config) : null;
     }
 
     /**
@@ -157,7 +127,7 @@ public final class SpannerLookupConfig implements Serializable {
      * @return a new partial cache
      */
     public DefaultLookupCache createPartialCache() {
-        return DefaultLookupCache.fromConfig(asConfiguration());
+        return DefaultLookupCache.fromConfig(partialCacheConfiguration());
     }
 
     /**
@@ -166,19 +136,18 @@ public final class SpannerLookupConfig implements Serializable {
      * @return a new reload trigger
      */
     public CacheReloadTrigger createFullReloadTrigger() {
-        Configuration config = asConfiguration();
-        switch (fullReloadStrategy) {
-            case PERIODIC:
-                return PeriodicCacheReloadTrigger.fromConfig(config);
-            case TIMED:
-                return TimedCacheReloadTrigger.fromConfig(config);
-            default:
-                throw new IllegalStateException(
-                        "Unknown full-cache reload strategy " + fullReloadStrategy);
+        if (fullReload == null) {
+            throw new IllegalStateException(
+                    "The full-cache reload trigger exists only when '"
+                            + LookupOptions.CACHE_TYPE.key()
+                            + "' is FULL, but it is "
+                            + cacheType
+                            + ".");
         }
+        return fullReload.createTrigger();
     }
 
-    private Configuration asConfiguration() {
+    private Configuration partialCacheConfiguration() {
         Configuration config = new Configuration();
         config.set(LookupOptions.CACHE_TYPE, cacheType);
         config.set(LookupOptions.MAX_RETRIES, maxRetries);
@@ -186,18 +155,6 @@ public final class SpannerLookupConfig implements Serializable {
         setIfPresent(config, LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE, expireAfterWrite);
         config.set(LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY, cacheMissingKey);
         setIfPresent(config, LookupOptions.PARTIAL_CACHE_MAX_ROWS, maxRows);
-        config.set(LookupOptions.FULL_CACHE_RELOAD_STRATEGY, fullReloadStrategy);
-        setIfPresent(
-                config,
-                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
-                fullPeriodicReloadInterval);
-        config.set(
-                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE, fullPeriodicScheduleMode);
-        setIfPresent(
-                config, LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME, fullTimedReloadIsoTime);
-        config.set(
-                LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
-                fullTimedReloadIntervalDays);
         return config;
     }
 
@@ -220,15 +177,11 @@ public final class SpannerLookupConfig implements Serializable {
         return async == that.async
                 && maxRetries == that.maxRetries
                 && cacheMissingKey == that.cacheMissingKey
-                && fullTimedReloadIntervalDays == that.fullTimedReloadIntervalDays
                 && cacheType == that.cacheType
                 && Objects.equals(expireAfterAccess, that.expireAfterAccess)
                 && Objects.equals(expireAfterWrite, that.expireAfterWrite)
                 && Objects.equals(maxRows, that.maxRows)
-                && fullReloadStrategy == that.fullReloadStrategy
-                && Objects.equals(fullPeriodicReloadInterval, that.fullPeriodicReloadInterval)
-                && fullPeriodicScheduleMode == that.fullPeriodicScheduleMode
-                && Objects.equals(fullTimedReloadIsoTime, that.fullTimedReloadIsoTime);
+                && Objects.equals(fullReload, that.fullReload);
     }
 
     @Override
@@ -241,10 +194,6 @@ public final class SpannerLookupConfig implements Serializable {
                 expireAfterWrite,
                 cacheMissingKey,
                 maxRows,
-                fullReloadStrategy,
-                fullPeriodicReloadInterval,
-                fullPeriodicScheduleMode,
-                fullTimedReloadIsoTime,
-                fullTimedReloadIntervalDays);
+                fullReload);
     }
 }

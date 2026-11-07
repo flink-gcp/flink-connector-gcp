@@ -17,21 +17,16 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
-import org.apache.flink.table.connector.source.lookup.LookupOptions.ReloadStrategy;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.CacheReloadTrigger;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger.ScheduleMode;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 
-import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.base.table.FullCacheReloadConfig;
 
 import javax.annotation.Nullable;
 
@@ -52,11 +47,7 @@ public final class BigtableLookupConfig implements Serializable {
     @Nullable private final Duration partialExpireAfterWrite;
     private final boolean partialCacheMissingKey;
     @Nullable private final Long partialMaxRows;
-    private final ReloadStrategy fullReloadStrategy;
-    @Nullable private final Duration fullPeriodicReloadInterval;
-    private final ScheduleMode fullPeriodicScheduleMode;
-    @Nullable private final String fullTimedReloadIsoTime;
-    private final int fullTimedReloadIntervalDays;
+    @Nullable private final FullCacheReloadConfig fullReload;
 
     private BigtableLookupConfig(ReadableConfig config) {
         this.async = config.get(BigtableConnectorOptions.LOOKUP_ASYNC);
@@ -68,15 +59,6 @@ public final class BigtableLookupConfig implements Serializable {
                 config.getOptional(LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE).orElse(null);
         this.partialCacheMissingKey = config.get(LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY);
         this.partialMaxRows = config.getOptional(LookupOptions.PARTIAL_CACHE_MAX_ROWS).orElse(null);
-        this.fullReloadStrategy = config.get(LookupOptions.FULL_CACHE_RELOAD_STRATEGY);
-        this.fullPeriodicReloadInterval =
-                config.getOptional(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL).orElse(null);
-        this.fullPeriodicScheduleMode =
-                config.get(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE);
-        this.fullTimedReloadIsoTime =
-                config.getOptional(LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME).orElse(null);
-        this.fullTimedReloadIntervalDays =
-                config.get(LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS);
 
         if (maxRetries < 0) {
             throw new ValidationException(
@@ -104,22 +86,10 @@ public final class BigtableLookupConfig implements Serializable {
         // the DDL is planned, not later on a task manager.
         if (cacheType == LookupCacheType.PARTIAL) {
             createPartialCache();
-        } else if (cacheType == LookupCacheType.FULL) {
-            if (fullReloadStrategy == ReloadStrategy.PERIODIC
-                    && fullPeriodicReloadInterval != null) {
-                // Flink's trigger checks only that the interval is positive and then schedules it
-                // in whole milliseconds, so a sub-millisecond interval would plan and then fail as
-                // the job starts.
-                try {
-                    OptionChecks.checkAtLeastOneMilli(
-                            fullPeriodicReloadInterval,
-                            LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL.key());
-                } catch (IllegalArgumentException e) {
-                    throw new ValidationException(e.getMessage(), e);
-                }
-            }
-            createFullReloadTrigger();
         }
+        // Read only for FULL, which is the only cache type that consults the reload options.
+        this.fullReload =
+                cacheType == LookupCacheType.FULL ? FullCacheReloadConfig.from(config) : null;
     }
 
     /** Maps the lookup options from the factory's validated configuration. */
@@ -144,25 +114,23 @@ public final class BigtableLookupConfig implements Serializable {
 
     /** Creates the partial cache from Flink's standard options. */
     public DefaultLookupCache createPartialCache() {
-        return DefaultLookupCache.fromConfig(asConfiguration());
+        return DefaultLookupCache.fromConfig(partialCacheConfiguration());
     }
 
     /** Creates the configured full-cache reload trigger. */
     public CacheReloadTrigger createFullReloadTrigger() {
-        Configuration config = asConfiguration();
-        switch (fullReloadStrategy) {
-            case PERIODIC:
-                return PeriodicCacheReloadTrigger.fromConfig(config);
-            case TIMED:
-                return TimedCacheReloadTrigger.fromConfig(config);
-            default:
-                throw new IllegalStateException(
-                        "Unknown full-cache reload strategy " + fullReloadStrategy);
+        if (fullReload == null) {
+            throw new IllegalStateException(
+                    "The full-cache reload trigger exists only when '"
+                            + LookupOptions.CACHE_TYPE.key()
+                            + "' is FULL, but it is "
+                            + cacheType
+                            + ".");
         }
+        return fullReload.createTrigger();
     }
 
-    @VisibleForTesting
-    Configuration asConfiguration() {
+    private Configuration partialCacheConfiguration() {
         Configuration config = new Configuration();
         config.set(BigtableConnectorOptions.LOOKUP_ASYNC, async);
         config.set(LookupOptions.CACHE_TYPE, cacheType);
@@ -173,18 +141,6 @@ public final class BigtableLookupConfig implements Serializable {
                 config, LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE, partialExpireAfterWrite);
         config.set(LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY, partialCacheMissingKey);
         setIfPresent(config, LookupOptions.PARTIAL_CACHE_MAX_ROWS, partialMaxRows);
-        config.set(LookupOptions.FULL_CACHE_RELOAD_STRATEGY, fullReloadStrategy);
-        setIfPresent(
-                config,
-                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
-                fullPeriodicReloadInterval);
-        config.set(
-                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE, fullPeriodicScheduleMode);
-        setIfPresent(
-                config, LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME, fullTimedReloadIsoTime);
-        config.set(
-                LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
-                fullTimedReloadIntervalDays);
         return config;
     }
 
@@ -207,15 +163,11 @@ public final class BigtableLookupConfig implements Serializable {
         return async == that.async
                 && maxRetries == that.maxRetries
                 && partialCacheMissingKey == that.partialCacheMissingKey
-                && fullTimedReloadIntervalDays == that.fullTimedReloadIntervalDays
                 && cacheType == that.cacheType
                 && Objects.equals(partialExpireAfterAccess, that.partialExpireAfterAccess)
                 && Objects.equals(partialExpireAfterWrite, that.partialExpireAfterWrite)
                 && Objects.equals(partialMaxRows, that.partialMaxRows)
-                && fullReloadStrategy == that.fullReloadStrategy
-                && Objects.equals(fullPeriodicReloadInterval, that.fullPeriodicReloadInterval)
-                && fullPeriodicScheduleMode == that.fullPeriodicScheduleMode
-                && Objects.equals(fullTimedReloadIsoTime, that.fullTimedReloadIsoTime);
+                && Objects.equals(fullReload, that.fullReload);
     }
 
     @Override
@@ -228,10 +180,6 @@ public final class BigtableLookupConfig implements Serializable {
                 partialExpireAfterWrite,
                 partialCacheMissingKey,
                 partialMaxRows,
-                fullReloadStrategy,
-                fullPeriodicReloadInterval,
-                fullPeriodicScheduleMode,
-                fullTimedReloadIsoTime,
-                fullTimedReloadIntervalDays);
+                fullReload);
     }
 }

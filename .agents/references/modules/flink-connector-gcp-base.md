@@ -175,6 +175,15 @@ record — context, evidence, declined alternatives — is the named ADR under `
   Spanner and Firestore allow only scalar extra keys; Bigtable also allows family ROWs with scalar
   children in NONE/PARTIAL. Keep service reads, retries and conversion in each connector.
 
+- `FullCacheReloadConfig` reads the standard `lookup.full-cache.*` options, refuses a periodic
+  interval under 1 ms and an unparsable timed reload time under their option keys, builds
+  Flink's reload trigger while the statement is planned, and carries the five values into
+  `equals` (ADRs 0095, 0098; #2042). Bigtable and Spanner hold one only when
+  `lookup.cache` is FULL; a new FULL cache holds one too rather than mapping the options again,
+  which is how Bigtable once missed the 1 ms floor. Keep the `lookup.async`-with-FULL refusal in
+  each connector, since it names the connector's own option, and keep PARTIAL's
+  `DefaultLookupCache.fromConfig` mapping per connector.
+
 ## `base.source` (`docs/adr/0083`, `0108`)
 
 - The one `AutoCloseable` `PullAssignmentSplitEnumerator` takes is the enumerator's for its

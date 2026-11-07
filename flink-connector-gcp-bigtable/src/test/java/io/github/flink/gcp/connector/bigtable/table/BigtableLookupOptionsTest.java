@@ -18,17 +18,15 @@ package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
-import org.apache.flink.table.connector.source.lookup.LookupOptions.ReloadStrategy;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger;
-import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger.ScheduleMode;
 import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -75,7 +73,7 @@ class BigtableLookupOptionsTest {
     }
 
     @Test
-    void retainsThePeriodicReloadIntervalAndScheduleMode() {
+    void buildsThePeriodicReloadTriggerUnderTheDefaultStrategy() {
         BigtableLookupConfig options =
                 options(
                         "lookup.cache",
@@ -87,18 +85,10 @@ class BigtableLookupOptionsTest {
 
         assertThat(options.createFullReloadTrigger())
                 .isInstanceOf(PeriodicCacheReloadTrigger.class);
-        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_RELOAD_STRATEGY))
-                .isEqualTo(ReloadStrategy.PERIODIC);
-        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL))
-                .isEqualTo(Duration.ofMinutes(7));
-        assertThat(
-                        options.asConfiguration()
-                                .get(LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE))
-                .isEqualTo(ScheduleMode.FIXED_RATE);
     }
 
     @Test
-    void retainsTheTimedReloadTimeAndDayInterval() {
+    void buildsTheTimedReloadTriggerWhenTheStrategyIsTimed() {
         BigtableLookupConfig options =
                 options(
                         "lookup.cache",
@@ -111,14 +101,6 @@ class BigtableLookupOptionsTest {
                         "3");
 
         assertThat(options.createFullReloadTrigger()).isInstanceOf(TimedCacheReloadTrigger.class);
-        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_RELOAD_STRATEGY))
-                .isEqualTo(ReloadStrategy.TIMED);
-        assertThat(options.asConfiguration().get(LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME))
-                .isEqualTo("10:15:30+09:00");
-        assertThat(
-                        options.asConfiguration()
-                                .get(LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS))
-                .isEqualTo(3);
     }
 
     @Test
@@ -142,6 +124,68 @@ class BigtableLookupOptionsTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("'lookup.async' cannot be true")
                 .hasMessageContaining("'lookup.cache' is FULL");
+        assertThatThrownBy(
+                        () ->
+                                options(
+                                        "lookup.async",
+                                        "true",
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "999 micros"))
+                .as("the async refusal precedes the reload checks")
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'lookup.async' cannot be true");
+    }
+
+    @Test
+    void namesTheTimedReloadTimeOptionWhenItIsNotAnIsoTime() {
+        assertThatThrownBy(
+                        () ->
+                                options(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.reload-strategy",
+                                        "timed",
+                                        "lookup.full-cache.timed-reload.iso-time",
+                                        "25:99"))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'lookup.full-cache.timed-reload.iso-time'")
+                .hasMessageContaining("'25:99'");
+    }
+
+    @Test
+    void buildsNoReloadTriggerOutsideFullCaching() {
+        assertThatThrownBy(() -> options("lookup.cache", "none").createFullReloadTrigger())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("is NONE");
+    }
+
+    @Test
+    void theReloadOptionsArePartOfAFullTablesIdentityOnly() {
+        String[] fullBase = {
+            "lookup.cache", "full",
+            "lookup.full-cache.periodic-reload.interval", "1 h",
+            "lookup.full-cache.timed-reload.iso-time", "10:15"
+        };
+        assertThat(options(fullBase))
+                .isEqualTo(options(fullBase))
+                .hasSameHashCodeAs(options(fullBase));
+        String[][] fullKnobs = {
+            {"lookup.full-cache.reload-strategy", "timed"},
+            {"lookup.full-cache.periodic-reload.interval", "2 h"},
+            {"lookup.full-cache.periodic-reload.schedule-mode", "FIXED_RATE"},
+            {"lookup.full-cache.timed-reload.iso-time", "10:16"},
+            {"lookup.full-cache.timed-reload.interval-in-days", "2"}
+        };
+        BigtableLookupConfig none = options();
+        for (String[] knob : fullKnobs) {
+            String[] changed = Arrays.copyOf(fullBase, fullBase.length + 2);
+            changed[fullBase.length] = knob[0];
+            changed[fullBase.length + 1] = knob[1];
+            assertThat(options(changed)).as(knob[0]).isNotEqualTo(options(fullBase));
+            assertThat(options(knob[0], knob[1])).as("%s outside FULL", knob[0]).isEqualTo(none);
+        }
     }
 
     @Test

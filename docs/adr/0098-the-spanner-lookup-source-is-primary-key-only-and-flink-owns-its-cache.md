@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0098: The Spanner lookup source point-reads by primary key or loads the scan, and Flink owns its cache
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-12, 2026-10-04 and 2026-11-05
+- Date: 2026-08-11, revised 2026-08-12, 2026-10-04, 2026-11-05 and 2026-11-07
 - Issues: [#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529) (under
   [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643), [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845)
 - Modules: spanner, base (`table`)
@@ -67,6 +67,8 @@ A schema-marked UUID key matches as its lowercase canonical string, while a prim
 `lookup.async = true` is rejected with `FULL`, as on Bigtable, because Flink has no asynchronous full-cache provider.
 The standard `lookup.full-cache.*` options are imported unchanged and validated by constructing Flink's reload trigger while the DDL is planned.
 The periodic interval must also be at least one millisecond (`OptionChecks.checkAtLeastOneMilli`, ADR-0068): Flink's trigger checks only that it is positive and then schedules it in whole milliseconds, so a shorter interval would plan and then fail as the job starts.
+A timed reload time that is not an ISO-8601 time is refused as a `ValidationException` naming `lookup.full-cache.timed-reload.iso-time`, because Flink's timed trigger passes its parse failure through unwrapped and names only the text.
+These checks and the trigger mapping live in the base module's `FullCacheReloadConfig`, which the Bigtable lookup source holds too (issue #2042), so the two connectors cannot drift apart again; the `lookup.async` refusal stays in each connector because it names that connector's own option.
 The loader exports no client metrics to Flink, because Flink opens it without a runtime context.
 The connector retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point reads within the configured retry budget.
 Those three are the connector's own choice rather than a mirror of the client's, because `readRow` reaches `StreamingRead` rather than the unary `Read` and `SpannerStubSettings` gives that RPC an empty retryable set (google-cloud-spanner 6.120.0); of the three, only `UNAVAILABLE` is retried underneath, so `ABORTED` and `DEADLINE_EXCEEDED` would be retried by nobody without this loop.
