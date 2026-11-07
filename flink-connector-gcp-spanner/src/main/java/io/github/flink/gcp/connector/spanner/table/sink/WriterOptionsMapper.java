@@ -51,6 +51,12 @@ public final class WriterOptionsMapper {
                 config, SpannerConnectorOptions.SINK_RPC_PRIORITY, builder::rpcPriority);
         OptionSetters.apply(
                 config,
+                SpannerConnectorOptions.SINK_EXCLUDE_TXN_FROM_CHANGE_STREAMS,
+                builder::excludeTxnFromChangeStreams);
+        OptionSetters.apply(
+                config, SpannerConnectorOptions.SINK_TRANSACTION_TAG, builder::transactionTag);
+        OptionSetters.apply(
+                config,
                 SpannerConnectorOptions.SINK_BATCH_WRITE_TIMEOUT,
                 builder::batchWriteTimeout);
         OptionSetters.apply(

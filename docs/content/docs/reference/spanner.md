@@ -106,6 +106,13 @@ decides how large a request grows**. The reasoning is under
 | `maxCommitDelay` | *unset ⇒ the service's own handling* | How long Spanner may delay a commit to group it with others, trading latency for throughput. Between zero and 500 ms, which is what the service accepts. Not rounded to milliseconds — the client forwards seconds and nanoseconds unchanged |
 | `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it. `LOW` is what a backfill that must not disturb serving traffic wants |
 
+### Change streams and tags
+
+| Option | Default | What it does |
+|---|---|---|
+| `excludeTxnFromChangeStreams` | `false` | Excludes the sink's writes from every change stream whose `allow_txn_exclusion` option is true. A change stream without that option still records them. See [Change streams and transaction tags]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-and-transaction-tags) |
+| `transactionTag` | *unset ⇒ no tag* | Tags the sink's writes, which change stream data records and Spanner's transaction and lock statistics report. At most 50 ASCII characters from 32 (space) to 126 (`~`), not blank, and not starting with `_`. Spanner truncates a longer tag, replaces any other character with an underscore and removes leading underscores, all without an error, so the builder refuses each |
+
 ### Order per row
 
 | Option | Default | What it does |

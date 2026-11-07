@@ -21,6 +21,7 @@ import org.apache.flink.annotation.Public;
 import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.base.options.OptionChecks;
+import io.github.flink.gcp.connector.base.options.ResourceNames;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import org.slf4j.Logger;
@@ -151,6 +152,13 @@ public final class SpannerWriterOptions implements Serializable {
      */
     public static final Duration MAX_COMMIT_DELAY_LIMIT = Duration.ofMillis(500);
 
+    /**
+     * The longest {@link Builder#transactionTag(String)} Spanner keeps. The service truncates a
+     * longer tag without an error, so a tag that reads correctly in the job would be recorded
+     * shortened in the change stream and the statistics tables.
+     */
+    static final int MAX_TRANSACTION_TAG_LENGTH = 50;
+
     private static final SpannerWriterOptions DEFAULTS = builder().build();
 
     private final int maxBatchCells;
@@ -158,6 +166,8 @@ public final class SpannerWriterOptions implements Serializable {
     private final long maxBatchBytes;
     @Nullable private final Duration maxCommitDelay;
     @Nullable private final SpannerRpcPriority rpcPriority;
+    private final boolean excludeTxnFromChangeStreams;
+    @Nullable private final String transactionTag;
     @Nullable private final Duration batchWriteTimeout;
     private final Duration recoveryInitialBackoff;
     private final Duration recoveryMaxBackoff;
@@ -172,6 +182,8 @@ public final class SpannerWriterOptions implements Serializable {
         this.maxBatchBytes = builder.maxBatchBytes;
         this.maxCommitDelay = builder.maxCommitDelay;
         this.rpcPriority = builder.rpcPriority;
+        this.excludeTxnFromChangeStreams = builder.excludeTxnFromChangeStreams;
+        this.transactionTag = builder.transactionTag;
         this.batchWriteTimeout = builder.batchWriteTimeout;
         this.recoveryInitialBackoff = builder.recoveryInitialBackoff;
         this.recoveryMaxBackoff = builder.recoveryMaxBackoff;
@@ -191,9 +203,10 @@ public final class SpannerWriterOptions implements Serializable {
     /**
      * Returns the default options: at most {@value #DEFAULT_MAX_BATCH_CELLS} mutation cells,
      * {@value #DEFAULT_MAX_BATCH_MUTATIONS} mutations and 1 MiB per batch write request, the
-     * service's own commit delay and priority, a 30 s timeout for one complete batch write attempt,
-     * a recovery budget of 500 ms doubling to 10 s over at most 10 attempts, and no order between
-     * mutations of one row within a request.
+     * service's own commit delay and priority, writes that change streams record and no transaction
+     * tag, a 30 s timeout for one complete batch write attempt, a recovery budget of 500 ms
+     * doubling to 10 s over at most 10 attempts, and no order between mutations of one row within a
+     * request.
      *
      * @return the default options
      */
@@ -226,6 +239,20 @@ public final class SpannerWriterOptions implements Serializable {
     @Nullable
     public SpannerRpcPriority getRpcPriority() {
         return rpcPriority;
+    }
+
+    /**
+     * Returns whether the sink's writes are excluded from change streams that allow transaction
+     * exclusion.
+     */
+    public boolean isExcludeTxnFromChangeStreams() {
+        return excludeTxnFromChangeStreams;
+    }
+
+    /** Returns the transaction tag the sink's writes carry, or {@code null} for none. */
+    @Nullable
+    public String getTransactionTag() {
+        return transactionTag;
     }
 
     /** Returns the timeout for one complete batch write attempt. */
@@ -285,6 +312,8 @@ public final class SpannerWriterOptions implements Serializable {
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
                 && Objects.equals(maxCommitDelay, that.maxCommitDelay)
                 && rpcPriority == that.rpcPriority
+                && excludeTxnFromChangeStreams == that.excludeTxnFromChangeStreams
+                && Objects.equals(transactionTag, that.transactionTag)
                 && getBatchWriteTimeout().equals(that.getBatchWriteTimeout())
                 && recoveryInitialBackoff.equals(that.recoveryInitialBackoff)
                 && recoveryMaxBackoff.equals(that.recoveryMaxBackoff)
@@ -299,6 +328,8 @@ public final class SpannerWriterOptions implements Serializable {
                 maxBatchBytes,
                 maxCommitDelay,
                 rpcPriority,
+                excludeTxnFromChangeStreams,
+                transactionTag,
                 getBatchWriteTimeout(),
                 recoveryInitialBackoff,
                 recoveryMaxBackoff,
@@ -318,6 +349,10 @@ public final class SpannerWriterOptions implements Serializable {
                 + maxCommitDelay
                 + ", rpcPriority="
                 + rpcPriority
+                + ", excludeTxnFromChangeStreams="
+                + excludeTxnFromChangeStreams
+                + ", transactionTag="
+                + transactionTag
                 + ", batchWriteTimeout="
                 + getBatchWriteTimeout()
                 + ", recoveryInitialBackoff="
@@ -340,6 +375,8 @@ public final class SpannerWriterOptions implements Serializable {
         private long maxBatchBytes = DEFAULT_MAX_BATCH_BYTES;
         @Nullable private Duration maxCommitDelay;
         @Nullable private SpannerRpcPriority rpcPriority;
+        private boolean excludeTxnFromChangeStreams;
+        @Nullable private String transactionTag;
         private Duration batchWriteTimeout = DEFAULT_BATCH_WRITE_TIMEOUT;
         private Duration recoveryInitialBackoff = Duration.ofMillis(500);
         private Duration recoveryMaxBackoff = Duration.ofSeconds(10);
@@ -461,6 +498,44 @@ public final class SpannerWriterOptions implements Serializable {
         }
 
         /**
+         * Sets whether the sink's writes are excluded from change streams. Defaults to {@code
+         * false}, so every change stream watching the written columns records them.
+         *
+         * <p>Only a change stream whose {@code allow_txn_exclusion} option is true honours the
+         * exclusion, whether it was set when the stream was created or later by {@code ALTER CHANGE
+         * STREAM}; every other change stream still records the writes. Use it to stop a job that
+         * reads a change stream and writes back into the same database from reading its own writes,
+         * or to keep a backfill out of a change stream's consumers.
+         *
+         * @param excludeTxnFromChangeStreams whether to exclude the writes
+         * @return this builder
+         */
+        public Builder excludeTxnFromChangeStreams(boolean excludeTxnFromChangeStreams) {
+            this.excludeTxnFromChangeStreams = excludeTxnFromChangeStreams;
+            return this;
+        }
+
+        /**
+         * Sets the transaction tag the sink's writes carry. Defaults to unset, so the writes carry
+         * no tag.
+         *
+         * <p>Spanner reports the tag in change stream data records and in its transaction and lock
+         * statistics tables. A tag excludes nothing from a change stream by itself.
+         *
+         * <p>The tag is checked here because Spanner would change it without an error: it truncates
+         * a tag longer than 50 characters, replaces a character outside ASCII 32 to 126 with an
+         * underscore, and removes leading underscores.
+         *
+         * @param transactionTag the tag, at most 50 ASCII characters from 32 (space) to 126 ({@code
+         *     ~}), not blank, and not starting with an underscore
+         * @return this builder
+         */
+        public Builder transactionTag(String transactionTag) {
+            this.transactionTag = checkTransactionTag(transactionTag);
+            return this;
+        }
+
+        /**
          * Sets the timeout for one complete batch write attempt. Defaults to 30 s.
          *
          * <p>The timeout covers the whole server stream, including a stream that returns some group
@@ -533,6 +608,31 @@ public final class SpannerWriterOptions implements Serializable {
             this.orderingMode =
                     Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
             return this;
+        }
+
+        private static String checkTransactionTag(String transactionTag) {
+            Preconditions.checkNotNull(transactionTag, "transactionTag must not be null");
+            ResourceNames.checkNotBlank(transactionTag, "transactionTag");
+            Preconditions.checkArgument(
+                    transactionTag.length() <= MAX_TRANSACTION_TAG_LENGTH,
+                    "transactionTag must be at most %s characters, beyond which Spanner truncates"
+                            + " it: %s",
+                    MAX_TRANSACTION_TAG_LENGTH,
+                    transactionTag);
+            for (int i = 0; i < transactionTag.length(); i++) {
+                char c = transactionTag.charAt(i);
+                Preconditions.checkArgument(
+                        c >= ' ' && c <= '~',
+                        "transactionTag must contain only ASCII characters 32 to 126, as Spanner"
+                                + " replaces any other with an underscore: found U+%s at index %s",
+                        String.format("%04X", (int) c),
+                        i);
+            }
+            Preconditions.checkArgument(
+                    transactionTag.charAt(0) != '_',
+                    "transactionTag must not start with an underscore, which Spanner removes: %s",
+                    transactionTag);
+            return transactionTag;
         }
 
         /**

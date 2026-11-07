@@ -448,6 +448,95 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
         }
     }
 
+    /**
+     * What the emulator cannot show about the sink's change-stream options: that a batch write
+     * carries the transaction tag into change stream records, and that the service honours the
+     * exclusion for a batch write as it does for a commit. The emulator honours the exclusion but
+     * records no tag at all, not even a commit's.
+     *
+     * <p>A database of its own, because the service lets at most three change streams track one
+     * column and the shared change-stream database already has three on {@code changes}.
+     */
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void theSinkTagsItsWritesAndExcludesThemFromAStreamThatAllowsIt(Dialect dialect)
+            throws Exception {
+        DatabaseDestination target = createExclusionDatabase(dialect);
+        long tagged = 1L;
+        long excluded = tagged + 1;
+        long plain = tagged + 2;
+        // A commit's own timestamp, so the start is after the stream's creation by construction and
+        // no local clock is compared with the service's.
+        long start =
+                client(target)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertOrUpdateBuilder("changes")
+                                                .set("id")
+                                                .to(tagged + 3)
+                                                .set("value")
+                                                .to("start")
+                                                .build()))
+                        .toSqlTimestamp()
+                        .getTime();
+        TableEnvironment sink =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        sink.executeSql(
+                changesSinkDdl(
+                        "tagged_sink", target, dialect, "'sink.transaction-tag'='flink-tagged'"));
+        sink.executeSql(
+                changesSinkDdl(
+                        "excluded_sink",
+                        target,
+                        dialect,
+                        "'sink.exclude-txn-from-change-streams'='true',"
+                                + " 'sink.transaction-tag'='flink-excluded'"));
+        sink.executeSql("INSERT INTO tagged_sink VALUES (" + tagged + ", 'tagged')").await();
+        sink.executeSql("INSERT INTO excluded_sink VALUES (" + excluded + ", 'excluded')").await();
+        // Written last and outside the sink, so a read bounded at its commit has seen every record
+        // the two sink writes could have produced.
+        com.google.cloud.Timestamp last =
+                client(target)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertOrUpdateBuilder("changes")
+                                                .set("id")
+                                                .to(plain)
+                                                .set("value")
+                                                .to("plain")
+                                                .build()));
+        long bound = Math.addExact(last.toSqlTimestamp().getTime(), 1);
+        String ids = tagged + ", " + excluded + ", " + plain;
+
+        TableEnvironment read =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        read.getConfig().set("parallelism.default", "1");
+        read.executeSql(
+                boundedTagTableDdl("excludable", "excludable", target, dialect, start, bound));
+        read.executeSql(
+                boundedTagTableDdl("recording", "recording", target, dialect, start, bound));
+
+        // One row more than expected: a bounded read returns early only if an extra row arrives.
+        assertThat(
+                        firstRows(
+                                read,
+                                "SELECT id, tag FROM excludable WHERE id IN (" + ids + ")",
+                                3,
+                                CHANGE_STREAM_WAIT))
+                .containsExactlyInAnyOrder(Row.of(tagged, "flink-tagged"), Row.of(plain, ""));
+        assertThat(
+                        firstRows(
+                                read,
+                                "SELECT id, tag FROM recording WHERE id IN (" + ids + ")",
+                                4,
+                                CHANGE_STREAM_WAIT))
+                .containsExactlyInAnyOrder(
+                        Row.of(tagged, "flink-tagged"),
+                        Row.of(excluded, "flink-excluded"),
+                        Row.of(plain, ""));
+    }
+
     @ParameterizedTest
     @MethodSource("tableMetadataCases")
     void tableChangeStreamExposesServiceMetadataAndSourceWatermarks(
@@ -1105,6 +1194,73 @@ class SpannerSourceRealGcpITCase extends AbstractSpannerRealGcpITCase {
             collected.forEachRemaining(rows::add);
         }
         return rows;
+    }
+
+    private static DatabaseDestination createExclusionDatabase(Dialect dialect) throws Exception {
+        if (dialect == Dialect.POSTGRESQL) {
+            return createDatabase(
+                    dialect,
+                    "CREATE TABLE changes (id bigint NOT NULL PRIMARY KEY, value varchar)",
+                    "CREATE CHANGE STREAM excludable FOR changes WITH (allow_txn_exclusion=true,"
+                            + " value_capture_type='NEW_ROW_AND_OLD_VALUES')",
+                    "CREATE CHANGE STREAM recording FOR changes"
+                            + " WITH (value_capture_type='NEW_ROW_AND_OLD_VALUES')");
+        }
+        return createDatabase(
+                dialect,
+                "CREATE TABLE changes (id INT64 NOT NULL, value STRING(MAX)) PRIMARY KEY (id)",
+                "CREATE CHANGE STREAM excludable FOR changes OPTIONS (allow_txn_exclusion=true,"
+                        + " value_capture_type='NEW_ROW_AND_OLD_VALUES')",
+                "CREATE CHANGE STREAM recording FOR changes"
+                        + " OPTIONS (value_capture_type='NEW_ROW_AND_OLD_VALUES')");
+    }
+
+    private static String changesSinkDdl(
+            String name, DatabaseDestination target, Dialect dialect, String sinkOptions) {
+        return "CREATE TABLE "
+                + name
+                + " (id BIGINT, `value` STRING, PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                + "'connector'='spanner', 'project'='"
+                + target.getProject()
+                + "', 'instance'='"
+                + target.getInstance()
+                + "', 'database'='"
+                + target.getDatabase()
+                + "', 'table'='changes', 'dialect'='"
+                + dialect.name()
+                + "', "
+                + sinkOptions
+                + ")";
+    }
+
+    private static String boundedTagTableDdl(
+            String name,
+            String changeStream,
+            DatabaseDestination target,
+            Dialect dialect,
+            long startupTimestampMillis,
+            long boundedTimestampMillis) {
+        return "CREATE TABLE "
+                + name
+                + " (id BIGINT, `value` STRING, "
+                + "tag STRING METADATA FROM 'transaction-tag' VIRTUAL, "
+                + "PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                + "'connector'='spanner', 'project'='"
+                + target.getProject()
+                + "', 'instance'='"
+                + target.getInstance()
+                + "', 'database'='"
+                + target.getDatabase()
+                + "', 'table'='changes', 'dialect'='"
+                + dialect.name()
+                + "', 'scan.mode'='change-stream', 'scan.change-stream.name'='"
+                + changeStream
+                + "', 'scan.change-stream.changelog-mode'='full'"
+                + ", 'scan.startup.mode'='timestamp', 'scan.startup.timestamp-millis'='"
+                + startupTimestampMillis
+                + "', 'scan.bounded.timestamp-millis'='"
+                + boundedTimestampMillis
+                + "', 'scan.change-stream.heartbeat-interval'='1 s', 'scan.parallelism'='1')";
     }
 
     private static String changeStreamMetadataTableDdl(

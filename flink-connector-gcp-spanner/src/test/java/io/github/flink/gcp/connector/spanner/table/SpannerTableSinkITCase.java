@@ -21,19 +21,122 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
+import com.google.cloud.spanner.Mutation;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.AbstractSpannerEmulatorITCase;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.time.Duration;
 import java.util.List;
 
+import static io.github.flink.gcp.connector.spanner.table.UnboundedQueryRows.firstRows;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** End-to-end SQL sink coverage against both dialects of the Spanner emulator. */
 class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
+
+    private static final Duration ROW_DEADLINE = Duration.ofSeconds(90);
+
+    /**
+     * The sink's change-stream exclusion, read back through the connector's own change-stream
+     * source. One stream allows transaction exclusion and one does not, so the test also shows that
+     * the exclusion is the stream's to honour: the stream without the option still records the
+     * excluded write.
+     *
+     * <p>The transaction tag is set but not asserted. The emulator records no tag in a change
+     * stream, not even a {@code Commit}'s (measured 2026-11-07); the gated suite asserts it.
+     */
+    @ParameterizedTest
+    @EnumSource(Dialect.class)
+    void excludesTaggedWritesOnlyFromAStreamThatAllowsIt(Dialect dialect) throws Exception {
+        DatabaseDestination database =
+                dialect == Dialect.POSTGRESQL
+                        ? createDatabase(
+                                dialect,
+                                "CREATE TABLE records (id bigint NOT NULL PRIMARY KEY, name varchar(64))",
+                                "CREATE CHANGE STREAM excludable FOR records WITH"
+                                        + " (allow_txn_exclusion = true,"
+                                        + " value_capture_type = 'NEW_ROW_AND_OLD_VALUES')",
+                                "CREATE CHANGE STREAM recording FOR records WITH"
+                                        + " (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')")
+                        : createDatabase(
+                                dialect,
+                                "CREATE TABLE records (id INT64 NOT NULL, name STRING(64))"
+                                        + " PRIMARY KEY (id)",
+                                "CREATE CHANGE STREAM excludable FOR records OPTIONS"
+                                        + " (allow_txn_exclusion = true,"
+                                        + " value_capture_type = 'NEW_ROW_AND_OLD_VALUES')",
+                                "CREATE CHANGE STREAM recording FOR records OPTIONS"
+                                        + " (value_capture_type = 'NEW_ROW_AND_OLD_VALUES')");
+        // A commit's own timestamp rather than the host clock: the emulator runs in a container
+        // whose clock may drift from the JVM's. The row is filtered out of both reads.
+        long start =
+                client(database)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertBuilder("records")
+                                                .set("id")
+                                                .to(4L)
+                                                .set("name")
+                                                .to("start")
+                                                .build()))
+                        .toSqlTimestamp()
+                        .getTime();
+        TableEnvironment table =
+                TableEnvironment.create(
+                        EnvironmentSettings.newInstance().inStreamingMode().build());
+        table.executeSql(
+                sinkDdl(
+                        "tagged",
+                        database,
+                        dialect,
+                        "  'sink.transaction-tag' = 'flink-tagged',\n"));
+        table.executeSql(
+                sinkDdl(
+                        "excluded",
+                        database,
+                        dialect,
+                        "  'sink.exclude-txn-from-change-streams' = 'true',\n"
+                                + "  'sink.transaction-tag' = 'flink-excluded',\n"));
+        table.executeSql("INSERT INTO tagged VALUES (1, 'tagged')").await();
+        table.executeSql("INSERT INTO excluded VALUES (2, 'excluded')").await();
+        // A write outside the sink closes the window: the bound covers it, so a read that stops at
+        // the bound has seen everything the two sink writes could have produced.
+        Timestamp last =
+                client(database)
+                        .write(
+                                List.of(
+                                        Mutation.newInsertBuilder("records")
+                                                .set("id")
+                                                .to(3L)
+                                                .set("name")
+                                                .to("plain")
+                                                .build()));
+        long bound = Math.addExact(last.toSqlTimestamp().getTime(), 1);
+
+        table.executeSql(cdcDdl("excludable_cdc", "excludable", database, dialect, start, bound));
+        table.executeSql(cdcDdl("recording_cdc", "recording", database, dialect, start, bound));
+
+        // One row more than expected: a bounded read returns early only if an extra row arrives.
+        assertThat(
+                        firstRows(
+                                table,
+                                "SELECT id FROM excludable_cdc WHERE id IN (1, 2, 3)",
+                                3,
+                                ROW_DEADLINE))
+                .containsExactlyInAnyOrder(Row.of(1L), Row.of(3L));
+        assertThat(
+                        firstRows(
+                                table,
+                                "SELECT id FROM recording_cdc WHERE id IN (1, 2, 3)",
+                                4,
+                                ROW_DEADLINE))
+                .containsExactlyInAnyOrder(Row.of(1L), Row.of(2L), Row.of(3L));
+    }
 
     @ParameterizedTest
     @EnumSource(Dialect.class)
@@ -202,6 +305,61 @@ class SpannerTableSinkITCase extends AbstractSpannerEmulatorITCase {
                 + "  'dialect' = '"
                 + dialect.name()
                 + "',\n"
+                + "  'emulator-endpoint' = '"
+                + emulatorEndpoint()
+                + "'\n"
+                + ")";
+    }
+
+    private static String sinkDdl(
+            String name, DatabaseDestination database, Dialect dialect, String sinkOptions) {
+        return tableDdl(database, dialect)
+                .replace("CREATE TABLE target (", "CREATE TABLE " + name + " (")
+                .replace("  'emulator-endpoint'", sinkOptions + "  'emulator-endpoint'");
+    }
+
+    private static String cdcDdl(
+            String name,
+            String changeStream,
+            DatabaseDestination database,
+            Dialect dialect,
+            long startupTimestampMillis,
+            long boundedTimestampMillis) {
+        return "CREATE TABLE "
+                + name
+                + " (\n"
+                + "  id BIGINT,\n"
+                + "  name STRING,\n"
+                + "  PRIMARY KEY (id) NOT ENFORCED\n"
+                + ") WITH (\n"
+                + "  'connector' = 'spanner',\n"
+                + "  'project' = '"
+                + database.getProject()
+                + "',\n"
+                + "  'instance' = '"
+                + database.getInstance()
+                + "',\n"
+                + "  'database' = '"
+                + database.getDatabase()
+                + "',\n"
+                + "  'table' = 'records',\n"
+                + "  'dialect' = '"
+                + dialect.name()
+                + "',\n"
+                + "  'scan.mode' = 'change-stream',\n"
+                + "  'scan.change-stream.name' = '"
+                + changeStream
+                + "',\n"
+                + "  'scan.change-stream.changelog-mode' = 'full',\n"
+                + "  'scan.startup.mode' = 'timestamp',\n"
+                + "  'scan.startup.timestamp-millis' = '"
+                + startupTimestampMillis
+                + "',\n"
+                + "  'scan.bounded.timestamp-millis' = '"
+                + boundedTimestampMillis
+                + "',\n"
+                + "  'scan.change-stream.heartbeat-interval' = '1 s',\n"
+                + "  'scan.parallelism' = '1',\n"
                 + "  'emulator-endpoint' = '"
                 + emulatorEndpoint()
                 + "'\n"
