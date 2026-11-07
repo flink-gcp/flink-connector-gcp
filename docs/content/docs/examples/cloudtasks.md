@@ -114,7 +114,7 @@ not make the external API operation exactly once.
 
 Once the connector successfully creates the task, Cloud Tasks owns dispatch and its retries.
 A 2xx handler response completes the task; a non-2xx response or a missed deadline is retried under
-the queue's retry policy.
+the queue's retry policy, unless the task carries its own retry configuration.
 The connector observes task creation only, so the API operation must be idempotent or deduplicate
 using a durable business key.
 

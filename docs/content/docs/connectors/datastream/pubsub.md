@@ -1742,8 +1742,10 @@ either (the sink is single-phase), so Flink's committer metrics do not apply.
 accessor, and its only telemetry surface is `setEnableOpenTelemetryTracing`/`setOpenTelemetry`,
 which emits **spans** — not meters — into an OpenTelemetry instance a Flink job need not have
 configured. A Kafka-style passthrough of client-native metrics therefore has nothing to read. The
-connector leaves that tracing switch alone; a job that wants publish spans configures OpenTelemetry
-itself.
+connector does not enable that tracing, and it offers no switch to do so: the SDK emits no spans
+until `setEnableOpenTelemetryTracing(true)` is called, so an OpenTelemetry instance configured by the
+job alone produces none from this sink. [#2013]({{< param BookRepo >}}/issues/2013) decides on
+such a switch.
 
 ## Testing
 

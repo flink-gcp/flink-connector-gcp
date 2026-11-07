@@ -3317,6 +3317,8 @@ stream: building one record per row out of Arrow ran 34% *slower* than decoding 
 record directly, over two million rows a pass; and separately, Arrow's rows were 84% larger on the
 wire. Arrow is faster only for a reader that never asks for a row, which Flink is not.
 
-There is no unbounded or CDC read, and there is no planned one: BigQuery has no changelog read
-primitive, so it could only be a polling emulation ([#64]({{< param BookRepo >}}/issues/64) records
-the reasoning).
+There is no unbounded or CDC read. BigQuery's change-history reads are the `APPENDS` and `CHANGES`
+table functions, and each call is a bounded query over a time range, so an unbounded source over
+them would have to poll inside the table's time-travel window and track the ranges it has read.
+[#2001]({{< param BookRepo >}}/issues/2001) decides whether to build such a source;
+[#64]({{< param BookRepo >}}/issues/64) records why this one stays bounded.

@@ -74,10 +74,11 @@ import java.util.Objects;
  * <em>blocks</em> the calling thread when its limits are reached, and the calling thread is Flink's
  * task thread, which must stay free to run mailbox mails. So the writer keeps its own bounds and
  * yields to the mailbox instead. That only works while the writer's bounds are reached first, and
- * the client's limits — 20,000 outstanding entries and 100 MiB, blocking — cannot be raised through
- * its public API. Raising {@link Builder#maxInFlightEntries(int)} far above the default therefore
- * moves the effective bound into the client, where it stalls the task thread rather than
- * backpressuring the stream.
+ * the connector leaves the client's limits — 20,000 outstanding entries and 100 MiB, blocking — at
+ * their defaults; the client accepts others only through its beta {@code
+ * BigtableBatchingCallSettings}, and a larger budget would block the same way once reached. Raising
+ * {@link Builder#maxInFlightEntries(int)} far above the default therefore moves the effective bound
+ * into the client, where it stalls the task thread rather than backpressuring the stream.
  *
  * <p>Per-record destinations do not change that relationship, and the reason is measured rather
  * than assumed: the client's flow controller is one per <em>client</em> — {@code
@@ -126,8 +127,9 @@ public final class BigtableWriterOptions implements Serializable {
 
     /**
      * The client's own flow-control budget for the bulk-mutation path: 20,000 accumulated entries
-     * and 100 MiB, blocking, neither settable through its public API ({@code
-     * ClientOperationSettings}, google-cloud-bigtable 2.80.0, read 2026-08-10).
+     * and 100 MiB, blocking ({@code ClientOperationSettings}, google-cloud-bigtable 2.80.0, read
+     * 2026-08-10; unchanged in 2.86.0). The connector does not override them, although the client
+     * accepts other values through its {@code @BetaApi} {@code BigtableBatchingCallSettings}.
      *
      * <p>These are what the two ceilings below are derived from, and the derivation is the client's
      * own rule rather than a judgement of ours: {@code

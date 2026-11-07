@@ -59,10 +59,11 @@ import java.util.function.Supplier;
 /**
  * Reads a BigQuery table through the Storage Read API.
  *
- * <p>Bounded, and only bounded: BigQuery has no changelog read primitive, so a stream of changes
- * would have to be emulated by polling. A bounded source is not a batch-only one — it runs inside a
- * STREAMING pipeline and simply finishes, which is what makes reading a dimension table and joining
- * it against an unbounded stream work.
+ * <p>Bounded, and only bounded: BigQuery's change-history reads ({@code APPENDS} and {@code
+ * CHANGES}) are bounded table functions, so a stream of changes would have to poll them within the
+ * time-travel window. A bounded source is not a batch-only one — it runs inside a STREAMING
+ * pipeline and simply finishes, which is what makes reading a dimension table and joining it
+ * against an unbounded stream work.
  *
  * @param <T> type of the records produced by the source
  */

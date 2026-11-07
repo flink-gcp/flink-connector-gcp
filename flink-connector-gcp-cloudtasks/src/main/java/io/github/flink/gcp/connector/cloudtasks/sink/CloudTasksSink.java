@@ -24,7 +24,8 @@ import org.apache.flink.annotation.Public;
  * <p>By default the sink creates one task per record, at-least-once, and flushes every outstanding
  * creation at each checkpoint barrier. Dispatch pacing is <em>not</em> configured here: Cloud Tasks
  * paces execution on the queue, so the queue's rate limits and retry policy — applied by whoever
- * created it — decide how fast the tasks run. The sink only decides how fast tasks are handed over.
+ * created it — decide how fast the tasks run, unless a task carries its own retry configuration.
+ * The sink only decides how fast tasks are handed over.
  *
  * <p>Opt-in {@link CloudTasksDeliveryGuarantee#EXACTLY_ONCE} stages immutable named envelopes and
  * creates tasks after checkpoint completion, within a bounded retention and recovery scope. It
