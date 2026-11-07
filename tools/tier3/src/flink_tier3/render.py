@@ -25,6 +25,8 @@ from .bigtable import trial as bigtable_trial
 from .cloudtasks import plan as cloudtasks_plan
 from .cloudtasks import trial as cloudtasks_trial
 from .common import Failure
+from .firestore import plan as firestore_plan
+from .firestore import trial as firestore_trial
 from .model import SCENARIOS
 from .pubsub import plan as pubsub_plan
 from .resource import RESOURCE_SCENARIOS
@@ -37,6 +39,7 @@ RESOURCE_PLANS = {
     "cloudtasks-recovery": cloudtasks_plan,
     "bigtable-recovery": bigtable_plan,
     "spanner-recovery": spanner_plan,
+    "firestore-recovery": firestore_plan,
 }
 
 
@@ -65,6 +68,9 @@ def main(argv=None):
     )
     parser.add_argument(
         "--spanner-trial", choices=spanner_trial.KINDS, help="Spanner trial"
+    )
+    parser.add_argument(
+        "--firestore-trial", choices=firestore_trial.KINDS, help="Firestore trial"
     )
     parser.add_argument("--started-at", help="trial proposal's absolute start time")
     parser.add_argument(

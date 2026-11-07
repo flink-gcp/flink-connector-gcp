@@ -41,7 +41,7 @@ def micros(value):
     return (parsed - _EPOCH) // _MICROSECOND
 
 
-class _Check:
+class Check:
     """Counts and examples shared by the checks."""
 
     def __init__(self, expected):
@@ -85,7 +85,7 @@ class _Check:
         return result
 
 
-class Sink(_Check):
+class Sink(Check):
     """`input`: every record's key holds its sequence, and nothing else is there."""
 
     def __init__(self, trial):
@@ -116,7 +116,7 @@ class Sink(_Check):
         return result
 
 
-class ChangeStream(_Check):
+class ChangeStream(Check):
     """`relay`: every input key was delivered, and no commit after the end.
 
     A key's rows are its deliveries and their distinct commit times its
@@ -159,7 +159,7 @@ class ChangeStream(_Check):
         return result
 
 
-class Seed(_Check):
+class Seed(Check):
     """`seed`: the runner's rows and the supervisor's late ones, each its own value.
 
     The table's key is the row's, so with none missing and none foreign it
@@ -178,7 +178,7 @@ class Seed(_Check):
         return super().report(("foreign", "wrong_value"))
 
 
-class BatchCopy(_Check):
+class BatchCopy(Check):
     """`batch_out`: every seed row copied with its value, and no late row.
 
     The copy reads `seed` at the snapshot it planned, before the late rows
