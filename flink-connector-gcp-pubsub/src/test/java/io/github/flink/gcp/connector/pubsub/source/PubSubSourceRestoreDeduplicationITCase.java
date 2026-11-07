@@ -69,12 +69,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * That check assumes the emulator returns the first run's nacked messages before the fresh ones
  * nacked later, since it pulls only as many messages as the restored run left behind; the emitter's
  * unit test is what pins that a suppressed message is acknowledged.
+ *
+ * <p>Every job caps each acknowledgement-deadline extension at {@link #ACK_DEADLINE}, which is also
+ * what the client library requests as the streaming pull's initial deadline. Left at its 60-second
+ * default, a message that reaches a cancelled job's stream during teardown, before the client has
+ * extended or nacked it, stays leased for 60 seconds, and the final pull, which waits for a server
+ * response for at most 30 seconds, fails first (#2077). The cap leaves leases during a run as they
+ * were: the client never extends by less than 10 seconds, and nothing these jobs acknowledge takes
+ * longer than that, so it already extended by 10 seconds.
  */
 @Timeout(300)
 class PubSubSourceRestoreDeduplicationITCase extends AbstractPubSubSourceEmulatorITCase {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(120);
     private static final int ACK_DEADLINE_SECONDS = 10;
+    private static final Duration ACK_DEADLINE = Duration.ofSeconds(ACK_DEADLINE_SECONDS);
 
     /** Long enough that no periodic checkpoint acknowledges anything during a test. */
     private static final Duration CHECKPOINT_INTERVAL = Duration.ofMinutes(30);
@@ -207,6 +216,10 @@ class PubSubSourceRestoreDeduplicationITCase extends AbstractPubSubSourceEmulato
                         .subscriptions(subscriptions)
                         .deserializer(PubSubDeserializationSchema.payload(new SimpleStringSchema()))
                         .emulatorEndpoint(emulatorEndpoint())
+                        .subscriberOptions(
+                                PubSubSubscriberOptions.builder()
+                                        .maxDurationPerAckExtension(ACK_DEADLINE)
+                                        .build())
                         .restoreDeduplication(deduplicate);
         env.fromSource(source.build(), WatermarkStrategy.noWatermarks(), "pubsub")
                 // The source's uid is what lets the savepoint's reader state find it again.
