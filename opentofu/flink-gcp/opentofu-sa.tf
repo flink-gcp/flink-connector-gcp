@@ -48,6 +48,11 @@ resource "google_project_iam_member" "opentofu" {
     # A modern Standard deployment builds its container through Cloud Build.
     # Storage Admin below already carries the other deployer-side requirement.
     "roles/cloudbuild.builds.editor",
+    # The key ring and key for the BigQuery CMEK tests, and the grant on the
+    # key (bigquery-cmek.tf). Narrower roles split creation from IAM policy
+    # management; admin is the one role carrying both, as storage.admin does
+    # for the buckets.
+    "roles/cloudkms.admin",
     # Tier-3 cluster and private network.
     "roles/compute.networkAdmin",
     "roles/container.clusterAdmin",

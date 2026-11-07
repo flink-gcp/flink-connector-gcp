@@ -40,6 +40,9 @@ resource "google_project_service" "this" {
     "bigtable.googleapis.com",
     "bigtableadmin.googleapis.com",
     "cloudbuild.googleapis.com",
+    # The Cloud KMS key the BigQuery connector's tests encrypt the tables they
+    # create with (#2101).
+    "cloudkms.googleapis.com",
     "cloudtasks.googleapis.com",
     # Two services, because a Firestore database in Datastore mode is read and
     # written through a different API: datastore.googleapis.com serves that
