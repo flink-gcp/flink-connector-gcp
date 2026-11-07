@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-11, revised 2026-08-12, 2026-10-04, 2026-11-05 and 2026-11-07
 - Issues: [#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529) (under
-  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643), [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845)
+  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643), [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845), [#2061](https://github.com/flink-gcp/flink-connector-gcp/issues/2061)
 - Modules: spanner, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -33,7 +33,7 @@ Flink also defines standard lookup cache options and owns the cache lifecycle ar
 
 The Spanner dynamic source accepts a lookup only when the planner supplies equality predicates for every declared primary-key column.
 It restores the declared composite-key order before calling Spanner.
-Synchronous mode uses `readRow`; asynchronous mode uses `readRowAsync`.
+Synchronous mode uses `readRow`; asynchronous mode uses `readRowAsync`; a key with a coarse `TIMESTAMP_LTZ` part reads a range through `read` and `readAsync` instead, as issue #2061 below describes.
 Both modes qualify the table with the optional dialect-specific `named-schema` value used by the sink and bounded source.
 
 Issue #1643 permits additional top-level physical scalar equality keys, including constants from ON or WHERE and comparisons with input fields.
@@ -45,7 +45,14 @@ Nested key paths, metadata and additional ARRAY, MAP or ROW keys are rejected du
 The helper snapshots comparison values per async invocation and normalizes complete PARTIAL key tuples without taking over Flink's cache lifecycle or policy.
 
 The connector exposes Flink's `NONE` and `PARTIAL` cache modes and delegates partial-cache storage, expiry, and missing-key behavior to Flink.
-The primary-key requirement above applies to these two modes, which address Spanner by point read.
+The primary-key requirement above applies to these two modes, which address Spanner by the complete primary key: a point read, or the range below for a coarse key part.
+
+Issue #2061 reads a range instead when a primary-key part is declared `TIMESTAMP_LTZ(p)` with `p` below 9.
+Read rows carry such a value truncated to `p` (issue #2041), so a probe matches every stored value in its bucket, and a point read at the probe's own value would miss the rows `FULL` and a bounded scan return.
+The range pins the key parts before the first such part and covers that part's bucket; the rows read are kept when every key part, truncated as a read row carries it, equals the probe's, which also checks the parts after the range and any later coarse part.
+A key range is written in index order, so a descending part needs its endpoints reversed, and a point read never needed to know the order.
+The lookup therefore reads that part's `COLUMN_ORDERING` when it opens, through the same `INFORMATION_SCHEMA` query a bounded scan resolves its access path with, and reads every primary-key column along with the projection to match the rows on.
+A legacy `table` value that carries `schema.table` without `named-schema` reaches the data API unchanged but names no table in `INFORMATION_SCHEMA`, so the lookup splits it before reading the metadata; otherwise a key that point-read before would fail when the lookup opens.
 
 Issue #1845 adds `FULL`.
 Flink's full cache never loads through the FLIP-27 `SourceProvider` the bounded scan returns: it takes an `InputFormatProvider` on both supported lines, or on Flink 1.20 also a deprecated `SourceFunctionProvider` (ADR-0095), and loads through `InputFormatCacheLoader` (checked in Flink 1.20.5 and 2.2.1).
@@ -85,9 +92,13 @@ The asynchronous retry loop is shared through `base.table.AsyncLookupRetries` ([
 - Keeping `scan.timestamp-bound.read-timestamp` with `FULL`, so a reload reread a fixed snapshot: the reload would do no useful work and would fail once the timestamp left version retention.
 - Retrying `RESOURCE_EXHAUSTED`, which the sink's `SpannerErrorClassifier` does treat as transient. What separates the two is backoff rather than polarity: the sink retries on a `RetrySchedule` and sleeps between attempts (ADR-0075), so it can serve out the wait this status asks for, and the client honours that wait too, retrying the status on this read path precisely when the server attached a retry delay. The lookup loop has no backoff at all, so including it would re-issue at once and spend the whole budget against the wait the server asked for. That is the shape ADR-0084 records on the BigQuery read path.
 
+- Reading both the ascending and the descending range in one `KeySet`, so the lookup would need no key order: neither `keys.proto` nor the client documents what Spanner does with a range whose start sorts after its end, and the emulator returning nothing for one is not evidence for the service.
+- A SQL query with a range predicate on the timestamp part, which is order-independent: each probe would leave `StreamingRead`, so the retry classification above, which rests on that RPC's empty retryable set, would need a second basis.
+
 ## Consequences
 
 Lookup cost is one native point read on a cache miss when no retryable failure occurs, and absent rows naturally produce an empty result.
+A key with a coarse `TIMESTAMP_LTZ` part costs one range read instead, which returns every row in the probe's bucket under its pinned prefix before the connector filters them, plus one `INFORMATION_SCHEMA` query per lookup function when it opens.
 Prefix, range, and lookups without the complete primary key remain unsupported in `NONE` and `PARTIAL`; `FULL` serves them from memory at the cost of reading the whole table once per TaskManager per load, and of holding two copies while a reload runs.
 PARTIAL stores filtered hits and misses under the whole key tuple; different additional comparison values do not share entries.
 Emulator tests exercise constant predicates in ON and WHERE and input-field keys with NONE and PARTIAL, sync and async, in both dialects.

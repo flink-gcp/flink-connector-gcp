@@ -213,9 +213,7 @@ final class SpannerFilterPushDown {
             return nextId;
         }
         if (encoded.get() instanceof Timestamp) {
-            int unit =
-                    StructToRowDataConverter.truncationUnit(
-                            (LocalZonedTimestampType) column.getLogicalType());
+            int unit = TimestampTruncation.unit((LocalZonedTimestampType) column.getLogicalType());
             if (unit > 1) {
                 // The comparison excludes nulls even when a bound past the range adds no predicate,
                 // so it proves the field non-null the way an IS NOT NULL does.
@@ -256,10 +254,9 @@ final class SpannerFilterPushDown {
             List<Predicate> predicates,
             int nextId) {
         parent.truncated = true;
-        int floorNanos = literal.getNanos() - literal.getNanos() % unit;
-        Timestamp floor = Timestamp.ofTimeSecondsAndNanos(literal.getSeconds(), floorNanos);
-        @Nullable Timestamp next = nextBucket(literal.getSeconds(), floorNanos, unit);
-        @Nullable Timestamp ceiling = floorNanos == literal.getNanos() ? floor : next;
+        Timestamp floor = TimestampTruncation.floor(literal, unit);
+        @Nullable Timestamp next = TimestampTruncation.nextBucket(floor, unit);
+        @Nullable Timestamp ceiling = floor.equals(literal) ? floor : next;
         int id = nextId;
         switch (comparison) {
             case EQUALS:
@@ -290,19 +287,6 @@ final class SpannerFilterPushDown {
             default:
                 throw new IllegalStateException("Unknown comparison " + comparison);
         }
-    }
-
-    /**
-     * The start of the bucket after {@code [seconds.floorNanos, +unit)}, or null past the range.
-     */
-    @Nullable
-    private static Timestamp nextBucket(long seconds, int floorNanos, int unit) {
-        long nanos = (long) floorNanos + unit;
-        long nextSeconds = seconds + nanos / 1_000_000_000L;
-        if (nextSeconds > Timestamp.MAX_VALUE.getSeconds()) {
-            return null;
-        }
-        return Timestamp.ofTimeSecondsAndNanos(nextSeconds, (int) (nanos % 1_000_000_000L));
     }
 
     /**

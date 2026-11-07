@@ -113,7 +113,7 @@ public final class SpannerLookupConfig implements Serializable {
     }
 
     /**
-     * The number of retries after the initial point read.
+     * The number of retries after a lookup's initial read.
      *
      * @return the retry count
      */

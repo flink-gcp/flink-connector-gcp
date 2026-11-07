@@ -58,6 +58,8 @@ import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ErrorCode;
 import com.google.cloud.spanner.Key;
+import com.google.cloud.spanner.KeyRange;
+import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
@@ -1014,14 +1016,248 @@ class SpannerLookupSourceTest {
                         });
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aCoarserTimestampKeyReadsItsBucketAndKeepsTheRowsCarryingTheProbe(boolean async)
+            throws Exception {
+        FakeLookup lookup = new FakeLookup(null);
+        lookup.rangeRows.add(event(7L, "2026-08-11T01:02:03.123456789Z", 2L, "Ada"));
+        lookup.rangeRows.add(event(7L, "2026-08-11T01:02:03.123999Z", 3L, "Bob"));
+        lookup.rangeRows.add(event(7L, "2026-08-11T01:02:03.123Z", 2L, "Cy"));
+        // The fake returns every row whatever the range, so these pin that the match compares the
+        // truncated timestamp and the pinned prefix too, not only the parts after the range.
+        lookup.rangeRows.add(event(7L, "2026-08-11T01:02:03.124Z", 2L, "Zed"));
+        lookup.rangeRows.add(event(8L, "2026-08-11T01:02:03.123Z", 2L, "Other"));
+        // A probe carrying digits beyond its own precision still names its bucket.
+        RowData probe =
+                GenericRowData.of(
+                        7L,
+                        TimestampData.fromInstant(Instant.parse("2026-08-11T01:02:03.1235Z")),
+                        2L);
+
+        Collection<RowData> rows = coarseLookup(lookup, async, probe);
+
+        assertThat(lookup.keys).isEmpty();
+        assertThat(lookup.ranges)
+                .containsExactly(
+                        KeySet.range(
+                                KeyRange.closedOpen(
+                                        Key.of(7L, timestamp("2026-08-11T01:02:03.123Z")),
+                                        Key.of(7L, timestamp("2026-08-11T01:02:03.124Z")))));
+        assertThat(rows)
+                .extracting(row -> row.getString(0).toString())
+                .containsExactly("Ada", "Cy");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aDescendingCoarserTimestampKeyReversesItsBucket(boolean async) throws Exception {
+        FakeLookup lookup = new FakeLookup(null);
+        lookup.descending = true;
+
+        coarseLookup(
+                lookup,
+                async,
+                GenericRowData.of(
+                        7L,
+                        TimestampData.fromInstant(Instant.parse("2026-08-11T01:02:03.123Z")),
+                        2L));
+
+        assertThat(lookup.ranges)
+                .containsExactly(
+                        KeySet.range(
+                                KeyRange.openClosed(
+                                        Key.of(7L, timestamp("2026-08-11T01:02:03.124Z")),
+                                        Key.of(7L, timestamp("2026-08-11T01:02:03.123Z")))));
+    }
+
+    @Test
+    void theLastBucketOfACoarserTimestampKeyRunsToTheEndOfItsPrefix() throws Exception {
+        FakeLookup ascending = new FakeLookup(null);
+        FakeLookup descending = new FakeLookup(null);
+        descending.descending = true;
+        RowData probe =
+                GenericRowData.of(
+                        7L,
+                        TimestampData.fromInstant(Instant.parse("9999-12-31T23:59:59.999Z")),
+                        2L);
+        Key last = Key.of(7L, timestamp("9999-12-31T23:59:59.999Z"));
+
+        coarseLookup(ascending, false, probe);
+        coarseLookup(descending, false, probe);
+
+        assertThat(ascending.ranges)
+                .containsExactly(KeySet.range(KeyRange.closedClosed(last, Key.of(7L))));
+        assertThat(descending.ranges)
+                .containsExactly(KeySet.range(KeyRange.closedClosed(Key.of(7L), last)));
+    }
+
+    @Test
+    void aTransientRangeReadFailureIsRetriedInBothModes() throws Exception {
+        RuntimeException transientFailure =
+                SpannerExceptionFactory.newSpannerException(ErrorCode.UNAVAILABLE, "try again");
+        List<Struct> hit =
+                Collections.singletonList(event(7L, "2026-08-11T01:02:03.123Z", 2L, "Ada"));
+        RowData probe =
+                GenericRowData.of(
+                        7L,
+                        TimestampData.fromInstant(Instant.parse("2026-08-11T01:02:03.123Z")),
+                        2L);
+
+        ScriptedLookup syncLookup = new ScriptedLookup().answer(transientFailure).answer(hit);
+        SpannerRowDataLookupFunction sync =
+                new SpannerRowDataLookupFunction(
+                        coarseSchema(), new int[] {3}, new int[] {0, 1, 2}, 1, syncLookup);
+        sync.open(new FunctionContext(null));
+        assertThat(sync.lookup(probe)).hasSize(1);
+        assertThat(syncLookup.ranges).hasSize(2);
+
+        ScriptedLookup asyncLookup = new ScriptedLookup().answer(transientFailure).answer(hit);
+        SpannerRowDataAsyncLookupFunction async =
+                new SpannerRowDataAsyncLookupFunction(
+                        coarseSchema(), new int[] {3}, new int[] {0, 1, 2}, 1, asyncLookup);
+        async.open(new FunctionContext(null));
+        assertThat(async.asyncLookup(probe).join()).hasSize(1);
+        assertThat(asyncLookup.ranges).hasSize(2);
+    }
+
+    @Test
+    void aLeadingCoarsePartRangesFromAnEmptyPrefixAndALaterOneIsMatched() throws Exception {
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        (RowType)
+                                DataTypes.ROW(
+                                                DataTypes.FIELD(
+                                                        "seen_at",
+                                                        DataTypes.TIMESTAMP_LTZ(3).notNull()),
+                                                DataTypes.FIELD(
+                                                        "until",
+                                                        DataTypes.TIMESTAMP_LTZ(0).notNull()),
+                                                DataTypes.FIELD("name", DataTypes.STRING()))
+                                        .getLogicalType(),
+                        new int[] {0, 1},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        FakeLookup lookup = new FakeLookup(null);
+        lookup.rangeRows.add(
+                window("2026-08-11T01:02:03.123456Z", "2026-08-11T05:00:00.5Z", "Ada"));
+        lookup.rangeRows.add(window("2026-08-11T01:02:03.123Z", "2026-08-11T05:00:01Z", "Bob"));
+        SpannerRowDataLookupFunction function =
+                new SpannerRowDataLookupFunction(
+                        schema, new int[] {2}, new int[] {0, 1}, 0, lookup);
+        function.open(new FunctionContext(null));
+
+        Collection<RowData> rows =
+                function.lookup(
+                        GenericRowData.of(
+                                TimestampData.fromInstant(
+                                        Instant.parse("2026-08-11T01:02:03.123Z")),
+                                TimestampData.fromInstant(Instant.parse("2026-08-11T05:00:00Z"))));
+
+        assertThat(lookup.ranges)
+                .containsExactly(
+                        KeySet.range(
+                                KeyRange.closedOpen(
+                                        Key.of(timestamp("2026-08-11T01:02:03.123Z")),
+                                        Key.of(timestamp("2026-08-11T01:02:03.124Z")))));
+        // The second coarse part is not ranged; its truncation is matched on the rows read.
+        assertThat(rows).extracting(row -> row.getString(0).toString()).containsExactly("Ada");
+    }
+
+    private static Struct window(String seenAt, String until, String name) {
+        return Struct.newBuilder()
+                .set("seen_at")
+                .to(Timestamp.parseTimestamp(seenAt))
+                .set("until")
+                .to(Timestamp.parseTimestamp(until))
+                .set("name")
+                .to(name)
+                .build();
+    }
+
+    private static SpannerTableSchemaConverter coarseSchema() {
+        return SpannerTableSchemaConverter.of(
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("tenant", DataTypes.BIGINT().notNull()),
+                                        DataTypes.FIELD(
+                                                "seen_at", DataTypes.TIMESTAMP_LTZ(3).notNull()),
+                                        DataTypes.FIELD("seq", DataTypes.BIGINT().notNull()),
+                                        DataTypes.FIELD("name", DataTypes.STRING()))
+                                .getLogicalType(),
+                new int[] {0, 1, 2},
+                Dialect.GOOGLE_STANDARD_SQL,
+                Collections.emptyList(),
+                Collections.emptyMap(),
+                Collections.emptyMap());
+    }
+
+    /** Looks up one probe on {@code (tenant, seen_at TIMESTAMP_LTZ(3), seq)}, projecting name. */
+    private static Collection<RowData> coarseLookup(FakeLookup lookup, boolean async, RowData probe)
+            throws Exception {
+        SpannerTableSchemaConverter schema = coarseSchema();
+        int[] projection = {3};
+        int[] keyPositions = {0, 1, 2};
+        if (async) {
+            SpannerRowDataAsyncLookupFunction function =
+                    new SpannerRowDataAsyncLookupFunction(
+                            schema, projection, keyPositions, 0, lookup);
+            function.open(new FunctionContext(null));
+            return function.asyncLookup(probe).get();
+        }
+        SpannerRowDataLookupFunction function =
+                new SpannerRowDataLookupFunction(schema, projection, keyPositions, 0, lookup);
+        function.open(new FunctionContext(null));
+        return function.lookup(probe);
+    }
+
+    private static Struct event(long tenant, String seenAt, long seq, String name) {
+        return Struct.newBuilder()
+                .set("tenant")
+                .to(tenant)
+                .set("seen_at")
+                .to(Timestamp.parseTimestamp(seenAt))
+                .set("seq")
+                .to(seq)
+                .set("name")
+                .to(name)
+                .build();
+    }
+
+    private static Timestamp timestamp(String instant) {
+        return Timestamp.parseTimestamp(instant);
+    }
+
     private static final class FakeLookup implements SpannerRowLookup {
         private static final long serialVersionUID = 1L;
         private final List<Key> keys = new ArrayList<>();
+        private final List<KeySet> ranges = new ArrayList<>();
+        private final List<Struct> rangeRows = new ArrayList<>();
         @Nullable private Struct row;
+        private boolean descending;
         private boolean closed;
 
         private FakeLookup(@Nullable Struct row) {
             this.row = row;
+        }
+
+        @Override
+        public List<Struct> read(KeySet keys) {
+            ranges.add(keys);
+            return new ArrayList<>(rangeRows);
+        }
+
+        @Override
+        public ApiFuture<List<Struct>> readAsync(KeySet keys) {
+            ranges.add(keys);
+            return ApiFutures.immediateFuture(new ArrayList<>(rangeRows));
+        }
+
+        @Override
+        public boolean isKeyColumnDescending() {
+            return descending;
         }
 
         @Override
@@ -1049,6 +1285,7 @@ class SpannerLookupSourceTest {
         private static final long serialVersionUID = 1L;
         private final Deque<Object> answers = new ArrayDeque<>();
         private final List<Key> keys = new ArrayList<>();
+        private final List<KeySet> ranges = new ArrayList<>();
 
         private ScriptedLookup answer(Object answer) {
             answers.add(answer);
@@ -1081,6 +1318,33 @@ class SpannerLookupSourceTest {
                 return ApiFutures.immediateFailedFuture((RuntimeException) answer);
             }
             return ApiFutures.immediateFuture((Struct) answer);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public List<Struct> read(KeySet keys) {
+            ranges.add(keys);
+            Object answer = answers.removeFirst();
+            if (answer instanceof RuntimeException) {
+                throw (RuntimeException) answer;
+            }
+            return (List<Struct>) answer;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public ApiFuture<List<Struct>> readAsync(KeySet keys) {
+            ranges.add(keys);
+            Object answer = answers.removeFirst();
+            if (answer instanceof RuntimeException) {
+                return ApiFutures.immediateFailedFuture((RuntimeException) answer);
+            }
+            return ApiFutures.immediateFuture((List<Struct>) answer);
+        }
+
+        @Override
+        public boolean isKeyColumnDescending() {
+            return false;
         }
 
         @Override

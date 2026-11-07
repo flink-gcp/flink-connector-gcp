@@ -295,6 +295,9 @@ The source supports temporal lookup joins when the equality key contains every c
 Composite keys are encoded in the DDL declaration order even when the planner supplies the predicates in another order.
 Additional equality keys on top-level physical scalar columns are supported, including constants in `ON` or `WHERE` and comparisons with an input column.
 The complete primary key alone addresses the point read; the connector compares the additional keys against the converted Flink row before returning it.
+A primary key with a `TIMESTAMP_LTZ(p)` part below precision 9 is read as a range instead, because every stored value that [truncates](#type-mapping) to the probe's value matches it, so one probe can join several rows.
+The range covers the key parts before that part and its bucket, and the connector keeps the rows whose truncated key equals the probe.
+To order the range, the lookup reads that part's sort direction from `INFORMATION_SCHEMA` once when it opens, and it also reads every primary-key column, projected or not, to match the rows on.
 Binary values compare by content, and schema-marked values compare in their Flink carrier type: UUID and JSON strings, PROTO bytes, and ENUM integers.
 Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
 A null lookup key, an absent Spanner row, or a failed additional equality produces no joined row.
@@ -304,12 +307,12 @@ The following example uses an `order_events` input with `event_id`, `order_id`, 
 
 {{< sql-snippet file="flink/SpannerTableReference.sql" tag="lookup-equality" >}}
 
-`lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API.
+`lookup.async` chooses Spanner's synchronous `readRow` or asynchronous `readRowAsync` API, or `read` and `readAsync` for a range.
 Flink's standard `lookup.cache` modes `NONE`, `PARTIAL`, and `FULL` are supported.
 The standard partial-cache expiry, size, and missing-key options apply unchanged.
 The cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same primary key have separate entries.
 An additional equality that fails follows the configured missing-key cache policy.
-`lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point-read failures and counts retries after the initial request.
+`lookup.max-retries` retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` lookup read failures and counts retries after the initial request.
 Of those, only `UNAVAILABLE` is also retried by the Spanner client, so this option is what buys a second attempt at the other two.
 `RESOURCE_EXHAUSTED` is not retried here because the client already retries it whenever the server asks for a delay, and waits that delay; re-issuing the read at once would spend the budget against the wait rather than observe it.
 
@@ -326,7 +329,7 @@ Each key must be a top-level physical column of a scalar type other than `FLOAT`
 The cache compares Flink values with Java equality, which tells `-0.0` from `0.0` and matches `NaN` to itself, unlike SQL `=`; `ARRAY` keys are rejected because their binary and generic Flink forms do not compare equal.
 A row with a null key value is never matched, as SQL equality requires.
 A UUID column loads as its lowercase canonical string and matches as a string, so a probe in upper case, which a primary-key point read under `NONE` or `PARTIAL` accepts, finds no row under `FULL`.
-A `TIMESTAMP_LTZ(p)` primary-key column with `p` below 9 differs the other way: `FULL` matches a probe to a stored value with digits beyond `p`, because the loaded row carries the [truncated](#type-mapping) value, while a point read under `NONE` or `PARTIAL` addresses the probe's own value and finds no row.
+A `TIMESTAMP_LTZ(p)` primary-key column with `p` below 9 matches a probe of that precision to the same rows under all three modes: the loaded row carries the [truncated](#type-mapping) value, and `NONE` and `PARTIAL` read the probe's [range](#lookup-behavior).
 
 `lookup.full-cache.reload-strategy` selects `PERIODIC`, which needs `lookup.full-cache.periodic-reload.interval`, or `TIMED`, which needs `lookup.full-cache.timed-reload.iso-time`.
 `lookup.async = true` is rejected with `FULL` because Flink has no asynchronous full-cache provider.
@@ -475,9 +478,9 @@ The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#
 | `scan.timestamp-bound.read-timestamp` | *unset* | RFC 3339 snapshot timestamp; mutually exclusive with exact staleness |
 | `scan.timestamp-bound.exact-staleness` | *unset ⇒ strong read* | Exact age of the snapshot; mutually exclusive with read timestamp |
 | `scan.parallelism` | *unset ⇒ operator parallelism* | Flink's standard source parallelism override |
-| `lookup.async` | `false` | Use asynchronous `readRowAsync` point reads instead of synchronous `readRow` |
+| `lookup.async` | `false` | Use asynchronous `readRowAsync` point reads, or `readAsync` for a [range](#lookup-behavior), instead of synchronous `readRow` or `read` |
 | `lookup.cache` | `NONE` | Flink's standard lookup cache mode: `NONE`, `PARTIAL`, or `FULL`. See [Full lookup cache](#full-lookup-cache) |
-| `lookup.max-retries` | `3` | Retries after the initial point read, for transient failures only |
+| `lookup.max-retries` | `3` | Retries after the initial point or range read, for transient failures only |
 | `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
 | `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | `true` | Whether partial cache records lookup misses |

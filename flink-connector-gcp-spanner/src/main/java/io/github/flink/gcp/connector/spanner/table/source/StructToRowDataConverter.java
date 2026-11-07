@@ -51,11 +51,6 @@ import java.util.UUID;
 final class StructToRowDataConverter implements Serializable {
     private static final long serialVersionUID = 1L;
 
-    /** The nanosecond unit a {@code TIMESTAMP_LTZ(p)} value keeps, indexed by {@code p}. */
-    private static final int[] NANOS_TRUNCATION = {
-        1_000_000_000, 100_000_000, 10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1
-    };
-
     private final List<SpannerTableSchemaConverter.Column> columns;
 
     StructToRowDataConverter(SpannerTableSchemaConverter schema, @Nullable int[] projectedFields) {
@@ -232,14 +227,9 @@ final class StructToRowDataConverter implements Serializable {
     private static TimestampData convertTimestamp(
             Timestamp timestamp, LocalZonedTimestampType type) {
         int nanos = timestamp.getNanos();
-        nanos -= nanos % truncationUnit(type);
+        nanos -= nanos % TimestampTruncation.unit(type);
         return TimestampData.fromEpochMillis(
                 timestamp.getSeconds() * 1000L + nanos / 1_000_000, nanos % 1_000_000);
-    }
-
-    /** The nanosecond unit a value of {@code type} keeps: {@code 1} keeps every digit. */
-    static int truncationUnit(LocalZonedTimestampType type) {
-        return NANOS_TRUNCATION[type.getPrecision()];
     }
 
     private static DecimalData convertPostgresqlDecimal(
