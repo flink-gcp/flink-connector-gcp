@@ -128,6 +128,11 @@ public final class SpannerDynamicTableFactory
                         LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
                         LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
                         LookupOptions.PARTIAL_CACHE_MAX_ROWS,
+                        LookupOptions.FULL_CACHE_RELOAD_STRATEGY,
+                        LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
+                        LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE,
+                        LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
+                        LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_CELLS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
@@ -372,7 +377,12 @@ public final class SpannerDynamicTableFactory
                 LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_ACCESS,
                 LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE,
                 LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY,
-                LookupOptions.PARTIAL_CACHE_MAX_ROWS);
+                LookupOptions.PARTIAL_CACHE_MAX_ROWS,
+                LookupOptions.FULL_CACHE_RELOAD_STRATEGY,
+                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
+                LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE,
+                LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
+                LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS);
         requireNonBlank(config, SpannerConnectorOptions.SCAN_CHANGE_STREAM_NAME);
         ChangeStreamChangelogMode changelog =
                 config.getOptional(SpannerConnectorOptions.SCAN_CHANGE_STREAM_CHANGELOG_MODE)

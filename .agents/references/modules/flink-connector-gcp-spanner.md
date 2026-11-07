@@ -379,6 +379,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   top-level physical scalar keys go through `base.table.LookupKeyFilter`, comparing converted values
   before caching by the full tuple. Keep nested key paths, metadata and extra ARRAY/MAP/ROW keys
   unsupported (ADR-0098).
+- `lookup.cache = FULL` loads through `SpannerFullCacheInputFormat`, which runs the bounded scan's
+  own `SpannerSourceConfig` from `scanBuilder`: never build a second read path for the cache. One
+  split per load, one snapshot per load, partitions read sequentially and the session released by
+  the planner on close; `close()` turns every release failure into an `IOException`, which Flink's
+  loader logs without discarding the load. `lookup.async` is refused with FULL in the lookup
+  config, and a fixed `scan.timestamp-bound.read-timestamp` only on the FULL lookup path, so scans
+  keep it. FULL keys are any mapped top-level type except FLOAT/DOUBLE/ARRAY, because Flink's index
+  compares with `equals` (ADR-0098).
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 

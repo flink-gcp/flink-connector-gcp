@@ -926,7 +926,12 @@ class SpannerDynamicTableFactoryTest {
                         Map.entry("lookup.partial-cache.expire-after-access", "1 min"),
                         Map.entry("lookup.partial-cache.expire-after-write", "1 min"),
                         Map.entry("lookup.partial-cache.cache-missing-key", "true"),
-                        Map.entry("lookup.partial-cache.max-rows", "100"));
+                        Map.entry("lookup.partial-cache.max-rows", "100"),
+                        Map.entry("lookup.full-cache.reload-strategy", "PERIODIC"),
+                        Map.entry("lookup.full-cache.periodic-reload.interval", "1 h"),
+                        Map.entry("lookup.full-cache.periodic-reload.schedule-mode", "FIXED_DELAY"),
+                        Map.entry("lookup.full-cache.timed-reload.iso-time", "10:15"),
+                        Map.entry("lookup.full-cache.timed-reload.interval-in-days", "1"));
         for (Map.Entry<String, String> entry : boundedOnly.entrySet()) {
             Map<String, String> changeStream = changeStreamOptions("full");
             changeStream.put(entry.getKey(), entry.getValue());
