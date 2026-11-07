@@ -25,14 +25,15 @@ import com.google.cloud.spanner.SpannerException;
 import java.util.EnumSet;
 import java.util.Set;
 
-/** Classifies point-read failures eligible for another client call. */
+/** Classifies lookup read failures eligible for another client call. */
 @Internal
 final class SpannerLookupErrorClassifier {
 
     /**
-     * Statuses a point read is issued again on. These are <em>not</em> the client's own retryable
-     * set: {@code singleUse().readRow(...)} reaches {@code StreamingRead} rather than the unary
-     * {@code Read}, and {@code SpannerStubSettings} gives that RPC an empty retryable set
+     * Statuses a lookup read is issued again on. These are <em>not</em> the client's own retryable
+     * set: {@code singleUse().readRow(...)} for a point, and {@code singleUse().read(...)} for the
+     * range a coarse {@code TIMESTAMP_LTZ} key part reads, reach {@code StreamingRead} rather than
+     * the unary {@code Read}, and {@code SpannerStubSettings} gives that RPC an empty retryable set
      * (google-cloud-spanner 6.120.0). What the client still retries beneath this loop comes from
      * {@code SpannerExceptionFactory.isRetryable}, which of these three names covers only {@code
      * UNAVAILABLE}, and that unless the cause is an SSL handshake or a channel shutdown. So {@code

@@ -21,11 +21,13 @@ import org.apache.flink.metrics.MetricGroup;
 
 import com.google.api.core.ApiFuture;
 import com.google.cloud.spanner.Key;
+import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Struct;
 
 import java.io.Serializable;
+import java.util.List;
 
-/** Point-read seam shared by synchronous and asynchronous lookup functions. */
+/** Read seam shared by synchronous and asynchronous lookup functions. */
 @Internal
 interface SpannerRowLookup extends Serializable, AutoCloseable {
     /**
@@ -40,6 +42,30 @@ interface SpannerRowLookup extends Serializable, AutoCloseable {
     Struct read(Key key);
 
     ApiFuture<Struct> readAsync(Key key);
+
+    /**
+     * Reads every row in a key range, for a key with a coarse {@code TIMESTAMP_LTZ} part.
+     *
+     * @param keys the range to read
+     * @return the rows, in key order
+     */
+    List<Struct> read(KeySet keys);
+
+    /**
+     * Reads every row in a key range asynchronously.
+     *
+     * @param keys the range to read
+     * @return the rows, in key order
+     */
+    ApiFuture<List<Struct>> readAsync(KeySet keys);
+
+    /**
+     * Whether the column this lookup was asked to resolve sorts descending in the live primary key.
+     * It is resolved when the lookup opens, and is false when no column was named.
+     *
+     * @return whether the column sorts descending
+     */
+    boolean isKeyColumnDescending();
 
     @Override
     void close() throws Exception;

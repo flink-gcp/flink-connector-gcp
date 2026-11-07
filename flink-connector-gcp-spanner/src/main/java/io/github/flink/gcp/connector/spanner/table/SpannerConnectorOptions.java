@@ -385,12 +385,12 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("How stale the read snapshot must be.");
 
-    /** Whether point lookups use Spanner's asynchronous read API. */
+    /** Whether lookups use Spanner's asynchronous read API. */
     public static final ConfigOption<Boolean> LOOKUP_ASYNC =
             ConfigOptions.key("lookup.async")
                     .booleanType()
                     .defaultValue(false)
-                    .withDescription("Whether point lookups use Spanner's asynchronous read API.");
+                    .withDescription("Whether lookups use Spanner's asynchronous read API.");
 
     /** The maximum mutation cells in one BatchWrite request. */
     public static final ConfigOption<Integer> SINK_BUFFER_FLUSH_MAX_CELLS =

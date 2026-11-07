@@ -99,6 +99,82 @@ final class SpannerTableReadResolver implements SpannerReadOperationResolver {
         }
     }
 
+    /**
+     * Reads whether {@code column} sorts descending in {@code table}'s live primary key, from the
+     * same {@code INFORMATION_SCHEMA} query a scan resolves its access path with, at a strong read.
+     *
+     * @throws IOException if the metadata cannot be read, or the primary key has no such column
+     */
+    static boolean isPrimaryKeyColumnDescending(
+            DatabaseClient client, SpannerTableName table, String column) throws IOException {
+        SpannerTableName named = metadataName(table);
+        Statement statement =
+                metadataQuery(named.dialect(), named.schema(), named.table(), PRIMARY_KEY);
+        IndexMetadata metadata;
+        try (ReadContext context = client.singleUse();
+                ResultSet rows = context.executeQuery(statement)) {
+            metadata = IndexMetadata.read(rows, named.dialect());
+        } catch (SpannerException e) {
+            throw new IOException(
+                    "Failed to read the Spanner primary-key order of table '"
+                            + table.apiName()
+                            + "'.",
+                    e);
+        }
+        return isPrimaryKeyColumnDescending(metadata, named, column);
+    }
+
+    /**
+     * The name to read a table's metadata by. A legacy {@code table} value that carries its schema
+     * as {@code schema.table}, with no {@code named-schema}, reaches the data API unchanged but
+     * names no table in {@code INFORMATION_SCHEMA}, so it is split as the data API reads it.
+     */
+    static SpannerTableName metadataName(SpannerTableName table) {
+        if (!table.apiName().equals(table.table()) || table.table().indexOf('.') < 0) {
+            return table;
+        }
+        try {
+            return SpannerTableName.ofApiName(table.apiName(), table.dialect());
+        } catch (IllegalArgumentException e) {
+            return table;
+        }
+    }
+
+    /**
+     * Finds {@code column} in a table's primary-key metadata. A GoogleSQL name matches ignoring
+     * case, as GoogleSQL compares identifiers; a PostgreSQL name matches exactly.
+     */
+    static boolean isPrimaryKeyColumnDescending(
+            IndexMetadata metadata, SpannerTableName table, String column) throws IOException {
+        if (!metadata.schemaExists()) {
+            throw new IOException(
+                    "Spanner schema '"
+                            + table.schema()
+                            + "' was not found or is not visible to this job.");
+        }
+        if (metadata.keyColumns.isEmpty()) {
+            throw new IOException(
+                    "Spanner table '"
+                            + table.apiName()
+                            + "' was not found or is not visible to this job.");
+        }
+        for (IndexColumn keyColumn : metadata.keyColumns) {
+            boolean same =
+                    table.dialect() == Dialect.GOOGLE_STANDARD_SQL
+                            ? keyColumn.name.equalsIgnoreCase(column)
+                            : keyColumn.name.equals(column);
+            if (same) {
+                return "DESC".equals(keyColumn.ordering);
+            }
+        }
+        throw new IOException(
+                "Spanner table '"
+                        + table.apiName()
+                        + "' has no primary-key column '"
+                        + column
+                        + "', which the declared PRIMARY KEY names.");
+    }
+
     SpannerReadOperation resolve(IndexMetadata metadata) throws IOException {
         if (!metadata.schemaExists()) {
             throw new IOException(

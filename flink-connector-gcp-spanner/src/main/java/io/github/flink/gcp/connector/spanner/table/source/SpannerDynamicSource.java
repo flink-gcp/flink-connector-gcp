@@ -75,8 +75,9 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A bounded table scan and lookup source for Spanner tables: primary-key point reads, or Flink's
- * full cache loaded through the bounded scan.
+ * A bounded table scan and lookup source for Spanner tables: primary-key point reads, a range read
+ * for a key with a coarse {@code TIMESTAMP_LTZ} part, or Flink's full cache loaded through the
+ * bounded scan.
  */
 @Internal
 public final class SpannerDynamicSource
@@ -356,6 +357,24 @@ public final class SpannerDynamicSource
         return names;
     }
 
+    /**
+     * The columns a lookup reads: the retained projection, and for a key with a coarse {@code
+     * TIMESTAMP_LTZ} part also every primary-key column, which the range read's rows are matched
+     * on.
+     */
+    private List<String> lookupColumns(int[] keyPositions) {
+        List<String> names = retainedColumns();
+        if (SpannerLookupKeyEncoder.coarseColumn(schema) != null) {
+            for (int index : schema.getPrimaryKeyIndexes()) {
+                String name = schema.getColumns().get(index).getName();
+                if (!names.contains(name)) {
+                    names.add(name);
+                }
+            }
+        }
+        return names;
+    }
+
     private List<String> retainedColumns() {
         List<String> names = projectedColumns();
         if (names.isEmpty()) {
@@ -381,8 +400,8 @@ public final class SpannerDynamicSource
                     equalityKeys.wrap(
                             new SpannerRowDataAsyncLookupFunction(
                                     database,
-                                    table.apiName(),
-                                    retainedColumns(),
+                                    table,
+                                    lookupColumns(keyPositions),
                                     schema,
                                     projectedFields,
                                     keyPositions,
@@ -400,8 +419,8 @@ public final class SpannerDynamicSource
                 equalityKeys.wrap(
                         new SpannerRowDataLookupFunction(
                                 database,
-                                table.apiName(),
-                                retainedColumns(),
+                                table,
+                                lookupColumns(keyPositions),
                                 schema,
                                 projectedFields,
                                 keyPositions,

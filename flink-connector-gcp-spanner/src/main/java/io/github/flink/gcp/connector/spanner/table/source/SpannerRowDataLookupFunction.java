@@ -23,8 +23,10 @@ import org.apache.flink.table.functions.FunctionContext;
 import org.apache.flink.table.functions.LookupFunction;
 
 import com.google.cloud.spanner.Key;
+import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
@@ -47,7 +49,7 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
 
     SpannerRowDataLookupFunction(
             DatabaseDestination database,
-            String table,
+            SpannerTableName table,
             List<String> columns,
             SpannerTableSchemaConverter schema,
             @Nullable int[] projectedFields,
@@ -70,7 +72,7 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
 
     SpannerRowDataLookupFunction(
             DatabaseDestination database,
-            String table,
+            SpannerTableName table,
             List<String> columns,
             SpannerTableSchemaConverter schema,
             @Nullable int[] projectedFields,
@@ -85,10 +87,11 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
                 projectedFields,
                 keyPositions,
                 maxRetries,
-                new SpannerDatabaseRowLookup(
+                SpannerDatabaseRowLookup.forTable(
                         database,
                         table,
                         columns,
+                        schema,
                         emulatorEndpoint,
                         serviceAccountKeyFile,
                         clientMetrics),
@@ -145,9 +148,16 @@ public final class SpannerRowDataLookupFunction extends LookupFunction {
         if (!filters.matchesPrimaryKey(key)) {
             return Collections.emptyList();
         }
+        @Nullable
+        KeySet range =
+                keyEncoder.isCoarse()
+                        ? keyEncoder.range(key, lookup.isKeyColumnDescending())
+                        : null;
         for (int retry = 0; ; retry++) {
             try {
-                return convert(lookup.read(key));
+                return range == null
+                        ? convert(lookup.read(key))
+                        : keyEncoder.matching(lookup.read(range), key, converter);
             } catch (RuntimeException failure) {
                 if (retry >= maxRetries || !SpannerLookupErrorClassifier.isTransient(failure)) {
                     throw failure;

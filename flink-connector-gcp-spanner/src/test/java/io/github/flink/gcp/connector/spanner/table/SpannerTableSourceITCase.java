@@ -432,6 +432,161 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     }
 
     @ParameterizedTest
+    @MethodSource("coarseKeyLookupCases")
+    void aCoarserTimestampKeyLooksUpEveryStoredValueInItsBucket(
+            Dialect dialect, boolean descending, boolean async, String cache) throws Exception {
+        DatabaseDestination database =
+                createDatabase(
+                        dialect,
+                        dialect == Dialect.POSTGRESQL
+                                ? "CREATE TABLE events (tenant bigint NOT NULL, seen_at timestamptz"
+                                        + " NOT NULL, seq bigint NOT NULL, name varchar(64),"
+                                        + " PRIMARY KEY (tenant, seen_at, seq))"
+                                : "CREATE TABLE events (tenant INT64 NOT NULL, seen_at TIMESTAMP"
+                                        + " NOT NULL, seq INT64 NOT NULL, name STRING(64))"
+                                        + " PRIMARY KEY (tenant,"
+                                        + (descending ? " seen_at DESC," : " seen_at,")
+                                        + " seq)");
+        client(database)
+                .write(
+                        List.of(
+                                event(7L, "2026-08-11T01:02:03.123456789Z", 2L, "Ada"),
+                                // A second stored key in Ada's bucket, which the same probe joins.
+                                event(7L, "2026-08-11T01:02:03.1231Z", 2L, "Ann"),
+                                event(7L, "2026-08-11T01:02:03.123999Z", 3L, "Bob"),
+                                event(7L, "2026-08-11T01:02:03.124Z", 2L, "Zed"),
+                                event(8L, "2026-08-11T01:02:03.123456Z", 2L, "Other")));
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                "CREATE TABLE event_source (tenant BIGINT, seen_at TIMESTAMP_LTZ(3), seq BIGINT,"
+                        + " name STRING, PRIMARY KEY (tenant, seen_at, seq) NOT ENFORCED) WITH ("
+                        + "'connector' = 'spanner', 'dialect' = '"
+                        + dialect.name()
+                        + "', 'lookup.async' = '"
+                        + async
+                        + "', 'lookup.cache' = '"
+                        + cache
+                        + "',"
+                        + ("PARTIAL".equals(cache)
+                                ? " 'lookup.partial-cache.max-rows' = '10',"
+                                : "")
+                        + " 'project' = '"
+                        + database.getProject()
+                        + "', 'instance' = '"
+                        + database.getInstance()
+                        + "', 'database' = '"
+                        + database.getDatabase()
+                        + "', 'table' = 'events', 'emulator-endpoint' = '"
+                        + emulatorEndpoint()
+                        + "')");
+        long millis = Instant.parse("2026-08-11T01:02:03.123Z").toEpochMilli();
+        table.executeSql(
+                "CREATE TEMPORARY VIEW probes AS SELECT tenant, TO_TIMESTAMP_LTZ(millis, 3) AS"
+                        + " probe_at, seq, PROCTIME() AS t FROM (VALUES"
+                        + " (CAST(7 AS BIGINT), CAST("
+                        + millis
+                        + " AS BIGINT), CAST(2 AS BIGINT)),"
+                        + " (CAST(7 AS BIGINT), CAST("
+                        + millis
+                        + " AS BIGINT), CAST(3 AS BIGINT)),"
+                        // The first probe again, which a PARTIAL cache may answer from the
+                        // multi-row entry the first lookup stored.
+                        + " (CAST(7 AS BIGINT), CAST("
+                        + millis
+                        + " AS BIGINT), CAST(2 AS BIGINT)),"
+                        + " (CAST(7 AS BIGINT), CAST("
+                        + (millis + 2)
+                        + " AS BIGINT), CAST(2 AS BIGINT))) AS v(tenant, millis, seq)");
+
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT p.seq, p.probe_at, s.name FROM probes AS p LEFT JOIN"
+                                        + " event_source FOR SYSTEM_TIME AS OF p.t AS s"
+                                        + " ON p.tenant = s.tenant AND p.probe_at = s.seen_at"
+                                        + " AND p.seq = s.seq"))
+                .extracting(row -> row.getField(0) + " " + row.getField(2))
+                .containsExactlyInAnyOrder("2 Ada", "2 Ann", "3 Bob", "2 Ada", "2 Ann", "2 null");
+    }
+
+    @Test
+    void aCoarserTimestampKeyLooksUpALegacyQualifiedTable() throws Exception {
+        DatabaseDestination database =
+                createDatabase(
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        "CREATE SCHEMA sales",
+                        "CREATE TABLE sales.events (tenant INT64 NOT NULL, seen_at TIMESTAMP"
+                                + " NOT NULL, seq INT64 NOT NULL, name STRING(64))"
+                                + " PRIMARY KEY (tenant, seen_at DESC, seq)");
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newInsertOrUpdateBuilder("sales.events")
+                                        .set("tenant")
+                                        .to(7L)
+                                        .set("seen_at")
+                                        .to(Timestamp.parseTimestamp("2026-08-11T01:02:03.123456Z"))
+                                        .set("seq")
+                                        .to(2L)
+                                        .set("name")
+                                        .to("Ada")
+                                        .build()));
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        // The schema rides in 'table' with no 'named-schema', as the data API accepts it.
+        table.executeSql(
+                "CREATE TABLE event_source (tenant BIGINT, seen_at TIMESTAMP_LTZ(3), seq BIGINT,"
+                        + " name STRING, PRIMARY KEY (tenant, seen_at, seq) NOT ENFORCED) WITH ("
+                        + "'connector' = 'spanner', 'project' = '"
+                        + database.getProject()
+                        + "', 'instance' = '"
+                        + database.getInstance()
+                        + "', 'database' = '"
+                        + database.getDatabase()
+                        + "', 'table' = 'sales.events', 'emulator-endpoint' = '"
+                        + emulatorEndpoint()
+                        + "')");
+        table.executeSql(
+                "CREATE TEMPORARY VIEW probes AS SELECT tenant, TO_TIMESTAMP_LTZ(millis, 3) AS"
+                        + " probe_at, seq, PROCTIME() AS t FROM (VALUES (CAST(7 AS BIGINT), CAST("
+                        + Instant.parse("2026-08-11T01:02:03.123Z").toEpochMilli()
+                        + " AS BIGINT), CAST(2 AS BIGINT))) AS v(tenant, millis, seq)");
+
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT s.name FROM probes AS p JOIN event_source FOR SYSTEM_TIME"
+                                        + " AS OF p.t AS s ON p.tenant = s.tenant"
+                                        + " AND p.probe_at = s.seen_at AND p.seq = s.seq"))
+                .containsExactly(Row.of("Ada"));
+    }
+
+    private static Stream<Arguments> coarseKeyLookupCases() {
+        return Stream.of(
+                Arguments.of(Dialect.GOOGLE_STANDARD_SQL, false, false, "NONE"),
+                Arguments.of(Dialect.GOOGLE_STANDARD_SQL, false, true, "PARTIAL"),
+                Arguments.of(Dialect.GOOGLE_STANDARD_SQL, true, false, "PARTIAL"),
+                Arguments.of(Dialect.GOOGLE_STANDARD_SQL, true, true, "NONE"),
+                Arguments.of(Dialect.POSTGRESQL, false, false, "PARTIAL"));
+    }
+
+    private static Mutation event(long tenant, String seenAt, long seq, String name) {
+        return Mutation.newInsertOrUpdateBuilder("events")
+                .set("tenant")
+                .to(tenant)
+                .set("seen_at")
+                .to(Timestamp.parseTimestamp(seenAt))
+                .set("seq")
+                .to(seq)
+                .set("name")
+                .to(name)
+                .build();
+    }
+
+    @ParameterizedTest
     @MethodSource("lookupCases")
     void looksUpCompositeHitsAndMissesInBothDialects(Dialect dialect, boolean async)
             throws Exception {

@@ -23,9 +23,11 @@ import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.FunctionContext;
 
 import com.google.cloud.spanner.Key;
+import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.table.AsyncLookupRetries;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
@@ -49,7 +51,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
 
     SpannerRowDataAsyncLookupFunction(
             DatabaseDestination database,
-            String table,
+            SpannerTableName table,
             List<String> columns,
             SpannerTableSchemaConverter schema,
             @Nullable int[] projectedFields,
@@ -72,7 +74,7 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
 
     SpannerRowDataAsyncLookupFunction(
             DatabaseDestination database,
-            String table,
+            SpannerTableName table,
             List<String> columns,
             SpannerTableSchemaConverter schema,
             @Nullable int[] projectedFields,
@@ -87,10 +89,11 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
                 projectedFields,
                 keyPositions,
                 maxRetries,
-                new SpannerDatabaseRowLookup(
+                SpannerDatabaseRowLookup.forTable(
                         database,
                         table,
                         columns,
+                        schema,
                         emulatorEndpoint,
                         serviceAccountKeyFile,
                         clientMetrics),
@@ -148,6 +151,14 @@ public final class SpannerRowDataAsyncLookupFunction extends AsyncLookupFunction
         Key key = keyEncoder.encode(keyRow);
         if (!filters.matchesPrimaryKey(key)) {
             return CompletableFuture.completedFuture(Collections.emptyList());
+        }
+        if (keyEncoder.isCoarse()) {
+            KeySet range = keyEncoder.range(key, lookup.isKeyColumnDescending());
+            return AsyncLookupRetries.lookup(
+                    () -> lookup.readAsync(range),
+                    rows -> keyEncoder.matching(rows, key, converter),
+                    SpannerLookupErrorClassifier::isTransient,
+                    maxRetries);
         }
         return AsyncLookupRetries.lookup(
                 () -> lookup.readAsync(key),

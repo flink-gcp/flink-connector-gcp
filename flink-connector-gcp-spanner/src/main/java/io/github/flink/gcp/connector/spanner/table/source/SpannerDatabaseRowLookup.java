@@ -21,9 +21,12 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.metrics.MetricGroup;
 
 import com.google.api.core.ApiFuture;
+import com.google.cloud.spanner.AsyncResultSet;
 import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Key;
+import com.google.cloud.spanner.KeySet;
+import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
@@ -33,14 +36,17 @@ import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
+import io.github.flink.gcp.connector.spanner.SpannerTableName;
 import io.github.flink.gcp.connector.spanner.table.SpannerClientMetricsConfig;
 import io.github.flink.gcp.connector.spanner.table.SpannerConnectorOptions;
+import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 
 import javax.annotation.Nullable;
 
+import java.util.ArrayList;
 import java.util.List;
 
-/** Point reads through a client owned by one lookup function instance. */
+/** Point and range reads through a client owned by one lookup function instance. */
 @Internal
 final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     private static final long serialVersionUID = 1L;
@@ -51,6 +57,12 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
     private final SpannerClientMetricsConfig clientMetricsConfig;
+
+    /** The table whose live primary key orders {@code keyOrderColumn}, or null for none. */
+    @Nullable private final SpannerTableName keyOrderTable;
+
+    @Nullable private final String keyOrderColumn;
+    private transient boolean keyColumnDescending;
     @Nullable private transient Spanner spanner;
     @Nullable private transient ClientMetrics clientMetrics;
     @Nullable private transient DatabaseClient client;
@@ -85,15 +97,66 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile,
             SpannerClientMetricsConfig clientMetricsConfig) {
+        this(
+                database,
+                table,
+                columns,
+                emulatorEndpoint,
+                serviceAccountKeyFile,
+                clientMetricsConfig,
+                null,
+                null);
+    }
+
+    /**
+     * Creates a lookup that also resolves, when it opens, whether {@code keyOrderColumn} sorts
+     * descending in {@code keyOrderTable}'s live primary key.
+     */
+    SpannerDatabaseRowLookup(
+            DatabaseDestination database,
+            String table,
+            List<String> columns,
+            @Nullable String emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
+            SpannerClientMetricsConfig clientMetricsConfig,
+            @Nullable SpannerTableName keyOrderTable,
+            @Nullable String keyOrderColumn) {
         this.database = database;
         this.table = table;
         this.columns = columns;
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.clientMetricsConfig = clientMetricsConfig;
+        this.keyOrderTable = keyOrderTable;
+        this.keyOrderColumn = keyOrderColumn;
     }
 
-    /** Returns the exact table passed to the Spanner point-read APIs. */
+    /**
+     * Creates the lookup a lookup function reads {@code table} through. When the declared key has a
+     * coarse {@code TIMESTAMP_LTZ} part, the lookup also resolves that column's live order when it
+     * opens, so a range read can be ordered.
+     */
+    static SpannerDatabaseRowLookup forTable(
+            DatabaseDestination database,
+            SpannerTableName table,
+            List<String> columns,
+            SpannerTableSchemaConverter schema,
+            @Nullable String emulatorEndpoint,
+            @Nullable String serviceAccountKeyFile,
+            SpannerClientMetricsConfig clientMetrics) {
+        @Nullable String coarseColumn = SpannerLookupKeyEncoder.coarseColumn(schema);
+        return new SpannerDatabaseRowLookup(
+                database,
+                table.apiName(),
+                columns,
+                emulatorEndpoint,
+                serviceAccountKeyFile,
+                clientMetrics,
+                coarseColumn == null ? null : table,
+                coarseColumn);
+    }
+
+    /** Returns the exact table passed to the Spanner point- and range-read APIs. */
     @VisibleForTesting
     String table() {
         return table;
@@ -109,13 +172,20 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     @Override
     public void open(MetricGroup metricGroup) throws Exception {
         // Before the client exists. A lookup's client creates a session for its database handle
-        // and reads each key with a streaming read, synchronous or not.
+        // and reads each key with a streaming read, synchronous or not; resolving a key column's
+        // order adds one query.
         if (clientMetricsConfig.exportToFlink()) {
             clientMetrics =
-                    SpannerClientMetrics.register(
-                            metricGroup,
-                            SpannerClientMetrics.CREATE_SESSION,
-                            SpannerClientMetrics.STREAMING_READ);
+                    keyOrderColumn == null
+                            ? SpannerClientMetrics.register(
+                                    metricGroup,
+                                    SpannerClientMetrics.CREATE_SESSION,
+                                    SpannerClientMetrics.STREAMING_READ)
+                            : SpannerClientMetrics.register(
+                                    metricGroup,
+                                    SpannerClientMetrics.CREATE_SESSION,
+                                    SpannerClientMetrics.STREAMING_READ,
+                                    SpannerClientMetrics.EXECUTE_STREAMING_SQL);
         }
         spanner = SpannerClients.open(database, settings());
         client =
@@ -124,6 +194,11 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
                                 database.getProject(),
                                 database.getInstance(),
                                 database.getDatabase()));
+        if (keyOrderColumn != null && keyOrderTable != null) {
+            keyColumnDescending =
+                    SpannerTableReadResolver.isPrimaryKeyColumnDescending(
+                            client, keyOrderTable, keyOrderColumn);
+        }
     }
 
     /**
@@ -156,6 +231,32 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
     @Override
     public ApiFuture<Struct> readAsync(Key key) {
         return client().singleUse().readRowAsync(table, key, columns);
+    }
+
+    @Override
+    public List<Struct> read(KeySet keys) {
+        List<Struct> rows = new ArrayList<>();
+        try (ResultSet resultSet = client().singleUse().read(table, keys, columns)) {
+            while (resultSet.next()) {
+                rows.add(resultSet.getCurrentRowAsStruct());
+            }
+        }
+        return rows;
+    }
+
+    @Override
+    public ApiFuture<List<Struct>> readAsync(KeySet keys) {
+        // As the client's own readRowAsync does: the callback is set before the result set is
+        // closed, and copying a row out blocks nothing, so it runs on the thread delivering it.
+        try (AsyncResultSet resultSet = client().singleUse().readAsync(table, keys, columns)) {
+            return resultSet.toListAsync(
+                    row -> ((AsyncResultSet) row).getCurrentRowAsStruct(), Runnable::run);
+        }
+    }
+
+    @Override
+    public boolean isKeyColumnDescending() {
+        return keyColumnDescending;
     }
 
     @Override

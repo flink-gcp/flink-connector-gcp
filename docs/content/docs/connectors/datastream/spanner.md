@@ -841,7 +841,7 @@ Each component registers the methods its client calls when it opens, so a method
 | Batch source reader, on each subtask | `ExecuteStreamingSql` (a query partition), `StreamingRead` (a table-read partition) |
 | Change Streams split enumerator, on the coordinator | `CreateSession`, `ExecuteStreamingSql` (the dialect and the stream's metadata) |
 | Change Streams reader, on each subtask | `CreateSession`, `ExecuteStreamingSql` (the dialect and each partition query) |
-| Table lookup, synchronous or asynchronous | `CreateSession`, `StreamingRead` (each key) |
+| Table lookup, synchronous or asynchronous | `CreateSession`, `StreamingRead` (each key), `ExecuteStreamingSql` (once when it opens, for a [coarse timestamp key]({{< relref "docs/connectors/table/spanner" >}}#lookup-behavior)) |
 
 | Metric | Type | Meaning |
 |---|---|---|

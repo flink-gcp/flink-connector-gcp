@@ -362,6 +362,92 @@ class SpannerTableReadResolverTest {
                 emptyRuntime());
     }
 
+    @Test
+    void aPrimaryKeyColumnsOrderIsReadFromItsMetadata() throws Exception {
+        SpannerTableName table = SpannerTableName.of(null, "events", Dialect.GOOGLE_STANDARD_SQL);
+        SpannerTableReadResolver.IndexMetadata metadata =
+                SpannerTableReadResolver.IndexMetadata.of(
+                        null,
+                        false,
+                        Arrays.asList(
+                                column("tenant", 1, "ASC", false),
+                                column("Seen_At", 2, "DESC", false)),
+                        set("tenant", "Seen_At"));
+
+        assertThat(SpannerTableReadResolver.isPrimaryKeyColumnDescending(metadata, table, "tenant"))
+                .isFalse();
+        // GoogleSQL compares identifiers ignoring case.
+        assertThat(
+                        SpannerTableReadResolver.isPrimaryKeyColumnDescending(
+                                metadata, table, "seen_at"))
+                .isTrue();
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableReadResolver.isPrimaryKeyColumnDescending(
+                                        metadata, table, "seq"))
+                .hasMessage(
+                        "Spanner table 'events' has no primary-key column 'seq', which the"
+                                + " declared PRIMARY KEY names.");
+    }
+
+    @Test
+    void aPostgresqlPrimaryKeyColumnMatchesItsExactName() {
+        SpannerTableName table = SpannerTableName.of(null, "events", Dialect.POSTGRESQL);
+        SpannerTableReadResolver.IndexMetadata metadata =
+                SpannerTableReadResolver.IndexMetadata.of(
+                        null,
+                        false,
+                        Collections.singletonList(column("Seen_At", 1, "ASC", false)),
+                        set("Seen_At"));
+
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableReadResolver.isPrimaryKeyColumnDescending(
+                                        metadata, table, "seen_at"))
+                .hasMessageContaining("has no primary-key column 'seen_at'");
+    }
+
+    @Test
+    void aLegacyQualifiedTableIsSplitToReadItsMetadata() {
+        SpannerTableName legacy =
+                SpannerTableName.of(null, "sales.events", Dialect.GOOGLE_STANDARD_SQL);
+        SpannerTableName plain = SpannerTableName.of(null, "events", Dialect.GOOGLE_STANDARD_SQL);
+        SpannerTableName named =
+                SpannerTableName.of("sales", "events", Dialect.GOOGLE_STANDARD_SQL);
+
+        SpannerTableName split = SpannerTableReadResolver.metadataName(legacy);
+        assertThat(split.schema()).isEqualTo("sales");
+        assertThat(split.table()).isEqualTo("events");
+        assertThat(split.apiName()).isEqualTo("sales.events");
+        assertThat(SpannerTableReadResolver.metadataName(plain)).isSameAs(plain);
+        assertThat(SpannerTableReadResolver.metadataName(named)).isSameAs(named);
+    }
+
+    @Test
+    void aMissingTableOrSchemaIsNamedWhenTheKeyOrderIsRead() {
+        SpannerTableName table = SpannerTableName.of("ops", "events", Dialect.GOOGLE_STANDARD_SQL);
+
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableReadResolver.isPrimaryKeyColumnDescending(
+                                        SpannerTableReadResolver.IndexMetadata.missingSchema(),
+                                        table,
+                                        "seen_at"))
+                .hasMessage("Spanner schema 'ops' was not found or is not visible to this job.");
+        assertThatThrownBy(
+                        () ->
+                                SpannerTableReadResolver.isPrimaryKeyColumnDescending(
+                                        SpannerTableReadResolver.IndexMetadata.of(
+                                                null,
+                                                false,
+                                                Collections.emptyList(),
+                                                Collections.emptySet()),
+                                        table,
+                                        "seen_at"))
+                .hasMessage(
+                        "Spanner table 'ops.events' was not found or is not visible to this job.");
+    }
+
     private static SpannerTableReadResolver.IndexMetadata primaryMetadata() {
         return SpannerTableReadResolver.IndexMetadata.of(
                 null,

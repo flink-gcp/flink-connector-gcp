@@ -129,6 +129,11 @@ public final class SpannerTableName implements Serializable {
         return table;
     }
 
+    /** Returns the dialect the names are spelled in. */
+    public Dialect dialect() {
+        return dialect;
+    }
+
     /**
      * Returns the schema segment for lineage. Legacy native API names may already include their
      * schema; keep that complete name in the table segment instead of prepending a default schema.
