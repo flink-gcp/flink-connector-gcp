@@ -53,15 +53,10 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
-    /** The contract a config restored without one falls back to. */
-    private static final CdcTableOptionsProvider DEFAULT_CDC_TABLE_OPTIONS_PROVIDER =
-            new FixedCdcTableOptionsProvider(CdcTableOptions.defaults());
-
     private final DestinationResolver<? super T> destinationResolver;
     private final BigQueryProtoSerializationSchema<? super T> serializer;
     @Nullable private final CdcOptions<? super T> cdcOptions;
     @Nullable private final ProtoRowAugmentingSerializer<T> rowAugmentingSerializer;
-    private final boolean manageCdcTableCreation;
     private final CreateDisposition createDisposition;
     private final TableCreateOptionsProvider tableCreateOptionsProvider;
     private final CdcTableOptionsProvider cdcTableOptionsProvider;
@@ -111,10 +106,6 @@ public final class BigQuerySinkConfig<T> implements Serializable {
                                 cdcOnly
                                         ? "Failed to add BigQuery CDC metadata to a serialized row"
                                         : "Failed to add fields to a serialized BigQuery row");
-        // Derived, never passed: the only caller could only ever pass this. The *field* still
-        // exists so a job graph serialized before CDC auto-creation keeps Java's false default,
-        // and that path is deserialization, which never runs this constructor.
-        this.manageCdcTableCreation = cdcOptions != null;
         this.createDisposition = createDisposition;
         this.tableCreateOptionsProvider = tableCreateOptionsProvider;
         this.cdcTableOptionsProvider = cdcTableOptionsProvider;
@@ -151,16 +142,11 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     }
 
     /**
-     * Returns whether this job graph opted into connector-managed CDC table verification and
-     * provisioning.
-     *
-     * <p>The field deliberately keeps Java's {@code false} default for job graphs serialized before
-     * CDC auto-creation existed. Those jobs retain their previous pre-created-table behavior after
-     * an upgrade instead of failing because their old creation options carry no primary-key
-     * declaration.
+     * Returns whether the connector verifies and provisions CDC tables: true exactly when CDC
+     * options are configured.
      */
     public boolean managesCdcTableContract() {
-        return manageCdcTableCreation;
+        return cdcOptions != null;
     }
 
     /** Returns the descriptor sent to a writer, including every additional or write-only field. */
@@ -246,16 +232,12 @@ public final class BigQuerySinkConfig<T> implements Serializable {
 
     /** Returns the per-destination desired CDC table contract. */
     public CdcTableOptionsProvider getCdcTableOptionsProvider() {
-        return cdcTableOptionsProvider == null
-                ? DEFAULT_CDC_TABLE_OPTIONS_PROVIDER
-                : cdcTableOptionsProvider;
+        return cdcTableOptionsProvider;
     }
 
     /** Returns how this job handles CDC tables that already exist. */
     public CdcTableReconciliationPolicy getCdcTableReconciliationPolicy() {
-        return cdcTableReconciliationPolicy == null
-                ? CdcTableReconciliationPolicy.VERIFY_ONLY
-                : cdcTableReconciliationPolicy;
+        return cdcTableReconciliationPolicy;
     }
 
     /** Returns the options gating connector-driven table schema updates. */

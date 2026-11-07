@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0112: BigQuery CDC auto-creation combines the Tables API with verified DDL
 
 - Status: Accepted
-- Date: 2026-08-14
+- Date: 2026-08-14; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
 - Issues: [#65](https://github.com/flink-gcp/flink-connector-gcp/issues/65),
-  [#627](https://github.com/flink-gcp/flink-connector-gcp/issues/627)
+  [#627](https://github.com/flink-gcp/flink-connector-gcp/issues/627), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#change-data-capture`,
   `docs/content/docs/connectors/table/bigquery.md#change-data-capture`
@@ -169,7 +169,7 @@ The only DDL is the `ALTER TABLE` required to set or explicitly clear maximum st
 The sink owns a small, recoverable provisioning state machine instead of requiring operators to pre-create every CDC destination.
 Operators who do not want connector-owned DDL can leave maximum staleness unmanaged and retain the default `VERIFY_ONLY` policy.
 `CREATE_NEVER` can still use `RECONCILE`; it denies creation but permits explicitly selected convergence of an existing table.
-A job graph serialized before this decision retains that legacy pre-created-table behavior after an upgrade; a new deployment opts into connector-managed CDC creation.
+Every CDC sink manages its table contract; a job graph serialized by an earlier version is not read across the upgrade (ADR-0200), so no CDC sink keeps the earlier pre-created-table behavior.
 
 [cdc-guide]: https://cloud.google.com/bigquery/docs/change-data-capture
 [labels]: https://cloud.google.com/bigquery/docs/labels-intro

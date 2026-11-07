@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0153: The Table keep-latest mode replaces only written cells
 
 - Status: Accepted
-- Date: 2026-09-06
-- Issue: [#1177](https://github.com/flink-gcp/flink-connector-gcp/issues/1177)
+- Date: 2026-09-06; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Issues: [#1177](https://github.com/flink-gcp/flink-connector-gcp/issues/1177), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigtable (`table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -46,7 +46,6 @@ The mode uses the ordinary mutation batcher, writer options and table creation/r
 GC settings remain independent, including the requirement for a GC rule when SQL enables table creation.
 Conditional-only settings remain invalid.
 The ordinary upsert changelog and ADR-0102's insert-only compatibility mode apply unchanged.
-The serializer stores a boolean flag whose absent value in an older job graph is false, preserving ordinary writes on restore.
 
 ## Guarantees and costs
 

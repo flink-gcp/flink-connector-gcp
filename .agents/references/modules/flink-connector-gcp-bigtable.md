@@ -913,7 +913,7 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
 - Preserve ADR-0149 timestamp behavior: explicit bucket timestamps or a per-cell writer clock when absent/null.
   Do not describe a fixed timestamp as deduplicating an aggregate input.
 - Keep aggregate input DDL sink-only; state reads use separate BIGINT numeric and BYTES HLL qualifiers.
-- Keep typed provisioning serializable without SDK types, old job graphs raw-compatible, and reconciliation add-only. Options containing any aggregate type validate every declared existing type with fatal mismatches; raw-only options reconcile existing families by name only.
+- Keep typed provisioning serializable without SDK types, an untyped family raw, and reconciliation add-only. Options containing any aggregate type validate every declared existing type with fatal mismatches; raw-only options reconcile existing families by name only.
   Read raw admin protos so an unknown type in an undeclared family cannot break inspection.
   SQL validates/ensures at writer startup; typed DataStream creation options validate before a destination first sends; raw-only writers retain lazy admin access.
 

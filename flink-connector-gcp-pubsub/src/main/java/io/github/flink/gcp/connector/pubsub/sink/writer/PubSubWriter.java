@@ -297,9 +297,9 @@ public class PubSubWriter<T> implements SinkWriter<T> {
         this.nanoClock = nanoClock;
         PubSubPublisherOptions options = config.getPublisherOptions();
         // Re-checked for the deserialization reason InFlightTracker's own preconditions give,
-        // though the failure mode is milder: a zero — which an options instance serialized before
-        // the field existed carries — would fail the job on the first confirmed rejection,
-        // silently overriding the handler the user configured, rather than hanging anything.
+        // though the failure mode is milder: a zero would fail the job on the first confirmed
+        // rejection, silently overriding the handler the user configured, rather than hanging
+        // anything.
         //
         // Kept ahead of the tracker's construction, which is where it stood relative to the budget
         // check the tracker now owns. The two caps, which used to precede it, are the tracker's

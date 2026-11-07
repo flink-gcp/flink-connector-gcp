@@ -816,10 +816,6 @@ CDC has the following table and write-path requirements:
 If a table carries the matching connector-owned pending label, either policy resumes that partial
 attempt, which may apply the required maximum-staleness DDL before completing the label.
 
-A running job restored from a job graph serialized before CDC auto-creation existed keeps its
-pre-created-table behavior after a connector upgrade.
-Redeploy the job from the new builder or Table API plan to opt into connector-managed creation.
-
 The configured serializer remains the source of the physical `TableSchema`.
 The sink augments only the protobuf descriptor sent to the default stream, so the two CDC
 pseudocolumns never become ordinary table columns or participate in schema reconciliation.

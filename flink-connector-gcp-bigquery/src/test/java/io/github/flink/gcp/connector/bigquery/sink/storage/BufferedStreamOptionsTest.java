@@ -199,20 +199,6 @@ class BufferedStreamOptionsTest {
         assertThat(configured.toString()).contains("destinationIdleTimeout=PT2M");
     }
 
-    @Test
-    void optionsSerializedBeforeTheIdleTimeoutWasAddedReceiveItsDefault() throws Exception {
-        BufferedStreamOptions restored = BufferedStreamOptions.builder().build();
-        java.lang.reflect.Field field =
-                BufferedStreamOptions.class.getDeclaredField("destinationIdleTimeout");
-        field.setAccessible(true);
-        field.set(restored, null);
-
-        assertThat(restored.getDestinationIdleTimeout())
-                .isEqualTo(BufferedStreamOptions.DEFAULT_DESTINATION_IDLE_TIMEOUT);
-        assertThat(restored).isEqualTo(BufferedStreamOptions.builder().build());
-        assertThat(restored.toString()).contains("destinationIdleTimeout=PT1H");
-    }
-
     /**
      * The recovery knobs reach a {@code RetrySchedule} through {@code toMillis()}, so a
      * sub-millisecond value used to be accepted here and rejected by the schedule's constructor —

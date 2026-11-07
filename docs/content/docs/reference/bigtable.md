@@ -259,7 +259,6 @@ is under
 | `columnFamily` | **at least one required** | Declares a raw family by name, optionally with a `GcRule`; the three-argument overload takes name, `ColumnFamilyType`, and nullable rule. Types: `RAW`, `INT64_SUM`, `INT64_MIN`, `INT64_MAX`, `INT64_HLL`. Repeatable; a repeated name replaces both type and rule |
 
 `getColumnFamilies()` retains its family-to-GC-rule map; `getColumnFamilyTypes()` returns an immutable type map in the same declaration order.
-Options restored from an older job graph default their families to `RAW`.
 The enum is serializable; SDK type models are created only for admin requests.
 
 A family declared without a rule keeps Bigtable's default of collecting nothing — for this

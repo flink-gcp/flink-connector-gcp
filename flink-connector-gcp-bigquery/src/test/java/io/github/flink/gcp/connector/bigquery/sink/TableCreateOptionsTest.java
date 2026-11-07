@@ -16,11 +16,8 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.util.InstantiationUtil;
-
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -205,33 +202,6 @@ class TableCreateOptionsTest {
 
         assertThat(a).isEqualTo(b).hasSameHashCodeAs(b);
         assertThat(a).isNotEqualTo(TableCreateOptions.defaults());
-    }
-
-    /**
-     * An instance serialized before the labels existed restores the field as {@code null}, which
-     * creation and equality must read as "no labels" rather than fail on.
-     */
-    @Test
-    void anInstanceSerializedBeforeLabelsExistedHasNone() throws Exception {
-        TableCreateOptions restored =
-                InstantiationUtil.clone(
-                        TableCreateOptions.builder()
-                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
-                                .build());
-        Field labels = TableCreateOptions.class.getDeclaredField("labels");
-        labels.setAccessible(true);
-        labels.set(restored, null);
-
-        assertThat(restored.getLabels()).isEmpty();
-        assertThat(restored)
-                .isEqualTo(
-                        TableCreateOptions.builder()
-                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
-                                .build())
-                .hasSameHashCodeAs(
-                        TableCreateOptions.builder()
-                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
-                                .build());
     }
 
     @Test

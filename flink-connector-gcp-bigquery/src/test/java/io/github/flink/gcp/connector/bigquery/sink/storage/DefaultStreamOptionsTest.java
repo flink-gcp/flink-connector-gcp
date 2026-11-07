@@ -22,7 +22,6 @@ import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.sink.OrderingMode;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -85,21 +84,6 @@ class DefaultStreamOptionsTest {
         assertThatThrownBy(() -> DefaultStreamOptions.builder().orderingMode(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("orderingMode must not be null");
-    }
-
-    @Test
-    void optionsSerializedBeforeTheOrderingModeExistedReadAsNone() throws Exception {
-        // A job graph serialized before the field existed deserializes it as null; the reflective
-        // write stands in for those bytes, which no test can produce from this source.
-        DefaultStreamOptions old = DefaultStreamOptions.builder().build();
-        Field field = DefaultStreamOptions.class.getDeclaredField("orderingMode");
-        field.setAccessible(true);
-        field.set(old, null);
-
-        assertThat(old.getOrderingMode()).isEqualTo(OrderingMode.NONE);
-        assertThat(old)
-                .isEqualTo(DefaultStreamOptions.builder().build())
-                .hasSameHashCodeAs(DefaultStreamOptions.builder().build());
     }
 
     /**

@@ -136,37 +136,9 @@ class BigQuerySinkBuilderTest {
 
         BigQuerySinkConfig<String> restoredDefaults = InstantiationUtil.clone(defaults).getConfig();
         assertThat(restoredDefaults.getCdcTableOptionsProvider().optionsFor(DESTINATION))
-                .isNotNull();
+                .isEqualTo(CdcTableOptions.defaults());
         assertThat(restoredDefaults.getTableCreateOptionsProvider().optionsFor(DESTINATION))
                 .isNotNull();
-    }
-
-    @Test
-    void theConfigsOwnFallbackProviderIsNamedToo() throws Exception {
-        // The field is null only in a config restored from a job graph written before it existed,
-        // which no builder can produce and which is exactly the path this guard is about: the
-        // fallback the getter mints then travels on into the writers.
-        BigQuerySinkConfig<String> config =
-                new BigQuerySinkConfig<>(
-                        new FixedDestinationResolver(DESTINATION),
-                        new TestSerializer(),
-                        null,
-                        null,
-                        CreateDisposition.CREATE_IF_NEEDED,
-                        new FixedTableCreateOptionsProvider(TableCreateOptions.defaults()),
-                        null,
-                        CdcTableReconciliationPolicy.VERIFY_ONLY,
-                        SchemaUpdateOptions.defaults(),
-                        FailureHandler.failJob(),
-                        "US",
-                        null,
-                        null,
-                        null);
-
-        CdcTableOptionsProvider fallback = config.getCdcTableOptionsProvider();
-
-        assertThat(serializedForm(fallback)).doesNotContain("SerializedLambda");
-        assertThat(fallback.optionsFor(DESTINATION)).isEqualTo(CdcTableOptions.defaults());
     }
 
     private static String serializedForm(Object value) throws Exception {

@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0024: The Avro serializer accepts `IndexedRecord`, derives eagerly, and rejects unstorable logical types
 
 - Status: Accepted
-- Date: 2026-07-26
+- Date: 2026-07-26; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
 - Issues: [#66] (Avro half); the shared holder extracted by [#828] (2026-08-18); the
-  compatibility record corrected by [#998] (2026-08-22)
+  compatibility record corrected by [#998] (2026-08-22), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery (`sink.serializer.avro`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Avro records
 
@@ -79,11 +79,8 @@ conversions enabled carries the latter and assuming the former would be a per-ro
   The reverse direction restores: Java deserialization ignores the holder field because the older
   local class has no serializable field by that name, and the older serializer rebuilds its own
   transient conversion state.
-  Persisted job graphs can cross connector versions during recovery, including the Kubernetes
-  Operator's `last-state` upgrade path that ADR-0125 records.
-  The old-to-new incompatibility was accepted for [#828] because the change landed before 1.0.0,
-  the last release boundary at which ADR-0125 permits that choice.
-  An analogous serialized-form change after 1.0.0 requires an upgrade path.
+  No supported upgrade path reads a job graph written by another connector version (ADR-0200), so
+  the old-to-new incompatibility needs no upgrade path.
 
 ## Evidence
 

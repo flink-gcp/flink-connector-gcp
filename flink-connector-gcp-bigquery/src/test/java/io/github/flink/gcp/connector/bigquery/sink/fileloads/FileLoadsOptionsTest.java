@@ -253,67 +253,6 @@ class FileLoadsOptionsTest {
     }
 
     @Test
-    void absentFieldsFromAnOlderSerializedJobGraphUseTheNewDefaults() throws Exception {
-        FileLoadsOptions.Builder oldBuilder = base();
-        setBuilderField(oldBuilder, "maxOpenDestinations", 0);
-        setBuilderField(oldBuilder, "maxPendingFiles", 0);
-        setBuilderField(oldBuilder, "maxConcurrentCheckpointFinalizations", 0);
-        setBuilderField(oldBuilder, "maxConcurrentDestinations", 0);
-        setBuilderField(oldBuilder, "stagingUploadChunkBytes", 0L);
-        setBuilderField(oldBuilder, "maxInFlightUploadOperations", null);
-        setBuilderField(oldBuilder, "destinationIdleTimeout", null);
-        setBuilderField(oldBuilder, "maxSerializedRowBytes", 0L);
-        setBuilderField(oldBuilder, "tempTableExpiration", null);
-        FileLoadsOptions restored = withField(oldBuilder.build(), "avroCompression", null);
-        restored = withField(restored, "zstdLevel", null);
-        restored = withField(restored, "backgroundStagingUploadEnabled", null);
-        FileLoadsOptions defaults = base().build();
-
-        assertThat(restored.getMaxOpenDestinations()).isEqualTo(16);
-        assertThat(restored.getMaxPendingFiles()).isEqualTo(10_000);
-        assertThat(restored.getMaxConcurrentCheckpointFinalizations()).isEqualTo(1);
-        assertThat(restored.getMaxConcurrentDestinations()).isEqualTo(8);
-        assertThat(restored.getStagingUploadChunkBytes()).isEqualTo(4L * 1024 * 1024);
-        assertThat(restored.isBackgroundStagingUploadEnabled()).isTrue();
-        assertThat(restored.getMaxInFlightUploadOperations()).isEqualTo(2);
-        assertThat(restored.getDestinationIdleTimeout()).isEqualTo(Duration.ofMinutes(1));
-        assertThat(restored.getMaxSerializedRowBytes()).isEqualTo(15_000_000L);
-        assertThat(restored.getTempTableExpiration()).isEqualTo(Duration.ofDays(1));
-        assertThat(restored.getAvroCompression()).isEqualTo(AvroCompression.ZSTD);
-        assertThat(restored.getZstdLevel()).isEqualTo(3);
-        assertThat(restored).isEqualTo(defaults).hasSameHashCodeAs(defaults);
-        assertThat(restored.toString()).isEqualTo(defaults.toString());
-    }
-
-    @Test
-    void anOptionsInstanceSerializedBeforeTheUploaderReadsItsDefaultDepth() throws Exception {
-        // Deserialization skips the constructor, so a missing int field arrives as 0.
-        FileLoadsOptions options = withField(base().build(), "maxInFlightUploadOperations", 0);
-
-        assertThat(options.getMaxInFlightUploadOperations()).isEqualTo(2);
-        assertThat(options).isEqualTo(base().build()).hasSameHashCodeAs(base().build());
-    }
-
-    /**
-     * The options with one field as Java deserialization leaves it when the serialized form
-     * predates the field: the builder supplies a default, so only the built instance can carry it.
-     */
-    private static FileLoadsOptions withField(FileLoadsOptions options, String name, Object value)
-            throws Exception {
-        java.lang.reflect.Field field = FileLoadsOptions.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(options, value);
-        return options;
-    }
-
-    private static void setBuilderField(FileLoadsOptions.Builder builder, String name, Object value)
-            throws Exception {
-        java.lang.reflect.Field field = FileLoadsOptions.Builder.class.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(builder, value);
-    }
-
-    @Test
     void stagingUploadOptionsAreKeptAndBounded() {
         FileLoadsOptions defaults = base().build();
         assertThat(defaults.isBackgroundStagingUploadEnabled()).isTrue();

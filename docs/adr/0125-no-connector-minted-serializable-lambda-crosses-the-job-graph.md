@@ -17,9 +17,10 @@ limitations under the License.
 # ADR-0125: No connector-minted serializable lambda crosses the job graph
 
 - Status: Accepted
-- Date: 2026-08-18 (measured 2026-08-18)
+- Date: 2026-08-18 (measured 2026-08-18); revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: reachability premise corrected)
 - Issues: [#822](https://github.com/flink-gcp/flink-connector-gcp/issues/822),
-  [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777)
+  [#777](https://github.com/flink-gcp/flink-connector-gcp/issues/777),
+  [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
 - Modules: bigquery, bigtable, cloudtasks (rule applies to all)
 - Current behavior: no user-visible change
 
@@ -33,12 +34,13 @@ be posted before the measurement rather than after.
 
 **Reachability.** Flink "persists metadata and the job artifacts" in order to recover submitted
 jobs, and its `Dispatcher` is constructed with a `Collection<JobGraph> recoveredJobs` that it runs:
-recovery replays the *persisted* graph rather than regenerating one. The Kubernetes operator's
-`last-state` upgrade mode suspends with "Cancel / Delete (keep HA metadata)" and restores by "Use
-HA metadata", while the spec change that triggered the upgrade may carry a new image — hence a
-different connector jar under a graph serialized by the old one. ADR-0112 already reasons this way: "A job
-graph serialized before this decision retains that legacy pre-created-table behavior after an
-upgrade."
+recovery replays the *persisted* graph rather than regenerating one. Within one connector version
+that replay reads a graph the same jar wrote. This record originally also read the Kubernetes
+operator's `last-state` upgrade as replaying a graph serialized by the old image under a new one;
+[ADR-0200](0200-job-graph-objects-carry-no-older-serialized-form-fallbacks.md) measured that
+premise false, because the operator deletes the persisted job graph before it deploys an
+application cluster, and records that a job graph is read only by the connector version that
+wrote it.
 
 **What a serialized lambda's identity actually is.** Measured, not assumed. javac names a
 serializable lambda `lambda$<enclosingMethod>$<hash>$<index>`. Two lambdas share the hash when they
@@ -103,8 +105,8 @@ by the guard that claims it.
 ## Consequences
 
 The serialized form of the affected objects changed, so a job graph written by an earlier build
-does not restore against this one. That is acceptable before 1.0.0 and is the last release in which
-it is: after the tag, the same change would need the upgrade path, not just the fix.
+does not restore against this one. No supported upgrade path reads such a graph (ADR-0200), so a
+later change of the same kind needs no upgrade path either.
 
 Two limits this rule does not claim to cover.
 

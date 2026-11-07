@@ -153,7 +153,7 @@ public final class DefaultStreamOptions implements Serializable {
     private final Duration destinationIdleTimeout;
     @Nullable private final Duration flushInterval;
     private final boolean perDestinationMetrics;
-    @Nullable private final OrderingMode orderingMode;
+    private final OrderingMode orderingMode;
 
     private DefaultStreamOptions(Builder builder) {
         this.maxAppendRequestBytes = builder.maxAppendRequestBytes;
@@ -279,14 +279,9 @@ public final class DefaultStreamOptions implements Serializable {
         return perDestinationMetrics;
     }
 
-    /**
-     * Returns the order a table's rows commit in.
-     *
-     * <p>The {@code null} fallback preserves the default for options serialized before this field
-     * existed.
-     */
+    /** Returns the order a table's rows commit in. */
     public OrderingMode getOrderingMode() {
-        return orderingMode == null ? OrderingMode.NONE : orderingMode;
+        return orderingMode;
     }
 
     @Override
@@ -314,7 +309,7 @@ public final class DefaultStreamOptions implements Serializable {
                 && destinationIdleTimeout.equals(that.destinationIdleTimeout)
                 && Objects.equals(flushInterval, that.flushInterval)
                 && perDestinationMetrics == that.perDestinationMetrics
-                && getOrderingMode() == that.getOrderingMode();
+                && orderingMode == that.orderingMode;
     }
 
     @Override
@@ -336,7 +331,7 @@ public final class DefaultStreamOptions implements Serializable {
                 destinationIdleTimeout,
                 flushInterval,
                 perDestinationMetrics,
-                getOrderingMode());
+                orderingMode);
     }
 
     @Override
@@ -374,7 +369,7 @@ public final class DefaultStreamOptions implements Serializable {
                 + ", perDestinationMetrics="
                 + perDestinationMetrics
                 + ", orderingMode="
-                + getOrderingMode()
+                + orderingMode
                 + "}";
     }
 

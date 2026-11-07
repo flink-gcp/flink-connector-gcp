@@ -103,11 +103,7 @@ public final class TableCreateOptions implements Serializable {
     private final List<String> clusteredFields;
     @Nullable private final String description;
 
-    /**
-     * {@code null} only in an instance serialized before the field existed; read through {@link
-     * #getLabels()}.
-     */
-    @Nullable private final Map<String, String> labels;
+    private final Map<String, String> labels;
 
     private TableCreateOptions(Builder builder) {
         this.timePartitioningType = builder.timePartitioningType;
@@ -170,8 +166,7 @@ public final class TableCreateOptions implements Serializable {
 
     /** Returns the table labels, in the order they were given; empty when none are configured. */
     public Map<String, String> getLabels() {
-        // An instance serialized before labels existed restores the field as null.
-        return labels == null ? Collections.emptyMap() : labels;
+        return labels;
     }
 
     @Override
@@ -188,7 +183,7 @@ public final class TableCreateOptions implements Serializable {
                 && Objects.equals(timePartitioningExpirationMs, that.timePartitioningExpirationMs)
                 && clusteredFields.equals(that.clusteredFields)
                 && Objects.equals(description, that.description)
-                && getLabels().equals(that.getLabels());
+                && labels.equals(that.labels);
     }
 
     @Override
@@ -199,7 +194,7 @@ public final class TableCreateOptions implements Serializable {
                 timePartitioningExpirationMs,
                 clusteredFields,
                 description,
-                getLabels());
+                labels);
     }
 
     @Override

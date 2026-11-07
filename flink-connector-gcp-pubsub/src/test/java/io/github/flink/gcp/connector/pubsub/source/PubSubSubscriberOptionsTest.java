@@ -20,8 +20,6 @@ import org.apache.flink.util.InstantiationUtil;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ObjectStreamClass;
-import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.function.UnaryOperator;
 
@@ -301,32 +299,6 @@ class PubSubSubscriberOptionsTest {
     }
 
     @Test
-    void serializedOptionsFromBeforeTheBufferLimitsDeriveTheirBudget() throws Exception {
-        assertThat(ObjectStreamClass.lookup(PubSubSubscriberOptions.class).getSerialVersionUID())
-                .isEqualTo(1L);
-        PubSubSubscriberOptions legacy = fullyPopulated();
-        // ObjectInputStream assigns null to a reference field absent from an older stream. Nulling
-        // the two newly added fields before this round trip exercises that exact post-read state
-        // without checking in a Java-serialization blob tied to a compiler implementation.
-        setField(legacy, "subscriberBufferMaxMessages", null);
-        setField(legacy, "subscriberBufferMaxBytes", null);
-
-        PubSubSubscriberOptions restored =
-                InstantiationUtil.deserializeObject(
-                        InstantiationUtil.serializeObject(legacy), getClass().getClassLoader());
-        PubSubSubscriberOptions expected = withoutBudgetBuilder().build();
-
-        // Twice the fixture's flow-control limits of 500 messages and 1 MiB.
-        assertThat(restored.getSubscriberBufferMaxMessages()).isEqualTo(1_000);
-        assertThat(restored.getSubscriberBufferMaxBytes()).isEqualTo(2L * 1024 * 1024);
-        assertThat(restored).isEqualTo(expected);
-        assertThat(restored).hasSameHashCodeAs(expected);
-        assertThat(restored.toString())
-                .contains("subscriberBufferMaxMessages=null")
-                .contains("subscriberBufferMaxBytes=null");
-    }
-
-    @Test
     void anUnsetBudgetIsTwiceTheConfiguredFlowControl() {
         PubSubSubscriberOptions options =
                 PubSubSubscriberOptions.builder()
@@ -395,12 +367,6 @@ class PubSubSubscriberOptionsTest {
                                         .build())
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("at least 2000");
-    }
-
-    private static void setField(Object target, String name, Object value) throws Exception {
-        Field field = target.getClass().getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(target, value);
     }
 
     private static PubSubSubscriberOptions variedBy(

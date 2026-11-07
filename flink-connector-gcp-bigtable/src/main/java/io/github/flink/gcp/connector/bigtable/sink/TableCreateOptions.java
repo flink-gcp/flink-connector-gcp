@@ -58,7 +58,8 @@ public final class TableCreateOptions implements Serializable {
     /** Family name to garbage-collection rule; a {@code null} value is a family without one. */
     private final LinkedHashMap<String, GcRule> columnFamilies;
 
-    @Nullable private final Map<String, ColumnFamilyType> columnFamilyTypes;
+    /** Family name to value type, with the same keys in the same order as the families. */
+    private final LinkedHashMap<String, ColumnFamilyType> columnFamilyTypes;
 
     private TableCreateOptions(Builder builder) {
         this.columnFamilies = new LinkedHashMap<>(builder.columnFamilies);
@@ -83,21 +84,12 @@ public final class TableCreateOptions implements Serializable {
     }
 
     /**
-     * Returns the value type of every declared family, in declaration order. Families restored from
-     * job graphs predating typed creation are raw.
+     * Returns the value type of every declared family, in declaration order.
      *
      * @return an immutable family-to-type map
      */
     public Map<String, ColumnFamilyType> getColumnFamilyTypes() {
-        Map<String, ColumnFamilyType> types = new LinkedHashMap<>();
-        for (String name : columnFamilies.keySet()) {
-            types.put(
-                    name,
-                    columnFamilyTypes == null
-                            ? ColumnFamilyType.RAW
-                            : columnFamilyTypes.getOrDefault(name, ColumnFamilyType.RAW));
-        }
-        return Collections.unmodifiableMap(types);
+        return Collections.unmodifiableMap(columnFamilyTypes);
     }
 
     @Override
@@ -110,12 +102,12 @@ public final class TableCreateOptions implements Serializable {
         }
         TableCreateOptions that = (TableCreateOptions) o;
         return columnFamilies.equals(that.columnFamilies)
-                && getColumnFamilyTypes().equals(that.getColumnFamilyTypes());
+                && columnFamilyTypes.equals(that.columnFamilyTypes);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(columnFamilies, getColumnFamilyTypes());
+        return Objects.hash(columnFamilies, columnFamilyTypes);
     }
 
     @Override
@@ -123,7 +115,7 @@ public final class TableCreateOptions implements Serializable {
         return "TableCreateOptions{columnFamilies="
                 + columnFamilies
                 + ", columnFamilyTypes="
-                + getColumnFamilyTypes()
+                + columnFamilyTypes
                 + "}";
     }
 

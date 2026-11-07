@@ -23,7 +23,6 @@ import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -234,36 +233,6 @@ class SpannerWriterOptionsTest {
         assertThat(InstantiationUtil.clone(options)).isEqualTo(options);
         assertThat(InstantiationUtil.clone(options).getBatchWriteTimeout())
                 .isEqualTo(Duration.ofSeconds(17));
-    }
-
-    @Test
-    void anOlderSerializedFormWithoutTheTimeoutUsesTheNewDefault() throws Exception {
-        SpannerWriterOptions options = SpannerWriterOptions.builder().build();
-        Field timeout = SpannerWriterOptions.class.getDeclaredField("batchWriteTimeout");
-        timeout.setAccessible(true);
-        timeout.set(options, null);
-
-        SpannerWriterOptions restored = InstantiationUtil.clone(options);
-
-        assertThat(restored.getBatchWriteTimeout()).isEqualTo(Duration.ofSeconds(30));
-        assertThat(restored)
-                .isEqualTo(SpannerWriterOptions.defaults())
-                .hasSameHashCodeAs(SpannerWriterOptions.defaults());
-    }
-
-    @Test
-    void anOlderSerializedFormWithoutTheOrderingModeKeepsNoOrder() throws Exception {
-        SpannerWriterOptions options = SpannerWriterOptions.builder().build();
-        Field mode = SpannerWriterOptions.class.getDeclaredField("orderingMode");
-        mode.setAccessible(true);
-        mode.set(options, null);
-
-        SpannerWriterOptions restored = InstantiationUtil.clone(options);
-
-        assertThat(restored.getOrderingMode()).isEqualTo(OrderingMode.NONE);
-        assertThat(restored)
-                .isEqualTo(SpannerWriterOptions.defaults())
-                .hasSameHashCodeAs(SpannerWriterOptions.defaults());
     }
 
     @Test

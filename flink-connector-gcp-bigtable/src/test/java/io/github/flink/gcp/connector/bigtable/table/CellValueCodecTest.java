@@ -967,16 +967,11 @@ class CellValueCodecTest {
         }
 
         @Test
-        void anAbsentPolicyResolvesTheDocumentedDefault() {
-            // A TypedFieldDecoder serialized before the policy existed deserializes with a null
-            // trailingBytes field — defaultReadObject leaves an absent field at its default —
-            // and readObject re-resolves through the same resolveDecoder path this reaches with
-            // null directly. The compatible reading is the documented default, never the strict
-            // opt-in.
-            assertThat(
-                            CellValueCodec.decoder(DataTypes.BIGINT().getLogicalType(), null)
-                                    .decode(fromHex("00000000000000017f")))
-                    .isEqualTo(1L);
+        void anAbsentPolicyIsRejected() {
+            assertThatThrownBy(
+                            () -> CellValueCodec.decoder(DataTypes.BIGINT().getLogicalType(), null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessage("trailingBytes must not be null");
         }
 
         @Test

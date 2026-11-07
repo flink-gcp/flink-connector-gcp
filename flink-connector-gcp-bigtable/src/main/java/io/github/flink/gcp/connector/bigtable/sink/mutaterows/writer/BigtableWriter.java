@@ -490,9 +490,7 @@ public class BigtableWriter<T> implements SinkWriter<T> {
         // awaitCapacity predicate with nothing in flight, and no completion can arrive to end it
         // — so it is a silent permanent park, not a rejected configuration. Fail where the
         // invariant is relied on rather than trusting that every options instance came from the
-        // builder, which Java deserialization does not run. maxActiveInstances is the exception
-        // for zero: its getter maps a field absent from an older stream to the new default, while
-        // this check still rejects a corrupt negative value.
+        // builder, which Java deserialization does not run.
         Preconditions.checkArgument(
                 options.getMaxInFlightEntries() > 0, "maxInFlightEntries must be positive");
         Preconditions.checkArgument(
