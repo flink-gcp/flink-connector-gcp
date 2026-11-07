@@ -39,6 +39,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -203,20 +204,66 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     }
 
     @Test
-    void aCommitOverTenMebibytesIsApplied() {
+    void aCommitOverTenMebibytesIsApplied() throws Exception {
         // The service documents a 10 MiB request limit, and the writer budgets 9,000,000 bytes per
         // commit on that premise; twelve entities of 900 KiB are one commit of about 10.5 MiB, and
         // the service applies it, as the emulator does.
-        List<DatastoreMutation> writes = new ArrayList<>();
+        //
+        // A database created for the test starts with little write bandwidth. In Native mode the
+        // service answered part of such a request RESOURCE_EXHAUSTED ("exceeded their maximum
+        // bandwidth for writes"; 2026-11-07, FirestoreRejectionRealGcpITCase), and a commit has no
+        // per-write answer, so the throttle would fail the whole commit. Such a commit is sent
+        // again whole with backoff, still over 10 MiB, which is safe because every write is an
+        // upsert. Only a failure whose message names the write bandwidth counts as the throttle;
+        // any other failure, a RESOURCE_EXHAUSTED for the message size included, fails the test.
+        List<EncodedMutation> writes = new ArrayList<>();
         String nineHundredKiB = "z".repeat(900 * 1024);
         for (int i = 0; i < 12; i++) {
             writes.add(
-                    DatastoreMutation.upsert(
-                            Entity.newBuilder(key(kind, "m" + i))
-                                    .set("s", unindexed(nineHundredKiB))
-                                    .build()));
+                    EncodedMutation.of(
+                            DatastoreMutation.upsert(
+                                    Entity.newBuilder(key(kind, "m" + i))
+                                            .set("s", unindexed(nineHundredKiB))
+                                            .build())));
         }
-        assertThat(code(writes.toArray(new DatastoreMutation[0]))).isEqualTo("applied");
+        // No attempt starts after four minutes, so a last commit that runs to its 60-second
+        // timeout still ends well inside the class's ten-minute bound.
+        long deadline = System.nanoTime() + Duration.ofMinutes(4).toNanos();
+        long backoffMillis = 1_000;
+        for (int attempt = 1; ; attempt++) {
+            try {
+                access.commit(writes);
+                LOG.info("Attempt {}: the commit of about 10.5 MiB was applied.", attempt);
+                break;
+            } catch (RuntimeException e) {
+                if (DatastoreErrorClassifier.statusCode(e) != StatusCode.Code.RESOURCE_EXHAUSTED
+                        || !namesWriteBandwidth(e)) {
+                    throw e;
+                }
+                LOG.info("Attempt {}: the commit was throttled: {}", attempt, e.toString());
+                Thread.sleep(backoffMillis);
+                backoffMillis *= 2;
+                if (System.nanoTime() - deadline >= 0) {
+                    throw new AssertionError("still throttled after four minutes", e);
+                }
+            }
+        }
+
+        for (int i = 0; i < 12; i++) {
+            Entity stored = client().get(key(kind, "m" + i));
+            assertThat(stored).as("m%d", i).isNotNull();
+            assertThat(stored.getString("s")).as("m%d", i).isEqualTo(nineHundredKiB);
+        }
+    }
+
+    /** Whether any message in the failure's cause chain names the database's write bandwidth. */
+    private static boolean namesWriteBandwidth(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause()) {
+            if (t.getMessage() != null && t.getMessage().contains("maximum bandwidth for writes")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Test
