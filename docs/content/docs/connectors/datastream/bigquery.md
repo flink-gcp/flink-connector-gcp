@@ -1718,6 +1718,46 @@ Caveats:
   schema changes are still picked up when the serializer fingerprint changes or the service
   rejects the changed descriptor.
 
+### Iceberg managed tables
+
+BigQuery's [Iceberg managed tables](https://cloud.google.com/bigquery/docs/iceberg-tables) keep
+their rows as Parquet files and Iceberg metadata in a Cloud Storage bucket, written by BigQuery
+through a Cloud resource connection.
+The sink writes such a table like any other existing table: it does not detect one, refuse a write
+method for it, or create one.
+Create the table first, with `CREATE TABLE ... WITH CONNECTION ... OPTIONS (file_format = 'PARQUET',
+table_format = 'ICEBERG', storage_uri = ...)`, and point the sink at it.
+If the table is missing, auto-creation makes a standard BigQuery table without an error, so set
+`CreateDisposition.CREATE_NEVER` (`sink.create-disposition = 'create-never'`) when the destination
+must be an Iceberg table.
+
+What BigQuery accepts for these tables was measured on 2026-11-07:
+
+| Write | Result |
+|---|---|
+| `STORAGE_API_AT_LEAST_ONCE` | Works; the source reads the rows back |
+| `STORAGE_API_EXACTLY_ONCE` | Works; the source reads the rows back |
+| `FILE_LOADS` with `WRITE_APPEND` | Works when a commit loads directly into the table; the source reads the rows back |
+| `FILE_LOADS` with `WRITE_TRUNCATE`, `WRITE_TRUNCATE_DATA` or `WRITE_EMPTY` | Fails: the load job is refused |
+| `FILE_LOADS` with schema update options | Fails: a load cannot update the schema of these tables |
+| `FILE_LOADS` commit that overflows into temporary tables | Fails: the final copy, or the query under `WRITE_TRUNCATE_DATA`, is refused |
+| Change data capture | Fails: the Storage Write API refuses the change stream, although Google lists change data capture into these tables as a Preview |
+
+Each failure fails the job with BigQuery's own message, which names "BigQuery tables for Apache
+Iceberg".
+The overflow row matters for `FILE_LOADS`: a job whose commits load directly can succeed for a long
+time and then fail on the first commit large enough to need temporary tables (see
+[File loads](#file-loads)).
+Schema changes outside a load go through the table API, which accepted both adding a column and
+relaxing `REQUIRED` to `NULLABLE` on these tables.
+The columns themselves cannot be `JSON`, `RANGE`, `GEOGRAPHY`, `BIGNUMERIC` or `INTERVAL`.
+
+Iceberg tables in the Lakehouse runtime catalog, served through the Apache Iceberg REST catalog,
+are a different kind: the Storage Write API does not write them, and the Apache Iceberg Flink
+connector does.
+[ADR-0202]({{< param BookRepo >}}/blob/main/docs/adr/0202-the-bigquery-sink-writes-iceberg-managed-tables-without-detecting-them.md)
+records the measurements and why the sink does not detect these tables.
+
 ## Delivery guarantees and state
 
 See [Delivery guarantees]({{< relref "docs/connectors/delivery-guarantees" >}}) for the terms and
@@ -3270,6 +3310,11 @@ credential-less CI:
   two dynamic destinations, a clean streaming run and batch execution
   (`BigQueryBufferedStreamExactlyOnceITCase`, gated on `BQ_IT_PROJECT`/`BQ_IT_DATASET` only;
   no bucket needed)
+- Iceberg managed tables: each write method that works writes into a table created beforehand and
+  the source reads it back, and a truncating load and change data capture fail with the service's
+  message (`BigQueryIcebergManagedTableRealGcpITCase`, also gated on `BQ_IT_ICEBERG_CONNECTION`
+  and `BQ_IT_ICEBERG_BUCKET`, which name the connection as `project.location.connection` and the
+  bucket that holds the tables' files)
 
 These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
 ([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent.
