@@ -84,6 +84,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
@@ -415,17 +416,32 @@ class SpannerLookupSourceTest {
                                 "lookup.partial-cache.expire-after-write",
                                 "1 min"))
                 .isNotEqualTo(base);
+        // The reload options are read only under FULL, so they are part of a FULL table's
+        // identity and of no other.
+        String[] fullBase = {
+            "lookup.cache", "full",
+            "lookup.full-cache.periodic-reload.interval", "1 h",
+            "lookup.full-cache.timed-reload.iso-time", "10:15"
+        };
+        assertThat(configOf(fullBase)).isEqualTo(configOf(fullBase));
+        assertThatThrownBy(() -> base.createFullReloadTrigger())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("is NONE");
         String[][] fullKnobs = {
             {"lookup.full-cache.reload-strategy", "timed"},
-            {"lookup.full-cache.periodic-reload.interval", "1 h"},
+            {"lookup.full-cache.periodic-reload.interval", "2 h"},
             {"lookup.full-cache.periodic-reload.schedule-mode", "FIXED_RATE"},
-            {"lookup.full-cache.timed-reload.iso-time", "10:15"},
+            {"lookup.full-cache.timed-reload.iso-time", "10:16"},
             {"lookup.full-cache.timed-reload.interval-in-days", "2"}
         };
         for (String[] knob : fullKnobs) {
+            String[] changed = Arrays.copyOf(fullBase, fullBase.length + 2);
+            changed[fullBase.length] = knob[0];
+            changed[fullBase.length + 1] = knob[1];
+            assertThat(configOf(changed)).as(knob[0]).isNotEqualTo(configOf(fullBase));
             assertThat(configOf("lookup.partial-cache.max-rows", "10", knob[0], knob[1]))
-                    .as(knob[0])
-                    .isNotEqualTo(base);
+                    .as("%s outside FULL", knob[0])
+                    .isEqualTo(base);
         }
     }
 
@@ -598,14 +614,39 @@ class SpannerLookupSourceTest {
                                         "lookup.cache",
                                         "full",
                                         "lookup.full-cache.periodic-reload.interval",
+                                        "999 micros",
+                                        "lookup.async",
+                                        "true"))
+                .as("the async refusal precedes the reload checks")
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'lookup.async' cannot be true when 'lookup.cache' is FULL");
+        assertThatThrownBy(
+                        () ->
+                                configOf(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.periodic-reload.interval",
                                         "999 micros"))
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining(
                         "lookup.full-cache.periodic-reload.interval must be at least 1"
                                 + " millisecond");
         configOf("lookup.cache", "full", "lookup.full-cache.periodic-reload.interval", "1 ms");
+        assertThatThrownBy(
+                        () ->
+                                configOf(
+                                        "lookup.cache",
+                                        "full",
+                                        "lookup.full-cache.reload-strategy",
+                                        "timed",
+                                        "lookup.full-cache.timed-reload.iso-time",
+                                        "25:99"))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("'lookup.full-cache.timed-reload.iso-time'")
+                .hasMessageContaining("'25:99'");
         assertThatThrownBy(() -> configOf("lookup.cache", "full"))
                 .as("Flink's own trigger validation runs while the DDL is planned")
+                .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("lookup.full-cache.periodic-reload.interval");
         assertThatThrownBy(
                         () ->
