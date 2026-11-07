@@ -68,6 +68,8 @@ public final class PubSubSourceReaderMetrics {
     private final Counter recordsSkipped;
     private final Counter deserializationErrors;
     private final Counter splitsParked;
+    private Counter redeliveriesSuppressed = new ThreadSafeSimpleCounter();
+    private Counter ledgerEntriesExpired = new ThreadSafeSimpleCounter();
 
     /**
      * How many of this subtask's splits are parked right now.
@@ -160,6 +162,36 @@ public final class PubSubSourceReaderMetrics {
         metricGroup.gauge(
                 PubSubMetricNames.PENDING_CHECKPOINTS,
                 (Gauge<Integer>) ackTracker::checkpointsPendingAckCount);
+    }
+
+    /**
+     * Registers the restore-deduplication metrics, which exist only with the feature on. Until then
+     * the two counters are unregistered, so a source with the feature off exports nothing for it.
+     *
+     * @param ledger the ledger whose size the gauge reads
+     */
+    public void bindRestoredLedger(RestoredLedger ledger) {
+        redeliveriesSuppressed =
+                metricGroup.counter(
+                        PubSubMetricNames.REDELIVERIES_SUPPRESSED, new ThreadSafeSimpleCounter());
+        ledgerEntriesExpired =
+                metricGroup.counter(
+                        PubSubMetricNames.LEDGER_ENTRIES_EXPIRED, new ThreadSafeSimpleCounter());
+        metricGroup.gauge(PubSubMetricNames.LEDGER_ENTRIES, (Gauge<Integer>) ledger::size);
+    }
+
+    /** Counts one redelivery the restored ledger acknowledged instead of emitting. */
+    public void redeliverySuppressed() {
+        redeliveriesSuppressed.inc();
+    }
+
+    /**
+     * Counts restored ledger entries that expired without a redelivery to suppress.
+     *
+     * @param count how many entries expired
+     */
+    public void ledgerEntriesExpired(long count) {
+        ledgerEntriesExpired.inc(count);
     }
 
     /** Counts one message handed over by the client library. */

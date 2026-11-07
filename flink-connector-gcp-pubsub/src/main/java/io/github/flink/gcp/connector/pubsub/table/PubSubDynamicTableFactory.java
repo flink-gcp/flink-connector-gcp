@@ -34,7 +34,9 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.factories.SerializationFormatFactory;
 
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.sink.PublisherOptionsMapper;
@@ -44,6 +46,9 @@ import io.github.flink.gcp.connector.pubsub.table.source.StartPositionMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.SubscriberOptionsMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.SubscriptionCreateOptionsMapper;
 
+import javax.annotation.Nullable;
+
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -99,6 +104,8 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SCAN_SHUTDOWN_TIMEOUT,
                         PubSubConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
                         PubSubConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
+                        PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_ENABLED,
+                        PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_TTL,
                         PubSubConnectorOptions.SCAN_STARTUP_MODE,
                         PubSubConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS,
@@ -206,6 +213,10 @@ public class PubSubDynamicTableFactory
         for (String name : subscriptionNames) {
             subscriptions.add(SubscriptionDestination.of(project, name));
         }
+        boolean restoreDeduplication =
+                config.getOptional(PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_ENABLED)
+                        .orElse(false);
+        Duration restoreDeduplicationTtl = restoreDeduplicationTtl(config, restoreDeduplication);
         return new PubSubDynamicSource(
                 context.getObjectIdentifier().asSummaryString(),
                 context.getPhysicalRowDataType(),
@@ -217,9 +228,40 @@ public class PubSubDynamicTableFactory
                 config.getOptional(PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY)
                         .orElse(null),
                 SubscriberOptionsMapper.map(config),
+                restoreDeduplication,
+                restoreDeduplicationTtl,
                 config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+    }
+
+    /**
+     * Reads the restore-deduplication time-to-live, applying the builder's own bound under the
+     * option key, and restates in DDL keys the builder's cross-field rejection of a time-to-live
+     * without deduplication (ADR-0133 leaves cross-field checks to the table layer).
+     */
+    @Nullable
+    private static Duration restoreDeduplicationTtl(
+            ReadableConfig config, boolean restoreDeduplication) {
+        Duration ttl =
+                config.getOptional(PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_TTL)
+                        .orElse(null);
+        if (ttl == null) {
+            return null;
+        }
+        if (!restoreDeduplication) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' is set but '%s' is not 'true'. Enable restore"
+                                    + " deduplication, or remove the time-to-live.",
+                            PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_TTL.key(),
+                            PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_ENABLED.key()));
+        }
+        OptionSetters.accept(
+                PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_TTL.key(),
+                ttl,
+                PubSubSource.<RowData>builder()::restoreDeduplicationTtl);
+        return ttl;
     }
 
     private static void validateAutoCreateTopicsSyntax(Context context) {

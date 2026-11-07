@@ -20,14 +20,17 @@ import org.apache.flink.annotation.Public;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubEnumeratorState;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriptionSplit;
+import io.github.flink.gcp.connector.pubsub.source.streamingpull.reader.DefaultSubscriberFactory;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -47,6 +50,14 @@ import java.util.Set;
 @Public
 public class PubSubSourceBuilder<T> {
 
+    /**
+     * How long the restored ledger is kept when acknowledgement-deadline extension is disabled
+     * ({@code maxAckExtensionPeriod} zero): the longest acknowledgement deadline Pub/Sub accepts.
+     */
+    private static final Duration UNEXTENDED_LEASE_TIME_TO_LIVE = Duration.ofMinutes(10);
+
+    private static final Duration MAX_EXPRESSIBLE_IN_NANOS = Duration.ofNanos(Long.MAX_VALUE);
+
     private final List<SubscriptionDestination> subscriptions = new ArrayList<>();
     private final Map<SubscriptionDestination, SubscriptionCreateOptions> createOptions =
             new LinkedHashMap<>();
@@ -58,6 +69,8 @@ public class PubSubSourceBuilder<T> {
     private PubSubStartPosition startPosition = PubSubStartPosition.continueFromSubscription();
     @Nullable private String serviceAccountKeyFile;
     @Nullable private EmulatorEndpoint emulatorEndpoint;
+    private boolean restoreDeduplication;
+    @Nullable private Duration restoreDeduplicationTtl;
 
     PubSubSourceBuilder() {}
 
@@ -251,6 +264,63 @@ public class PubSubSourceBuilder<T> {
     }
 
     /**
+     * Keeps a completed checkpoint's acknowledgements across a restart. Optional; off by default.
+     *
+     * <p>The source acknowledges a checkpoint's messages when the checkpoint's completion
+     * notification reaches the reader. Flink delivers that notification on a best-effort basis: a
+     * job that is cancelled or fails between completing a checkpoint and notifying its readers
+     * restores that checkpoint, while Pub/Sub, never having heard the acknowledgements, redelivers
+     * its messages, which are then processed a second time. The AdaptiveScheduler, including
+     * reactive mode, triggers a rescale when a checkpoint completes, so every such rescale races
+     * the notification, and one lost race duplicates a whole checkpoint interval.
+     *
+     * <p>With this on, each checkpoint also records the ids of the messages it covers that are not
+     * acknowledged yet. After a restore, a redelivery of one of those messages is acknowledged
+     * instead of emitted, for {@link #restoreDeduplicationTtl(Duration)}. This removes the
+     * duplicates of a whole-job restore — which every AdaptiveScheduler restart is, whether it
+     * rescales up or down — and loses nothing: every suppressed message was covered by the restored
+     * checkpoint, and a redelivery that arrives after the ledger expires is emitted as it would be
+     * without this setting. A region failover is covered for the subtasks it restores; a redelivery
+     * that Pub/Sub routes to a source subtask the failover left running is emitted again.
+     *
+     * <p>The cost is checkpoint state proportional to the messages emitted per checkpoint interval,
+     * and a restore that waits for the ledger to be redistributed before consuming. See the Pub/Sub
+     * connector documentation for the details and caveats, including a seek during the ledger's
+     * lifetime.
+     *
+     * @param restoreDeduplication whether to suppress redeliveries of restored messages
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> restoreDeduplication(boolean restoreDeduplication) {
+        this.restoreDeduplication = restoreDeduplication;
+        return this;
+    }
+
+    /**
+     * Sets how long a restored deduplication ledger is kept once the reader starts consuming.
+     * Optional; requires {@link #restoreDeduplication(boolean)}. When unset, the ledger is kept for
+     * the subscriber's {@link PubSubSubscriberOptions.Builder#maxAckExtensionPeriod(Duration)}, the
+     * longest the previous execution could have kept a message leased, capped at {@code
+     * Duration.ofNanos(Long.MAX_VALUE)}, or for ten minutes, the longest acknowledgement deadline,
+     * when that extension is disabled.
+     *
+     * <p>A redelivery that arrives after the ledger expires is emitted, so a longer lifetime
+     * suppresses late redeliveries, for example behind a backlog, at the cost of keeping the ids in
+     * memory for longer.
+     *
+     * @param restoreDeduplicationTtl how long to keep the restored ledger; must be positive
+     * @return this builder
+     */
+    public PubSubSourceBuilder<T> restoreDeduplicationTtl(Duration restoreDeduplicationTtl) {
+        this.restoreDeduplicationTtl =
+                OptionChecks.checkExpressibleInNanos(
+                        OptionChecks.checkPositive(
+                                restoreDeduplicationTtl, "restoreDeduplicationTtl"),
+                        "restoreDeduplicationTtl");
+        return this;
+    }
+
+    /**
      * Builds the source.
      *
      * <p>The returned source implements {@link
@@ -301,6 +371,11 @@ public class PubSubSourceBuilder<T> {
                 "serviceAccountKeyFile(...) cannot be combined with emulatorEndpoint(...): an"
                         + " emulator uses a plaintext channel with no credentials. Remove one of"
                         + " the two settings.");
+        Preconditions.checkState(
+                restoreDeduplication || restoreDeduplicationTtl == null,
+                "restoreDeduplicationTtl(%s) is set but restoreDeduplication is off. Set"
+                        + " restoreDeduplication(true), or remove the time-to-live.",
+                restoreDeduplicationTtl);
         // Both settings are checked at startup and this source never updates a subscription it
         // created, so catching them here is what stops it creating one it then refuses to consume —
         // leaving an orphan behind and crash-looping. (Ordering is genuinely fixed at creation; a
@@ -337,6 +412,24 @@ public class PubSubSourceBuilder<T> {
                         deserializationFailurePolicy,
                         startPosition,
                         serviceAccountKeyFile,
-                        emulatorEndpoint));
+                        emulatorEndpoint,
+                        restoreDeduplication ? resolveRestoreDeduplicationTtl() : null));
+    }
+
+    private Duration resolveRestoreDeduplicationTtl() {
+        if (restoreDeduplicationTtl != null) {
+            return restoreDeduplicationTtl;
+        }
+        Duration maxAckExtension =
+                DefaultSubscriberFactory.effectiveMaxAckExtensionPeriod(subscriberOptions);
+        if (maxAckExtension.isZero()) {
+            return UNEXTENDED_LEASE_TIME_TO_LIVE;
+        }
+        // maxAckExtensionPeriod has no upper bound of its own, and the ledger's clock counts in
+        // nanoseconds (ADR-0068). A default past what nanoseconds express is unbounded in effect,
+        // so it is capped rather than rejected.
+        return maxAckExtension.compareTo(MAX_EXPRESSIBLE_IN_NANOS) > 0
+                ? MAX_EXPRESSIBLE_IN_NANOS
+                : maxAckExtension;
     }
 }

@@ -18,7 +18,9 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import javax.annotation.Nullable;
 
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /** Records the one call this class makes, and answers the rest with nothing. */
 final class RecordingAckTracker implements AckTracker {
@@ -58,6 +60,11 @@ final class RecordingAckTracker implements AckTracker {
 
     @Override
     public void stagePendingAck(String splitId, String messageId) {}
+
+    @Override
+    public Map<String, List<String>> checkpointedMessageIds() {
+        return Collections.emptyMap();
+    }
 
     @Override
     public void ackPendingImmediately(String splitId, String messageId) {}

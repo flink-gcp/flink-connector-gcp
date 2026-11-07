@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.pubsub.source.serializer.PubSubDeserializat
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +48,7 @@ public final class PubSubSourceConfig<T> implements Serializable {
     private final PubSubStartPosition startPosition;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
+    @Nullable private final Duration restoreDeduplicationTtl;
 
     PubSubSourceConfig(
             List<SubscriptionDestination> subscriptions,
@@ -57,7 +59,8 @@ public final class PubSubSourceConfig<T> implements Serializable {
             DeserializationFailurePolicy deserializationFailurePolicy,
             PubSubStartPosition startPosition,
             @Nullable String serviceAccountKeyFile,
-            @Nullable EmulatorEndpoint emulatorEndpoint) {
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Duration restoreDeduplicationTtl) {
         this.subscriptions = subscriptions;
         this.createOptions = createOptions;
         this.deserializationSchema = deserializationSchema;
@@ -67,6 +70,16 @@ public final class PubSubSourceConfig<T> implements Serializable {
         this.startPosition = startPosition;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
+        this.restoreDeduplicationTtl = restoreDeduplicationTtl;
+    }
+
+    /**
+     * Returns how long a restored deduplication ledger is kept, or {@code null} when restore
+     * deduplication is off. The builder resolves the default, so a set value is always concrete.
+     */
+    @Nullable
+    public Duration getRestoreDeduplicationTtl() {
+        return restoreDeduplicationTtl;
     }
 
     /** Returns the subscriptions to consume, in assignment order. */

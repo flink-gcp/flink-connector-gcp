@@ -150,6 +150,8 @@ the sink creates. See
 | `subscriberOptions` | [defaults](#pubsubsubscriberoptions) | Subscriber and reader tuning |
 | `deserializationFailurePolicy` | `FAIL` | What happens to a message the schema cannot convert — fail, drop, or nack |
 | `startPosition` | `continueFromSubscription()` | Where the source begins. Any other value issues a seek, once, at first start |
+| `restoreDeduplication` | `false` | After a restore, acknowledges instead of emitting a redelivery that the restored checkpoint already covers. Each checkpoint then records the ids of its unacknowledged messages; see [Restore deduplication]({{< relref "docs/connectors/datastream/pubsub" >}}#restore-deduplication) |
+| `restoreDeduplicationTtl` | *unset ⇒ `maxAckExtensionPeriod`, capped at `Duration.ofNanos(Long.MAX_VALUE)`, or 10 min when that is zero* | How long a restored ledger is kept once the reader starts consuming. Requires `restoreDeduplication(true)` |
 | `serviceAccountKeyFile` | *unset ⇒ application-default credentials* | Reads a service-account JSON key when the JobManager's enumerator or a TaskManager's reader starts. Every eligible process must see the same path. Rejected beside `emulatorEndpoint`; see the [deployment note]({{< relref "docs/connectors/datastream/pubsub" >}}#credential-file-deployment) |
 | `emulatorEndpoint` | — | Points the source at an emulator over a plaintext channel with **no credentials**. `PUBSUB_EMULATOR_HOST` is deliberately ignored. Given as `host:port`, and rejected at the setter if it is not |
 

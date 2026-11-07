@@ -46,6 +46,10 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
     private final Map<Integer, List<SubscriptionSplit>> assignments = new HashMap<>();
     private final Set<Integer> readersToldNoMoreSplits = new LinkedHashSet<>();
     private final Deque<Runnable> asyncCalls = new ArrayDeque<>();
+    private final List<Runnable> periodicCalls = new ArrayList<>();
+
+    /** What each subtask was sent, events and assignments alike, in sending order. */
+    private final Map<Integer, List<Object>> deliveries = new HashMap<>();
 
     /** Lets tests read back the gauges the enumerator registers. */
     private final MetricListener metricListener = new MetricListener();
@@ -90,7 +94,16 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
 
     @Override
     public void sendEventToSourceReader(int subtaskId, SourceEvent event) {
-        throw new UnsupportedOperationException("The Pub/Sub enumerator sends no source events.");
+        checkRegistered(subtaskId, "send an event to");
+        deliveries.computeIfAbsent(subtaskId, key -> new ArrayList<>()).add(event);
+    }
+
+    /**
+     * Returns what the subtask was sent, in order: each source event as itself, each assignment as
+     * its list of splits.
+     */
+    List<Object> deliveries(int subtaskId) {
+        return deliveries.getOrDefault(subtaskId, Collections.emptyList());
     }
 
     @Override
@@ -117,6 +130,9 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
                             assignments
                                     .computeIfAbsent(subtask, key -> new ArrayList<>())
                                     .addAll(splits);
+                            deliveries
+                                    .computeIfAbsent(subtask, key -> new ArrayList<>())
+                                    .add(new ArrayList<>(splits));
                         });
     }
 
@@ -175,9 +191,8 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
         return asyncCalls.size();
     }
 
-    // The startup check is the enumerator's only asynchronous step, and it is one-shot; these throw
-    // rather than silently accepting work, so the next asynchronous step added has to revisit this
-    // fake.
+    // The only periodic call is the deduplication ledger's upload timeout. It is held here and
+    // fired by the test, so a test decides when the timeout passes.
 
     @Override
     public <T> void callAsync(
@@ -185,8 +200,29 @@ final class FakeSplitEnumeratorContext implements SplitEnumeratorContext<Subscri
             BiConsumer<T, Throwable> handler,
             long initialDelayMillis,
             long periodMillis) {
-        throw new UnsupportedOperationException(
-                "The Pub/Sub enumerator makes no periodic async calls.");
+        periodicCalls.add(
+                () -> {
+                    T result = null;
+                    Throwable error = null;
+                    try {
+                        result = callable.call();
+                    } catch (Throwable t) {
+                        error = t;
+                    }
+                    handler.accept(result, error);
+                });
+    }
+
+    int periodicCallCount() {
+        return periodicCalls.size();
+    }
+
+    void firePeriodicCalls() {
+        periodicCalls.forEach(Runnable::run);
+    }
+
+    void firePeriodicCall(int index) {
+        periodicCalls.get(index).run();
     }
 
     @Override

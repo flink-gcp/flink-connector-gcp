@@ -82,6 +82,11 @@ ordering), with the costs stated both ways.
   contains no reader holding a split, so re-applying after such a restore is safe; a redeploy
   without state seeks again.
 
+Refined by [ADR-0198] (2026-11-06): with restore deduplication on, a reader's snapshot holds
+restore-deduplication ledger chunks, a split kind that consumes nothing and that the reader
+forwards to the enumerator on restore. No consuming split is ever checkpointed, so the rule above
+and its reason are unchanged.
+
 ## Consequences
 
 **The real-GCP gated suite ([#82]) is the only coverage of**: ordered dispatch (per-key callback
@@ -111,3 +116,4 @@ now, and this paragraph no longer claims otherwise.
 [#118]: https://github.com/flink-gcp/flink-connector-gcp/issues/118
 [#139]: https://github.com/flink-gcp/flink-connector-gcp/issues/139
 [#546]: https://github.com/flink-gcp/flink-connector-gcp/issues/546
+[ADR-0198]: 0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md

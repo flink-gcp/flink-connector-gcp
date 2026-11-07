@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -163,6 +164,38 @@ class PubSubAckTrackerTest {
         assertThat(firstDelivery.isNacked()).isTrue();
         assertThat(redelivery.isUnsettled()).isTrue();
         assertThat(tracker.outstandingAckCount()).isEqualTo(1);
+    }
+
+    @Test
+    void theLedgerHoldsWhatTheCheckpointCoversAndNothingElse() throws Exception {
+        tracker.addPendingAck(SPLIT_A, "received-only", new RecordingAckHandle("received-only"));
+        stageOn(SPLIT_A, "acked", new RecordingAckHandle("acked"));
+        tracker.addCheckpoint(1L);
+        tracker.notifyCheckpointComplete(1L);
+        stageOn(SPLIT_A, "older-unnotified", new RecordingAckHandle("older-unnotified"));
+        tracker.addCheckpoint(2L);
+        stageOn(SPLIT_B, "covered", new RecordingAckHandle("covered"));
+        tracker.addCheckpoint(3L);
+        stageOn(SPLIT_B, "after-barrier", new RecordingAckHandle("after-barrier"));
+
+        // Checkpoint 3 covers everything emitted before its barrier, including checkpoint 2's
+        // messages whose notification never came. It covers neither the message received but not
+        // emitted — suppressing its redelivery after a restore would lose it — nor the one emitted
+        // after the barrier, nor the one checkpoint 1 already acknowledged.
+        assertThat(tracker.checkpointedMessageIds())
+                .containsOnlyKeys(SPLIT_A, SPLIT_B)
+                .containsEntry(SPLIT_A, List.of("older-unnotified"))
+                .containsEntry(SPLIT_B, List.of("covered"));
+    }
+
+    @Test
+    void aNackedSplitLeavesTheLedger() throws Exception {
+        stageOn(SPLIT_A, "m1", new RecordingAckHandle("m1"));
+        tracker.addCheckpoint(1L);
+
+        tracker.nackSplit(SPLIT_A);
+
+        assertThat(tracker.checkpointedMessageIds()).isEmpty();
     }
 
     @Test

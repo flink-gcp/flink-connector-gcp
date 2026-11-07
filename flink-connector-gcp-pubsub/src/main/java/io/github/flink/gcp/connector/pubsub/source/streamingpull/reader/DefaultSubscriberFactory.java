@@ -73,6 +73,18 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
      */
     public static final Duration DEFAULT_MAX_ACK_EXTENSION_PERIOD = Duration.ofMinutes(60);
 
+    /**
+     * Returns the acknowledgement-deadline extension budget the subscriber runs with: the
+     * configured one, or the client library's default when it is unset.
+     *
+     * @param options the subscriber options
+     * @return the effective {@code maxAckExtensionPeriod}
+     */
+    public static Duration effectiveMaxAckExtensionPeriod(PubSubSubscriberOptions options) {
+        Duration configured = options.getMaxAckExtensionPeriod();
+        return configured != null ? configured : DEFAULT_MAX_ACK_EXTENSION_PERIOD;
+    }
+
     private final PubSubSubscriberOptions options;
     private final OrderingMode orderingMode;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;

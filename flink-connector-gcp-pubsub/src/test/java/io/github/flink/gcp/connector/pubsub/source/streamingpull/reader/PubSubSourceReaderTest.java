@@ -175,7 +175,8 @@ class PubSubSourceReaderTest {
                 new Configuration(),
                 new FakeSourceReaderContext(testMetrics.metricGroup()),
                 ackTracker,
-                detector);
+                detector,
+                null);
     }
 
     /** Accepts splits and fetches nothing, so a reader can hold a split without an emulator. */

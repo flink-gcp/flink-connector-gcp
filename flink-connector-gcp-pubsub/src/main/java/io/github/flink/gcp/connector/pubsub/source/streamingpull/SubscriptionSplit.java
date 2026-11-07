@@ -22,6 +22,9 @@ import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
+import javax.annotation.Nullable;
+
+import java.io.Serializable;
 import java.util.Objects;
 
 /**
@@ -37,24 +40,93 @@ import java.util.Objects;
  * io.github.flink.gcp.connector.pubsub.source.OrderingMode#NONE}. Under {@code PER_KEY} a
  * subscription appears in exactly one split, so that its ordering keys are never spread across
  * reader subtasks.
+ *
+ * <p>A split of the second kind, a <em>ledger chunk</em>, consumes nothing. It carries part of the
+ * restore-deduplication ledger: the ids of messages a checkpoint covers but whose acknowledgement
+ * may not have reached Pub/Sub. Readers checkpoint only ledger chunks, never consuming splits, so
+ * the enumerator stays the sole owner of consumption (ADR-0011); a reader that is handed a restored
+ * chunk forwards it to the enumerator instead of subscribing. The chunk's split id cannot collide
+ * with a consuming split's, whose uid is a plan index.
  */
 @Internal
-public final class SubscriptionSplit implements SourceSplit {
+public final class SubscriptionSplit implements SourceSplit, Serializable {
+
+    /** Serializable so that a ledger chunk can travel inside a {@link LedgerChunkEvent}. */
+    private static final long serialVersionUID = 1L;
 
     private final SubscriptionDestination subscription;
     private final String uid;
     private final String splitId;
+    private final boolean ledgerChunkKind;
 
     /**
-     * Creates a split.
+     * The encoded ids, or {@code null} for a consuming split or once released. Not final: Flink's
+     * {@code SourceOperator} keeps every restored split for the lifetime of the execution, so a
+     * restored chunk would otherwise pin its payload long after the ledger expired.
+     */
+    @Nullable private byte[] ledgerChunk;
+
+    /**
+     * Creates a consuming split.
      *
      * @param subscription the subscription to consume
      * @param uid distinguishes splits sharing a subscription; unique within one job
      */
     public SubscriptionSplit(SubscriptionDestination subscription, String uid) {
+        this(subscription, uid, null);
+    }
+
+    private SubscriptionSplit(
+            SubscriptionDestination subscription, String uid, @Nullable byte[] ledgerChunk) {
         this.subscription = Preconditions.checkNotNull(subscription, "subscription");
         this.uid = Preconditions.checkNotNull(uid, "uid");
-        this.splitId = subscription.toSubscriptionPath() + "#" + uid;
+        this.ledgerChunk = ledgerChunk;
+        this.ledgerChunkKind = ledgerChunk != null;
+        this.splitId =
+                subscription.toSubscriptionPath() + (ledgerChunk == null ? "#" : "#ledger:") + uid;
+    }
+
+    /**
+     * Creates a ledger chunk.
+     *
+     * @param subscription the subscription whose message ids the chunk holds
+     * @param uid distinguishes the chunk from every other chunk of the same checkpoint
+     * @param chunk the ids, encoded by {@link MessageIdLedgerCodec}
+     * @return the chunk split
+     */
+    public static SubscriptionSplit ledgerChunk(
+            SubscriptionDestination subscription, String uid, byte[] chunk) {
+        return new SubscriptionSplit(subscription, uid, Preconditions.checkNotNull(chunk, "chunk"));
+    }
+
+    /** Returns whether this split is a ledger chunk rather than a subscription to consume. */
+    public boolean isLedgerChunk() {
+        return ledgerChunkKind;
+    }
+
+    /**
+     * Returns the encoded ledger chunk.
+     *
+     * @throws IllegalStateException if this is a consuming split
+     */
+    public byte[] getLedgerChunk() {
+        Preconditions.checkState(ledgerChunkKind, "%s is not a ledger chunk.", splitId);
+        Preconditions.checkState(
+                ledgerChunk != null, "The payload of %s has been released.", splitId);
+        return ledgerChunk;
+    }
+
+    /**
+     * Returns a copy of this ledger chunk and drops this instance's reference to the payload, so
+     * that the instance Flink retains no longer holds it.
+     *
+     * @return a ledger chunk with the same id and payload
+     * @throws IllegalStateException if this is a consuming split or was already released
+     */
+    public SubscriptionSplit takeLedgerChunk() {
+        SubscriptionSplit copy = ledgerChunk(subscription, uid, getLedgerChunk());
+        ledgerChunk = null;
+        return copy;
     }
 
     /** Returns the subscription this split consumes. */
@@ -91,6 +163,11 @@ public final class SubscriptionSplit implements SourceSplit {
 
     @Override
     public String toString() {
-        return "SubscriptionSplit{" + splitId + "}";
+        if (!ledgerChunkKind) {
+            return "SubscriptionSplit{" + splitId + "}";
+        }
+        return ledgerChunk == null
+                ? "SubscriptionSplit{" + splitId + ", released}"
+                : "SubscriptionSplit{" + splitId + ", " + ledgerChunk.length + " ledger bytes}";
     }
 }

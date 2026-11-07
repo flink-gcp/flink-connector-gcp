@@ -23,17 +23,21 @@ import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.util.SimpleUserCodeClassLoader;
 import org.apache.flink.util.UserCodeClassLoader;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Minimal {@link SourceReaderContext} for reader unit tests.
  *
- * <p>Following the convention of {@code FakeSplitEnumeratorContext}, the coordinator-facing methods
- * throw rather than silently accepting work, so the first test that needs them has to revisit this
- * fake.
+ * <p>Source events sent to the coordinator are recorded in order. Split requests throw: the source
+ * never sends one.
  */
 final class FakeSourceReaderContext implements SourceReaderContext {
 
     private final SourceReaderMetricGroup metricGroup;
     private final Configuration configuration;
+    private final List<SourceEvent> sentEvents = new ArrayList<>();
+    private int indexOfSubtask;
 
     FakeSourceReaderContext(SourceReaderMetricGroup metricGroup) {
         this(metricGroup, new Configuration());
@@ -61,7 +65,12 @@ final class FakeSourceReaderContext implements SourceReaderContext {
 
     @Override
     public int getIndexOfSubtask() {
-        return 0;
+        return indexOfSubtask;
+    }
+
+    /** Sets the subtask index the reader sees; zero by default. */
+    void setIndexOfSubtask(int indexOfSubtask) {
+        this.indexOfSubtask = indexOfSubtask;
     }
 
     @Override
@@ -72,8 +81,12 @@ final class FakeSourceReaderContext implements SourceReaderContext {
 
     @Override
     public void sendSourceEventToCoordinator(SourceEvent sourceEvent) {
-        throw new UnsupportedOperationException(
-                "The Pub/Sub source sends no source events; add support here when it does.");
+        sentEvents.add(sourceEvent);
+    }
+
+    /** Returns the source events sent to the coordinator, in order. */
+    List<SourceEvent> sentEvents() {
+        return sentEvents;
     }
 
     @Override

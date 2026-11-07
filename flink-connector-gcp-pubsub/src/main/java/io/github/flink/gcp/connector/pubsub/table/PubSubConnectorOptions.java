@@ -320,6 +320,35 @@ public final class PubSubConnectorOptions {
                                     + " checkpoint before failing, which is how a job running"
                                     + " without checkpointing is caught. Zero disables the check.");
 
+    /**
+     * Whether a restore suppresses redeliveries of messages the restored checkpoint already covers,
+     * whose acknowledgement was lost because the job stopped before the checkpoint's completion
+     * reached the readers. Each checkpoint then records the ids of those messages.
+     */
+    public static final ConfigOption<Boolean> SCAN_RESTORE_DEDUPLICATION_ENABLED =
+            ConfigOptions.key("scan.restore-deduplication.enabled")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a restore suppresses redeliveries of messages the restored"
+                                    + " checkpoint already covers, whose acknowledgement was lost"
+                                    + " because the job stopped before the checkpoint's completion"
+                                    + " reached the readers. Each checkpoint then records the ids"
+                                    + " of those messages.");
+
+    /**
+     * How long a restored deduplication ledger is kept once the reader starts consuming. A
+     * redelivery that arrives later is emitted. Requires 'scan.restore-deduplication.enabled'.
+     */
+    public static final ConfigOption<Duration> SCAN_RESTORE_DEDUPLICATION_TTL =
+            ConfigOptions.key("scan.restore-deduplication.ttl")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a restored deduplication ledger is kept once the reader"
+                                    + " starts consuming. A redelivery that arrives later is"
+                                    + " emitted. Requires 'scan.restore-deduplication.enabled'.");
+
     // ------------------------------------------------------------------------
     //  Source — start position
     // ------------------------------------------------------------------------

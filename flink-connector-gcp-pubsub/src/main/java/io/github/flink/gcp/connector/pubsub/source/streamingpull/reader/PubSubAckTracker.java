@@ -112,7 +112,7 @@ public class PubSubAckTracker implements AckTracker {
     public synchronized void stagePendingAck(String splitId, String messageId) {
         AckHandle handle = removePendingAck(splitId, messageId);
         if (handle != null) {
-            stagedAcks.add(new TrackedAck(splitId, handle));
+            stagedAcks.add(new TrackedAck(splitId, messageId, handle));
         }
     }
 
@@ -160,6 +160,28 @@ public class PubSubAckTracker implements AckTracker {
     public synchronized void addCheckpoint(long checkpointId) {
         checkpoints.put(checkpointId, new ArrayList<>(stagedAcks));
         stagedAcks.clear();
+    }
+
+    /**
+     * Returns the ids of every message bound to a checkpoint that has not been acknowledged yet,
+     * per split. Called right after {@link #addCheckpoint(long)}, this is exactly the set the
+     * checkpoint being taken covers but whose acknowledgement could still be lost: everything
+     * emitted before its barrier, minus what earlier completions already acknowledged.
+     *
+     * <p>Received-but-unemitted messages are never included: their records are not in the
+     * checkpoint, so suppressing their redelivery after a restore would lose them.
+     *
+     * @return the message ids per split id, in binding order
+     */
+    @Override
+    public synchronized Map<String, List<String>> checkpointedMessageIds() {
+        Map<String, List<String>> ids = new LinkedHashMap<>();
+        for (List<TrackedAck> checkpointed : checkpoints.values()) {
+            for (TrackedAck ack : checkpointed) {
+                ids.computeIfAbsent(ack.splitId, key -> new ArrayList<>()).add(ack.messageId);
+            }
+        }
+        return ids;
     }
 
     @Override
@@ -252,14 +274,16 @@ public class PubSubAckTracker implements AckTracker {
         return checkpoints.size();
     }
 
-    /** An acknowledgement handle together with the split it belongs to. */
+    /** An acknowledgement handle together with the split and message it belongs to. */
     private static final class TrackedAck {
 
         private final String splitId;
+        private final String messageId;
         private final AckHandle handle;
 
-        private TrackedAck(String splitId, AckHandle handle) {
+        private TrackedAck(String splitId, String messageId, AckHandle handle) {
             this.splitId = splitId;
+            this.messageId = messageId;
             this.handle = handle;
         }
     }
