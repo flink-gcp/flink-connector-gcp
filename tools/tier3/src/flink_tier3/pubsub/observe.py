@@ -42,7 +42,19 @@ FAMILIES = {
     "source": frozenset(SOURCE_METRICS),
     "sink": frozenset(SINK_METRICS),
 }
-WANTED = frozenset(SOURCE_METRICS) | frozenset(SINK_METRICS)
+# The source's restore-deduplication readings (#2049), sampled when listed.
+# The source registers them only with the setting on, so they belong to no
+# family whose absence would leave a trial with it off inconclusive.
+DEDUPLICATION_METRICS = (
+    "redeliveriesSuppressed",
+    "ledgerEntriesExpired",
+    "ledgerEntries",
+)
+WANTED = (
+    frozenset(SOURCE_METRICS)
+    | frozenset(SINK_METRICS)
+    | frozenset(DEDUPLICATION_METRICS)
+)
 
 
 def connector_metrics(rest, vertex):

@@ -16,7 +16,7 @@
 
 import re
 
-from ..common import Failure, contains, utc
+from ..common import ApiError, Failure, TransportError, contains, utc
 from ..exercise import FAILOVERS, FAULTS, RecoveryExercise
 from ..metrics import sample, subset, unavailable
 from ..policy import PUBSUB, PUBSUB_EXERCISE, PUBSUB_STATE
@@ -27,6 +27,7 @@ from .output import OutputCollector
 from .verdict import (
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
+    REACTIVE,
     REPLACEMENTS,
     started_by_fault,
     summarize,
@@ -86,9 +87,15 @@ class PubSubExercise(RecoveryExercise):
             raise Failure("Pub/Sub exercise requires a Pub/Sub approval")
         super().__init__(env, upgrade)
         self.kind = env.approval.pubsub_trial["trial"]
-        # The Pod a replacement deletes; a rescale deletes none.
+        # A reactive kind's sizes and fault, or None.
+        self.reactive = REACTIVE.get(self.kind)
+        # The Pod a replacement or an eviction deletes; a rescale deletes none.
         self.replaced = (
-            FAULTS[self.kind].failover if self.kind in REPLACEMENTS else None
+            FAULTS[self.kind].failover
+            if self.kind in REPLACEMENTS
+            else "taskmanager"
+            if self.reactive and self.reactive["fault"] == "evict"
+            else None
         )
         self.handoff = handoff
         self.collector = OutputCollector(handoff)
@@ -100,6 +107,7 @@ class PubSubExercise(RecoveryExercise):
         self.observed = False
         self.marker = None
         self.fault = None
+        self.resized = None
 
     @property
     def recovering(self):
@@ -152,6 +160,32 @@ class PubSubExercise(RecoveryExercise):
 
     def attach_rest(self, service, job_id):
         self.track_rest(service, job_id)
+
+    def restarts(self, rest):
+        """Accept every restore of a reactive recovery; otherwise as the base does.
+
+        The reactive scheduler keeps its JobMaster and restarts the job from
+        its latest checkpoint whenever its TaskManagers change: once for a
+        scale, and twice for an eviction, down when the Pod goes and up when
+        its Deployment's replacement registers. A lost TaskManager may also
+        fail the job before its slots are released, which would add one.
+        Restores outside the recovery stay unplanned.
+        """
+        if self.reactive is None or not self.recovering:
+            super().restarts(rest)
+            return
+        restored = (rest.get("latest") or {}).get("restored")
+        if not restored:
+            return
+        at = restored.get("restore_timestamp")
+        if type(at) is not int:
+            raise Failure("Restored checkpoint has no restore time")
+        if self.last_restore and at <= self.last_restore["at"]:
+            return
+        count = (rest.get("counts") or {}).get("restored")
+        if type(count) is not int:
+            raise Failure("Checkpoint statistics have no restore count")
+        self.last_restore = {"at": at, "count": count, "stage": self.stage, "base": 0}
 
     def backlog(self):
         """Requested input not yet seen on the output subscription.
@@ -320,25 +354,39 @@ class PubSubExercise(RecoveryExercise):
         """The Pod the fault removes, or None while it cannot yet be named."""
         if self.replaced == "jobmanager":
             return self.jobmanager(pods)
+        return self.busiest(pods, replayed, required=True)
+
+    def busiest(self, pods, replayed, *, required):
+        """The running TaskManager whose attempts processed most of ``replayed``.
+
+        A ``required`` count excludes a TaskManager that processed none; an
+        eviction takes the first by name when none did yet.
+        """
         counts = {}
         for item in replayed:
             owner = self.attempts.get(item["attempt"])
             if owner:
                 counts[owner["pod_uid"]] = counts.get(owner["pod_uid"], 0) + 1
-        managers = [
-            pod
-            for pod in pods
-            if pod["metadata"]["namespace"] == self.namespace
-            and pod["metadata"].get("labels", {}).get("component") == "taskmanager"
-            and not pod["metadata"].get("deletionTimestamp")
-            and pod.get("status", {}).get("phase") == "Running"
-            and pod["metadata"]["uid"] in counts
-        ]
+        managers = sorted(
+            (
+                pod
+                for pod in pods
+                if pod["metadata"]["namespace"] == self.namespace
+                and pod["metadata"].get("labels", {}).get("component") == "taskmanager"
+                and not pod["metadata"].get("deletionTimestamp")
+                and pod.get("status", {}).get("phase") == "Running"
+                and (pod["metadata"]["uid"] in counts or not required)
+            ),
+            key=lambda pod: pod["metadata"]["name"],
+        )
         if not managers:
             return None
-        return max(managers, key=lambda pod: counts[pod["metadata"]["uid"]])
+        return max(managers, key=lambda pod: counts.get(pod["metadata"]["uid"], 0))
 
     def inject(self, pods, rest):
+        if self.reactive:
+            self.inject_reactive(pods, rest)
+            return
         if not self.collector.complete(REPLAY):
             return
         cohort = self.handoff.cohorts().get(REPLAY)
@@ -410,8 +458,130 @@ class PubSubExercise(RecoveryExercise):
                 ],
             )
 
+    def inject_reactive(self, pods, rest):
+        """Scale or evict as soon as the replay cohort is published.
+
+        The cohort's delayed records then keep the task busy while the new
+        TaskManagers come and the reactive scheduler restarts the job at the
+        next completed checkpoint, which is the window #2049's race needs.
+        Every attempt restarts, so every one is displaced; what reappears is
+        either redelivery of what the restored checkpoint had not covered,
+        which the oracle's completeness counts, or what it had covered, which
+        the oracle counts as covered redeliveries.
+        """
+        cohort = self.handoff.cohorts().get(REPLAY)
+        if not cohort or cohort["published_at"] is None:
+            return
+        jm = self.jobmanager(pods)
+        if jm is None:
+            return
+        pod = None
+        if self.replaced:
+            replayed = [
+                o for o in self.collector.observations if self.in_cohort(REPLAY, o)
+            ]
+            pod = self.busiest(pods, replayed, required=False)
+            if pod is None:
+                return
+        app = self.env.root("application")
+        if not app:
+            raise Failure("Application disappeared before completion")
+        if not self.replaced:
+            self.generation = app["metadata"]["generation"] + 1
+        before = {item["attempt"] for item in self.collector.observations}
+        latest = ((rest.get("latest") or {}).get("completed") or {}).get("id")
+        self.fault = {
+            "kind": self.kind,
+            "at": self.env.clock(),
+            "checkpoint": self.outcomes["checkpoint"]["id"],
+            "latest_completed": latest,
+            "cohort": cohort,
+            "jm_uid": jm["metadata"]["uid"],
+            "pod_uid": pod["metadata"]["uid"] if pod else None,
+            "pod": pod["metadata"]["name"] if pod else None,
+            "generation": self.generation,
+            "before": sorted(before),
+            "displaced": sorted(set(self.attempts) | before),
+            "expected_replay": [],
+        }
+        self.renew(self.fault["at"], self.timing["recovery_seconds"])
+        self.outcomes["fault"] = self.fault
+        self.persist("recovering", observed=self.summary())
+        self.check_open()
+        if pod is not None:
+            self.delete_pod(pod, FAILOVERS["taskmanager"])
+        else:
+            self.patch_upgrade(
+                app,
+                [
+                    {
+                        "op": "replace",
+                        "path": "/spec/taskManager/replicas",
+                        "value": self.upgrade["spec"]["taskManager"]["replicas"],
+                    }
+                ],
+            )
+
+    def restored_reactive(self, app, rest, pods):
+        """The checkpoint the job last restored, once it runs at the recovery size.
+
+        The reactive scheduler restores the latest checkpoint each time it
+        restarts, so the restore is the last one after the fault, and the
+        recovery is complete when every vertex runs at the kind's recovery
+        TaskManagers: after an eviction, that is the second restart.
+        """
+        restored = (rest.get("latest") or {}).get("restored") or {}
+        if restored.get("restore_timestamp", 0) / 1000 <= self.fault["at"]:
+            return None
+        if (
+            type(restored.get("id")) is not int
+            or restored.get("is_savepoint") is not False
+            or restored["id"] < self.fault["checkpoint"]
+            or not restored.get("external_path", "").startswith(
+                self.prefix("checkpoints")
+            )
+        ):
+            raise Failure("Reactive restart did not restore a retained checkpoint")
+        jm = self.jobmanager(pods)
+        if jm is None:
+            return None
+        if self.fault["jm_uid"] != jm["metadata"]["uid"]:
+            raise Failure("JobManager was replaced during a reactive recovery")
+        if self.replaced:
+            if any(pod["metadata"]["uid"] == self.fault["pod_uid"] for pod in pods):
+                return None
+        else:
+            status = app.get("status", {})
+            if (
+                status.get("observedGeneration", 0) < self.generation
+                or status.get("reconciliationStatus", {}).get("state") != "DEPLOYED"
+            ):
+                return None
+            if not contains(app["spec"], self.upgrade["spec"]):
+                raise Failure("Application differs from the approved recovery manifest")
+        try:
+            plan = self.rest.job("")
+            # The sizes are read after the poll's checkpoint statistics, so a
+            # restart between the two would pair this restore with the next
+            # restart's sizes; the restore is read again to rule that out.
+            again = (self.rest.job("/checkpoints").get("latest") or {}).get("restored")
+        except (ApiError, TransportError) as error:
+            if self.tolerate_rest(error):
+                return None
+            raise
+        sizes = {vertex.get("parallelism") for vertex in plan.get("vertices") or []}
+        if (
+            sizes != {self.reactive["recovery"]}
+            or (again or {}).get("restore_timestamp") != restored["restore_timestamp"]
+        ):
+            return None
+        self.resized = sizes.pop()
+        return restored
+
     def restored(self, app, rest, pods):
         """What the job restored after the fault, or None while it has not."""
+        if self.reactive:
+            return self.restored_reactive(app, rest, pods)
         restored = (rest.get("latest") or {}).get("restored") or {}
         if restored.get("restore_timestamp", 0) / 1000 <= self.fault["at"]:
             return None
@@ -493,6 +663,22 @@ class PubSubExercise(RecoveryExercise):
         if not started:
             return
         after = [o for o in self.collector.observations if self.restarted(o)]
+        if self.reactive:
+            self.outcomes["recovery"] = {
+                "restored": restored,
+                "replay": "restored-checkpoint",
+                # The size every vertex ran at when recovery was proven.
+                "parallelism": self.resized,
+                "restores": self.last_restore["count"] if self.last_restore else None,
+                "first_output_after_fault": (
+                    utc(min(o["at"] for o in after)) if after else None
+                ),
+                "attempts": started,
+            }
+            self.rebaseline(pods)
+            self.marker = None
+            self.request(LAST, self.timing["after_seconds"], "after")
+            return
         held = self.kind in REPLACEMENTS and restored["id"] == self.fault["checkpoint"]
         expected = {tuple(identity) for identity in self.fault["expected_replay"]}
         replays = [o for o in after if self.in_cohort(REPLAY, o)]

@@ -24,15 +24,17 @@ from flink_tier3 import render as command
 from flink_tier3.common import Failure
 from flink_tier3.model import validate_approval
 from flink_tier3.pubsub import plan
+from flink_tier3.pubsub.verdict import REACTIVE
 
 
 @pytest.fixture
 def trial():
     return {
-        "version": 5,
+        "version": 6,
         "trial": "rescale-out",
         "entry_point": "table",
         "records_per_subscription": 1000,
+        "restore_deduplication": False,
     }
 
 
@@ -70,7 +72,9 @@ def renderer(monkeypatch):
             ]
         }
 
-    def application(run_id, nonce, expiry, options, parallelism, phase):
+    def application(run_id, nonce, expiry, options, parallelism, phase, replicas=None):
+        reactive = options["pubsub_trial"] in REACTIVE
+        replicas = parallelism if replicas is None else replicas
         spec = {
             "image": options["application_image"],
             "podTemplate": {"spec": pod("smoke")},
@@ -83,12 +87,16 @@ def renderer(monkeypatch):
                     f"--parallelism={parallelism}",
                     f"--require-restored={str(phase == 'upgrade').lower()}",
                     f"--entry-point={options['pubsub_entry_point']}",
+                    "--restore-deduplication="
+                    + options["pubsub_restore_deduplication"],
+                    f"--replay-delay-millis={100 if reactive else 0}",
+                    f"--max-outstanding-messages={100000 if reactive else 1000}",
                 ],
             },
         }
-        for manager, replicas in (("jobManager", 1), ("taskManager", parallelism)):
+        for manager, count in (("jobManager", 1), ("taskManager", replicas)):
             spec[manager] = {
-                "replicas": replicas,
+                "replicas": count,
                 "resource": {"cpu": 1, "memory": "2Gi"},
                 "podTemplate": {"spec": pod("smoke")},
             }
@@ -109,17 +117,37 @@ def renderer(monkeypatch):
     def render(run_id, nonce, expiry, seconds, **options):
         calls.append((run_id, nonce, expiry, seconds, options))
         kind = options["pubsub_trial"]
-        initial = application(
-            run_id, nonce, expiry, options, 1 if kind == "rescale-out" else 2, "initial"
-        )
-        recovery = application(
-            run_id,
-            nonce,
-            expiry,
-            options,
-            1 if kind == "rescale-in" else 2,
-            "upgrade" if kind.startswith("rescale-") else "initial",
-        )
+        if kind in REACTIVE:
+            sizes = REACTIVE[kind]
+            initial = application(
+                run_id, nonce, expiry, options, sizes["initial"], "initial"
+            )
+            recovery = application(
+                run_id,
+                nonce,
+                expiry,
+                options,
+                sizes["initial"],
+                "initial",
+                sizes["recovery"],
+            )
+        else:
+            initial = application(
+                run_id,
+                nonce,
+                expiry,
+                options,
+                1 if kind == "rescale-out" else 2,
+                "initial",
+            )
+            recovery = application(
+                run_id,
+                nonce,
+                expiry,
+                options,
+                1 if kind == "rescale-in" else 2,
+                "upgrade" if kind.startswith("rescale-") else "initial",
+            )
         supervisor = pod("supervisor")
         supervisor["containers"][0]["image"] = (
             plan.GAR + "lifecycle-tools@sha256:" + "9" * 64
@@ -197,10 +225,23 @@ def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
         ("tm-replacement", (2, "initial"), (2, "initial")),
         ("rescale-out", (1, "initial"), (2, "upgrade")),
         ("rescale-in", (2, "initial"), (1, "upgrade")),
+        # A reactive kind runs one job; only the TaskManagers change.
+        ("reactive-scale-out", (2, "initial"), (2, "initial")),
+        ("reactive-scale-in", (3, "initial"), (3, "initial")),
+        ("reactive-tm-eviction", (3, "initial"), (3, "initial")),
     ],
 )
-def test_the_trial_fixes_each_manifests_job(trial, kind, initial, recovery):
-    trial.update(trial=kind, entry_point="table", records_per_subscription=40)
+@pytest.mark.parametrize("deduplication", [False, True])
+def test_the_trial_fixes_each_manifests_job(
+    trial, kind, initial, recovery, deduplication
+):
+    trial.update(
+        trial=kind,
+        entry_point="table",
+        records_per_subscription=40,
+        restore_deduplication=deduplication,
+    )
+    reactive = kind.startswith("reactive-")
     jobs = plan.manifest_jobs("run-1430", trial)
     assert jobs == tuple(
         (
@@ -212,6 +253,9 @@ def test_the_trial_fixes_each_manifests_job(trial, kind, initial, recovery):
                 f"--parallelism={parallelism}",
                 f"--require-restored={str(phase == 'upgrade').lower()}",
                 "--entry-point=table",
+                f"--restore-deduplication={str(deduplication).lower()}",
+                f"--replay-delay-millis={100 if reactive else 0}",
+                f"--max-outstanding-messages={100000 if reactive else 1000}",
             ],
         )
         for parallelism, phase in (initial, recovery)
@@ -519,9 +563,20 @@ def test_a_reviewed_trial_file_that_is_not_utf8_is_refused(tmp_path):
         plan.load_reviewed_trial(path)
 
 
-def test_the_estimate_charges_the_pod_budget_and_the_reserve():
-    # Seven Pods of 1 vCPU, 2 GiB and 1 GiB for the hour, and the reserve.
-    assert plan.estimate() == Decimal("0.987") + Decimal("1.00")
+@pytest.mark.parametrize(
+    "kind, slots",
+    [
+        ("jm-replacement", 7),
+        ("rescale-out", 7),
+        # Three TaskManagers take one application slot more.
+        ("reactive-scale-out", 8),
+        ("reactive-scale-in", 8),
+        ("reactive-tm-eviction", 8),
+    ],
+)
+def test_the_estimate_charges_the_pod_budget_and_the_reserve(kind, slots):
+    # Pods of 1 vCPU, 2 GiB and 1 GiB for the hour, at 0.141 each, and the reserve.
+    assert plan.estimate(kind) == slots * Decimal("0.141") + Decimal("1.00")
 
 
 def test_the_estimate_charges_each_slot_at_its_own_shape(monkeypatch):
@@ -531,7 +586,9 @@ def test_the_estimate_charges_each_slot_at_its_own_shape(monkeypatch):
     shapes["operator"] = {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}
     monkeypatch.setattr(plan, "POD_RESOURCES", shapes)
     # Three control slots at 0.10 more each.
-    assert plan.estimate() == Decimal("0.987") + 3 * Decimal("0.10") + Decimal("1.00")
+    assert plan.estimate("jm-replacement") == Decimal("0.987") + 3 * Decimal(
+        "0.10"
+    ) + Decimal("1.00")
 
 
 def test_the_proposal_carries_the_estimate_and_its_basis(inputs, renderer):

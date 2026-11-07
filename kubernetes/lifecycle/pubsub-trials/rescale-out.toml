@@ -15,8 +15,8 @@
 # One of the four recovery trials #1361 ran once each on the DataStream
 # entry point, with 1,000 records per subscription: 2,000 input messages.
 
-version = 5
+version = 6
 trial = "rescale-out"
 entry_point = "datastream"
 records_per_subscription = 1000
-
+restore_deduplication = false

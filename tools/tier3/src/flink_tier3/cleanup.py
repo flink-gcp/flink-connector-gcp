@@ -53,6 +53,7 @@ from .policy import (
     SYSTEM,
 )
 from .pubsub.lifecycle import require_pubsub_clean
+from .pubsub.verdict import application_pods
 from .records import require_services_clean
 from .resource import RESOURCE_SCENARIOS, require_resources_clean
 
@@ -175,7 +176,8 @@ class Cleanup:
             if admission == "supervisor":
                 pods, resources = 1, POD_RESOURCES["supervisor"]
             elif namespace == PUBSUB:
-                pods, resources = 4, sum_resources([POD_RESOURCES["smoke"]] * 4)
+                pods = application_pods(self.env.approval.pubsub_trial["trial"])
+                resources = sum_resources([POD_RESOURCES["smoke"]] * pods)
             elif namespace in (BIGQUERY, CLOUDTASKS, BIGTABLE, SPANNER):
                 # One JobManager and two TaskManagers.
                 pods, resources = 3, sum_resources([POD_RESOURCES["smoke"]] * 3)

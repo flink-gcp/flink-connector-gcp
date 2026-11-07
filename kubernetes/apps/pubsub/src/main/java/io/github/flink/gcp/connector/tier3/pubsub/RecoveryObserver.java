@@ -42,6 +42,11 @@ final class RecoveryObserver extends RichMapFunction<String, String>
     private transient ListState<String> identity;
     private transient boolean restored;
     private transient String attempt;
+    // The checkpoint this attempt restored, or zero, and the latest checkpoint whose barrier it
+    // has passed. Barriers are aligned, so a record carrying an epoch below a checkpoint's id was
+    // emitted before that checkpoint's barrier and is covered by it.
+    private transient long origin;
+    private transient long epoch;
 
     RecoveryObserver(RecoveryOptions options) {
         this.options = options;
@@ -55,13 +60,19 @@ final class RecoveryObserver extends RichMapFunction<String, String>
                                 new ListStateDescriptor<>("pubsub-run-v1", Types.STRING));
         restored = context.isRestored();
         verifyIdentity(options, restored, identity.get());
+        origin = restored ? context.getRestoredCheckpointId().orElse(0L) : 0L;
+        if (restored && origin < 1) {
+            throw new IllegalStateException("Restored Pub/Sub state names no checkpoint");
+        }
+        epoch = origin;
         attempt = UUID.randomUUID().toString();
         LOG.info(
-                "event=pubsub-attempt run_id={} phase={} attempt={} restored={}",
+                "event=pubsub-attempt run_id={} phase={} attempt={} restored={} origin={}",
                 options.runId,
                 options.phase,
                 attempt,
-                restored);
+                restored,
+                origin);
     }
 
     static void verifyIdentity(
@@ -84,13 +95,29 @@ final class RecoveryObserver extends RichMapFunction<String, String>
     }
 
     @Override
-    public String map(String value) {
-        return RecoveryPayload.observation(options, value, attempt, restored);
+    public String map(String value) throws InterruptedException {
+        if (options.replayDelayMillis > 0 && options.inReplayCohort(value)) {
+            // On the DataStream entry point the observer is chained to the source, so this keeps
+            // the source's task thread busy while the replay cohort is in flight. A checkpoint's
+            // completion notification can then queue behind a record and lose the race with a
+            // cancellation.
+            Thread.sleep(options.replayDelayMillis);
+        }
+        return RecoveryPayload.observation(
+                options,
+                value,
+                attempt,
+                restored,
+                origin,
+                epoch,
+                getRuntimeContext().getTaskInfo().getIndexOfThisSubtask(),
+                getRuntimeContext().getTaskInfo().getAttemptNumber());
     }
 
     @Override
     public void snapshotState(FunctionSnapshotContext context) throws Exception {
         identity.update(List.of(options.identity()));
+        epoch = context.getCheckpointId();
         LOG.info(
                 "event=pubsub-snapshot run_id={} phase={} attempt={} checkpoint_id={}",
                 options.runId,

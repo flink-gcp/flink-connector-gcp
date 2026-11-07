@@ -17,8 +17,8 @@
 # kubernetes/lifecycle/pubsub-trials/ so that no dispatch can name it: a file
 # there is a runnable trial, and the campaign's four trials are the files there.
 
-version = 5
+version = 6
 trial = "rescale-out"
 entry_point = "table"
 records_per_subscription = 1000
-
+restore_deduplication = false

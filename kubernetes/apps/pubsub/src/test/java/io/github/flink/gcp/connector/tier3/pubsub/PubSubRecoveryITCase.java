@@ -121,7 +121,7 @@ class PubSubRecoveryITCase {
             publish(clients, initial, 0);
             JobClient first = submit(initial, null);
             try (AutoCloseable firstCleanup = () -> cancelIfRunning(first)) {
-                collect(clients, initial, report, 2, false);
+                collect(clients, initial, report, 2, -1);
                 String savepoint =
                         first.stopWithSavepoint(
                                         false,
@@ -131,7 +131,7 @@ class PubSubRecoveryITCase {
                 publish(clients, initial, 1);
                 JobClient second = submit(upgrade, savepoint);
                 try (AutoCloseable secondCleanup = () -> cancelIfRunning(second)) {
-                    collect(clients, upgrade, report, 4, true);
+                    collect(clients, upgrade, report, 4, 1);
                     assertThat(second.getJobStatus().get(10, TimeUnit.SECONDS))
                             .isEqualTo(JobStatus.RUNNING);
                     assertThat(report.complete()).startsWith("logical_inputs=4 ");
@@ -145,7 +145,7 @@ class PubSubRecoveryITCase {
     void taskManagerLossRestoresACompletedCheckpoint(
             String entryPoint, @InjectMiniCluster MiniCluster cluster) throws Exception {
         RecoveryOptions options =
-                new RecoveryOptions("it-" + UUID.randomUUID(), 2, 2, "initial", false, entryPoint);
+                new RecoveryOptions("it-" + UUID.randomUUID(), 3, 2, "initial", false, entryPoint);
         try (PubSubTestClients clients =
                         PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
                 AutoCloseable resources = () -> deleteResources(clients, options)) {
@@ -154,9 +154,19 @@ class PubSubRecoveryITCase {
             JobClient job = submit(options, null, true);
             try (AutoCloseable jobCleanup = () -> cancelIfRunning(job)) {
                 PubSubRecoveryReport report = new PubSubRecoveryReport(options);
-                collect(clients, options, report, 2, false);
-                cluster.triggerCheckpoint(job.getJobID(), CheckpointType.FULL)
-                        .get(60, TimeUnit.SECONDS);
+                collect(clients, options, report, 2, -1);
+                long checkpoint =
+                        cluster.triggerCheckpoint(job.getJobID(), CheckpointType.FULL)
+                                .get(60, TimeUnit.SECONDS);
+                // The attempts that passed the checkpoint's barrier carry it as their epoch, which
+                // is what tells the oracle a later redelivery of this input was not covered.
+                publish(clients, options, 1);
+                for (String[] fields : collect(clients, options, report, 4, -1)) {
+                    if (fields[3].equals("1")) {
+                        assertThat(fields[8]).isEqualTo("false");
+                        assertThat(Long.parseLong(fields[10])).isGreaterThanOrEqualTo(checkpoint);
+                    }
+                }
                 // Restart both TMs so this does not depend on the scheduler's slot placement.
                 cluster.terminateTaskManager(startedTaskManagers - 2).get(10, TimeUnit.SECONDS);
                 cluster.terminateTaskManager(startedTaskManagers - 1).get(10, TimeUnit.SECONDS);
@@ -164,11 +174,18 @@ class PubSubRecoveryITCase {
                     cluster.startTaskManager();
                     startedTaskManagers++;
                 }
-                publish(clients, options, 1);
-                collect(clients, options, report, 4, true);
+                publish(clients, options, 2);
+                for (String[] fields : collect(clients, options, report, 6, 2)) {
+                    if (fields[8].equals("true")) {
+                        // A restored attempt names the checkpoint it restored, and Flink numbers
+                        // it after the attempt the TaskManager loss ended.
+                        assertThat(Long.parseLong(fields[9])).isGreaterThanOrEqualTo(checkpoint);
+                        assertThat(Integer.parseInt(fields[12])).isPositive();
+                    }
+                }
                 assertThat(job.getJobStatus().get(10, TimeUnit.SECONDS))
                         .isEqualTo(JobStatus.RUNNING);
-                assertThat(report.complete()).startsWith("logical_inputs=4 ");
+                assertThat(report.complete()).startsWith("logical_inputs=6 ");
             }
         }
     }
@@ -207,7 +224,7 @@ class PubSubRecoveryITCase {
             JobClient first = submit(initial, null);
             String savepoint;
             try (AutoCloseable firstCleanup = () -> cancelIfRunning(first)) {
-                collect(clients, initial, new PubSubRecoveryReport(initial), 2, false);
+                collect(clients, initial, new PubSubRecoveryReport(initial), 2, -1);
                 savepoint =
                         first.stopWithSavepoint(
                                         false,
@@ -352,13 +369,20 @@ class PubSubRecoveryITCase {
         }
     }
 
-    private static void collect(
+    /**
+     * Collects output until {@code count} logical inputs were seen and, unless {@code
+     * restoredSequence} is negative, until a restored attempt processed that sequence on both
+     * inputs. Returns the payload fields of every message collected.
+     */
+    private static List<String[]> collect(
             PubSubTestClients clients,
             RecoveryOptions options,
             PubSubRecoveryReport report,
             int count,
-            boolean restored)
+            int restoredSequence)
             throws Exception {
+        boolean restored = restoredSequence >= 0;
+        List<String[]> seen = new ArrayList<>();
         Set<Integer> restoredInputs = new HashSet<>();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
         await(
@@ -369,7 +393,8 @@ class PubSubRecoveryITCase {
                         String value = message.getData().toStringUtf8();
                         report.accept(message.getMessageId(), value);
                         String[] fields = value.split("\\|", -1);
-                        if (fields[3].equals("1")
+                        seen.add(fields);
+                        if (fields[3].equals(Integer.toString(restoredSequence))
                                 && fields[7].equals(options.phase)
                                 && fields[8].equals("true")) {
                             restoredInputs.add(Integer.parseInt(fields[2]));
@@ -383,6 +408,7 @@ class PubSubRecoveryITCase {
                                 + report.distinctInputs()
                                 + ", restored inputs="
                                 + restoredInputs);
+        return seen;
     }
 
     private static List<PubsubMessage> pullOutputs(

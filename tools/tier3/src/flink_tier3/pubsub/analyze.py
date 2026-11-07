@@ -314,7 +314,7 @@ def assess_runs(runs):
 def _counters(oracle):
     if not isinstance(oracle, dict) or oracle.get("rejected") is not None:
         return "-"
-    return " / ".join(str(oracle.get(name, "-")) for name in COUNTERS[1:])
+    return " / ".join(str(oracle.get(name, "-")) for name in COUNTERS[1:5])
 
 
 def render(assessments):
@@ -334,22 +334,27 @@ def render(assessments):
         "",
         (
             "| run | verdict | stored | samples | logical inputs | duplicates | "
-            "extra publications | reasons | problems |"
+            "covered redeliveries | extra publications | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracle = item["oracle"] if isinstance(item["oracle"], dict) else {}
         extra = item["extra_publications"]
         lines.append(
             "| {run} | {verdict} | {stored} | {samples} | {inputs} | {duplicates} | "
-            "{extra} | {reasons} | {problems} |".format(
+            "{covered} | {extra} | {reasons} | {problems} |".format(
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
                 samples=item["samples"],
                 inputs=oracle.get("logical_inputs", "-"),
                 duplicates=_counters(oracle),
+                covered=(
+                    "-"
+                    if oracle.get("rejected") is not None
+                    else oracle.get("covered_redeliveries", "-")
+                ),
                 extra="-" if extra is None else extra,
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",
@@ -361,7 +366,15 @@ def render(assessments):
             (
                 "Duplicates are, in order, input publication duplicates, repeated "
                 "input processing, output publication duplicates and repeated output "
-                "delivery, as the output oracle counts them; extra publications "
+                "delivery, as the output oracle counts them. Covered redeliveries "
+                "are input messages a restored attempt processed again although "
+                "an earlier run had processed them before a checkpoint barrier "
+                "in the restored checkpoint's lineage, which covered them; restore "
+                "deduplication exists to suppress them. The count is an upper "
+                "bound where the job restored one checkpoint twice and the "
+                "second restore removed a subtask, and the source's "
+                "redeliveriesSuppressed reading is its cross-check. Extra "
+                "publications "
                 "counts the runner's own receipts beyond one per input. They are "
                 "reported apart from the verdict and decide nothing."
             ),

@@ -37,12 +37,28 @@ COUNTERS = (
     "repeated_input_processing",
     "output_publication_duplicates",
     "repeated_output_delivery",
+    "covered_redeliveries",
 )
+# Long.parseLong's range, which a checkpoint id is read in.
+MAX_LONG = 2**63 - 1
 
 
 def _units(text):
     # A lone surrogate is one unit to Java's String.length(), not an error.
     return len(text.encode("utf-16-le", "surrogatepass")) // 2
+
+
+def _count(text):
+    """RecoveryPayload.count: a canonical non-negative decimal."""
+    # Long.parseLong takes one optional sign and ASCII or Unicode digits; the
+    # canonical check then refuses all but plain ASCII, as here.
+    try:
+        value = int(text)
+    except ValueError:
+        raise Failure("Payload counts must be canonical decimals") from None
+    if not 0 <= value <= MAX_LONG or str(value) != text:
+        raise Failure("Payload counts must be canonical decimals")
+    return value
 
 
 def _consistent(values, key, value):
@@ -60,6 +76,9 @@ class Report:
         self.attempts = {}
         self.input_messages = {}
         self.logical_inputs = set()
+        # Each input message's distinct observations as
+        # (origin, epoch, subtask, attempt number).
+        self.processing = {}
         self.lines = 0
 
     def _input(self, logical):
@@ -91,11 +110,14 @@ class Report:
             raise Failure("Evidence exceeds its bound or lacks an output message ID")
         fields = payload.split("|")
         if (
-            len(fields) != 9
+            len(fields) != 13
             or fields[7] not in PHASES
             or fields[8] not in ("true", "false")
             or (fields[7] == "upgrade" and fields[8] != "true")
         ):
+            raise Failure("Invalid output observation")
+        origin, epoch, subtask, number = (_count(field) for field in fields[9:13])
+        if (origin == 0) == (fields[8] == "true") or epoch < origin:
             raise Failure("Invalid output observation")
         logical = "|".join(fields[:4])
         index = self._input(logical)
@@ -107,8 +129,12 @@ class Report:
         if not (canonical_uuid(fields[5]) and canonical_uuid(fields[6])):
             raise Failure("Attempt and observation IDs must be UUIDs")
         _consistent(self.output_messages, output_message_id, payload)
+        if fields[6] not in self.observations:
+            self.processing.setdefault(f"{index}|{fields[4]}", []).append(
+                (origin, epoch, subtask, number)
+            )
         _consistent(self.observations, fields[6], payload)
-        _consistent(self.attempts, fields[5], fields[7] + "|" + fields[8])
+        _consistent(self.attempts, fields[5], "|".join((*fields[7:10], *fields[11:13])))
         _consistent(self.input_messages, f"{index}|{fields[4]}", logical)
         self.logical_inputs.add(logical)
 
@@ -126,8 +152,42 @@ class Report:
             raise Failure("Noncanonical UTF-8/base64 field")
         self.accept(*decoded)
 
+    def covered_redeliveries(self):
+        """Input messages a restored attempt processed again although covered.
+
+        PubSubRecoveryReport.coveredRedeliveries: an earlier processing is
+        covered when its origin is below the later attempt's and its epoch is
+        below the end of its own run: the first of the same subtask's next
+        attempt's origin and the next origin above its own. A restore of the
+        same checkpoint that removed a subtask is invisible to both, so the
+        count is then an upper bound.
+        """
+        origins, runs = set(), {}
+        for state in self.attempts.values():
+            _, _, origin, subtask, number = state.split("|")
+            origins.add(int(origin))
+            runs.setdefault(int(subtask), set()).add((int(origin), int(number)))
+
+        def end(origin, subtask, number, restored):
+            ends = [restored]
+            later = [run for run in runs[subtask] if run > (origin, number)]
+            if later:
+                ends.append(min(later)[0])
+            ends.extend(o for o in origins if o > origin)
+            return min(ends)
+
+        return sum(
+            any(
+                origin < restored
+                and epoch < min(end(origin, subtask, number, restored), restored)
+                for restored, *_ in seen
+                for origin, epoch, subtask, number in seen
+            )
+            for seen in self.processing.values()
+        )
+
     def counters(self):
-        """The five populations over the evidence accepted so far."""
+        """The six populations over the evidence accepted so far."""
         logical = len(self.logical_inputs)
         inputs = len(self.input_messages)
         observations = len(self.observations)
@@ -141,6 +201,7 @@ class Report:
                     observations - inputs,
                     outputs - observations,
                     self.lines - outputs,
+                    self.covered_redeliveries(),
                 ),
                 strict=True,
             )

@@ -25,8 +25,10 @@ import pytest
 from flink_tier3 import lifecycle as cli
 from flink_tier3 import repository
 from flink_tier3.common import Failure, digest
+from flink_tier3.exercise import FAULTS
 from flink_tier3.model import APPROVAL_VERSION, validate_approval
 from flink_tier3.policy import CLEANUP_SECONDS, MIB, PUBSUB, SMOKE, WINDOWS
+from flink_tier3.pubsub.verdict import REACTIVE
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_plan import FIXTURE_TRIALS
@@ -492,13 +494,26 @@ def test_the_approval_holds_a_deep_copy_of_the_trial(trial):
     assert approval["upgrade_application_sha256"] == "4" * 64
 
 
-def test_each_reviewed_trial_is_one_of_the_four_and_plans_its_input():
+def test_each_reviewed_trial_names_its_kind_and_plans_its_input():
     checkout = Path(__file__).resolve().parents[4]
     reviewed = sorted((checkout / cli.PUBSUB_TRIALS).glob("*.toml"))
     trials = {path.stem: cli.pubsub_plan.load_reviewed_trial(path) for path in reviewed}
-    assert set(trials) == set(cli.pubsub_plan.TRIALS)
+    # #1361's four, and each reactive kind of #2054 with deduplication off and on.
+    expected = {kind for kind in cli.pubsub_plan.TRIALS if kind in FAULTS} | {
+        f"{kind}-deduplication-{setting}"
+        for kind in REACTIVE
+        for setting in ("off", "on")
+    }
+    assert set(trials) == expected
     for name, reviewed_trial in trials.items():
-        assert reviewed_trial["trial"] == name
+        assert name.startswith(reviewed_trial["trial"])
         assert reviewed_trial["entry_point"] == "datastream"
-        assert reviewed_trial["records_per_subscription"] == 1000
+        if reviewed_trial["trial"] in REACTIVE:
+            assert reviewed_trial["records_per_subscription"] == 10000
+            assert name.endswith(
+                "-on" if reviewed_trial["restore_deduplication"] else "-off"
+            )
+        else:
+            assert reviewed_trial["records_per_subscription"] == 1000
+            assert reviewed_trial["restore_deduplication"] is False
         cli.pubsub_plan.input_plan("ps-1361-0001", reviewed_trial)

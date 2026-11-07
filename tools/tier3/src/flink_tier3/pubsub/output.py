@@ -24,6 +24,9 @@ from .messages import _encode, cohort_ranges
 
 PHASES = ("initial", "upgrade")
 DECIMAL = re.compile(r"0|[1-9][0-9]{0,4}")
+# A checkpoint id; Java's long bounds its value.
+CHECKPOINT = re.compile(r"0|[1-9][0-9]{0,18}")
+MAX_LONG = 2**63 - 1
 
 
 def decode(text):
@@ -48,9 +51,12 @@ def canonical_uuid(text):
 def parse(line, run_id, records):
     """One collected TSV line as the relay's observation, or None.
 
-    The application writes nine fields: version, run, input index, sequence,
-    the input message ID, the processing attempt, a fresh observation ID,
-    phase and whether the attempt restored state. Anything else, including a
+    The application writes thirteen fields: version, run, input index,
+    sequence, the input message ID, the processing attempt, a fresh
+    observation ID, phase, whether the attempt restored state, the checkpoint
+    it restored (zero for none), the latest checkpoint whose barrier it had
+    passed when it processed the input, and the subtask and attempt number
+    that processed it. Anything else, including a
     payload of another run, is not this relay's output; the collector keeps
     its line in the evidence for the oracle to refuse.
     """
@@ -61,7 +67,7 @@ def parse(line, run_id, records):
     if not message_id or payload is None:
         return None
     fields = payload.split("|")
-    if len(fields) != 9:
+    if len(fields) != 13:
         return None
     input_message_id = decode(fields[4])
     if (
@@ -75,6 +81,14 @@ def parse(line, run_id, records):
         or not canonical_uuid(fields[6])
         or fields[7] not in PHASES
         or fields[8] not in ("true", "false")
+        or not CHECKPOINT.fullmatch(fields[9])
+        or not CHECKPOINT.fullmatch(fields[10])
+        or (fields[9] == "0") == (fields[8] == "true")
+        or int(fields[10]) < int(fields[9])
+        or int(fields[10]) > MAX_LONG
+        or not CHECKPOINT.fullmatch(fields[11])
+        or not CHECKPOINT.fullmatch(fields[12])
+        or max(int(fields[11]), int(fields[12])) > MAX_LONG
     ):
         return None
     return {
@@ -86,6 +100,10 @@ def parse(line, run_id, records):
         "observation": fields[6],
         "phase": fields[7],
         "restored": fields[8] == "true",
+        "origin": int(fields[9]),
+        "epoch": int(fields[10]),
+        "subtask": int(fields[11]),
+        "attempt_number": int(fields[12]),
     }
 
 

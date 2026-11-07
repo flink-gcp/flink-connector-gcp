@@ -41,7 +41,13 @@ class RecoveryContractTest {
     @ValueSource(
             strings = {
                 "--unknown=a",
-                "--parallelism=3",
+                "--parallelism=4",
+                "--parallelism=0",
+                "--restore-deduplication=yes",
+                "--replay-delay-millis=-1",
+                "--replay-delay-millis=1001",
+                "--max-outstanding-messages=0",
+                "--max-outstanding-messages=100001",
                 "--records-per-subscription=0",
                 "--records-per-subscription=10001",
                 "--phase=upgrade",
@@ -193,11 +199,42 @@ class RecoveryContractTest {
     void eachProcessingCallHasItsOwnIdWithoutChangingLogicalAndServiceIdentity() {
         String input = "v1|run-1|0|0|" + RecoveryPayload.encode("input-1");
         String attempt = UUID.randomUUID().toString();
-        String first = RecoveryPayload.observation(options, input, attempt, false);
-        String second = RecoveryPayload.observation(options, input, attempt, false);
+        String first = RecoveryPayload.observation(options, input, attempt, false, 0, 2, 1, 0);
+        String second = RecoveryPayload.observation(options, input, attempt, false, 0, 2, 1, 0);
         assertThat(first)
                 .startsWith(input + "|" + attempt + "|")
-                .endsWith("|initial|false")
+                .endsWith("|initial|false|0|2|1|0")
                 .isNotEqualTo(second);
+    }
+
+    @Test
+    void theReplayCohortIsTheMiddleThirdOfEachInput() {
+        RecoveryOptions ten = new RecoveryOptions("run-1", 10, 1, "initial", false, "datastream");
+        String tagged = "|" + RecoveryPayload.encode("m");
+        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 1, 2) + tagged)).isFalse();
+        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 1, 3) + tagged)).isTrue();
+        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 0, 5) + tagged)).isTrue();
+        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 0, 6) + tagged)).isFalse();
+    }
+
+    @Test
+    void parsesTheDeduplicationTrialArguments() {
+        RecoveryOptions parsed =
+                RecoveryOptions.parse(
+                        new String[] {
+                            "--run-id=run-1",
+                            "--parallelism=3",
+                            "--restore-deduplication=true",
+                            "--replay-delay-millis=20",
+                            "--max-outstanding-messages=100000"
+                        });
+        assertThat(parsed.parallelism).isEqualTo(3);
+        assertThat(parsed.restoreDeduplication).isTrue();
+        assertThat(parsed.replayDelayMillis).isEqualTo(20);
+        assertThat(parsed.maxOutstandingMessages).isEqualTo(100000);
+        RecoveryOptions defaults = RecoveryOptions.parse(new String[] {"--run-id=run-1"});
+        assertThat(defaults.restoreDeduplication).isFalse();
+        assertThat(defaults.replayDelayMillis).isZero();
+        assertThat(defaults.maxOutstandingMessages).isEqualTo(1000);
     }
 }

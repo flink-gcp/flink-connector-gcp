@@ -36,6 +36,7 @@ from flink_tier3.lifecycle import bind
 from flink_tier3.model import Approval, validate_approval
 from flink_tier3.policy import GAR, POD_RESOURCES
 from flink_tier3.pubsub import plan as pubsub_plan
+from flink_tier3.pubsub import verdict as pubsub_verdict
 
 KUBERNETES = Path(__file__).resolve().parents[1]
 CUE = shutil.which("cue")
@@ -1839,6 +1840,9 @@ def test_pubsub_recovery_deployment_contract(
         f"--parallelism={parallelism}",
         f"--require-restored={str(phase == 'upgrade').lower()}",
         f"--entry-point={entry_point}",
+        "--restore-deduplication=false",
+        "--replay-delay-millis=0",
+        "--max-outstanding-messages=1000",
     ]
     config = spec["flinkConfiguration"]
     assert config["taskmanager.numberOfTaskSlots"] == "1"
@@ -1888,7 +1892,7 @@ def test_pubsub_recovery_deployment_contract(
         {"recordsPerSubscription": 10001},
         {"recordsPerSubscription": "1"},
         {"parallelism": 0},
-        {"parallelism": 3},
+        {"parallelism": 4},
         {"parallelism": "1"},
         {"entryPoint": "sql"},
         {"entryPoint": "Table"},
@@ -1959,7 +1963,7 @@ def test_pubsub_delivery_cannot_override_recovery_contract(module, override):
     assert not invalid.stdout.strip()
 
 
-@pytest.mark.parametrize("parallelism", [1, 2])
+@pytest.mark.parametrize("parallelism", [1, 2, 3])
 def test_pubsub_namespace_policy_without_application_package(module, parallelism):
     document = workload()
     document["run"]["namespace"] = "tier3-pubsub"
@@ -1975,7 +1979,7 @@ def test_pubsub_namespace_policy_without_application_package(module, parallelism
     for override in [
         {"serviceAccount": "smoke"},
         {"flinkVersion": "v1_20"},
-        {"job": {"parallelism": 3}},
+        {"job": {"parallelism": 4}},
     ]:
         leaf(
             module,
@@ -2153,6 +2157,76 @@ def test_every_scenario_renders_each_fault_kinds_sizes(
         flags = " ".join(app["spec"]["job"]["args"]).replace("=", " ")
         assert f"--phase {rendered} " in flags
         assert re.search(rf"--(sink-)?parallelism {size}( |$)", flags), flags
+
+
+def test_the_pubsub_reactive_kinds_are_the_verdict_table(module):
+    """The CUE copy of `REACTIVE` and its constants, so a change to one fails here."""
+    result = lifecycle_export(
+        module,
+        "[pubsubReactiveKinds, pubsubReactiveReplayDelayMillis, "
+        "pubsubReactiveMaxOutstanding]",
+    )
+    assert result.returncode == 0, result.stderr
+    kinds, delay, outstanding = json.loads(result.stdout)
+    assert kinds == {
+        name: {"initial": size["initial"], "recovery": size["recovery"]}
+        for name, size in pubsub_verdict.REACTIVE.items()
+    }
+    assert delay == pubsub_verdict.REACTIVE_REPLAY_DELAY_MILLIS
+    assert outstanding == pubsub_verdict.REACTIVE_MAX_OUTSTANDING
+
+
+@pytest.mark.parametrize("deduplication", ["false", "true"])
+@pytest.mark.parametrize("name", list(pubsub_verdict.REACTIVE))
+def test_a_reactive_pubsub_kind_renders_standalone_reactive_manifests(
+    module, name, deduplication
+):
+    """Both manifests run one reactive job; only the TaskManagers differ."""
+    sizes = pubsub_verdict.REACTIVE[name]
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication]",
+        "pubsub-recovery",
+        run_id="proposal-2055",
+        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        pubsub_trial=name,
+        pubsub_restore_deduplication=deduplication,
+    )
+    assert result.returncode == 0, result.stderr
+    initial, recovery = json.loads(result.stdout)
+    for app, replicas in ((initial, sizes["initial"]), (recovery, sizes["recovery"])):
+        spec = app["spec"]
+        assert spec["mode"] == "standalone"
+        assert spec["flinkConfiguration"]["scheduler-mode"] == "reactive"
+        assert spec["taskManager"]["replicas"] == replicas
+        assert spec["job"]["parallelism"] == sizes["initial"]
+        assert spec["job"]["args"][-3:] == [
+            f"--restore-deduplication={deduplication}",
+            f"--replay-delay-millis={pubsub_verdict.REACTIVE_REPLAY_DELAY_MILLIS}",
+            f"--max-outstanding-messages={pubsub_verdict.REACTIVE_MAX_OUTSTANDING}",
+        ]
+    # The patch the exercise applies is all that separates them.
+    recovery["spec"]["taskManager"]["replicas"] = sizes["initial"]
+    assert recovery == initial
+
+
+def test_a_native_pubsub_kind_keeps_native_mode_and_the_default_flow_control(module):
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication]",
+        "pubsub-recovery",
+        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        pubsub_trial="tm-replacement",
+    )
+    assert result.returncode == 0, result.stderr
+    for app in json.loads(result.stdout):
+        assert app["spec"]["mode"] == "native"
+        assert "scheduler-mode" not in app["spec"]["flinkConfiguration"]
+        assert app["spec"]["job"]["args"][-3:] == [
+            "--restore-deduplication=false",
+            "--replay-delay-millis=0",
+            "--max-outstanding-messages=1000",
+        ]
 
 
 @pytest.mark.parametrize("trial", ["rescale", "none", ""])
@@ -2382,10 +2456,11 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
         revision="b" * 40,
         application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         trial={
-            "version": 5,
+            "version": 6,
             "trial": "jm-replacement",
             "entry_point": "datastream",
             "records_per_subscription": 1000,
+            "restore_deduplication": False,
         },
     )
     probe = bundle["delivery"]["probe"]
@@ -2442,10 +2517,11 @@ def test_pubsub_approval_binds_the_real_cue_delivery(
     monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
     pubsub_trial = {
-        "version": 5,
+        "version": 6,
         "trial": trial,
         "entry_point": entry_point,
         "records_per_subscription": 1000,
+        "restore_deduplication": False,
     }
     application_image = GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST
     bundle = pubsub_plan.prepare(
@@ -2543,10 +2619,11 @@ def test_pubsub_proposal_from_real_cue(
         "revision": "b" * 40,
         "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         "trial": {
-            "version": 5,
+            "version": 6,
             "trial": trial,
             "entry_point": entry_point,
             "records_per_subscription": records,
+            "restore_deduplication": False,
         },
     }
     bundle = pubsub_plan.prepare(**inputs)
@@ -2563,7 +2640,7 @@ def test_pubsub_proposal_from_real_cue(
     assert f"--phase={phase}" in recovery["spec"]["job"]["args"]
     for app in (initial, recovery):
         # The entry point is fixed across phases: state from one variant cannot restore the other.
-        assert app["spec"]["job"]["args"][-1] == f"--entry-point={entry_point}"
+        assert app["spec"]["job"]["args"][5] == f"--entry-point={entry_point}"
     assert (initial == recovery) == trial.endswith("replacement")
     for app in (initial, recovery):
         assert app["metadata"]["namespace"] == "tier3-pubsub"

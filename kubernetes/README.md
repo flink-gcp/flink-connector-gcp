@@ -121,7 +121,7 @@ The root supplies common project labels.
 `runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-bigquery`, `tier3-pubsub`, `tier3-cloudtasks`, `tier3-bigtable` or `tier3-spanner`) to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism one or two and `v2_2`.
-The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one or two and `v2_2`.
+The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one to three and `v2_2`; three is for the reactive trials.
 In `tier3-bigtable` it requires the `bigtable` ServiceAccount, the `bigtable-recovery` GAR package, parallelism one or two and `v2_2`.
 In `tier3-spanner` it requires the `spanner` ServiceAccount, the `spanner-recovery` GAR package, parallelism one or two and `v2_2`.
 The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its [offline proposal](apps/pubsub/README.md#offline-trial-proposal) renders a reviewable delivery, and [dispatch](apps/pubsub/README.md#approval-dispatch) runs a reviewed trial through the runner's [admission](apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](apps/pubsub/README.md#recovery-exercise).

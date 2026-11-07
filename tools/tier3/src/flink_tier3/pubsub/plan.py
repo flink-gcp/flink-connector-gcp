@@ -28,8 +28,16 @@ from ..workflow import render
 from .access import probe_spec
 from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
 from .resources import ResourcePlan
+from .verdict import (
+    MAX_OUTSTANDING,
+    REACTIVE,
+    REACTIVE_MAX_OUTSTANDING,
+    REACTIVE_REPLAY_DELAY_MILLIS,
+    application_pods,
+    sizes,
+)
 
-TRIALS = tuple(FAULTS)
+TRIALS = (*FAULTS, *REACTIVE)
 ENTRY_POINTS = ("datastream", "table")
 WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
@@ -37,8 +45,14 @@ ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 # pages: the basis of the number the owner approves, not an admission deadline.
 REVIEWED_AT = "2026-10-10T00:00:00Z"
 RESERVE_USD = Decimal("1.00")
-VERSION = 5
-FIELDS = {"version", "trial", "entry_point", "records_per_subscription"}
+VERSION = 6
+FIELDS = {
+    "version",
+    "trial",
+    "entry_point",
+    "records_per_subscription",
+    "restore_deduplication",
+}
 
 
 def validate_trial(value):
@@ -54,21 +68,26 @@ def validate_trial(value):
         raise Failure("Unknown Pub/Sub trial")
     if value["entry_point"] not in ENTRY_POINTS:
         raise Failure("Unknown Pub/Sub entry point")
+    if type(value["restore_deduplication"]) is not bool:
+        raise Failure("Invalid Pub/Sub trial field: restore_deduplication")
 
 
-def estimate():
+def estimate(kind):
     """Planning estimate for one trial; not a bound on bills or SDK retries.
 
-    It is the same for every trial. It charges the seven Pod slots the
-    admission quotas hold for the whole window, the four application slots at
-    the Flink shape and the three control slots at the Operator's, which is
+    It charges the Pod slots the admission quotas hold for the whole window:
+    the application's at the Flink shape, four for a kind that runs at most
+    two TaskManagers and five for one that runs three, and the three control
+    slots at the Operator's, which is
     at least the supervisor's, with no Spot or commitment discount. The
     reserve covers what the input domain and the window bound: Pub/Sub
     throughput, Cloud Storage operations and storage, Cloud Logging ingestion
     and the logs and evidence leaving Google Cloud, each a fraction of it at
     the largest input domain and the exercise's pulls over the whole window.
     """
-    shapes = [POD_RESOURCES["smoke"]] * 4 + [POD_RESOURCES["operator"]] * 3
+    shapes = [POD_RESOURCES["smoke"]] * application_pods(kind) + [
+        POD_RESOURCES["operator"]
+    ] * 3
     compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
     return compute + RESERVE_USD
 
@@ -185,15 +204,24 @@ def manifest_jobs(run_id, trial):
 
     Replacement trials keep both manifests at parallelism two; a rescale trial
     changes one to two or two to one and requires restored state in the
-    upgrade phase.
+    upgrade phase. A reactive trial's manifests run the same job, whose
+    parallelism the reactive scheduler takes from the TaskManagers rather
+    than from either, so its recovery manifest changes only the replica count.
     """
     validate_trial(trial)
-    fault = FAULTS[trial["trial"]]
+    kind = trial["trial"]
+    reactive = kind in REACTIVE
+    initial, recovery = sizes(kind)
+    if reactive:
+        steps = ((initial, "initial"), (initial, "initial"))
+    else:
+        rescale = FAULTS[kind].rescale
+        steps = (
+            (initial, "initial"),
+            (recovery, "initial" if rescale is None else "upgrade"),
+        )
     jobs = []
-    for parallelism, phase in (
-        (fault.initial, "initial"),
-        (fault.upgrade, "initial" if fault.rescale is None else "upgrade"),
-    ):
+    for parallelism, phase in steps:
         jobs.append(
             (
                 parallelism,
@@ -204,6 +232,12 @@ def manifest_jobs(run_id, trial):
                     f"--parallelism={parallelism}",
                     f"--require-restored={str(phase == 'upgrade').lower()}",
                     f"--entry-point={trial['entry_point']}",
+                    "--restore-deduplication="
+                    + str(trial["restore_deduplication"]).lower(),
+                    "--replay-delay-millis="
+                    + str(REACTIVE_REPLAY_DELAY_MILLIS if reactive else 0),
+                    "--max-outstanding-messages="
+                    + str(REACTIVE_MAX_OUTSTANDING if reactive else MAX_OUTSTANDING),
                 ],
             )
         )
@@ -276,13 +310,12 @@ def prepare(
         pubsub_trial=trial["trial"],
         pubsub_records=records,
         pubsub_entry_point=trial["entry_point"],
+        pubsub_restore_deduplication=str(trial["restore_deduplication"]).lower(),
         pubsub_probe=probe_argument(resources, schedule),
         pubsub_probe_source=probe_command()[3],
     )
     require_trial_jobs(run_id, trial, initial, recovery)
-    for application, (parallelism, _) in zip(
-        (initial, recovery), manifest_jobs(run_id, trial)
-    ):
+    for application, replicas in zip((initial, recovery), sizes(trial["trial"])):
         metadata = application["metadata"]
         annotations = metadata.get("annotations", {})
         if (
@@ -296,8 +329,8 @@ def prepare(
         if spec["image"] != application_image:
             raise Failure("Rendered application differs from the Pub/Sub trial")
         _pod(spec["podTemplate"]["spec"], "smoke")
-        for manager, replicas in (("jobManager", 1), ("taskManager", parallelism)):
-            if spec[manager]["replicas"] != replicas or spec[manager]["resource"] != {
+        for manager, count in (("jobManager", 1), ("taskManager", replicas)):
+            if spec[manager]["replicas"] != count or spec[manager]["resource"] != {
                 "cpu": 1,
                 "memory": "2Gi",
             }:
@@ -352,7 +385,7 @@ def prepare(
         },
         "cost": {
             "kind": "planning-estimate",
-            "usd": str(estimate()),
+            "usd": str(estimate(trial["trial"])),
             "reviewed_at": REVIEWED_AT,
             "other_reserve_usd": str(RESERVE_USD),
         },

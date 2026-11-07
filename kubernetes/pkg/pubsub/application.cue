@@ -22,8 +22,20 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 		image:                  string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/pubsub-recovery@sha256:[0-9a-f]{64}$"
 		phase:                  *"initial" | "upgrade"
 		recordsPerSubscription: *1000 | (int & >=1 & <=10000)
-		parallelism:            *1 | 2
+		parallelism:            *1 | 2 | 3
 		entryPoint:             *"datastream" | "table"
+		// The reactive kinds (#2055) run in the Operator's standalone mode under Flink's
+		// reactive scheduler, whose parallelism follows the TaskManagers rather than the job's,
+		// so a change to `taskManagers` alone rescales the job in place from its latest
+		// checkpoint. Every other kind runs in native mode at `parallelism` TaskManagers.
+		reactive:     *false | bool
+		taskManagers: int & >=1 & <=3
+		if !reactive {
+			taskManagers: parallelism
+		}
+		restoreDeduplication:   *false | bool
+		replayDelayMillis:      *0 | (int & >=0 & <=1000)
+		maxOutstandingMessages: *1000 | (int & >=1 & <=100000)
 	}
 	let storage = "gs://flink-gcp-tier3-pubsub/runs/\(run.id)"
 	let containerResources = {
@@ -36,8 +48,15 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 			image:          run.image
 			flinkVersion:   "v2_2"
 			serviceAccount: "pubsub"
-			mode:           "native"
+			mode: [if run.reactive {"standalone"}, "native"][0]
 			flinkConfiguration: {
+				if run.reactive {
+					"scheduler-mode": "reactive"
+					// Reactive mode wants every TaskManager it can get, so it starts the job after
+					// this wait rather than when the initial ones have registered. A TaskManager
+					// that came after the first checkpoint would restart the job before the fault.
+					"jobmanager.adaptive-scheduler.submission.resource-stabilization-timeout": "120 s"
+				}
 				"taskmanager.numberOfTaskSlots":                               "1"
 				"kubernetes.operator.job.upgrade.last-state-fallback.enabled": "false"
 				"kubernetes.operator.snapshot.resource.enabled":               "false"
@@ -58,7 +77,7 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 				"restart-strategy.fixed-delay.delay":                          "10 s"
 			}
 			jobManager: replicas:  1
-			taskManager: replicas: run.parallelism
+			taskManager: replicas: run.taskManagers
 			for manager in ["jobManager", "taskManager"] {
 				"\(manager)": {
 					resource: {cpu: 1, memory: "2Gi"}
@@ -82,7 +101,10 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 					"--records-per-subscription=\(run.recordsPerSubscription)",
 					"--parallelism=\(run.parallelism)",
 					"--require-restored=\(run.phase == "upgrade")",
-					"--entry-point=\(run.entryPoint)"]
+					"--entry-point=\(run.entryPoint)",
+					"--restore-deduplication=\(run.restoreDeduplication)",
+					"--replay-delay-millis=\(run.replayDelayMillis)",
+					"--max-outstanding-messages=\(run.maxOutstandingMessages)"]
 			}
 		}
 	}
