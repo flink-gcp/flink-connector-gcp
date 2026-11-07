@@ -59,7 +59,7 @@ class FirestoreTableFilterPushDownITCase extends AbstractFirestoreEmulatorITCase
 
     private static final String COLUMNS =
             "s STRING, n BIGINT, d DOUBLE, b BOOLEAN, y BYTES, ts TIMESTAMP_LTZ(6), c CHAR(3),"
-                    + " bin BINARY(2), e ROW<x BIGINT, flag BOOLEAN>,"
+                    + " bin BINARY(2), e ROW<x BIGINT, flag BOOLEAN>, ts3 TIMESTAMP_LTZ(3),"
                     + " path STRING METADATA FROM 'document-path' VIRTUAL";
 
     private static final Timestamp TIME = Timestamp.ofTimeSecondsAndNanos(1_000, 123_456_000);
@@ -70,7 +70,7 @@ class FirestoreTableFilterPushDownITCase extends AbstractFirestoreEmulatorITCase
     static void writeDocuments() throws Exception {
         collection = uniqueCollection();
         Map<String, Object> nulls = new HashMap<>();
-        for (String field : List.of("s", "n", "d", "b", "y", "ts", "c", "bin", "e")) {
+        for (String field : List.of("s", "n", "d", "b", "y", "ts", "c", "bin", "e", "ts3")) {
             nulls.put(field, null);
         }
         write("missing", Map.of());
@@ -128,10 +128,45 @@ class FirestoreTableFilterPushDownITCase extends AbstractFirestoreEmulatorITCase
         write("notmap", Map.of("e", "x"));
         write("maps", Map.of("e", List.of(Map.of("x", 1L, "flag", true))));
         write("dotted", Map.of("e.x", 1L, "e.flag", true));
-        // Near misses of the id the id tests filter on.
-        for (String id : List.of("matc", "match ", "MATCH")) {
+        // Near misses of the id the id tests filter on, and ids UTF-16 orders unlike UTF-8.
+        for (String id : List.of("matc", "match ", "MATCH", "\uFFFD", "\uD83D\uDE00")) {
             write(id, Map.of("s", "y"));
         }
+        // Range neighbours: strings and bytes UTF-16 or signed bytes would order otherwise, an
+        // integer under DOUBLE above and below the literals, and millisecond-column timestamps
+        // inside, at the end of, and either side of the millisecond 1000.123.
+        write(
+                "low",
+                Map.of(
+                        "n",
+                        3L,
+                        "d",
+                        7L,
+                        "s",
+                        "\uFFFD",
+                        "y",
+                        Blob.fromBytes(new byte[] {0x7f}),
+                        "ts3",
+                        TIME,
+                        "e",
+                        Map.of("x", 0L)));
+        write(
+                "high",
+                Map.of(
+                        "n",
+                        7L,
+                        "d",
+                        -1.5d,
+                        "s",
+                        "\uD83D\uDE00",
+                        "y",
+                        Blob.fromBytes(new byte[] {(byte) 0x80}),
+                        "ts3",
+                        Timestamp.ofTimeSecondsAndNanos(1_000, 123_999_000),
+                        "e",
+                        Map.of("x", 2L)));
+        write("next", Map.of("ts3", Timestamp.ofTimeSecondsAndNanos(1_000, 124_000_000)));
+        write("before", Map.of("ts3", Timestamp.ofTimeSecondsAndNanos(1_000, 122_999_000)));
     }
 
     private static void write(String id, Map<String, Object> fields) throws Exception {
@@ -152,7 +187,10 @@ class FirestoreTableFilterPushDownITCase extends AbstractFirestoreEmulatorITCase
                         + collection
                         + "', 'type-mismatch-policy' = '"
                         + policy
-                        + "'";
+                        + "'"
+                        // Pages of two documents, so a scan resumes at a cursor, which an
+                        // inequality orders by its field first.
+                        + ", 'scan.max-rows-per-fetch' = '2'";
         table.executeSql("CREATE TABLE pushed (" + COLUMNS + ") WITH (" + common + ")");
         table.executeSql(
                 "CREATE TABLE keyed (id STRING, "
@@ -218,6 +256,111 @@ class FirestoreTableFilterPushDownITCase extends AbstractFirestoreEmulatorITCase
                 .containsPattern("filter=\\[[^\\]]");
         assertThat(ids(table, "pushed", predicate))
                 .containsExactlyInAnyOrderElementsOf(ids(table, "unpushed", predicate));
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "n > 4",
+                "n >= 5",
+                "n < 5",
+                "n <= 5",
+                "n <> 5",
+                "n BETWEEN 1 AND 6",
+                "d > 5",
+                "d >= 5",
+                "d < 5.5",
+                "d <= 0",
+                "d <> 5",
+                "s > 'x'",
+                "s > 'z'",
+                "s < 'x '",
+                "y > x'7f'",
+                "y < x'80'",
+                "b > FALSE",
+                "ts > CAST(TIMESTAMP '1970-01-01 00:16:40.123456' AS TIMESTAMP_LTZ(6))",
+                "ts <= CAST(TIMESTAMP '1970-01-01 00:16:40.123456' AS TIMESTAMP_LTZ(6))",
+                "ts3 = CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 <= CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 > CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 < CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 >= CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "e.x > 0",
+                "s IS NOT NULL",
+                "n IS NOT NULL",
+                "d IS NOT NULL",
+                "ts IS NOT NULL",
+                "e.x IS NOT NULL",
+                "s IN ('x', 'x ')",
+                "n IN (5, 0)",
+                "d IN (5, 5.5)",
+                "e.x IN (1, 2)",
+                "n NOT IN (5, 7)",
+                "s = 'x' AND n > 4",
+                "n > 4 AND d > 1"
+            })
+    void aPushedComparisonReturnsTheRowsFlinksFilterKeeps(String predicate) throws Exception {
+        TableEnvironment table = tables("null");
+
+        assertThat(table.explainSql("SELECT path FROM pushed WHERE " + predicate))
+                .containsPattern("filter=\\[[^\\]]");
+        assertThat(ids(table, "pushed", predicate))
+                .containsExactlyInAnyOrderElementsOf(ids(table, "unpushed", predicate));
+    }
+
+    @Test
+    void theOracleSeesWhatTheComparisonsShouldAndShouldNotMatch() throws Exception {
+        // Firing control for the comparison above: the rows a narrower service match would miss.
+        TableEnvironment table = tables("null");
+
+        // An integer under DOUBLE, 5 and 7, beside the doubles 5.0 and 5.5.
+        assertThat(ids(table, "unpushed", "d >= 5"))
+                .containsExactlyInAnyOrder(id("match"), id("numbers"), id("fraction"), id("low"));
+        assertThat(ids(table, "unpushed", "d <= 0"))
+                .containsExactlyInAnyOrder(id("zero"), id("high"));
+        // U+FFFD and a supplementary character, which UTF-8 and UTF-16 order unlike each other,
+        // both above a literal below U+D800.
+        assertThat(ids(table, "unpushed", "s > 'z'"))
+                .containsExactlyInAnyOrder(id("low"), id("high"));
+        // Unsigned bytes order 0x80 after 0x7f; signed bytes would not.
+        assertThat(ids(table, "unpushed", "y > x'7f'")).containsExactly(id("high"));
+        // Every value read as 1000.123 at millisecond precision, and none of its neighbours.
+        assertThat(
+                        ids(
+                                table,
+                                "unpushed",
+                                "ts3 = CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS"
+                                        + " TIMESTAMP_LTZ(3))"))
+                .containsExactlyInAnyOrder(id("low"), id("high"));
+        assertThat(
+                        ids(
+                                table,
+                                "unpushed",
+                                "ts3 <= CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS"
+                                        + " TIMESTAMP_LTZ(3))"))
+                .containsExactlyInAnyOrder(id("low"), id("high"), id("before"));
+        assertThat(ids(table, "unpushed", "n <> 5"))
+                .containsExactlyInAnyOrder(id("zero"), id("low"), id("high"));
+        assertThat(ids(table, "unpushed", "n IN (5, 0)"))
+                .containsExactlyInAnyOrder(id("match"), id("zero"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"> 'match'", "<= 'match'", "> 'z'", "< 'm'"})
+    void aPushedDocumentIdRangeReturnsTheDocumentsFlinksFilterKeeps(String range) throws Exception {
+        TableEnvironment table = tables("null");
+
+        assertThat(table.explainSql("SELECT path FROM keyed WHERE id " + range))
+                .containsPattern("filter=\\[[^\\]]");
+        assertThat(ids(table, "keyed", "id " + range))
+                .isNotEmpty()
+                .containsExactlyInAnyOrderElementsOf(
+                        ids(
+                                table,
+                                "unpushed",
+                                "SUBSTRING(path FROM " + (collection.length() + 2) + ") " + range));
+        assertThat(ids(table, "keyed", "id IN ('match', 'MATCH', 'absent')"))
+                .containsExactlyInAnyOrder(id("match"), id("MATCH"));
     }
 
     @Test

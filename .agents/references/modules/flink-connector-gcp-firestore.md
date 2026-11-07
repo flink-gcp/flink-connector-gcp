@@ -186,22 +186,41 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   so never remove a predicate from the residual, and never push a shape whose filter could drop a
   document Flink keeps. A new type or operator needs its matching measured on the emulator, a
   Standard- and an Enterprise-edition database (the editions differ for `!=`) before it is pushed.
-- **The search for equalities is shared** (`firestore.common.table.EqualityMatcher`, #2066): `AND`
-  flattening, either-way-round `=`, bare `BOOLEAN`/`NOT`, and nested paths, which it refuses below
-  a nullable `ROW` for a `NOT NULL` field. Column checks and value mapping stay per mode; a shape
-  change that both modes take goes in the matcher, and both plan tests pin it.
+- **The search for comparisons is shared** (`firestore.common.table.PredicateMatcher`, #2066,
+  widened by #2076): `AND` flattening, either-way-round `=`/`<>`/`<`/`<=`/`>`/`>=`, bare
+  `BOOLEAN`/`NOT`, `IS NOT NULL`, an `OR` of equalities on one reference (`IN`), nested paths
+  (refused below a nullable `ROW` for a `NOT NULL` field), one `<>` or `IS NOT NULL` per query, and
+  at most 30 disjuncts counted by `Translator.width` (a Datastore integral-`DOUBLE` `IN` counts its
+  values). `TimestampBound` (truncated reads as whole-microsecond bounds) and `OrderedStrings`
+  (a string range only under a literal below U+D800) are shared too. Column checks and value
+  mapping stay per mode; a shape change that both modes take goes in the matcher, and both plan
+  tests pin it.
+- **Never push a string or id range whose literal has a char >= U+D800**: Flink compares two Java
+  strings by UTF-16 code units (`BinaryStringData.compareTo`), the service by UTF-8 bytes (#2076).
+- **Index requirements are the service's** (owner, #2076): do not add logic predicting composite
+  indexes; a refusal fails at job start. Native `scan.filter-push-down.enabled` (default `true`) is
+  the off switch; off, only an id equality or `IN` is pushed.
 - Pushed since #2066: the document id (`FieldPath.documentId()`, only a value
   `FirestoreDocumentLookups.isStorableId` accepts), `ROW` fields as `FieldPath.of(segments)`
-  (never through a geo point, never a reference-marked path), and CHAR/BINARY, which the planner
-  presents bare only beside a literal of the column's length.
-- Declined on purpose: reference-marked columns, TIMESTAMP_LTZ below precision 6 (the converter
-  truncates), `IS NULL` (a missing field matches nothing), strings or bytes over 1,500 bytes,
-  inequalities, OR/IN (#2066's undecided list), and collection-group scans (Standard needs a
-  collection-group index; `PartitionQuery` takes no filter). `ARRAY_CONTAINS` never reaches
-  `applyFilters` on Flink 1.20.5 or 2.2.1.
+  (never through a geo point, never a reference-marked path), and CHAR/BINARY (`=` and
+  `IS NOT NULL` only), which the planner presents bare only beside a literal of the column's
+  length. Since #2076: ranges, `<>`, `IS NOT NULL` (scalars only) and `IN` on fields; `=`, `IN`
+  and ranges on the id; coarse TIMESTAMP_LTZ as covering bounds.
+- **An inequality's field must stay in the mask** (`FirestoreCollectionQueryFactory`):
+  `startAfter` takes the ordered field from the last document.
+- **Never send Native `!=` or `!= null`**: Enterprise returns documents lacking the field, from
+  which no cursor can be taken (the planner probe and every later page take one). `<>` goes as
+  `< v OR > v` (`OR = NaN` on DOUBLE), `IS NOT NULL` as `>=` the type's lowest value
+  (`OR = NaN` on DOUBLE); a `<>` counts 2-3 toward the 30 disjuncts.
+- Declined on purpose: reference-marked columns, `IS NULL` (a missing field matches nothing),
+  `IS NOT NULL` on ARRAY/MAP/ROW, strings or bytes over 1,500 bytes (1,500 exactly for `=` only),
+  an `OR` across references, and collection-group scans (Standard needs a collection-group index;
+  `PartitionQuery` takes no filter). `ARRAY_CONTAINS` never reaches `applyFilters` on Flink 1.20.5
+  or 2.2.1.
 - Both `type-mismatch-policy` values push; a mismatch in an excluded document does not fail the scan.
 - `FirestoreTableFilterPushDownITCase` compares against a collection-group table of the same
-  documents, which pushes nothing; keep that oracle when adding shapes.
+  documents, which pushes nothing, in pages of two; keep that oracle when adding shapes. The gated
+  class compares against the same scan with `scan.filter-push-down.enabled` off, on both editions.
 
 ## Table API limit pushdown, both modes (`docs/adr/0201`)
 
@@ -421,10 +440,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Filter pushdown is opt-in** (owner, 2026-11-07, #1831): `scan.filter-push-down.enabled`
   (default `false`) is the user's assertion that filtered properties are indexed, because a
   Datastore filter never matches an unindexed value. With it, `DatastoreFilterPushDown` pushes
-  equalities as necessary conditions (every predicate stays residual, ADR-0197's shape) and only
-  `EQUAL`, so the query stays splittable. `DOUBLE` is pushed only under a finite fractional
-  literal: `== 5.0` misses a stored integer the converter reads as `5.0`. Do not push
-  inequalities, `IN` or `OR` without the owner's decision on #2066's list: each makes one split.
+  comparisons as necessary conditions (every predicate stays residual, ADR-0197's shape). Only a
+  query of equalities stays splittable; a range, `<>`, `IN`, `OR` or `IS NOT NULL` makes one split
+  (owner accepted the trade under the opt-in, #2076), and `scan.partition.max-partitions` is then
+  not applied. The service orders every integer below every double, so `DOUBLE` `=` on an
+  integral value is `IN [long, double]` (both zeros for 0), `>`/`>=` use an integer bound, and
+  `<`/`<=`/`<>` the value. A key `IN` is pushed without the option, like the key equality.
 - **A key equality is pushed without the option** (#2066): `__key__ ==` a key built by
   `DatastoreLookupKeys` (project, database, namespace; the service refuses another namespace).
   Property paths are joined by dots unquoted: `PropertyReference` has no quoting, and a dotted

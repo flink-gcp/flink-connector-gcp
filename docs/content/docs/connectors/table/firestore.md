@@ -128,7 +128,7 @@ Both read a consistent snapshot at `scan.read-time` (truncated to the microsecon
 
 A scan reads only the fields of the columns it produces: the declared columns, or the projected ones when the planner pushes a projection down, so a document's undeclared top-level fields never travel.
 A query that reads a field of a `ROW` column can read that field alone; [Projection pushdown](#projection-pushdown) gives the boundary.
-Equality predicates are pushed into a scan of one collection; [Filter pushdown](#filter-pushdown) gives the boundary.
+Comparisons, `IN` and `IS NOT NULL` are pushed into a scan of one collection; [Filter pushdown](#filter-pushdown) gives the boundary.
 A `LIMIT` directly above the scan bounds what it reads; [Limit pushdown](#limit-pushdown) gives the boundary.
 
 A collection-group scan reads documents of many collections, whose ids repeat across them, so its table cannot declare a PRIMARY KEY: the planner trusts a declared key to be unique and removes a `GROUP BY` or a `DISTINCT` over it, so repeated ids would come back unaggregated.
@@ -168,24 +168,38 @@ A value of another type at the field a query names is still seen, and follows th
 
 ### Filter pushdown
 
-A scan of one collection hands the service the equality predicates it can evaluate, so documents that cannot match are not returned; a Standard-edition database bills only the documents a query returns.
-A predicate is pushed when it compares a column, or a field of a `ROW` column such as `e.x`, with a literal (`s = 'x'`), or is a `BOOLEAN` one or its `NOT`, and its type is `STRING`/`VARCHAR`/`CHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY`/`BINARY`, or `TIMESTAMP_LTZ` of precision 6 or more.
+A scan of one collection hands the service the predicates it can evaluate, so documents that cannot match are not returned; a Standard-edition database bills only the documents a query returns.
+A predicate is pushed when it compares a column, or a field of a `ROW` column such as `e.x`, with a literal by `=`, `<>`, `<`, `<=`, `>` or `>=` (`s = 'x'`, `n > 5`, and `BETWEEN`, which Flink presents as two comparisons), is a `BOOLEAN` one or its `NOT`, or is `IS NOT NULL`, and its type is `STRING`/`VARCHAR`, `BIGINT`, `DOUBLE`, `BOOLEAN`, `BYTES`/`VARBINARY` or `TIMESTAMP_LTZ`.
+`CHAR` and `BINARY` push `=` and `IS NOT NULL` only.
+`IN`, and an `OR` of equalities on one column, are pushed as one disjunction of at most 30 values; the disjunctions of one query together expand to at most 30, a `<>` counting as the two or three branches it is sent as.
 A field of a `ROW` column is compared at its path in the map, so a document whose field is named by the whole path (`"e.x"`) does not match `e.x = 1`.
-An equality on the PRIMARY KEY column is pushed as a filter on the document id, unless the value cannot be an id in the collection (empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/`).
+The PRIMARY KEY column pushes `=`, `IN` and the ranges as filters on the document id, unless the value cannot be an id in the collection (empty, `.`, `..`, `__…__`, over 1,500 bytes, or holding `/`).
 Flink hands a `CHAR` or `BINARY` column to the source only beside a literal of the column's length; beside a literal of another length it arrives as a cast, which stays with Flink.
-Under `AND`, each conjunct that qualifies is pushed.
-Everything else is evaluated by Flink alone: a column or field `reference-field-paths` names, a field of a geographical point, a `NOT NULL` field under a nullable `ROW` (Flink takes it to be never NULL), a coarser `TIMESTAMP_LTZ`, `IS NULL` (the service matches only a stored null, never a missing field), inequalities, `OR`, `IN`, a string or bytes literal over 1,500 bytes, and an `ARRAY`, `MAP` or whole `ROW` value.
+Under `AND`, each conjunct that qualifies is pushed, except a `<>` or `IS NOT NULL` after the first, so a query never carries two not-equal filters.
+
+A `TIMESTAMP_LTZ` below precision 6 reads a stored timestamp truncated to the column's precision, so its comparisons are pushed as the bounds of the stored values that read so: `ts3 = L` becomes `L <= ts3 < L + 1 ms`, and `ts3 <= L` becomes `ts3 < L + 1 ms`; a `<>` on such a column stays with Flink.
+A range on a string or the document id is pushed only when its literal holds no character from U+D800 up.
+Flink compares two strings it holds as Java strings by UTF-16 code units and the service compares UTF-8 bytes, and the two orders differ only where a supplementary character, such as an emoji, meets a character from U+E000 to U+FFFF; a literal below U+D800 meets neither at the position that decides a comparison.
+
+Everything else is evaluated by Flink alone: a column or field `reference-field-paths` names, a field of a geographical point, a `NOT NULL` field under a nullable `ROW` (Flink takes it to be never NULL), `IS NULL` (the service matches only a stored null, never a missing field), `IS NOT NULL` on an `ARRAY`, `MAP` or `ROW` (whether an empty one matches was not measured), an `OR` across columns or holding anything but equalities, a string or bytes literal over 1,500 bytes (or of 1,500 bytes, for any comparison but `=`), and an `ARRAY`, `MAP` or whole `ROW` value.
 `ARRAY_CONTAINS` never reaches the source: Flink 1.20 and 2.2 do not offer it for pushdown.
 
 A pushed filter narrows what is read; it does not replace Flink's evaluation, so every predicate still runs in Flink afterwards.
-The service compares numbers across types, so `n = 5` also reads a document holding `5.0`, and the conversion and Flink's filter then decide that document as they would without pushdown.
-A document whose value has another type, or lacks the field, matches no filter, so it is not read: under `type-mismatch-policy = 'fail'` a mismatched value in a document the filter excludes no longer fails the scan, and under either policy neither does a `NOT NULL` column that such a document lacks.
+The service compares numbers across types, so `n = 5` also reads a document holding `5.0`, and `n > 4` one holding `5.5`; the conversion and Flink's filter then decide that document as they would without pushdown.
+A range matches only values of the literal's type, integers and doubles comparing as numbers, so it never leaves out a value the column reads.
+`<>` is sent as the ranges either side of its value (and, on a `DOUBLE`, an equality on `NaN`, which Flink's `<>` keeps), and `IS NOT NULL` as a range from the lowest value of the column's type (and `NaN`, on a `DOUBLE`).
+The service's own not-equal filter is not used: an Enterprise-edition database returns, for it, a document that lacks the field, and the scan cannot resume after such a document, so a read of more than one page, or the one-document query that plans it, would fail.
+A document that lacks the field, or whose value has another type, matches no pushed filter, so it is not read: under `type-mismatch-policy = 'fail'` its mismatched value no longer fails the scan, and under either policy neither does a `NOT NULL` column it lacks.
 Type checking covers the documents read, as it already covers only the columns read.
+
+An inequality orders the query by its field, so the scan also reads that field to resume after each page.
+A Standard-edition database answers equalities on several fields, `IN` beside them, ranges on one field, and an id range beside a range on a field through the single-field indexes it creates by itself.
+It needs a composite index for an equality on one field beside a range on another (`<>` and `IS NOT NULL` included, sent as ranges), for ranges on two fields, and for an `OR` holding a range, and refuses the query with `FAILED_PRECONDITION` without one; an Enterprise-edition database answers all of them.
+Such a query, or one on a field exempted from indexing, fails when the job starts, not partway through the read: the read is planned with a one-document query of the same filters, and the service's message names the index to create.
+Setting `scan.filter-push-down.enabled` to `false` reads the collection without those filters instead; the scan then pushes only an equality, or `IN`, on the document id, which needs no index.
 
 A collection-group scan pushes nothing.
 A Standard-edition database serves a filtered collection-group query only through an index of collection-group scope, which it does not create by itself, and refuses the query with `FAILED_PRECONDITION` without one.
-On one collection, a Standard-edition database answered equalities on two and on three fields through the single-field indexes it creates by itself, without a composite index.
-Should a pushed query still need an index the database lacks, for example on a field exempted from indexing, it fails when the job starts, not partway through the read: the read is planned with a one-document query of the same filters.
 
 ### Limit pushdown
 
@@ -303,6 +317,7 @@ No table write carries a precondition.
 | `scan.partition.max-partitions` | *unset ⇒ the scan's parallelism* | Maps to `partitionCount`: the partitions a collection-group scan asks the service for; only with `scan.collection-group`; unused by a scan given a [pushed limit](#limit-pushdown) |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the documents one request asks for |
+| `scan.filter-push-down.enabled` | `true` | Push predicates into a single-collection scan's query; when `false`, only an equality or `IN` on the document id is pushed; see [Filter pushdown](#filter-pushdown) |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
 | `lookup.async` | `false` | Run the join as Flink's asynchronous lookup, with several reads in flight per subtask |
 | `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
@@ -344,4 +359,5 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 
 The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md), filter pushdown, with the service's matching measured on both editions, in [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md), and limit pushdown in [ADR-0201]({{< param BookRepo >}}/blob/main/docs/adr/0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md).
 The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups; the uber-jar's tests write through its relocated classes.
-A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing, nested fields and fixed-length columns included, and a document-id equality with a filter on the document path; the gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database, an id and a map field's equality on a Standard-edition one.
+A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing, nested fields, fixed-length columns, ranges, `IN`, `IS NOT NULL` and millisecond timestamps included, read in pages of two so that every query resumes at a cursor, and a document-id equality and range with a filter on the document path.
+The gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database, an id and a map field's equality on a Standard-edition one, compares the ranges, `IN` and `IS NOT NULL` on both editions with the same scan with `scan.filter-push-down.enabled` off, a 32-bit integer on Enterprise included, and holds the Standard edition's refusal of a range beside an equality on another field.

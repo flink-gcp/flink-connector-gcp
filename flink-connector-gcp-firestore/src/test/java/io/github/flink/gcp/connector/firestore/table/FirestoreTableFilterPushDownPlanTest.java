@@ -98,8 +98,43 @@ class FirestoreTableFilterPushDownPlanTest {
                 "e.flag",
                 "NOT e.flag",
                 "e.`y.z`.w = 'q'",
+                // A timestamp read below microseconds, as the range of stored values that
+                // truncate to the literal.
+                "ts3 = TO_TIMESTAMP_LTZ(1000, 3)",
+                "ts5 = TO_TIMESTAMP_LTZ(1000, 3)",
+                // Inequalities, either way round, and their negations the planner folds.
+                "n > 5",
+                "5 < n",
+                "n >= 5",
+                "n < 5",
+                "n <= 5",
+                "NOT (n > 5)",
+                "n BETWEEN 3 AND 7",
+                "d > 5",
+                "d < 5.5",
+                "s > 'a'",
+                "s < '\uD7FF'",
+                "s <> '\uFFFD'",
+                "y > x'01'",
+                "b > FALSE",
+                "ts > TO_TIMESTAMP_LTZ(1000, 3)",
+                "ts3 <= TO_TIMESTAMP_LTZ(1000, 3)",
+                "e.x > 1",
+                "s <> 'x'",
+                "n NOT IN (1, 2)",
+                "s IS NOT NULL",
+                "e.x IS NOT NULL",
+                "c IS NOT NULL",
+                // IN and an OR of equalities on one column, which the planner presents alike.
+                "s IN ('x', 'y')",
+                "n = 1 OR n = 2",
+                "e.x IN (1, 2)",
+                // The document id's ranges and IN.
+                "id > 'k'",
+                "id <= 'k'",
+                "id IN ('a', 'b')",
             })
-    void anEqualityOnAScalarColumnIsPushedAndStaysAResidual(String predicate) {
+    void aComparisonOnAScalarColumnIsPushedAndStaysAResidual(String predicate) {
         String plan = scan("SELECT id FROM f WHERE " + predicate);
 
         assertThat(plan).containsPattern("filter=\\[[^\\]]").contains("where=[");
@@ -122,17 +157,37 @@ class FirestoreTableFilterPushDownPlanTest {
                 // The planner presents a fixed-length column beside a shorter literal as a cast.
                 "c = 'ab'",
                 "bin = x'01'",
-                // The converter truncates a stored timestamp to a precision below the service's.
-                "ts3 = TO_TIMESTAMP_LTZ(1000, 3)",
-                "ts5 = TO_TIMESTAMP_LTZ(1000, 3)",
                 // A missing field reads as NULL and matches no filter.
                 "s IS NULL",
-                "s IS NOT NULL",
-                "s <> 'x'",
-                "n > 5",
+                // An OR across columns, or holding anything but equalities.
                 "s = 'x' OR n = 5",
-                "s IN ('x', 'y')",
+                "n = 1 OR n > 5",
                 "n = CAST(d AS BIGINT)",
+                // A range literal holding a character UTF-8 and UTF-16 could order unlike each
+                // other: Flink compares two Java strings by UTF-16 code units.
+                "s > '\uFFFD'",
+                "s < '\uD83D\uDE00'",
+                "s >= '\uD7FF\uE000'",
+                "id > '\uFFFD'",
+                // No ordering of fixed-length values was measured.
+                "c > 'abc'",
+                "bin > x'0102'",
+                // A document always has its id.
+                "id <> 'k'",
+                "id > ''",
+                "id > 'k/x'",
+                // Whether an empty array or map matches != null is unmeasured.
+                "arr IS NOT NULL",
+                "e IS NOT NULL",
+                "r IS NOT NULL",
+                "loc IS NOT NULL",
+                "r > 'c/x'",
+                "loc.latitude > 1.5",
+                // A range literal of 1,500 bytes could equal the prefix of a longer value.
+                "s > REPEAT('x', 1500)",
+                // More disjuncts than a query takes.
+                "n IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,"
+                        + " 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)",
                 "arr = ARRAY['x']",
                 // The planner presents no ARRAY_CONTAINS to a source.
                 "ARRAY_CONTAINS(arr, 'x')",
@@ -219,12 +274,38 @@ class FirestoreTableFilterPushDownPlanTest {
 
     @Test
     void theTranslatableConjunctsOfAConjunctionArePushedAndTheWholeStaysResidual() {
-        String plan = scan("SELECT id FROM f WHERE s = 'x' AND n > 5 AND b");
+        String plan = scan("SELECT id FROM f WHERE s = 'x' AND s LIKE 'x%' AND n > 5");
 
         assertThat(plan)
                 .containsPattern("filter=\\[[^\\]]*=\\(s, ")
-                .doesNotContainPattern("filter=\\[[^\\]]*>\\(n")
+                .containsPattern("filter=\\[[^\\]]*>\\(n, 5\\)")
+                .doesNotContainPattern("filter=\\[[^\\]]*LIKE")
+                .containsPattern("where=\\[[^\\]]*LIKE\\(s")
                 .containsPattern("where=\\[[^\\]]*>\\(n, 5\\)")
                 .containsPattern("where=\\[[^\\]]*=\\(s, 'x'\\)");
+    }
+
+    @Test
+    void onlyTheFirstNotEqualIsPushed() {
+        String plan = scan("SELECT id FROM f WHERE n <> 5 AND s <> 'x'");
+
+        assertThat(plan)
+                .containsPattern("filter=\\[[^\\]]*<>\\(n, 5")
+                .doesNotContainPattern("filter=\\[[^\\]]*<>\\(s");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"n > 5", "s IN ('x', 'y')", "s IS NOT NULL", "id > 'k'", "s = 'x'"})
+    void withoutTheOptionOnlyAnIdEqualityIsPushed(String predicate) {
+        table.executeSql(
+                "CREATE TABLE off ("
+                        + COLUMNS
+                        + ", PRIMARY KEY (id) NOT ENFORCED) WITH ('connector' = 'firestore',"
+                        + " 'project' = 'p', 'collection' = 'c',"
+                        + " 'scan.filter-push-down.enabled' = 'false')");
+
+        assertThat(scan("SELECT id FROM off WHERE " + predicate))
+                .doesNotContainPattern("filter=\\[[^\\]]");
+        assertThat(scan("SELECT id FROM off WHERE id = 'k'")).containsPattern("filter=\\[[^\\]]");
     }
 }

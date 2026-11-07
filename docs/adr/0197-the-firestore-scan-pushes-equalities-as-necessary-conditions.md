@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0197: The Firestore scan pushes equalities as necessary conditions
 
 - Status: Accepted
-- Date: 2026-11-05 (client library facts read in google-cloud-firestore 3.50.0; service behavior measured 2026-11-05 against ephemeral Standard- and Enterprise-edition Native-mode databases, one run each, and against the pinned emulator image); revised 2026-11-07 by [#2066] (the document id, fields of `ROW` columns, `CHAR` and `BINARY`, and the matcher shared with Datastore mode)
-- Issues: [#1830], [#1829] (the pushdown umbrella), [#1838] (LIMIT, which depends on this record), [#2066]
+- Date: 2026-11-05 (client library facts read in google-cloud-firestore 3.50.0; service behavior measured 2026-11-05 against ephemeral Standard- and Enterprise-edition Native-mode databases, one run each, and against the pinned emulator image); revised 2026-11-07 by [#2066] (the document id, fields of `ROW` columns, `CHAR` and `BINARY`, and the matcher shared with Datastore mode) and by [#2076] (ranges, `<>`, `IN`, `IS NOT NULL`, coarse timestamps and `scan.filter-push-down.enabled`, measured the same day on the emulator and on ephemeral Standard- and Enterprise-edition databases)
+- Issues: [#1830], [#1829] (the pushdown umbrella), [#1838] (LIMIT, which depends on this record), [#2066], [#2076]
 - Modules: firestore (`io.github.flink.gcp.connector.firestore.table.source`, `firestore.common.table`)
 - Current behavior: `docs/content/docs/connectors/table/firestore.md` § Filter pushdown
 
@@ -90,10 +90,34 @@ The id equality adds no ordering, so a cursor still resumes the query by documen
 
 `FirestoreTableFilterPushDownPlanTest` pins the new pushed and declined shapes, `EqualityMatcherTest` the shared search; `FirestoreTableFilterPushDownITCase` compares each new shape with its oracle, fixed-length near misses and a map holding a double, an array, a non-map value, a list of maps and a dotted top-level field included, and the id with a filter on the document path; the gated class holds an id and a map field's equality on a Standard-edition collection.
 
+### Ranges, `IN` and `IS NOT NULL` ([#2076], 2026-11-07)
+
+[#2076] took up the shapes [#2066] left undecided, and `EqualityMatcher` became `PredicateMatcher`, which finds `=`, `<>`, `<`, `<=`, `>`, `>=`, `IS NOT NULL`, and an `OR` of equalities on one reference, the planner's form of `IN`.
+The planner's forms were read on Flink 2.2.1: a range either way round, `BETWEEN` as two conjuncts, `NOT (n > 5)` folded to `n <= 5`, `IN` of 22 values as a left-deep `OR` tree, `NOT IN` as `<>` conjuncts, `IS NOT NULL` as a call, and `d > 5` with an `INT` literal under `DOUBLE`.
+The service's answers were read through the client library on the pinned emulator and on ephemeral Standard- and Enterprise-edition databases, one run each, and the plan tests and both modes' emulator ITs pass on Flink 2.2.1 and 1.20.5.
+
+| Measured | Standard and Enterprise | Consequence |
+|---|---|---|
+| a range on a field | matches only values of the literal's type, integers and doubles as numbers; never null, a missing field, an array or NaN | a range never drops a value the column reads |
+| strings and bytes | UTF-8 byte order (an emoji above U+FFFD) and unsigned bytes, as Flink orders bytes (`byteArrayCompare`) | see the string row below |
+| Flink's own string order | `BinaryStringData.compareTo` compares two strings still held as Java strings with `String.compareTo`, by UTF-16 code units, and materialized ones by UTF-8 bytes; in the emulator IT, Flink's own filter left an emoji out of `s > U+FFFD` on a column it read, and kept it under `SUBSTRING(path) >= U+FFFD`, a string it computed | a string or id range is pushed only under a literal below U+D800, where both orders agree (`OrderedStrings`, a property test over code points straddling every boundary) |
+| a timestamp literal between microseconds | compared exactly | the bounds are rounded to the column's unit anyway (`TimestampBound`, shared with Datastore mode, which floors the literal) |
+| `!=` and `!= null` | Standard leaves out a missing field and a stored null; Enterprise returns them, and `startAfter` cannot take a cursor from a document lacking the field (the independent review's finding: the planner's one-document probe and every page after the first take one) | neither is sent: `<>` goes as `< v OR > v` (and `= NaN` on `DOUBLE`, which Flink's `<>` keeps and no range matches), `IS NOT NULL` as `>=` the type's lowest value (and `= NaN` on `DOUBLE`), which no missing field matches on either edition |
+| an `!= null` read in pages | `UnaryFilterInternal.isInequalityFilter` is `false` in client library 3.50.0, so `startAfter` orders the cursor by the name alone, and the emulator refused the resumed query with `order by clause cannot contain more fields after the key` | moot once `!= null` is not sent |
+| an inequality read in pages | `startAfter` needs the ordered field's value from the last document | the projection adds the field |
+| composite indexes (Standard) | refused with `FAILED_PRECONDITION`: an equality beside a range, `!=` or `!= null` on another field, ranges on two fields, an `OR` holding a range; answered: an equality beside `IN`, two ranges on one field, an id range beside a field range | the job fails when it starts; Enterprise answers all |
+
+- **Pushed** (owner's choice, 2026-11-07): `<>` (the first `<>` or `IS NOT NULL` in a query, so a query never carries two not-equal filters; whether the service takes two was not measured), `<`, `<=`, `>`, `>=` and `IS NOT NULL` (as the range above) on the scalar types, and `IN` or an `OR` of equalities on one reference, up to 30 disjuncts across the query; `CHAR` and `BINARY` push `=` and `IS NOT NULL` only; the id pushes `=`, `IN` and ranges; `TIMESTAMP_LTZ` below precision 6 pushes its comparisons as covering bounds (`ts3 = L` as `L <= ts3 < L + 1 ms`), `<>` excepted. A string or bytes literal of 1,500 bytes is pushed for `=` alone: a Standard-edition database compares that prefix of a longer value, which a range on a literal that long could misplace.
+- **Index requirements are the service's** (owner, 2026-11-07): the connector does not predict which combination needs a composite index, because a refusal is loud, at job start with the index named, and the editions differ and may change. `scan.filter-push-down.enabled`, `true` by default, is the way out for a user who will not create the index: off, the scan pushes only an equality or `IN` on the document id.
+- **Declined**: `IS NOT NULL` on `ARRAY`, `MAP` and `ROW` (whether an empty one matches is unmeasured), a range on a string or id literal from U+D800 up, ranges on `CHAR` and `BINARY` (no ordering of fixed-length values was measured), an `OR` across references or holding anything but equalities, `<>` and `IS NOT NULL` on the id, and `IS NULL`, still for the missing field.
+
+`PredicateMatcherTest`, `TimestampBoundTest` (a property test of every operator against truncated reads), `OrderedStringsTest` and `FirestoreCollectionQueryFactoryTest` pin the search, the bounds, the string rule and the query; `FirestoreTableFilterPushDownPlanTest` the pushed and declined shapes and the option; `FirestoreTableFilterPushDownITCase` compares each new shape with its collection-group oracle, read in pages of two, with integers under `DOUBLE`, U+FFFD and an emoji, `0x7f` and `0x80`, and millisecond-column timestamps either side of a boundary, and the id ranges with filters on the document path; `FirestoreTableFilterPushDownRealGcpITCase` compares them on both editions with the same scan with the option off, a 32-bit integer on Enterprise included, and holds the Standard edition's refusal of a range beside an equality on another field.
+
 ## Consequences
 
 - A selective scan reads and is billed for fewer documents; the residual costs one comparison per document read.
 - [#1838] can push a `LIMIT` only above exactly pushed filters, so a Firestore scan with a pushed filter keeps its limit in Flink.
+- Since [#2076], a scan whose predicates combine an equality on one field with a range on another, which read the collection before, needs a composite index on a Standard-edition database, or `scan.filter-push-down.enabled = 'false'`; without either, the job fails when it starts.
 - A query the database cannot serve, for example an equality on a field exempted from indexing, fails at job start instead of reading the collection.
 - A change in the service's matching that narrows an equality would drop rows silently; the gated class pins the Enterprise 32-bit integer match and the refusal of a subtype-0 BSON binary, the two Enterprise-only premises the declined list does not already avoid.
 
@@ -112,3 +136,4 @@ The id equality adds no ordering, so a cursor still resumes the query by documen
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838
 [#2050]: https://github.com/flink-gcp/flink-connector-gcp/issues/2050
 [#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066
+[#2076]: https://github.com/flink-gcp/flink-connector-gcp/issues/2076

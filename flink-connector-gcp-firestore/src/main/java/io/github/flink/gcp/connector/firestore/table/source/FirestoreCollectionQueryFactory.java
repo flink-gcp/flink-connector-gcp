@@ -22,19 +22,21 @@ import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import io.github.flink.gcp.connector.firestore.source.FirestoreQueryFactory;
-import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldEquality;
+import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldFilter;
 
 import javax.annotation.Nullable;
 
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * The query of a {@code firestore} table that scans its one collection: every document directly in
- * it that the pushed equality filters admit, up to the pushed limit, projected to the fields of the
- * columns read. Each field name is one literal path segment, so a name containing a dot projects,
- * or filters on, that field.
+ * it that the pushed filters admit, up to the pushed limit, projected to the fields of the columns
+ * read and the fields an inequality filter orders the query by. Each field name is one literal path
+ * segment, so a name containing a dot projects, or filters on, that field.
  *
  * <p>A collection-group table's scan is this query too when the planner pushed a limit: the group,
  * unfiltered, up to the limit, read as one split instead of as partitions ({@code docs/adr/0201}).
@@ -49,7 +51,7 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
 
     private final boolean collectionGroup;
     private final String[] fields;
-    private final List<FieldEquality> equalities;
+    private final List<FieldFilter> filters;
     @Nullable private final Integer limit;
 
     /**
@@ -59,31 +61,31 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
      * @param fields the field paths to read, each in the client library's encoded form ({@code
      *     FieldPath.toString()}); an empty array reads none, as for a table or a projection of only
      *     the key and metadata
-     * @param equalities the pushed equality filters, each a necessary condition Flink evaluates
-     *     again. An equality adds no ordering, so the query stays in document-name order and its
-     *     field need not be in the projection for a cursor to resume it
-     * @param limit the pushed limit, or {@code null} for none. A limit beside an equality would
-     *     stop the read before a document Flink's residual keeps, so the caller passes no limit
-     *     with equalities
+     * @param filters the pushed filters, each a necessary condition Flink evaluates again. An
+     *     inequality on a field orders the query by that field first, and a cursor resuming the
+     *     query takes the field's value from the last document read, so the projection adds it
+     * @param limit the pushed limit, or {@code null} for none. A limit beside a filter would stop
+     *     the read before a document Flink's residual keeps, so the caller passes no limit with
+     *     filters
      */
     FirestoreCollectionQueryFactory(
             String collection,
             String[] fields,
-            List<FieldEquality> equalities,
+            List<FieldFilter> filters,
             @Nullable Integer limit) {
-        this(collection, false, fields, equalities, limit);
+        this(collection, false, fields, filters, limit);
     }
 
     private FirestoreCollectionQueryFactory(
             String collection,
             boolean collectionGroup,
             String[] fields,
-            List<FieldEquality> equalities,
+            List<FieldFilter> filters,
             @Nullable Integer limit) {
         this.collection = collection;
         this.collectionGroup = collectionGroup;
         this.fields = fields.clone();
-        this.equalities = List.copyOf(equalities);
+        this.filters = List.copyOf(filters);
         this.limit = limit;
     }
 
@@ -107,15 +109,19 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
                 collectionGroup
                         ? firestore.collectionGroup(collection)
                         : firestore.collection(collection);
-        for (FieldEquality equality : equalities) {
-            query = query.whereEqualTo(equality.path(), equality.value());
+        Set<FieldPath> paths = new LinkedHashSet<>();
+        for (String field : fields) {
+            paths.add(FieldPath.fromServerFormat(field));
         }
-        FieldPath[] paths = new FieldPath[fields.length];
-        for (int i = 0; i < fields.length; i++) {
-            paths[i] = FieldPath.fromServerFormat(fields[i]);
+        for (FieldFilter filter : filters) {
+            query = query.where(filter.toFilter());
+            FieldPath ordered = filter.orderedPath();
+            if (ordered != null) {
+                paths.add(ordered);
+            }
         }
         // An empty selection reads only each document's name.
-        query = query.select(paths);
+        query = query.select(paths.toArray(new FieldPath[0]));
         return limit == null ? query : query.limit(limit);
     }
 
@@ -131,13 +137,13 @@ final class FirestoreCollectionQueryFactory implements FirestoreQueryFactory {
         return collection.equals(that.collection)
                 && collectionGroup == that.collectionGroup
                 && Arrays.equals(fields, that.fields)
-                && equalities.equals(that.equalities)
+                && filters.equals(that.filters)
                 && Objects.equals(limit, that.limit);
     }
 
     @Override
     public int hashCode() {
-        return 31 * Objects.hash(collection, collectionGroup, equalities, limit)
+        return 31 * Objects.hash(collection, collectionGroup, filters, limit)
                 + Arrays.hashCode(fields);
     }
 }

@@ -73,6 +73,7 @@ class DatastoreTableFilterPushDownITCase extends AbstractDatastoreEmulatorITCase
             "id STRING NOT NULL, s STRING, n BIGINT, b BOOLEAN, y BYTES, ts TIMESTAMP_LTZ(6),"
                     + " ts9 TIMESTAMP_LTZ(9), d DOUBLE, c CHAR(3), bin BINARY(2),"
                     + " e ROW<x BIGINT, flag BOOLEAN>, `a.b` STRING, `a``b` STRING, `a\\b` STRING,"
+                    + " ts3 TIMESTAMP_LTZ(3),"
                     + " PRIMARY KEY (id) NOT ENFORCED";
 
     private static final Timestamp TIME = Timestamp.ofTimeSecondsAndNanos(1_000, 123_456_000);
@@ -84,6 +85,10 @@ class DatastoreTableFilterPushDownITCase extends AbstractDatastoreEmulatorITCase
     private static String keyKind;
 
     private static String idKind;
+
+    private static String rangeKind;
+
+    private static String rangeIdKind;
 
     private static final String NAMESPACE = "tenant";
 
@@ -187,6 +192,60 @@ class DatastoreTableFilterPushDownITCase extends AbstractDatastoreEmulatorITCase
                         .set("a", FullEntity.newBuilder().set("b", "q").build())
                         .build());
 
+        // Range neighbours: strings and blobs UTF-16 or signed bytes would order otherwise, an
+        // integer and both zeros under DOUBLE, an integer under the timestamp column the service
+        // orders among timestamps, and millisecond-column timestamps inside, at the end of, and
+        // either side of the millisecond 1000.123.
+        put(
+                Entity.newBuilder(key(kind, "low"))
+                        .set("n", 3L)
+                        .set("d", 7L)
+                        .set("s", "\uFFFD")
+                        .set("y", Blob.copyFrom(new byte[] {0x7f}))
+                        .set("ts3", TIME)
+                        .set("e", FullEntity.newBuilder().set("x", 0L).build())
+                        .build());
+        put(
+                Entity.newBuilder(key(kind, "high"))
+                        .set("n", 7L)
+                        .set("d", -1.5d)
+                        .set("s", "\uD83D\uDE00")
+                        .set("y", Blob.copyFrom(new byte[] {(byte) 0x80}))
+                        .set("ts3", Timestamp.ofTimeSecondsAndNanos(1_000, 123_999_000))
+                        .set("e", FullEntity.newBuilder().set("x", 2L).build())
+                        .build());
+        put(
+                Entity.newBuilder(key(kind, "next"))
+                        .set("ts3", Timestamp.ofTimeSecondsAndNanos(1_000, 124_000_000))
+                        .set("d", 0L)
+                        .build());
+        put(
+                Entity.newBuilder(key(kind, "before"))
+                        .set("ts3", Timestamp.ofTimeSecondsAndNanos(1_000, 122_999_000))
+                        .set("d", -0.0d)
+                        .build());
+
+        // Doubles under DOUBLE: an integral one and both zeros, which an integral equality must
+        // reach through IN; integers just above and below the bounds a DOUBLE range rounds to;
+        // NaN, which Flink keeps under <>.
+        put(Entity.newBuilder(key(kind, "five")).set("d", 5.0d).build());
+        put(Entity.newBuilder(key(kind, "positiveZero")).set("d", 0.0d).build());
+        put(Entity.newBuilder(key(kind, "six")).set("d", 6L).build());
+        put(Entity.newBuilder(key(kind, "minusOne")).set("d", -1L).build());
+        put(Entity.newBuilder(key(kind, "notANumber")).set("d", Double.NaN).build());
+
+        rangeKind = uniqueKind();
+        for (String name : new String[] {"a", "b", "c", "B", "\uFFFD", "\uD83D\uDE00"}) {
+            put(Entity.newBuilder(key(rangeKind, name)).set("s", "x").build());
+        }
+        rangeIdKind = uniqueKind();
+        for (long id : new long[] {-5, 5, 6, 100}) {
+            put(
+                    Entity.newBuilder(Key.newBuilder(PROJECT, rangeIdKind, id).build())
+                            .set("s", "x")
+                            .build());
+        }
+
         keyKind = uniqueKind();
         put(Entity.newBuilder(key(keyKind, "k")).set("s", "x").build());
         put(Entity.newBuilder(key(keyKind, "k ")).set("s", "x").build());
@@ -251,8 +310,8 @@ class DatastoreTableFilterPushDownITCase extends AbstractDatastoreEmulatorITCase
                         + ") WITH ("
                         + common
                         + ", 'scan.filter-push-down.enabled' = 'true',"
-                        // The builder refuses a split count for a query it cannot split, so this
-                        // also holds that a pushed query stays splittable.
+                        // A query only equalities filter is cut into these; one a range or a
+                        // disjunction filters is one split, which the count does not refuse.
                         + " 'scan.partition.max-partitions' = '4')");
         table.executeSql("CREATE TABLE unpushed (" + COLUMNS + ") WITH (" + common + ")");
         return table;
@@ -301,6 +360,142 @@ class DatastoreTableFilterPushDownITCase extends AbstractDatastoreEmulatorITCase
                 .containsPattern("filter=\\[[^\\]]");
         assertThat(ids(table, "pushed", predicate))
                 .containsExactlyInAnyOrderElementsOf(ids(table, "unpushed", predicate));
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "n > 4",
+                "n >= 5",
+                "n < 5",
+                "n <= 5",
+                "n <> 5",
+                "n BETWEEN 1 AND 6",
+                "d = 5",
+                "d = 0",
+                "d = 7",
+                "d > 5",
+                "d >= 5",
+                "d > 5.1",
+                "d > -1.5",
+                "d >= -1.5",
+                "d < 5.5",
+                "d <= 0",
+                "d <> 5",
+                "s > 'x'",
+                "s > 'z'",
+                "s < 'x '",
+                "y > x'7f'",
+                "y < x'80'",
+                "b > FALSE",
+                "ts > CAST(TIMESTAMP '1970-01-01 00:16:40.123456' AS TIMESTAMP_LTZ(6))",
+                "ts <= CAST(TIMESTAMP '1970-01-01 00:16:40.123456' AS TIMESTAMP_LTZ(6))",
+                "ts9 < CAST(TIMESTAMP '1970-01-01 00:16:40.1234565' AS TIMESTAMP_LTZ(9))",
+                "ts9 >= CAST(TIMESTAMP '1970-01-01 00:16:40.1234555' AS TIMESTAMP_LTZ(9))",
+                "ts3 = CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 <= CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 > CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "ts3 < CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+                "e.x > 0",
+                "s IS NOT NULL",
+                "n IS NOT NULL",
+                "d IS NOT NULL",
+                "ts IS NOT NULL",
+                "e.x IS NOT NULL",
+                "s IN ('x', 'x ')",
+                "n IN (5, 7)",
+                "d IN (5, 5.5)",
+                "e.x IN (1, 2)",
+                "n NOT IN (5, 7)",
+                "s = 'x' AND n > 4",
+                "n > 4 AND n < 7"
+            })
+    void aPushedComparisonReturnsTheRowsFlinksFilterKeeps(String predicate) throws Exception {
+        TableEnvironment table = tables(kind, "null");
+
+        assertThat(table.explainSql("SELECT id FROM pushed WHERE " + predicate))
+                .containsPattern("filter=\\[[^\\]]");
+        assertThat(ids(table, "pushed", predicate))
+                .containsExactlyInAnyOrderElementsOf(ids(table, "unpushed", predicate));
+    }
+
+    @Test
+    void theOracleSeesWhatTheComparisonsShouldAndShouldNotMatch() throws Exception {
+        // Firing control for the comparison above: the rows a narrower service match would miss.
+        TableEnvironment table = tables(kind, "null");
+
+        // The integers 6 and 7 under DOUBLE, which the service orders below every double, beside
+        // 5.5 and 5.25.
+        assertThat(ids(table, "unpushed", "d > 5"))
+                .containsExactlyInAnyOrder(
+                        Row.of("near"), Row.of("low"), Row.of("match"), Row.of("six"));
+        assertThat(ids(table, "unpushed", "d > 5.1")).contains(Row.of("six"));
+        assertThat(ids(table, "unpushed", "d > -1.5")).contains(Row.of("minusOne"));
+        assertThat(ids(table, "unpushed", "d = 5"))
+                .containsExactlyInAnyOrder(Row.of("numbers"), Row.of("five"));
+        // An integer zero and both floating-point zeros.
+        assertThat(ids(table, "unpushed", "d = 0"))
+                .containsExactlyInAnyOrder(
+                        Row.of("next"), Row.of("before"), Row.of("positiveZero"));
+        assertThat(ids(table, "unpushed", "d <> 5")).contains(Row.of("notANumber"));
+        assertThat(ids(table, "unpushed", "s > 'z'"))
+                .containsExactlyInAnyOrder(Row.of("low"), Row.of("high"));
+        assertThat(ids(table, "unpushed", "y > x'7f'")).containsExactly(Row.of("high"));
+        // The literal 1000.1234565 the service would floor to 1000.123456, dropping match.
+        assertThat(
+                        ids(
+                                table,
+                                "unpushed",
+                                "ts9 < CAST(TIMESTAMP '1970-01-01 00:16:40.1234565' AS"
+                                        + " TIMESTAMP_LTZ(9))"))
+                .contains(Row.of("match"));
+        assertThat(
+                        ids(
+                                table,
+                                "unpushed",
+                                "ts3 = CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS"
+                                        + " TIMESTAMP_LTZ(3))"))
+                .containsExactlyInAnyOrder(Row.of("low"), Row.of("high"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"> 'b'", "<= 'b'", "> 'z'", "< 'b'", ">= 'B'"})
+    void aPushedKeyNameRangeReturnsTheEntitiesFlinksFilterKeeps(String range) throws Exception {
+        TableEnvironment table = tables(rangeKind, "null");
+
+        assertThat(table.explainSql("SELECT id FROM pushed WHERE id " + range))
+                .containsPattern("filter=\\[[^\\]]");
+        assertThat(ids(table, "pushed", "id " + range))
+                .isNotEmpty()
+                .containsExactlyInAnyOrderElementsOf(ids(table, "unpushed", "id " + range));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"> 5", "<= 5", ">= -5", "< 100"})
+    void aPushedKeyIdRangeReturnsTheEntitiesFlinksFilterKeeps(String range) throws Exception {
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        String with =
+                " WITH ('connector' = 'datastore', 'project' = '"
+                        + PROJECT
+                        + "', 'emulator-endpoint' = '"
+                        + emulatorEndpoint()
+                        + "', 'kind' = '"
+                        + rangeIdKind
+                        + "'";
+        String columns = "(id BIGINT NOT NULL, s STRING, PRIMARY KEY (id) NOT ENFORCED)";
+        table.executeSql(
+                "CREATE TABLE pushed "
+                        + columns
+                        + with
+                        + ", 'scan.filter-push-down.enabled' = 'true')");
+        table.executeSql("CREATE TABLE unpushed " + columns + with + ")");
+
+        assertThat(table.explainSql("SELECT id FROM pushed WHERE id " + range))
+                .containsPattern("filter=\\[[^\\]]");
+        assertThat(ids(table, "pushed", "id " + range))
+                .isNotEmpty()
+                .containsExactlyInAnyOrderElementsOf(ids(table, "unpushed", "id " + range));
     }
 
     @Test
@@ -458,9 +653,10 @@ class DatastoreTableFilterPushDownITCase extends AbstractDatastoreEmulatorITCase
     }
 
     @Test
-    void aFloatingPointEqualityMissesAStoredIntegerSoAnIntegralDoubleIsNotPushed() {
-        // The premise behind declining an integral DOUBLE literal: the converter reads the integer
-        // 5 into a DOUBLE column as 5.0, which the service's equality on 5.0 does not match.
+    void aFloatingPointEqualityMissesAStoredIntegerSoAnIntegralDoubleIsPushedAsIn() {
+        // The premise behind pushing an integral DOUBLE literal as IN of the integer and the
+        // floating-point value: the converter reads the integer 5 into a DOUBLE column as 5.0,
+        // which the service's equality on 5.0 does not match.
         String numbers = uniqueKind();
         put(Entity.newBuilder(key(numbers, "integer")).set("d", 5L).build());
         put(Entity.newBuilder(key(numbers, "double")).set("d", 5.0d).build());
