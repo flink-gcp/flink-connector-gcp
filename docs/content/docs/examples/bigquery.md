@@ -194,9 +194,10 @@ flink run -s gs://my-savepoints/savepoint-xxxx my-job.jar
 ```
 
 With the Flink Kubernetes Operator that is `upgradeMode: savepoint` (or `last-state`), never
-`stateless`. When state genuinely has to be dropped, rewind the source behind the last completed
-checkpoint so a potential loss becomes a duplicate instead, and make duplicates harmless downstream
-with an idempotent key plus `MERGE` or `QUALIFY ROW_NUMBER()`.
+`stateless`, as for [connector upgrades]({{< relref "docs/connectors#upgrading-the-connector" >}}).
+When state genuinely has to be dropped, rewind the source behind the last completed checkpoint so
+a potential loss becomes a duplicate instead, and make duplicates harmless downstream with an
+idempotent key plus `MERGE` or `QUALIFY ROW_NUMBER()`.
 
 The at-least-once write method has the opposite profile — it keeps the sink strictly ahead of the
 source, so discarding state can duplicate rows but cannot lose them. Neither method is uniformly
