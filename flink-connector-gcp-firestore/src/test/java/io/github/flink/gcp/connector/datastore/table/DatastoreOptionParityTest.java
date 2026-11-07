@@ -111,6 +111,7 @@ class DatastoreOptionParityTest {
                         "scan.partition.max-partitions",
                         "scan.read-time",
                         "scan.max-rows-per-fetch",
+                        "scan.filter-push-down.enabled",
                         "lookup.async",
                         "sink.unindexed-columns",
                         "sink.write-mode",
@@ -150,9 +151,10 @@ class DatastoreOptionParityTest {
 
         // database is assembled from project and database, deserializer from the physical schema,
         // the metadata and type-mismatch-policy, kind and namespace map one option each. A query
-        // or GQL query has no option: the table is the whole kind, and filters are not pushed
-        // down. The other five map one option each: the three scan.* options below,
-        // service-account-key-file and emulator-endpoint.
+        // or GQL query has no option: the table is the whole kind, and query is set only with the
+        // equalities scan.filter-push-down.enabled lets the planner push. The other five map one
+        // option each: the three scan.* options below, service-account-key-file and
+        // emulator-endpoint.
         assertThat(declaredKeys())
                 .contains(
                         "kind",
@@ -160,7 +162,8 @@ class DatastoreOptionParityTest {
                         "type-mismatch-policy",
                         "scan.partition.max-partitions",
                         "scan.read-time",
-                        "scan.max-rows-per-fetch");
+                        "scan.max-rows-per-fetch",
+                        "scan.filter-push-down.enabled");
     }
 
     private static Set<String> declaredKeys() {

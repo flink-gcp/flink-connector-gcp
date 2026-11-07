@@ -24,9 +24,9 @@ limitations under the License.
   (the scan), [#1653] (the lookup), [#1690] (the scan's reason for refusing a metadata kind) and
   [#1689] (`scan.read-time` truncated to the microsecond), and 2026-10-11 by [#1717] (the metadata
   kinds' refusal kept), [#1730] (geographical points and key values), [#1729] (`sink.write-mode`,
-  a merge by default) and [#1743] (the `update` write mode), and 2026-10-12 by [#1719] (the scan
-  reads a statistics kind)
-- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719]
+  a merge by default) and [#1743] (the `update` write mode), 2026-10-12 by [#1719] (the scan
+  reads a statistics kind), and 2026-11-07 by [#1831] (opt-in filter pushdown)
+- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`, `datastore.table`, `datastore.table.sink`, `datastore.table.source`, `datastore.source.batch`, `datastore.source.serializer`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/datastore.md`
 
@@ -117,15 +117,54 @@ The Native-mode table offers `sink.write-mode = 'update'` (ADR-0179), and a job 
 - **`update` is refused on a table without a PRIMARY KEY**, as every mode is, **and on a table that declares only its PRIMARY KEY**, which has no property to update, as in Native mode; `updateProperties` refuses an entity without properties for the same reason.
 - `datastore.proto` says only that "the entity must already exist" for an `update`, and names no status. The emulator refused a masked `update` of a missing key with `NOT_FOUND`, alone and between two upserts, applying the write ahead of it and not the one after, as it does for an unmasked `update` (`DatastoreRejectionITCase`, the pinned image, one run). `DatastoreWriterITCase` and `DatastoreTableSinkITCase` hold the mode on the emulator: a declared `ROW` replaced the stored embedded entity whole, an undeclared property kept its value, a missing entity failed the job and was not created, deletes were refused when planned, and a materialized delete failed the job and deleted nothing. The service answered as the emulator did, except that it applied the write after the refused one too, as it does for an unmasked `update` (`DatastoreRejectionRealGcpITCase`; its message is "no entity to update"), and `DatastoreTableRealGcpITCase` held the mode against it, names holding a dot included (one run each, 2026-10-11).
 
+### Filter pushdown ([#1831], 2026-11-07)
+
+[#1831] asked whether the scan should push predicates into its query, given that a Datastore filter never matches a value excluded from indexes.
+Whether a value is indexed is set per value and per entity by whichever client wrote it (this table's `sink.unindexed-columns`, the DataStream sink's `excludeFromIndexes`, any other writer), and a string or blob over 1,500 bytes must be unindexed, so the table declaration cannot know which stored values a filter can see.
+It is one of the scan pushdowns [#1829] collects. The Native-mode scan pushes equalities as necessary conditions (ADR-0197); this revision takes that shape behind an assertion only the user can make.
+The client library facts are read in google-cloud-datastore and datastore-v1-proto-client 3.8.0 through libraries-bom 26.91.0; the emulator facts were measured once on 2026-11-07 against the pinned emulator in Datastore mode, and the service's in `DatastoreTableRealGcpITCase` against an ephemeral Standard-edition database, whose second run, in review round two, also matched the integer, `-0.0`, blob and over-long literal rows of the table below.
+
+| Filter (emulator) | Matched | Flink's `=` on the read row |
+|---|---|---|
+| `f == 5` (integer) | the integer `5` and the array `[5, 7]`, not the double `5.0` | `5.0` under `BIGINT` is a mismatch, and so is an array |
+| `f == 5.0` | the double `5.0` only | **misses the integer `5`, which the converter reads into `DOUBLE` as `5.0`** |
+| `f == 0.0`, `f == -0.0` | each only itself | Flink's `-0.0 = 0.0` is true |
+| `f == 'abc'` or the blob `abc` | the string, the blob and the array `['abc', 'def']` | the other type and the array are mismatches |
+| `f == null` | a stored null, not a missing property | Flink reads a missing property as NULL |
+| a timestamp one nanosecond past a stored microsecond | the stored value | Flink keeps it only at the stored microsecond |
+| a string literal over 1,500 bytes | refused, `INVALID_ARGUMENT: The value of property "f" is longer than 1500 bytes.` | |
+| an indexed value excluded from indexes, or one such array element | nothing | **Flink keeps it** |
+
+- **The scan pushes nothing unless `scan.filter-push-down.enabled` is set** (owner's choice, 2026-11-07, over declining pushdown in this record). The option, `false` by default, is the user's assertion that every property a pushed predicate filters is indexed on every entity of the kind; the docs state the loss it accepts. A decline would have left a selective SQL scan reading, and paying for, the whole kind, with the DataStream source's `gqlQuery` as the only way to filter in the service.
+- **With the option, a pushed equality is a necessary condition and every predicate stays a Flink residual**, as in ADR-0197. Pushed: `column = literal` either way round, a bare `BOOLEAN` column and its `NOT`, on a top-level physical column that is `STRING`/`VARCHAR`, `BIGINT`, `BOOLEAN`, `BYTES`/`VARBINARY`, or `TIMESTAMP_LTZ` of precision 6 or more; under `AND`, every conjunct that translates. Each becomes an `EQUAL` property filter of the kind query, and several are combined under `AND`.
+- **Only equalities are pushed, so the scan keeps its key ranges**: `SplittableQueries` cuts a query that filters with `EQUAL` under `AND`, and the service answered three equalities with both `__key__` bounds ANDed on, one split's query, without a composite index. The client library's splitter samples `__scatter__` keys from the kind alone (`QuerySplitterImpl.createScatterQuery` copies only the kind), so sampling needs no index either.
+- **Declined**, each for an entity the service would drop while Flink keeps it, or for a shape outside the measurements:
+  - the PRIMARY KEY column, which is the key and not a property, metadata columns, and a column `sink.unindexed-columns` names, whose values this table writes excluded from indexes;
+  - a column whose name holds a `.` or a backquote, which `PropertyReference` would read as a path;
+  - `DOUBLE`, for the integer the table above shows it missing and for `-0.0`;
+  - `CHAR` and `BINARY`, whose matching is unmeasured, and `TIMESTAMP_LTZ` below precision 6, which the converter truncates, as in ADR-0197;
+  - `IS NULL`, because a missing property matches no filter;
+  - a string or bytes literal over 1,500 bytes, which the service refuses; a timestamp finer than a microsecond, which equals no stored value, or outside the range the service stores;
+  - inequalities, `OR` and `IN`, which would read the query as one split, and `ARRAY` and `ROW` columns, geographical points and key values included.
+- **Both `type-mismatch-policy` values push**, as in ADR-0197. An entity the filter excludes is not read, so nothing in it fails the scan: a mismatch under `fail`, and under either policy a missing or mismatched value in a `NOT NULL` column, a key of the other form, or a key with a parent.
+
+`DatastoreTableFilterPushDownPlanTest` pins the pushed and declined shapes, that a table without the option pushes nothing, and that the residual stays; `DatastoreTableFilterPushDownITCase` compares each pushed predicate's rows with the same predicate over a table of the same kind without the option, including missing properties, nulls, mismatched types, arrays and near misses, under a split count the builder refuses for a query it cannot split, checks the rows the unpushed side keeps, pins the missed integer behind declining `DOUBLE`, holds the `fail`-policy consequence and drops an entity whose filtered value is unindexed; `DatastoreTableRealGcpITCase` holds the key-range query and that loss against the service.
+
 ## Consequences
 
 - A Datastore-mode table can be written from SQL without a DataStream program, with the DataStream sink's batching, ramp-up and recovery.
 - A table cannot express an ancestor path of its own rows, a `MAP` or a `DECIMAL`; each is additive later. A key value and a geographical point were added by [#1730], and a key value in another namespace reads as a mismatch until a `namespace` field is added.
 - An over-long value in an indexed column fails the job, with the service's message naming the property; the docs point to `sink.unindexed-columns`.
 - The scan ([#1652]) and the lookup ([#1653]) extend this connector; the type mapping is the contract they read back.
+- With `scan.filter-push-down.enabled`, an entity whose filtered value is unindexed is dropped without an error ([#1831]); a scan without the option reads every entity of the kind, as before.
+- [#1838] can push a `LIMIT` only above exactly pushed filters, so a Datastore scan with a pushed filter keeps its limit in Flink.
+- Key ranges are cut from the whole kind's scatter keys, so under a selective filter the ranges hold uneven numbers of matching entities and some hold none.
 
 ## Alternatives declined
 
+- **Declining filter pushdown, as the projection was** ([#1831]). It keeps every scan exact, at the cost of reading and billing the whole kind for a selective query; the owner chose the opt-in assertion instead.
+- **Pushing `DOUBLE` as an `IN` of the double and, when exact, the integer** ([#1831]). It would match both stored forms, but `IN` reads the query as one split, and `-0.0` would still need a second value.
+- **Pushing inequalities with the option** ([#1831]). A query with an inequality on a property is read as one split, which turns a parallel scan into one reader.
 - **Refusing a table without a PRIMARY KEY.** Proposed in planning on the ground that id allocation was deferred; the owner chose to accept key-less tables.
 - **A 20-character `SecureRandom` key name per row**, ADR-0179's shape, which this sink first shipped with. About 119 bits make a collision improbable, but an `upsert` under a colliding name replaces the other entity silently, and the owner asked for a guarantee rather than a probability. The Native-mode sink has no allocator in `firestore.v1`; [#1680] tracks the same guarantee there.
 - **An `insert` under a random name**, which refuses a collision instead of replacing: a commit retried after a lost answer, or one that partly applied, would then refuse the sink's own write with `ALREADY_EXISTS` and fail the job.
@@ -165,3 +204,6 @@ The Native-mode table offers `sink.write-mode = 'update'` (ADR-0179), and a job 
 [#1729]: https://github.com/flink-gcp/flink-connector-gcp/issues/1729
 [#1743]: https://github.com/flink-gcp/flink-connector-gcp/issues/1743
 [#1719]: https://github.com/flink-gcp/flink-connector-gcp/issues/1719
+[#1829]: https://github.com/flink-gcp/flink-connector-gcp/issues/1829
+[#1831]: https://github.com/flink-gcp/flink-connector-gcp/issues/1831
+[#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838

@@ -394,6 +394,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   entities without an indexed value of every projected property and repeats array values; the
   scan reads whole entities and converts only produced columns. Do not "optimize" this into a
   projection query.
+- **Filter pushdown is opt-in** (owner, 2026-11-07, #1831): `scan.filter-push-down.enabled`
+  (default `false`) is the user's assertion that filtered properties are indexed, because a
+  Datastore filter never matches an unindexed value. With it, `DatastoreFilterPushDown` pushes
+  equalities as necessary conditions (every predicate stays residual, ADR-0197's shape) and only
+  `EQUAL`, so the query stays splittable. `DOUBLE` is declined: `== 5.0` misses a stored integer
+  the converter reads as `5.0`. Do not push inequalities, `IN` or `OR`: each makes one split.
 - **Metadata** `key-name`/`key-id`/`version`/`create-time`/`update-time`/`read-time` reach the
   deserializer through the `@Internal` `EntityMetadata` and
   `DatastoreEntityMetadataDeserializationSchema` path (ADR-0177 revision); the public SPI is
