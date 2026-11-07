@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Timeout;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -112,6 +113,46 @@ class FirestoreSplitReaderTest {
                 .endsWith("/documents/c/c");
         assertThat(metrics.counter(FirestoreMetricNames.DOCUMENTS_READ)).isEqualTo(7);
         assertThat(pages.readTimes()).hasSize(3).containsOnly(READ_TIME);
+    }
+
+    @Test
+    void readsEveryPageOfAnUnorderedSplitInTheOrderItsCursorsContinueIt() throws IOException {
+        // A split restored from a checkpoint taken before the planner ordered its queries (#2088):
+        // an Enterprise-edition database answers a query without orderBy in no particular order,
+        // and the cursors that continue it would skip what that first page did not reach.
+        ScriptedQueryPageReader pages = new ScriptedQueryPageReader(client, SEVEN);
+        FirestoreSplitReader reader = reader(pages, 3);
+        reader.handleSplitsChanges(
+                new SplitsAddition<>(List.of(split("0", client.collection("c")))));
+
+        assertThat(readAll(reader, "0", new int[] {0})).containsExactlyElementsOf(SEVEN);
+
+        assertThat(pages.pages())
+                .hasSize(3)
+                .allSatisfy(
+                        page ->
+                                assertThat(page.getOrderByList())
+                                        .extracting(order -> order.getField().getFieldPath())
+                                        .containsExactly("__name__"));
+    }
+
+    @Test
+    void resumesASplitRestoredMidReadAtItsCursor() throws IOException {
+        // A checkpoint's resume point already carries the library's ordering and its cursor; the
+        // reader's ordering must leave both as they are.
+        Query restored =
+                client.collection("c")
+                        .startAfter(TestDocuments.document(client, "c/c", Map.of(), READ_TIME));
+        ScriptedQueryPageReader pages = new ScriptedQueryPageReader(client, SEVEN);
+        FirestoreSplitReader reader = reader(pages, 3);
+        reader.handleSplitsChanges(new SplitsAddition<>(List.of(split("0", restored))));
+
+        assertThat(readAll(reader, "0", new int[] {0}))
+                .containsExactlyElementsOf(SEVEN.subList(3, 7));
+        assertThat(pages.pages().get(0).getOrderByList())
+                .isEqualTo(restored.toProto().getStructuredQuery().getOrderByList());
+        assertThat(pages.pages().get(0).getStartAt())
+                .isEqualTo(restored.toProto().getStructuredQuery().getStartAt());
     }
 
     @Test

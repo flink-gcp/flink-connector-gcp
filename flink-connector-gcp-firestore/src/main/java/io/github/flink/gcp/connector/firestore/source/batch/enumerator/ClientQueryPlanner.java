@@ -20,6 +20,7 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.gax.rpc.StatusCode;
 import com.google.auth.Credentials;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.CollectionGroup;
@@ -31,6 +32,8 @@ import com.google.cloud.firestore.QueryPartition;
 import com.google.cloud.firestore.QuerySnapshot;
 import com.google.firestore.v1.RunQueryRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.StatusCodes;
+import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.LazyFirestoreClient;
 import io.github.flink.gcp.connector.firestore.source.FirestoreQueryFactory;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceConfig;
@@ -110,8 +113,13 @@ public class ClientQueryPlanner implements QueryPlanner {
                     config.getPartitionCount() != null
                             ? config.getPartitionCount()
                             : Math.max(1, defaultPartitionCount);
-            for (QueryPartition partition :
-                    partitions(firestore.collectionGroup(collectionGroup), partitionCount)) {
+            List<QueryPartition> partitions;
+            try {
+                partitions = partitions(firestore.collectionGroup(collectionGroup), partitionCount);
+            } catch (IOException e) {
+                throw partitionFailure(e, config.getDatabase(), partitionCount);
+            }
+            for (QueryPartition partition : partitions) {
                 queries.add(project(partition.createQuery(), config).toProto());
             }
         }
@@ -136,6 +144,36 @@ public class ClientQueryPlanner implements QueryPlanner {
         return ReadTimeQueries.await(
                 group.getPartitions(partitionCount),
                 "Failed to partition the Firestore collection group scan.");
+    }
+
+    /**
+     * Returns a partitioning failure with a hint added when the service refused the call as a
+     * precondition, which is how an Enterprise-edition database answers every {@code
+     * PartitionQuery} (measured 2026-11-07: "Service not implemented for Enterprise DB"); the
+     * failure unchanged otherwise. One partition takes no call, so such a scan still reads, in one
+     * subtask.
+     *
+     * @param failure the failure of {@link #partitions(CollectionGroup, int)}
+     * @param database the database the scan reads
+     * @param partitionCount the number of partitions asked for
+     * @return the failure to throw
+     */
+    @VisibleForTesting
+    static IOException partitionFailure(
+            IOException failure, DatabaseDestination database, int partitionCount) {
+        Throwable cause = failure.getCause();
+        if (cause == null || StatusCodes.codeOf(cause) != StatusCode.Code.FAILED_PRECONDITION) {
+            return failure;
+        }
+        return new IOException(
+                "Failed to partition the Firestore collection group scan of "
+                        + database
+                        + " into "
+                        + partitionCount
+                        + " partitions. If the database is Enterprise edition, which does not"
+                        + " implement partitioning, read it as one partition: partitionCount(1),"
+                        + " or 'scan.partition.max-partitions' = '1' in the Table API.",
+                cause);
     }
 
     private static Query project(Query query, FirestoreSourceConfig<?> config) {
@@ -163,8 +201,10 @@ public class ClientQueryPlanner implements QueryPlanner {
             // reader rebuilds too. The two differ for a limitToLast query, whose wire form carries
             // the reversed ordering as an ordinary limit: resolving an offset on the original would
             // skip from the other end. The rebuild is also the library's own check that the query
-            // addresses this client's database.
-            return Query.fromProto(firestore, query.toProto());
+            // addresses this client's database. The rebuilt query also orders explicitly by what a
+            // cursor continues it in, so that resolving an offset, and every page after, reads it
+            // in one order whatever the edition (QueryCursors.withCursorOrder).
+            return Query.fromProto(firestore, QueryCursors.withCursorOrder(query.toProto()));
         } catch (IllegalArgumentException e) {
             throw new IOException(
                     "The Firestore query factory returned a query that addresses a database other"

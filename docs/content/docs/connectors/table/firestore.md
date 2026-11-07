@@ -121,6 +121,7 @@ A `NOT NULL` column has no nullable field around it, so a mismatched or missing 
 
 A scan reads the documents directly in the table's collection, as one query on one split, at one read time.
 With `scan.collection-group` it reads every collection whose id is the last segment of `collection`, at any depth of the database, as a collection-group scan that the service partitions; `scan.partition.max-partitions` caps the partitions it asks for.
+An Enterprise-edition database does not partition, so such a scan that asks for more than one partition fails when it is planned; set `scan.partition.max-partitions` to `1` ([DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#splits-pages-and-recovery)).
 A pushed `LIMIT` reads the group as one query instead, as [Limit pushdown](#limit-pushdown) describes.
 Both read a consistent snapshot at `scan.read-time` (truncated to the microsecond), or at the service's time when the read is planned.
 
@@ -300,7 +301,7 @@ No table write carries a precondition.
 | `reference-field-paths` | empty | Semicolon-separated field paths of `STRING` values written as references to documents |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
 | `scan.collection-group` | `false` | Scan every collection whose id is the last segment of `collection`, partitioned, rather than the one collection as a single split |
-| `scan.partition.max-partitions` | *unset ⇒ the scan's parallelism* | Maps to `partitionCount`: the partitions a collection-group scan asks the service for; only with `scan.collection-group`; unused by a scan given a [pushed limit](#limit-pushdown) |
+| `scan.partition.max-partitions` | *unset ⇒ the scan's parallelism* | Maps to `partitionCount`: the partitions a collection-group scan asks the service for; only with `scan.collection-group`; unused by a scan given a [pushed limit](#limit-pushdown); must be `1` for an Enterprise-edition database, which does not partition |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the documents one request asks for |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |

@@ -104,7 +104,14 @@ public class FirestoreSplitReader implements SplitReader<FetchedDocument, QueryS
                 batch.addFinishedSplit(split.splitId());
                 return batch.build();
             }
-            active = new ActiveSplit(split, pageReader.query(database, split.getQuery()));
+            // The planner already ordered the query; a split restored from a checkpoint an earlier
+            // version took may not be, and its first page must be read in the order its cursors
+            // continue it in.
+            active =
+                    new ActiveSplit(
+                            split,
+                            pageReader.query(
+                                    database, QueryCursors.withCursorOrder(split.getQuery())));
         }
         ActiveSplit split = active;
 

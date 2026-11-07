@@ -20,10 +20,19 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Query;
+import com.google.firestore.v1.RunQueryRequest;
 import com.google.firestore.v1.StructuredQuery;
 
 import javax.annotation.Nullable;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 
 /**
  * Continues a query after a document, the one operation both the split reader's paging and a
@@ -36,6 +45,12 @@ import javax.annotation.Nullable;
  * exactly one position and a document is neither repeated nor skipped, whatever the query's own
  * ordering ({@code docs/adr/0173}).
  *
+ * <p>A cursor continues the query in that ordering, so the query must be read in it from its first
+ * page on. The service does not guarantee that for a query that leaves the ordering implicit: an
+ * Enterprise-edition database answers one without {@code orderBy} in no particular order, and a
+ * continuation would then skip every document ordered before the last one passed (#2088). {@link
+ * #withCursorOrder(RunQueryRequest)} writes the ordering into the query before anything reads it.
+ *
  * <p>Continuing also rewrites the two clauses that count documents rather than name them: the
  * {@code offset} has been consumed once a document has been passed, and the {@code limit} shrinks
  * by the documents passed.
@@ -46,7 +61,111 @@ public final class QueryCursors {
     /** The client library's message for a snapshot that lacks an ordered field. */
     private static final String MISSING_FIELD = "is missing in the provided DocumentSnapshot";
 
+    private static final String DOCUMENT_NAME = FieldPath.documentId().toString();
+
     private QueryCursors() {}
+
+    /**
+     * Returns the query with the ordering a cursor continues it in written out explicitly.
+     *
+     * <p>The ordering is the one the client library's {@code startAfter(DocumentSnapshot)} derives:
+     * the query's own {@code orderBy}, then each inequality-filtered field it does not order by, in
+     * field-path order, then the document name, the added fields in the direction of the last
+     * explicit ordering, ascending when there is none. One deliberate difference: {@code != null}
+     * and {@code != NaN} count as inequality filters here, as the service counts them, while the
+     * library 3.50.0 leaves their fields out and would continue such a query in another order than
+     * its first page. Once the ordering is explicit, the library's cursor takes it unchanged.
+     *
+     * <p>Making the ordering explicit changes nothing the service answers where it already honours
+     * the implicit one, the Standard edition, and needs no other index: it is the ordering the
+     * service applies there anyway.
+     *
+     * @param request the query to read
+     * @return the query with that ordering explicit; {@code request} itself when it already was
+     */
+    public static RunQueryRequest withCursorOrder(RunQueryRequest request) {
+        Preconditions.checkNotNull(request, "request must not be null");
+        StructuredQuery structured = request.getStructuredQuery();
+        List<StructuredQuery.Order> orders = new ArrayList<>(structured.getOrderByList());
+        Set<String> ordered = new HashSet<>();
+        for (StructuredQuery.Order order : orders) {
+            ordered.add(order.getField().getFieldPath());
+        }
+        StructuredQuery.Direction direction =
+                orders.isEmpty()
+                        ? StructuredQuery.Direction.ASCENDING
+                        : orders.get(orders.size() - 1).getDirection();
+        SortedSet<FieldPath> inequalityFields = new TreeSet<>();
+        if (structured.hasWhere()) {
+            collectInequalityFields(structured.getWhere(), inequalityFields);
+        }
+        for (FieldPath field : inequalityFields) {
+            String path = field.toString();
+            if (!path.equals(DOCUMENT_NAME) && ordered.add(path)) {
+                orders.add(order(path, direction));
+            }
+        }
+        if (ordered.add(DOCUMENT_NAME)) {
+            orders.add(order(DOCUMENT_NAME, direction));
+        }
+        if (orders.size() == structured.getOrderByCount()) {
+            return request;
+        }
+        return request.toBuilder()
+                .setStructuredQuery(structured.toBuilder().clearOrderBy().addAllOrderBy(orders))
+                .build();
+    }
+
+    private static void collectInequalityFields(
+            StructuredQuery.Filter filter, SortedSet<FieldPath> fields) {
+        switch (filter.getFilterTypeCase()) {
+            case COMPOSITE_FILTER:
+                for (StructuredQuery.Filter child : filter.getCompositeFilter().getFiltersList()) {
+                    collectInequalityFields(child, fields);
+                }
+                break;
+            case FIELD_FILTER:
+                if (isInequality(filter.getFieldFilter().getOp())) {
+                    fields.add(
+                            FieldPath.fromServerFormat(
+                                    filter.getFieldFilter().getField().getFieldPath()));
+                }
+                break;
+            case UNARY_FILTER:
+                StructuredQuery.UnaryFilter.Operator op = filter.getUnaryFilter().getOp();
+                if (op == StructuredQuery.UnaryFilter.Operator.IS_NOT_NULL
+                        || op == StructuredQuery.UnaryFilter.Operator.IS_NOT_NAN) {
+                    fields.add(
+                            FieldPath.fromServerFormat(
+                                    filter.getUnaryFilter().getField().getFieldPath()));
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    private static boolean isInequality(StructuredQuery.FieldFilter.Operator op) {
+        switch (op) {
+            case LESS_THAN:
+            case LESS_THAN_OR_EQUAL:
+            case GREATER_THAN:
+            case GREATER_THAN_OR_EQUAL:
+            case NOT_EQUAL:
+            case NOT_IN:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static StructuredQuery.Order order(
+            String fieldPath, StructuredQuery.Direction direction) {
+        return StructuredQuery.Order.newBuilder()
+                .setField(StructuredQuery.FieldReference.newBuilder().setFieldPath(fieldPath))
+                .setDirection(direction)
+                .build();
+    }
 
     /**
      * Returns the query that reads what is left after a document.
