@@ -29,9 +29,14 @@ import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.factories.utils.FactoryMocks;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
 
+import com.google.protobuf.Int32Value;
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
 import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
@@ -106,6 +111,71 @@ class DatastoreDynamicTableSourceFactoryTest {
         assertThat(config.getSplitCount()).isEqualTo(16);
         assertThat(config.getReadTime()).isEqualTo(Instant.parse("2026-10-04T00:00:00Z"));
         assertThat(config.getPageSize()).isEqualTo(50);
+    }
+
+    @Test
+    void aPushedLimitBoundsTheKindQueryReadAsOneSplit() {
+        DatastoreDynamicSource dynamic =
+                (DatastoreDynamicSource)
+                        FactoryMocks.createTableSource(
+                                KEYED, options("scan.partition.max-partitions", "16"));
+        dynamic.applyLimit(5);
+        DatastoreSourceConfig<?> config = config(runtimeSource(dynamic));
+
+        assertThat(config.getQuery())
+                .isEqualTo(
+                        SplittableQueries.ofKind("Order").toBuilder()
+                                .setLimit(Int32Value.of(5))
+                                .build());
+        // The builder refuses a split count for a query it reads as one split.
+        assertThat(SplittableQueries.whyNotSplittable(config.getQuery())).isNotNull();
+        assertThat(config.getSplitCount()).isNull();
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+        assertThat(dynamic)
+                .isNotEqualTo(
+                        FactoryMocks.createTableSource(
+                                KEYED, options("scan.partition.max-partitions", "16")));
+    }
+
+    @Test
+    void aLimitPastAnIntOrBesideAPushedFilterIsNotSent() {
+        DatastoreDynamicSource tooLarge =
+                (DatastoreDynamicSource)
+                        FactoryMocks.createTableSource(
+                                KEYED, options("scan.partition.max-partitions", "16"));
+        tooLarge.applyLimit(Integer.MAX_VALUE + 1L);
+        DatastoreSourceConfig<?> unlimited = config(runtimeSource(tooLarge));
+
+        assertThat(unlimited.getQuery()).isEqualTo(SplittableQueries.ofKind("Order"));
+        assertThat(unlimited.getSplitCount()).isEqualTo(16);
+
+        // A key equality is pushed without the option; the planner never pushes a limit beside
+        // it, and a scan that had both would stop early.
+        DatastoreDynamicSource filtered =
+                (DatastoreDynamicSource)
+                        FactoryMocks.createTableSource(
+                                KEYED, options("scan.partition.max-partitions", "16"));
+        filtered.applyFilters(
+                List.of(
+                        CallExpression.permanent(
+                                BuiltInFunctionDefinitions.EQUALS,
+                                List.of(
+                                        new FieldReferenceExpression(
+                                                "id", DataTypes.STRING(), 0, 0),
+                                        new ValueLiteralExpression("k")),
+                                DataTypes.BOOLEAN())));
+        filtered.applyLimit(5);
+        DatastoreSourceConfig<?> keyed = config(runtimeSource(filtered));
+
+        assertThat(keyed.getQuery().hasFilter()).isTrue();
+        assertThat(keyed.getQuery().hasLimit()).isFalse();
+        assertThat(keyed.getSplitCount()).isEqualTo(16);
+
+        DatastoreDynamicSource maxInt =
+                (DatastoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
+        maxInt.applyLimit(Integer.MAX_VALUE);
+        assertThat(config(runtimeSource(maxInt)).getQuery().getLimit().getValue())
+                .isEqualTo(Integer.MAX_VALUE);
     }
 
     @Test

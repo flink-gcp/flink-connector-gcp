@@ -203,6 +203,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `FirestoreTableFilterPushDownITCase` compares against a collection-group table of the same
   documents, which pushes nothing; keep that oracle when adding shapes.
 
+## Table API limit pushdown, both modes (`docs/adr/0201`)
+
+- **A pushed limit is the query's `limit`, and a limited scan is one split** (owner, 2026-11-07,
+  over a per-split limit that reads split count × limit, all billed): a collection-group scan
+  becomes one collection-group query (`FirestoreCollectionQueryFactory.collectionGroup`), a
+  Datastore kind scan one limited query that `SplittableQueries` does not cut. `applyTo(builder,
+  split)` leaves the partition count unset then; both builders refuse it on a one-split query.
+- **The filter interaction is the planner's**: it pushes a limit only with no operator between it
+  and the scan, and every pushed predicate stays a residual `Calc`, so a limited scan carries no
+  filter. Each source still drops the limit beside a pushed filter; keep that guard. The plan tests
+  pin both modes; the emulator ITs' firing control is an unlimited collection-group scan with four
+  partitions, which the emulator cannot plan.
+
 ## Native-mode Table API lookup (`docs/adr/0179`, lookup section)
 
 - **Only the document id addresses a lookup**; a keyless table (every collection-group table) is

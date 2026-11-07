@@ -37,7 +37,10 @@ class FirestoreCollectionQueryFactoryTest {
         try (Firestore client = TestDocuments.offlineClient("p")) {
             assertThat(
                             new FirestoreCollectionQueryFactory(
-                                            "c", new String[] {"`a.b`", "x", "r.`p.q`"}, List.of())
+                                            "c",
+                                            new String[] {"`a.b`", "x", "r.`p.q`"},
+                                            List.of(),
+                                            null)
                                     .create(client))
                     .isEqualTo(
                             client.collection("c")
@@ -46,7 +49,7 @@ class FirestoreCollectionQueryFactoryTest {
                                             FieldPath.of("x"),
                                             FieldPath.of("r", "p.q")));
             assertThat(
-                            new FirestoreCollectionQueryFactory("c", new String[0], List.of())
+                            new FirestoreCollectionQueryFactory("c", new String[0], List.of(), null)
                                     .create(client))
                     .isEqualTo(client.collection("c").select(FieldPath.documentId()));
         }
@@ -67,7 +70,8 @@ class FirestoreCollectionQueryFactoryTest {
                                                     FieldEquality.documentId("k"),
                                                     FieldEquality.field(List.of("n"), 5L),
                                                     FieldEquality.field(List.of("t"), time),
-                                                    FieldEquality.field(List.of("bytes"), bytes)))
+                                                    FieldEquality.field(List.of("bytes"), bytes)),
+                                            null)
                                     .create(client))
                     .isEqualTo(
                             client.collection("c")
@@ -83,6 +87,27 @@ class FirestoreCollectionQueryFactoryTest {
     }
 
     @Test
+    void boundsTheQueryByTheLimitAfterTheSelection() throws Exception {
+        try (Firestore client = TestDocuments.offlineClient("p")) {
+            assertThat(
+                            new FirestoreCollectionQueryFactory(
+                                            "c", new String[] {"x"}, List.of(), 5)
+                                    .create(client))
+                    .isEqualTo(client.collection("c").select(FieldPath.of("x")).limit(5));
+            // A collection group is read whole up to the limit, with no partition cursors.
+            assertThat(
+                            FirestoreCollectionQueryFactory.collectionGroup(
+                                            "c", new String[] {"x"}, 5)
+                                    .create(client))
+                    .isEqualTo(client.collectionGroup("c").select(FieldPath.of("x")).limit(5));
+            assertThat(
+                            FirestoreCollectionQueryFactory.collectionGroup("c", new String[0], 0)
+                                    .create(client))
+                    .isEqualTo(client.collectionGroup("c").select(FieldPath.documentId()).limit(0));
+        }
+    }
+
+    @Test
     void comparesByCollectionFieldsAndEqualitiesAndSurvivesJavaSerialization() throws Exception {
         List<FieldEquality> equalities =
                 List.of(
@@ -92,15 +117,32 @@ class FirestoreCollectionQueryFactoryTest {
                         FieldEquality.field(List.of("b"), Blob.fromBytes(new byte[] {1})),
                         FieldEquality.field(List.of("t"), Timestamp.ofTimeSecondsAndNanos(1, 0)));
         FirestoreCollectionQueryFactory factory =
-                new FirestoreCollectionQueryFactory("c", new String[] {"a"}, equalities);
+                new FirestoreCollectionQueryFactory("c", new String[] {"a"}, equalities, null);
 
         assertThat(InstantiationUtil.clone(factory)).isEqualTo(factory).hasSameHashCodeAs(factory);
         assertThat(factory)
                 .isNotEqualTo(
-                        new FirestoreCollectionQueryFactory("d", new String[] {"a"}, equalities))
+                        new FirestoreCollectionQueryFactory(
+                                "d", new String[] {"a"}, equalities, null))
                 .isNotEqualTo(
-                        new FirestoreCollectionQueryFactory("c", new String[] {"b"}, equalities))
+                        new FirestoreCollectionQueryFactory(
+                                "c", new String[] {"b"}, equalities, null))
                 .isNotEqualTo(
-                        new FirestoreCollectionQueryFactory("c", new String[] {"a"}, List.of()));
+                        new FirestoreCollectionQueryFactory(
+                                "c", new String[] {"a"}, List.of(), null))
+                .isNotEqualTo(
+                        new FirestoreCollectionQueryFactory("c", new String[] {"a"}, equalities, 5))
+                .isNotEqualTo(
+                        FirestoreCollectionQueryFactory.collectionGroup(
+                                "c", new String[] {"a"}, 5));
+        FirestoreCollectionQueryFactory group =
+                FirestoreCollectionQueryFactory.collectionGroup("c", new String[] {"a"}, 5);
+        assertThat(InstantiationUtil.clone(group)).isEqualTo(group).hasSameHashCodeAs(group);
+        assertThat(group)
+                .isNotEqualTo(
+                        new FirestoreCollectionQueryFactory("c", new String[] {"a"}, List.of(), 5))
+                .isNotEqualTo(
+                        FirestoreCollectionQueryFactory.collectionGroup(
+                                "c", new String[] {"a"}, 6));
     }
 }

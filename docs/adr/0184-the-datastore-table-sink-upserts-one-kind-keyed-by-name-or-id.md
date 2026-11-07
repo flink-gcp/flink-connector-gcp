@@ -187,7 +187,7 @@ The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, and the plan tes
 - An over-long value in an indexed column fails the job, with the service's message naming the property; the docs point to `sink.unindexed-columns`.
 - The scan ([#1652]) and the lookup ([#1653]) extend this connector; the type mapping is the contract they read back.
 - With `scan.filter-push-down.enabled`, an entity whose filtered value is unindexed is dropped without an error ([#1831]); a scan without the option reads every entity of the kind, as before, unless its predicate pins the key: a key equality is pushed without the option ([#2066]), so such a scan reads that root entity alone and no longer fails on a child entity or a key of the other form.
-- [#1838] can push a `LIMIT` only above exactly pushed filters, so a Datastore scan with a pushed filter keeps its limit in Flink.
+- [#1838] can push a `LIMIT` only above exactly pushed filters, so a Datastore scan with a pushed filter keeps its limit in Flink; [ADR-0201] pushes a limit only onto a scan with no predicate.
 - Key ranges are cut from the whole kind's scatter keys, so under a selective filter the ranges hold uneven numbers of matching entities and some hold none.
 
 ## Alternatives declined
@@ -236,5 +236,6 @@ The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, and the plan tes
 [#1719]: https://github.com/flink-gcp/flink-connector-gcp/issues/1719
 [#1829]: https://github.com/flink-gcp/flink-connector-gcp/issues/1829
 [#1831]: https://github.com/flink-gcp/flink-connector-gcp/issues/1831
+[ADR-0201]: 0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838
 [#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066

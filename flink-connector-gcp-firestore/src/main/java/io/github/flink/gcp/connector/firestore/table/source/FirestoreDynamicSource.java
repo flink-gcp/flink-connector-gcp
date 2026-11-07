@@ -26,6 +26,7 @@ import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
@@ -77,12 +78,19 @@ import java.util.Set;
  * single-collection scan also adds the equality filters {@link FirestoreFilterPushDown} translates,
  * each a necessary condition that Flink evaluates again; a collection-group scan pushes none
  * ({@code docs/adr/0197}).
+ *
+ * <p>A limit the planner pushes bounds the query, and a collection-group scan given one reads the
+ * group as one limited query instead of as partitions, so a scan reads at most that many documents
+ * ({@code docs/adr/0201}). Flink keeps its own limit above the scan. The planner pushes a limit
+ * only onto a scan with no residual predicate above it, and every predicate stays a residual, so a
+ * limited scan carries no pushed filter; a scan that has both drops the limit.
  */
 @Internal
 public final class FirestoreDynamicSource
         implements ScanTableSource,
                 LookupTableSource,
                 SupportsFilterPushDown,
+                SupportsLimitPushDown,
                 SupportsProjectionPushDown,
                 SupportsReadingMetadata {
 
@@ -103,6 +111,7 @@ public final class FirestoreDynamicSource
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
     private PushedFilters<FieldEquality> filterState = PushedFilters.empty();
+    @Nullable private Integer limit;
 
     /**
      * Creates the source over every physical column and no metadata.
@@ -165,7 +174,14 @@ public final class FirestoreDynamicSource
                                 new RowDataDeserializationSchema(
                                         schema, columns, metadataKeys, policy, producedType));
         String[] fields = fieldMask(schema, columns);
-        if (scanConfig.isCollectionGroup()) {
+        // A limit beside a pushed filter would stop before a document Flink's residual keeps. The
+        // planner never pushes both; the guard keeps the query right if it ever did.
+        Integer queryLimit = filterState.filters().isEmpty() ? limit : null;
+        if (scanConfig.isCollectionGroup() && queryLimit != null) {
+            builder.query(
+                    FirestoreCollectionQueryFactory.collectionGroup(
+                            collectionId(collection), fields, queryLimit));
+        } else if (scanConfig.isCollectionGroup()) {
             FieldPath[] paths = new FieldPath[fields.length];
             for (int i = 0; i < paths.length; i++) {
                 paths[i] = FieldPath.fromServerFormat(fields[i]);
@@ -175,9 +191,11 @@ public final class FirestoreDynamicSource
                     .select(paths.length == 0 ? new FieldPath[] {FieldPath.documentId()} : paths);
         } else {
             builder.query(
-                    new FirestoreCollectionQueryFactory(collection, fields, filterState.filters()));
+                    new FirestoreCollectionQueryFactory(
+                            collection, fields, filterState.filters(), queryLimit));
         }
-        scanConfig.applyTo(builder);
+        // Only an unlimited collection-group scan is partitioned.
+        scanConfig.applyTo(builder, scanConfig.isCollectionGroup() && queryLimit == null);
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -363,6 +381,15 @@ public final class FirestoreDynamicSource
         return filterState.result();
     }
 
+    /**
+     * Bounds the scan's query by the limit, which includes any offset the statement skips. A limit
+     * beyond what a query's 32-bit limit holds is not pushed: Flink's own limit still applies.
+     */
+    @Override
+    public void applyLimit(long limit) {
+        this.limit = limit <= Integer.MAX_VALUE ? (int) limit : null;
+    }
+
     @Override
     public Map<String, DataType> listReadableMetadata() {
         return ReadableMetadata.listAll();
@@ -394,6 +421,7 @@ public final class FirestoreDynamicSource
         copy.metadataKeys = metadataKeys;
         copy.producedDataType = producedDataType;
         copy.filterState = filterState;
+        copy.limit = limit;
         return copy;
     }
 
@@ -424,7 +452,8 @@ public final class FirestoreDynamicSource
                 && Arrays.deepEquals(columns, that.columns)
                 && metadataKeys.equals(that.metadataKeys)
                 && producedDataType.equals(that.producedDataType)
-                && filterState.equals(that.filterState);
+                && filterState.equals(that.filterState)
+                && Objects.equals(limit, that.limit);
     }
 
     @Override
@@ -443,6 +472,7 @@ public final class FirestoreDynamicSource
                 Arrays.deepHashCode(columns),
                 metadataKeys,
                 producedDataType,
-                filterState);
+                filterState,
+                limit);
     }
 }
