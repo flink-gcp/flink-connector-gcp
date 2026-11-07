@@ -146,13 +146,6 @@ public final class SpannerWriterOptions implements Serializable {
     static final long MAX_BATCH_BYTES_LIMIT = 100L * 1024 * 1024;
 
     /**
-     * The largest {@link Builder#maxCommitDelay(Duration)} Spanner accepts. Rejected here rather
-     * than by the service, which would fail the write on a task manager rather than the job on
-     * submission.
-     */
-    public static final Duration MAX_COMMIT_DELAY_LIMIT = Duration.ofMillis(500);
-
-    /**
      * The longest {@link Builder#transactionTag(String)} Spanner keeps. The service truncates a
      * longer tag without an error, so a tag that reads correctly in the job would be recorded
      * shortened in the change stream and the statistics tables.
@@ -164,7 +157,6 @@ public final class SpannerWriterOptions implements Serializable {
     private final int maxBatchCells;
     private final int maxBatchMutations;
     private final long maxBatchBytes;
-    @Nullable private final Duration maxCommitDelay;
     @Nullable private final SpannerRpcPriority rpcPriority;
     private final boolean excludeTxnFromChangeStreams;
     @Nullable private final String transactionTag;
@@ -180,7 +172,6 @@ public final class SpannerWriterOptions implements Serializable {
         this.maxBatchCells = builder.maxBatchCells;
         this.maxBatchMutations = builder.maxBatchMutations;
         this.maxBatchBytes = builder.maxBatchBytes;
-        this.maxCommitDelay = builder.maxCommitDelay;
         this.rpcPriority = builder.rpcPriority;
         this.excludeTxnFromChangeStreams = builder.excludeTxnFromChangeStreams;
         this.transactionTag = builder.transactionTag;
@@ -203,10 +194,9 @@ public final class SpannerWriterOptions implements Serializable {
     /**
      * Returns the default options: at most {@value #DEFAULT_MAX_BATCH_CELLS} mutation cells,
      * {@value #DEFAULT_MAX_BATCH_MUTATIONS} mutations and 1 MiB per batch write request, the
-     * service's own commit delay and priority, writes that change streams record and no transaction
-     * tag, a 30 s timeout for one complete batch write attempt, a recovery budget of 500 ms
-     * doubling to 10 s over at most 10 attempts, and no order between mutations of one row within a
-     * request.
+     * service's own priority, writes that change streams record and no transaction tag, a 30 s
+     * timeout for one complete batch write attempt, a recovery budget of 500 ms doubling to 10 s
+     * over at most 10 attempts, and no order between mutations of one row within a request.
      *
      * @return the default options
      */
@@ -227,12 +217,6 @@ public final class SpannerWriterOptions implements Serializable {
     /** Returns the cap on the estimated size of a batch write request. */
     public long getMaxBatchBytes() {
         return maxBatchBytes;
-    }
-
-    /** Returns the commit delay, or {@code null} to leave the service's own handling in place. */
-    @Nullable
-    public Duration getMaxCommitDelay() {
-        return maxCommitDelay;
     }
 
     /** Returns the RPC priority, or {@code null} to leave it unspecified (meaning high). */
@@ -310,7 +294,6 @@ public final class SpannerWriterOptions implements Serializable {
                 && maxBatchMutations == that.maxBatchMutations
                 && maxBatchBytes == that.maxBatchBytes
                 && recoveryMaxAttempts == that.recoveryMaxAttempts
-                && Objects.equals(maxCommitDelay, that.maxCommitDelay)
                 && rpcPriority == that.rpcPriority
                 && excludeTxnFromChangeStreams == that.excludeTxnFromChangeStreams
                 && Objects.equals(transactionTag, that.transactionTag)
@@ -326,7 +309,6 @@ public final class SpannerWriterOptions implements Serializable {
                 maxBatchCells,
                 maxBatchMutations,
                 maxBatchBytes,
-                maxCommitDelay,
                 rpcPriority,
                 excludeTxnFromChangeStreams,
                 transactionTag,
@@ -345,8 +327,6 @@ public final class SpannerWriterOptions implements Serializable {
                 + maxBatchMutations
                 + ", maxBatchBytes="
                 + maxBatchBytes
-                + ", maxCommitDelay="
-                + maxCommitDelay
                 + ", rpcPriority="
                 + rpcPriority
                 + ", excludeTxnFromChangeStreams="
@@ -373,7 +353,6 @@ public final class SpannerWriterOptions implements Serializable {
         private int maxBatchCells = DEFAULT_MAX_BATCH_CELLS;
         private int maxBatchMutations = DEFAULT_MAX_BATCH_MUTATIONS;
         private long maxBatchBytes = DEFAULT_MAX_BATCH_BYTES;
-        @Nullable private Duration maxCommitDelay;
         @Nullable private SpannerRpcPriority rpcPriority;
         private boolean excludeTxnFromChangeStreams;
         @Nullable private String transactionTag;
@@ -456,31 +435,6 @@ public final class SpannerWriterOptions implements Serializable {
                     MAX_BATCH_BYTES_LIMIT,
                     maxBatchBytes);
             this.maxBatchBytes = maxBatchBytes;
-            return this;
-        }
-
-        /**
-         * Sets how long Spanner may delay a commit to group it with others, trading latency for
-         * throughput. Defaults to unset, leaving the service's own handling in place.
-         *
-         * <p>Not rounded to milliseconds: the client forwards seconds and nanoseconds unchanged, so
-         * whatever is set here is what the service sees.
-         *
-         * @param maxCommitDelay the commit delay, between zero and {@link #MAX_COMMIT_DELAY_LIMIT}
-         * @return this builder
-         */
-        public Builder maxCommitDelay(Duration maxCommitDelay) {
-            Preconditions.checkNotNull(maxCommitDelay, "maxCommitDelay must not be null");
-            Preconditions.checkArgument(
-                    !maxCommitDelay.isNegative(),
-                    "maxCommitDelay must not be negative: %s",
-                    maxCommitDelay);
-            Preconditions.checkArgument(
-                    maxCommitDelay.compareTo(MAX_COMMIT_DELAY_LIMIT) <= 0,
-                    "maxCommitDelay must be at most %s, which is what Spanner accepts: %s",
-                    MAX_COMMIT_DELAY_LIMIT,
-                    maxCommitDelay);
-            this.maxCommitDelay = maxCommitDelay;
             return this;
         }
 

@@ -40,7 +40,6 @@ class SpannerWriterOptionsTest {
         assertThat(options.getMaxBatchMutations()).isEqualTo(500);
         assertThat(options.getMaxBatchBytes()).isEqualTo(1024L * 1024);
         // Unset, so the service's own handling stays in place rather than being restated here.
-        assertThat(options.getMaxCommitDelay()).isNull();
         assertThat(options.getRpcPriority()).isNull();
         assertThat(options.getBatchWriteTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(options.getOrderingMode()).isEqualTo(OrderingMode.NONE);
@@ -201,49 +200,6 @@ class SpannerWriterOptionsTest {
     }
 
     @Test
-    void rejectsACommitDelayThatSpannerWouldRefuse() {
-        assertThatThrownBy(
-                        () -> SpannerWriterOptions.builder().maxCommitDelay(Duration.ofMillis(501)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("maxCommitDelay");
-        assertThatThrownBy(
-                        () -> SpannerWriterOptions.builder().maxCommitDelay(Duration.ofMillis(-1)))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void acceptsTheCommitDelayBoundsSpannerDoes() {
-        // Zero has a meaning of its own — commit without waiting to group — so it is not rejected
-        // as a positivity violation the way a backoff would be.
-        assertThat(
-                        SpannerWriterOptions.builder()
-                                .maxCommitDelay(Duration.ZERO)
-                                .build()
-                                .getMaxCommitDelay())
-                .isEqualTo(Duration.ZERO);
-        assertThat(
-                        SpannerWriterOptions.builder()
-                                .maxCommitDelay(SpannerWriterOptions.MAX_COMMIT_DELAY_LIMIT)
-                                .build()
-                                .getMaxCommitDelay())
-                .isEqualTo(Duration.ofMillis(500));
-    }
-
-    @Test
-    void keepsSubMillisecondCommitDelaysBecauseTheClientForwardsThem() {
-        // The client copies seconds and nanos straight onto the request, so rounding here would
-        // silently change what the service was asked for.
-        Duration halfMilli = Duration.ofNanos(500_000);
-
-        assertThat(
-                        SpannerWriterOptions.builder()
-                                .maxCommitDelay(halfMilli)
-                                .build()
-                                .getMaxCommitDelay())
-                .isEqualTo(halfMilli);
-    }
-
-    @Test
     void rejectsRetryBackoffsBelowAMillisecondBecauseTheScheduleIsInMilliseconds() {
         assertThatThrownBy(
                         () ->
@@ -331,8 +287,6 @@ class SpannerWriterOptionsTest {
 
     @Test
     void rejectsNullOptionalKnobs() {
-        assertThatThrownBy(() -> SpannerWriterOptions.builder().maxCommitDelay(null))
-                .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerWriterOptions.builder().rpcPriority(null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> SpannerWriterOptions.builder().transactionTag(null))
@@ -352,7 +306,6 @@ class SpannerWriterOptionsTest {
                         .maxBatchCells(11)
                         .maxBatchMutations(22)
                         .maxBatchBytes(33)
-                        .maxCommitDelay(Duration.ofMillis(44))
                         .rpcPriority(SpannerRpcPriority.LOW)
                         .excludeTxnFromChangeStreams(true)
                         .transactionTag("backfill")
@@ -378,7 +331,6 @@ class SpannerWriterOptionsTest {
                 .contains("maxBatchCells=11")
                 .contains("maxBatchMutations=22")
                 .contains("maxBatchBytes=33")
-                .contains("maxCommitDelay=PT0.044S")
                 .contains("rpcPriority=LOW")
                 .contains("excludeTxnFromChangeStreams=true")
                 .contains("transactionTag=backfill")

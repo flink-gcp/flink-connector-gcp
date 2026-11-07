@@ -63,25 +63,6 @@ class DefaultSpannerDatabaseAccessFactoryTest {
     }
 
     @Test
-    void carriesTheCommitDelayAndPriorityWhenTheyAreSet() {
-        Options.TransactionOption[] transactionOptions =
-                DefaultSpannerDatabaseAccessFactory.transactionOptions(
-                        SpannerWriterOptions.builder()
-                                .maxCommitDelay(Duration.ofMillis(20))
-                                .rpcPriority(SpannerRpcPriority.LOW)
-                                .build());
-
-        // Asserted by kind rather than by value, because the client library reads a transaction
-        // option only from inside its own package: the accessors that would say what these carry
-        // are package-private, as is the aggregate they fold into. Comparing against what the
-        // library's own factories produce keeps the assertion off any private class name.
-        assertThat(transactionOptions)
-                .hasSize(2)
-                .anyMatch(option -> option.getClass() == commitDelayKind())
-                .anyMatch(option -> option.getClass() == priorityKind());
-    }
-
-    @Test
     void carriesTheChangeStreamExclusionAndTagWhenTheyAreSet() {
         Options.TransactionOption[] transactionOptions =
                 DefaultSpannerDatabaseAccessFactory.transactionOptions(
@@ -90,8 +71,10 @@ class DefaultSpannerDatabaseAccessFactoryTest {
                                 .transactionTag("backfill")
                                 .build());
 
-        // The exclusion is one shared instance in the client library, so it compares by identity;
-        // the tag option has no value equality and is asserted by kind, as above.
+        // The exclusion is one shared instance in the client library, so it compares by identity.
+        // The tag option has no value equality, and the accessor that would say what it carries is
+        // package-private in the client library, so it is asserted by kind: comparing against what
+        // the library's own factory produces keeps the assertion off any private class name.
         assertThat(transactionOptions)
                 .hasSize(2)
                 .contains(Options.excludeTxnFromChangeStreams())
@@ -178,10 +161,6 @@ class DefaultSpannerDatabaseAccessFactoryTest {
                                 SpannerWriterOptions.builder().rpcPriority(priority).build()))
                 .singleElement()
                 .matches(option -> option.getClass() == priorityKind());
-    }
-
-    private static Class<?> commitDelayKind() {
-        return Options.maxCommitDelay(Duration.ofMillis(1)).getClass();
     }
 
     private static Class<?> tagKind() {

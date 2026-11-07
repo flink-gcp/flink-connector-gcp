@@ -413,13 +413,6 @@ public final class SpannerConnectorOptions {
                     .noDefaultValue()
                     .withDescription("The maximum estimated mutation bytes in one request.");
 
-    /** The commit delay Spanner may use to group writes. */
-    public static final ConfigOption<Duration> SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY =
-            ConfigOptions.key("sink.buffer-flush.max-commit-delay")
-                    .durationType()
-                    .noDefaultValue()
-                    .withDescription("The commit delay Spanner may use to group writes.");
-
     /** The LOW, MEDIUM, or HIGH priority of sink RPCs. */
     public static final ConfigOption<SpannerRpcPriority> SINK_RPC_PRIORITY =
             ConfigOptions.key("sink.rpc-priority")

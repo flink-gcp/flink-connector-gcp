@@ -126,7 +126,8 @@ Two client-library facts constrain what can be measured at all (checked in 6.119
   Spanner's own refusal names the real one better. A range delete is the one way this sink can
   reach the per-mutation-group 80,000, and it is exactly such a single mutation.
 
-**All three are bounded at the setter** ([#435]), as `maxCommitDelay` already was — a `*_LIMIT`
+**All three are bounded at the setter** ([#435]), as `maxCommitDelay` already was (that knob was
+later removed by [#2064], because `BatchWrite` never sent it) — a `*_LIMIT`
 constant, a message naming what the figure is, and a reject/accept test pair. `maxBatchBytes(512L * 1024 * 1024)` built fine before them, and a job so
 configured then dies on a task manager, one request-level refusal per batch — which
 `SpannerErrorClassifier` calls `FATAL`, since a failure of the request names no mutation — for a
@@ -295,4 +296,5 @@ The primary-key index is excluded by name (`PRIMARY_KEY` in both dialects, the f
 [#573]: https://github.com/flink-gcp/flink-connector-gcp/issues/573
 [#1926]: https://github.com/flink-gcp/flink-connector-gcp/issues/1926
 [#1928]: https://github.com/flink-gcp/flink-connector-gcp/issues/1928
+[#2064]: https://github.com/flink-gcp/flink-connector-gcp/issues/2064
 [ADR-0189]: 0189-the-spanner-sink-keeps-per-row-order-on-opt-in.md

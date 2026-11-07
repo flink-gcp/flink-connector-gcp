@@ -44,9 +44,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Check a transaction option against `BatchWriteRequest`, not against `Options`** (#1992).
   `transactionOptions` hands every knob to `batchWriteAtLeastOnce`, and the client copies only what
   the request has a field for: the priority and tag (`request_options`) and the change-stream
-  exclusion. `maxCommitDelay` has no field and is dropped (#2064). The emulator honours the
-  exclusion but records no transaction tag, not even a commit's, so a tag claim is the gated
-  suite's to make.
+  exclusion. A commit delay has no field there, which is why the sink offers none (#2064). The
+  emulator honours the exclusion but records no transaction tag, not even a commit's, so a tag
+  claim is the gated suite's to make.
 - **The transaction tag is checked at the setter** under ADR-0127's third shape: Spanner's
   tag-limitations page says it truncates past 50 characters, replaces a character outside ASCII
   32-126 with an underscore, and strips leading underscores, all without an error. Round one of

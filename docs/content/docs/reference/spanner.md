@@ -103,8 +103,10 @@ decides how large a request grows**. The reasoning is under
 | Option | Default | What it does |
 |---|---|---|
 | `batchWriteTimeout` | `30s` | Bounds one complete `BatchWrite` RPC attempt, including a response stream that reports some groups and then stalls. At least 1 ms. Raise it when larger batches or service load make valid attempts approach the bound, then recompute the retry budget against the checkpoint timeout. This connector, rather than the client library, decides whether to retry the mutations that remain undecided |
-| `maxCommitDelay` | *unset ⇒ the service's own handling* | How long Spanner may delay a commit to group it with others, trading latency for throughput. Between zero and 500 ms, which is what the service accepts. Not rounded to milliseconds — the client forwards seconds and nanoseconds unchanged |
 | `rpcPriority` | *unset ⇒ `HIGH`* | `LOW`, `MEDIUM` or `HIGH`. Spanner treats an unspecified priority as `HIGH`, so `MEDIUM` is a step down from the default rather than a restatement of it. `LOW` is what a backfill that must not disturb serving traffic wants |
+
+The sink has no commit-delay option.
+It writes through `BatchWrite`, and a `BatchWrite` request has no field for Spanner's `max_commit_delay`, which only a `Commit` request carries.
 
 ### Change streams and tags
 

@@ -356,7 +356,6 @@ class SpannerDynamicTableFactoryTest {
         options.put("sink.buffer-flush.max-cells", "100");
         options.put("sink.buffer-flush.max-mutations", "90");
         options.put("sink.buffer-flush.max-size", "2 mb");
-        options.put("sink.buffer-flush.max-commit-delay", "25 ms");
         options.put("sink.rpc-priority", "low");
         options.put("sink.exclude-txn-from-change-streams", "true");
         options.put("sink.transaction-tag", "flink-backfill");
@@ -373,8 +372,6 @@ class SpannerDynamicTableFactoryTest {
         assertThat(sink.getConfig().getWriterOptions().getMaxBatchMutations()).isEqualTo(90);
         assertThat(sink.getConfig().getWriterOptions().getMaxBatchBytes())
                 .isEqualTo(2L * 1024 * 1024);
-        assertThat(sink.getConfig().getWriterOptions().getMaxCommitDelay())
-                .isEqualTo(Duration.ofMillis(25));
         assertThat(sink.getConfig().getWriterOptions().getRpcPriority())
                 .isEqualTo(SpannerRpcPriority.LOW);
         assertThat(sink.getConfig().getWriterOptions().isExcludeTxnFromChangeStreams()).isTrue();

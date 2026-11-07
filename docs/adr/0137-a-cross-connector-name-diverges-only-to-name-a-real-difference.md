@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-23; revised by [#1048], [#1049], [#1051], [#1052] and [#1058]
-  (2026-08-23); BigQuery read-side option keys migrated by [#1047] (2026-08-23)
-- Issues: [#1043], [#782], [#1047], [#1048], [#1049], [#1051], [#1052], [#1058]
+  (2026-08-23); BigQuery read-side option keys migrated by [#1047] (2026-08-23); Spanner's
+  `sink.buffer-flush.max-commit-delay` removed by [#2064] (2026-11-07)
+- Issues: [#1043], [#782], [#1047], [#1048], [#1049], [#1051], [#1052], [#1058], [#2064]
 - Modules: all connectors
 - Current behavior: the rules in this record, with the judged divergence table appended below
   as evidence; the drift half is routed as sub-issues [#1047]–[#1053]
@@ -59,9 +60,10 @@ idiom wins.** This is [ADR-0028]'s `retry*` (gax `RetrySettings`) versus `recove
   `delay-threshold` are gax `BatchingSettings`' field names, the same move Flink's
   Elasticsearch connector makes with its client's word (`sink.bulk-flush.*`). A
   connector-owned buffer takes Flink's own idiom — Spanner's `sink.buffer-flush.max-*` is the
-  JDBC/HBase shape, correctly, because the Spanner writer accumulates its own buffer (its
-  `max-commit-delay` leaf is the Spanner API's own `maxCommitDelay`, a commit-time option the
-  vendor applies server-side — the vendor word riding the house prefix).
+  JDBC/HBase shape, correctly, because the Spanner writer accumulates its own buffer. Its
+  former `max-commit-delay` leaf, the Spanner API's own `maxCommitDelay`, was removed by
+  [#2064]: the writer sends `BatchWrite`, whose request has no commit-delay field, so the value
+  never reached the service.
   BigQuery's `max-append-request-bytes` names the `AppendRows` request limit.
   [#1052] aligned Bigtable's gax-backed keys and public builder methods with Pub/Sub's
   `element-count-threshold` and `request-byte-threshold` vocabulary.
@@ -390,7 +392,7 @@ divergence-bearing rows — identical-by-construction rows are summarized below)
 | in-flight bytes | `…max-inflight-bytes` / `maxInflightBytes` | `sink.in-flight.max-bytes` / `maxInFlightBytes` | — | `sink.in-flight.max-bytes` / `maxInFlightBytes` | — |
 | batch by count | — | `sink.batching.element-count-threshold` | — | `sink.batching.element-count-threshold` | `sink.buffer-flush.max-mutations`, `…max-cells` |
 | batch by bytes | `sink.*.max-append-request-bytes` | `sink.batching.request-byte-threshold` | — | `sink.batching.request-byte-threshold` | `sink.buffer-flush.max-size` |
-| batch latency | `sink.default-stream.flush-interval` | `sink.batching.delay-threshold` | — | — | `sink.buffer-flush.max-commit-delay` |
+| batch latency | `sink.default-stream.flush-interval` | `sink.batching.delay-threshold` | — | — | — (`sink.buffer-flush.max-commit-delay` removed by [#2064]) |
 | connector-owned retry budget | `sink.*.recovery.*` / `recovery*` | `sink.recovery.*` / `recovery*` | **`sink.retry.*` / `retry*`** | `sink.recovery.*` / `recovery*` | **`sink.retry.*` / `retry*`** |
 | total SDK retry budget | `sink.*.retry.max-duration` / `maxRetryDuration` | `sink.retry.total-timeout` / `retryTotalTimeout` | — | — | — |
 | sink failure handler | **`failureHandler`** | `failedMessageHandler` | `failedTaskHandler` | `failedMutationHandler` | `failedMutationHandler` |
@@ -431,9 +433,9 @@ The migration also grouped the one flat retry key, `source.retry-max-attempts`, 
 JDBC/HBase use `sink.buffer-flush.max-rows`/`max-size`/`interval`; Elasticsearch uses its
 client's own word (`sink.bulk-flush.*`); Kafka has no Flink-level batching keys. In this
 repository, Spanner's `sink.buffer-flush.*` names a **connector-owned** buffer in the Flink
-idiom — conformant on both axes, and its `max-commit-delay` leaf is the Spanner API's own
-`maxCommitDelay` field (a commit-time option the vendor applies server-side, not a local flush
-trigger), the vendor word riding the house prefix; Pub/Sub's `sink.batching.element-count-threshold`/
+idiom — conformant on both axes (its former `max-commit-delay` leaf, the Spanner API's own
+`maxCommitDelay` field, was removed by [#2064] because `BatchWrite` carries no commit delay);
+Pub/Sub's `sink.batching.element-count-threshold`/
 `request-byte-threshold`/`delay-threshold` are gax `BatchingSettings`' own field names fronting
 an **SDK-owned** batcher — the Elasticsearch pattern; BigQuery's `max-append-request-bytes`
 names the `AppendRows` request limit (vendor word). Bigtable originally fronted the same gax
@@ -665,6 +667,7 @@ stay unchecked, because they inherit their enclosing tier.
 [#1052]: https://github.com/flink-gcp/flink-connector-gcp/issues/1052
 [#1053]: https://github.com/flink-gcp/flink-connector-gcp/issues/1053
 [#1058]: https://github.com/flink-gcp/flink-connector-gcp/issues/1058
+[#2064]: https://github.com/flink-gcp/flink-connector-gcp/issues/2064
 [ADR-0014]: 0014-the-pubsub-table-layer-maps-onto-the-datastream-builders.md
 [ADR-0028]: 0028-default-stream-tuning-recovery-vs-retry-naming-eviction-and-flush-interval.md
 [ADR-0038]: 0038-metric-names-are-per-connector-inventories-in-one-shape-without-flinks-num-prefix.md

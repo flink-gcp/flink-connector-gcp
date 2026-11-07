@@ -490,7 +490,6 @@ The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#
 | `sink.buffer-flush.max-cells` | `5000` | Maps to `maxBatchCells` |
 | `sink.buffer-flush.max-mutations` | `500` | Maps to `maxBatchMutations` |
 | `sink.buffer-flush.max-size` | `1 mb` | Maps to `maxBatchBytes` |
-| `sink.buffer-flush.max-commit-delay` | *unset* | Maps to `maxCommitDelay` |
 | `sink.rpc-priority` | *unset ⇒ Spanner treats it as `HIGH`* | Maps to `rpcPriority` |
 | `sink.exclude-txn-from-change-streams` | `false` | Maps to `excludeTxnFromChangeStreams`; only a change stream whose `allow_txn_exclusion` option is true leaves the writes out |
 | `sink.transaction-tag` | *unset ⇒ no tag* | Maps to `transactionTag` |
