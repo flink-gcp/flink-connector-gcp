@@ -454,6 +454,8 @@ The application runs in the Operator's standalone mode with `scheduler-mode: rea
 Both manifests run the same job, and the recovery manifest differs only in `taskManager.replicas`, which the Operator applies to the TaskManager Deployment in place.
 The scheduler takes the job's parallelism from the TaskManagers, so a scale to three makes two subtasks read subscription 0, as the [split plan](../../../docs/content/docs/connectors/datastream/pubsub.md#subscriptions-splits-and-parallelism) assigns it.
 It waits 120 seconds for TaskManagers before it starts the job, so that one registering after the first checkpoint does not restart it before the fault.
+In standalone application mode, Operator 1.15.0's `UserLibMountDecorator` mounts an empty volume over `/opt/flink/usrlib` whenever `pipeline.classpaths` is set, which hides the relay's JAR and dependencies there, and the JobManager then fails to load its entry class and restarts; the first deployed run, `ps2056-rso-off-a1`, stopped on that restart.
+The decorator leaves alone a JobManager that already mounts a path under `/opt/flink/usrlib`, so the reactive JobManager template mounts an empty volume at `/opt/flink/usrlib/.operator-guard`.
 
 The observer sleeps 100 ms for each replay-cohort input, and the source's flow-control limit is 100,000 messages, so the replay cohort keeps the task thread busy for about 330 seconds on a subtask that reads a subscription alone.
 The limit matters because the source acknowledges only at checkpoint completion, so the SDK's default of 1,000 would leave the thread idle for most of a 120-second interval.
