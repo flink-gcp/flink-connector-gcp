@@ -35,6 +35,7 @@ kubernetes/
   pkg/cloudtasks/application.cue # Cloud Tasks recovery trial contract
   pkg/bigtable/application.cue   # Bigtable recovery trial contract
   pkg/spanner/application.cue    # Spanner recovery trial contract
+  pkg/firestore/application.cue  # Firestore recovery trial contract
   apps/smoke/                    # Internal Java application and image payload
   apps/bigquery/                 # Finite BigQuery recovery application and local tests
   apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
@@ -48,7 +49,7 @@ kubernetes/
   runs/common.cue                # Run inputs and environment constraints
   lifecycle/delivery.cue         # Shared lifecycle ConfigMap and supervisor
   lifecycle/faults.cue           # Recovery fault kinds and each phase's sizes
-  lifecycle/{smoke,bigquery,pubsub,cloudtasks,bigtable,spanner}.cue # Scenario inputs and applications
+  lifecycle/{smoke,bigquery,pubsub,cloudtasks,bigtable,spanner,firestore}.cue # Scenario inputs and applications
   tests/                         # CI delivery discovery and synthetic regression cases
   upstream.toml                  # Operator chart version, mirror URLs and SHA-512
 ```
@@ -119,12 +120,13 @@ The package deliberately leaves image, ServiceAccount and application-specific f
 An upgrade requiring state preservation must explicitly select its upgrade mode and recovery inputs.
 
 The root supplies common project labels.
-`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-bigquery`, `tier3-pubsub`, `tier3-cloudtasks`, `tier3-bigtable` or `tier3-spanner`) to resource metadata.
+`runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-bigquery`, `tier3-pubsub`, `tier3-cloudtasks`, `tier3-bigtable`, `tier3-spanner` or `tier3-firestore`) to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism one or two and `v2_2`.
 The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one to three and `v2_2`; three is for the reactive trials.
 In `tier3-bigtable` it requires the `bigtable` ServiceAccount, the `bigtable-recovery` GAR package, parallelism one or two and `v2_2`.
 In `tier3-spanner` it requires the `spanner` ServiceAccount, the `spanner-recovery` GAR package, parallelism one or two and `v2_2`.
+In `tier3-firestore` it requires the `firestore` ServiceAccount, the `firestore-recovery` GAR package, parallelism one or two and `v2_2`.
 The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its [offline proposal](apps/pubsub/README.md#offline-trial-proposal) renders a reviewable delivery, and [dispatch](apps/pubsub/README.md#approval-dispatch) runs a reviewed trial through the runner's [admission](apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](apps/pubsub/README.md#recovery-exercise).
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
 The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
@@ -260,7 +262,8 @@ Its four trials each reached `usable`, as the [Spanner recovery trial findings](
 
 The [Firestore recovery application](apps/firestore/README.md) supplies the one graph that the trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) share: the Native-mode and Datastore-mode sinks and a paced batch-read copy in each mode.
 Build it with `just tier3-firestore-verify`.
-Its tests run the production graph against the Firestore emulator in both modes through savepoint upgrades and both rescales and pin the graph; it has no namespace, grants or scenario yet.
+Its tests run the production graph against the Firestore emulator in both modes through savepoint upgrades and both rescales and pin the graph.
+The [`firestore-recovery`](lifecycle/firestore.cue) delivery runs it in the `tier3-firestore` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-firestore.tf); the namespace follows in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083) and the rig scenario in [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084).
 
 ## Pub/Sub recovery application
 
