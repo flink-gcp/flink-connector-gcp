@@ -2200,6 +2200,14 @@ def test_a_reactive_pubsub_kind_renders_standalone_reactive_manifests(
         assert spec["flinkConfiguration"]["scheduler-mode"] == "reactive"
         assert spec["taskManager"]["replicas"] == replicas
         assert spec["job"]["parallelism"] == sizes["initial"]
+        # The Operator's standalone UserLibMountDecorator skips a JobManager that
+        # already mounts under /opt/flink/usrlib; otherwise it hides the image's JAR.
+        jm = spec["jobManager"]["podTemplate"]["spec"]
+        assert [v["name"] for v in jm["volumes"]] == ["usrlib-guard"]
+        (mount,) = jm["containers"][0]["volumeMounts"]
+        assert mount["mountPath"].startswith("/opt/flink/usrlib/")
+        assert "volumes" not in spec["podTemplate"]["spec"]
+        assert "volumes" not in spec["taskManager"]["podTemplate"]["spec"]
         assert spec["job"]["args"][-3:] == [
             f"--restore-deduplication={deduplication}",
             f"--replay-delay-millis={pubsub_verdict.REACTIVE_REPLAY_DELAY_MILLIS}",
@@ -2222,6 +2230,7 @@ def test_a_native_pubsub_kind_keeps_native_mode_and_the_default_flow_control(mod
     for app in json.loads(result.stdout):
         assert app["spec"]["mode"] == "native"
         assert "scheduler-mode" not in app["spec"]["flinkConfiguration"]
+        assert "volumes" not in app["spec"]["jobManager"]["podTemplate"]["spec"]
         assert app["spec"]["job"]["args"][-3:] == [
             "--restore-deduplication=false",
             "--replay-delay-millis=0",

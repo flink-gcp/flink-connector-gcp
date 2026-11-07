@@ -1691,6 +1691,8 @@ The `pkg/pubsub` package now renders the Operator's standalone mode under `sched
 A third subtask makes two readers share a subscription, which the ledger relay has to reach.
 The `tier3-pubsub` run policy admits a job parallelism of three for them, and their admission quota holds five Pods in that namespace instead of four, which makes their estimate USD 2.128.
 Their recovery manifest differs from the initial one only in the TaskManager replica count, which the Operator applies in place, and an eviction deletes a TaskManager Pod that the Deployment replaces.
+Refined under [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056), after the first reactive run stopped on a JobManager container restart: in standalone application mode Operator 1.15.0 mounts an empty volume over `/opt/flink/usrlib` when `pipeline.classpaths` is set, which hides the JAR the image installs there, unless the JobManager already mounts a path below it, so the reactive JobManager template mounts an empty volume at `/opt/flink/usrlib/.operator-guard`.
+Building the JAR into another directory was declined, because the native kinds load it from `usrlib` and the image is shared.
 
 The unplanned-restart rule keeps its expected count everywhere except inside a reactive recovery, where every restore is accepted and recorded.
 The reactive scheduler keeps its JobMaster and restarts the job whenever its TaskManagers change: once for a scale and twice for an eviction, and a lost TaskManager may also fail the job before its slots are released, which would add one that no fixed count predicts.
