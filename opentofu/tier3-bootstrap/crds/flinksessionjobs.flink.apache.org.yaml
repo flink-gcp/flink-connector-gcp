@@ -1,4 +1,4 @@
-# Generated from the Apache Flink Kubernetes Operator 1.15.0 chart.
+# Generated from the Apache Flink Kubernetes Operator 1.16.1 chart.
 # Regenerate with just tier3-schemas refresh; do not edit by hand.
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements. See the NOTICE file
@@ -31,14 +31,11 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - description: Last observed state of the job.
-      jsonPath: .status.jobStatus.state
+    - jsonPath: .status.jobStatus.state
       name: Job Status
       priority: 0
       type: string
-    - description: Lifecycle state of the Flink resource (including being rolled back,
-        failed etc.).
-      jsonPath: .status.lifecycleState
+    - jsonPath: .status.lifecycleState
       name: Lifecycle State
       priority: 0
       type: string

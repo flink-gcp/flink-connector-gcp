@@ -1,4 +1,4 @@
-// Generated from the Apache Flink Kubernetes Operator 1.15.0 chart.
+// Generated from the Apache Flink Kubernetes Operator 1.16.1 chart.
 // Regenerate with just tier3-schemas refresh; do not edit by hand.
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements. See the NOTICE file
@@ -21,6 +21,7 @@ package v1beta1
 #FlinkBlueGreenDeployment: {
 	_embeddedResource
 	spec?: {
+		configuration?: [string]: string
 		ingress?: {
 			annotations?: [string]: string
 			className?: string
@@ -31,7 +32,6 @@ package v1beta1
 				secretName?: string
 			}]
 		}
-		configuration?: [string]: string
 		template?: {
 			metadata?: {
 				annotations?: [string]: string
@@ -69,7 +69,7 @@ package v1beta1
 				flinkConfiguration?: null | bool | number | string | [...] | {
 					...
 				}
-				flinkVersion?:    "v1_13" | "v1_14" | "v1_15" | "v1_16" | "v1_17" | "v1_18" | "v1_19" | "v1_20" | "v2_0" | "v2_1" | "v2_2"
+				flinkVersion?:    "v1_13" | "v1_14" | "v1_15" | "v1_16" | "v1_17" | "v1_18" | "v1_19" | "v1_20" | "v2_0" | "v2_1" | "v2_2" | "v2_3" | "v2_4"
 				image?:           string
 				imagePullPolicy?: string
 				ingress?: {
@@ -280,6 +280,12 @@ package v1beta1
 											apiVersion?: string
 											fieldPath?:  string
 										}
+										fileKeyRef?: {
+											key?:        string
+											optional?:   bool
+											path?:       string
+											volumeName?: string
+										}
 										resourceFieldRef?: {
 											containerName?: string
 											divisor?: matchN(>=1, [int, string]) & (int | string)
@@ -419,6 +425,13 @@ package v1beta1
 									requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 								}
 								restartPolicy?: string
+								restartPolicyRules?: [...{
+									action?: string
+									exitCodes?: {
+										operator?: string
+										values?: [...int]
+									}
+								}]
 								securityContext?: {
 									allowPrivilegeEscalation?: bool
 									appArmorProfile?: {
@@ -525,6 +538,12 @@ package v1beta1
 											apiVersion?: string
 											fieldPath?:  string
 										}
+										fileKeyRef?: {
+											key?:        string
+											optional?:   bool
+											path?:       string
+											volumeName?: string
+										}
 										resourceFieldRef?: {
 											containerName?: string
 											divisor?: matchN(>=1, [int, string]) & (int | string)
@@ -664,6 +683,13 @@ package v1beta1
 									requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 								}
 								restartPolicy?: string
+								restartPolicyRules?: [...{
+									action?: string
+									exitCodes?: {
+										operator?: string
+										values?: [...int]
+									}
+								}]
 								securityContext?: {
 									allowPrivilegeEscalation?: bool
 									appArmorProfile?: {
@@ -749,11 +775,12 @@ package v1beta1
 								hostnames?: [...string]
 								ip?: string
 							}]
-							hostIPC?:     bool
-							hostNetwork?: bool
-							hostPID?:     bool
-							hostUsers?:   bool
-							hostname?:    string
+							hostIPC?:          bool
+							hostNetwork?:      bool
+							hostPID?:          bool
+							hostUsers?:        bool
+							hostname?:         string
+							hostnameOverride?: string
 							imagePullSecrets?: [...{
 								name?: string
 							}]
@@ -772,6 +799,12 @@ package v1beta1
 										fieldRef?: {
 											apiVersion?: string
 											fieldPath?:  string
+										}
+										fileKeyRef?: {
+											key?:        string
+											optional?:   bool
+											path?:       string
+											volumeName?: string
 										}
 										resourceFieldRef?: {
 											containerName?: string
@@ -912,6 +945,13 @@ package v1beta1
 									requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 								}
 								restartPolicy?: string
+								restartPolicyRules?: [...{
+									action?: string
+									exitCodes?: {
+										operator?: string
+										values?: [...int]
+									}
+								}]
 								securityContext?: {
 									allowPrivilegeEscalation?: bool
 									appArmorProfile?: {
@@ -1021,6 +1061,7 @@ package v1beta1
 							schedulingGates?: [...{
 								name?: string
 							}]
+							schedulingGroup?: podGroupName?: string
 							securityContext?: {
 								appArmorProfile?: {
 									localhostProfile?: string
@@ -1333,6 +1374,15 @@ package v1beta1
 												resource?: string
 											}
 										}]
+										podCertificate?: {
+											certificateChainPath?: string
+											credentialBundlePath?: string
+											keyPath?:              string
+											keyType?:              string
+											maxExpirationSeconds?: int
+											signerName?:           string
+											userAnnotations?: [string]: string
+										}
 										secret?: {
 											items?: [...{
 												key?:  string
@@ -1405,6 +1455,7 @@ package v1beta1
 							}]
 						}
 						status?: {
+							allocatedResources?: [string]: matchN(>=1, [int, string]) & (int | string)
 							conditions?: [...{
 								lastProbeTime?:      string
 								lastTransitionTime?: string
@@ -1420,6 +1471,7 @@ package v1beta1
 									name?: string
 									resources?: [...{
 										health?:     string
+										message?:    string
 										resourceID?: string
 									}]
 								}]
@@ -1481,6 +1533,7 @@ package v1beta1
 									name?:              string
 									readOnly?:          bool
 									recursiveReadOnly?: string
+									volumeStatus?: image?: imageRef?: string
 								}]
 							}]
 							ephemeralContainerStatuses?: [...{
@@ -1489,6 +1542,7 @@ package v1beta1
 									name?: string
 									resources?: [...{
 										health?:     string
+										message?:    string
 										resourceID?: string
 									}]
 								}]
@@ -1550,8 +1604,17 @@ package v1beta1
 									name?:              string
 									readOnly?:          bool
 									recursiveReadOnly?: string
+									volumeStatus?: image?: imageRef?: string
 								}]
 							}]
+							extendedResourceClaimStatus?: {
+								requestMappings?: [...{
+									containerName?: string
+									requestName?:   string
+									resourceName?:  string
+								}]
+								resourceClaimName?: string
+							}
 							hostIP?: string
 							hostIPs?: [...{
 								ip?: string
@@ -1562,6 +1625,7 @@ package v1beta1
 									name?: string
 									resources?: [...{
 										health?:     string
+										message?:    string
 										resourceID?: string
 									}]
 								}]
@@ -1623,9 +1687,15 @@ package v1beta1
 									name?:              string
 									readOnly?:          bool
 									recursiveReadOnly?: string
+									volumeStatus?: image?: imageRef?: string
 								}]
 							}]
-							message?:            string
+							message?: string
+							nodeAllocatableResourceClaimStatuses?: [...{
+								containers?: [...string]
+								resourceClaimName?: string
+								resources?: [string]: matchN(>=1, [int, string]) & (int | string)
+							}]
 							nominatedNodeName?:  string
 							observedGeneration?: int
 							phase?:              string
@@ -1640,6 +1710,14 @@ package v1beta1
 								name?:              string
 								resourceClaimName?: string
 							}]
+							resources?: {
+								claims?: [...{
+									name?:    string
+									request?: string
+								}]
+								limits?: [string]: matchN(>=1, [int, string]) & (int | string)
+								requests?: [string]: matchN(>=1, [int, string]) & (int | string)
+							}
 							startTime?: string
 						}
 					}
@@ -1648,6 +1726,14 @@ package v1beta1
 						cpu?:              number
 						ephemeralStorage?: string
 						memory?:           string
+					}
+					resources?: {
+						claims?: [...{
+							name?:    string
+							request?: string
+						}]
+						limits?: [string]: matchN(>=1, [int, string]) & (int | string)
+						requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 					}
 				}
 				logConfiguration?: [string]: string
@@ -1835,6 +1921,12 @@ package v1beta1
 										apiVersion?: string
 										fieldPath?:  string
 									}
+									fileKeyRef?: {
+										key?:        string
+										optional?:   bool
+										path?:       string
+										volumeName?: string
+									}
 									resourceFieldRef?: {
 										containerName?: string
 										divisor?: matchN(>=1, [int, string]) & (int | string)
@@ -1974,6 +2066,13 @@ package v1beta1
 								requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 							}
 							restartPolicy?: string
+							restartPolicyRules?: [...{
+								action?: string
+								exitCodes?: {
+									operator?: string
+									values?: [...int]
+								}
+							}]
 							securityContext?: {
 								allowPrivilegeEscalation?: bool
 								appArmorProfile?: {
@@ -2080,6 +2179,12 @@ package v1beta1
 										apiVersion?: string
 										fieldPath?:  string
 									}
+									fileKeyRef?: {
+										key?:        string
+										optional?:   bool
+										path?:       string
+										volumeName?: string
+									}
 									resourceFieldRef?: {
 										containerName?: string
 										divisor?: matchN(>=1, [int, string]) & (int | string)
@@ -2219,6 +2324,13 @@ package v1beta1
 								requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 							}
 							restartPolicy?: string
+							restartPolicyRules?: [...{
+								action?: string
+								exitCodes?: {
+									operator?: string
+									values?: [...int]
+								}
+							}]
 							securityContext?: {
 								allowPrivilegeEscalation?: bool
 								appArmorProfile?: {
@@ -2304,11 +2416,12 @@ package v1beta1
 							hostnames?: [...string]
 							ip?: string
 						}]
-						hostIPC?:     bool
-						hostNetwork?: bool
-						hostPID?:     bool
-						hostUsers?:   bool
-						hostname?:    string
+						hostIPC?:          bool
+						hostNetwork?:      bool
+						hostPID?:          bool
+						hostUsers?:        bool
+						hostname?:         string
+						hostnameOverride?: string
 						imagePullSecrets?: [...{
 							name?: string
 						}]
@@ -2327,6 +2440,12 @@ package v1beta1
 									fieldRef?: {
 										apiVersion?: string
 										fieldPath?:  string
+									}
+									fileKeyRef?: {
+										key?:        string
+										optional?:   bool
+										path?:       string
+										volumeName?: string
 									}
 									resourceFieldRef?: {
 										containerName?: string
@@ -2467,6 +2586,13 @@ package v1beta1
 								requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 							}
 							restartPolicy?: string
+							restartPolicyRules?: [...{
+								action?: string
+								exitCodes?: {
+									operator?: string
+									values?: [...int]
+								}
+							}]
 							securityContext?: {
 								allowPrivilegeEscalation?: bool
 								appArmorProfile?: {
@@ -2576,6 +2702,7 @@ package v1beta1
 						schedulingGates?: [...{
 							name?: string
 						}]
+						schedulingGroup?: podGroupName?: string
 						securityContext?: {
 							appArmorProfile?: {
 								localhostProfile?: string
@@ -2888,6 +3015,15 @@ package v1beta1
 											resource?: string
 										}
 									}]
+									podCertificate?: {
+										certificateChainPath?: string
+										credentialBundlePath?: string
+										keyPath?:              string
+										keyType?:              string
+										maxExpirationSeconds?: int
+										signerName?:           string
+										userAnnotations?: [string]: string
+									}
 									secret?: {
 										items?: [...{
 											key?:  string
@@ -2960,6 +3096,7 @@ package v1beta1
 						}]
 					}
 					status?: {
+						allocatedResources?: [string]: matchN(>=1, [int, string]) & (int | string)
 						conditions?: [...{
 							lastProbeTime?:      string
 							lastTransitionTime?: string
@@ -2975,6 +3112,7 @@ package v1beta1
 								name?: string
 								resources?: [...{
 									health?:     string
+									message?:    string
 									resourceID?: string
 								}]
 							}]
@@ -3036,6 +3174,7 @@ package v1beta1
 								name?:              string
 								readOnly?:          bool
 								recursiveReadOnly?: string
+								volumeStatus?: image?: imageRef?: string
 							}]
 						}]
 						ephemeralContainerStatuses?: [...{
@@ -3044,6 +3183,7 @@ package v1beta1
 								name?: string
 								resources?: [...{
 									health?:     string
+									message?:    string
 									resourceID?: string
 								}]
 							}]
@@ -3105,8 +3245,17 @@ package v1beta1
 								name?:              string
 								readOnly?:          bool
 								recursiveReadOnly?: string
+								volumeStatus?: image?: imageRef?: string
 							}]
 						}]
+						extendedResourceClaimStatus?: {
+							requestMappings?: [...{
+								containerName?: string
+								requestName?:   string
+								resourceName?:  string
+							}]
+							resourceClaimName?: string
+						}
 						hostIP?: string
 						hostIPs?: [...{
 							ip?: string
@@ -3117,6 +3266,7 @@ package v1beta1
 								name?: string
 								resources?: [...{
 									health?:     string
+									message?:    string
 									resourceID?: string
 								}]
 							}]
@@ -3178,9 +3328,15 @@ package v1beta1
 								name?:              string
 								readOnly?:          bool
 								recursiveReadOnly?: string
+								volumeStatus?: image?: imageRef?: string
 							}]
 						}]
-						message?:            string
+						message?: string
+						nodeAllocatableResourceClaimStatuses?: [...{
+							containers?: [...string]
+							resourceClaimName?: string
+							resources?: [string]: matchN(>=1, [int, string]) & (int | string)
+						}]
 						nominatedNodeName?:  string
 						observedGeneration?: int
 						phase?:              string
@@ -3195,6 +3351,14 @@ package v1beta1
 							name?:              string
 							resourceClaimName?: string
 						}]
+						resources?: {
+							claims?: [...{
+								name?:    string
+								request?: string
+							}]
+							limits?: [string]: matchN(>=1, [int, string]) & (int | string)
+							requests?: [string]: matchN(>=1, [int, string]) & (int | string)
+						}
 						startTime?: string
 					}
 				}
@@ -3384,6 +3548,12 @@ package v1beta1
 											apiVersion?: string
 											fieldPath?:  string
 										}
+										fileKeyRef?: {
+											key?:        string
+											optional?:   bool
+											path?:       string
+											volumeName?: string
+										}
 										resourceFieldRef?: {
 											containerName?: string
 											divisor?: matchN(>=1, [int, string]) & (int | string)
@@ -3523,6 +3693,13 @@ package v1beta1
 									requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 								}
 								restartPolicy?: string
+								restartPolicyRules?: [...{
+									action?: string
+									exitCodes?: {
+										operator?: string
+										values?: [...int]
+									}
+								}]
 								securityContext?: {
 									allowPrivilegeEscalation?: bool
 									appArmorProfile?: {
@@ -3629,6 +3806,12 @@ package v1beta1
 											apiVersion?: string
 											fieldPath?:  string
 										}
+										fileKeyRef?: {
+											key?:        string
+											optional?:   bool
+											path?:       string
+											volumeName?: string
+										}
 										resourceFieldRef?: {
 											containerName?: string
 											divisor?: matchN(>=1, [int, string]) & (int | string)
@@ -3768,6 +3951,13 @@ package v1beta1
 									requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 								}
 								restartPolicy?: string
+								restartPolicyRules?: [...{
+									action?: string
+									exitCodes?: {
+										operator?: string
+										values?: [...int]
+									}
+								}]
 								securityContext?: {
 									allowPrivilegeEscalation?: bool
 									appArmorProfile?: {
@@ -3853,11 +4043,12 @@ package v1beta1
 								hostnames?: [...string]
 								ip?: string
 							}]
-							hostIPC?:     bool
-							hostNetwork?: bool
-							hostPID?:     bool
-							hostUsers?:   bool
-							hostname?:    string
+							hostIPC?:          bool
+							hostNetwork?:      bool
+							hostPID?:          bool
+							hostUsers?:        bool
+							hostname?:         string
+							hostnameOverride?: string
 							imagePullSecrets?: [...{
 								name?: string
 							}]
@@ -3876,6 +4067,12 @@ package v1beta1
 										fieldRef?: {
 											apiVersion?: string
 											fieldPath?:  string
+										}
+										fileKeyRef?: {
+											key?:        string
+											optional?:   bool
+											path?:       string
+											volumeName?: string
 										}
 										resourceFieldRef?: {
 											containerName?: string
@@ -4016,6 +4213,13 @@ package v1beta1
 									requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 								}
 								restartPolicy?: string
+								restartPolicyRules?: [...{
+									action?: string
+									exitCodes?: {
+										operator?: string
+										values?: [...int]
+									}
+								}]
 								securityContext?: {
 									allowPrivilegeEscalation?: bool
 									appArmorProfile?: {
@@ -4125,6 +4329,7 @@ package v1beta1
 							schedulingGates?: [...{
 								name?: string
 							}]
+							schedulingGroup?: podGroupName?: string
 							securityContext?: {
 								appArmorProfile?: {
 									localhostProfile?: string
@@ -4437,6 +4642,15 @@ package v1beta1
 												resource?: string
 											}
 										}]
+										podCertificate?: {
+											certificateChainPath?: string
+											credentialBundlePath?: string
+											keyPath?:              string
+											keyType?:              string
+											maxExpirationSeconds?: int
+											signerName?:           string
+											userAnnotations?: [string]: string
+										}
 										secret?: {
 											items?: [...{
 												key?:  string
@@ -4509,6 +4723,7 @@ package v1beta1
 							}]
 						}
 						status?: {
+							allocatedResources?: [string]: matchN(>=1, [int, string]) & (int | string)
 							conditions?: [...{
 								lastProbeTime?:      string
 								lastTransitionTime?: string
@@ -4524,6 +4739,7 @@ package v1beta1
 									name?: string
 									resources?: [...{
 										health?:     string
+										message?:    string
 										resourceID?: string
 									}]
 								}]
@@ -4585,6 +4801,7 @@ package v1beta1
 									name?:              string
 									readOnly?:          bool
 									recursiveReadOnly?: string
+									volumeStatus?: image?: imageRef?: string
 								}]
 							}]
 							ephemeralContainerStatuses?: [...{
@@ -4593,6 +4810,7 @@ package v1beta1
 									name?: string
 									resources?: [...{
 										health?:     string
+										message?:    string
 										resourceID?: string
 									}]
 								}]
@@ -4654,8 +4872,17 @@ package v1beta1
 									name?:              string
 									readOnly?:          bool
 									recursiveReadOnly?: string
+									volumeStatus?: image?: imageRef?: string
 								}]
 							}]
+							extendedResourceClaimStatus?: {
+								requestMappings?: [...{
+									containerName?: string
+									requestName?:   string
+									resourceName?:  string
+								}]
+								resourceClaimName?: string
+							}
 							hostIP?: string
 							hostIPs?: [...{
 								ip?: string
@@ -4666,6 +4893,7 @@ package v1beta1
 									name?: string
 									resources?: [...{
 										health?:     string
+										message?:    string
 										resourceID?: string
 									}]
 								}]
@@ -4727,9 +4955,15 @@ package v1beta1
 									name?:              string
 									readOnly?:          bool
 									recursiveReadOnly?: string
+									volumeStatus?: image?: imageRef?: string
 								}]
 							}]
-							message?:            string
+							message?: string
+							nodeAllocatableResourceClaimStatuses?: [...{
+								containers?: [...string]
+								resourceClaimName?: string
+								resources?: [string]: matchN(>=1, [int, string]) & (int | string)
+							}]
 							nominatedNodeName?:  string
 							observedGeneration?: int
 							phase?:              string
@@ -4744,6 +4978,14 @@ package v1beta1
 								name?:              string
 								resourceClaimName?: string
 							}]
+							resources?: {
+								claims?: [...{
+									name?:    string
+									request?: string
+								}]
+								limits?: [string]: matchN(>=1, [int, string]) & (int | string)
+								requests?: [string]: matchN(>=1, [int, string]) & (int | string)
+							}
 							startTime?: string
 						}
 					}
@@ -4752,6 +4994,14 @@ package v1beta1
 						cpu?:              number
 						ephemeralStorage?: string
 						memory?:           string
+					}
+					resources?: {
+						claims?: [...{
+							name?:    string
+							request?: string
+						}]
+						limits?: [string]: matchN(>=1, [int, string]) & (int | string)
+						requests?: [string]: matchN(>=1, [int, string]) & (int | string)
 					}
 				}
 			}

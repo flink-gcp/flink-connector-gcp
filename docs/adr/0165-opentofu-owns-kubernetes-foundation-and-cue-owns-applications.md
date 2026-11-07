@@ -1880,3 +1880,23 @@ The [preregistered](evidence/0165-spanner-recovery-preregistration-1878.md) tria
 So the sink, the Change Streams source and the batch read have each taken the five faults of the Tier-3 measurement set on the deployed rig: every one of 180,000 input keys held its sequence with one counted execution and was relayed at least once, and every one of 120,000 seed rows was copied with its value and no late row, with the relay's replays and the copy's whole-partition replays counted.
 They also ran the foundation's grants above for the first time: the runner's `CreateDatabase` with its extra statements, its seed commits and split points, and the workload's and the supervisor's data calls under the instance-name condition all succeeded, and no attempt's evidence holds a `PERMISSION_DENIED`.
 Reaching them took nine attempts, none showing a connector defect: the platform preempted a JobManager twice and the supervisor once and shut down a TaskManager's node once, one GCS `compose` timeout restarted a job under Flink's default of zero tolerable checkpoint failures, which [Unplanned job restarts](#unplanned-job-restarts) now tolerates twice, and one connection reset ended a campaign before its next dispatch, which [#1937](https://github.com/flink-gcp/flink-connector-gcp/issues/1937) closed.
+
+### Operator 1.16.1
+
+[#2081](https://github.com/flink-gcp/flink-connector-gcp/issues/2081) moves the Operator from 1.15.0 to 1.16.1, because 1.15.0 cannot start a Flink 2.x standalone application with Kubernetes HA, which the [reactive Pub/Sub trials](#reactive-pubsub-trials) need.
+With HA enabled, Operator 1.15.0 passes `--host <Pod IP>` to the standalone application entry point.
+Flink 1.20's entry point parses that option, but Flink 2.0 removed it, so on Flink 2.2.1 the pair reaches the user program as its first two arguments.
+The second reactive run, `ps2056-rso-off-a2`, failed that way: the relay rejected `--host` in its main method, so the application ended `FAILED` without running the job.
+[FLINK-38795](https://issues.apache.org/jira/browse/FLINK-38795) replaces the pair with `-D jobmanager.rpc.address=<Pod IP>`, and Operator 1.16.0 is the first release to carry it.
+
+Two workarounds were declined.
+Disabling HA for the reactive kinds would have kept 1.15.0, but it would also have made those trials the only ones whose JobManager keeps its completed checkpoints in memory.
+Having the relay skip a leading `--host` pair would have absorbed an Operator defect in an application that every Pub/Sub kind shares, and needed a new image.
+
+The two pins move in two changes, as the separate pins above intend.
+The first moves the CRD and schema pin, whose apply updates the four CRDs while the idle 1.15.0 Operator stays installed.
+The second moves the Helm pin and the Operator image, and its apply installs the 1.16.1 release.
+The changes cannot share a merge: one merge applies both roots as parallel matrix jobs, which neither order the CRDs first nor share the environment lock each apply takes, and that lock admits one holder, so the two jobs would race for it.
+No trial runs between the two applies.
+
+The 1.16.1 CRDs keep the deprecated `jobManager.resource` and `taskManager.resource` beside the new `resources` field ([FLINK-33548](https://issues.apache.org/jira/browse/FLINK-33548)), and the 1.16.1 Operator applies either to the Pods, so the application packages keep `resource`.

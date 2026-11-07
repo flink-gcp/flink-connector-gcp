@@ -1,4 +1,4 @@
-# Generated from the Apache Flink Kubernetes Operator 1.15.0 chart.
+# Generated from the Apache Flink Kubernetes Operator 1.16.1 chart.
 # Regenerate with just tier3-schemas refresh; do not edit by hand.
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements. See the NOTICE file
@@ -31,18 +31,15 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - description: Final path of the snapshot.
-      jsonPath: .status.path
+    - jsonPath: .status.path
       name: Path
       priority: 0
       type: string
-    - description: Timestamp when the snapshot was last created/failed.
-      jsonPath: .status.resultTimestamp
+    - jsonPath: .status.resultTimestamp
       name: Result Timestamp
       priority: 0
       type: string
-    - description: Current state of the snapshot.
-      jsonPath: .status.state
+    - jsonPath: .status.state
       name: Snapshot State
       priority: 0
       type: string

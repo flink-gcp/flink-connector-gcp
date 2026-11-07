@@ -1,4 +1,4 @@
-// Generated from the Apache Flink Kubernetes Operator 1.15.0 chart.
+// Generated from the Apache Flink Kubernetes Operator 1.16.1 chart.
 // Regenerate with just tier3-schemas refresh; do not edit by hand.
 // Licensed to the Apache Software Foundation (ASF) under one
 // or more contributor license agreements. See the NOTICE file
