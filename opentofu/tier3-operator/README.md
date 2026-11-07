@@ -31,8 +31,10 @@ The [bootstrap recovery apply](https://github.com/flink-gcp/flink-connector-gcp/
 | Distributed chart and Operator | 1.15.0 |
 | Planned smoke runtime | Flink 2.2.1 on Java 17, API enum `v2_2` |
 
-The root's `upstream.yaml` fixes the archive URL, version and SHA-512.
+The root's `upstream.yaml` fixes the version, the SHA-512 and the ordered mirror URLs.
 Both runners download and verify that archive into `.terraform/operator-chart.tgz`; the resource uses this checkout-relative path and `values.yaml`.
+The download tries the `urls` in order and accepts only bytes that match the SHA-512, as [the schema refresh](../../kubernetes/README.md#refresh-upstream-schemas) does.
+Each of the two pins carries its own `urls`, so a mirror added to one is not used by the other.
 The helper checks the chart's version and appVersion and renders the same archive before OpenTofu runs.
 The distributed chart defaults to `ghcr.io/apache/flink-kubernetes-operator:79d730b`.
 The idle values select the Operator 1.15.0 GAR digest from the [successful publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704); every later publication mirrors the same digest, and the [image runbook](../../kubernetes/images/README.md) records which run created the current GAR version.

@@ -123,8 +123,9 @@ jobs:
         run: just test-scripts
 
   # Validate deliveries and reproduce generated CRDs on every PR. This job may
-  # fetch public schema modules and the checksum-pinned chart; it is separate
-  # from offline `just lint`. Install only the CUE and Python runners it uses.
+  # fetch public schema modules and, on a cache miss, the checksum-pinned chart;
+  # it is separate from offline `just lint`. Install only the CUE and Python
+  # runners it uses.
   tier3:
     name: Validate Tier-3 manifests
     runs-on: ubuntu-latest
@@ -143,5 +144,19 @@ jobs:
       - name: Check CUE constraints and hierarchy
         run: just tier3-check
 
+      # Keyed on the pin file; the chart is downloaded only when no entry for
+      # that key is available. The check verifies the cached chart against the
+      # pinned SHA-512.
+      - name: Restore the pinned Operator chart
+        id: operator-chart
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/operator-chart.tgz
+          key: tier3-operator-chart-${{ hashFiles('kubernetes/upstream.toml') }}
+
+      - name: Download the pinned Operator chart
+        if: steps.operator-chart.outputs.cache-hit != 'true'
+        run: just tier3-schemas fetch --chart "$RUNNER_TEMP/operator-chart.tgz"
+
       - name: Verify generated schemas against the pinned chart
-        run: just tier3-schemas check
+        run: just tier3-schemas check --chart "$RUNNER_TEMP/operator-chart.tgz"

@@ -536,10 +536,11 @@ tier3-bootstrap kubeconfig *args:
 tier3-operator kubeconfig *args:
     PYTHONUNBUFFERED=1 mise x kubectl helm opentofu uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$1" --root operator tofu "${@:2}"
 
-# Both modes verify the fixed upstream chart hash. Only refresh changes sources.
+# Every mode verifies the fixed upstream chart hash. Only refresh changes sources;
+# fetch only writes the verified chart to --chart, which the other modes then read offline.
 [positional-arguments]
-tier3-schemas mode='check':
-    mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 schemas "$1"
+tier3-schemas mode='check' *args:
+    mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 schemas "$@"
 
 # Offline analysis of a downloaded evidence directory; never contacts a cluster.
 [positional-arguments]

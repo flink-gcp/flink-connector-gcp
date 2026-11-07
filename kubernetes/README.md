@@ -49,7 +49,7 @@ kubernetes/
   lifecycle/faults.cue           # Recovery fault kinds and each phase's sizes
   lifecycle/{smoke,bigquery,pubsub,cloudtasks,bigtable,spanner}.cue # Scenario inputs and applications
   tests/                         # CI delivery discovery and synthetic regression cases
-  upstream.toml                  # Operator chart version, URL and SHA-512
+  upstream.toml                  # Operator chart version, mirror URLs and SHA-512
 ```
 
 `gen/` contains generated sources; `pkg/` contains our reusable packages.
@@ -189,6 +189,12 @@ The schema generator belongs to the `flink-tier3` uv workspace member and runs t
 It shares the root `uv.lock` with the bootstrap helper, lifecycle runtime and tests.
 `upstream.toml` pins the distributed Apache Helm chart and its SHA-512.
 Treat that archive as the CRD source of truth: the source repository's release tag and its distributed chart can differ.
+Its `urls` array lists the mirrors in the order the download tries them, and only bytes that match the SHA-512 are accepted, so a mirror can be added without weakening the pin.
+The operator bootstrap's `opentofu/tier3-operator/upstream.yaml` is a separate pin with its own `urls`.
+The pin lists `dlcdn.apache.org` before the permanent `archive.apache.org` copy.
+The CDN serves only the releases the Flink project still distributes; once the project removes the pinned release from distribution, only the archive serves it.
+`just tier3-schemas fetch --chart <path>` writes the verified chart, and `check` or `refresh` with `--chart <path>` reads it without downloading.
+The Tier-3 lint job caches that file under a key derived from `upstream.toml` and downloads the chart only when no cache entry for that key is available.
 The 1.15.0 archive's FlinkVersion enum ends at `v2_2`; the planned runtime is Flink 2.2.1 on Java 17.
 
 `just tier3-schemas refresh` verifies the archive hash and chart version, then runs `cue get crd` over all four CRD documents.

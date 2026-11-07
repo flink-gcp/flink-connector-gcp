@@ -20,18 +20,17 @@ Kubernetes or GCP operations. The check mode writes only to a temporary director
 """
 
 import argparse
-import hashlib
 import io
 import json
 import subprocess
 import tarfile
 import tempfile
 import tomllib
-import urllib.request
 from pathlib import Path
 
 import yaml
 
+from . import chart as operator_chart
 from . import repository
 
 GENERATED = Path("kubernetes/gen/flink")
@@ -42,24 +41,19 @@ CRDS = {
     "flinksessionjobs": "FlinkSessionJob",
     "flinkstatesnapshots": "FlinkStateSnapshot",
 }
-MAX_CHART_BYTES = 2 * 1024 * 1024
+PIN = Path("kubernetes/upstream.toml")
 
 
-def download_chart(url):
-    """Bound downloads without presenting truncation as a checksum mismatch."""
-    with urllib.request.urlopen(url, timeout=60) as response:
-        data = response.read(MAX_CHART_BYTES + 1)
-    if len(data) > MAX_CHART_BYTES:
-        raise ValueError(f"Operator chart exceeds the {MAX_CHART_BYTES}-byte limit")
-    return data
+def download_chart(pin):
+    """Download the pinned chart from the first of its URLs that serves it."""
+    return operator_chart.download(
+        operator_chart.pinned_urls(pin, str(PIN)), pin["sha512"], str(PIN)
+    )
 
 
 def read_chart(data, pin):
     """Validate the downloaded bytes and return the complete CRD documents."""
-    if hashlib.sha512(data).hexdigest() != pin["sha512"]:
-        raise ValueError(
-            "Operator chart SHA-512 does not match kubernetes/upstream.toml"
-        )
+    operator_chart.check_bytes(data, pin["sha512"], str(PIN))
     result = {}
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as chart:
         version = yaml.safe_load(
@@ -139,21 +133,29 @@ def generated_files(directory):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="flink-tier3 schemas", description=__doc__)
-    parser.add_argument("mode", choices=("check", "refresh"))
+    parser.add_argument("mode", choices=("check", "refresh", "fetch"))
     parser.add_argument(
         "--chart",
         type=Path,
-        help="Use an already downloaded chart (checksum still checked)",
+        help=(
+            "Use an already downloaded chart (checksum still checked); "
+            "fetch writes the verified chart to this path"
+        ),
     )
     parser.add_argument("--cue", default="cue")
     args = parser.parse_args(argv)
-    pin = tomllib.loads((repository.ROOT / "kubernetes/upstream.toml").read_text())[
-        "operator"
-    ]
+    pin = tomllib.loads((repository.ROOT / PIN).read_text())["operator"]
+    if args.mode == "fetch":
+        if not args.chart:
+            parser.error("fetch requires --chart")
+        args.chart.parent.mkdir(parents=True, exist_ok=True)
+        args.chart.write_bytes(download_chart(pin))
+        print(f"Downloaded the Operator {pin['version']} chart to {args.chart}.")
+        return
     if args.chart:
         data = args.chart.read_bytes()
     else:
-        data = download_chart(pin["url"])
+        data = download_chart(pin)
     documents = read_chart(data, pin)
     with tempfile.TemporaryDirectory(prefix="tier3-schemas-") as temporary:
         output = Path(temporary) / "flink"
