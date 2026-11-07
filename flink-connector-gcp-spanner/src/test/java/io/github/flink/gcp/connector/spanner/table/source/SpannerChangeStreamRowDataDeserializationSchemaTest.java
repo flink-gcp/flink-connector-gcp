@@ -725,6 +725,60 @@ class SpannerChangeStreamRowDataDeserializationSchemaTest {
     }
 
     @Test
+    void truncatesTimestampColumnValuesToTheDeclaredPrecision() throws Exception {
+        RowType rowType =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("id", DataTypes.BIGINT()),
+                                        DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(6)),
+                                        DataTypes.FIELD(
+                                                "ats", DataTypes.ARRAY(DataTypes.TIMESTAMP_LTZ(3))))
+                                .getLogicalType();
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        rowType,
+                        new int[] {0},
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        List<DataChangeRecord.ColumnType> columns =
+                Arrays.asList(
+                        column("id", "{\"code\":\"INT64\"}", true, 1),
+                        column("at", "{\"code\":\"TIMESTAMP\"}", false, 2),
+                        column(
+                                "ats",
+                                "{\"code\":\"ARRAY\",\"array_element_type\":{\"code\":\"TIMESTAMP\"}}",
+                                false,
+                                3));
+        String values =
+                "{\"at\":\"2026-08-13T01:02:03.123456789Z\","
+                        + "\"ats\":[\"2026-08-13T01:02:03.123456789Z\"]}";
+        List<RowData> rows = new ArrayList<>();
+
+        new SpannerChangeStreamRowDataDeserializationSchema(
+                        schema,
+                        table(null, "people"),
+                        ChangeStreamChangelogMode.UPSERT,
+                        TypeInformation.of(RowData.class))
+                .deserialize(
+                        record(
+                                "people",
+                                columns,
+                                ModType.INSERT,
+                                ValueCaptureType.NEW_ROW,
+                                Collections.singletonList(new Mod("{\"id\":\"7\"}", values, null))),
+                        collector(rows));
+
+        RowData row = rows.get(0);
+        assertThat(row.getTimestamp(1, 6).toInstant())
+                .isEqualTo(Instant.parse("2026-08-13T01:02:03.123456Z"));
+        assertThat(row.getArray(2).getTimestamp(0, 3).toInstant())
+                .isEqualTo(Instant.parse("2026-08-13T01:02:03.123Z"));
+    }
+
+    @Test
     void convertsPostgresqlAnnotatedNumericAndJsonbDescriptors() throws Exception {
         RowType rowType =
                 (RowType)

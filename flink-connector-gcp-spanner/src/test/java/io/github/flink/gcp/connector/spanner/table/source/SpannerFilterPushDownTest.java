@@ -66,6 +66,8 @@ class SpannerFilterPushDownTest {
                     DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(9).notNull()),
                     DataTypes.FIELD("enabled", DataTypes.BOOLEAN().notNull()),
                     DataTypes.FIELD("amount", DataTypes.DECIMAL(38, 9).notNull()));
+    private static final DataType MILLIS =
+            DataTypes.ROW(DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(3).notNull()));
     private static final Date PRE_EPOCH_DAY = Date.fromYearMonthDay(1969, 12, 31);
 
     @Test
@@ -265,6 +267,222 @@ class SpannerFilterPushDownTest {
     }
 
     @Test
+    void aCoarserTimestampKeyReadsEveryStoredValueThatTruncatesIntoTheRange() {
+        SpannerTableSchemaConverter millisKey = schema(MILLIS, 0);
+        List<KeyColumn> key = Collections.singletonList(new KeyColumn("at", 0, false, false));
+        Key millis = Key.of(timestamp("2026-08-11T01:02:03.123Z"));
+        Key nextMillis = Key.of(timestamp("2026-08-11T01:02:03.124Z"));
+
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.EQUALS,
+                "2026-08-11T01:02:03.123Z",
+                KeyRange.closedOpen(millis, nextMillis));
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.GREATER_THAN,
+                "2026-08-11T01:02:03.123Z",
+                KeyRange.closedClosed(nextMillis, Key.of()));
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                "2026-08-11T01:02:03.123Z",
+                KeyRange.closedClosed(millis, Key.of()));
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.LESS_THAN,
+                "2026-08-11T01:02:03.123Z",
+                KeyRange.closedOpen(Key.of(), millis));
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                "2026-08-11T01:02:03.123Z",
+                KeyRange.closedOpen(Key.of(), nextMillis));
+        // A literal finer than the column rounds a lower bound up and an upper bound down.
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                "2026-08-11T01:02:03.1225Z",
+                KeyRange.closedClosed(millis, Key.of()));
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.LESS_THAN,
+                "2026-08-11T01:02:03.1225Z",
+                KeyRange.closedOpen(Key.of(), millis));
+    }
+
+    @Test
+    void aCoarserTimestampKeyCarriesBoundsAcrossSecondsAndBeforeTheEpoch() {
+        SpannerTableSchemaConverter millisKey = schema(MILLIS, 0);
+        List<KeyColumn> key = Collections.singletonList(new KeyColumn("at", 0, false, false));
+
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                "2026-08-11T01:02:03.999Z",
+                KeyRange.closedOpen(Key.of(), Key.of(timestamp("2026-08-11T01:02:04Z"))));
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.GREATER_THAN_OR_EQUAL,
+                "1969-12-31T23:59:59.9875Z",
+                KeyRange.closedClosed(Key.of(timestamp("1969-12-31T23:59:59.988Z")), Key.of()));
+        // The last millisecond Spanner can store has no next one, so its equality has no end.
+        assertTruncatedRange(
+                millisKey,
+                key,
+                BuiltInFunctionDefinitions.EQUALS,
+                "9999-12-31T23:59:59.999Z",
+                KeyRange.closedClosed(Key.of(timestamp("9999-12-31T23:59:59.999Z")), Key.of()));
+    }
+
+    @Test
+    void aCoarserTimestampKeyPartReadsItsBucketWithinAndAfterAPrefix() {
+        DataType tenantFirst =
+                DataTypes.ROW(
+                        DataTypes.FIELD("tenant", DataTypes.BIGINT().notNull()),
+                        DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(3).notNull()));
+        ResolvedExpression tenant =
+                equals(
+                        new FieldReferenceExpression(
+                                "tenant", tenantFirst.getChildren().get(0), 0, 0),
+                        literal(1));
+        ResolvedExpression at =
+                equals(
+                        new FieldReferenceExpression("at", tenantFirst.getChildren().get(1), 0, 1),
+                        literalOf(Instant.parse("2026-08-11T01:02:03.123Z")));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        schema(tenantFirst, 0, 1), Arrays.asList(tenant, at), false);
+
+        assertResult(state.result(), Arrays.asList(tenant, at), Collections.singletonList(at));
+        assertThat(
+                        state.keySet(
+                                        Arrays.asList(
+                                                new KeyColumn("tenant", 0, false, false),
+                                                new KeyColumn("at", 1, false, false)))
+                                .getRanges())
+                .containsExactly(
+                        KeyRange.closedOpen(
+                                Key.of(1L, timestamp("2026-08-11T01:02:03.123Z")),
+                                Key.of(1L, timestamp("2026-08-11T01:02:03.124Z"))));
+    }
+
+    @Test
+    void aCoarserTimestampEqualityEndsTheKeyPrefix() {
+        DataType atFirst =
+                DataTypes.ROW(
+                        DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(3).notNull()),
+                        DataTypes.FIELD("id", DataTypes.BIGINT().notNull()));
+        ResolvedExpression at =
+                equals(
+                        new FieldReferenceExpression("at", atFirst.getChildren().get(0), 0, 0),
+                        literalOf(Instant.parse("2026-08-11T01:02:03.123Z")));
+        ResolvedExpression id =
+                equals(
+                        new FieldReferenceExpression("id", atFirst.getChildren().get(1), 0, 1),
+                        literal(5));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        schema(atFirst, 0, 1), Arrays.asList(at, id), false);
+
+        assertResult(state.result(), Collections.singletonList(at), Arrays.asList(at, id));
+        assertThat(
+                        state.keySet(
+                                        Arrays.asList(
+                                                new KeyColumn("at", 0, false, false),
+                                                new KeyColumn("id", 1, false, false)))
+                                .getRanges())
+                .containsExactly(
+                        KeyRange.closedOpen(
+                                Key.of(timestamp("2026-08-11T01:02:03.123Z")),
+                                Key.of(timestamp("2026-08-11T01:02:03.124Z"))));
+    }
+
+    @Test
+    void aDescendingCoarserTimestampKeyReversesItsBucket() {
+        assertTruncatedRange(
+                schema(MILLIS, 0),
+                Collections.singletonList(new KeyColumn("at", 0, true, false)),
+                BuiltInFunctionDefinitions.EQUALS,
+                "2026-08-11T01:02:03.123Z",
+                KeyRange.openClosed(
+                        Key.of(timestamp("2026-08-11T01:02:03.124Z")),
+                        Key.of(timestamp("2026-08-11T01:02:03.123Z"))));
+    }
+
+    @Test
+    void aCoarserTimestampKeyRefusesAnEqualityNoTruncatedValueCanMeet() {
+        ResolvedExpression between =
+                equals(millisField(), literalOf(Instant.parse("2026-08-11T01:02:03.1225Z")));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        schema(MILLIS, 0), Collections.singletonList(between), false);
+
+        assertThat(state.keySet(Collections.singletonList(new KeyColumn("at", 0, false, false))))
+                .isEqualTo(KeySet.newBuilder().build());
+    }
+
+    @Test
+    void aCoarserTimestampKeyBoundPastTheLastBucketRemainsForFlink() {
+        // The last millisecond Spanner can store has no next millisecond to bound it.
+        ResolvedExpression last =
+                call(
+                        BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                        millisField(),
+                        literalOf(Instant.parse("9999-12-31T23:59:59.999Z")));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(
+                        schema(MILLIS, 0), Collections.singletonList(last), false);
+
+        assertResult(state.result(), Collections.emptyList(), Collections.singletonList(last));
+        // The comparison still excludes nulls, which a null-filtered index read relies on. Through
+        // an index it is also accepted, because a restored plan replays only accepted filters.
+        assertThat(state.runtime().provesNonNull(0)).isTrue();
+        SpannerFilterPushDown.State throughIndex =
+                SpannerFilterPushDown.translate(
+                        schema(MILLIS, 0), Collections.singletonList(last), true);
+        assertResult(
+                throughIndex.result(),
+                Collections.singletonList(last),
+                Collections.singletonList(last));
+        assertThat(throughIndex.runtime().provesNonNull(0)).isTrue();
+        assertThat(state.keySet(Collections.singletonList(new KeyColumn("at", 0, false, false))))
+                .isNull();
+    }
+
+    @Test
+    void aCoarserTimestampKeyStillMatchesALookupProbeOfItsOwnPrecision() {
+        ResolvedExpression atMost =
+                call(
+                        BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL,
+                        millisField(),
+                        literalOf(Instant.parse("2026-08-11T01:02:03.123Z")));
+
+        SpannerFilterPushDown.RuntimeState runtime =
+                SpannerFilterPushDown.translate(
+                                schema(MILLIS, 0), Collections.singletonList(atMost), false)
+                        .runtime();
+
+        assertThat(runtime.matchesPrimaryKey(Key.of(timestamp("2026-08-11T01:02:03.123Z"))))
+                .isTrue();
+        assertThat(runtime.matchesPrimaryKey(Key.of(timestamp("2026-08-11T01:02:03.124Z"))))
+                .isFalse();
+    }
+
+    @Test
     void aNonIntegralLiteralOnAnIntegerKeyRemainsForFlink() {
         SpannerTableSchemaConverter idKey = schema(PHYSICAL, 1);
         ResolvedExpression fractional = equals(field(1), literalOf(new BigDecimal("1.5")));
@@ -428,6 +646,40 @@ class SpannerFilterPushDownTest {
 
         assertThat(state.keySet(typedPrimaryKey(index, name)))
                 .isEqualTo(KeySet.singleKey(expected));
+    }
+
+    /**
+     * Asserts that a comparison on a {@code TIMESTAMP_LTZ(3)} key reads exactly the stored values
+     * that truncate into its range, and stays for Flink to evaluate on the truncated rows.
+     */
+    private static void assertTruncatedRange(
+            SpannerTableSchemaConverter schema,
+            List<KeyColumn> key,
+            BuiltInFunctionDefinition comparison,
+            String literal,
+            KeyRange expected) {
+        ResolvedExpression filter =
+                call(comparison, millisField(), literalOf(Instant.parse(literal)));
+
+        SpannerFilterPushDown.State state =
+                SpannerFilterPushDown.translate(schema, Collections.singletonList(filter), false);
+
+        assertResult(
+                state.result(),
+                Collections.singletonList(filter),
+                Collections.singletonList(filter));
+        assertThat(state.keySet(key).getRanges())
+                .as("%s %s", comparison.getName(), literal)
+                .containsExactly(expected);
+    }
+
+    private static FieldReferenceExpression millisField() {
+        return new FieldReferenceExpression("at", MILLIS.getChildren().get(0), 0, 0);
+    }
+
+    private static Timestamp timestamp(String instant) {
+        Instant parsed = Instant.parse(instant);
+        return Timestamp.ofTimeSecondsAndNanos(parsed.getEpochSecond(), parsed.getNano());
     }
 
     private static SpannerTableSchemaConverter typedSchema(int primaryKeyIndex) {

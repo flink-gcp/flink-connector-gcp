@@ -611,6 +611,120 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
     }
 
     @Test
+    void aFullCacheAndAScanTruncateTimestampsToTheDeclaredPrecision() throws Exception {
+        Dialect dialect = Dialect.GOOGLE_STANDARD_SQL;
+        DatabaseDestination database =
+                createDatabase(
+                        dialect,
+                        "CREATE TABLE instants (id INT64 NOT NULL, seen_at TIMESTAMP, seen_at_micros TIMESTAMP)"
+                                + " PRIMARY KEY (id)");
+        Timestamp stored = Timestamp.parseTimestamp("2026-08-11T01:02:03.123456789Z");
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newInsertOrUpdateBuilder("instants")
+                                        .set("id")
+                                        .to(1L)
+                                        .set("seen_at")
+                                        .to(stored)
+                                        .set("seen_at_micros")
+                                        .to(stored)
+                                        .build()));
+        Instant millis = Instant.parse("2026-08-11T01:02:03.123Z");
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                "CREATE TABLE instant_source (id BIGINT, seen_at TIMESTAMP_LTZ(3), seen_at_micros TIMESTAMP_LTZ(6),"
+                        + " PRIMARY KEY (id) NOT ENFORCED) WITH ("
+                        + "'connector' = 'spanner', 'lookup.cache' = 'FULL',"
+                        + " 'lookup.full-cache.periodic-reload.interval' = '1 h',"
+                        + " 'project' = '"
+                        + database.getProject()
+                        + "', 'instance' = '"
+                        + database.getInstance()
+                        + "', 'database' = '"
+                        + database.getDatabase()
+                        + "', 'table' = 'instants', 'emulator-endpoint' = '"
+                        + emulatorEndpoint()
+                        + "')");
+        table.executeSql(
+                "CREATE TEMPORARY VIEW probes AS SELECT TO_TIMESTAMP_LTZ(millis, 3) AS probe_at,"
+                        + " PROCTIME() AS t FROM (VALUES (CAST("
+                        + millis.toEpochMilli()
+                        + " AS BIGINT))) AS v(millis)");
+
+        // A collected TIMESTAMP_LTZ(3) is serialized as milliseconds whatever it held, so only a
+        // finer precision shows what the scan produced.
+        assertThat(rows(table, "SELECT id, seen_at_micros FROM instant_source"))
+                .containsExactly(Row.of(1L, Instant.parse("2026-08-11T01:02:03.123456Z")));
+        // The cache indexes loaded rows by value equality, so a stored value that kept its
+        // sub-millisecond digits would never equal a TIMESTAMP_LTZ(3) probe.
+        assertThat(
+                        rows(
+                                table,
+                                "SELECT p.probe_at, s.id FROM probes AS p LEFT JOIN instant_source FOR SYSTEM_TIME AS OF p.t AS s ON p.probe_at = s.seen_at"))
+                .containsExactly(Row.of(millis, 1L));
+    }
+
+    @Test
+    void pushedFiltersOnACoarserTimestampKeyCompareTheTruncatedValues() throws Exception {
+        DatabaseDestination database =
+                createDatabase(
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        "CREATE TABLE moments (seen_at TIMESTAMP NOT NULL, id INT64)"
+                                + " PRIMARY KEY (seen_at)");
+        client(database)
+                .write(
+                        List.of(
+                                Mutation.newInsertOrUpdateBuilder("moments")
+                                        .set("seen_at")
+                                        .to(
+                                                Timestamp.parseTimestamp(
+                                                        "2026-08-11T01:02:03.123456789Z"))
+                                        .set("id")
+                                        .to(1L)
+                                        .build(),
+                                Mutation.newInsertOrUpdateBuilder("moments")
+                                        .set("seen_at")
+                                        .to(Timestamp.parseTimestamp("2026-08-11T01:02:03.124Z"))
+                                        .set("id")
+                                        .to(2L)
+                                        .build()));
+        TableEnvironment table =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        table.getConfig().set("parallelism.default", "1");
+        table.executeSql(
+                "CREATE TABLE moment_source (seen_at TIMESTAMP_LTZ(3), id BIGINT,"
+                        + " PRIMARY KEY (seen_at) NOT ENFORCED) WITH ('connector' = 'spanner',"
+                        + " 'project' = '"
+                        + database.getProject()
+                        + "', 'instance' = '"
+                        + database.getInstance()
+                        + "', 'database' = '"
+                        + database.getDatabase()
+                        + "', 'table' = 'moments', 'emulator-endpoint' = '"
+                        + emulatorEndpoint()
+                        + "')");
+        String millis =
+                "TO_TIMESTAMP_LTZ("
+                        + Instant.parse("2026-08-11T01:02:03.123Z").toEpochMilli()
+                        + ", 3)";
+
+        assertThat(table.explainSql("SELECT id FROM moment_source WHERE seen_at > " + millis))
+                .as("the comparison reaches the source and also stays for Flink")
+                .contains("filter=[")
+                .contains("where=[");
+        // The first row reads as .123: it equals the literal and is not greater than it.
+        assertThat(rows(table, "SELECT id FROM moment_source WHERE seen_at = " + millis))
+                .containsExactly(Row.of(1L));
+        assertThat(rows(table, "SELECT id FROM moment_source WHERE seen_at <= " + millis))
+                .containsExactly(Row.of(1L));
+        assertThat(rows(table, "SELECT id FROM moment_source WHERE seen_at > " + millis))
+                .containsExactly(Row.of(2L));
+    }
+
+    @Test
     void aPeriodicFullCacheReloadObservesAChangedRow() throws Exception {
         Dialect dialect = Dialect.GOOGLE_STANDARD_SQL;
         DatabaseDestination database = lookupDatabase(dialect);
