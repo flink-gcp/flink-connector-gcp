@@ -123,6 +123,10 @@ PostgreSQL accepts every Flink-supported `DECIMAL(p, s)`, but the physical `nume
 On reads, a PostgreSQL numeric value must fit the declared Flink precision without reducing non-zero fractional digits; trailing fractional zeros may be removed without changing the value.
 Precision overflow, scale loss, and PostgreSQL numeric `NaN` fail conversion instead of rounding or turning a non-null value into null.
 The error names the physical column and declared Flink shape without including the stored value.
+On reads, a Spanner `TIMESTAMP` value is truncated to the declared `TIMESTAMP_LTZ` precision: a `TIMESTAMP_LTZ(3)` column reads a stored `01:02:03.123456789` as `01:02:03.123`.
+The truncation applies to bounded scans, lookups, the `FULL` lookup cache, and change-stream column values, and to array elements in each.
+Unlike a decimal's scale loss it does not fail, because declaring a coarser precision than Spanner's nanoseconds is how a column asks for one.
+Two stored values that differ only beyond the declared precision read as equal, so a declared primary key over such a column can repeat.
 `FLOAT` cannot be a primary-key column in either dialect, and no PostgreSQL decimal can be a primary-key column because PostgreSQL `numeric` is not a key type.
 
 ## Catalog
@@ -214,8 +218,11 @@ Nested projection is not advertised.
 If the planner requests no physical column, the connector reads the first declared column as a carrier but emits zero-field rows in the requested shape.
 
 The source translates `=`, `<`, `<=`, `>`, `>=`, and conjunctions over consecutive key columns into Spanner `KeySet` points and lexicographic ranges.
-A complete primary-key equality is an exact point read.
+A complete primary-key equality is an exact point read, unless a key column is a coarser `TIMESTAMP_LTZ` as described below.
 A leading equality prefix, optionally followed by a range on the next primary-key column, is exact and is removed from Flink's residual filter.
+A comparison on a `TIMESTAMP_LTZ(p)` key column with `p` below 9 reads every stored value that [truncates](#type-mapping) into the compared range, so an equality with `01:02:03.123` on a `TIMESTAMP_LTZ(3)` key reads the stored values from `01:02:03.123` up to, but not including, `01:02:03.124`.
+Such a comparison is never exact: it stays in Flink's residual filter, which evaluates it again on the truncated values.
+An equality on such a column is a range read too, so it ends the key prefix, and later key columns no longer narrow the read.
 For `DOUBLE` keys (`FLOAT64` / PostgreSQL `FLOAT8`), equality and ordered comparisons accept finite literals.
 The literal must reach the connector as `DOUBLE`; a `DECIMAL` literal that Flink leaves unconverted remains residual.
 The translator also handles infinite `DOUBLE` literals.
@@ -319,6 +326,7 @@ Each key must be a top-level physical column of a scalar type other than `FLOAT`
 The cache compares Flink values with Java equality, which tells `-0.0` from `0.0` and matches `NaN` to itself, unlike SQL `=`; `ARRAY` keys are rejected because their binary and generic Flink forms do not compare equal.
 A row with a null key value is never matched, as SQL equality requires.
 A UUID column loads as its lowercase canonical string and matches as a string, so a probe in upper case, which a primary-key point read under `NONE` or `PARTIAL` accepts, finds no row under `FULL`.
+A `TIMESTAMP_LTZ(p)` primary-key column with `p` below 9 differs the other way: `FULL` matches a probe to a stored value with digits beyond `p`, because the loaded row carries the [truncated](#type-mapping) value, while a point read under `NONE` or `PARTIAL` addresses the probe's own value and finds no row.
 
 `lookup.full-cache.reload-strategy` selects `PERIODIC`, which needs `lookup.full-cache.periodic-reload.interval`, or `TIMED`, which needs `lookup.full-cache.timed-reload.iso-time`.
 `lookup.async = true` is rejected with `FULL` because Flink has no asynchronous full-cache provider.

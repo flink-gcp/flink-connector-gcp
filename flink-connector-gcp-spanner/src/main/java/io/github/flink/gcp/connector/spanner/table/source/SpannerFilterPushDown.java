@@ -24,7 +24,9 @@ import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.functions.FunctionDefinition;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 
+import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeyRange;
 import com.google.cloud.spanner.KeySet;
@@ -82,6 +84,12 @@ import java.util.UUID;
  * reported as fully handled, because the rows the range over-selects would then never be filtered
  * out. An {@code IS NOT NULL} is never exact for the same reason: a Spanner key range does not
  * exclude nulls the way the SQL predicate does, so the filter has to run as well.
+ *
+ * <p>A comparison on a {@code TIMESTAMP_LTZ(p < 9)} column is never exact. Its rows carry the
+ * stored value truncated to {@code p}, so the comparison is rewritten onto the stored values that
+ * truncate into its range, and it stays in {@code remaining} so that Flink evaluates it again on
+ * the truncated values. An equality on such a column becomes a range too, so it ends the walk like
+ * an inequality and later key columns no longer narrow the read.
  *
  * <p>Contradictions are resolved here rather than sent: {@code a = 1 AND a = 2}, or a lower bound
  * above its upper, compile to an empty key set, so Spanner is never asked to read a range that
@@ -204,10 +212,122 @@ final class SpannerFilterPushDown {
             parent.unsupported = true;
             return nextId;
         }
-        Predicate predicate = new Predicate(nextId, fieldIndex, normalized, encoded.get());
+        if (encoded.get() instanceof Timestamp) {
+            int unit =
+                    StructToRowDataConverter.truncationUnit(
+                            (LocalZonedTimestampType) column.getLogicalType());
+            if (unit > 1) {
+                // The comparison excludes nulls even when a bound past the range adds no predicate,
+                // so it proves the field non-null the way an IS NOT NULL does.
+                nonNullFields.add(fieldIndex);
+                parent.nonNullFields.add(fieldIndex);
+                return addTruncatedBounds(
+                        (Timestamp) encoded.get(),
+                        unit,
+                        fieldIndex,
+                        normalized,
+                        parent,
+                        predicates,
+                        nextId);
+            }
+        }
+        return addPredicate(
+                new Predicate(nextId, fieldIndex, normalized, encoded.get()), parent, predicates);
+    }
+
+    /**
+     * Rewrites a comparison on a {@code TIMESTAMP_LTZ(p < 9)} column, whose rows carry the stored
+     * value truncated to {@code p}, into the comparison on the stored value that selects the same
+     * rows. With {@code u} the column's unit and the literal {@code x} lying in the bucket {@code
+     * [floor, next)}, {@code ceiling} being {@code x} when it is a whole unit and {@code next}
+     * otherwise: {@code = x} reads {@code [ceiling, next)}, {@code > x} reads {@code >= next},
+     * {@code >= x} reads {@code >= ceiling}, {@code < x} reads {@code < ceiling}, and {@code <= x}
+     * reads {@code < next}. A bound past {@link Timestamp#MAX_VALUE} is dropped, which only widens
+     * the read.
+     *
+     * <p>The filter stays in {@code remaining}, so Flink evaluates it again on the truncated rows.
+     */
+    private static int addTruncatedBounds(
+            Timestamp literal,
+            int unit,
+            int fieldIndex,
+            Comparison comparison,
+            ParsedFilter parent,
+            List<Predicate> predicates,
+            int nextId) {
+        parent.truncated = true;
+        int floorNanos = literal.getNanos() - literal.getNanos() % unit;
+        Timestamp floor = Timestamp.ofTimeSecondsAndNanos(literal.getSeconds(), floorNanos);
+        @Nullable Timestamp next = nextBucket(literal.getSeconds(), floorNanos, unit);
+        @Nullable Timestamp ceiling = floorNanos == literal.getNanos() ? floor : next;
+        int id = nextId;
+        switch (comparison) {
+            case EQUALS:
+                id =
+                        addBound(
+                                id,
+                                fieldIndex,
+                                Comparison.GREATER_THAN_OR_EQUAL,
+                                ceiling,
+                                parent,
+                                predicates);
+                return addBound(id, fieldIndex, Comparison.LESS_THAN, next, parent, predicates);
+            case GREATER_THAN:
+                return addBound(
+                        id, fieldIndex, Comparison.GREATER_THAN_OR_EQUAL, next, parent, predicates);
+            case GREATER_THAN_OR_EQUAL:
+                return addBound(
+                        id,
+                        fieldIndex,
+                        Comparison.GREATER_THAN_OR_EQUAL,
+                        ceiling,
+                        parent,
+                        predicates);
+            case LESS_THAN:
+                return addBound(id, fieldIndex, Comparison.LESS_THAN, ceiling, parent, predicates);
+            case LESS_THAN_OR_EQUAL:
+                return addBound(id, fieldIndex, Comparison.LESS_THAN, next, parent, predicates);
+            default:
+                throw new IllegalStateException("Unknown comparison " + comparison);
+        }
+    }
+
+    /**
+     * The start of the bucket after {@code [seconds.floorNanos, +unit)}, or null past the range.
+     */
+    @Nullable
+    private static Timestamp nextBucket(long seconds, int floorNanos, int unit) {
+        long nanos = (long) floorNanos + unit;
+        long nextSeconds = seconds + nanos / 1_000_000_000L;
+        if (nextSeconds > Timestamp.MAX_VALUE.getSeconds()) {
+            return null;
+        }
+        return Timestamp.ofTimeSecondsAndNanos(nextSeconds, (int) (nanos % 1_000_000_000L));
+    }
+
+    /**
+     * Adds one bound, or nothing for a null one: an absent lower bound past the range matches no
+     * stored value, so the filter is left to Flink, and an absent upper bound only widens the read.
+     */
+    private static int addBound(
+            int nextId,
+            int fieldIndex,
+            Comparison comparison,
+            @Nullable Timestamp value,
+            ParsedFilter parent,
+            List<Predicate> predicates) {
+        if (value == null) {
+            return nextId;
+        }
+        return addPredicate(
+                new Predicate(nextId, fieldIndex, comparison, value), parent, predicates);
+    }
+
+    private static int addPredicate(
+            Predicate predicate, ParsedFilter parent, List<Predicate> predicates) {
         predicates.add(predicate);
-        parent.predicateIds.add(nextId);
-        return nextId + 1;
+        parent.predicateIds.add(predicate.id);
+        return predicate.id + 1;
     }
 
     static Compiled compile(List<KeyColumn> keyColumns, List<Predicate> predicates) {
@@ -487,6 +607,9 @@ final class SpannerFilterPushDown {
         private final Set<Integer> nonNullFields = new LinkedHashSet<>();
         private boolean unsupported;
 
+        /** Set when a comparison was rewritten onto stored values its rows carry truncated. */
+        private boolean truncated;
+
         private ParsedFilter(ResolvedExpression expression) {
             this.expression = expression;
         }
@@ -502,6 +625,7 @@ final class SpannerFilterPushDown {
 
         private boolean isExact(Set<Integer> used) {
             return !unsupported
+                    && !truncated
                     && nonNullFields.isEmpty()
                     && !predicateIds.isEmpty()
                     && used.containsAll(predicateIds);

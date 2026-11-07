@@ -25,6 +25,7 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.DecimalType;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalType;
 
 import com.google.cloud.ByteArray;
@@ -49,6 +50,11 @@ import java.util.UUID;
 @Internal
 final class StructToRowDataConverter implements Serializable {
     private static final long serialVersionUID = 1L;
+
+    /** The nanosecond unit a {@code TIMESTAMP_LTZ(p)} value keeps, indexed by {@code p}. */
+    private static final int[] NANOS_TRUNCATION = {
+        1_000_000_000, 100_000_000, 10_000_000, 1_000_000, 100_000, 10_000, 1_000, 100, 10, 1
+    };
 
     private final List<SpannerTableSchemaConverter.Column> columns;
 
@@ -117,10 +123,8 @@ final class StructToRowDataConverter implements Serializable {
                         LocalDate.of(date.getYear(), date.getMonth(), date.getDayOfMonth())
                                 .toEpochDay();
             case TIMESTAMP:
-                Timestamp timestamp = value.getTimestamp();
-                return TimestampData.fromEpochMillis(
-                        timestamp.getSeconds() * 1000L + timestamp.getNanos() / 1_000_000,
-                        timestamp.getNanos() % 1_000_000);
+                return convertTimestamp(
+                        value.getTimestamp(), (LocalZonedTimestampType) logicalType);
             case ARRAY:
                 return new GenericArrayData(
                         convertArray(
@@ -215,13 +219,27 @@ final class StructToRowDataConverter implements Serializable {
                         LocalDate.of(date.getYear(), date.getMonth(), date.getDayOfMonth())
                                 .toEpochDay();
             case TIMESTAMP:
-                Timestamp timestamp = (Timestamp) item;
-                return TimestampData.fromEpochMillis(
-                        timestamp.getSeconds() * 1000L + timestamp.getNanos() / 1_000_000,
-                        timestamp.getNanos() % 1_000_000);
+                return convertTimestamp((Timestamp) item, (LocalZonedTimestampType) logicalType);
             default:
                 return item;
         }
+    }
+
+    /**
+     * Converts a timestamp, its nanoseconds truncated to the declared precision. A timestamp's
+     * nanoseconds are never negative, also before the epoch, so truncating them rounds down.
+     */
+    private static TimestampData convertTimestamp(
+            Timestamp timestamp, LocalZonedTimestampType type) {
+        int nanos = timestamp.getNanos();
+        nanos -= nanos % truncationUnit(type);
+        return TimestampData.fromEpochMillis(
+                timestamp.getSeconds() * 1000L + nanos / 1_000_000, nanos % 1_000_000);
+    }
+
+    /** The nanosecond unit a value of {@code type} keeps: {@code 1} keeps every digit. */
+    static int truncationUnit(LocalZonedTimestampType type) {
+        return NANOS_TRUNCATION[type.getPrecision()];
     }
 
     private static DecimalData convertPostgresqlDecimal(

@@ -20,6 +20,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 
@@ -32,9 +33,11 @@ import com.google.cloud.spanner.Value;
 import io.github.flink.gcp.connector.spanner.table.SpannerTableSchemaConverter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collections;
@@ -376,6 +379,59 @@ class StructToRowDataConverterTest {
                 .hasMessageContaining("column 'amounts'")
                 .hasMessageContaining("DECIMAL(5, 2)")
                 .hasMessageContaining("NaN");
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "0, 2026-08-11T01:02:03Z, 1969-12-31T23:59:59Z",
+        "1, 2026-08-11T01:02:03.1Z, 1969-12-31T23:59:59.9Z",
+        "2, 2026-08-11T01:02:03.12Z, 1969-12-31T23:59:59.98Z",
+        "3, 2026-08-11T01:02:03.123Z, 1969-12-31T23:59:59.987Z",
+        "4, 2026-08-11T01:02:03.1234Z, 1969-12-31T23:59:59.9876Z",
+        "5, 2026-08-11T01:02:03.12345Z, 1969-12-31T23:59:59.98765Z",
+        "6, 2026-08-11T01:02:03.123456Z, 1969-12-31T23:59:59.987654Z",
+        "7, 2026-08-11T01:02:03.1234567Z, 1969-12-31T23:59:59.9876543Z",
+        "8, 2026-08-11T01:02:03.12345678Z, 1969-12-31T23:59:59.98765432Z",
+        "9, 2026-08-11T01:02:03.123456789Z, 1969-12-31T23:59:59.987654321Z"
+    })
+    void truncatesTimestampsToTheDeclaredPrecision(
+            int precision, String expected, String expectedBeforeEpoch) {
+        RowType type =
+                (RowType)
+                        DataTypes.ROW(
+                                        DataTypes.FIELD("at", DataTypes.TIMESTAMP_LTZ(precision)),
+                                        DataTypes.FIELD(
+                                                "ats",
+                                                DataTypes.ARRAY(
+                                                        DataTypes.TIMESTAMP_LTZ(precision))))
+                                .getLogicalType();
+        SpannerTableSchemaConverter schema =
+                SpannerTableSchemaConverter.of(
+                        type,
+                        new int[0],
+                        Dialect.GOOGLE_STANDARD_SQL,
+                        Collections.emptyList(),
+                        Collections.emptyMap(),
+                        Collections.emptyMap());
+        Timestamp timestamp = Timestamp.parseTimestamp("2026-08-11T01:02:03.123456789Z");
+        Timestamp beforeEpoch = Timestamp.parseTimestamp("1969-12-31T23:59:59.987654321Z");
+        Struct struct =
+                Struct.newBuilder()
+                        .set("at")
+                        .to(timestamp)
+                        .set("ats")
+                        .toTimestampArray(Arrays.asList(timestamp, null, beforeEpoch))
+                        .build();
+
+        RowData row = new StructToRowDataConverter(schema, null).convert(struct);
+
+        TimestampData expectedData = TimestampData.fromInstant(Instant.parse(expected));
+        assertThat(row.getTimestamp(0, precision)).isEqualTo(expectedData);
+        ArrayData values = row.getArray(1);
+        assertThat(values.getTimestamp(0, precision)).isEqualTo(expectedData);
+        assertThat(values.isNullAt(1)).isTrue();
+        assertThat(values.getTimestamp(2, precision))
+                .isEqualTo(TimestampData.fromInstant(Instant.parse(expectedBeforeEpoch)));
     }
 
     private static StructToRowDataConverter postgresqlDecimalConverter(
