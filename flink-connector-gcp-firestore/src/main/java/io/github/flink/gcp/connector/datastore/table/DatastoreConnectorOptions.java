@@ -151,17 +151,20 @@ public final class DatastoreConnectorOptions {
                     .withDescription("How many entities one request of the scan asks for.");
 
     /**
-     * Whether the scan hands equality predicates to the service as filters of its query, so
-     * entities that cannot match are not read. Enable it only when every property a pushed
-     * predicate filters is indexed on every entity of the kind: a Datastore filter never matches a
-     * value excluded from indexes, so such an entity is dropped without an error.
+     * Whether the scan hands predicates on properties, and ranges on the key, to the service as
+     * filters of its query, so entities that cannot match are not read. Enable it only when every
+     * property a pushed predicate filters is indexed on every entity of the kind: a Datastore
+     * filter never matches a value excluded from indexes, so such an entity is dropped without an
+     * error. A pushed filter other than an equality makes the scan read the kind as one split, and
+     * some combinations, such as an equality on one property beside a range on another, need a
+     * composite index, without which the job fails when it starts.
      */
     public static final ConfigOption<Boolean> SCAN_FILTER_PUSH_DOWN_ENABLED =
             ConfigOptions.key("scan.filter-push-down.enabled")
                     .booleanType()
                     .defaultValue(false)
                     .withDescription(
-                            "Whether the scan hands equality predicates to the service as filters of its query, so entities that cannot match are not read. Enable it only when every property a pushed predicate filters is indexed on every entity of the kind: a Datastore filter never matches a value excluded from indexes, so such an entity is dropped without an error.");
+                            "Whether the scan hands predicates on properties, and ranges on the key, to the service as filters of its query, so entities that cannot match are not read. Enable it only when every property a pushed predicate filters is indexed on every entity of the kind: a Datastore filter never matches a value excluded from indexes, so such an entity is dropped without an error. A pushed filter other than an equality makes the scan read the kind as one split, and some combinations, such as an equality on one property beside a range on another, need a composite index, without which the job fails when it starts.");
 
     /**
      * Whether the lookup join runs as Flink's asynchronous lookup, keeping several reads in flight

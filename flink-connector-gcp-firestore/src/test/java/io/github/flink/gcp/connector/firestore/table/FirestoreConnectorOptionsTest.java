@@ -41,7 +41,7 @@ class FirestoreConnectorOptionsTest {
     @Test
     void onlyTheRecordedOptionsCarryADefault() {
         // A mapped option's default lives on the connector's own builder and is applied by not
-        // calling a setter. These four are table-owned: no builder setter takes them, and the
+        // calling a setter. These five are table-owned: no builder setter takes them, and the
         // factory reads each with get().
         assertThat(DeclaredOptions.all()).isNotEmpty();
         assertThat(DeclaredOptions.all())
@@ -50,6 +50,7 @@ class FirestoreConnectorOptionsTest {
                         FirestoreConnectorOptions.SINK_WRITE_MODE,
                         FirestoreConnectorOptions.TYPE_MISMATCH_POLICY,
                         FirestoreConnectorOptions.SCAN_COLLECTION_GROUP,
+                        FirestoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED,
                         FirestoreConnectorOptions.LOOKUP_ASYNC);
     }
 

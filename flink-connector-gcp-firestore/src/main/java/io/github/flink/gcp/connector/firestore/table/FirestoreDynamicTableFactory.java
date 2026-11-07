@@ -82,6 +82,7 @@ public final class FirestoreDynamicTableFactory
                         FirestoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         FirestoreConnectorOptions.SCAN_READ_TIME,
                         FirestoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
+                        FirestoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED,
                         FirestoreConnectorOptions.LOOKUP_ASYNC,
                         LookupOptions.CACHE_TYPE,
                         LookupOptions.MAX_RETRIES,

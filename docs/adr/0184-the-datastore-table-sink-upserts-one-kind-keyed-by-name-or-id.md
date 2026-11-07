@@ -27,8 +27,9 @@ limitations under the License.
   a merge by default) and [#1743] (the `update` write mode), 2026-10-12 by [#1719] (the scan
   reads a statistics kind), and 2026-11-07 by [#1831] (opt-in filter pushdown) and [#2066]
   (key equalities without the option, `ROW` fields, fractional `DOUBLE`, dotted names, `CHAR`
-  and `BINARY`)
-- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829], [#2066]
+  and `BINARY`) and [#2076] (ranges, `<>`, `IN`, `IS NOT NULL`, integral `DOUBLE` and coarse
+  timestamps, measured the same day on the emulator and an ephemeral database)
+- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829], [#2066], [#2076]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`, `datastore.table`, `datastore.table.sink`, `datastore.table.source`, `datastore.source.batch`, `datastore.source.serializer`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/datastore.md`
 
@@ -176,9 +177,30 @@ The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, and the plan tes
   - `DOUBLE` under a finite literal with a fractional part, which no stored integer the converter reads into the column can equal. An integral literal, zero included, stays declined; `NaN` and the infinities are declined too, their matching in a filter unmeasured;
   - `CHAR` and `BINARY` beside a literal of the column's length, the only shape the planner presents without a cast; the converter reads a stored value unpadded, and Flink's `c = 'ab '` keeps `"ab "` and not `"ab"`.
 - **`ARRAY_CONTAINS` never reaches `applyFilters`** on Flink 1.20.5 or 2.2.1, so the service's matching of an equality against array elements stays unused.
-- **Still to decide** ([#2066] lists them apart): inequalities, `IN`, `OR`, `IS NOT NULL` and a coarse `TIMESTAMP_LTZ` as a range would each make the query one split.
+- **Still to decide** ([#2066] lists them apart): inequalities, `IN`, `OR`, `IS NOT NULL` and a coarse `TIMESTAMP_LTZ` as a range would each make the query one split (decided by [#2076]'s revision below).
 
 `DatastoreTableFilterPushDownPlanTest` pins the new pushed and declined shapes and a key equality on a table without the option; `DatastoreTableFilterPushDownITCase` compares each new shape with the table without the option, and a key equality, by name and by id, with the expected root entity, near-miss names in the default and the table's namespace, a child entity and a name under a numeric key included, and holds that the unfiltered scan fails on the child entity and on that name.
+
+### Ranges, `IN` and `IS NOT NULL` ([#2076], 2026-11-07)
+
+[#2076] took up [#2066]'s undecided shapes through `PredicateMatcher`, the renamed shared search (ADR-0197's revision gives the planner's forms).
+The service's answers were read through the client library on the pinned emulator and on an ephemeral Datastore-mode database, one run each.
+
+| Measured | Service | Consequence |
+|---|---|---|
+| a range on a property | crosses types in one order: null, integers and timestamps together by microseconds, booleans, strings and blobs together by bytes, then doubles, `NaN` the highest; never a missing or unindexed value | a range matches every value of the column's own type it should, and values of other types the converter reads as mismatches |
+| `DOUBLE` | every integer below every double, so `d > 5.0` misses the integer 7 the converter reads as 7.0; `IN [5, 5.0]` matches both | `>` and `>=` compare an integer bound (`d > 5.5` as `d > 5`), `<`, `<=` and `<>` the value, `=` on an integral value `IN` of the integer and the double, both zeros for zero |
+| a timestamp literal between microseconds | floored: `< T + 500 ns` leaves out `T` | the bounds are rounded to whole microseconds first (`TimestampBound`, shared with Native mode) |
+| strings | UTF-8 byte order, as Native mode; Flink may compare by UTF-16 code units (ADR-0197's revision) | a string or key-name range is pushed only under a literal below U+D800 |
+| `!= null` | leaves out null, a missing property and an unindexed value | covered by the option's assertion |
+| composite indexes | refused with `FAILED_PRECONDITION` (`no matching index found`): an equality beside a range or `!= null` on another property, ranges on two properties, an `OR` holding a range; answered: an equality beside `IN`, two ranges on one property, a key range beside a property range or an equality | the job fails when it starts |
+
+- **Pushed under the option** (owner's choice, 2026-11-07, after measurement): `<>` (the first in a query), `<`, `<=`, `>`, `>=`, `IS NOT NULL` on the scalar types, `IN` or an `OR` of equalities on one reference up to 30 disjuncts across the query, an integral `DOUBLE` equality as `IN` (counted as its values toward the 30), coarse `TIMESTAMP_LTZ` comparisons as covering bounds (`<>` below microseconds excepted, as in ADR-0197), and ranges on the key; an `IS NOT NULL`, sent as `!= null`, takes the query's one not-equal filter as `<>` does, and `d < -0.0` or `<= -0.0` is sent with `0.0`, which the service orders apart. Each but an equality makes the query one split, trading the scan's parallelism for the entities it does not read; the opt-in already is the user's choice to filter in the service, and the docs state the trade. `scan.partition.max-partitions` is no longer applied to such a query, which the builder would otherwise refuse.
+- **Without the option**, an `IN` of keys is pushed as the key equality is, a key always being indexed; it too makes the query one split, reading only the named entities.
+- **Index requirements are the service's** (owner, 2026-11-07): the connector does not predict which combination needs a composite index; the refusal is loud, at job start, and the option turns pushdown off.
+- **Declined**: `IS NOT NULL` on an `ARRAY` or a `ROW` (whether an empty array or an embedded entity matches is unmeasured), ranges on `CHAR` and `BINARY`, `<>` and `IS NOT NULL` on the key, an `OR` across references, and non-finite `DOUBLE` literals.
+
+`DatastoreTableFilterPushDownPlanTest` pins the new pushed and declined shapes and the key `IN` without the option; `DatastoreTableFilterPushDownITCase` compares each new shape with the table without the option, under a split count, with integers and both zeros under `DOUBLE`, U+FFFD and an emoji, `0x7f` and `0x80`, a literal between microseconds, millisecond-column timestamps either side of a boundary, and key name and id ranges; `DatastoreTableRealGcpITCase` compares them on the service and holds the refusal of a range beside an equality on another property.
 
 ## Consequences
 
@@ -188,6 +210,7 @@ The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, and the plan tes
 - The scan ([#1652]) and the lookup ([#1653]) extend this connector; the type mapping is the contract they read back.
 - With `scan.filter-push-down.enabled`, an entity whose filtered value is unindexed is dropped without an error ([#1831]); a scan without the option reads every entity of the kind, as before, unless its predicate pins the key: a key equality is pushed without the option ([#2066]), so such a scan reads that root entity alone and no longer fails on a child entity or a key of the other form.
 - [#1838] can push a `LIMIT` only above exactly pushed filters, so a Datastore scan with a pushed filter keeps its limit in Flink; [ADR-0201] pushes a limit only onto a scan with no predicate.
+- Since [#2076], a table with the option whose predicates hold a range, `<>`, `IN`, `OR` or `IS NOT NULL` reads the kind as one split, and one combining an equality on one property with a range on another needs a composite index, without which the job fails when it starts.
 - Key ranges are cut from the whole kind's scatter keys, so under a selective filter the ranges hold uneven numbers of matching entities and some hold none.
 
 ## Alternatives declined
@@ -239,3 +262,4 @@ The planner's shapes were read on Flink 1.20.5 and 2.2.1 alike, and the plan tes
 [ADR-0201]: 0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838
 [#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066
+[#2076]: https://github.com/flink-gcp/flink-connector-gcp/issues/2076

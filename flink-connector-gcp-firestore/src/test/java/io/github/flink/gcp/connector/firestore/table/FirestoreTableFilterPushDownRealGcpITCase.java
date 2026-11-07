@@ -212,4 +212,157 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
         assertThat(collect(table, "SELECT id FROM t WHERE y = x'0102'"))
                 .containsExactly(Row.of("bytes"));
     }
+
+    /** The predicates both editions must answer as the unpushed scan of the same collection. */
+    private static final String[] COMPARISONS = {
+        "n > 4",
+        "n <= 5",
+        "n <> 5",
+        "n IN (5, 7)",
+        "n IS NOT NULL",
+        "d > 5",
+        "d < 5.5",
+        "d <> 5",
+        "d IS NOT NULL",
+        "s > 'z'",
+        "s < 'x '",
+        "s IS NOT NULL",
+        "y > x'7f'",
+        "ts3 = CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+        "ts3 <= CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+        "id > 'm'"
+    };
+
+    /**
+     * On both editions a pushed range, {@code <>}, {@code IN} and {@code IS NOT NULL} return the
+     * rows the same scan returns with {@code scan.filter-push-down.enabled} off, on Standard read
+     * in pages of two so that every query resumes at a cursor (an Enterprise read of several pages
+     * skips documents, #2088): what the emulator answered of integers and doubles comparing as
+     * numbers, UTF-8 string and unsigned byte order, a range matching no value of another type, and
+     * the explicit ordering a {@code != null} filter needs. On Enterprise a 32-bit BSON integer
+     * passes the ranges a {@code BIGINT} column pushes, and {@code !=} also returns a missing
+     * field, which the residual removes. On Standard, a range beside an equality on another field
+     * needs a composite index, and the job fails when it starts.
+     */
+    @Test
+    void pushedComparisonsReturnTheUnpushedRowsOnBothEditionsAndAnIndexIsRefusedLoudly()
+            throws Exception {
+        DatabaseDestination enterprise =
+                createDatabase(
+                        Database.DatabaseType.FIRESTORE_NATIVE,
+                        Database.DatabaseEdition.ENTERPRISE);
+        String collection = uniqueCollection();
+        try (Firestore client = open(enterprise)) {
+            write(client(), collection, false);
+            write(client, collection, true);
+        }
+        TableEnvironment table = batch();
+        String columns =
+                "(id STRING NOT NULL, n BIGINT, d DOUBLE, s STRING, y BYTES, ts3 TIMESTAMP_LTZ(3),"
+                        + " PRIMARY KEY (id) NOT ENFORCED) ";
+        for (DatabaseDestination database : List.of(database(), enterprise)) {
+            String edition = database == enterprise ? "ent" : "std";
+            // An Enterprise-edition database returns a query without orderBy in no name order,
+            // so a read of several pages skips documents there (#2088); one page reads them all.
+            String paged = database == enterprise ? "" : ", 'scan.max-rows-per-fetch' = '2'";
+            table.executeSql(
+                    "CREATE TABLE pushed_" + edition + columns + with(database, collection, paged));
+            table.executeSql(
+                    "CREATE TABLE unpushed_"
+                            + edition
+                            + columns
+                            + with(
+                                    database,
+                                    collection,
+                                    paged + ", 'scan.filter-push-down.enabled' = 'false'"));
+            for (String predicate : COMPARISONS) {
+                assertThat(
+                                table.explainSql(
+                                        "SELECT id FROM pushed_" + edition + " WHERE " + predicate))
+                        .containsPattern("filter=\\[[^\\]]");
+                assertThat(
+                                collect(
+                                        table,
+                                        "SELECT id FROM pushed_" + edition + " WHERE " + predicate))
+                        .as("%s on %s", predicate, edition)
+                        .containsExactlyInAnyOrderElementsOf(
+                                collect(
+                                        table,
+                                        "SELECT id FROM unpushed_"
+                                                + edition
+                                                + " WHERE "
+                                                + predicate));
+            }
+        }
+        // Firing control: the rows a narrower service match would miss.
+        assertThat(collect(table, "SELECT id FROM unpushed_ent WHERE n > 4"))
+                .containsExactlyInAnyOrder(Row.of("int32"), Row.of("high"), Row.of("match"));
+        assertThat(collect(table, "SELECT id FROM unpushed_std WHERE d > 5"))
+                .containsExactlyInAnyOrder(Row.of("low"), Row.of("fraction"));
+        assertThat(collect(table, "SELECT id FROM unpushed_std WHERE d <> 5"))
+                .contains(Row.of("notANumber"));
+        assertThat(collect(table, "SELECT id FROM unpushed_std WHERE s > 'z'"))
+                .containsExactlyInAnyOrder(Row.of("low"), Row.of("high"));
+
+        assertThatThrownBy(() -> collect(table, "SELECT id FROM pushed_std WHERE n = 5 AND d > 1"))
+                .hasStackTraceContaining("FAILED_PRECONDITION")
+                .hasStackTraceContaining("requires an index");
+    }
+
+    private static void write(Firestore client, String collection, boolean enterprise)
+            throws Exception {
+        Map<String, Map<String, Object>> documents = new java.util.LinkedHashMap<>();
+        documents.put("missing", Map.of());
+        documents.put(
+                "low",
+                Map.of(
+                        "n",
+                        3L,
+                        "d",
+                        7L,
+                        "s",
+                        "\uFFFD",
+                        "y",
+                        Blob.fromBytes(new byte[] {0x7f}),
+                        "ts3",
+                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(1_000, 123_456_000)));
+        documents.put(
+                "high",
+                Map.of(
+                        "n",
+                        7L,
+                        "d",
+                        -1.5d,
+                        "s",
+                        "\uD83D\uDE00",
+                        "y",
+                        Blob.fromBytes(new byte[] {(byte) 0x80}),
+                        "ts3",
+                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(1_000, 123_999_000)));
+        documents.put(
+                "match",
+                Map.of(
+                        "n",
+                        5L,
+                        "d",
+                        5.0d,
+                        "s",
+                        "x",
+                        "ts3",
+                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(1_000, 124_000_000)));
+        documents.put("fraction", Map.of("d", 5.5d, "n", 5.5d, "s", 5L));
+        // Flink keeps NaN under d <> 5.
+        documents.put("notANumber", Map.of("d", Double.NaN));
+        documents.put("text", Map.of("n", "7", "d", "7", "y", "\u0080"));
+        for (Map.Entry<String, Map<String, Object>> document : documents.entrySet()) {
+            client.document(collection + "/" + document.getKey())
+                    .set(document.getValue())
+                    .get(30, TimeUnit.SECONDS);
+        }
+        if (enterprise) {
+            client.document(collection + "/int32")
+                    .set(Map.of("n", new Int32Value(6)))
+                    .get(30, TimeUnit.SECONDS);
+        }
+    }
 }

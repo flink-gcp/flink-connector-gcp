@@ -113,15 +113,68 @@ class DatastoreTableFilterPushDownPlanTest {
                 "e.flag",
                 "NOT e.flag",
                 "e.`y.z`.w = 'q'",
+                // An integral literal, as IN of the integer and the floating-point value, both
+                // zeros included for zero.
+                "d = 5",
+                "d = 0.0",
+                "d = -0.0",
+                // A timestamp read below microseconds, as the range of stored values that
+                // truncate to the literal.
+                "ts5 = TO_TIMESTAMP_LTZ(1000, 3)",
+                // Inequalities, either way round, and their negations the planner folds.
+                "n > 5",
+                "5 < n",
+                "n >= 5",
+                "n < 5",
+                "n <= 5",
+                "NOT (n > 5)",
+                "n BETWEEN 3 AND 7",
+                // A DOUBLE range: an integer bound above, the value itself below.
+                "d > 5.5",
+                "d >= 5.5",
+                "d < 5.5",
+                "d <> 5",
+                "s > 'a'",
+                "s < '\uD7FF'",
+                "s <> '\uFFFD'",
+                "y > x'01'",
+                "b > FALSE",
+                "ts > TO_TIMESTAMP_LTZ(1000, 3)",
+                "ts9 < CAST(TIMESTAMP '1970-01-01 00:00:01.000000001' AS TIMESTAMP_LTZ(9))",
+                "ts5 <= TO_TIMESTAMP_LTZ(1000, 3)",
+                "e.x > 1",
+                "s <> 'x'",
+                "n NOT IN (1, 2)",
+                "s IS NOT NULL",
+                "e.x IS NOT NULL",
+                "c IS NOT NULL",
+                // IN and an OR of equalities on one column, which the planner presents alike.
+                "s IN ('x', 'y')",
+                "n = 1 OR n = 2",
+                "d IN (5, 5.5)",
+                // The key's ranges.
+                "id > 'k'",
+                "id <= 'k'",
             })
-    void anEqualityOnAScalarColumnIsPushedAndStaysAResidual(String predicate) {
+    void aComparisonOnAScalarColumnIsPushedAndStaysAResidual(String predicate) {
         String plan = scan("SELECT id FROM f WHERE " + predicate);
 
         assertThat(plan).containsPattern("filter=\\[[^\\]]").contains("where=[");
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"s = 'x'", "n = 5", "b", "s = 'x' AND n = 5", "e.x = 1"})
+    @ValueSource(
+            strings = {
+                "s = 'x'",
+                "n = 5",
+                "b",
+                "s = 'x' AND n = 5",
+                "e.x = 1",
+                "n > 5",
+                "s IS NOT NULL",
+                "s IN ('x', 'y')",
+                "id > 'k'"
+            })
     void withoutTheOptionNoPropertyIsPushed(String predicate) {
         String plan = scan("SELECT id FROM off WHERE " + predicate);
 
@@ -141,26 +194,42 @@ class DatastoreTableFilterPushDownPlanTest {
                 // Written excluded from indexes, so no filter on it can match.
                 "u = 'x'",
                 "ue.x = 1",
-                // The converter reads a stored integer into DOUBLE, which 5.0 does not match.
-                "d = 5",
-                "d = 0.0",
-                "d = -0.0",
                 // A geographical point and a key value are each one value, not an entity.
                 "loc.latitude = 1.5",
                 "owner.name = 'x'",
                 // The planner presents a fixed-length column beside a shorter literal as a cast.
                 "c = 'ab'",
                 "bin = x'01'",
-                // The converter truncates a stored timestamp below the service's precision.
-                "ts5 = TO_TIMESTAMP_LTZ(1000, 3)",
                 // A missing property reads as NULL and matches no filter.
                 "s IS NULL",
-                "s IS NOT NULL",
-                "s <> 'x'",
-                "n > 5",
+                // An OR across columns, or holding anything but equalities.
                 "s = 'x' OR n = 5",
-                "s IN ('x', 'y')",
+                "n = 1 OR n > 5",
                 "n = CAST(d AS BIGINT)",
+                // A range literal holding a character UTF-8 and UTF-16 could order unlike each
+                // other: Flink compares two Java strings by UTF-16 code units.
+                "s > '\uFFFD'",
+                "s < '\uD83D\uDE00'",
+                "s >= '\uD7FF\uE000'",
+                "id > '\uFFFD'",
+                // No ordering of fixed-length values was measured.
+                "c > 'abc'",
+                "bin > x'0102'",
+                // Every entity has its key.
+                "id <> 'k'",
+                // Whether an empty array or an embedded entity matches != null is unmeasured.
+                "arr IS NOT NULL",
+                "e IS NOT NULL",
+                "loc IS NOT NULL",
+                "owner IS NOT NULL",
+                "u IS NOT NULL",
+                "u > 'x'",
+                "loc.latitude > 1.5",
+                // An integral DOUBLE equality is sent as IN of two values, so 16 of them are 32.
+                "d IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)",
+                // More disjuncts than a query takes.
+                "n IN (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,"
+                        + " 21, 22, 23, 24, 25, 26, 27, 28, 29, 30)",
                 "arr = ARRAY['x']",
                 // The planner presents no ARRAY_CONTAINS to a source.
                 "ARRAY_CONTAINS(arr, 'x')",
@@ -197,7 +266,13 @@ class DatastoreTableFilterPushDownPlanTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"id = 'k'", "'k' = id", "id = 'k' AND s = 'x'"})
+    @ValueSource(
+            strings = {
+                "id = 'k'",
+                "'k' = id",
+                "id = 'k' AND s = 'x'",
+                "id IN ('a', 'b') AND s = 'x'"
+            })
     void aKeyEqualityIsPushedWithoutTheOption(String predicate) {
         String plan = scan("SELECT id FROM off WHERE " + predicate);
 
@@ -263,12 +338,23 @@ class DatastoreTableFilterPushDownPlanTest {
 
     @Test
     void theTranslatableConjunctsOfAConjunctionArePushedAndTheWholeStaysResidual() {
-        String plan = scan("SELECT id FROM f WHERE s = 'x' AND n > 5 AND b");
+        String plan = scan("SELECT id FROM f WHERE s = 'x' AND s LIKE 'x%' AND n > 5");
 
         assertThat(plan)
                 .containsPattern("filter=\\[[^\\]]*=\\(s, ")
-                .doesNotContainPattern("filter=\\[[^\\]]*>\\(n")
+                .containsPattern("filter=\\[[^\\]]*>\\(n, 5\\)")
+                .doesNotContainPattern("filter=\\[[^\\]]*LIKE")
+                .containsPattern("where=\\[[^\\]]*LIKE\\(s")
                 .containsPattern("where=\\[[^\\]]*>\\(n, 5\\)")
                 .containsPattern("where=\\[[^\\]]*=\\(s, 'x'\\)");
+    }
+
+    @Test
+    void onlyTheFirstNotEqualIsPushed() {
+        String plan = scan("SELECT id FROM f WHERE n <> 5 AND s <> 'x'");
+
+        assertThat(plan)
+                .containsPattern("filter=\\[[^\\]]*<>\\(n, 5")
+                .doesNotContainPattern("filter=\\[[^\\]]*<>\\(s");
     }
 }
