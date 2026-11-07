@@ -25,6 +25,8 @@ import com.google.firestore.v1.BatchWriteResponse;
 import com.google.firestore.v1.Document;
 import com.google.firestore.v1.Value;
 import com.google.firestore.v1.Write;
+import com.google.rpc.Code;
+import com.google.rpc.Status;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreRealGcpITCase;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.sink.FirestoreWrite;
@@ -38,6 +40,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -231,27 +234,75 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         // of about 10.5 MiB, and the service applied it, as the emulator does. Sent as one raw
         // BatchWrite, so the request's size is what the assertion says rather than a premise about
         // how BulkWriter cuts its batches.
+        //
+        // A database created for the test starts with little write bandwidth, so the service may
+        // answer some of the twelve writes RESOURCE_EXHAUSTED ("exceeded their maximum bandwidth
+        // for writes, please retry with exponential backoff"; five of twelve in the scheduled E2E
+        // run of 2026-11-07). That is a throttle of the database, not a refusal of the request's
+        // size, so a write is taken as throttled only when its message names the write bandwidth;
+        // any other status, a RESOURCE_EXHAUSTED for the message size included, fails the test.
+        // The throttled writes are sent again with backoff, as the service asks, until every
+        // write is applied.
         String database = "projects/" + PROJECT + "/databases/" + database().getDatabaseId();
-        Value payload = Value.newBuilder().setStringValue("y".repeat(900 * 1024)).build();
-        BatchWriteRequest.Builder request = BatchWriteRequest.newBuilder().setDatabase(database);
+        String value = "y".repeat(900 * 1024);
+        Value payload = Value.newBuilder().setStringValue(value).build();
+        List<Write> pending = new ArrayList<>();
         for (int i = 0; i < 12; i++) {
-            request.addWrites(
+            pending.add(
                     Write.newBuilder()
                             .setUpdate(
                                     Document.newBuilder()
                                             .setName(database + "/documents/" + path("large" + i))
-                                            .putFields("v", payload)));
+                                            .putFields("v", payload))
+                            .build());
         }
-        assertThat(request.build().getSerializedSize()).isGreaterThan(10 * 1024 * 1024);
-
-        BatchWriteResponse response;
         try (FirestoreClient raw = FirestoreClient.create()) {
-            response = raw.batchWrite(request.build());
+            // No attempt starts after four minutes, so a last request that runs to its own
+            // timeout still ends well inside the class's ten-minute bound.
+            long deadline = System.nanoTime() + Duration.ofMinutes(4).toNanos();
+            long backoffMillis = 1_000;
+            for (int attempt = 1; !pending.isEmpty(); attempt++) {
+                if (attempt > 1) {
+                    Thread.sleep(backoffMillis);
+                    backoffMillis *= 2;
+                    assertThat(System.nanoTime() - deadline)
+                            .as("still throttled after four minutes: %d writes", pending.size())
+                            .isNegative();
+                }
+                BatchWriteRequest request =
+                        BatchWriteRequest.newBuilder()
+                                .setDatabase(database)
+                                .addAllWrites(pending)
+                                .build();
+                if (attempt == 1) {
+                    assertThat(request.getSerializedSize()).isGreaterThan(10 * 1024 * 1024);
+                }
+                BatchWriteResponse response = raw.batchWrite(request);
+                assertThat(response.getStatusList()).hasSize(pending.size());
+                List<Write> throttled = new ArrayList<>();
+                for (int i = 0; i < pending.size(); i++) {
+                    Status status = response.getStatus(i);
+                    if (status.getCode() == Code.RESOURCE_EXHAUSTED_VALUE
+                            && status.getMessage().contains("maximum bandwidth for writes")) {
+                        throttled.add(pending.get(i));
+                    } else {
+                        assertThat(status.getCode())
+                                .as("attempt %d: %s", attempt, status)
+                                .isEqualTo(Code.OK_VALUE);
+                    }
+                }
+                LOG.info(
+                        "Attempt {}: {} of {} writes throttled.",
+                        attempt,
+                        throttled.size(),
+                        pending.size());
+                pending = throttled;
+            }
         }
 
-        assertThat(response.getStatusList())
-                .hasSize(12)
-                .allSatisfy(status -> assertThat(status.getCode()).isZero());
+        for (int i = 0; i < 12; i++) {
+            assertThat(read(path("large" + i)).getString("v")).as("large%d", i).isEqualTo(value);
+        }
     }
 
     @Test
