@@ -71,6 +71,12 @@ resource "google_storage_bucket" "iceberg" {
 
 # The two roles Google names for the connection's service account: object
 # read and write, and the bucket metadata read that objectUser lacks.
+#
+# BigQuery creates that service agent asynchronously. The first apply (#2091)
+# sent these grants 0.8 s after the connection was created and Cloud Storage
+# refused them: the account did not exist yet. The follow-up (#2095) granted
+# them once it did. A re-created connection may get a new agent and need the
+# same follow-up; no wait is configured for a resource created once.
 resource "google_storage_bucket_iam_member" "iceberg_connection" {
   for_each = toset([
     "roles/storage.objectUser",
