@@ -1048,8 +1048,8 @@ class RecoveryExercise:
             if self.failover_floor:
                 self.begin_failover(app, self.outcomes["upgrade"], pods)
         if status == "FINISHED":
-            # Operator 1.15.0 marks the old job FINISHED after stop-with-savepoint
-            # and assigns the upgraded job's ID before that state clears, so
+            # Operator 1.15.0 marked the old job FINISHED after stop-with-savepoint
+            # and assigned the upgraded job's ID before that state cleared, so
             # FINISHED under either ID is the transition. An upgraded job that
             # really finished never proves recovery, and the stage deadline
             # stops the run.

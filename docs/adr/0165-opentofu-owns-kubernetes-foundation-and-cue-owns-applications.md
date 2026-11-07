@@ -157,10 +157,10 @@ Helm owns Operator Deployment/configuration/KSA/RBAC and release metadata, with 
 Its job ServiceAccount/RBAC creation is disabled because the persistent application identity belongs to bootstrap.
 The chart's explicit Operator privileges remain on the installer before it creates/binds chart Roles, avoiding unrestricted bind or escalate.
 
-The Helm root pins the distributed 1.15.0 chart independently of the CRD/schema pin, so updating bootstrap does not simultaneously advance Helm.
+The Helm root pins the distributed chart independently of the CRD/schema pin, so updating bootstrap does not simultaneously advance Helm.
 Both runners verify the archive SHA-512 and render the same local archive that the provider consumes.
 The initial inventory is seven namespaced resources plus Helm release Secrets; the chart creates no job identity, webhook, certificate or hook workload.
-The chart's default image tag is a commit abbreviation; the idle Deployment selects the published GAR digest for Operator 1.15.0.
+The chart's default image tag is a commit abbreviation; the idle Deployment selects the published GAR digest of the pinned Operator.
 GAR publication and digest selection remain prerequisites to later Pod admission.
 Helm provider 3.3.0 reads its kubeconfig from the execution-time environment, using the shared wrapper and a fixed context, with no saved token or runner path.
 The plan job retains the rendered resources for review; after saved-plan apply, CI checks the deployed release, live configuration/RBAC, idle inventory and an empty refreshed Helm plan.
@@ -1900,3 +1900,8 @@ The changes cannot share a merge: one merge applies both roots as parallel matri
 No trial runs between the two applies.
 
 The 1.16.1 CRDs keep the deprecated `jobManager.resource` and `taskManager.resource` beside the new `resources` field ([FLINK-33548](https://issues.apache.org/jira/browse/FLINK-33548)), and the 1.16.1 Operator applies either to the Pods, so the application packages keep `resource`.
+
+The second change selects the Docker Hub `linux/amd64` manifest of Operator 1.16.1, which the publication mirrors unchanged, so the Helm values name that digest before a publication has created it in GAR; the Deployment stays at zero replicas, and admission requires a fresh mirror anyway.
+The chart's values gain only a webhook certificate profile and comments, and it still renders `watchNamespaces` into the Operator configuration.
+The behaviour the rig relies on is unchanged in the release sources: `kubernetes.operator.snapshot.resource.enabled` still selects status-based savepoint reporting, `UserLibMountDecorator` is byte-identical, and the 1.16 changes to job status observation concern cancellation-driven suspends and a job the cluster no longer reports, which keeps an already terminal state rather than replacing it, not the savepoint upgrade itself.
+The exercise still tolerates a `FINISHED` old job during the upgrade stage without requiring one.

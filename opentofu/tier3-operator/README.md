@@ -28,7 +28,7 @@ The [bootstrap recovery apply](https://github.com/flink-gcp/flink-connector-gcp/
 | OpenTofu | 1.12.5 |
 | Helm provider | 3.3.0, with committed Linux amd64 and macOS arm64 checksums |
 | Helm rendering CLI | 3.20.2, matching the provider's Helm library |
-| Distributed chart and Operator | 1.15.0 |
+| Distributed chart and Operator | 1.16.1 |
 | Planned smoke runtime | Flink 2.2.1 on Java 17, API enum `v2_2` |
 
 The root's `upstream.yaml` fixes the version, the SHA-512 and the ordered mirror URLs.
@@ -36,8 +36,8 @@ Both runners download and verify that archive into `.terraform/operator-chart.tg
 The download tries the `urls` in order and accepts only bytes that match the SHA-512, as [the schema refresh](../../kubernetes/README.md#refresh-upstream-schemas) does.
 Each of the two pins carries its own `urls`, so a mirror added to one is not used by the other.
 The helper checks the chart's version and appVersion and renders the same archive before OpenTofu runs.
-The distributed chart defaults to `ghcr.io/apache/flink-kubernetes-operator:79d730b`.
-The idle values select the Operator 1.15.0 GAR digest from the [successful publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704); every later publication mirrors the same digest, and the [image runbook](../../kubernetes/images/README.md) records which run created the current GAR version.
+The distributed chart defaults to `ghcr.io/apache/flink-kubernetes-operator:1c895a3`.
+The idle values select the GAR digest of the Operator 1.16.1 image, `sha256:91250bb0…`, the Docker Hub `linux/amd64` manifest that every publication since [#2081](https://github.com/flink-gcp/flink-connector-gcp/issues/2081) mirrors unchanged; Operator 1.15.0 came from the [first publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34760632704), and the [image runbook](../../kubernetes/images/README.md) records which run created the current GAR version.
 The image verifier requires the Tier-3 GAR Operator repository and a SHA-256 digest, compares chart output with that reference, and compares the live Deployment with the rendered expectation.
 The [seven-day cleanup policy](../../kubernetes/images/README.md#retention-and-acceptance) still requires a fresh image-availability check before Pod admission.
 

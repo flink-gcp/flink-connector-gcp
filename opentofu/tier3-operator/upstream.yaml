@@ -13,9 +13,9 @@
 # limitations under the License.
 
 # Independent from the bootstrap pin: apply CRD upgrades before Helm upgrades.
-version: "1.15.0"
+version: "1.16.1"
 # Mirrors, tried in order; see kubernetes/README.md#refresh-upstream-schemas.
 urls:
-  - https://dlcdn.apache.org/flink/flink-kubernetes-operator-1.15.0/flink-kubernetes-operator-1.15.0-helm.tgz
-  - https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.15.0/flink-kubernetes-operator-1.15.0-helm.tgz
-sha512: 13076a6cbc92136da01aa67f4881ca2bb12d44697f782616b3f2e5b185e915cbb3ed7dd00de5b14ad81c408aebd7cbffa1611e96538d36389261780a75935781
+  - https://dlcdn.apache.org/flink/flink-kubernetes-operator-1.16.1/flink-kubernetes-operator-1.16.1-helm.tgz
+  - https://archive.apache.org/dist/flink/flink-kubernetes-operator-1.16.1/flink-kubernetes-operator-1.16.1-helm.tgz
+sha512: c10d08e6246c987bc4513fb198112a52903eccec5616161e429c4f4a466c9181266c226509f591ec26e45a3ffb104febd5bb7c371c3c8132fe58cac40603d4fe

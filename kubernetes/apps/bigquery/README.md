@@ -120,7 +120,7 @@ The fixed-delay restart strategy permits three attempts with a ten-second delay;
 For the upgrade, render the same inputs with `run.phase: "upgrade"` and update the same deployment.
 Both phases use `upgradeMode: savepoint` and `allowNonRestoredState: false`; only the phase argument and `--require-restored` change, with the latter becoming `true` on upgrade.
 A rescale trial's upgrade also changes `--parallelism`, the job parallelism and the TaskManager count together.
-The definition also sets `kubernetes.operator.job.upgrade.last-state-fallback.enabled=false` so an unavailable savepoint cannot be replaced by last-state recovery, and `kubernetes.operator.snapshot.resource.enabled=false` to use Operator 1.15.0's status-based savepoint reporting instead of separate FlinkStateSnapshot resources.
+The definition also sets `kubernetes.operator.job.upgrade.last-state-fallback.enabled=false` so an unavailable savepoint cannot be replaced by last-state recovery, and `kubernetes.operator.snapshot.resource.enabled=false` to use the Operator's status-based savepoint reporting instead of separate FlinkStateSnapshot resources.
 These settings follow the generic recovery exercise that [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran; an Operator upgrade must revisit this version-specific reporting choice.
 The running application's checkpointed identity also rejects changed input parameters on restore.
 The package describes that transition; it does not wait for baseline observations, prove a completed savepoint, apply the upgrade or delete the JobManager.

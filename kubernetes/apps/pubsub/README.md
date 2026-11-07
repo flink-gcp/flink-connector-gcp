@@ -56,7 +56,7 @@ At parallelism two, the application alone therefore uses three Pods; later admis
 Namespace quotas remain idle until a separately approved lifecycle admits the complete workload.
 
 Savepoint upgrades preserve state and refuse unclaimed state.
-The definition disables last-state fallback, so an unavailable savepoint cannot be replaced by last-state recovery, and sets `kubernetes.operator.snapshot.resource.enabled=false`, so Operator 1.15.0 reports the upgrade savepoint in the application's status rather than in a separate FlinkStateSnapshot, which is where the recovery exercise reads it, as the BigQuery application does.
+The definition disables last-state fallback, so an unavailable savepoint cannot be replaced by last-state recovery, and sets `kubernetes.operator.snapshot.resource.enabled=false`, so the Operator reports the upgrade savepoint in the application's status rather than in a separate FlinkStateSnapshot, which is where the recovery exercise reads it, as the BigQuery application does.
 The rendered job arguments use the application's `--name=value` syntax, match Flink parallelism and require restored identity in the `upgrade` phase.
 That phase does not locate a savepoint or prove a checkpoint boundary: the supervisor's [recovery exercise](#recovery-exercise) selects and checks the recovery state and observes the restoration.
 The logical input domain and restart count do not bound elapsed execution or billable service operations.
@@ -454,7 +454,7 @@ The application runs in the Operator's standalone mode with `scheduler-mode: rea
 Both manifests run the same job, and the recovery manifest differs only in `taskManager.replicas`, which the Operator applies to the TaskManager Deployment in place.
 The scheduler takes the job's parallelism from the TaskManagers, so a scale to three makes two subtasks read subscription 0, as the [split plan](../../../docs/content/docs/connectors/datastream/pubsub.md#subscriptions-splits-and-parallelism) assigns it.
 It waits 120 seconds for TaskManagers before it starts the job, so that one registering after the first checkpoint does not restart it before the fault.
-In standalone application mode, Operator 1.15.0's `UserLibMountDecorator` mounts an empty volume over `/opt/flink/usrlib` whenever `pipeline.classpaths` is set, which hides the relay's JAR and dependencies there, and the JobManager then fails to load its entry class and restarts; the first deployed run, `ps2056-rso-off-a1`, stopped on that restart.
+In standalone application mode, the Operator's `UserLibMountDecorator`, unchanged from 1.15.0 to 1.16.1, mounts an empty volume over `/opt/flink/usrlib` whenever `pipeline.classpaths` is set, which hides the relay's JAR and dependencies there, and the JobManager then fails to load its entry class and restarts; the first deployed run, `ps2056-rso-off-a1`, stopped on that restart.
 The decorator leaves alone a JobManager that already mounts a path under `/opt/flink/usrlib`, so the reactive JobManager template mounts an empty volume at `/opt/flink/usrlib/.operator-guard`.
 
 The observer sleeps 100 ms for each replay-cohort input, and the source's flow-control limit is 100,000 messages, so the replay cohort keeps the task thread busy for about 330 seconds on a subtask that reads a subscription alone.
