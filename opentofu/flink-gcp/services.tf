@@ -30,6 +30,9 @@ resource "google_project_service" "this" {
     "appengine.googleapis.com",
     "artifactregistry.googleapis.com",
     "bigquery.googleapis.com",
+    # The Cloud resource connection through which BigQuery writes the files of
+    # the Iceberg managed tables the sink's tests create (#2089).
+    "bigqueryconnection.googleapis.com",
     "bigquerystorage.googleapis.com",
     # Two services, because the Bigtable E2E suite (#218) spans both planes: it
     # creates and deletes an ephemeral instance through the admin API and then

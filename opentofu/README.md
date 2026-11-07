@@ -23,6 +23,7 @@ queues) are created and deleted by the tests themselves.
 | `flink-gcp/opentofu-sa.tf` | Plan (read-only) and apply service accounts |
 | `flink-gcp/e2e-sa.tf` | The E2E test service account and its scoped grants |
 | `flink-gcp/it-resources.tf` | Pre-existing bucket/dataset, adopted via import blocks |
+| `flink-gcp/bigquery-iceberg.tf` | Cloud resource connection and data bucket for the BigQuery sink's Iceberg managed tables, and their grants |
 | `flink-gcp/appengine-e2e.tf` | The stopped App Engine Standard fixture used by Cloud Tasks acceptance |
 | `flink-gcp/tier3.tf` | Shared Autopilot cluster, private network, node identity and image repository |
 | `flink-gcp/tier3-cloudtasks.tf` | Cloud Tasks recovery workload identity, one-day state bucket, queue roles and lifecycle state access |
