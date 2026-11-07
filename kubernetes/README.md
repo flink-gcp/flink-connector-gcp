@@ -263,7 +263,7 @@ Its four trials each reached `usable`, as the [Spanner recovery trial findings](
 The [Firestore recovery application](apps/firestore/README.md) supplies the one graph that the trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) share: the Native-mode and Datastore-mode sinks and a paced batch-read copy in each mode.
 Build it with `just tier3-firestore-verify`.
 Its tests run the production graph against the Firestore emulator in both modes through savepoint upgrades and both rescales and pin the graph.
-The [`firestore-recovery`](lifecycle/firestore.cue) delivery runs it in the `tier3-firestore` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-firestore.tf); the namespace follows in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083) and the rig scenario in [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084).
+The [`firestore-recovery`](lifecycle/firestore.cue) delivery runs it in the `tier3-firestore` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-firestore.tf), and the rig scenario of [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084) creates each run's databases and judges the trial, as the [recovery trial runbook](apps/firestore/README.md#recovery-trial) describes; the namespace follows in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083).
 
 ## Pub/Sub recovery application
 

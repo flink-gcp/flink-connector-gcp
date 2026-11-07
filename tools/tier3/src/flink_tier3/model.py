@@ -30,6 +30,7 @@ from .policy import (
     CLEANUP_SECONDS,
     CLOUDTASKS,
     COST_RATES,
+    FIRESTORE,
     GAR,
     POD_RESOURCES,
     PUBSUB,
@@ -84,6 +85,7 @@ APPLICATION_NAMESPACES = {
     "cloudtasks-recovery": CLOUDTASKS,
     "bigtable-recovery": BIGTABLE,
     "spanner-recovery": SPANNER,
+    "firestore-recovery": FIRESTORE,
 }
 
 
@@ -263,6 +265,7 @@ class Approval:
     cloudtasks_trial: dict = field(default_factory=dict)
     bigtable_trial: dict = field(default_factory=dict)
     spanner_trial: dict = field(default_factory=dict)
+    firestore_trial: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, value):
@@ -328,6 +331,15 @@ class Approval:
             raise Failure("Approval does not describe a Spanner trial")
         return Trial(self.run_id, **self.spanner_trial)
 
+    @property
+    def firestore_plan(self):
+        """Derive the trial's input and databases from a Firestore approval."""
+        from .firestore.trial import Trial
+
+        if self.scenario != "firestore-recovery":
+            raise Failure("Approval does not describe a Firestore trial")
+        return Trial(self.run_id, **self.firestore_trial)
+
     def to_dict(self):
         value = asdict(self)
         if self.scenario != "pubsub-recovery":
@@ -340,6 +352,8 @@ class Approval:
             value.pop("bigtable_trial")
         if self.scenario != "spanner-recovery":
             value.pop("spanner_trial")
+        if self.scenario != "firestore-recovery":
+            value.pop("firestore_trial")
         return value
 
 
@@ -415,6 +429,7 @@ class RunRecord:
     cloudtasks: dict | None = None
     bigtable: dict | None = None
     spanner: dict | None = None
+    firestore: dict | None = None
 
     @classmethod
     def from_dict(cls, value):
