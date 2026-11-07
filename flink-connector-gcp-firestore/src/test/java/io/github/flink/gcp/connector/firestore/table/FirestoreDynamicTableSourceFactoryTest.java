@@ -40,6 +40,7 @@ import org.apache.flink.table.types.DataType;
 
 import com.google.cloud.firestore.FieldPath;
 import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.Query;
 import io.github.flink.gcp.connector.base.lineage.PhysicalResourceFacet;
 import io.github.flink.gcp.connector.base.lineage.ResourceIdentifier;
 import io.github.flink.gcp.connector.base.lineage.internal.TableLineageSource;
@@ -169,6 +170,95 @@ class FirestoreDynamicTableSourceFactoryTest {
         }
         assertThat(dynamic.copy()).isEqualTo(dynamic);
         assertThat(dynamic).isNotEqualTo(FactoryMocks.createTableSource(KEYED, options()));
+    }
+
+    @Test
+    void aPushedLimitBoundsTheCollectionQueryAndComparesByIt() throws Exception {
+        FirestoreDynamicSource dynamic =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
+        dynamic.applyLimit(5);
+
+        try (Firestore client = TestDocuments.offlineClient("my-project")) {
+            assertThat(config(runtimeSource(dynamic)).getQueryFactory().create(client))
+                    .isEqualTo(
+                            client.collection("users/alice/orders")
+                                    .select(FieldPath.of("name"), FieldPath.of("a.b"))
+                                    .limit(5));
+        }
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+        assertThat(dynamic).isNotEqualTo(FactoryMocks.createTableSource(KEYED, options()));
+    }
+
+    @Test
+    void aLimitedCollectionGroupScanIsOneQueryWithoutPartitions() throws Exception {
+        FirestoreDynamicSource dynamic =
+                (FirestoreDynamicSource)
+                        FactoryMocks.createTableSource(
+                                UNKEYED,
+                                options(
+                                        "scan.collection-group", "true",
+                                        "scan.partition.max-partitions", "16"));
+        dynamic.applyLimit(5);
+        FirestoreSourceConfig<?> config = config(runtimeSource(dynamic));
+
+        assertThat(config.getCollectionGroup()).isNull();
+        assertThat(config.getPartitionCount()).isNull();
+        assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
+
+        // A limit past an int is not pushed, so the scan stays partitioned.
+        FirestoreDynamicSource tooLarge =
+                (FirestoreDynamicSource)
+                        FactoryMocks.createTableSource(
+                                UNKEYED,
+                                options(
+                                        "scan.collection-group", "true",
+                                        "scan.partition.max-partitions", "16"));
+        tooLarge.applyLimit(Integer.MAX_VALUE + 1L);
+        FirestoreSourceConfig<?> partitioned = config(runtimeSource(tooLarge));
+        assertThat(partitioned.getCollectionGroup()).isEqualTo("orders");
+        assertThat(partitioned.getPartitionCount()).isEqualTo(16);
+        try (Firestore client = TestDocuments.offlineClient("my-project")) {
+            assertThat(config.getQueryFactory().create(client))
+                    .isEqualTo(
+                            client.collectionGroup("orders")
+                                    .select(FieldPath.of("name"), FieldPath.of("a.b"))
+                                    .limit(5));
+        }
+    }
+
+    @Test
+    void aLimitPastAnIntOrBesideAPushedFilterIsNotSent() throws Exception {
+        FirestoreDynamicSource tooLarge =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
+        tooLarge.applyLimit(Integer.MAX_VALUE + 1L);
+        FirestoreDynamicSource filtered =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
+        filtered.applyFilters(List.of(equals("a.b", 2, "x")));
+        filtered.applyLimit(5);
+
+        try (Firestore client = TestDocuments.offlineClient("my-project")) {
+            Query all =
+                    client.collection("users/alice/orders")
+                            .select(FieldPath.of("name"), FieldPath.of("a.b"));
+            assertThat(config(runtimeSource(tooLarge)).getQueryFactory().create(client))
+                    .isEqualTo(all);
+            // The planner never pushes both; a scan that had both would stop early.
+            assertThat(config(runtimeSource(filtered)).getQueryFactory().create(client))
+                    .isEqualTo(
+                            client.collection("users/alice/orders")
+                                    .whereEqualTo(FieldPath.of("a.b"), "x")
+                                    .select(FieldPath.of("name"), FieldPath.of("a.b")));
+        }
+        FirestoreDynamicSource maxInt =
+                (FirestoreDynamicSource) FactoryMocks.createTableSource(KEYED, options());
+        maxInt.applyLimit(Integer.MAX_VALUE);
+        try (Firestore client = TestDocuments.offlineClient("my-project")) {
+            assertThat(config(runtimeSource(maxInt)).getQueryFactory().create(client))
+                    .isEqualTo(
+                            client.collection("users/alice/orders")
+                                    .select(FieldPath.of("name"), FieldPath.of("a.b"))
+                                    .limit(Integer.MAX_VALUE));
+        }
     }
 
     @Test

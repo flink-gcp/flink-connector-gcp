@@ -99,13 +99,14 @@ The id equality adds no ordering, so a cursor still resumes the query by documen
 
 ## Alternatives declined
 
-- **An exact contract for the string, boolean and bytes columns**, which would leave #1838 room to push a limit. The owner kept one contract for every type; exactness per type would need its own measurement against both editions.
+- **An exact contract for the string, boolean and bytes columns**, which would leave #1838 room to push a limit. The owner kept one contract for every type; exactness per type would need its own measurement against both editions. [ADR-0201] pushes a limit only onto a scan with no predicate, which the residual every pushed filter leaves already guarantees.
 - **Pushing only under `type-mismatch-policy = 'null'`**, which keeps `fail` detecting mismatches in documents the filter excludes, at the cost of reading and billing them.
 - **An opt-in equality pushdown for collection-group scans**, adding the filter to each partition's query, which needs a collection-group index the user creates.
 - **`IS NOT NULL` as `!= null`**: a necessary condition on every edition measured, but an inequality orders the query by its field and needs that field in the field mask; left with the other inequalities.
 
 [ADR-0173]: 0173-the-firestore-source-reads-partition-cursor-ranges-at-one-read-time.md
 [ADR-0179]: 0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md
+[ADR-0201]: 0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md
 [#1829]: https://github.com/flink-gcp/flink-connector-gcp/issues/1829
 [#1830]: https://github.com/flink-gcp/flink-connector-gcp/issues/1830
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838

@@ -150,6 +150,7 @@ The read time must lie within the past hour, or on a whole minute within the pas
 A scan reads whole entities and converts only the columns it produces.
 A column projection is not sent to the service as a Datastore projection query, because such a query returns only the entities that hold an indexed value of every projected property, and one result per value of an array property: a column written through `sink.unindexed-columns` would read as no row at all.
 A key equality always reaches the service, and other predicates only when the table sets `scan.filter-push-down.enabled`, as [Filter pushdown](#filter-pushdown) describes.
+A `LIMIT` directly above the scan bounds what it reads, as [Limit pushdown](#limit-pushdown) describes.
 
 A scan or a lookup can read six metadata columns:
 
@@ -206,6 +207,20 @@ These are never pushed, each because the service would drop an entity Flink keep
 
 A pushed filter also changes which entities the read checks: an entity the filter excludes is not read, so nothing in it fails the scan.
 That covers a mismatched value under `type-mismatch-policy = 'fail'` and, under either policy, a missing or mismatched value in a `NOT NULL` column, a key of the other form and a key with a parent.
+
+### Limit pushdown
+
+A statement whose `LIMIT` sits directly above the scan, such as `SELECT * FROM t LIMIT 10`, hands the limit to the service, so the scan's query returns at most that many entities instead of the whole kind.
+Planning the read adds a one-entity query of its own, and a page the client library retries is read again, so the database bills those on top of the limit.
+An `OFFSET` is added to the limit the scan reads, and Flink skips the offset and applies the limit again to what the scan returns.
+Which entities come back is not specified, as in SQL without `ORDER BY`.
+
+A limited scan is read as one query, not cut into key ranges, so `scan.partition.max-partitions` does not apply to it.
+Asking each key range for the limit would read up to the range count times the limit, and without `scan.partition.max-partitions` the source asks for at least twelve ranges; one query reads the limit alone, at the cost of reading serially, so a large limit over a large kind takes longer than a parallel read of the same entities would.
+
+The limit is pushed only when nothing stands between it and the scan.
+Any `WHERE` predicate stays with Flink, even a key equality or one `scan.filter-push-down.enabled` also hands the service, so a filtered statement reads as it would without a limit: a limit beneath Flink's filter could stop before the entities the filter keeps.
+`ORDER BY`, `GROUP BY` and `DISTINCT` below the limit keep it with Flink too.
 
 The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#reading-in-datastore-mode) describes the read-time window, the split count's estimate, paging and recovery.
 
@@ -320,7 +335,7 @@ All of this is streaming behaviour: in batch execution Flink 2.3 plans such a st
 | `geo-point-field-paths` | empty | Semicolon-separated field paths of `ROW<latitude DOUBLE, longitude DOUBLE>` values written and read as geographical points |
 | `reference-field-paths` | empty | Semicolon-separated field paths of `ROW<kind STRING, name STRING, id BIGINT>` values, optionally with `ancestors`, written and read as key values in the table's namespace |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
-| `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000` |
+| `scan.partition.max-partitions` | *unset ⇒ estimated from the kind's statistics, at least the larger of 12 and the scan's parallelism* | Maps to `splitCount`: the key ranges a scan asks the splitter for, at most `50000`; unused by a scan given a [pushed limit](#limit-pushdown) |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the entities one request asks for |
 | `scan.filter-push-down.enabled` | `false` | Push equality predicates on properties into the scan's query, asserting that every filtered property is indexed on every entity; a key equality is pushed without it; see [Filter pushdown](#filter-pushdown) |
@@ -359,7 +374,7 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 
 ## Design decisions and testing
 
-The table mapping, filter pushdown and the declined alternatives are recorded in [ADR-0184]({{< param BookRepo >}}/blob/main/docs/adr/0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md).
+The table mapping, filter pushdown and the declined alternatives are recorded in [ADR-0184]({{< param BookRepo >}}/blob/main/docs/adr/0184-the-datastore-table-sink-upserts-one-kind-keyed-by-name-or-id.md), and limit pushdown in [ADR-0201]({{< param BookRepo >}}/blob/main/docs/adr/0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md).
 The emulator integration tests, against the Firestore emulator in Datastore mode, write every type through SQL and read the entities back with the client library, apply an upsert changelog in order, merge rows into stored entities, replace them and update their declared properties, NULL and mismatched stored values included, fail an update of a missing entity, refuse deletes into an `update` table when planned and fail the delete an upsert materialization still sends, write a numeric id into a namespace, store a timestamp to the microsecond, and contrast an over-long string in indexed and unindexed columns at the top level, as an array element and inside a `ROW`, which the emulator refuses and stores as the service documents.
 They also read every type back through a SQL scan with its metadata, read the allocated ids of a table without a PRIMARY KEY, fail and read as NULL a mismatched value under each policy, keep every entity under a column projection, and read at a configured read time.
 A scan with `scan.filter-push-down.enabled` is compared with the same predicate over a table without it, missing properties, nulls, mismatched types, arrays and near misses included, as well as fractional doubles, fixed-length columns, embedded entities and dotted names, and drops an entity whose filtered value is unindexed; a key equality without the option reads the root entity alone, in the table's namespace; the gated suite runs three equalities with a key range against the service, a key equality with a key range, unquoted dotted, backquoted and nested property names, pins the service's matching of an integer under a floating-point equality, of `-0.0`, of a blob under a string equality and of an over-long literal, and holds the same loss there.

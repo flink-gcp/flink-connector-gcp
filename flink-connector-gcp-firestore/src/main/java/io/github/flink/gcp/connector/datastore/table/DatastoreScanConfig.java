@@ -77,7 +77,7 @@ public final class DatastoreScanConfig implements Serializable {
                         config.getOptional(DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH)
                                 .orElse(null),
                         config.get(DatastoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED));
-        options.applyTo(DatastoreSource.builder());
+        options.applyTo(DatastoreSource.builder(), true);
         return options;
     }
 
@@ -103,12 +103,20 @@ public final class DatastoreScanConfig implements Serializable {
         return filterPushDown;
     }
 
-    /** Applies the options to a source builder, renaming a refused value to its option key. */
-    public void applyTo(DatastoreSourceBuilder<?> builder) {
-        OptionSetters.accept(
-                DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS.key(),
-                maxPartitions,
-                builder::splitCount);
+    /**
+     * Applies the options to a source builder, renaming a refused value to its option key.
+     *
+     * @param builder the source builder
+     * @param split whether the read is cut into key ranges; {@code scan.partition.max-partitions}
+     *     applies only then, since a read of one split has no count to bound
+     */
+    public void applyTo(DatastoreSourceBuilder<?> builder, boolean split) {
+        if (split) {
+            OptionSetters.accept(
+                    DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS.key(),
+                    maxPartitions,
+                    builder::splitCount);
+        }
         OptionSetters.accept(
                 DatastoreConnectorOptions.SCAN_READ_TIME.key(), readTime, builder::readTime);
         OptionSetters.accept(

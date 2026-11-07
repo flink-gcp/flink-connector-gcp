@@ -25,6 +25,7 @@ import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
 import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
+import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
@@ -42,10 +43,12 @@ import org.apache.flink.util.Preconditions;
 
 import com.google.datastore.v1.Filter;
 import com.google.datastore.v1.Query;
+import com.google.protobuf.Int32Value;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSource;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceBuilder;
+import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.github.flink.gcp.connector.datastore.table.DatastoreLookupConfig;
 import io.github.flink.gcp.connector.datastore.table.DatastoreScanConfig;
 import io.github.flink.gcp.connector.datastore.table.DatastoreTableLineage;
@@ -77,12 +80,19 @@ import java.util.Objects;
  * translates: one on the key always, and those on properties only when {@code
  * scan.filter-push-down.enabled} is set, because a filter never matches a value excluded from
  * indexes and the option asserts that the filtered properties are indexed.
+ *
+ * <p>A limit the planner pushes bounds the query, which the source then reads as one split instead
+ * of in key ranges, so a scan reads at most that many entities ({@code docs/adr/0201}). Flink keeps
+ * its own limit above the scan. The planner pushes a limit only onto a scan with no residual
+ * predicate above it, and every predicate stays a residual, so a limited scan carries no pushed
+ * filter; a scan that has both drops the limit.
  */
 @Internal
 public final class DatastoreDynamicSource
         implements ScanTableSource,
                 LookupTableSource,
                 SupportsFilterPushDown,
+                SupportsLimitPushDown,
                 SupportsProjectionPushDown,
                 SupportsReadingMetadata {
 
@@ -102,6 +112,7 @@ public final class DatastoreDynamicSource
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
     private PushedFilters<Filter> filterState = PushedFilters.empty();
+    @Nullable private Integer limit;
 
     /**
      * Creates the source over every physical column and no metadata.
@@ -173,14 +184,22 @@ public final class DatastoreDynamicSource
                                         producedType));
         Query filtered = DatastoreFilterPushDown.query(kind, filterState.filters());
         if (filtered != null) {
+            // A limit beside a pushed filter would stop before an entity Flink's residual keeps.
+            // The planner never pushes both; the limit is dropped if it ever did.
             builder.query(filtered);
+        } else if (limit != null) {
+            builder.query(
+                    SplittableQueries.ofKind(kind).toBuilder()
+                            .setLimit(Int32Value.of(limit))
+                            .build());
         } else {
             builder.kind(kind);
         }
         if (!namespace.isEmpty()) {
             builder.namespace(namespace);
         }
-        scanConfig.applyTo(builder);
+        // A limited query is read as one split.
+        scanConfig.applyTo(builder, filtered != null || limit == null);
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -290,6 +309,15 @@ public final class DatastoreDynamicSource
         return filterState.result();
     }
 
+    /**
+     * Bounds the scan's query by the limit, which includes any offset the statement skips. A limit
+     * beyond what a query's 32-bit limit holds is not pushed: Flink's own limit still applies.
+     */
+    @Override
+    public void applyLimit(long limit) {
+        this.limit = limit <= Integer.MAX_VALUE ? (int) limit : null;
+    }
+
     @Override
     public Map<String, DataType> listReadableMetadata() {
         return ReadableMetadata.listAll();
@@ -322,6 +350,7 @@ public final class DatastoreDynamicSource
         copy.metadataKeys = metadataKeys;
         copy.producedDataType = producedDataType;
         copy.filterState = filterState;
+        copy.limit = limit;
         return copy;
     }
 
@@ -353,7 +382,8 @@ public final class DatastoreDynamicSource
                 && Arrays.equals(columns, that.columns)
                 && metadataKeys.equals(that.metadataKeys)
                 && producedDataType.equals(that.producedDataType)
-                && filterState.equals(that.filterState);
+                && filterState.equals(that.filterState)
+                && Objects.equals(limit, that.limit);
     }
 
     @Override
@@ -373,7 +403,8 @@ public final class DatastoreDynamicSource
                 Arrays.hashCode(columns),
                 metadataKeys,
                 producedDataType,
-                filterState);
+                filterState,
+                limit);
     }
 
     /** The root keys the table's PRIMARY KEY values name, for the lookup and the key filter. */

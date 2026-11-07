@@ -121,6 +121,7 @@ A `NOT NULL` column has no nullable field around it, so a mismatched or missing 
 
 A scan reads the documents directly in the table's collection, as one query on one split, at one read time.
 With `scan.collection-group` it reads every collection whose id is the last segment of `collection`, at any depth of the database, as a collection-group scan that the service partitions; `scan.partition.max-partitions` caps the partitions it asks for.
+A pushed `LIMIT` reads the group as one query instead, as [Limit pushdown](#limit-pushdown) describes.
 Both read a consistent snapshot at `scan.read-time` (truncated to the microsecond), or at the service's time when the read is planned.
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="scan" >}}
@@ -128,6 +129,7 @@ Both read a consistent snapshot at `scan.read-time` (truncated to the microsecon
 A scan reads only the fields of the columns it produces: the declared columns, or the projected ones when the planner pushes a projection down, so a document's undeclared top-level fields never travel.
 A query that reads a field of a `ROW` column can read that field alone; [Projection pushdown](#projection-pushdown) gives the boundary.
 Equality predicates are pushed into a scan of one collection; [Filter pushdown](#filter-pushdown) gives the boundary.
+A `LIMIT` directly above the scan bounds what it reads; [Limit pushdown](#limit-pushdown) gives the boundary.
 
 A collection-group scan reads documents of many collections, whose ids repeat across them, so its table cannot declare a PRIMARY KEY: the planner trusts a declared key to be unique and removes a `GROUP BY` or a `DISTINCT` over it, so repeated ids would come back unaggregated.
 The `document-path` metadata column, which is unique, identifies a document instead.
@@ -184,6 +186,22 @@ A collection-group scan pushes nothing.
 A Standard-edition database serves a filtered collection-group query only through an index of collection-group scope, which it does not create by itself, and refuses the query with `FAILED_PRECONDITION` without one.
 On one collection, a Standard-edition database answered equalities on two and on three fields through the single-field indexes it creates by itself, without a composite index.
 Should a pushed query still need an index the database lacks, for example on a field exempted from indexing, it fails when the job starts, not partway through the read: the read is planned with a one-document query of the same filters.
+
+### Limit pushdown
+
+A statement whose `LIMIT` sits directly above the scan, such as `SELECT * FROM t LIMIT 10`, hands the limit to the service, so the scan emits at most that many documents and, while no read fails, its query reads at most that many instead of the whole collection.
+Planning the read adds one-document queries of its own, two without `scan.read-time` and one with it.
+A page's stream that the client library resumes after a failure asks again for that page's full size from the last document received, and the scan discards what exceeds the page, so each such retry can read up to one page more; a page holds at most the limit and at most `scan.max-rows-per-fetch` documents.
+A Standard-edition database bills those reads on top of the limit.
+An `OFFSET` is added to the limit the scan reads, and Flink skips the offset and applies the limit again to what the scan returns.
+Which documents come back is not specified, as in SQL without `ORDER BY`.
+
+A collection-group scan given a limit reads the group as one query instead of as partitions, so `scan.partition.max-partitions` does not apply to it.
+Asking each partition for the limit would read up to the partition count times the limit; one query reads the limit alone, at the cost of reading serially, so a large limit over a large group takes longer than a parallel read of the same documents would.
+
+The limit is pushed only when nothing stands between it and the scan.
+Any `WHERE` predicate stays with Flink, even one [Filter pushdown](#filter-pushdown) also hands the service, so a filtered statement reads as it would without a limit: a limit beneath Flink's filter could stop before the documents the filter keeps.
+`ORDER BY`, `GROUP BY` and `DISTINCT` below the limit keep it with Flink too.
 
 ## Lookup
 
@@ -282,7 +300,7 @@ No table write carries a precondition.
 | `reference-field-paths` | empty | Semicolon-separated field paths of `STRING` values written as references to documents |
 | `type-mismatch-policy` | `fail` | What a read does with a stored value whose type does not match its column: `fail` the read, or read the field as `null` |
 | `scan.collection-group` | `false` | Scan every collection whose id is the last segment of `collection`, partitioned, rather than the one collection as a single split |
-| `scan.partition.max-partitions` | *unset ⇒ the scan's parallelism* | Maps to `partitionCount`: the partitions a collection-group scan asks the service for; only with `scan.collection-group` |
+| `scan.partition.max-partitions` | *unset ⇒ the scan's parallelism* | Maps to `partitionCount`: the partitions a collection-group scan asks the service for; only with `scan.collection-group`; unused by a scan given a [pushed limit](#limit-pushdown) |
 | `scan.read-time` | *unset ⇒ the service's time when the read is planned* | Maps to `readTime`: an ISO-8601 instant such as `2026-10-04T00:00:00Z`, truncated to the microsecond, within the past hour, or a whole minute within seven days with point-in-time recovery |
 | `scan.max-rows-per-fetch` | `500` | Maps to `pageSize`: the documents one request asks for |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
@@ -324,6 +342,6 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 
 ## Design decisions and testing
 
-The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md), and filter pushdown, with the service's matching measured on both editions, in [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md).
+The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md), filter pushdown, with the service's matching measured on both editions, in [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md), and limit pushdown in [ADR-0201]({{< param BookRepo >}}/blob/main/docs/adr/0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md).
 The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups; the uber-jar's tests write through its relocated classes.
 A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing, nested fields and fixed-length columns included, and a document-id equality with a filter on the document path; the gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database, an id and a map field's equality on a Standard-edition one.
