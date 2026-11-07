@@ -492,6 +492,10 @@ tier3-bigtable-verify:
 tier3-spanner-verify:
     just verify -P tier3-spanner -pl kubernetes/apps/spanner -am clean
 
+# Verify the internal Firestore recovery application without GCP access.
+tier3-firestore-verify:
+    just verify -P tier3-firestore -pl kubernetes/apps/firestore -am clean
+
 # Verify the internal Pub/Sub recovery relay and offline evidence oracle.
 tier3-pubsub-verify:
     just verify -P tier3-pubsub -pl kubernetes/apps/pubsub -am clean

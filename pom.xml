@@ -1213,6 +1213,12 @@ limitations under the License.
             </modules>
         </profile>
         <profile>
+            <id>tier3-firestore</id>
+            <modules>
+                <module>kubernetes/apps/firestore</module>
+            </modules>
+        </profile>
+        <profile>
             <id>tier3-cloudtasks</id>
             <modules>
                 <module>kubernetes/apps/cloudtasks</module>

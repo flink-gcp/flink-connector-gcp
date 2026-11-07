@@ -41,8 +41,9 @@ jobs:
   publish:
     if: github.repository_id == '1305440656' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Six application verifications, each building its connector with -am, bring the job to
-    # about 28 minutes; this leaves room for a slow runner.
+    # Seven application verifications, each building its connector with -am, bring the job to
+    # about 32 minutes (25 for the six before Firestore's, whose own CI lane takes about 7);
+    # this leaves room for a slow runner.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -108,6 +109,9 @@ jobs:
 
       - name: Verify the Spanner recovery payload
         run: just tier3-spanner-verify
+
+      - name: Verify the Firestore recovery payload
+        run: just tier3-firestore-verify
 
       - name: Export the locked lifecycle dependencies
         run: just tier3-lifecycle-requirements
@@ -259,6 +263,24 @@ jobs:
           tags: ${{ steps.spanner_meta.outputs.tags }}
           labels: ${{ steps.spanner_meta.outputs.labels }}
 
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: firestore_meta
+        with:
+          images: ${{ env.GAR }}/firestore-recovery
+          tags: type=sha,format=long
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: firestore_build
+        with:
+          context: kubernetes/apps/firestore
+          platforms: linux/amd64
+          build-args: |
+            FLINK_IMAGE=${{ steps.recovery_base.outputs.image }}
+            FLINK_VERSION=2.2.1
+          push: true
+          tags: ${{ steps.firestore_meta.outputs.tags }}
+          labels: ${{ steps.firestore_meta.outputs.labels }}
+
       - name: Show published image digests
         env:
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
@@ -269,6 +291,7 @@ jobs:
           CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
           BIGTABLE_DIGEST: ${{ steps.bigtable_build.outputs.digest }}
           SPANNER_DIGEST: ${{ steps.spanner_build.outputs.digest }}
+          FIRESTORE_DIGEST: ${{ steps.firestore_build.outputs.digest }}
         run: |
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
@@ -283,4 +306,5 @@ jobs:
             printf '%s/cloudtasks-recovery@%s\n' "$GAR" "$CLOUDTASKS_DIGEST"
             printf '%s/bigtable-recovery@%s\n' "$GAR" "$BIGTABLE_DIGEST"
             printf '%s/spanner-recovery@%s\n' "$GAR" "$SPANNER_DIGEST"
+            printf '%s/firestore-recovery@%s\n' "$GAR" "$FIRESTORE_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"

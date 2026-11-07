@@ -41,6 +41,7 @@ kubernetes/
   apps/cloudtasks/               # Cloud Tasks measurement and recovery applications and local tests
   apps/bigtable/                 # Bigtable sink and Change Streams recovery application and local tests
   apps/spanner/                  # Spanner sink, Change Streams and batch-read recovery application and local tests
+  apps/firestore/                # Firestore Native and Datastore-mode sink and batch-read recovery application and local tests
   images/pins.cue                # Published Flink base and lifecycle runtime digests
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
@@ -254,6 +255,12 @@ Build it with `just tier3-spanner-verify`.
 Its tests run the production graph against the Spanner emulator through savepoint upgrades and both rescales and pin the graph.
 The [`spanner-recovery`](lifecycle/spanner.cue) delivery runs it in the `tier3-spanner` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-spanner.tf), and the rig scenario of [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/spanner/README.md#recovery-trial) describes.
 Its four trials each reached `usable`, as the [Spanner recovery trial findings](../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) record.
+
+## Firestore recovery application
+
+The [Firestore recovery application](apps/firestore/README.md) supplies the one graph that the trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) share: the Native-mode and Datastore-mode sinks and a paced batch-read copy in each mode.
+Build it with `just tier3-firestore-verify`.
+Its tests run the production graph against the Firestore emulator in both modes through savepoint upgrades and both rescales and pin the graph; it has no namespace, grants or scenario yet.
 
 ## Pub/Sub recovery application
 
