@@ -85,6 +85,7 @@ public final class DatastoreDynamicTableFactory
                         DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         DatastoreConnectorOptions.SCAN_READ_TIME,
                         DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH,
+                        DatastoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED,
                         DatastoreConnectorOptions.LOOKUP_ASYNC,
                         LookupOptions.CACHE_TYPE,
                         LookupOptions.MAX_RETRIES,

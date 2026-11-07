@@ -46,14 +46,17 @@ public final class DatastoreScanConfig implements Serializable {
     @Nullable private final Integer maxPartitions;
     @Nullable private final Instant readTime;
     @Nullable private final Integer maxRowsPerFetch;
+    private final boolean filterPushDown;
 
     private DatastoreScanConfig(
             @Nullable Integer maxPartitions,
             @Nullable Instant readTime,
-            @Nullable Integer maxRowsPerFetch) {
+            @Nullable Integer maxRowsPerFetch,
+            boolean filterPushDown) {
         this.maxPartitions = maxPartitions;
         this.readTime = readTime;
         this.maxRowsPerFetch = maxRowsPerFetch;
+        this.filterPushDown = filterPushDown;
     }
 
     /**
@@ -72,7 +75,8 @@ public final class DatastoreScanConfig implements Serializable {
                                 .map(DatastoreScanConfig::parseReadTime)
                                 .orElse(null),
                         config.getOptional(DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH)
-                                .orElse(null));
+                                .orElse(null),
+                        config.get(DatastoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED));
         options.applyTo(DatastoreSource.builder());
         return options;
     }
@@ -89,6 +93,14 @@ public final class DatastoreScanConfig implements Serializable {
                             + "' is not an ISO-8601 instant such as '2026-10-04T00:00:00Z'.",
                     e);
         }
+    }
+
+    /**
+     * Returns whether the scan pushes equality predicates into its query, the user having asserted
+     * that the filtered properties are indexed on every entity.
+     */
+    public boolean isFilterPushDown() {
+        return filterPushDown;
     }
 
     /** Applies the options to a source builder, renaming a refused value to its option key. */
@@ -116,11 +128,12 @@ public final class DatastoreScanConfig implements Serializable {
         DatastoreScanConfig that = (DatastoreScanConfig) o;
         return Objects.equals(maxPartitions, that.maxPartitions)
                 && Objects.equals(readTime, that.readTime)
-                && Objects.equals(maxRowsPerFetch, that.maxRowsPerFetch);
+                && Objects.equals(maxRowsPerFetch, that.maxRowsPerFetch)
+                && filterPushDown == that.filterPushDown;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(maxPartitions, readTime, maxRowsPerFetch);
+        return Objects.hash(maxPartitions, readTime, maxRowsPerFetch, filterPushDown);
     }
 }

@@ -21,18 +21,25 @@ import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
+import com.google.cloud.datastore.Blob;
 import com.google.cloud.datastore.DatastoreException;
 import com.google.cloud.datastore.Entity;
 import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.LatLng;
 import com.google.cloud.datastore.PathElement;
+import com.google.cloud.datastore.Query;
+import com.google.cloud.datastore.StringValue;
+import com.google.cloud.datastore.StructuredQuery;
+import com.google.cloud.datastore.StructuredQuery.CompositeFilter;
+import com.google.cloud.datastore.StructuredQuery.PropertyFilter;
 import com.google.cloud.datastore.Value;
 import io.github.flink.gcp.connector.datastore.AbstractDatastoreRealGcpITCase;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -46,8 +53,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * key value outside the entity's partition), and its write modes (the default {@code merge}, an
  * upsert whose property mask names every value the row holds, a mask with no path and names the
  * mask must quote and escape included, and {@code replace}), which the docs and ADR-0184 rest on.
- * The emulator's reading of a mask is not evidence about the service's, which {@code
- * datastore.proto} documents only in prose.
+ * It also holds what a pushed filter rests on: the query one split reads needs no composite index,
+ * and a filtered scan misses an unindexed value. The emulator's reading of a mask is not evidence
+ * about the service's, which {@code datastore.proto} documents only in prose.
  */
 @EnabledIfEnvironmentVariable(named = "FIRESTORE_IT_PROJECT", matches = ".+")
 @Tag("gated")
@@ -134,6 +142,96 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                 .hasMessageContaining("The project flink-gcp-no-such-project does not exist");
         assertThat(read(keyIn(kind, "db").build())).isNull();
         assertThat(read(keyIn(kind, "project").build())).isNull();
+    }
+
+    /**
+     * The service answers equality filters on three properties with a key range ANDed on, the query
+     * one split of a pushed scan reads, without a composite index, and a filtered scan drops an
+     * entity whose filtered value is excluded from indexes while keeping the indexed ones. It also
+     * pins the service's matching the declined and admitted shapes rest on: an equality on {@code
+     * 5.0} misses the integer {@code 5}, {@code 0.0} misses {@code -0.0}, a string equality matches
+     * the same bytes stored as a blob, and a string literal over 1,500 bytes is refused.
+     */
+    @Test
+    void pushedEqualitiesNeedNoCompositeIndexAndMissAnUnindexedValue() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        entity(kind, "a").set("s", "x").set("n", 5L).set("b", true).build(),
+                        entity(kind, "b").set("s", "x").set("n", 5L).set("b", true).build(),
+                        entity(kind, "c").set("s", "x").set("n", 6L).set("b", true).build(),
+                        entity(kind, "d")
+                                .set(
+                                        "s",
+                                        StringValue.newBuilder("x")
+                                                .setExcludeFromIndexes(true)
+                                                .build())
+                                .set("n", 5L)
+                                .set("b", true)
+                                .build(),
+                        entity(kind, "e").set("s", "x").set("n", 5L).set("b", true).build());
+
+        assertThat(
+                        names(
+                                kind,
+                                CompositeFilter.and(
+                                        PropertyFilter.eq("s", "x"),
+                                        PropertyFilter.eq("n", 5L),
+                                        PropertyFilter.eq("b", true),
+                                        PropertyFilter.ge("__key__", keyIn(kind, "b").build()),
+                                        PropertyFilter.lt("__key__", keyIn(kind, "e").build()))))
+                .containsExactly("b");
+
+        String numbers = uniqueKind();
+        client().put(
+                        entity(numbers, "integer").set("f", 5L).build(),
+                        entity(numbers, "double").set("f", 5.0d).build(),
+                        entity(numbers, "zero").set("f", 0.0d).build(),
+                        entity(numbers, "negativeZero").set("f", -0.0d).build(),
+                        entity(numbers, "string").set("f", "abc").build(),
+                        entity(numbers, "blob")
+                                .set("f", Blob.copyFrom("abc".getBytes(StandardCharsets.UTF_8)))
+                                .build());
+        assertThat(names(numbers, PropertyFilter.eq("f", 5.0d))).containsExactly("double");
+        assertThat(names(numbers, PropertyFilter.eq("f", 0.0d))).containsExactly("zero");
+        assertThat(names(numbers, PropertyFilter.eq("f", "abc")))
+                .containsExactlyInAnyOrder("string", "blob");
+        assertThatThrownBy(() -> names(numbers, PropertyFilter.eq("f", "x".repeat(1501))))
+                .isInstanceOf(DatastoreException.class)
+                .hasMessageContaining("1500 bytes");
+
+        TableEnvironment batch =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        String columns = "(id STRING NOT NULL, s STRING, n BIGINT, PRIMARY KEY (id) NOT ENFORCED) ";
+        batch.executeSql(
+                "CREATE TABLE pushed "
+                        + columns
+                        + with(
+                                kind,
+                                "'scan.filter-push-down.enabled' = 'true'",
+                                "'scan.partition.max-partitions' = '4'"));
+        batch.executeSql("CREATE TABLE unpushed " + columns + with(kind));
+
+        String query = " WHERE s = 'x' AND n = 5";
+        assertThat(collect(batch, "SELECT id FROM pushed" + query))
+                .containsExactlyInAnyOrder(Row.of("a"), Row.of("b"), Row.of("e"));
+        assertThat(collect(batch, "SELECT id FROM unpushed" + query))
+                .containsExactlyInAnyOrder(Row.of("a"), Row.of("b"), Row.of("d"), Row.of("e"));
+    }
+
+    private static Entity.Builder entity(String kind, String name) {
+        return Entity.newBuilder(keyIn(kind, name).build());
+    }
+
+    private static List<String> names(String kind, StructuredQuery.Filter filter) {
+        List<String> names = new ArrayList<>();
+        client().run(
+                        Query.newEntityQueryBuilder()
+                                .setNamespace(NAMESPACE)
+                                .setKind(kind)
+                                .setFilter(filter)
+                                .build())
+                .forEachRemaining(entity -> names.add(entity.getKey().getName()));
+        return names;
     }
 
     @Test

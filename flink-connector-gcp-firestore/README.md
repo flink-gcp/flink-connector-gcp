@@ -23,6 +23,7 @@ the client library's query splitter and write one in non-transactional commits.
 | Table API / SQL sink for Datastore mode (`datastore`; one kind keyed by key name or id; `merge` (the default), `replace` and `update` write modes; unindexed columns) | Implemented ([#1651](https://github.com/flink-gcp/flink-connector-gcp/issues/1651)) |
 | Table API / SQL scan for Datastore mode (key ranges at one read time; key, version and time metadata; type-mismatch policy) | Implemented ([#1652](https://github.com/flink-gcp/flink-connector-gcp/issues/1652)) |
 | Table API / SQL lookup for Datastore mode (one `Lookup` per key name or id; sync or async; partial cache; property mask) | Implemented ([#1653](https://github.com/flink-gcp/flink-connector-gcp/issues/1653)) |
+| Opt-in equality filter pushdown into a Datastore-mode scan (`scan.filter-push-down.enabled`, for indexed properties) | Implemented ([#1831](https://github.com/flink-gcp/flink-connector-gcp/issues/1831)) |
 | Geographical points and key values in the Datastore-mode table (geo-point and reference markers; sink, scan and lookup) | Implemented ([#1730](https://github.com/flink-gcp/flink-connector-gcp/issues/1730)) |
 | Gated real-GCP integration tests | Implemented ([#1546](https://github.com/flink-gcp/flink-connector-gcp/issues/1546)) |
 | Opt-in per-document submission order (`orderingMode` / `sink.ordering-mode`) | Implemented ([#1556](https://github.com/flink-gcp/flink-connector-gcp/issues/1556)) |

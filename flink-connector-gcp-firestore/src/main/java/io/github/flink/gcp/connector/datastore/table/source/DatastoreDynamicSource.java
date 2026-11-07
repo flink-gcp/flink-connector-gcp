@@ -24,6 +24,7 @@ import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsFilterPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
@@ -32,12 +33,14 @@ import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheT
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
+import com.google.datastore.v1.Query;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSource;
@@ -67,11 +70,16 @@ import java.util.Objects;
  * array property, so it would drop or repeat rows. A lookup asks for the produced columns'
  * properties through the lookup's property mask instead, which keeps every entity whole in that
  * respect: it returns the entity whatever its indexes, and an array whole.
+ *
+ * <p>Predicates reach the service only when {@code scan.filter-push-down.enabled} is set, as the
+ * equality filters {@link DatastoreFilterPushDown} translates; a filter never matches a value
+ * excluded from indexes, so the option asserts that the filtered properties are indexed.
  */
 @Internal
 public final class DatastoreDynamicSource
         implements ScanTableSource,
                 LookupTableSource,
+                SupportsFilterPushDown,
                 SupportsProjectionPushDown,
                 SupportsReadingMetadata {
 
@@ -90,6 +98,7 @@ public final class DatastoreDynamicSource
     private int[] columns;
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
+    private DatastoreFilterPushDown.State filterState = DatastoreFilterPushDown.State.empty();
 
     /**
      * Creates the source over every physical column and no metadata.
@@ -158,8 +167,13 @@ public final class DatastoreDynamicSource
                                         columns,
                                         metadataKeys,
                                         policy,
-                                        producedType))
-                        .kind(kind);
+                                        producedType));
+        Query filtered = filterState.query(kind);
+        if (filtered != null) {
+            builder.query(filtered);
+        } else {
+            builder.kind(kind);
+        }
         if (!namespace.isEmpty()) {
             builder.namespace(namespace);
         }
@@ -258,6 +272,22 @@ public final class DatastoreDynamicSource
         this.producedDataType = producedDataType;
     }
 
+    /**
+     * Pushes the equalities {@link DatastoreFilterPushDown} translates when {@code
+     * scan.filter-push-down.enabled} is set, and nothing otherwise; every predicate stays a
+     * residual either way.
+     */
+    @Override
+    public Result applyFilters(List<ResolvedExpression> filters) {
+        // A filter never matches a value excluded from indexes, so pushing one is safe only on the
+        // user's assertion that the filtered properties are indexed (docs/adr/0184).
+        filterState =
+                scanConfig.isFilterPushDown()
+                        ? DatastoreFilterPushDown.translate(schema, filters)
+                        : DatastoreFilterPushDown.State.declined(filters);
+        return filterState.result();
+    }
+
     @Override
     public Map<String, DataType> listReadableMetadata() {
         return ReadableMetadata.listAll();
@@ -289,6 +319,7 @@ public final class DatastoreDynamicSource
         copy.columns = columns.clone();
         copy.metadataKeys = metadataKeys;
         copy.producedDataType = producedDataType;
+        copy.filterState = filterState;
         return copy;
     }
 
@@ -319,7 +350,8 @@ public final class DatastoreDynamicSource
                 && lineage.equals(that.lineage)
                 && Arrays.equals(columns, that.columns)
                 && metadataKeys.equals(that.metadataKeys)
-                && producedDataType.equals(that.producedDataType);
+                && producedDataType.equals(that.producedDataType)
+                && filterState.equals(that.filterState);
     }
 
     @Override
@@ -338,6 +370,7 @@ public final class DatastoreDynamicSource
                 lineage,
                 Arrays.hashCode(columns),
                 metadataKeys,
-                producedDataType);
+                producedDataType,
+                filterState);
     }
 }
