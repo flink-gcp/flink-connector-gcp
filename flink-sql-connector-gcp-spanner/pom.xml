@@ -30,12 +30,6 @@
     <description>SQL uber-jar for the independent Google Cloud Spanner connector for Apache Flink. Not affiliated with the Apache Software Foundation or Google.</description>
     <packaging>jar</packaging>
 
-    <properties>
-        <!-- This module has no source of its own; its public surface is the connector's,
-             checked there. japicmp would compare a relocated uber-jar against itself. -->
-        <japicmp.skip>true</japicmp.skip>
-    </properties>
-
     <dependencies>
         <!-- The only compile dependency, and the reason this module exists: it is bundled
              along with its whole runtime tree. Nothing here references it from source,

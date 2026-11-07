@@ -759,7 +759,7 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   itself it may send again, or they sit in the accumulator until the client's 1 s timer.
   `OrderingMode` is an `@Experimental` closure stop, because the `@Public` `BigtableWriterOptions`
   names it (ADR-0124's revision); do not copy Firestore's `@PublicEvolving`, whose options type
-  is not frozen. `aggregate`, the staged sink and both async helpers refuse `PER_KEY`; `bufferedEntries` and
+  is not `@Public`. `aggregate`, the staged sink and both async helpers refuse `PER_KEY`; `bufferedEntries` and
   `bufferedRequests` (sink surface only) report the held writes. The emulator ITs fail without the
   mode in most runs (3 of 4 and 4 of 4, measured), so they are the regression tests; `*RowOrderTest` pins each turn rule (killed by
   mutation, 2026-10-29).

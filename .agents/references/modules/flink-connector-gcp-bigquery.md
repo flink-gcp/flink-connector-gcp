@@ -52,7 +52,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   order.
 - **The whole CDC public surface is `@Experimental` while #706 stays open** (`docs/adr/0141`):
   the upstream resolution shapes what the sequence-number providers receive, so the 12 CDC types
-  sit below the `1.0.0` freeze. The four `BigQuerySinkBuilder` CDC setters are recorded closure
+  sit below `@Public`. The four `BigQuerySinkBuilder` CDC setters are recorded closure
   stops (`docs/adr/0124`).
   The CDC table-provisioning calls `TableInfo.getLabels`/`setLabels` and
   `TimePartitioning.Builder.setField` are method-level `@BetaApi` — internal calls,
@@ -528,7 +528,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (shade `artifactSet`/`filters`/`transformers`, the dependency-recording executions, the licence
   execution) is in the **root pom's `pluginManagement`**, including the `META-INF` exclusions and
   the JDK-interface SPI filters that were found here; this module's pom carries its
-  `<relocations>`, its surefire override, `japicmp.skip` and its dependencies. A change to the
+  `<relocations>`, its surefire override and its dependencies. A change to the
   shared block is verified by a zero-delta comparison of both uber-jars' entry names and CRCs.
 
 ## Catalog (`docs/adr/0168`, `docs/adr/0169`)

@@ -710,8 +710,10 @@ facts); the rules a session needs:
 
 ## Version policy
 
-- Releases follow full semver. Early milestones closed without artifacts and without tags; the
-  first tag and the first Maven Central version are both `1.0.0` (issue #29), and the working
+- Versions are `MAJOR.MINOR.PATCH`, but an incompatible public API change may ship in a minor
+  release under ADR-0199 (below) rather than only in a major one. Early milestones closed
+  without artifacts and without tags; the first tag and the first Maven Central version are both
+  `1.0.0` (issue #29), and the working
   tree precedes the next release as `<next>-SNAPSHOT`. The published docs name the latest
   *released* version, not the tree's. Cutting a release updates the quickstart coordinates,
   the status blockquotes (README and the site front page), and the `ADD JAR` jar names in the
@@ -723,10 +725,7 @@ facts); the rules a session needs:
   quickstart index, and the module's quickstart, DataStream and Table API pages) and adds it to the quickstart's list of artifact ids; no test holds those. The
   bump merges before the tag, because the tag freezes those surfaces
   on that release's documentation line (ADR-0159). A follow-up PR then bumps the working tree to the next
-  `-SNAPSHOT` and `japicmp.referenceVersion` to the version just released (the reference
-  rides the CI Maven cache — measured on #728, the cache archives the whole local repository
-  including it; ADR-0124's revision records why. Measured on #1888, that holds for the saving
-  lane's modules, while each other lane fetches its own reference through the CI mirror)
+  `-SNAPSHOT`
 - **Releases publish after both Central Portal deployments validate** (ADR-0147, issues #724, #1185):
   `just stage-release <version>` — which `.github/workflows/release.yaml` runs once per
   version line on a `vX.Y.Z` tag push, with `workflow_dispatch` as the dry run (bare `X.Y.Z`
@@ -752,12 +751,10 @@ facts); the rules a session needs:
   `-Dflink.version=1.20.<patch>`, and refuses a mislabelled pairing in either direction. The
   published set per line is 14 artifacts — the parent POM, base, six connectors, six SQL
   uber-jars; `flink-connector-gcp-test-utils`
-  skips itself in its own POM (test-scope-only consumption; freezing its API buys users
+  skips itself in its own POM (test-scope-only consumption; putting its API under the compatibility promise buys users
   nothing), and the signing key is a dedicated project release key read from
   `MAVEN_GPG_KEY`/`MAVEN_GPG_PASSPHRASE` (the bc signer; the parent's gpg-plugin 1.4 pin is
-  overridden to 3.x). The release build passes `-Djapicmp.skip=true` (every verify lane already runs the
-  real check; for the release whose version equals the reference, the skip was also
-  load-bearing — ADR-0124) and `-DskipTests`, because
+  overridden to 3.x). The release build passes `-DskipTests`, because
   the staged commit already passed every CI lane
 - **The release credentials are secrets of the `release` environment** (ADR-0147, issue #1971):
   `MAVEN_GPG_KEY`, `MAVEN_GPG_PASSPHRASE`, `CENTRAL_TOKEN_USERNAME` and `CENTRAL_TOKEN_PASSWORD`
@@ -780,24 +777,14 @@ facts); the rules a session needs:
   raise it before the tag. A local rehearsal
   (`just rehearse-release <version> --unsigned -Dmaven.repo.local=<copy>`) checks the
   structure but counts no signatures; the script's docstring lists its other traps
-- **The project's own API stability is annotation-tiered and japicmp-checked** (ADR-0124, issue
-  #728): `@Public` — the promoted entry surface, its signature closure, and its subtypes — must
-  not break within a major version (a deliberate break is a major-release event); the japicmp
-  declaration in the root pom compares every connector
-  jar against `japicmp.referenceVersion` during `verify`, so `just verify` and every CI lane run
-  it. `@PublicEvolving` may break at a minor release with a release-notes entry, never at a
-  patch — cutting a patch runs `just verify -Pjapicmp-patch`, and because nothing in CI
-  exercises that profile, the patch run first re-proves it fires (the emitted
-  `tools/japicmp-output/<module>/japicmp/japicmp.xml` must name `@PublicEvolving` types). A
-  deliberate break adds an entry
-  under `<excludes combine.children="append">` in the root declaration. Each release bumps
-  `japicmp.referenceVersion` to itself and wipes those excludes, and the release build whose own
-  version equals the reference passes `-Djapicmp.skip=true` (Maven resolves the reference from
-  the reactor itself and japicmp reads the old compile classpath as old API) — the release
-  recipe skips unconditionally, which that first release needed and later releases keep only
-  because every verify lane already runs the real check. Since 2026-08-31 the reference
-  resolves from Central; the firing evidence, pre- and post-publication, is on ADR-0124 and
-  #728
+- **Public API compatibility follows the Google Cloud libraries** (ADR-0199, issue #2068, which
+  superseded ADR-0124's major-only freeze): a `@Public` or `@PublicEvolving` type may change
+  incompatibly at a minor release, never at a patch, and the release notes name every such change.
+  A `@Public` type changes only when a dependency or service forces it or it no longer does what it
+  says; a patch release takes no `libraries-bom` update that changes a public signature.
+  No build check holds this; the release tracker's checklist carries the release-notes entry. Remove API that does nothing or can no longer be supported
+  rather than deprecating it. The tiers remain user guidance, held present by
+  `just check-declared-api-tiers`
 - **Which tier a surface gets is a rule, not taste** (ADR-0141, issue #783): a new or
   re-examined surface's tier is decided by ADR-0141's clauses — what can reshape its inputs or
   outputs within 1.x — at introduction time, in the adopting ADR. A vendor
@@ -935,8 +922,7 @@ Migrated to ADRs (`docs/adr/0057`–`0059`); the rules a session needs:
   lines, negation included**: the cache's version derives from them, and the Tier-3 lanes missed
   every restore until #1888. The settings file is part of the key, and before a new entry is saved
   the saving lane runs `just ci-maven-cache-warmup`, which packages the whole reactor and every
-  `tier3-*` profile without tests, so the entry holds every lane's dependencies except the other
-  modules' japicmp references
+  `tier3-*` profile without tests, so the entry holds every lane's dependencies
 - **`pinact.yaml` is deliberately not enrolled in that gate** (ADR-0121), for the reason
   ADR-0058 already gives: it is paths-filtered, and a required check that never reports blocks a
   pull request forever. It reports as its own non-required check

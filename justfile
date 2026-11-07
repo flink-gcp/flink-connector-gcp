@@ -93,11 +93,7 @@ verify-flink version *extra:
 # compiler re-pin, Central Portal upload with autoPublish=false — the deployment stops
 # at VALIDATED; the release workflow publishes only after both lines validate).
 # Signing reads MAVEN_GPG_KEY and MAVEN_GPG_PASSPHRASE; the upload reads the `central`
-# server credentials from ~/.m2/settings.xml. -Djapicmp.skip=true is unconditional:
-# every verify lane already runs the real check, and for a release whose version
-# equals japicmp.referenceVersion (the 1.0.0 case) the skip is also load-bearing —
-# Maven would resolve the reference from the reactor itself and japicmp would read
-# the old side's whole compile classpath as old API (ADR-0124).
+# server credentials from ~/.m2/settings.xml.
 # -DskipTests because the staged commit already passed every CI lane. Every release
 # stages two version lines (ADR-0147): bare X.Y.Z is the Flink 2.x line built at the
 # pom's pinned floor, and X.Y.Z-1.20 is the same coordinates compiled for the 1.x
@@ -116,8 +112,7 @@ verify-flink version *extra:
 # re-parsed by bash. The recipe re-versions the working tree's POMs and leaves them
 # that way if a later step fails — fine in CI, where the checkout is ephemeral;
 # locally restore with `git checkout -- '*pom.xml'` (one star: '**/pom.xml' is a
-# non-glob pathspec that misses the root pom, and a tree left at the release version
-# arms the japicmp reactor-self-reference trap the root pom documents). Extra
+# non-glob pathspec that misses the root pom). Extra
 # arguments go to the deploy step: `-DskipPublishing=true` builds and signs the
 # artifacts without uploading them, and `-DskipUpload=true` also writes the bundle
 # without reading Central credentials (`just rehearse-release` uses it).
@@ -127,7 +122,7 @@ verify-flink version *extra:
 stage-release version *extra:
     mise x uv -- uv run --locked scripts/stage-release-guard.py "$@"
     {{ mvn }} versions:set -DnewVersion="$1" -DgenerateBackupPoms=false
-    {{ mvn }} clean deploy -Drelease -DskipTests -Djapicmp.skip=true {{ if version =~ '-1\.20$' { '-Dflink.compat=flink1' } else { '' } }} "${@:2}"
+    {{ mvn }} clean deploy -Drelease -DskipTests {{ if version =~ '-1\.20$' { '-Dflink.compat=flink1' } else { '' } }} "${@:2}"
 
 # The pre-tag rehearsal (issue #1818); scripts/rehearse-release.py says what it runs.
 #

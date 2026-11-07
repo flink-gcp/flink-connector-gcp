@@ -253,7 +253,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **The change-stream public surface is `@PublicEvolving`, not `@Public`** (`docs/adr/0141`,
   `docs/adr/0124`'s revision): `SpannerChangeStreamSource(+Builder)`, the deserialization
   schema, and `DataChangeRecord`/`Mod`/`ModType`/`ValueCaptureType` moved down whole-group
-  before the `1.0.0` tag — held one tier below the freeze until the surface has survived a
+  before the `1.0.0` tag — held one tier below `@Public` until the surface has survived a
   release under real use; the path itself calls no vendor change-stream API (plain SQL over the
   TVF).
 - The enumerator state is the only partition-lifecycle recovery record; do not add Beam's external

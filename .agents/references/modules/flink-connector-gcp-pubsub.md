@@ -263,8 +263,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   phase, never bare. Read `docs/adr/0015` before changing any SQL module's pom or adding a
   third module; what is specific to a tree belongs beside that connector (the BigQuery jar's
   record is in its module).
-- **A SQL module's pom carries its `<relocations>`, its surefire `integration-tests` override,
-  `japicmp.skip` and its dependencies — nothing else.** The shade `artifactSet`, `filters` and
+- **A SQL module's pom carries its `<relocations>`, its surefire `integration-tests` override
+  and its dependencies — nothing else.** The shade `artifactSet`, `filters` and
   `transformers`, both `maven-dependency-plugin` executions and the licence execution are in the
   root pom's `pluginManagement`, so a bundle-shape change reaches both jars at once; a module
   declares each plugin to switch it on, empty but for the shade one's relocations. That list is
