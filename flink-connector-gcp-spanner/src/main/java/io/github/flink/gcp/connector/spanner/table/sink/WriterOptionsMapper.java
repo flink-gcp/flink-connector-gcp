@@ -44,10 +44,6 @@ public final class WriterOptionsMapper {
                 SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
                 size -> builder.maxBatchBytes(size.getBytes()));
         OptionSetters.apply(
-                config,
-                SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY,
-                builder::maxCommitDelay);
-        OptionSetters.apply(
                 config, SpannerConnectorOptions.SINK_RPC_PRIORITY, builder::rpcPriority);
         OptionSetters.apply(
                 config,

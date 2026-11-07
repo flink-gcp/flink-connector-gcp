@@ -109,9 +109,6 @@ final class SpannerExamplesSinkOptions {
                                 // Bound one complete BatchWrite attempt, including a response
                                 // stream that returns some groups and then stalls.
                                 .batchWriteTimeout(Duration.ofSeconds(20))
-                                // A commit delay trades latency for throughput by letting Spanner
-                                // group this commit with others. Zero to 500 ms.
-                                .maxCommitDelay(Duration.ofMillis(50))
                                 // A backfill that must not disturb serving traffic on the same
                                 // instance.
                                 .rpcPriority(SpannerRpcPriority.LOW)

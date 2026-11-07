@@ -136,7 +136,6 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_CELLS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_MUTATIONS,
                         SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_SIZE,
-                        SpannerConnectorOptions.SINK_BUFFER_FLUSH_MAX_COMMIT_DELAY,
                         SpannerConnectorOptions.SINK_RPC_PRIORITY,
                         SpannerConnectorOptions.SINK_EXCLUDE_TXN_FROM_CHANGE_STREAMS,
                         SpannerConnectorOptions.SINK_TRANSACTION_TAG,

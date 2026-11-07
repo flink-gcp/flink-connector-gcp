@@ -1066,6 +1066,16 @@ limitations under the License.
                             <groupId>io.github.flink-gcp</groupId>
                         </dependency>
                     </oldVersion>
+                    <parameter>
+                        <excludes combine.children="append">
+                            <!-- #2064: BatchWrite has no commit-delay field, so the Spanner
+                                 sink's maxCommitDelay never reached the service and is
+                                 removed. Named in the v1.4.0 release notes. -->
+                            <exclude>io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions#MAX_COMMIT_DELAY_LIMIT</exclude>
+                            <exclude>io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions#getMaxCommitDelay()</exclude>
+                            <exclude>io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions$Builder#maxCommitDelay(java.time.Duration)</exclude>
+                        </excludes>
+                    </parameter>
                 </configuration>
             </plugin>
 
