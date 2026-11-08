@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Copy this recipe into the consumer's justfile, or import this file from it.
+# Copy this file into the consumer as dev-tools.just and import it from the consumer's justfile;
+# the Update consumers workflow refreshes that copy with each release.
 # Keep the selected full commit SHA in the consumer's tracked configuration.
 
 # The archive is downloaded once, and every item is checked before any is replaced.
