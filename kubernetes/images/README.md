@@ -362,6 +362,27 @@ The digests are the ones the `sha-d11be404…` tag resolves to, and `operator` a
 The same run republished the Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopts.
 A BigQuery trial checks the `operator` mirror, the lifecycle-tools pin and its `bigquery-recovery` image, so it must be admitted so that its window ends before 2026-11-11T16:10:41Z.
 
+### Pub/Sub reactive trial publication
+
+The [Pub/Sub reactive trial publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42380022557) built main commit `4ab6d7808789779ea4cc97f1b6ccff49c113df1c` on 2026-11-07 UTC, after [#2081](https://github.com/flink-gcp/flink-connector-gcp/issues/2081) moved the Operator to 1.16.1, for the reactive trials of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056).
+It mirrored the Operator 1.16.1 image into the `operator` package and rebuilt the lifecycle-tools, smoke and application images; it pushed no new `flink` version, so the one the [BigQuery uploader trial publication](#bigquery-uploader-trial-publication) recreated stands.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d` | 2026-11-07T14:41:26Z | 2026-11-14T14:41:26Z |
+| `lifecycle-tools` | `sha256:c62b7173e96820029c165dae683696163792e4d3fe214fcc5fd880cc2c5c2fec` | 2026-11-07T14:41:45Z | 2026-11-14T14:41:45Z |
+| `smoke` | `sha256:67d1a7994ba175293faeea5ec0dad9fedc7c6e63329f2a058db6c81a723787a6` | 2026-11-07T14:42:00Z | 2026-11-14T14:42:00Z |
+| `bigquery-recovery` | `sha256:59f974b10dbc8cc9e6a5b136bf82ef486dd420a36f16d8fcdfab00359ed6f14d` | 2026-11-07T14:42:08Z | 2026-11-14T14:42:08Z |
+| `pubsub-recovery` | `sha256:4faf9b7dbeadeee4721d42f69c229bab6a3802181ae35bc565f94252874a0734` | 2026-11-07T14:42:13Z | 2026-11-14T14:42:13Z |
+| `cloudtasks-recovery` | `sha256:65f923128a0e875bc5354dcdb487af7c99b2dcde01ec9fb1ea10e0b92a3c480e` | 2026-11-07T14:42:19Z | 2026-11-14T14:42:19Z |
+| `bigtable-recovery` | `sha256:2379b354d65a6c682582db4e190980965e9f201672d7bde30a91e4ea56ee45fa` | 2026-11-07T14:42:24Z | 2026-11-14T14:42:24Z |
+| `spanner-recovery` | `sha256:05e050dba44c7b455ea732a4b11d99f24ab6efe7dbb37f548876bd0be5feb1ce` | 2026-11-07T14:42:30Z | 2026-11-14T14:42:30Z |
+| `firestore-recovery` | `sha256:fbb33f946ccc71b46ae63ae10cfcf9fb6235b9ee521956165c77b208f371aa98` | 2026-11-07T14:42:36Z | 2026-11-14T14:42:36Z |
+
+The digests are the ones the `sha-4ab6d780…` tag resolves to, and `operator` the one its `1.16.1` tag resolves to, read from GAR after the run.
+Nothing adopts this run's lifecycle-tools or smoke digests: [pins.cue](pins.cue) still names those of the BigQuery uploader trial publication, which every reactive trial ran as its supervisor.
+The `pubsub-recovery` digest was a dispatch input verified live, and the six usable trials' [findings](../../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md) record it.
+
 For a shell or Docker build argument, read a pin with:
 
 ```sh

@@ -22,6 +22,7 @@ limitations under the License.
 - Modules: pubsub (`io.github.flink.gcp.connector.pubsub.source.streamingpull`)
 - Refines: [ADR-0011] (readers now checkpoint ledger chunks, never consuming splits)
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` § Restore deduplication
+- Evidence: [reactive-mode trial findings](evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md)
 
 ## Context
 
@@ -87,5 +88,9 @@ A restore that drops downstream state, such as a sink whose uid changed, can los
 Its control run, with the setting off, shows the emulator redelivering the covered messages, and its scale-out and scale-in runs fail when the emitter's suppression is disabled.
 The emulator delivered every redelivery to one stream, so the IT still passed with the ledger forwarded to subtask 0 alone; `PubSubSplitEnumeratorLedgerTest` pins forwarding to every reader of a subscription.
 
+Deployed reactive-mode trials on 2026-11-07 and 2026-11-08 ([#2056]) observed the lost notification once, in a scale-out with the setting on: the job restored the checkpoint whose completion triggered the rescale, and the ledger suppressed 2,390 redeliveries against the 2,390 ids that checkpoint covered, with the ledger forwarded to all three restored readers, two of which shared a subscription, and no input lost ([findings](evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md)).
+The matching scale-out with the setting off acknowledged its checkpoint before the cancellation, and the scale-in and TaskManager eviction trials restored a checkpoint that covered no unacknowledged message, so their ledgers were empty.
+
 [ADR-0011]: 0011-the-pubsub-source-is-flip27-streaming-pull-and-readers-checkpoint-no-splits.md
 [#2049]: https://github.com/flink-gcp/flink-connector-gcp/issues/2049
+[#2056]: https://github.com/flink-gcp/flink-connector-gcp/issues/2056

@@ -56,7 +56,7 @@ on:
           - 'fl-10-uploader-rescale-out'
           - 'fl-10-uploader-rescale-in'
       pubsub_trial:
-        description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml (jm-replacement, tm-replacement, rescale-out or rescale-in)'
+        description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml: reactive-scale-out, reactive-scale-in or reactive-tm-eviction followed by -deduplication-off or -deduplication-on, or a shared kind (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
         type: string
         default: ''

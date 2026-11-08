@@ -528,7 +528,9 @@ class PubSubExercise(RecoveryExercise):
         The reactive scheduler restores the latest checkpoint each time it
         restarts, so the restore is the last one after the fault, and the
         recovery is complete when every vertex runs at the kind's recovery
-        TaskManagers: after an eviction, that is the second restart.
+        TaskManagers: after an eviction, that is the restart that takes in the
+        replacement, the first when it registers within the scheduler's
+        resource stabilization.
         """
         restored = (rest.get("latest") or {}).get("restored") or {}
         if restored.get("restore_timestamp", 0) / 1000 <= self.fault["at"]:

@@ -465,12 +465,14 @@ The other cohorts carry no delay.
 
 Recovery is proven by a restore of a checkpoint under the run's state prefix after the fault, with the same JobManager, and by every job vertex running at the kind's recovery TaskManagers.
 A scale also needs the Operator to report the new generation deployed with the recovery manifest, and an eviction needs the deleted Pod gone.
-An eviction restarts the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for the second.
+An eviction can restart the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for every vertex to run at three; in both deployed evictions the replacement registered within the restart's 120-second resource stabilization, and the job restored once.
 While the trial recovers, every restore the job counts is accepted and recorded as `restores`; one after recovery still stops the trial.
 
 What a reactive restart displaces is redelivered, and the oracle's completeness check counts it.
 What the restored checkpoint had covered is the oracle's `covered_redeliveries`, which restore deduplication exists to suppress, and the comparison between the two settings reads that count.
 A scale-in or eviction restarts the job when a TaskManager disappears, at no particular point relative to a checkpoint, so it is not expected to reproduce the race and checks that deduplication loses nothing.
+Because the fault follows the cohort's publication within about half a minute, the checkpoint such a restart restores usually predates the cohort and covers no unacknowledged message, so its ledger is empty.
+The deployed trials of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056) bear that out, and their [findings](../../../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md) record one scale-out whose ledger suppressed 2,390 redeliveries against the 2,390 ids the restored checkpoint had covered.
 The verdict does not depend on the count.
 
 ### Verdict
