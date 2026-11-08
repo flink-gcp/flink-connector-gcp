@@ -37,6 +37,7 @@ final class RecoveryOptions implements Serializable {
     final boolean restoreDeduplication;
     final int replayDelayMillis;
     final long maxOutstandingMessages;
+    final int holdAfterCheckpointMillis;
 
     RecoveryOptions(
             String runId,
@@ -45,7 +46,7 @@ final class RecoveryOptions implements Serializable {
             String phase,
             boolean requireRestored,
             String entryPoint) {
-        this(runId, records, parallelism, phase, requireRestored, entryPoint, false, 0, 1000);
+        this(runId, records, parallelism, phase, requireRestored, entryPoint, false, 0, 1000, 0);
     }
 
     RecoveryOptions(
@@ -57,7 +58,8 @@ final class RecoveryOptions implements Serializable {
             String entryPoint,
             boolean restoreDeduplication,
             int replayDelayMillis,
-            long maxOutstandingMessages) {
+            long maxOutstandingMessages,
+            int holdAfterCheckpointMillis) {
         if (runId == null || !runId.matches("[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")) {
             throw new IllegalArgumentException(
                     "--run-id must be a Tier-3 label of at most 40 characters");
@@ -82,6 +84,10 @@ final class RecoveryOptions implements Serializable {
         if (maxOutstandingMessages < 1 || maxOutstandingMessages > 100000) {
             throw new IllegalArgumentException("--max-outstanding-messages must be in [1, 100000]");
         }
+        if (holdAfterCheckpointMillis < 0 || holdAfterCheckpointMillis > 600000) {
+            throw new IllegalArgumentException(
+                    "--hold-after-checkpoint-millis must be in [0, 600000]");
+        }
         this.runId = runId;
         this.records = records;
         this.parallelism = parallelism;
@@ -91,6 +97,7 @@ final class RecoveryOptions implements Serializable {
         this.restoreDeduplication = restoreDeduplication;
         this.replayDelayMillis = replayDelayMillis;
         this.maxOutstandingMessages = maxOutstandingMessages;
+        this.holdAfterCheckpointMillis = holdAfterCheckpointMillis;
     }
 
     static RecoveryOptions parse(String[] args) {
@@ -105,7 +112,8 @@ final class RecoveryOptions implements Serializable {
                         "entry-point",
                         "restore-deduplication",
                         "replay-delay-millis",
-                        "max-outstanding-messages");
+                        "max-outstanding-messages",
+                        "hold-after-checkpoint-millis");
         for (String arg : args) {
             int split = arg.indexOf('=');
             if (!arg.startsWith("--")
@@ -134,7 +142,8 @@ final class RecoveryOptions implements Serializable {
                 values.getOrDefault("entry-point", "datastream"),
                 Boolean.parseBoolean(deduplication),
                 Integer.parseInt(values.getOrDefault("replay-delay-millis", "0")),
-                Long.parseLong(values.getOrDefault("max-outstanding-messages", "1000")));
+                Long.parseLong(values.getOrDefault("max-outstanding-messages", "1000")),
+                Integer.parseInt(values.getOrDefault("hold-after-checkpoint-millis", "0")));
     }
 
     String input(int index) {

@@ -22,18 +22,19 @@ import (
 )
 
 // The reviewed trial's inputs, which dispatch and the offline renderer supply.
-// The reactive-mode kinds only this scenario runs (#2055), as `flink_tier3/pubsub/verdict.py`
-// declares them in its `REACTIVE` table, which a test holds this to: the TaskManagers of the
-// initial and recovery manifests. Their per-record delay and flow-control limit are the same
-// table's constants.
-pubsubReactiveKinds: {
-	"reactive-scale-out": {initial: 2, recovery: 3}
-	"reactive-scale-in": {initial: 3, recovery: 2}
-	"reactive-tm-eviction": {initial: 3, recovery: 3}
+// The AdaptiveScheduler kinds only this scenario runs (#2055, reworked by #2126), as
+// `flink_tier3/pubsub/verdict.py` declares them in its `ADAPTIVE` table, which a test holds this
+// to: whether the scheduler runs in reactive mode, the job vertex's parallelism before and after
+// the fault, and how long the relay holds a checkpoint's notification. Their per-record delay and
+// flow-control limit are the same module's constants.
+pubsubAdaptiveKinds: {
+	"reactive-scale-out": {scheduler: "reactive", initial: 2, recovery: 3, holdMillis: 30000}
+	"reactive-tm-kill": {scheduler: "reactive", initial: 3, recovery: 3, holdMillis: 90000}
+	"adaptive-scale-in": {scheduler: "adaptive", initial: 3, recovery: 2, holdMillis: 30000}
 }
-pubsubReactiveReplayDelayMillis: 100
-pubsubReactiveMaxOutstanding:    100000
-pubsubTrial: *defaultFault | or([for kind, _ in faultKinds {kind}, for kind, _ in pubsubReactiveKinds {kind}]) @tag(pubsub_trial)
+pubsubAdaptiveReplayDelayMillis: 100
+pubsubAdaptiveMaxOutstanding:    100000
+pubsubTrial: *defaultFault | or([for kind, _ in faultKinds {kind}, for kind, _ in pubsubAdaptiveKinds {kind}]) @tag(pubsub_trial)
 pubsubRecords:              *1000 | (int & >=2 & <=10000) @tag(pubsub_records,type=int)
 pubsubEntryPoint:           *"datastream" | "table"       @tag(pubsub_entry_point)
 pubsubRestoreDeduplication: *false | bool                 @tag(pubsub_restore_deduplication,type=bool)
@@ -51,19 +52,36 @@ if scenario == "pubsub-recovery" {
 					id:                   runID, image: applicationImage, recordsPerSubscription: pubsubRecords, entryPoint: pubsubEntryPoint
 					restoreDeduplication: pubsubRestoreDeduplication
 					// An unknown kind takes this branch, whose index refuses it.
-					if pubsubReactiveKinds[pubsubTrial] == _|_ {
+					if pubsubAdaptiveKinds[pubsubTrial] == _|_ {
 						// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the upgrade phase.
 						parallelism: faultKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
 						phase: [if recovery && faultKinds[pubsubTrial].rescale != null {"upgrade"}, "initial"][0]
 					}
-					if pubsubReactiveKinds[pubsubTrial] != _|_ {
-						// Both manifests run the same job; the recovery manifest changes only the
-						// TaskManagers, which the Operator applies in place.
-						reactive:               true
-						parallelism:            pubsubReactiveKinds[pubsubTrial].initial
-						taskManagers:           pubsubReactiveKinds[pubsubTrial][[if recovery {"recovery"}, "initial"][0]]
-						replayDelayMillis:      pubsubReactiveReplayDelayMillis
-						maxOutstandingMessages: pubsubReactiveMaxOutstanding
+					if pubsubAdaptiveKinds[pubsubTrial] != _|_ {
+						// Both manifests run the same job. A reactive kind's recovery manifest
+						// changes only the TaskManagers, and the adaptive kind's only the job
+						// vertex's parallelism override; the Operator applies either in place.
+						if pubsubAdaptiveKinds[pubsubTrial].scheduler == "reactive" {
+							reactive:     true
+							taskManagers: pubsubAdaptiveKinds[pubsubTrial][[if recovery {"recovery"}, "initial"][0]]
+						}
+						if pubsubAdaptiveKinds[pubsubTrial].scheduler == "adaptive" {
+							adaptive: true
+							if recovery {
+								parallelismOverride: pubsubAdaptiveKinds[pubsubTrial].recovery
+							}
+						}
+
+						// Each of these kinds shows restore deduplication suppressing its case, so
+						// it runs only with the setting on, and only the DataStream entry point
+						// chains the holding observer to the source; a delivery saying
+						// otherwise fails here.
+						restoreDeduplication:      true
+						entryPoint:                "datastream"
+						parallelism:               pubsubAdaptiveKinds[pubsubTrial].initial
+						replayDelayMillis:         pubsubAdaptiveReplayDelayMillis
+						maxOutstandingMessages:    pubsubAdaptiveMaxOutstanding
+						holdAfterCheckpointMillis: pubsubAdaptiveKinds[pubsubTrial].holdMillis
 					}
 				}
 			}).resource & {

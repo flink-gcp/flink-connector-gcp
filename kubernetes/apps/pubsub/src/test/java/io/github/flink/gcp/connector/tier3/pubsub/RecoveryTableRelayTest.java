@@ -21,10 +21,13 @@ import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.types.Row;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,6 +71,26 @@ class RecoveryTableRelayTest {
         assertThatThrownBy(() -> tagger.map(row)).hasMessageContaining("subscription");
         row.setField("payload", null);
         assertThatThrownBy(() -> tagger.map(row)).hasMessageContaining("bounded UTF-8");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {2, 3})
+    void theDataStreamJobHasOneVertexWithThePinnedId(int parallelism) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(parallelism);
+        PubSubRecoveryJob.attach(
+                env,
+                new RecoveryOptions("vertex-probe", 2, parallelism, "initial", false, "datastream"),
+                "localhost:1");
+        List<String> vertices =
+                StreamSupport.stream(
+                                env.getStreamGraph().getJobGraph().getVertices().spliterator(),
+                                false)
+                        .map(vertex -> vertex.getID().toString())
+                        .collect(Collectors.toList());
+        // The adaptive scale-in's recovery manifest names this vertex in its parallelism
+        // override, so a change to the graph or to the source's uid must change the pin too.
+        assertThat(vertices).containsExactly(PubSubRecoveryJob.DATASTREAM_VERTEX_ID);
     }
 
     private static List<String> uids(String entryPoint, int parallelism) {

@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# One of the six reactive-mode trials of #2054, each kind with restore
-# deduplication off and on, on the DataStream entry point with 10,000
-# records per subscription: 20,000 input messages.
+# One of the restore-deduplication trials of #2054, reworked by #2126: the
+# reactive scale-out from two to three TaskManagers, restarted when a held
+# checkpoint completes. It runs with restore deduplication on, on the
+# DataStream entry point, with 10,000 records per subscription: 20,000 input
+# messages.
 
 version = 6
 trial = "reactive-scale-out"
 entry_point = "datastream"
 records_per_subscription = 10000
-restore_deduplication = false
+restore_deduplication = true

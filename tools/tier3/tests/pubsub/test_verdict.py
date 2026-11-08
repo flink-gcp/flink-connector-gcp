@@ -23,7 +23,9 @@ from flink_tier3.pubsub.verdict import (
     OBSERVED,
     SAMPLED_WINDOWS,
     WINDOWS,
+    held,
     summarize,
+    suppressed,
     verdict,
 )
 
@@ -297,3 +299,55 @@ def test_windows_name_every_stage_before_the_fault_and_after_recovery():
     # Reasons are reported in this order.
     assert SAMPLED_WINDOWS == ("before", "after")
     assert MEASUREMENT_EVENT == "pubsub-measurement"
+
+
+HOLD = {
+    "checkpoint": 7,
+    "triggered_at": 1_000_000,
+    "hold_millis": 30_000,
+    "event_at": 1_010_000,
+    "relay_holds": 2,
+}
+
+
+def test_a_restore_inside_a_logged_hold_is_the_case():
+    assert held({"id": 7}, HOLD)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Another checkpoint than the one the hold covered.
+        {"restored": 8},
+        # No relay attempt logged a hold after the checkpoint.
+        {"relay_holds": 0},
+        # The fault came once the hold had run out, or before the trigger.
+        {"event_at": 1_030_000},
+        {"event_at": 999_999},
+        {"hold_millis": 0},
+        # A field the record lacks, or one of the wrong type.
+        {"triggered_at": None},
+        {"relay_holds": True},
+        {"event_at": "1010000"},
+    ],
+)
+def test_a_restore_outside_a_logged_hold_is_not_the_case(change):
+    hold = dict(HOLD)
+    restored = {"id": change.pop("restored", 7)}
+    hold.update(change)
+    assert not held(restored, hold)
+
+
+@pytest.mark.parametrize(
+    "reading, expected",
+    [
+        ({"redeliveriesSuppressed": 3}, True),
+        ({"redeliveriesSuppressed": 0.5}, True),
+        ({"redeliveriesSuppressed": 0}, False),
+        ({"redeliveriesSuppressed": float("nan")}, False),
+        ({"ledgerEntries": 40}, False),
+        (None, False),
+    ],
+)
+def test_only_a_suppressed_redelivery_shows_the_setting(reading, expected):
+    assert suppressed(reading) is expected

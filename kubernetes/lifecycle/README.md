@@ -420,6 +420,6 @@ Each file holds the [offline trial schema](../apps/pubsub/README.md#offline-tria
 The dispatched commit must contain the file: the workflow checks that commit out fresh, so no untracked file is there to name.
 
 The directory holds the four trials [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs once each: `jm-replacement`, `tm-replacement`, `rescale-out` and `rescale-in`, on the DataStream entry point with 1,000 records per subscription.
-It also holds the six [reactive trials](../apps/pubsub/README.md#reactive-trials) of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054), named `<kind>-deduplication-off` and `<kind>-deduplication-on` for each of `reactive-scale-out`, `reactive-scale-in` and `reactive-tm-eviction`, on the DataStream entry point with 10,000 records per subscription.
+It also holds the three [restore-deduplication trials](../apps/pubsub/README.md#restore-deduplication-trials) of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054), `reactive-scale-out`, `reactive-tm-kill` and `adaptive-scale-in`, each with restore deduplication on, on the DataStream entry point with 10,000 records per subscription.
 They use the version 6 schema, which carries no traffic limits; each run is dispatched only after the owner approves its [estimate](../apps/pubsub/README.md#offline-trial-proposal).
 A file under that path is a runnable trial, so the example the tests use lives in `tools/tier3/tests/fixtures/pubsub-trials/` instead, where no dispatch can name it.

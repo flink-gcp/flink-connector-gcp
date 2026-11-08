@@ -955,10 +955,13 @@ class RecoveryExercise:
                 return pod
         return None
 
-    def delete_pod(self, pod, role):
-        """Delete one planned Pod once; a lost response must show it going."""
+    def delete_pod(self, pod, role, force=False):
+        """Delete one planned Pod once; a lost response must show it going.
+
+        ``force`` deletes it without a grace period.
+        """
         try:
-            if self.env.kube.delete(pod) is False:
+            if self.env.kube.delete(pod, force=force) is False:
                 raise Failure(role + " disappeared before its planned deletion")
         except (ApiError, TransportError) as error:
             if isinstance(error, ApiError) and error.status not in (500, 502, 503, 504):

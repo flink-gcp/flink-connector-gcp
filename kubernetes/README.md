@@ -123,7 +123,7 @@ The root supplies common project labels.
 `runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-bigquery`, `tier3-pubsub`, `tier3-cloudtasks`, `tier3-bigtable`, `tier3-spanner` or `tier3-firestore`) to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism one or two and `v2_2`.
-The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one to three and `v2_2`; three is for the reactive trials.
+The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one to three and `v2_2`; three is for the restore-deduplication trials.
 In `tier3-bigtable` it requires the `bigtable` ServiceAccount, the `bigtable-recovery` GAR package, parallelism one or two and `v2_2`.
 In `tier3-spanner` it requires the `spanner` ServiceAccount, the `spanner-recovery` GAR package, parallelism one or two and `v2_2`.
 In `tier3-firestore` it requires the `firestore` ServiceAccount, the `firestore-recovery` GAR package, parallelism one or two and `v2_2`.
