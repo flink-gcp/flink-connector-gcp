@@ -36,15 +36,17 @@ import java.io.IOException;
  *
  * <p>The BigQuery table schema is derived from the message's descriptor (see {@link
  * ProtoToTableSchemaConverter} for the type mapping), and each record is rewritten into a
- * BigQuery-storage compatible row: well-known types are recognised ({@code Timestamp} becomes
- * {@code TIMESTAMP} in microseconds, a {@code *Value} wrapper the scalar it wraps, {@code
- * Struct}/{@code Value}/{@code ListValue} a {@code JSON} column) and enums become their value
- * names.
+ * BigQuery-storage compatible row: well-known types are recognised (by default {@code Timestamp}
+ * becomes {@code TIMESTAMP} in microseconds and a {@code *Value} wrapper the scalar it wraps, and
+ * {@code Struct}/{@code Value}/{@code ListValue} always become a {@code JSON} column) and enums
+ * become their value names.
  *
- * <p>{@link ProtoSchemaOptions} adjusts three things about the derived schema: which fields become
- * {@code JSON} columns, which become {@code GEOGRAPHY} columns, and whether column modes come from
+ * <p>{@link ProtoSchemaOptions} adjusts four things about the derived schema: which fields become
+ * {@code JSON} columns, which become {@code GEOGRAPHY} columns, whether column modes come from
  * field presence instead of every non-repeated column being {@code NULLABLE} (see {@link
- * ProtoSchemaOptions.Builder#deriveRequiredColumns()}).
+ * ProtoSchemaOptions.Builder#deriveRequiredColumns()}), and which well-known types are expanded as
+ * ordinary messages instead of one flat column (see {@link
+ * ProtoSchemaOptions.Builder#wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType...)}).
  *
  * <p>All destinations share the schema of {@code T}; the message class (not its non-serializable
  * descriptor) is stored, so instances survive Flink's job-graph serialization and rebuild their

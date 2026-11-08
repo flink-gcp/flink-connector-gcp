@@ -263,6 +263,7 @@ particular for why an unmatched *path* is an error while an unmatched *option nu
 | `geographyFieldPath` / `geographyFieldPaths` | no geography columns | Maps the string field at a dotted path to a `GEOGRAPHY` column |
 | `geographyFieldOption` | no geography columns | Maps every string field carrying the given `bool` extension |
 | `geographyFieldOptionNumber` | no geography columns | The same by extension number |
+| `wellKnownTypesAsMessages` | none, each well-known type is one flat column | Expands the listed `Timestamp`, `Duration`, `FieldMask` or wrapper types as `STRUCT`s, to match an existing table; see [Well-known types]({{< relref "docs/connectors/datastream/bigquery" >}}#well-known-types) |
 
 Prefer the extension over the bare number: protobuf's private extension range has no registry, so
 the number alone cannot tell your annotation from an unrelated one at the same number.

@@ -120,7 +120,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `ProtoToTableSchemaConverter.markedType` point; a field claimed by both is rejected there, one
   extension number as both markers in `build()` (`docs/adr/0023`). Well-known types are
   recognised by full name **and** shape, answering `NONE` on a shape mismatch — never throwing
-  (`docs/adr/0027`).
+  (`docs/adr/0027`). Both converters classify through `ProtoWellKnownType.of(field, options)`,
+  which answers `NONE` for a type `wellKnownTypesAsMessages` lists; keep the option-blind lookup
+  private so a switch cannot ignore that option (`docs/adr/0027`, revision for #2107).
 - The Avro serializer accepts `IndexedRecord` (so every temporal/decimal conversion accepts raw
   and converted values), rejects unstorable logical types at job start, and its round-trip
   identity with `TableSchemaToAvroConverter` is pinned (`docs/adr/0024`). The JSON serializer

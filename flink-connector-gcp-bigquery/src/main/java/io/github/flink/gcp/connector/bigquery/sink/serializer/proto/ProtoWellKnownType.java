@@ -35,6 +35,8 @@ import com.google.protobuf.UInt32Value;
 import com.google.protobuf.UInt64Value;
 import com.google.protobuf.Value;
 
+import javax.annotation.Nullable;
+
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -67,26 +69,55 @@ import java.util.Map;
 enum ProtoWellKnownType {
 
     /** Not a message field, or not a recognised well-known type. */
-    NONE,
+    NONE(null),
 
     /** {@code google.protobuf.Timestamp} to {@code TIMESTAMP}, epoch microseconds. */
-    TIMESTAMP,
+    TIMESTAMP(ProtoSchemaOptions.WellKnownType.TIMESTAMP),
 
     /** {@code google.protobuf.Duration} to {@code INT64} microseconds. */
-    DURATION,
+    DURATION(ProtoSchemaOptions.WellKnownType.DURATION),
 
     /** {@code google.protobuf.FieldMask} to {@code STRING}, its paths joined by commas. */
-    FIELD_MASK,
+    FIELD_MASK(ProtoSchemaOptions.WellKnownType.FIELD_MASK),
 
     /** One of the nine {@code google.protobuf.*Value} wrappers, to the wrapped scalar's type. */
-    WRAPPER,
+    WRAPPER(ProtoSchemaOptions.WellKnownType.WRAPPERS),
 
     /**
      * {@code google.protobuf.Struct}, {@code Value} or {@code ListValue}, to a {@code JSON} column.
+     * Never expandable: the three are mutually recursive.
      */
-    JSON;
+    JSON(null);
 
     private static final Map<String, ProtoWellKnownType> BY_FULL_NAME = byFullName();
+
+    /** The public constant that expands this type as a message, or {@code null} if none can. */
+    @Nullable private final ProtoSchemaOptions.WellKnownType expandable;
+
+    ProtoWellKnownType(@Nullable ProtoSchemaOptions.WellKnownType expandable) {
+        this.expandable = expandable;
+    }
+
+    /**
+     * Returns the well-known type carried by the given field as the given options map it: {@link
+     * #NONE} where {@link ProtoSchemaOptions#getWellKnownTypesAsMessages} lists the type, so it is
+     * expanded as the ordinary message it is.
+     *
+     * <p>The only way in: the option-blind lookup is private, so neither converter can switch on a
+     * classification that ignores the options, and the derived schema and the row plan cannot
+     * disagree about which fields are expanded.
+     *
+     * @param field any field descriptor
+     * @param options the schema mapping options
+     * @return the well-known type to map, or {@link #NONE} for a field expanded as a message
+     */
+    static ProtoWellKnownType of(Descriptors.FieldDescriptor field, ProtoSchemaOptions options) {
+        ProtoWellKnownType type = of(field);
+        return type.expandable != null
+                        && options.getWellKnownTypesAsMessages().contains(type.expandable)
+                ? NONE
+                : type;
+    }
 
     /**
      * Returns the well-known type carried by the given field, or {@link #NONE} for a field that is
@@ -95,7 +126,7 @@ enum ProtoWellKnownType {
      * @param field any field descriptor
      * @return the recognised well-known type, or {@link #NONE}
      */
-    static ProtoWellKnownType of(Descriptors.FieldDescriptor field) {
+    private static ProtoWellKnownType of(Descriptors.FieldDescriptor field) {
         if (field.getJavaType() != Descriptors.FieldDescriptor.JavaType.MESSAGE) {
             return NONE;
         }

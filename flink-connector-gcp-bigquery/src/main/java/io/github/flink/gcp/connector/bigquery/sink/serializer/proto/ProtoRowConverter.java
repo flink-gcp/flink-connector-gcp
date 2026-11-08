@@ -61,6 +61,11 @@ import java.util.List;
  * exception of the empty string on a field without presence, which is left unset rather than
  * written), and nested/repeated fields (including maps) are converted recursively.
  *
+ * <p>A well-known type that {@link ProtoSchemaOptions#getWellKnownTypesAsMessages} lists takes the
+ * ordinary message path instead: its sub-fields are converted as any message's are, so a {@code
+ * Duration} is written as its raw {@code seconds} and {@code nanos} and a wrapper holding {@code 0}
+ * as {@code {value: 0}}.
+ *
  * <p>Instances hold non-serializable descriptors and must be re-created after deserialization (see
  * {@link ProtoMessageSerializationSchema}).
  */
@@ -166,7 +171,7 @@ public final class ProtoRowConverter {
             return FieldPlan.scalar(sourceField, targetField, scalarKind(sourceField, path), path);
         }
         Descriptors.Descriptor messageType = sourceField.getMessageType();
-        switch (ProtoWellKnownType.of(sourceField)) {
+        switch (ProtoWellKnownType.of(sourceField, options)) {
             case TIMESTAMP:
                 return FieldPlan.timestamp(
                         sourceField,

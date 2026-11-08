@@ -28,14 +28,15 @@ import io.github.flink.gcp.connector.base.options.ResourceNames;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Options controlling how protobuf descriptors are mapped to BigQuery schemas. Three mappings can
- * be adjusted:
+ * Options controlling how protobuf descriptors are mapped to BigQuery schemas. Four mappings can be
+ * adjusted:
  *
  * <ul>
  *   <li><b>JSON columns.</b> The Storage Write API carries a {@code JSON} column as a string, so
@@ -58,6 +59,11 @@ import java.util.Set;
  *   <li><b>Nullability.</b> Every non-repeated column is derived as {@code NULLABLE} by default.
  *       {@link Builder#deriveRequiredColumns()} reads each field's presence instead and derives
  *       {@code REQUIRED} where protobuf cannot express absence.
+ *   <li><b>Well-known types.</b> {@code Timestamp}, {@code Duration}, {@code FieldMask} and the
+ *       nine {@code *Value} wrappers each become one flat column by default. {@link
+ *       Builder#wellKnownTypesAsMessages(WellKnownType...)} expands the listed ones as the ordinary
+ *       messages they are, so the sink can write to a table that another writer created with {@code
+ *       STRUCT} columns for them.
  * </ul>
  *
  * <p>Two reasons {@code NULLABLE} is the default. A proto3 field without presence is the spelling
@@ -104,6 +110,8 @@ public final class ProtoSchemaOptions implements Serializable {
 
     private final boolean deriveRequiredColumns;
 
+    private final Set<WellKnownType> wellKnownTypesAsMessages;
+
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptions =
@@ -113,6 +121,8 @@ public final class ProtoSchemaOptions implements Serializable {
         this.geographyFieldOptions =
                 Collections.unmodifiableMap(new LinkedHashMap<>(builder.geographyFieldOptions));
         this.deriveRequiredColumns = builder.deriveRequiredColumns;
+        this.wellKnownTypesAsMessages =
+                Collections.unmodifiableSet(EnumSet.copyOf(builder.wellKnownTypesAsMessages));
     }
 
     /**
@@ -140,6 +150,14 @@ public final class ProtoSchemaOptions implements Serializable {
     /** Returns whether column modes are derived from field presence. */
     public boolean isDeriveRequiredColumns() {
         return deriveRequiredColumns;
+    }
+
+    /**
+     * Returns the well-known types expanded as ordinary messages rather than mapped to one flat
+     * column; empty by default.
+     */
+    public Set<WellKnownType> getWellKnownTypesAsMessages() {
+        return wellKnownTypesAsMessages;
     }
 
     /**
@@ -239,6 +257,44 @@ public final class ProtoSchemaOptions implements Serializable {
         return geography ? TableFieldSchema.Type.GEOGRAPHY : null;
     }
 
+    /**
+     * A protobuf well-known type that maps to one flat column by default and that {@link
+     * Builder#wellKnownTypesAsMessages(WellKnownType...)} can expand as an ordinary message
+     * instead.
+     *
+     * <p>{@code Struct}, {@code Value} and {@code ListValue} are not listed. They are mutually
+     * recursive, so a BigQuery schema cannot hold them expanded, and they stay {@code JSON}
+     * columns. {@code Any} is not listed either: it is always expanded as {@code STRUCT<type_url,
+     * value>}.
+     */
+    @Public
+    public enum WellKnownType {
+
+        /**
+         * {@code google.protobuf.Timestamp}: {@code TIMESTAMP} by default, {@code STRUCT<seconds
+         * INT64, nanos INT64>} when expanded.
+         */
+        TIMESTAMP,
+
+        /**
+         * {@code google.protobuf.Duration}: {@code INT64} microseconds by default, {@code
+         * STRUCT<seconds INT64, nanos INT64>} when expanded.
+         */
+        DURATION,
+
+        /**
+         * {@code google.protobuf.FieldMask}: {@code STRING} of comma-joined paths by default,
+         * {@code STRUCT<paths ARRAY<STRING>>} when expanded.
+         */
+        FIELD_MASK,
+
+        /**
+         * All nine {@code google.protobuf.*Value} wrappers: the wrapped scalar's column type by
+         * default, {@code STRUCT<value T>} when expanded, with {@code T} that same column type.
+         */
+        WRAPPERS
+    }
+
     /** Builder for {@link ProtoSchemaOptions}. */
     @Public
     public static final class Builder {
@@ -248,8 +304,50 @@ public final class ProtoSchemaOptions implements Serializable {
         private final Set<String> geographyFieldPaths = new HashSet<>();
         private final Map<Integer, String> geographyFieldOptions = new LinkedHashMap<>();
         private boolean deriveRequiredColumns;
+        private final EnumSet<WellKnownType> wellKnownTypesAsMessages =
+                EnumSet.noneOf(WellKnownType.class);
 
         Builder() {}
+
+        /**
+         * Expands the given well-known types as the ordinary messages they are, instead of mapping
+         * each to one flat column. Use it to write to an existing table whose columns for these
+         * types are {@code STRUCT}s, such as a table loaded from Avro that Avro's {@code
+         * ProtobufData} wrote.
+         * <!-- javadoc-example file="JavadocBigQueryExamples.java" tag="well-known-types-as-messages" -->
+         *
+         * <pre>{@code
+         * ProtoSchemaOptions.builder()
+         *         .wellKnownTypesAsMessages(
+         *                 ProtoSchemaOptions.WellKnownType.DURATION,
+         *                 ProtoSchemaOptions.WellKnownType.WRAPPERS)
+         *         .build();
+         * }</pre>
+         *
+         * <p>An expanded type follows the rules for any other message field, in the derived schema
+         * and in the written values alike. An unset singular field is a NULL {@code STRUCT}. A set
+         * field writes its sub-fields, so an {@code Int64Value} holding {@code 0} is {@code {value:
+         * 0}}, and a {@code Duration} is written as its {@code seconds} and {@code nanos} without
+         * being range-checked. Under {@link #deriveRequiredColumns()}, the scalar sub-fields have
+         * no presence and so are derived {@code REQUIRED}; a {@code FieldMask}'s {@code paths} is
+         * repeated and stays {@code REPEATED}.
+         *
+         * <p>A field marked as a {@code JSON} column, by path or by field option, stays one: the
+         * marking wins over this option as it wins over the default mapping.
+         *
+         * <p>Additive: types from several calls are unioned.
+         *
+         * @param types the well-known types to expand
+         * @return this builder
+         */
+        public Builder wellKnownTypesAsMessages(WellKnownType... types) {
+            Preconditions.checkNotNull(types, "types must not be null");
+            for (WellKnownType type : types) {
+                this.wellKnownTypesAsMessages.add(
+                        Preconditions.checkNotNull(type, "types must not contain null"));
+            }
+            return this;
+        }
 
         /**
          * Derives each column's mode from its field's presence, instead of deriving every

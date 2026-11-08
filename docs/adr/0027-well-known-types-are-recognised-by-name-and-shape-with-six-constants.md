@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0027: Protobuf well-known types are recognised by name *and* shape, with six constants
 
 - Status: Accepted
-- Date: 2026-07-27
-- Issues: [#147] (which is [#124] Part 2)
+- Date: 2026-07-27; revised by [#2107] (2026-11-08)
+- Issues: [#147] (which is [#124] Part 2), [#2107]
 - Modules: bigquery (`sink.serializer.proto`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Protobuf messages
 
@@ -91,8 +91,50 @@ name** — a descriptor built from a serialized `FileDescriptorSet` carries its 
 This is a **breaking schema change** for any existing table (`STRUCT` → scalar):
 `SchemaUnifier` rejects the union rather than corrupting rows.
 
+## Revision for #2107: an opt-in back to the message expansion
+
+Tables that other writers created keep the shape this decision replaced. Avro's `ProtobufData`
+(read in `avro-protobuf` 1.12.0) makes every message field a record of its fields, wrapped in a
+union with `null` when optional, and leaves scalar fields outside a union. An Avro load therefore
+gives a `Duration` the column `STRUCT<seconds, nanos>` and a wrapper `STRUCT<value>`, each with
+`REQUIRED` sub-fields. Such a table cannot take this connector's rows. Measured with schema updates
+disabled, the default: the live schema wins, and the `FILE_LOADS` load job fails with `incompatible
+types. Configured schema: record; Avro file: string`, while a Storage Write API append fails with
+`The proto field mismatched with BigQuery field`. With schema updates enabled, `SchemaUnifier`
+refuses the type change before a `FILE_LOADS` commit submits a load, and on the Storage Write API
+path once a schema change or a rejected append triggers reconciliation. A `FILE_LOADS` load under
+`WRITE_TRUNCATE` skips the union and replaces the table's schema with the flat one. The only
+way around it was a serializer that copies each payload into lookalike message types the converter
+does not recognise.
+
+`ProtoSchemaOptions.Builder#wellKnownTypesAsMessages(WellKnownType...)` now names the types to
+expand as ordinary messages: `TIMESTAMP`, `DURATION`, `FIELD_MASK` and `WRAPPERS`. The default is
+unchanged. The flat mapping stays the right one for a table this connector creates.
+
+- **The mechanism is classification, not a second mapping.** `ProtoWellKnownType.of(field,
+  options)` answers `NONE` for a listed type, so the field takes the generic message path in both
+  converters. The option-blind lookup is private, so neither converter can switch on a
+  classification that ignores the option. FILE_LOADS needs nothing of its own: its Avro staging
+  follows the derived `TableSchema`.
+- **`TIMESTAMP` and `FIELD_MASK` are included.** The issue assumed such tables already have
+  `TIMESTAMP` columns, but `ProtobufData` makes a `Timestamp` a record as well, unless the writer
+  registers `ProtoConversions`' timestamp conversion. The generic path handles both with no extra
+  code.
+- **`Struct`, `Value` and `ListValue` have no constant.** They are mutually recursive, so the
+  recursion guard would reject them expanded; they stay `JSON` columns.
+- **An expanded `Duration` is not range-checked.** Its components are what the column holds, so
+  there is nothing to overflow. An expanded `UInt64Value` keeps the `uint64` range check, because
+  its `value` is a bare `uint64`.
+
+Verified against real BigQuery by `BigQueryProtoWellKnownTypesAsMessagesRealGcpITCase`. A table
+created beforehand with `STRUCT<value STRING>` and `STRUCT<seconds INT64, nanos INT64>` columns
+took a load job and a Storage Write API append, and its schema was unchanged. Both sub-field modes
+were measured: `REQUIRED`, which the ITCase keeps, and `NULLABLE`. The union keeps the table's
+mode, and a set value writes every scalar sub-field.
+
 [#16]: https://github.com/flink-gcp/flink-connector-gcp/issues/16
 [#121]: https://github.com/flink-gcp/flink-connector-gcp/issues/121
 [#124]: https://github.com/flink-gcp/flink-connector-gcp/issues/124
 [#126]: https://github.com/flink-gcp/flink-connector-gcp/issues/126
 [#147]: https://github.com/flink-gcp/flink-connector-gcp/issues/147
+[#2107]: https://github.com/flink-gcp/flink-connector-gcp/issues/2107
