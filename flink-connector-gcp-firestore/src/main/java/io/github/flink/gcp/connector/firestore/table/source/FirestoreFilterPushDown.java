@@ -71,9 +71,8 @@ import java.util.Optional;
  *       {@code BYTES}/ {@code VARBINARY} or {@code TIMESTAMP_LTZ}, and {@code =} alone of {@code
  *       CHAR} and {@code BINARY} beside {@code IS NOT NULL}. A {@code TIMESTAMP_LTZ} below
  *       microseconds compares the bounds {@link TimestampBound} rounds to the column's precision,
- *       which the converter truncates to. No {@code !=} is sent: an Enterprise-edition database
- *       returns a document lacking the field for it, from which no resume cursor can be taken,
- *       while a range matches only values of its literal's type;
+ *       which the converter truncates to. No {@code !=} is sent: it also matches values of every
+ *       other type, while a range matches only values of its literal's type;
  *   <li>with a string or bytes literal of at most 1,500 bytes for an equality, and under 1,500 for
  *       any other operator: a Standard-edition database considers only that prefix of a value;
  *   <li>for a range on a string or the document id, a literal {@link OrderedStrings} finds ordered
@@ -174,10 +173,9 @@ final class FirestoreFilterPushDown {
 
     /**
      * Returns {@code IS NOT NULL} as a range from the lowest value of the column's type: a missing
-     * field and a stored null match no range, and Flink reads both as NULL. An Enterprise edition
-     * database returns a document lacking the field for {@code != null}, and a cursor cannot be
-     * taken from such a document, so the range replaces it. A {@code DOUBLE} also takes {@code
-     * NaN}, which no range matches and Flink keeps.
+     * field and a stored null match no range, and Flink reads both as NULL. The range replaces
+     * {@code != null}, which also matches values of every other type. A {@code DOUBLE} also takes
+     * {@code NaN}, which no range matches and Flink keeps.
      */
     private static List<FieldFilter> atLeastLowest(List<String> path, LogicalType type) {
         Serializable lowest;
@@ -371,9 +369,8 @@ final class FirestoreFilterPushDown {
 
         /**
          * Returns a not-equal comparison as the ranges either side of its value, and, for a double,
-         * an equality on {@code NaN}, which Flink's {@code <>} keeps and no range matches. Ranges
-         * never match a document lacking the field, which an Enterprise-edition database returns
-         * for {@code !=} and from which no resume cursor can be taken.
+         * an equality on {@code NaN}, which Flink's {@code <>} keeps and no range matches. Unlike
+         * {@code !=}, ranges never match a value of another type than the literal's.
          */
         FieldFilter asRanges() {
             List<String> path = Arrays.asList(segments);
