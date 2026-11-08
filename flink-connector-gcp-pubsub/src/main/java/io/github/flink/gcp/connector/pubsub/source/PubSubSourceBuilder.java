@@ -271,8 +271,9 @@ public class PubSubSourceBuilder<T> {
      * job that is cancelled or fails between completing a checkpoint and notifying its readers
      * restores that checkpoint, while Pub/Sub, never having heard the acknowledgements, redelivers
      * its messages, which are then processed a second time. The AdaptiveScheduler, including
-     * reactive mode, triggers a rescale when a checkpoint completes, so every such rescale races
-     * the notification, and one lost race duplicates a whole checkpoint interval.
+     * reactive mode, usually triggers a rescale toward added resources or changed resource
+     * requirements when a checkpoint completes; every rescale it triggers that way races the
+     * notification, and one lost race duplicates a whole checkpoint interval.
      *
      * <p>With this on, each checkpoint also records the ids of the messages it covers that are not
      * acknowledged yet. After a restore, a redelivery of one of those messages is acknowledged

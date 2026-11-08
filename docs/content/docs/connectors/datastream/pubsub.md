@@ -674,7 +674,9 @@ If the job is cancelled or fails after a checkpoint completes but before the not
 The reader's close nacks those messages with everything else it holds, Pub/Sub redelivers them, and the restored job processes a whole checkpoint interval a second time, although the restored checkpoint already covers its output.
 
 The AdaptiveScheduler makes this a routine event rather than a rare one.
-It triggers a rescale when a checkpoint completes (`jobmanager.adaptive-scheduler.rescale-trigger.*`), so the cancellation starts in the same instant as the notification, and every rescale in reactive mode or under an autoscaler races it.
+A rescale toward resources that have joined, or toward changed resource requirements as an autoscaler sets them, waits for the next completed checkpoint, or until the configured number of checkpoints has failed since the change or the trigger's maximum delay has passed, whichever comes first (`jobmanager.adaptive-scheduler.rescale-trigger.*`).
+When a checkpoint triggers it, the cancellation starts in the same instant as the notification, and every such rescale races it.
+A TaskManager that leaves, including one that a reactive scale-in removes, restarts the job at once without waiting for a checkpoint, so it loses the notification only when it lands after a checkpoint completes and before the reader has run that checkpoint's notification.
 One lost race duplicates a whole checkpoint interval, which is minutes of data for a job that needs long intervals, such as one writing to BigQuery with `FILE_LOADS`.
 
 `restoreDeduplication(true)` (Table API: `'scan.restore-deduplication.enabled' = 'true'`) closes that gap for a restore of the whole source.
@@ -691,6 +693,9 @@ Pub/Sub keeps the message id across a redelivery, and that id is what the ledger
 The ledger lands on the readers in whatever way Flink redistributes their state, while Pub/Sub decides which streaming-pull connection a redelivery reaches.
 So each reader uploads the ledger chunks it was handed to the enumerator, and the enumerator forwards each subscription's ledger to every reader that consumes the subscription under the current plan: all of its readers under `NONE`, its one owner under `PER_KEY`.
 Splits are assigned only after every restored reader has reported its upload, or two minutes after the first of them registers, whichever comes first, so the subscribers start with the ledger already in place.
+Chunks that reach the enumerator only after the wait suppress nothing: the enumerator drops them, and the reader that uploaded them has already discarded its own copy.
+A reader that registers after the wait is forwarded no ledger at all, so every redelivery that reaches it is emitted again.
+The enumerator logs a warning that names the readers it stopped waiting for.
 A chunk is at most about 1 MiB, so no event approaches Flink's RPC frame size however a rescale redistributes the state.
 
 **Scope.**
@@ -706,6 +711,8 @@ The restored ledger is kept in memory, never written into later checkpoints, and
 The default is the subscriber's `maxAckExtensionPeriod` (1 hour by default), the longest the previous execution could have kept a message leased, capped at the longest duration nanoseconds express; when that extension is disabled, the default is 10 minutes, the longest acknowledgement deadline Pub/Sub accepts.
 A cancellation nacks the messages, so their redelivery usually starts within seconds of the restore; a TaskManager that is lost leaves them leased until their deadline lapses, and a subscription's retry policy or a large backlog delays redelivery further.
 An entry is kept after its first match, so a message redelivered more than once is suppressed every time.
+Because the restored ledger is not carried into later checkpoints, a second restore keeps the first one's entries only when it restores the same checkpoint again.
+A second restore from a checkpoint taken after the first one carries only that checkpoint's own ledger, so a redelivery from the first restore that arrives after the second one is emitted again.
 
 **Costs and caveats.**
 
