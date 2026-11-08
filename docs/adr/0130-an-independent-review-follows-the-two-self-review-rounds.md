@@ -19,9 +19,10 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-22 (measured on
   [#1008](https://github.com/flink-gcp/flink-connector-gcp/pull/1008)); conflict-only refresh
-  revised by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30)
+  revised by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30);
+  dev-tools update exception added by [#2125](https://github.com/flink-gcp/flink-connector-gcp/pull/2125) (2026-11-08)
 - Issues: [#1017](https://github.com/flink-gcp/flink-connector-gcp/issues/1017),
-  [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172)
+  [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172), [#2125](https://github.com/flink-gcp/flink-connector-gcp/pull/2125)
 - Modules: all (workflow)
 - Current behavior: root `AGENTS.md` § GitHub workflow, the shared `push-pr-branch` and
   `independent-review` skills, and `.agents/references/repository-guide.md` (ADR-0164)
@@ -36,7 +37,9 @@ change, from a description that model also wrote.
 ## Decision
 
 A draft pull request is reviewed by a second model after both self-review rounds and before it is
-called ready. The initial round reads the full diff and records its covered surfaces. A narrow
+called ready. A dev-tools update PR that holds only `flink-gcp-bot`'s commit is exempt, because its
+shared diff passed this round in flink-gcp-dev-tools (ADR-0164). The initial round reads the full
+diff and records its covered surfaces. A narrow
 repair receives an independent review of the `range-diff` between the previous and current
 base-to-head patch series and the invariants affected by its changed hunks; it does not reopen
 untouched work. Expanded scope or contracts restart the full round. A proven base-only refresh

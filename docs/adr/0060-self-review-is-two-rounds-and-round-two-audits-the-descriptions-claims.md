@@ -20,8 +20,9 @@ limitations under the License.
 - Date: 2026-08-06 (measured across PRs
   [#314](https://github.com/flink-gcp/flink-connector-gcp/pull/314) and
   [#317](https://github.com/flink-gcp/flink-connector-gcp/pull/317)); conflict-only refresh revised
-  by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30)
-- Issues: [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172)
+  by [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172) (2026-08-30);
+  dev-tools update exception added by [#2125](https://github.com/flink-gcp/flink-connector-gcp/pull/2125) (2026-11-08)
+- Issues: [#1172](https://github.com/flink-gcp/flink-connector-gcp/pull/1172), [#2125](https://github.com/flink-gcp/flink-connector-gcp/pull/2125)
 - Modules: all (workflow)
 - Current behavior: root `AGENTS.md` § GitHub workflow, the shared review skills in `.agents/skills/`,
   and `.agents/references/repository-guide.md` for connector-specific verification (ADR-0164)
@@ -39,6 +40,10 @@ different questions** — this is not "review twice":
 - **Round two asks whether the description is true** — which is why its lenses point outward
   rather than at the diff: the user meeting the error, the operator reading the dashboard,
   the blast radius of a move, an adversary trying to defeat the invariant.
+
+A dev-tools update PR that holds only `flink-gcp-bot`'s commit is the one exception: its shared diff
+passed both rounds in flink-gcp-dev-tools, so it needs only round two here, which asks what the
+update changes in this repository (ADR-0164).
 
 Three rules the rounds share:
 

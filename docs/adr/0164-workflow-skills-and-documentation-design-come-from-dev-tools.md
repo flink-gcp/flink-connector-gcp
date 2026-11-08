@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0164: Workflow skills and documentation design come from dev-tools
 
 - Status: Accepted
-- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990) (2026-11-01) and [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018) (2026-11-05)
-- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990), [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018)
+- Date: 2026-09-06; revised by [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984) (2026-11-01), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990) (2026-11-01), [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018) (2026-11-05) and [#2125](https://github.com/flink-gcp/flink-connector-gcp/pull/2125) (2026-11-08)
+- Issues: [flink-gcp/flink-datastream-protobuf#24](https://github.com/flink-gcp/flink-datastream-protobuf/issues/24), [#1984](https://github.com/flink-gcp/flink-connector-gcp/issues/1984), [#1990](https://github.com/flink-gcp/flink-connector-gcp/issues/1990), [#2018](https://github.com/flink-gcp/flink-connector-gcp/issues/2018), [#2125](https://github.com/flink-gcp/flink-connector-gcp/pull/2125)
 - Modules: all (workflow), docs
 - Current behavior: [Contributing](../content/docs/development/contributing.md#shared-development-assets)
 
@@ -35,6 +35,14 @@ The shared search override adapts Hugo Book v0.14.0 and retains its upstream MIT
 Keep the four skill directories, including their Codex metadata, and `scripts/central-portal.py` as tracked
 copies selected by `dev_tools_revision` in the justfile.
 `just dev-tools-sync` installs that commit, and updates land as reviewed diffs with their pin.
+Each flink-gcp-dev-tools release proposes its update as a Draft PR from `flink-gcp-bot` on the `dev-tools/update` branch,
+as flink-gcp-dev-tools' [release-update amendment](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/c0d5afb3f0a0e89c1a5a3aaeca26a5730999983c/docs/adr/0001-share-development-assets.md#amendment-propose-each-release-to-the-consumers-from-a-bot) decides.
+While that PR holds only the bot's commit, it needs self-review round two (ADR-0060) and current aggregate CI before Ready.
+Round one and the independent review (ADR-0130) are not repeated, because that commit holds only the release's copies
+and pins, whose shared diff already passed all three rounds upstream.
+Round two still asks what the update changes here and whether its description holds here.
+A maintainer commit on that branch, such as a migration, returns the PR to the full flow, because that commit was reviewed
+nowhere.
 The tool is shared under flink-gcp-dev-tools' [ADR-0001 amendment](https://github.com/flink-gcp/flink-gcp-dev-tools/blob/40a3a0e54466d290422d5aeeac346dfad5091de4/docs/adr/0001-share-development-assets.md#amendment-share-standard-library-repository-tools): it imports only the Python standard
 library and carries no connector policy.
 A behavior change to it goes upstream, because the next sync replaces a committed local edit; its behavior
