@@ -74,7 +74,7 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     void openAccess() throws Exception {
         access = RejectionProbes.open(database(), null);
         collection = uniqueCollection();
-        client().document(collection + "/existing").set(Map.of("v", 1L)).get();
+        write(() -> client().document(collection + "/existing").set(Map.of("v", 1L)));
     }
 
     @AfterEach
@@ -241,8 +241,11 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         // run of 2026-11-07). That is a throttle of the database, not a refusal of the request's
         // size, so a write is taken as throttled only when its message names the write bandwidth;
         // any other status, a RESOURCE_EXHAUSTED for the message size included, fails the test.
-        // The throttled writes are sent again with backoff, as the service asks, until every
-        // write is applied.
+        // A write answered UNAVAILABLE ("The service is temporarily unavailable. Please retry
+        // with exponential backoff."; one of twelve on a third attempt in a manual run of
+        // 2026-11-08) is taken as throttled too: no size refusal is answered that way. The
+        // throttled writes are sent again with backoff, as the service asks, until every write is
+        // applied; each is an upsert, so one applied despite its answer is applied again.
         String database = "projects/" + PROJECT + "/databases/" + database().getDatabaseId();
         String value = "y".repeat(900 * 1024);
         Value payload = Value.newBuilder().setStringValue(value).build();
@@ -261,12 +264,16 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
             // timeout still ends well inside the class's ten-minute bound.
             long deadline = System.nanoTime() + Duration.ofMinutes(4).toNanos();
             long backoffMillis = 1_000;
+            List<String> lastAnswers = new ArrayList<>();
             for (int attempt = 1; !pending.isEmpty(); attempt++) {
                 if (attempt > 1) {
                     Thread.sleep(backoffMillis);
                     backoffMillis *= 2;
                     assertThat(System.nanoTime() - deadline)
-                            .as("still throttled after four minutes: %d writes", pending.size())
+                            .as(
+                                    "still throttled after four minutes: %d writes, last answered"
+                                            + " %s",
+                                    pending.size(), lastAnswers)
                             .isNegative();
                 }
                 BatchWriteRequest request =
@@ -280,11 +287,16 @@ class FirestoreRejectionRealGcpITCase extends AbstractFirestoreRealGcpITCase {
                 BatchWriteResponse response = raw.batchWrite(request);
                 assertThat(response.getStatusList()).hasSize(pending.size());
                 List<Write> throttled = new ArrayList<>();
+                lastAnswers.clear();
                 for (int i = 0; i < pending.size(); i++) {
                     Status status = response.getStatus(i);
-                    if (status.getCode() == Code.RESOURCE_EXHAUSTED_VALUE
-                            && status.getMessage().contains("maximum bandwidth for writes")) {
+                    if (status.getCode() == Code.UNAVAILABLE_VALUE
+                            || (status.getCode() == Code.RESOURCE_EXHAUSTED_VALUE
+                                    && status.getMessage()
+                                            .contains("maximum bandwidth for writes"))) {
                         throttled.add(pending.get(i));
+                        lastAnswers.add(
+                                Code.forNumber(status.getCode()) + ": " + status.getMessage());
                     } else {
                         assertThat(status.getCode())
                                 .as("attempt %d: %s", attempt, status)

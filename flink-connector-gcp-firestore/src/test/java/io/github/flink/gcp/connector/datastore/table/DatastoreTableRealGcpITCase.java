@@ -111,19 +111,16 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         String kind = uniqueKind();
         Key otherNamespace =
                 Key.newBuilder(PROJECT, "User", "u", database().getDatabaseId()).build();
-        client().put(
-                        Entity.newBuilder(keyIn(kind, "ns").build())
-                                .set("ref", otherNamespace)
-                                .build());
+        put(Entity.newBuilder(keyIn(kind, "ns").build()).set("ref", otherNamespace).build());
         assertThat(read(keyIn(kind, "ns").build()).getKey("ref")).isEqualTo(otherNamespace);
 
         Key otherDatabase = Key.newBuilder(PROJECT, "User", "u").setNamespace(NAMESPACE).build();
         assertThatThrownBy(
                         () ->
-                                client().put(
-                                                Entity.newBuilder(keyIn(kind, "db").build())
-                                                        .set("ref", otherDatabase)
-                                                        .build()))
+                                put(
+                                        Entity.newBuilder(keyIn(kind, "db").build())
+                                                .set("ref", otherDatabase)
+                                                .build()))
                 .isInstanceOf(DatastoreException.class)
                 .hasMessageContaining("INVALID_ARGUMENT")
                 .hasMessageContaining("does not match containing entity's");
@@ -133,10 +130,10 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                         .build();
         assertThatThrownBy(
                         () ->
-                                client().put(
-                                                Entity.newBuilder(keyIn(kind, "project").build())
-                                                        .set("ref", otherProject)
-                                                        .build()))
+                                put(
+                                        Entity.newBuilder(keyIn(kind, "project").build())
+                                                .set("ref", otherProject)
+                                                .build()))
                 .isInstanceOf(DatastoreException.class)
                 .hasMessageContaining("INVALID_ARGUMENT")
                 .hasMessageContaining("The project flink-gcp-no-such-project does not exist");
@@ -155,20 +152,16 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     @Test
     void pushedEqualitiesNeedNoCompositeIndexAndMissAnUnindexedValue() throws Exception {
         String kind = uniqueKind();
-        client().put(
-                        entity(kind, "a").set("s", "x").set("n", 5L).set("b", true).build(),
-                        entity(kind, "b").set("s", "x").set("n", 5L).set("b", true).build(),
-                        entity(kind, "c").set("s", "x").set("n", 6L).set("b", true).build(),
-                        entity(kind, "d")
-                                .set(
-                                        "s",
-                                        StringValue.newBuilder("x")
-                                                .setExcludeFromIndexes(true)
-                                                .build())
-                                .set("n", 5L)
-                                .set("b", true)
-                                .build(),
-                        entity(kind, "e").set("s", "x").set("n", 5L).set("b", true).build());
+        put(
+                entity(kind, "a").set("s", "x").set("n", 5L).set("b", true).build(),
+                entity(kind, "b").set("s", "x").set("n", 5L).set("b", true).build(),
+                entity(kind, "c").set("s", "x").set("n", 6L).set("b", true).build(),
+                entity(kind, "d")
+                        .set("s", StringValue.newBuilder("x").setExcludeFromIndexes(true).build())
+                        .set("n", 5L)
+                        .set("b", true)
+                        .build(),
+                entity(kind, "e").set("s", "x").set("n", 5L).set("b", true).build());
 
         assertThat(
                         names(
@@ -182,15 +175,15 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                 .containsExactly("b");
 
         String numbers = uniqueKind();
-        client().put(
-                        entity(numbers, "integer").set("f", 5L).build(),
-                        entity(numbers, "double").set("f", 5.0d).build(),
-                        entity(numbers, "zero").set("f", 0.0d).build(),
-                        entity(numbers, "negativeZero").set("f", -0.0d).build(),
-                        entity(numbers, "string").set("f", "abc").build(),
-                        entity(numbers, "blob")
-                                .set("f", Blob.copyFrom("abc".getBytes(StandardCharsets.UTF_8)))
-                                .build());
+        put(
+                entity(numbers, "integer").set("f", 5L).build(),
+                entity(numbers, "double").set("f", 5.0d).build(),
+                entity(numbers, "zero").set("f", 0.0d).build(),
+                entity(numbers, "negativeZero").set("f", -0.0d).build(),
+                entity(numbers, "string").set("f", "abc").build(),
+                entity(numbers, "blob")
+                        .set("f", Blob.copyFrom("abc".getBytes(StandardCharsets.UTF_8)))
+                        .build());
         assertThat(names(numbers, PropertyFilter.eq("f", 5.0d))).containsExactly("double");
         assertThat(names(numbers, PropertyFilter.eq("f", 0.0d))).containsExactly("zero");
         assertThat(names(numbers, PropertyFilter.eq("f", "abc")))
@@ -229,50 +222,50 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     @Test
     void pushedComparisonsReturnTheUnpushedRowsAndAnIndexIsRefusedLoudly() throws Exception {
         String kind = uniqueKind();
-        client().put(
-                        entity(kind, "missing").build(),
-                        entity(kind, "low")
-                                .set("n", 3L)
-                                .set("d", 7L)
-                                .set("s", "\uFFFD")
-                                .set("y", Blob.copyFrom(new byte[] {0x7f}))
-                                .set(
-                                        "ts3",
-                                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
-                                                1_000, 123_456_000))
-                                .build(),
-                        entity(kind, "high")
-                                .set("n", 7L)
-                                .set("d", -1.5d)
-                                .set("s", "\uD83D\uDE00")
-                                .set("y", Blob.copyFrom(new byte[] {(byte) 0x80}))
-                                .set(
-                                        "ts3",
-                                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
-                                                1_000, 123_999_000))
-                                .build(),
-                        entity(kind, "match")
-                                .set("n", 5L)
-                                .set("d", 5.0d)
-                                .set("s", "x")
-                                .set(
-                                        "ts3",
-                                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
-                                                1_000, 124_000_000))
-                                .build(),
-                        entity(kind, "zeros").set("d", 0L).set("n", 0L).build(),
-                        entity(kind, "negativeZero").set("d", -0.0d).build(),
-                        entity(kind, "positiveZero").set("d", 0.0d).build(),
-                        entity(kind, "six").set("d", 6L).build(),
-                        entity(kind, "minusOne").set("d", -1L).build(),
-                        entity(kind, "notANumber").set("d", Double.NaN).build(),
-                        entity(kind, "fraction").set("d", 5.5d).set("n", 5.5d).set("s", 5L).build(),
-                        entity(kind, "text")
-                                .set("n", "7")
-                                .set("d", "7")
-                                .set("y", "\u0080")
-                                .set("ts3", 1_000_123_500L)
-                                .build());
+        put(
+                entity(kind, "missing").build(),
+                entity(kind, "low")
+                        .set("n", 3L)
+                        .set("d", 7L)
+                        .set("s", "\uFFFD")
+                        .set("y", Blob.copyFrom(new byte[] {0x7f}))
+                        .set(
+                                "ts3",
+                                com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
+                                        1_000, 123_456_000))
+                        .build(),
+                entity(kind, "high")
+                        .set("n", 7L)
+                        .set("d", -1.5d)
+                        .set("s", "\uD83D\uDE00")
+                        .set("y", Blob.copyFrom(new byte[] {(byte) 0x80}))
+                        .set(
+                                "ts3",
+                                com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
+                                        1_000, 123_999_000))
+                        .build(),
+                entity(kind, "match")
+                        .set("n", 5L)
+                        .set("d", 5.0d)
+                        .set("s", "x")
+                        .set(
+                                "ts3",
+                                com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
+                                        1_000, 124_000_000))
+                        .build(),
+                entity(kind, "zeros").set("d", 0L).set("n", 0L).build(),
+                entity(kind, "negativeZero").set("d", -0.0d).build(),
+                entity(kind, "positiveZero").set("d", 0.0d).build(),
+                entity(kind, "six").set("d", 6L).build(),
+                entity(kind, "minusOne").set("d", -1L).build(),
+                entity(kind, "notANumber").set("d", Double.NaN).build(),
+                entity(kind, "fraction").set("d", 5.5d).set("n", 5.5d).set("s", 5L).build(),
+                entity(kind, "text")
+                        .set("n", "7")
+                        .set("d", "7")
+                        .set("y", "\u0080")
+                        .set("ts3", 1_000_123_500L)
+                        .build());
         TableEnvironment batch =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         String columns =
@@ -346,15 +339,13 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     @Test
     void aKeyEqualityAndUnquotedPropertyPathsMatchAsOnTheEmulator() throws Exception {
         String kind = uniqueKind();
-        client().put(
-                        entity(kind, "a").set("s", "x").build(),
-                        entity(kind, "k").set("s", "x").build(),
-                        entity(kind, "z").set("s", "x").build(),
-                        Entity.newBuilder(
-                                        Key.newBuilder(keyIn("Parent", "p").build(), kind, "k")
-                                                .build())
-                                .set("s", "x")
-                                .build());
+        put(
+                entity(kind, "a").set("s", "x").build(),
+                entity(kind, "k").set("s", "x").build(),
+                entity(kind, "z").set("s", "x").build(),
+                Entity.newBuilder(Key.newBuilder(keyIn("Parent", "p").build(), kind, "k").build())
+                        .set("s", "x")
+                        .build());
         Key k = keyIn(kind, "k").build();
         assertThat(names(kind, PropertyFilter.eq("__key__", k))).containsExactly("k");
         assertThat(
@@ -368,13 +359,13 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                 .containsExactly("k");
 
         String paths = uniqueKind();
-        client().put(
-                        entity(paths, "nested")
-                                .set("e", FullEntity.newBuilder().set("x", 1L).build())
-                                .set("a", FullEntity.newBuilder().set("b", "q").build())
-                                .build(),
-                        entity(paths, "dotted").set("e.x", 1L).set("a.b", "q").build(),
-                        entity(paths, "named").set("a`b", "q").set("a\\b", "q").build());
+        put(
+                entity(paths, "nested")
+                        .set("e", FullEntity.newBuilder().set("x", 1L).build())
+                        .set("a", FullEntity.newBuilder().set("b", "q").build())
+                        .build(),
+                entity(paths, "dotted").set("e.x", 1L).set("a.b", "q").build(),
+                entity(paths, "named").set("a`b", "q").set("a\\b", "q").build());
         assertThat(names(paths, PropertyFilter.eq("e.x", 1L)))
                 .containsExactlyInAnyOrder("nested", "dotted");
         assertThat(names(paths, PropertyFilter.eq("a.b", "q")))
@@ -441,7 +432,7 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     void pointsAndKeyValuesRoundTripThroughTheSinkTheScanAndTheLookup() throws Exception {
         String trips = uniqueKind();
         String users = uniqueKind();
-        client().put(Entity.newBuilder(keyIn(users, "u1").build()).set("label", "Ada").build());
+        put(Entity.newBuilder(keyIn(users, "u1").build()).set("label", "Ada").build());
         TableEnvironment batch =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         String columns =
@@ -524,18 +515,15 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     void theDefaultMergeKeepsWhatTheTableDoesNotDeclareAndReplaceRemovesIt() throws Exception {
         String kind = uniqueKind();
         for (String id : new String[] {"m", "r"}) {
-            client().put(
-                            Entity.newBuilder(keyIn(kind, id).build())
-                                    .set("other", 1L)
-                                    .set("a.b", 0L)
-                                    .set(
-                                            "e.f",
-                                            FullEntity.newBuilder()
-                                                    .set("g.h", 0L)
-                                                    .set("kept", "y")
-                                                    .build())
-                                    .set("tags", "a", "b")
-                                    .build());
+            put(
+                    Entity.newBuilder(keyIn(kind, id).build())
+                            .set("other", 1L)
+                            .set("a.b", 0L)
+                            .set(
+                                    "e.f",
+                                    FullEntity.newBuilder().set("g.h", 0L).set("kept", "y").build())
+                            .set("tags", "a", "b")
+                            .build());
         }
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
@@ -565,17 +553,14 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     @Test
     void anUpdateReplacesTheDeclaredPropertiesWholeAndFailsOnAMissingEntity() throws Exception {
         String kind = uniqueKind();
-        client().put(
-                        Entity.newBuilder(keyIn(kind, "u").build())
-                                .set("other", 1L)
-                                .set("a.b", 0L)
-                                .set(
-                                        "e.f",
-                                        FullEntity.newBuilder()
-                                                .set("g.h", 0L)
-                                                .set("dropped", "y")
-                                                .build())
-                                .build());
+        put(
+                Entity.newBuilder(keyIn(kind, "u").build())
+                        .set("other", 1L)
+                        .set("a.b", 0L)
+                        .set(
+                                "e.f",
+                                FullEntity.newBuilder().set("g.h", 0L).set("dropped", "y").build())
+                        .build());
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         table.executeSql(
@@ -610,12 +595,12 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         // segment, which datastore.proto names without spelling out. Both were first measured
         // on the emulator only; a wrong reading of either would erase what the merge must keep.
         String kind = uniqueKind();
-        client().put(
-                        Entity.newBuilder(keyIn(kind, "kept").build())
-                                .set("other", 1L)
-                                .set("tick`", 0L)
-                                .set("back\\slash", 0L)
-                                .build());
+        put(
+                Entity.newBuilder(keyIn(kind, "kept").build())
+                        .set("other", 1L)
+                        .set("tick`", 0L)
+                        .set("back\\slash", 0L)
+                        .build());
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         table.executeSql(

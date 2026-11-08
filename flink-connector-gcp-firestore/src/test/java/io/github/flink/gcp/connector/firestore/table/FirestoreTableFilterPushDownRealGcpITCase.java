@@ -87,18 +87,12 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
     void aStandardEditionCollectionAnswersTwoEqualitiesAndAGroupScanIsLeftUnfiltered()
             throws Exception {
         String collection = uniqueCollection();
-        client().document(collection + "/a")
-                .set(Map.of("s", "x", "n", 5L))
-                .get(30, TimeUnit.SECONDS);
+        write(() -> client().document(collection + "/a").set(Map.of("s", "x", "n", 5L)));
         // The service matches 5.0 to 5; the converter reads a double under BIGINT as NULL, and
         // Flink's residual removes the row.
-        client().document(collection + "/b")
-                .set(Map.of("s", "x", "n", 5.0d))
-                .get(30, TimeUnit.SECONDS);
-        client().document(collection + "/c")
-                .set(Map.of("s", "y", "n", 5L))
-                .get(30, TimeUnit.SECONDS);
-        client().document(collection + "/d").set(Map.of("s", "x")).get(30, TimeUnit.SECONDS);
+        write(() -> client().document(collection + "/b").set(Map.of("s", "x", "n", 5.0d)));
+        write(() -> client().document(collection + "/c").set(Map.of("s", "y", "n", 5L)));
+        write(() -> client().document(collection + "/d").set(Map.of("s", "x")));
         TableEnvironment table = batch();
         table.executeSql(
                 "CREATE TABLE keyed (id STRING NOT NULL, s STRING, n BIGINT,"
@@ -122,16 +116,16 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
     @Test
     void aStandardEditionCollectionAnswersAnIdAndAMapFieldEquality() throws Exception {
         String collection = uniqueCollection();
-        client().document(collection + "/a")
-                .set(Map.of("s", "x", "e", Map.of("x", 1L)))
-                .get(30, TimeUnit.SECONDS);
-        client().document(collection + "/b")
-                .set(Map.of("s", "x", "e", Map.of("x", 1L)))
-                .get(30, TimeUnit.SECONDS);
+        write(
+                () ->
+                        client().document(collection + "/a")
+                                .set(Map.of("s", "x", "e", Map.of("x", 1L))));
+        write(
+                () ->
+                        client().document(collection + "/b")
+                                .set(Map.of("s", "x", "e", Map.of("x", 1L))));
         // A field named by the whole path is not the map's field.
-        client().document(collection + "/c")
-                .set(Map.of("s", "x", "e.x", 1L))
-                .get(30, TimeUnit.SECONDS);
+        write(() -> client().document(collection + "/c").set(Map.of("s", "x", "e.x", 1L)));
         TableEnvironment table = batch();
         table.executeSql(
                 "CREATE TABLE keyed (id STRING NOT NULL, s STRING, e ROW<x BIGINT>,"
@@ -169,12 +163,11 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
                         Database.DatabaseEdition.ENTERPRISE);
         String collection = uniqueCollection();
         try (Firestore client = open(enterprise)) {
-            client.document(collection + "/int32")
-                    .set(Map.of("n", new Int32Value(5)))
-                    .get(30, TimeUnit.SECONDS);
-            client.document(collection + "/bytes")
-                    .set(Map.of("y", Blob.fromBytes(new byte[] {1, 2})))
-                    .get(30, TimeUnit.SECONDS);
+            write(() -> client.document(collection + "/int32").set(Map.of("n", new Int32Value(5))));
+            write(
+                    () ->
+                            client.document(collection + "/bytes")
+                                    .set(Map.of("y", Blob.fromBytes(new byte[] {1, 2}))));
             // The library sends a subtype-0 Blob as native bytes, so the reserved form is built by
             // hand. Were it stored, the converter would read it as BYTES and the pushed equality
             // on native bytes would have to be measured against it.
@@ -192,9 +185,10 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
                             .build();
             assertThatThrownBy(
                             () ->
-                                    client.document(collection + "/bson")
-                                            .set(Map.of("y", subtypeZero))
-                                            .get(30, TimeUnit.SECONDS))
+                                    write(
+                                            () ->
+                                                    client.document(collection + "/bson")
+                                                            .set(Map.of("y", subtypeZero))))
                     .hasStackTraceContaining("subtype 0 is not permitted");
         }
         TableEnvironment table = batch();
@@ -352,14 +346,13 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
         documents.put("notANumber", Map.of("d", Double.NaN));
         documents.put("text", Map.of("n", "7", "d", "7", "y", "\u0080"));
         for (Map.Entry<String, Map<String, Object>> document : documents.entrySet()) {
-            client.document(collection + "/" + document.getKey())
-                    .set(document.getValue())
-                    .get(30, TimeUnit.SECONDS);
+            write(
+                    () ->
+                            client.document(collection + "/" + document.getKey())
+                                    .set(document.getValue()));
         }
         if (enterprise) {
-            client.document(collection + "/int32")
-                    .set(Map.of("n", new Int32Value(6)))
-                    .get(30, TimeUnit.SECONDS);
+            write(() -> client.document(collection + "/int32").set(Map.of("n", new Int32Value(6))));
         }
     }
 }

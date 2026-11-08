@@ -66,10 +66,18 @@ class FirestoreTableRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     @Test
     void theDefaultMergeKeepsUndeclaredFieldsAndReplaceRemovesThem() throws Exception {
         String collection = uniqueCollection();
-        client().document(collection + "/m")
-                .set(Map.of("other", 1L, "attrs", Map.of("a", 1L), "row", Map.of("y", "kept")))
-                .get(30, TimeUnit.SECONDS);
-        client().document(collection + "/r").set(Map.of("other", 1L)).get(30, TimeUnit.SECONDS);
+        write(
+                () ->
+                        client().document(collection + "/m")
+                                .set(
+                                        Map.of(
+                                                "other",
+                                                1L,
+                                                "attrs",
+                                                Map.of("a", 1L),
+                                                "row",
+                                                Map.of("y", "kept"))));
+        write(() -> client().document(collection + "/r").set(Map.of("other", 1L)));
         TableEnvironment table =
                 TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
         String columns =

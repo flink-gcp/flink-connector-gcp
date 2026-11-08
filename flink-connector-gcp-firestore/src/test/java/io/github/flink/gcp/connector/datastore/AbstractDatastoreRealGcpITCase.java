@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.datastore;
 import com.google.cloud.datastore.Datastore;
 import com.google.cloud.datastore.DatastoreOptions;
 import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.FullEntity;
 import com.google.cloud.datastore.Key;
 import com.google.cloud.datastore.spi.v1.DatastoreRpc;
 import com.google.cloud.firestore.v1.FirestoreAdminClient;
@@ -26,6 +27,7 @@ import com.google.datastore.v1.PartitionId;
 import com.google.firestore.admin.v1.Database;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.firestore.EphemeralDatabases;
+import io.github.flink.gcp.connector.firestore.ThrottledWrites;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -36,6 +38,7 @@ import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -121,6 +124,41 @@ public abstract class AbstractDatastoreRealGcpITCase {
     /** Returns a client of the class's database, for arranging and reading entities directly. */
     protected static Datastore client() {
         return client;
+    }
+
+    /**
+     * Upserts one entity through the direct client and {@link ThrottledWrites}, which sends it
+     * again while the service throttles it.
+     *
+     * @param entity the entity
+     * @return the entity as stored
+     */
+    protected static Entity put(FullEntity<?> entity) {
+        return throttled(() -> client.put(entity));
+    }
+
+    /**
+     * Upserts the entities in one commit through the direct client and {@link ThrottledWrites},
+     * which sends the commit again while the service throttles it.
+     *
+     * @param entities the entities
+     * @return the entities as stored
+     */
+    protected static List<Entity> put(FullEntity<?>... entities) {
+        return throttled(() -> client.put(entities));
+    }
+
+    private static <T> T throttled(Callable<T> write) {
+        try {
+            return ThrottledWrites.retry(write);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     /** Returns the client's RPC layer, for a request the client does not expose. */

@@ -506,3 +506,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Datastore-mode harness (#1707) can share it. Gate annotations stay on the concrete classes. Teardown waits for a delete's acceptance
   and the database's absence, never for the operation: a database holding data outlived the
   client's five-minute polling. `scripts/sweep-e2e.sh` deliberately does not sweep databases.
+- A gated test's own direct write (a seed, a precondition document, an expected refusal) goes
+  through the harness's `write(...)`, `setInOneBatch(...)` or `put(...)`, which retry
+  `RESOURCE_EXHAUSTED` and `UNAVAILABLE` through `ThrottledWrites` (#2079, ADR-0185). Such a write
+  must be an upsert, because one answered `UNAVAILABLE` may already be applied. A connector call
+  under test, and a write whose throttle a test measures, do not go through it.

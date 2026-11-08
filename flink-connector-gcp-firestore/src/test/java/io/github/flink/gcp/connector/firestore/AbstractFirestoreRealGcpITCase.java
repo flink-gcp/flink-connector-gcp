@@ -16,9 +16,11 @@
 
 package io.github.flink.gcp.connector.firestore;
 
+import com.google.api.core.ApiFuture;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.FirestoreOptions;
+import com.google.cloud.firestore.WriteBatch;
 import com.google.cloud.firestore.v1.FirestoreAdminClient;
 import com.google.firestore.admin.v1.Database;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
@@ -31,6 +33,8 @@ import org.junit.jupiter.api.Timeout.ThreadMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -148,5 +152,35 @@ public abstract class AbstractFirestoreRealGcpITCase {
     /** Reads one document through the direct client. */
     protected static DocumentSnapshot read(String documentPath) throws Exception {
         return client.document(documentPath).get().get(30, TimeUnit.SECONDS);
+    }
+
+    /**
+     * Sends a write that arranges a test's data through {@link ThrottledWrites}, which sends it
+     * again while the service throttles it, and waits up to 60 seconds for each attempt. The write
+     * must be safe to apply twice, such as a {@code set}.
+     *
+     * @param write starts the write; called again on each attempt, so it builds a new batch rather
+     *     than committing one twice
+     * @return the write's result
+     */
+    protected static <T> T write(Callable<ApiFuture<T>> write) throws Exception {
+        return ThrottledWrites.retry(() -> write.call().get(60, TimeUnit.SECONDS));
+    }
+
+    /**
+     * Sets every document of the map, by path, in one batch through {@link #write(Callable)}; each
+     * attempt builds the batch anew, because a batch is committed once.
+     *
+     * @param direct a client of the database to write to
+     * @param documents the documents' fields by path, at most 500
+     */
+    protected static void setInOneBatch(
+            Firestore direct, Map<String, Map<String, Object>> documents) throws Exception {
+        write(
+                () -> {
+                    WriteBatch batch = direct.batch();
+                    documents.forEach((path, fields) -> batch.set(direct.document(path), fields));
+                    return batch.commit();
+                });
     }
 }
