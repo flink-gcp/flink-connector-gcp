@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0168: Connector catalogs are read-only views of the service schema
 
 - Status: Accepted
-- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03), and by [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) and [#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729) (2026-10-11), and by [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719) (2026-10-12)
-- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216), [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548), [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719)
-- Modules: base, bigquery, spanner, bigtable, firestore (no catalog); each later connector catalog adds an adoption section here
+- Date: 2026-09-27; revised by [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214) and [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216) (2026-10-03), and by [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) and [#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729) (2026-10-11), and by [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719) (2026-10-12), and by [#1732](https://github.com/flink-gcp/flink-connector-gcp/issues/1732) (2026-11-08)
+- Issues: [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1582](https://github.com/flink-gcp/flink-connector-gcp/issues/1582), [#1214](https://github.com/flink-gcp/flink-connector-gcp/issues/1214), [#1216](https://github.com/flink-gcp/flink-connector-gcp/issues/1216), [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548), [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719), [#1732](https://github.com/flink-gcp/flink-connector-gcp/issues/1732)
+- Modules: base, bigquery, spanner, bigtable, firestore (no catalog yet; [#2113](https://github.com/flink-gcp/flink-connector-gcp/issues/2113) builds the one [#1732](https://github.com/flink-gcp/flink-connector-gcp/issues/1732) designed); each later connector catalog adds an adoption section here
 - Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog), [Spanner catalog](../content/docs/connectors/table/spanner.md#catalog), [Bigtable catalog](../content/docs/connectors/table/bigtable.md#catalog), [connectors without a catalog](../content/docs/connectors/table/_index.md)
 
 ## Context
@@ -168,6 +168,7 @@ The type-mapping table gains no column: the catalog maps a family's value type, 
 ## Firestore in Native and Datastore mode
 
 Neither `firestore` nor `datastore` has a catalog (owner's decision, 2026-10-11, on [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548)).
+A catalog that derives typed columns from the service stays declined; one whose tables carry each document whole was settled later, for Flink 2.x only, and is recorded under [A whole-document catalog on Flink 2.x](#a-whole-document-catalog-on-flink-2x).
 A database in Native mode stores no schema, and its API has no counterpart to Datastore's property metadata.
 A database in Datastore mode answers the metadata kinds `__namespace__`, `__kind__` and `__property__`, and [#1548](https://github.com/flink-gcp/flink-connector-gcp/issues/1548) proposed deriving each kind's schema from `__property__`, which lists a kind's properties with the representations of their values.
 That derivation cannot meet this record's schema rule, because `__property__` neither types every property it lists nor lists every property.
@@ -196,8 +197,49 @@ Every result carried a cursor, every batch an end cursor, and `__property__` acc
 
 Two alternatives were declined with it:
 
-- **Sampling entities to refine the types**: reading the first entities of a kind would find timestamps, blobs, arrays and embedded entities, but not a property the sample lacks, so the write through a derived table stays destructive, and the schema would change with the data the sample reads. A projection query is a sample by another route: it marks a projected timestamp or blob (ADR-0177), but reads only the entities that hold an indexed value of the one property it projects. A sampling catalog would be designed for both modes at once, since sampling is one of the two forms a Native-mode catalog could take, the other being a fixed schema of the document id and the whole document in one column.
+- **Sampling entities to refine the types**: reading the first entities of a kind would find timestamps, blobs, arrays and embedded entities, but not a property the sample lacks, so the write through a derived table stays destructive, and the schema would change with the data the sample reads. A projection query is a sample by another route: it marks a projected timestamp or blob (ADR-0177), but reads only the entities that hold an indexed value of the one property it projects. A sampling catalog would be designed for both modes at once, since sampling is one of the two forms a Native-mode catalog could take, the other being a fixed schema of the document id and the whole document in one column. [#1732](https://github.com/flink-gcp/flink-connector-gcp/issues/1732) weighed both and chose the second (below).
 - **Statistics** (`__Stat_PropertyType_PropertyName_Kind__`): Google's [statistics](https://cloud.google.com/datastore/docs/concepts/stats) page records an array under its element type and lists no embedded-entity type, and says Datastore drops some statistics for a database with many properties. A kind written since statistics were last computed has none either: a database created within a gated run had none (ADR-0177), and one created for [#1719](https://github.com/flink-gcp/flink-connector-gcp/issues/1719) had its first about six hours after it was created and none newer within the following day (ADR-0177, revised 2026-10-12).
 
 The reopen condition is a service API that reports each property's value type, arrays, embedded entities and unindexed properties included.
 The merge write that [#1729](https://github.com/flink-gcp/flink-connector-gcp/issues/1729) made the default leaves undeclared properties untouched; it removes the write hazard under that default, not the missing types, so the reopen condition stands.
+It is the condition for a catalog with typed columns; the whole-document catalog below does not depend on it.
+
+### A whole-document catalog on Flink 2.x
+
+[#1732](https://github.com/flink-gcp/flink-connector-gcp/issues/1732) took up the sampling form for both modes and settled a different shape (owner's decision, 2026-11-08).
+[#2113](https://github.com/flink-gcp/flink-connector-gcp/issues/2113) builds it once the floor of the supported Flink range is 2.3, which the move to Flink 2.4 makes it.
+
+Sampling stays declined.
+A sample of N documents per table drops every field none of them holds, so it cannot meet this record's schema rule; the merge default makes a write through such a table safe, not its schema complete.
+A field whose sampled values disagree in type has no column type either.
+Alibaba's MongoDB catalog widens such a field up a type hierarchy whose top is `STRING`, which would need a read path that renders any value as a string, and ADR-0179 keeps the `firestore` scan's read mapping equal to its write mapping, with no such rendering.
+Without it, a field holding an integer in one document and a string in another, or nothing but nulls or empty arrays, would fail `getTable` for its whole table.
+A sample is also unstable: Flink calls `getTable` several times per statement without a cache, so a sampled schema needs a per-table cache or a deterministic read, and a cached one goes stale in a long-lived SQL Gateway session.
+
+The catalog fixes each table's schema instead and carries the document or entity whole in one `VARIANT` column.
+
+- **Native mode**: `id STRING NOT NULL` as `PRIMARY KEY NOT ENFORCED`, and `document VARIANT`.
+- **Datastore mode**: the entity key as columns, and `entity VARIANT`, with no primary key. The catalog cannot know whether a kind's keys are names or ids, and a kind may mix both and carry ancestors, which the keyed scan of ADR-0184 fails on.
+
+This meets the schema rule with no exception: no field is dropped, the schema does not depend on the data, and `getTable` reads no document or entity.
+Inside the value, scalars, arrays and maps take their matching `VARIANT` forms.
+A geographical point, a reference and a Datastore key have none, so each becomes a one-key object whose key is a reserved name of the form `__…__`, such as `__geo_point__`.
+Firestore refuses a field with such a name in every document, and Datastore reserves property names matching `__.*__`, so a tag cannot collide with a user's field.
+A reference is written as its full resource name, keeping the database that `DocumentReference.getPath()` drops (ADR-0179).
+The scans and the lookups read a `VARIANT` column, and the sinks refuse one when the statement is planned.
+A `VARIANT` can hold values the sinks do not write, such as a date, or a decimal, which only an Enterprise-edition Firestore database stores, as a BSON value the `firestore` sink refuses (ADR-0171), so writing one needs an encoding that round-trips, which is left until a user asks for it.
+
+The layout follows what each mode's API can list.
+
+- **Native mode**: one catalog names one database and lists it as its only Flink database, as the Bigtable catalog does with its instance. The client lists only the root collections or the children of one document, and no API lists a collection group at every depth, so the catalog lists root collections, resolves a quoted subcollection path that it does not list, and resolves no collection group, whose table could declare no key (ADR-0179).
+- **Datastore mode**: namespaces are the Flink databases, the default namespace under a reserved name, and `__kind__` lists the tables, without the statistics kinds.
+
+The catalog is for Flink 2.x only, and needs 2.3 within it, because the SQL around `VARIANT` is not usable before 2.3.
+Measured on 2026-11-08 against the 2.2.1 and 2.3.0 planners with `PARSE_JSON` values rather than a table column (`SELECT 1` as the positive control; the queries and their output are on [#1732](https://github.com/flink-gcp/flink-connector-gcp/issues/1732)), both versions produce and print a `VARIANT`.
+2.2.1 refuses field access (`v['a']`) and `JSON_STRING(v)`, so a whole-document column could only be printed there.
+2.3.0 accepts `v['a']` and `v['n']['b'][1]`, and `JSON_VALUE(JSON_STRING(v), '$.a' RETURNING INT)` returns a typed value, while `CAST` from a `VARIANT` to a scalar or to `STRING`, and a comparison with a literal, are refused on both.
+Flink 1.20 has no `VARIANT` type at all.
+The catalog and the `VARIANT` conversion therefore live in the `java-flink2` source roots (ADR-0054), and the `java-flink1` root carries a factory of the same name that refuses `CREATE CATALOG` with a message naming the Flink 2.x requirement, so the shared service file stays valid on both lines.
+The Bigtable async SQL functions are the precedent for a feature absent from the Flink 1.20 artifacts.
+
+Whether Flink 2.4 adds a `CAST` from `VARIANT` changes only the documented query form, and is measured when [#2113](https://github.com/flink-gcp/flink-connector-gcp/issues/2113) starts, together with listing on the emulators and the service and the values that have no `VARIANT` form, such as vector values.
