@@ -95,6 +95,7 @@ public class BigQuerySourceBuilder<T> {
     @Nullable private String query;
     @Nullable private String queryLocation;
     @Nullable private String queryResultDataset;
+    @Nullable private String queryResultKmsKeyName;
     @Nullable private Duration reuseQueryResultWithin;
     private boolean materializeViews;
     private String parentProject;
@@ -235,6 +236,27 @@ public class BigQuerySourceBuilder<T> {
     public BigQuerySourceBuilder<T> queryResultDataset(String queryResultDataset) {
         this.queryResultDataset =
                 ResourceNames.checkComponent(queryResultDataset, "queryResultDataset");
+        return this;
+    }
+
+    /**
+     * Encrypts the query job's result with the given Cloud KMS key, as the key's resource name
+     * {@code projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>}.
+     *
+     * <p>Optional. The key applies to the result in {@link #queryResultDataset(String)} and to one
+     * in BigQuery's anonymous dataset alike. It must be in the query's location, and BigQuery's
+     * encryption service account needs the {@code roles/cloudkms.cryptoKeyEncrypterDecrypter} role
+     * on it; both are BigQuery's answer, given when the query job is submitted. BigQuery keys its
+     * result cache by the key, so a cached result is reused only by a query stating the same one.
+     *
+     * @param queryResultKmsKeyName the key's resource name, not blank
+     * @return this builder
+     */
+    public BigQuerySourceBuilder<T> queryResultKmsKeyName(String queryResultKmsKeyName) {
+        Preconditions.checkArgument(
+                !StringUtils.isNullOrWhitespaceOnly(queryResultKmsKeyName),
+                "queryResultKmsKeyName must not be blank");
+        this.queryResultKmsKeyName = queryResultKmsKeyName;
         return this;
     }
 
@@ -612,6 +634,10 @@ public class BigQuerySourceBuilder<T> {
                 "queryResultDataset(...) applies to query(...) or materializeViews() only; reading"
                         + " a table materializes nothing.");
         Preconditions.checkState(
+                runsAQuery || queryResultKmsKeyName == null,
+                "queryResultKmsKeyName(...) applies to query(...) or materializeViews() only;"
+                        + " reading a table materializes nothing.");
+        Preconditions.checkState(
                 runsAQuery || reuseQueryResultWithin == null,
                 "reuseQueryResultWithin(...) applies to query(...) or materializeViews() only; a"
                         + " table source runs no query job to reuse.");
@@ -661,6 +687,7 @@ public class BigQuerySourceBuilder<T> {
                         .query(query)
                         .queryLocation(queryLocation)
                         .queryResultDataset(queryResultDataset)
+                        .queryResultKmsKeyName(queryResultKmsKeyName)
                         .reuseQueryResultWithin(reuseQueryResultWithin)
                         .materializeViews(materializeViews)
                         .parentProject(parentProject == null ? table.getProject() : parentProject)

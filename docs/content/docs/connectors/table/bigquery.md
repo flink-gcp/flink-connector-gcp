@@ -860,6 +860,7 @@ or SDK already uses. The full list of defaults is in the
 | `scan.materialize-views` | Boolean | `materializeViews()`; checks a configured table name and materializes it when it is a logical or materialized view. Cannot be combined with `scan.query` |
 | `scan.query-location` | String | `queryLocation(...)`; query or view materialization only |
 | `scan.query-result-dataset` | String | `queryResultDataset(...)`; query or view materialization only. Absent uses BigQuery's anonymous dataset |
+| `scan.query-result-kms-key-name` | String | `queryResultKmsKeyName(...)`; query or view materialization only. The Cloud KMS key that encrypts the result, in the result dataset or the anonymous one |
 | `scan.reuse-query-result-within` | Duration | `reuseQueryResultWithin(...)`; requires `scan.query-location` |
 | `scan.row-restriction` | String | `rowRestriction(...)`; a BigQuery filter expression without the `WHERE` keyword. Combined with a translated SQL predicate using parenthesized `AND` |
 | `scan.snapshot-time` | String | `snapshotTime(...)`; an ISO-8601 instant for a direct table read, incompatible with query or view materialization |
@@ -903,6 +904,16 @@ Setting any of them beside an explicit `create-never` is rejected.
 `sink.table-create.description` and `sink.table-create.labels` set the created table's description
 and labels; an existing table keeps its own.
 A label BigQuery rejects fails the job when the table is created, not when the DDL is planned.
+
+`sink.table-create.kms-key-name` encrypts a created table with a customer-managed Cloud KMS key.
+An existing table keeps its own encryption, except under `write-truncate` in the two cases the
+DataStream page lists.
+`file-loads` states the destination's own key on the jobs that fill its temporary tables and on
+every job that truncates a table, so `write-truncate` does not reset a destination with a
+customer-managed key to the default encryption.
+The DataStream page's
+[Customer-managed encryption keys]({{< relref "docs/connectors/datastream/bigquery" >}}#customer-managed-encryption-keys)
+covers which key applies where, including the staged Cloud Storage objects.
 Column `COMMENT`s in the DDL do not become BigQuery column descriptions.
 
 A column BigQuery could not use is rejected at plan time rather than at the first record: one the
@@ -921,6 +932,7 @@ refuse a table BigQuery would have created.
 | `sink.table-create.clustered-fields` | List&lt;String&gt; | `TableCreateOptions.clusteredFields(...)`, in precedence order; BigQuery takes at most four top-level columns |
 | `sink.table-create.description` | String | `TableCreateOptions.description(...)` |
 | `sink.table-create.labels` | Map | `TableCreateOptions.labels(...)`, written `'key1:value1,key2:value2'`. The key `flink_gcp_cdc` is reserved for CDC table provisioning |
+| `sink.table-create.kms-key-name` | String | `TableCreateOptions.kmsKeyName(...)`, the Cloud KMS key's resource name. Encrypts a created table. Under `file-loads`, the jobs that fill temporary tables state the destination's own key, which is this one only for a table the sink created |
 
 ### Sink tuning — `storage-api-at-least-once`
 

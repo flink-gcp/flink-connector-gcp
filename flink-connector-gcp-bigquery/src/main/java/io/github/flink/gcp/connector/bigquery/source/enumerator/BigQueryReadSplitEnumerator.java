@@ -237,6 +237,7 @@ public class BigQueryReadSplitEnumerator
                             config.getQueryLocation(),
                             config.getQueryResultDataset());
         }
+        spec = spec.withResultKmsKeyName(config.getQueryResultKmsKeyName());
         Duration reuseWindow = config.getReuseQueryResultWithin();
         if (reuseWindow != null) {
             QueryJobIdentity identity =

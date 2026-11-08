@@ -123,6 +123,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SCAN_MATERIALIZE_VIEWS,
                         BigQueryConnectorOptions.SCAN_QUERY_LOCATION,
                         BigQueryConnectorOptions.SCAN_QUERY_RESULT_DATASET,
+                        BigQueryConnectorOptions.SCAN_QUERY_RESULT_KMS_KEY_NAME,
                         BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN,
                         BigQueryConnectorOptions.SCAN_ROW_RESTRICTION,
                         BigQueryConnectorOptions.SCAN_SNAPSHOT_TIME,
@@ -148,6 +149,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS,
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_DESCRIPTION,
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS,
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_KMS_KEY_NAME,
                         BigQueryConnectorOptions.SINK_DERIVE_REQUIRED_COLUMNS,
                         BigQueryConnectorOptions.SINK_JSON_FIELD_PATHS,
                         BigQueryConnectorOptions.SINK_GEOGRAPHY_FIELD_PATHS,
@@ -432,6 +434,9 @@ public class BigQueryDynamicTableFactory
                                 .orElse(null))
                 .queryResultDataset(
                         config.getOptional(BigQueryConnectorOptions.SCAN_QUERY_RESULT_DATASET)
+                                .orElse(null))
+                .queryResultKmsKeyName(
+                        config.getOptional(BigQueryConnectorOptions.SCAN_QUERY_RESULT_KMS_KEY_NAME)
                                 .orElse(null))
                 .reuseQueryResultWithin(
                         config.getOptional(BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN)

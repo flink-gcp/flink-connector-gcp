@@ -25,6 +25,7 @@ import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Clustering;
+import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldList;
 import com.google.cloud.bigquery.LegacySQLTypeName;
@@ -196,13 +197,18 @@ public class BigQueryTableAdmin implements TableAdmin {
 
     @Override
     public long prepareTemporaryTable(
-            TableDestination table, Schema schema, TableLayout layout, Duration expiration)
+            TableDestination table,
+            Schema schema,
+            TableLayout layout,
+            @Nullable String kmsKeyName,
+            Duration expiration)
             throws IOException {
         BigQuery bigQuery = client(table);
         long expirationTime = System.currentTimeMillis() + expiration.toMillis();
         try {
             Table created =
-                    bigQuery.create(temporaryTableInfo(table, schema, layout, expirationTime));
+                    bigQuery.create(
+                            temporaryTableInfo(table, schema, layout, kmsKeyName, expirationTime));
             LOG.info(
                     "Created temporary BigQuery table {} with layout {}, expiring at {}",
                     table,
@@ -239,7 +245,11 @@ public class BigQueryTableAdmin implements TableAdmin {
     /** The table {@link #prepareTemporaryTable} creates. */
     @VisibleForTesting
     static TableInfo temporaryTableInfo(
-            TableDestination table, Schema schema, TableLayout layout, long expirationTime) {
+            TableDestination table,
+            Schema schema,
+            TableLayout layout,
+            @Nullable String kmsKeyName,
+            long expirationTime) {
         StandardTableDefinition.Builder definition =
                 StandardTableDefinition.newBuilder().setSchema(schema);
         if (layout.getTemporaryTimePartitioning() != null) {
@@ -251,9 +261,13 @@ public class BigQueryTableAdmin implements TableAdmin {
         if (layout.getClustering() != null) {
             definition.setClustering(layout.getClustering());
         }
-        return TableInfo.newBuilder(toTableId(table), definition.build())
-                .setExpirationTime(expirationTime)
-                .build();
+        TableInfo.Builder info =
+                TableInfo.newBuilder(toTableId(table), definition.build())
+                        .setExpirationTime(expirationTime);
+        if (kmsKeyName != null) {
+            info.setEncryptionConfiguration(encryptionConfiguration(kmsKeyName));
+        }
+        return info.build();
     }
 
     private static long creationTimeOf(TableDestination table, @Nullable Table resource)
@@ -669,7 +683,21 @@ public class BigQueryTableAdmin implements TableAdmin {
         if (!options.getLabels().isEmpty()) {
             table.setLabels(options.getLabels());
         }
+        if (options.getKmsKeyName() != null) {
+            table.setEncryptionConfiguration(encryptionConfiguration(options.getKmsKeyName()));
+        }
         return table.build();
+    }
+
+    /**
+     * The encryption configuration naming {@code kmsKeyName}, for a table, a load or copy job, or a
+     * query's result.
+     *
+     * @param kmsKeyName the Cloud KMS key's resource name
+     * @return the configuration
+     */
+    public static EncryptionConfiguration encryptionConfiguration(String kmsKeyName) {
+        return EncryptionConfiguration.newBuilder().setKmsKeyName(kmsKeyName).build();
     }
 
     @VisibleForTesting

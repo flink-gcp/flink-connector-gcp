@@ -27,6 +27,7 @@ import com.google.cloud.bigquery.ConnectionSettings;
 import com.google.cloud.bigquery.Dataset;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
+import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.InsertAllRequest;
 import com.google.cloud.bigquery.InsertAllResponse;
 import com.google.cloud.bigquery.Job;
@@ -278,6 +279,7 @@ public final class StubBigQuery implements BigQuery {
         @Nullable private final TableDefinition definition;
         @Nullable private final List<String> primaryKeyColumns;
         @Nullable private String description;
+        @Nullable private String kmsKeyName;
 
         private TableAnswer(
                 boolean present,
@@ -345,6 +347,16 @@ public final class StubBigQuery implements BigQuery {
                 @Nullable List<String> primaryKeyColumns) {
             TableAnswer answer = existing(definition, null, null, primaryKeyColumns);
             answer.description = description;
+            return answer;
+        }
+
+        /**
+         * Answers with a live table carrying a definition and encrypted with a Cloud KMS key — the
+         * shape {@code FILE_LOADS} reads the destination's key from.
+         */
+        public static TableAnswer encrypted(TableDefinition definition, String kmsKeyName) {
+            TableAnswer answer = existing(definition, null, null, null);
+            answer.kmsKeyName = kmsKeyName;
             return answer;
         }
 
@@ -641,9 +653,20 @@ public final class StubBigQuery implements BigQuery {
                             answer.etag,
                             answer.labels,
                             answer.primaryKeyColumns);
-            return answer.description == null
-                    ? table
-                    : table.toBuilder().setDescription(answer.description).build();
+            if (answer.description != null) {
+                table = table.toBuilder().setDescription(answer.description).build();
+            }
+            if (answer.kmsKeyName != null) {
+                // Table.Builder does not override this setter, so it returns the TableInfo
+                // builder; set it on the Table builder and build that.
+                Table.Builder keyed = table.toBuilder();
+                keyed.setEncryptionConfiguration(
+                        EncryptionConfiguration.newBuilder()
+                                .setKmsKeyName(answer.kmsKeyName)
+                                .build());
+                table = keyed.build();
+            }
+            return table;
         }
         return answer.etag == null
                 ? TestJobs.table(this, tableId)

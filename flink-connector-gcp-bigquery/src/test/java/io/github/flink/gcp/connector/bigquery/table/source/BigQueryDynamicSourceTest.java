@@ -241,6 +241,7 @@ class BigQueryDynamicSourceTest {
         varied.put("materializeViews", args -> args.materializeViews = true);
         varied.put("queryLocation", args -> args.queryLocation = "US");
         varied.put("queryResultDataset", args -> args.queryResultDataset = "scratch");
+        varied.put("queryResultKmsKeyName", args -> args.queryResultKmsKeyName = "k");
         varied.put(
                 "reuseQueryResultWithin",
                 args -> args.reuseQueryResultWithin = Duration.ofMinutes(10));
@@ -282,6 +283,7 @@ class BigQueryDynamicSourceTest {
         boolean materializeViews;
         @Nullable String queryLocation;
         @Nullable String queryResultDataset;
+        @Nullable String queryResultKmsKeyName;
         @Nullable Duration reuseQueryResultWithin;
         @Nullable String rowRestriction;
         @Nullable Instant snapshotTime;
@@ -305,6 +307,7 @@ class BigQueryDynamicSourceTest {
                     .materializeViews(materializeViews)
                     .queryLocation(queryLocation)
                     .queryResultDataset(queryResultDataset)
+                    .queryResultKmsKeyName(queryResultKmsKeyName)
                     .reuseQueryResultWithin(reuseQueryResultWithin)
                     .rowRestriction(rowRestriction)
                     .snapshotTime(snapshotTime)

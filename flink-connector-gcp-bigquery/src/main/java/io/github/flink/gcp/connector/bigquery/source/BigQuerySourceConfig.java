@@ -48,6 +48,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     @Nullable private final String query;
     @Nullable private final String queryLocation;
     @Nullable private final String queryResultDataset;
+    @Nullable private final String queryResultKmsKeyName;
     @Nullable private final Duration reuseQueryResultWithin;
     private final boolean materializeViews;
     @Nullable private final QueryRunner queryRunner;
@@ -68,6 +69,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         this.query = builder.query;
         this.queryLocation = builder.queryLocation;
         this.queryResultDataset = builder.queryResultDataset;
+        this.queryResultKmsKeyName = builder.queryResultKmsKeyName;
         this.reuseQueryResultWithin = builder.reuseQueryResultWithin;
         this.materializeViews = builder.materializeViews;
         this.queryRunner = builder.queryRunner;
@@ -125,6 +127,15 @@ public final class BigQuerySourceConfig<T> implements Serializable {
     @Nullable
     public String getQueryResultDataset() {
         return queryResultDataset;
+    }
+
+    /**
+     * Returns the Cloud KMS key that encrypts the query's result, or {@code null} for the default
+     * encryption.
+     */
+    @Nullable
+    public String getQueryResultKmsKeyName() {
+        return queryResultKmsKeyName;
     }
 
     /**
@@ -249,6 +260,7 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         @Nullable private String query;
         @Nullable private String queryLocation;
         @Nullable private String queryResultDataset;
+        @Nullable private String queryResultKmsKeyName;
         @Nullable private Duration reuseQueryResultWithin;
         private boolean materializeViews;
         @Nullable private QueryRunner queryRunner;
@@ -287,6 +299,12 @@ public final class BigQuerySourceConfig<T> implements Serializable {
         /** Sets the dataset the query's result is written to, or {@code null} for the anonymous. */
         Builder<T> queryResultDataset(@Nullable String queryResultDataset) {
             this.queryResultDataset = queryResultDataset;
+            return this;
+        }
+
+        /** Sets the key that encrypts the query's result, or {@code null} for the default. */
+        Builder<T> queryResultKmsKeyName(@Nullable String queryResultKmsKeyName) {
+            this.queryResultKmsKeyName = queryResultKmsKeyName;
             return this;
         }
 

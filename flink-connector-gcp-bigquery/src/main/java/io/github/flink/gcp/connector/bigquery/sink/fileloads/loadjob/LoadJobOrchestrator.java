@@ -22,6 +22,7 @@ import org.apache.flink.metrics.Counter;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.Schema;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -225,7 +226,8 @@ public final class LoadJobOrchestrator {
                             submitLoad(
                                     worker.runner,
                                     load,
-                                    Preconditions.checkNotNull(destination.reconciledSchema)),
+                                    Preconditions.checkNotNull(destination.reconciledSchema),
+                                    destination.kmsKeyName),
                     load -> load.jobId);
 
             int intermediateLevels = 0;
@@ -247,7 +249,8 @@ public final class LoadJobOrchestrator {
                                         ? destination.copy.intermediateLevels.get(currentLevel)
                                         : List.of(),
                         limits.maxSubmissionsPerWave,
-                        (destination, worker, copy) -> submitCopy(worker.runner, copy),
+                        (destination, worker, copy) ->
+                                submitCopy(worker.runner, copy, destination.kmsKeyName),
                         copy -> copy.jobId);
             }
             runJobStage(
@@ -257,7 +260,8 @@ public final class LoadJobOrchestrator {
                                     ? List.of()
                                     : List.of(destination.copy.finalCopy),
                     limits.maxSubmissionsPerWave,
-                    (destination, worker, copy) -> submitCopy(worker.runner, copy),
+                    (destination, worker, copy) ->
+                            submitCopy(worker.runner, copy, destination.kmsKeyName),
                     copy -> copy.jobId);
             runJobStage(
                     plan.destinations,
@@ -472,6 +476,7 @@ public final class LoadJobOrchestrator {
                 new FileLoadsSchemaReconciler(config, options, tableAdmin, userCallbackLock)
                         .reconcile(destination.destination);
         destination.reconciledSchema = reconciled.schema;
+        destination.kmsKeyName = reconciled.kmsKeyName;
         destination.layOutTempTables(
                 reconciled.layout,
                 new DestinationCommitPlan.TempTables() {
@@ -488,30 +493,68 @@ public final class LoadJobOrchestrator {
                                 table,
                                 reconciled.schema,
                                 reconciled.layout,
+                                reconciled.kmsKeyName,
                                 options.getTempTableExpiration());
                     }
                 });
     }
 
-    private void submitLoad(LoadJobRunner runner, PlannedLoad load, Schema schema)
+    private void submitLoad(
+            LoadJobRunner runner,
+            PlannedLoad load,
+            Schema schema,
+            @Nullable String destinationKmsKeyName)
             throws IOException {
         // Reconciliation completed before this phase; count only when submission is attempted.
         loadJobsSubmitted.inc();
         runner.submitLoad(
                 load.jobId,
                 new LoadJobSpec(
-                        load.jobDestination,
-                        load.uris,
-                        schema,
-                        load.createDisposition,
-                        load.writeDisposition,
-                        load.schemaUpdateOptions,
-                        load.format,
-                        load.tempTableLayout));
+                                load.jobDestination,
+                                load.uris,
+                                schema,
+                                load.createDisposition,
+                                load.writeDisposition,
+                                load.schemaUpdateOptions,
+                                load.format,
+                                load.tempTableLayout)
+                        .withKmsKeyName(
+                                jobKmsKeyName(load.writeDisposition, destinationKmsKeyName)));
     }
 
-    private static void submitCopy(LoadJobRunner runner, PlannedCopy copy) throws IOException {
-        runner.submitCopy(copy.jobId, copy.spec);
+    private static void submitCopy(
+            LoadJobRunner runner, PlannedCopy copy, @Nullable String destinationKmsKeyName)
+            throws IOException {
+        runner.submitCopy(
+                copy.jobId,
+                copy.spec.withKmsKeyName(
+                        jobKmsKeyName(copy.spec.getWriteDisposition(), destinationKmsKeyName)));
+    }
+
+    /**
+     * The key a job on a destination's behalf states: the destination's own for a job that replaces
+     * its table, and none otherwise.
+     *
+     * <p>A {@code WRITE_TRUNCATE} job without a key replaces its table's encryption with the
+     * default, so stating the destination's key keeps the destination's encryption under {@code
+     * WRITE_TRUNCATE} and gives every temporary table, which only such jobs write, the
+     * destination's key, except one filled by a job an earlier attempt completed, which is
+     * re-attached to rather than run again. A job that appends, writes into an empty table or
+     * replaces only data keeps the table's encryption without a key, and fails when it states one
+     * the table does not have (all measured). So a commit keeps an existing destination's key,
+     * apart from the {@code WRITE_TRUNCATE} exceptions ADR-0203 records.
+     *
+     * @param writeDisposition the job's write disposition
+     * @param destinationKmsKeyName the key that encrypts the destination, or {@code null}
+     * @return the key the job states, or {@code null}
+     */
+    @VisibleForTesting
+    @Nullable
+    static String jobKmsKeyName(
+            JobInfo.WriteDisposition writeDisposition, @Nullable String destinationKmsKeyName) {
+        return writeDisposition == JobInfo.WriteDisposition.WRITE_TRUNCATE
+                ? destinationKmsKeyName
+                : null;
     }
 
     private static void submitQuery(LoadJobRunner runner, PlannedQuery query) throws IOException {

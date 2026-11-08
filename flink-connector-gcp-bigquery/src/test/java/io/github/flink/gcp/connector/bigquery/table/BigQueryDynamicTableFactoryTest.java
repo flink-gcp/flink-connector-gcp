@@ -1453,6 +1453,39 @@ class BigQueryDynamicTableFactoryTest {
     }
 
     @Test
+    void theTableCreateKeyReachesTheBuiltSink() {
+        Map<String, String> options = minimalOptions();
+        options.put(
+                "sink.table-create.kms-key-name", "projects/p/locations/l/keyRings/r/cryptoKeys/k");
+        BigQueryDefaultStreamSink<?> built = (BigQueryDefaultStreamSink<?>) built(options);
+
+        assertThat(
+                        built.getConfig()
+                                .getTableCreateOptionsProvider()
+                                .optionsFor(DESTINATION)
+                                .getKmsKeyName())
+                .isEqualTo("projects/p/locations/l/keyRings/r/cryptoKeys/k");
+    }
+
+    @Test
+    void theQueryResultKeyReachesTheSourceAndABlankOneNamesItsOptionKey() {
+        Map<String, String> options = minimalOptions();
+        options.remove("dataset");
+        options.remove("table");
+        options.put("scan.query", "SELECT id FROM `p.d.t`");
+        options.put(
+                "scan.query-result-kms-key-name", "projects/p/locations/l/keyRings/r/cryptoKeys/k");
+
+        assertThat(sourceConfig(options).getQueryResultKmsKeyName())
+                .isEqualTo("projects/p/locations/l/keyRings/r/cryptoKeys/k");
+
+        options.put("scan.query-result-kms-key-name", " ");
+        assertThatThrownBy(() -> sourceConfig(options))
+                .hasStackTraceContaining("Option 'scan.query-result-kms-key-name' is invalid")
+                .hasStackTraceContaining("queryResultKmsKeyName must not be blank");
+    }
+
+    @Test
     void aTableCreateColumnOutsideTheDdlIsRejected() {
         // The check only this layer can make: the emulator would accept the create request and
         // real BigQuery would refuse it, so a plan-time failure is what keeps the two apart.

@@ -27,6 +27,8 @@ import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
@@ -103,11 +105,16 @@ public interface TableAdmin {
      * TableLayout#getTemporaryTimePartitioning()}, and a table expiration {@code expiration} from
      * now. A load cannot set a table's expiration, and a partitioned table does not take its
      * dataset's default table expiration when the dataset also sets a default partition expiration,
-     * so the temporary table is created ahead of the job that fills it (ADR-0183).
+     * so the temporary table is created ahead of the job that fills it (ADR-0183). A created table
+     * is encrypted with {@code kmsKeyName} when one is given, and the jobs that fill it state the
+     * same key. A job an earlier attempt already completed is re-attached to rather than run again,
+     * so a table it filled keeps the encryption it had then.
      *
      * @param table the temporary table
      * @param schema its schema
      * @param layout its partitioning and clustering
+     * @param kmsKeyName the Cloud KMS key that encrypts the table, or {@code null} for its
+     *     dataset's default
      * @param expiration how long from now the table lives, unless a later call extends it
      * @return the table's creation time in epoch milliseconds, which changes only when the table is
      *     created anew, for example after it expired
@@ -116,7 +123,11 @@ public interface TableAdmin {
      * @throws IOException if the table can be neither created nor extended
      */
     long prepareTemporaryTable(
-            TableDestination table, Schema schema, TableLayout layout, Duration expiration)
+            TableDestination table,
+            Schema schema,
+            TableLayout layout,
+            @Nullable String kmsKeyName,
+            Duration expiration)
             throws IOException;
 
     /**

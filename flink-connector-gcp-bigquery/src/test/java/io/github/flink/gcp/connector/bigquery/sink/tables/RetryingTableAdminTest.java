@@ -90,6 +90,7 @@ class RetryingTableAdminTest {
         private final Deque<IOException> preparationFailures = new ArrayDeque<>();
         private final Deque<IOException> primaryKeyFailures = new ArrayDeque<>();
         private int preparations;
+        private String preparedKmsKeyName;
         private int primaryKeyReads;
         private int getSchemaCalls;
         private int updateSchemaCalls;
@@ -127,9 +128,11 @@ class RetryingTableAdminTest {
                 TableDestination table,
                 com.google.cloud.bigquery.Schema schema,
                 TableLayout layout,
+                String kmsKeyName,
                 Duration expiration)
                 throws IOException {
             preparations++;
+            preparedKmsKeyName = kmsKeyName;
             IOException failure = preparationFailures.poll();
             if (failure != null) {
                 throw failure;
@@ -210,10 +213,12 @@ class RetryingTableAdminTest {
                                 DESTINATION,
                                 com.google.cloud.bigquery.Schema.of(),
                                 TableLayout.NONE,
+                                "k",
                                 Duration.ofHours(1));
 
         assertThat(creationTime).isEqualTo(42L);
         assertThat(delegate.preparations).isEqualTo(2);
+        assertThat(delegate.preparedKmsKeyName).isEqualTo("k");
     }
 
     @Test

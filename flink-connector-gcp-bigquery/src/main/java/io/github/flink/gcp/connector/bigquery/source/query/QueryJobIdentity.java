@@ -155,6 +155,11 @@ public final class QueryJobIdentity {
      * concatenate alike whatever characters a query carries, and a {@code null} is encoded
      * distinctly from every string including the empty one. Sixteen hex characters follows {@code
      * CommitPlanner}'s choice for its deterministic load-job ids.
+     *
+     * <p>The result's key is appended only when one is set, so a specification without one keeps
+     * the digest it had before the key was digested and a job submitted by an earlier version of
+     * the connector is still reused. The trailing field stays unambiguous: every field before it is
+     * length-prefixed.
      */
     private static String digest(String jobName, QuerySpec spec, long windowMillis) {
         String material =
@@ -163,7 +168,10 @@ public final class QueryJobIdentity {
                         + encode(spec.getProject())
                         + encode(spec.getLocation())
                         + encode(spec.getResultDataset())
-                        + encode(Long.toString(windowMillis));
+                        + encode(Long.toString(windowMillis))
+                        + (spec.getResultKmsKeyName() == null
+                                ? ""
+                                : encode(spec.getResultKmsKeyName()));
         return sha256Hex(material).substring(0, 16);
     }
 

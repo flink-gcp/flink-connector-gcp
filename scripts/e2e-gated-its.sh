@@ -275,7 +275,8 @@ list_gates() {
 
 # The variables each gate's classes read: BQ_IT_PROJECT/BQ_IT_DATASET gate every BigQuery
 # class, BQ_IT_GCS_BUCKET additionally gates the FILE_LOADS ones, and BQ_IT_ICEBERG_CONNECTION
-# and BQ_IT_ICEBERG_BUCKET the Iceberg managed table one (#1994). Every other gate reads
+# and BQ_IT_ICEBERG_BUCKET the Iceberg managed table one (#1994), and BQ_IT_KMS_KEY the
+# customer-managed key ones (#1995). Every other gate reads
 # only itself. None of Bigtable, Spanner and Firestore needs a companion variable: unlike the
 # BigQuery dataset and the GCS bucket, nothing persistent is provisioned for them — each suite
 # creates and deletes an instance or a database of its own — so there is no resource name to
@@ -283,7 +284,7 @@ list_gates() {
 # wrapper exports the observed instance id only after startup.
 gate_variables() {
     case "$1" in
-        BQ_IT_PROJECT) echo BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET BQ_IT_ICEBERG_CONNECTION BQ_IT_ICEBERG_BUCKET ;;
+        BQ_IT_PROJECT) echo BQ_IT_PROJECT BQ_IT_DATASET BQ_IT_GCS_BUCKET BQ_IT_ICEBERG_CONNECTION BQ_IT_ICEBERG_BUCKET BQ_IT_KMS_KEY ;;
         *) echo "$1" ;;
     esac
 }

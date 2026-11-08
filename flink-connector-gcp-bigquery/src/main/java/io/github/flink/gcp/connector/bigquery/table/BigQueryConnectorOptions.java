@@ -204,6 +204,19 @@ public final class BigQueryConnectorOptions {
                             "The dataset receiving a source query's temporary result table.");
 
     /**
+     * The Cloud KMS key that encrypts a source query's result table, as its resource name
+     * projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY.
+     */
+    public static final ConfigOption<String> SCAN_QUERY_RESULT_KMS_KEY_NAME =
+            ConfigOptions.key("scan.query-result-kms-key-name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Cloud KMS key that encrypts a source query's result table, as its"
+                                    + " resource name"
+                                    + " projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY.");
+
+    /**
      * How long a re-planned source may reattach to the same query job. Requires
      * scan.query-location.
      */
@@ -481,6 +494,21 @@ public final class BigQueryConnectorOptions {
                     .stringType()
                     .noDefaultValue()
                     .withDescription("The description of a created table.");
+
+    /**
+     * The Cloud KMS key that encrypts a created table, as its resource name
+     * projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY. FILE_LOADS states the
+     * destination's own key on the jobs that fill its temporary tables.
+     */
+    public static final ConfigOption<String> SINK_TABLE_CREATE_KMS_KEY_NAME =
+            ConfigOptions.key("sink.table-create.kms-key-name")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The Cloud KMS key that encrypts a created table, as its resource name"
+                                    + " projects/PROJECT/locations/LOCATION/keyRings/RING/cryptoKeys/KEY."
+                                    + " FILE_LOADS states the destination's own key on the jobs"
+                                    + " that fill its temporary tables.");
 
     /**
      * The labels of a created table, as a map from label key to value. The key 'flink_gcp_cdc' is

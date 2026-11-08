@@ -239,6 +239,46 @@ class BigQueryReadSplitEnumeratorTest {
     }
 
     @Test
+    void theResultKeyRidesOnTheSpecAndInTheReuseIdentity() throws Exception {
+        // The key must be on the spec before the identity is derived from it, or a keyed run could
+        // re-attach to an unkeyed run's job and read a result under the wrong key.
+        assertThat(reusedSpec(builder -> builder.queryResultKmsKeyName("k")).getResultKmsKeyName())
+                .isEqualTo("k");
+        assertThat(
+                        reusedSpec(builder -> builder.queryResultKmsKeyName("k"))
+                                .getJobIdentity()
+                                .getCurrentJobId())
+                .isNotEqualTo(reusedSpec(builder -> builder).getJobIdentity().getCurrentJobId());
+    }
+
+    private static io.github.flink.gcp.connector.bigquery.source.query.QuerySpec reusedSpec(
+            java.util.function.UnaryOperator<
+                            io.github.flink.gcp.connector.bigquery.source.BigQuerySourceBuilder<
+                                    org.apache.avro.generic.GenericRecord>>
+                    customizer)
+            throws Exception {
+        ScriptedQueryRunner runner = ScriptedQueryRunner.answering(TestSources.QUERY_RESULT);
+        FakeSplitEnumeratorContext<ReadStreamSplit> context = new FakeSplitEnumeratorContext<>(1);
+        context.putMetricVariable("<job_name>", "my pipeline");
+        try (BigQueryReadSplitEnumerator enumerator =
+                new BigQueryReadSplitEnumerator(
+                        context,
+                        TestSources.queryConfig(
+                                builder ->
+                                        customizer.apply(
+                                                builder.queryLocation("asia-northeast1")
+                                                        .reuseQueryResultWithin(
+                                                                Duration.ofHours(1)))),
+                        ScriptedReadSessionCreator.withStreams(1),
+                        runner,
+                        null)) {
+            enumerator.start();
+            context.runAsyncCalls();
+            return runner.lastSpec();
+        }
+    }
+
+    @Test
     void fallsBackToARandomIdWhereTheMetricGroupCarriesNoJobName() throws Exception {
         // The fake context's variables are empty unless a test injects them, which is exactly the
         // production fallback under test: a runtime that did not fill the variable in must get

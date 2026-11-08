@@ -171,7 +171,8 @@ class TableLayoutTest {
 
         assertThat(TableSchemaSnapshot.of(schema, null).getLayout()).isSameAs(TableLayout.NONE);
         assertThat(
-                        TableSchemaSnapshot.of(schema, null, TableLayout.of(null, RANGE, null))
+                        TableSchemaSnapshot.of(
+                                        schema, null, TableLayout.of(null, RANGE, null), null)
                                 .getLayout())
                 .isEqualTo(TableLayout.of(null, RANGE, null));
     }

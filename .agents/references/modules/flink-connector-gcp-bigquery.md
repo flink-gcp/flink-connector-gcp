@@ -242,6 +242,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `BigQueryIcebergManagedTableRealGcpITCase` asserts two of those refusals; when one fails because
   the write went through, the service changed, and the docs table and ADR-0202 change with it.
 
+## Encryption keys (`docs/adr/0203`)
+
+- The connector keeps an existing table's encryption, apart from the `WRITE_TRUNCATE` exceptions
+  ADR-0203 records. `kmsKeyName` applies at creation;
+  `FILE_LOADS` states the destination's actual key (read with its schema) on every
+  `WRITE_TRUNCATE` job and on no other job — `LoadJobOrchestrator.jobKmsKeyName` is the one place.
+  Stating a key on an append fails against a table with another key, and a `WRITE_TRUNCATE` job
+  with no key resets a CMEK table to the default (measured); do not "simplify" either way.
+- The query job identity digests `resultKmsKeyName` only when set, so pre-key ids stay stable;
+  `QueryJobIdentityTest` pins one. GCS staging uses the bucket default key, by owner decision.
+
 ## FILE_LOADS (`docs/adr/0018`–`0021`, `0070`, `0071`, `0183`)
 
 - Deterministic job ids + get-then-submit re-attach; loads commit **in the committer** on the

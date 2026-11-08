@@ -34,6 +34,7 @@ public final class CopyJobSpec {
     private final JobInfo.CreateDisposition createDisposition;
     private final JobInfo.WriteDisposition writeDisposition;
     @Nullable private final String equivalentJobId;
+    @Nullable private final String kmsKeyName;
 
     CopyJobSpec(
             List<TableDestination> sourceTables,
@@ -49,11 +50,38 @@ public final class CopyJobSpec {
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition,
             @Nullable String equivalentJobId) {
+        this(sourceTables, destination, createDisposition, writeDisposition, equivalentJobId, null);
+    }
+
+    private CopyJobSpec(
+            List<TableDestination> sourceTables,
+            TableDestination destination,
+            JobInfo.CreateDisposition createDisposition,
+            JobInfo.WriteDisposition writeDisposition,
+            @Nullable String equivalentJobId,
+            @Nullable String kmsKeyName) {
         this.sourceTables = List.copyOf(sourceTables);
         this.destination = destination;
         this.createDisposition = createDisposition;
         this.writeDisposition = writeDisposition;
         this.equivalentJobId = equivalentJobId;
+        this.kmsKeyName = kmsKeyName;
+    }
+
+    /**
+     * Returns this spec stating {@code kmsKeyName} as the job's destination encryption.
+     *
+     * @param kmsKeyName the Cloud KMS key, or {@code null} to state none
+     * @return the spec
+     */
+    CopyJobSpec withKmsKeyName(@Nullable String kmsKeyName) {
+        return new CopyJobSpec(
+                sourceTables,
+                destination,
+                createDisposition,
+                writeDisposition,
+                equivalentJobId,
+                kmsKeyName);
     }
 
     /** Returns the temporary tables to copy from. */
@@ -90,6 +118,17 @@ public final class CopyJobSpec {
         return equivalentJobId;
     }
 
+    /**
+     * Returns the Cloud KMS key the job states as its destination encryption, or {@code null} to
+     * state none. Only a job that replaces its destination states one: such a job without a key
+     * replaces the table's encryption with the default, while a job that appends to a table with a
+     * key other than the table's own fails (both measured).
+     */
+    @Nullable
+    public String getKmsKeyName() {
+        return kmsKeyName;
+    }
+
     @Override
     public String toString() {
         return "CopyJobSpec{sourceTables="
@@ -101,6 +140,7 @@ public final class CopyJobSpec {
                 + ", writeDisposition="
                 + writeDisposition
                 + (equivalentJobId != null ? ", equivalentJobId=" + equivalentJobId : "")
+                + (kmsKeyName != null ? ", kmsKeyName=" + kmsKeyName : "")
                 + "}";
     }
 }

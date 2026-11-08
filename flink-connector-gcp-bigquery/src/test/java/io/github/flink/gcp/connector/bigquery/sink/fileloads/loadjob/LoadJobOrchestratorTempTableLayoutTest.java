@@ -753,4 +753,190 @@ class LoadJobOrchestratorTempTableLayoutTest {
         }
         throw new AssertionError("No table was deleted: " + harness.runner.events);
     }
+
+    // --- Encryption: the destination's own key, stated only by jobs that replace a table ---
+
+    private static final String KEY = "projects/p/locations/l/keyRings/r/cryptoKeys/k";
+    private static final String OTHER_KEY = "projects/p/locations/l/keyRings/r/cryptoKeys/other";
+
+    private static Harness withExistingKeyedTable(
+            FileLoadsOptions options, TableLayout layout, Limits limits) {
+        Harness harness = new Harness(options, builder -> {}, null, limits);
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+        harness.tableAdmin.layouts.put(T1, layout);
+        harness.tableAdmin.kmsKeyNames.put(T1, KEY);
+        return harness;
+    }
+
+    private static FileLoadsOptions options(WriteDisposition disposition) {
+        return FileLoadsOptions.builder()
+                .stagingPath("gs://bucket/prefix")
+                .writeDisposition(disposition)
+                .build();
+    }
+
+    @Test
+    void aCreatedDestinationsKeyEncryptsItsLaidOutTempTablesButNotTheAppendingCopy()
+            throws IOException {
+        Harness harness =
+                new Harness(
+                        OPTIONS,
+                        builder ->
+                                builder.tableCreateOptions(
+                                        TableCreateOptions.builder()
+                                                .clusteredFields(List.of("f2"))
+                                                .kmsKeyName(KEY)
+                                                .build()));
+
+        harness.orchestrator.run(threeOversizedFiles());
+
+        assertThat(harness.tableAdmin.createOptions.get(T1).getKmsKeyName()).isEqualTo(KEY);
+        assertThat(harness.tableAdmin.preparedKmsKeyNames).hasSize(3).containsOnly(KEY);
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getKmsKeyName)
+                .containsOnly(KEY);
+        // Appending keeps the destination's encryption without a key, and would fail with one
+        // other than the table's.
+        assertThat(onlyCopy(harness).getWriteDisposition())
+                .isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
+        assertThat(onlyCopy(harness).getKmsKeyName()).isNull();
+    }
+
+    @Test
+    void unlaidTempTablesAndIntermediateCopiesTakeAnExistingDestinationsKey() throws IOException {
+        Limits limits = new Limits(2, 100, 100, 2).withMaxFilesPerJob(1);
+        Harness harness = withExistingKeyedTable(OPTIONS, TableLayout.NONE, limits);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10), file(T1, "c", 10)));
+
+        // Unlaid temporary tables are created by their loads, which state the key.
+        assertThat(harness.tableAdmin.preparedTemporaryTables).isEmpty();
+        assertThat(harness.runner.loads.values())
+                .allSatisfy(
+                        spec -> {
+                            assertThat(spec.getDestination()).isNotEqualTo(T1);
+                            assertThat(spec.getKmsKeyName()).isEqualTo(KEY);
+                        });
+        List<CopyJobSpec> copies = new ArrayList<>(harness.runner.copies.values());
+        assertThat(copies).hasSize(2);
+        assertThat(copies.get(0).getDestination()).isNotEqualTo(T1);
+        assertThat(copies.get(0).getKmsKeyName()).isEqualTo(KEY);
+        assertThat(copies.get(1).getDestination()).isEqualTo(T1);
+        assertThat(copies.get(1).getKmsKeyName()).isNull();
+    }
+
+    @Test
+    void writeTruncateStatesTheDestinationsKeySoItIsNotReplacedWithTheDefault() throws IOException {
+        Harness direct =
+                withExistingKeyedTable(
+                        options(WriteDisposition.WRITE_TRUNCATE),
+                        TableLayout.NONE,
+                        Limits.BIGQUERY);
+        Harness throughTempTables =
+                withExistingKeyedTable(
+                        options(WriteDisposition.WRITE_TRUNCATE),
+                        TableLayout.NONE,
+                        Limits.BIGQUERY);
+
+        direct.orchestrator.run(List.of(file(T1, "a", 10)));
+        throughTempTables.orchestrator.run(threeOversizedFiles());
+
+        LoadJobSpec load = direct.runner.loads.values().iterator().next();
+        assertThat(load.getDestination()).isEqualTo(T1);
+        assertThat(load.getKmsKeyName()).isEqualTo(KEY);
+        assertThat(throughTempTables.runner.loads.values())
+                .extracting(LoadJobSpec::getKmsKeyName)
+                .containsOnly(KEY);
+        assertThat(onlyCopy(throughTempTables).getDestination()).isEqualTo(T1);
+        assertThat(onlyCopy(throughTempTables).getKmsKeyName()).isEqualTo(KEY);
+    }
+
+    @Test
+    void writeTruncateDataKeysTheAggregateTableAndLeavesTheTerminalQueryToTheDestination()
+            throws IOException {
+        Harness harness =
+                withExistingKeyedTable(
+                        options(WriteDisposition.WRITE_TRUNCATE_DATA),
+                        TableLayout.NONE,
+                        Limits.BIGQUERY);
+
+        harness.orchestrator.run(threeOversizedFiles());
+
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getKmsKeyName)
+                .containsOnly(KEY);
+        assertThat(onlyCopy(harness).getDestination()).isNotEqualTo(T1);
+        assertThat(onlyCopy(harness).getKmsKeyName()).isEqualTo(KEY);
+        // The terminal query replaces only data, which keeps the destination's encryption.
+        assertThat(harness.runner.queries.values())
+                .singleElement()
+                .satisfies(query -> assertThat(query.getDestination()).isEqualTo(T1));
+    }
+
+    @Test
+    void aDirectAppendStatesNoKey() throws IOException {
+        Harness harness = withExistingKeyedTable(OPTIONS, TableLayout.NONE, Limits.BIGQUERY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10)));
+
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .satisfies(
+                        load -> {
+                            assertThat(load.getDestination()).isEqualTo(T1);
+                            assertThat(load.getKmsKeyName()).isNull();
+                        });
+    }
+
+    @Test
+    void anExistingDestinationsKeyWinsOverTheConfiguredOne() throws IOException {
+        Harness harness =
+                new Harness(
+                        options(WriteDisposition.WRITE_TRUNCATE),
+                        builder ->
+                                builder.tableCreateOptions(
+                                        TableCreateOptions.builder()
+                                                .kmsKeyName(OTHER_KEY)
+                                                .build()));
+        harness.tableAdmin.tables.put(T1, SCHEMA);
+        // Laid out, so the commit prepares its temporary tables and the key they take is visible.
+        harness.tableAdmin.layouts.put(T1, PARTITIONED_AND_CLUSTERED);
+        harness.tableAdmin.kmsKeyNames.put(T1, KEY);
+
+        harness.orchestrator.run(threeOversizedFiles());
+
+        assertThat(harness.tableAdmin.created).isEmpty();
+        assertThat(harness.tableAdmin.preparedKmsKeyNames).hasSize(3).containsOnly(KEY);
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getKmsKeyName)
+                .containsOnly(KEY);
+        assertThat(onlyCopy(harness).getKmsKeyName()).isEqualTo(KEY);
+    }
+
+    @Test
+    void aDestinationWithoutAKeyOfItsOwnStatesNone() throws IOException {
+        Harness harness =
+                withExistingTable(
+                        options(WriteDisposition.WRITE_TRUNCATE),
+                        builder -> {},
+                        PARTITIONED_AND_CLUSTERED);
+
+        harness.orchestrator.run(threeOversizedFiles());
+
+        assertThat(harness.tableAdmin.preparedKmsKeyNames).hasSize(3).containsOnlyNulls();
+        assertThat(harness.runner.loads.values())
+                .extracting(LoadJobSpec::getKmsKeyName)
+                .containsOnlyNulls();
+        assertThat(onlyCopy(harness).getKmsKeyName()).isNull();
+    }
+
+    @Test
+    void onlyAReplacingJobStatesTheDestinationsKey() {
+        for (JobInfo.WriteDisposition disposition : JobInfo.WriteDisposition.values()) {
+            assertThat(LoadJobOrchestrator.jobKmsKeyName(disposition, KEY))
+                    .as("%s", disposition)
+                    .isEqualTo(disposition == JobInfo.WriteDisposition.WRITE_TRUNCATE ? KEY : null);
+            assertThat(LoadJobOrchestrator.jobKmsKeyName(disposition, null)).isNull();
+        }
+    }
 }

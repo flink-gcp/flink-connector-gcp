@@ -39,6 +39,7 @@ import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery.JobAnswer;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
+import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -894,6 +895,44 @@ class BigQueryLoadJobRunnerTest {
         // create the destination: it is reconciled before the load runs.
         assertThat(copy.getCreateDisposition()).isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
         assertThat(copy.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_TRUNCATE);
+    }
+
+    @Test
+    void aLoadOrCopyStatesItsKeyAsTheDestinationEncryptionAndOtherwiseNone() throws Exception {
+        String key = "projects/p/locations/l/keyRings/r/cryptoKeys/k";
+        client.answering(
+                JobAnswer.absent(), JobAnswer.absent(), JobAnswer.absent(), JobAnswer.absent());
+
+        BigQueryLoadJobRunner runner = runner();
+        runner.submitLoad(JOB_ID, loadSpec(List.of()).withKmsKeyName(key));
+        runner.submitCopy("bq-2", copySpec().withKmsKeyName(key));
+        runner.submitLoad("bq-3", loadSpec(List.of()));
+        runner.submitCopy("bq-4", copySpec());
+
+        assertThat(
+                        client.created
+                                .get(0)
+                                .<LoadJobConfiguration>getConfiguration()
+                                .getDestinationEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
+        assertThat(
+                        client.created
+                                .get(1)
+                                .<CopyJobConfiguration>getConfiguration()
+                                .getDestinationEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
+        assertThat(
+                        client.created
+                                .get(2)
+                                .<LoadJobConfiguration>getConfiguration()
+                                .getDestinationEncryptionConfiguration())
+                .isNull();
+        assertThat(
+                        client.created
+                                .get(3)
+                                .<CopyJobConfiguration>getConfiguration()
+                                .getDestinationEncryptionConfiguration())
+                .isNull();
     }
 
     @Test

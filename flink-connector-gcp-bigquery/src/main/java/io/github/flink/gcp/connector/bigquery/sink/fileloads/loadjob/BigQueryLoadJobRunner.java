@@ -179,6 +179,10 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             load.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
         configureLayout(load, spec.getLayout());
+        if (spec.getKmsKeyName() != null) {
+            load.setDestinationEncryptionConfiguration(
+                    BigQueryTableAdmin.encryptionConfiguration(spec.getKmsKeyName()));
+        }
         submitOrAttach(jobId, load.build(), spec.getDestination(), spec.toString(), null);
     }
 
@@ -236,17 +240,24 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
 
     @Override
     public void submitCopy(String jobId, CopyJobSpec spec) throws IOException {
-        CopyJobConfiguration copy =
+        CopyJobConfiguration.Builder copy =
                 CopyJobConfiguration.newBuilder(
                                 BigQueryTableAdmin.toTableId(spec.getDestination()),
                                 spec.getSourceTables().stream()
                                         .map(BigQueryTableAdmin::toTableId)
                                         .collect(Collectors.toList()))
                         .setCreateDisposition(spec.getCreateDisposition())
-                        .setWriteDisposition(spec.getWriteDisposition())
-                        .build();
+                        .setWriteDisposition(spec.getWriteDisposition());
+        if (spec.getKmsKeyName() != null) {
+            copy.setDestinationEncryptionConfiguration(
+                    BigQueryTableAdmin.encryptionConfiguration(spec.getKmsKeyName()));
+        }
         submitOrAttach(
-                jobId, copy, spec.getDestination(), spec.toString(), spec.getEquivalentJobId());
+                jobId,
+                copy.build(),
+                spec.getDestination(),
+                spec.toString(),
+                spec.getEquivalentJobId());
     }
 
     @Override

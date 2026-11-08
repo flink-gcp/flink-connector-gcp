@@ -881,7 +881,11 @@ class BigQueryDefaultStreamWriterMetricsTest {
 
         @Override
         public long prepareTemporaryTable(
-                TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
+                TableDestination table,
+                Schema schema,
+                TableLayout layout,
+                String kmsKeyName,
+                Duration expiration) {
             throw new UnsupportedOperationException(
                     "FILE_LOADS temporary tables are not used here");
         }
