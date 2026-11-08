@@ -29,15 +29,15 @@ from .access import probe_spec
 from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
 from .resources import ResourcePlan
 from .verdict import (
+    ADAPTIVE,
+    ADAPTIVE_MAX_OUTSTANDING,
+    ADAPTIVE_REPLAY_DELAY_MILLIS,
     MAX_OUTSTANDING,
-    REACTIVE,
-    REACTIVE_MAX_OUTSTANDING,
-    REACTIVE_REPLAY_DELAY_MILLIS,
     application_pods,
     sizes,
 )
 
-TRIALS = (*FAULTS, *REACTIVE)
+TRIALS = (*FAULTS, *ADAPTIVE)
 ENTRY_POINTS = ("datastream", "table")
 WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
@@ -70,6 +70,19 @@ def validate_trial(value):
         raise Failure("Unknown Pub/Sub entry point")
     if type(value["restore_deduplication"]) is not bool:
         raise Failure("Invalid Pub/Sub trial field: restore_deduplication")
+    if value["trial"] in ADAPTIVE and (
+        value["restore_deduplication"] is not True
+        or value["entry_point"] != "datastream"
+    ):
+        # Each AdaptiveScheduler kind shows restore deduplication suppressing
+        # its case;
+        # with the setting off it would show only the duplicate, and the hold
+        # needs the observer chained to the source, as only the DataStream
+        # entry point chains it.
+        raise Failure(
+            "An AdaptiveScheduler Pub/Sub trial runs the DataStream entry point with"
+            " restore_deduplication = true"
+        )
 
 
 def estimate(kind):
@@ -199,20 +212,34 @@ def input_plan(run_id, trial):
     }
 
 
+def replica_counts(kind):
+    """The TaskManager replicas the initial and recovery manifests name.
+
+    The adaptive kind runs in native mode, where the resource manager
+    releases the TaskManager a scale-in leaves idle, so both of its manifests
+    name the initial count and differ only in the parallelism override.
+    """
+    initial, recovery = sizes(kind)
+    if kind in ADAPTIVE and ADAPTIVE[kind]["scheduler"] == "adaptive":
+        return initial, initial
+    return initial, recovery
+
+
 def manifest_jobs(run_id, trial):
     """The (parallelism, job arguments) of the initial and recovery manifests.
 
     Replacement trials keep both manifests at parallelism two; a rescale trial
     changes one to two or two to one and requires restored state in the
-    upgrade phase. A reactive trial's manifests run the same job, whose
-    parallelism the reactive scheduler takes from the TaskManagers rather
-    than from either, so its recovery manifest changes only the replica count.
+    upgrade phase. An AdaptiveScheduler trial's manifests run the same job:
+    a reactive kind's recovery manifest changes only the replica count, from
+    which the reactive scheduler takes the parallelism, and the adaptive
+    kind's only the job vertex's parallelism override.
     """
     validate_trial(trial)
     kind = trial["trial"]
-    reactive = kind in REACTIVE
+    adaptive = kind in ADAPTIVE
     initial, recovery = sizes(kind)
-    if reactive:
+    if adaptive:
         steps = ((initial, "initial"), (initial, "initial"))
     else:
         rescale = FAULTS[kind].rescale
@@ -235,9 +262,11 @@ def manifest_jobs(run_id, trial):
                     "--restore-deduplication="
                     + str(trial["restore_deduplication"]).lower(),
                     "--replay-delay-millis="
-                    + str(REACTIVE_REPLAY_DELAY_MILLIS if reactive else 0),
+                    + str(ADAPTIVE_REPLAY_DELAY_MILLIS if adaptive else 0),
                     "--max-outstanding-messages="
-                    + str(REACTIVE_MAX_OUTSTANDING if reactive else MAX_OUTSTANDING),
+                    + str(ADAPTIVE_MAX_OUTSTANDING if adaptive else MAX_OUTSTANDING),
+                    "--hold-after-checkpoint-millis="
+                    + str(ADAPTIVE[kind]["hold_millis"] if adaptive else 0),
                 ],
             )
         )
@@ -315,7 +344,9 @@ def prepare(
         pubsub_probe_source=probe_command()[3],
     )
     require_trial_jobs(run_id, trial, initial, recovery)
-    for application, replicas in zip((initial, recovery), sizes(trial["trial"])):
+    for application, replicas in zip(
+        (initial, recovery), replica_counts(trial["trial"])
+    ):
         metadata = application["metadata"]
         annotations = metadata.get("annotations", {})
         if (

@@ -1843,6 +1843,7 @@ def test_pubsub_recovery_deployment_contract(
         "--restore-deduplication=false",
         "--replay-delay-millis=0",
         "--max-outstanding-messages=1000",
+        "--hold-after-checkpoint-millis=0",
     ]
     config = spec["flinkConfiguration"]
     assert config["taskmanager.numberOfTaskSlots"] == "1"
@@ -2160,29 +2161,43 @@ def test_every_scenario_renders_each_fault_kinds_sizes(
 
 
 def test_the_pubsub_reactive_kinds_are_the_verdict_table(module):
-    """The CUE copy of `REACTIVE` and its constants, so a change to one fails here."""
+    """The CUE copy of `ADAPTIVE` and its constants, so a change to one fails here."""
     result = lifecycle_export(
         module,
-        "[pubsubReactiveKinds, pubsubReactiveReplayDelayMillis, "
-        "pubsubReactiveMaxOutstanding]",
+        "[pubsubAdaptiveKinds, pubsubAdaptiveReplayDelayMillis, "
+        "pubsubAdaptiveMaxOutstanding]",
     )
     assert result.returncode == 0, result.stderr
     kinds, delay, outstanding = json.loads(result.stdout)
     assert kinds == {
-        name: {"initial": size["initial"], "recovery": size["recovery"]}
-        for name, size in pubsub_verdict.REACTIVE.items()
+        name: {
+            "scheduler": size["scheduler"],
+            "initial": size["initial"],
+            "recovery": size["recovery"],
+            "holdMillis": size["hold_millis"],
+        }
+        for name, size in pubsub_verdict.ADAPTIVE.items()
     }
-    assert delay == pubsub_verdict.REACTIVE_REPLAY_DELAY_MILLIS
-    assert outstanding == pubsub_verdict.REACTIVE_MAX_OUTSTANDING
+    assert delay == pubsub_verdict.ADAPTIVE_REPLAY_DELAY_MILLIS
+    assert outstanding == pubsub_verdict.ADAPTIVE_MAX_OUTSTANDING
 
 
-@pytest.mark.parametrize("deduplication", ["false", "true"])
-@pytest.mark.parametrize("name", list(pubsub_verdict.REACTIVE))
-def test_a_reactive_pubsub_kind_renders_standalone_reactive_manifests(
-    module, name, deduplication
-):
+REACTIVE_KINDS = [
+    name
+    for name, size in pubsub_verdict.ADAPTIVE.items()
+    if size["scheduler"] == "reactive"
+]
+ADAPTIVE_KINDS = [
+    name
+    for name, size in pubsub_verdict.ADAPTIVE.items()
+    if size["scheduler"] == "adaptive"
+]
+
+
+@pytest.mark.parametrize("name", REACTIVE_KINDS)
+def test_a_reactive_pubsub_kind_renders_standalone_reactive_manifests(module, name):
     """Both manifests run one reactive job; only the TaskManagers differ."""
-    sizes = pubsub_verdict.REACTIVE[name]
+    sizes = pubsub_verdict.ADAPTIVE[name]
     result = lifecycle_export(
         module,
         "[application, upgradeApplication]",
@@ -2190,7 +2205,7 @@ def test_a_reactive_pubsub_kind_renders_standalone_reactive_manifests(
         run_id="proposal-2055",
         application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         pubsub_trial=name,
-        pubsub_restore_deduplication=deduplication,
+        pubsub_restore_deduplication="true",
     )
     assert result.returncode == 0, result.stderr
     initial, recovery = json.loads(result.stdout)
@@ -2208,14 +2223,94 @@ def test_a_reactive_pubsub_kind_renders_standalone_reactive_manifests(
         assert mount["mountPath"].startswith("/opt/flink/usrlib/")
         assert "volumes" not in spec["podTemplate"]["spec"]
         assert "volumes" not in spec["taskManager"]["podTemplate"]["spec"]
-        assert spec["job"]["args"][-3:] == [
-            f"--restore-deduplication={deduplication}",
-            f"--replay-delay-millis={pubsub_verdict.REACTIVE_REPLAY_DELAY_MILLIS}",
-            f"--max-outstanding-messages={pubsub_verdict.REACTIVE_MAX_OUTSTANDING}",
+        assert spec["job"]["args"][-4:] == [
+            "--restore-deduplication=true",
+            f"--replay-delay-millis={pubsub_verdict.ADAPTIVE_REPLAY_DELAY_MILLIS}",
+            f"--max-outstanding-messages={pubsub_verdict.ADAPTIVE_MAX_OUTSTANDING}",
+            f"--hold-after-checkpoint-millis={sizes['hold_millis']}",
         ]
     # The patch the exercise applies is all that separates them.
     recovery["spec"]["taskManager"]["replicas"] = sizes["initial"]
     assert recovery == initial
+
+
+@pytest.mark.parametrize("name", ADAPTIVE_KINDS)
+def test_an_adaptive_pubsub_kind_renders_native_adaptive_manifests(module, name):
+    """Both manifests run one native job; only the parallelism override differs."""
+    sizes = pubsub_verdict.ADAPTIVE[name]
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication]",
+        "pubsub-recovery",
+        run_id="proposal-2126",
+        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        pubsub_trial=name,
+        pubsub_restore_deduplication="true",
+    )
+    assert result.returncode == 0, result.stderr
+    initial, recovery = json.loads(result.stdout)
+    for app in (initial, recovery):
+        spec = app["spec"]
+        config = spec["flinkConfiguration"]
+        assert spec["mode"] == "native"
+        assert config["jobmanager.scheduler"] == "adaptive"
+        assert "scheduler-mode" not in config
+        assert spec["taskManager"]["replicas"] == sizes["initial"]
+        assert spec["job"]["parallelism"] == sizes["initial"]
+        assert "volumes" not in spec["jobManager"]["podTemplate"]["spec"]
+        assert spec["job"]["args"][-4:] == [
+            "--restore-deduplication=true",
+            f"--replay-delay-millis={pubsub_verdict.ADAPTIVE_REPLAY_DELAY_MILLIS}",
+            f"--max-outstanding-messages={pubsub_verdict.ADAPTIVE_MAX_OUTSTANDING}",
+            f"--hold-after-checkpoint-millis={sizes['hold_millis']}",
+        ]
+    assert OVERRIDES not in initial["spec"]["flinkConfiguration"]
+    override = recovery["spec"]["flinkConfiguration"].pop(OVERRIDES)
+    assert override == f"{relay_vertex_id()}:{sizes['recovery']}"
+    # The patch the exercise applies is all that separates them.
+    assert recovery == initial
+
+
+OVERRIDES = "pipeline.jobvertex-parallelism-overrides"
+
+
+def relay_vertex_id():
+    """The vertex id the relay pins, which a relay test holds to its job graph."""
+    source = (
+        KUBERNETES
+        / "apps/pubsub/src/main/java/io/github/flink/gcp/connector"
+        / "tier3/pubsub/PubSubRecoveryJob.java"
+    ).read_text()
+    (value,) = re.findall(r'DATASTREAM_VERTEX_ID = "([0-9a-f]{32})";', source)
+    return value
+
+
+@pytest.mark.parametrize(
+    "tag, value, field",
+    [
+        # With the setting off, the trial would show only the duplicate.
+        ("pubsub_restore_deduplication", "false", "restoreDeduplication"),
+        # Only the DataStream entry point chains the holding observer.
+        ("pubsub_entry_point", "table", "entryPoint"),
+    ],
+)
+@pytest.mark.parametrize("name", list(pubsub_verdict.ADAPTIVE))
+def test_an_adaptive_pubsub_kind_refuses_what_cannot_show_its_case(
+    module, name, tag, value, field
+):
+    """The delivery refuses it as well as the plan does."""
+    overrides = {"pubsub_restore_deduplication": "true", tag: value}
+    result = lifecycle_export(
+        module,
+        "[application, upgradeApplication]",
+        "pubsub-recovery",
+        run_id="proposal-2055",
+        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
+        pubsub_trial=name,
+        **overrides,
+    )
+    assert result.returncode != 0
+    assert field in result.stderr, result.stderr
 
 
 def test_a_native_pubsub_kind_keeps_native_mode_and_the_default_flow_control(module):
@@ -2231,10 +2326,11 @@ def test_a_native_pubsub_kind_keeps_native_mode_and_the_default_flow_control(mod
         assert app["spec"]["mode"] == "native"
         assert "scheduler-mode" not in app["spec"]["flinkConfiguration"]
         assert "volumes" not in app["spec"]["jobManager"]["podTemplate"]["spec"]
-        assert app["spec"]["job"]["args"][-3:] == [
+        assert app["spec"]["job"]["args"][-4:] == [
             "--restore-deduplication=false",
             "--replay-delay-millis=0",
             "--max-outstanding-messages=1000",
+            "--hold-after-checkpoint-millis=0",
         ]
 
 

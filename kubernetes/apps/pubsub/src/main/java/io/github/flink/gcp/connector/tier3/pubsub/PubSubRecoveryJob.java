@@ -35,6 +35,13 @@ import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 public final class PubSubRecoveryJob {
     private PubSubRecoveryJob() {}
 
+    /**
+     * The id of the DataStream entry point's one job vertex, which chains the source, the observer
+     * and the sink. Flink derives it from the source's uid, so it is the same at every parallelism
+     * and in every run; a parallelism override names a vertex by it.
+     */
+    static final String DATASTREAM_VERTEX_ID = "1fc1e910bda7a08a74f8b1a434d3e9b9";
+
     /** Runs the relay against pre-created resources using workload ADC. */
     public static void main(String[] args) throws Exception {
         RecoveryOptions options = RecoveryOptions.parse(args);

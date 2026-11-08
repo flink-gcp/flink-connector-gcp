@@ -48,6 +48,8 @@ class RecoveryContractTest {
                 "--replay-delay-millis=1001",
                 "--max-outstanding-messages=0",
                 "--max-outstanding-messages=100001",
+                "--hold-after-checkpoint-millis=-1",
+                "--hold-after-checkpoint-millis=600001",
                 "--records-per-subscription=0",
                 "--records-per-subscription=10001",
                 "--phase=upgrade",
@@ -226,15 +228,77 @@ class RecoveryContractTest {
                             "--parallelism=3",
                             "--restore-deduplication=true",
                             "--replay-delay-millis=20",
-                            "--max-outstanding-messages=100000"
+                            "--max-outstanding-messages=100000",
+                            "--hold-after-checkpoint-millis=15000"
                         });
         assertThat(parsed.parallelism).isEqualTo(3);
         assertThat(parsed.restoreDeduplication).isTrue();
         assertThat(parsed.replayDelayMillis).isEqualTo(20);
         assertThat(parsed.maxOutstandingMessages).isEqualTo(100000);
+        assertThat(parsed.holdAfterCheckpointMillis).isEqualTo(15000);
         RecoveryOptions defaults = RecoveryOptions.parse(new String[] {"--run-id=run-1"});
         assertThat(defaults.restoreDeduplication).isFalse();
         assertThat(defaults.replayDelayMillis).isZero();
         assertThat(defaults.maxOutstandingMessages).isEqualTo(1000);
+        assertThat(defaults.holdAfterCheckpointMillis).isZero();
+    }
+
+    @Test
+    void holdsOnlyTheFirstReplayRecordAfterEachSnapshot() {
+        RecoveryOptions held =
+                RecoveryOptions.parse(
+                        new String[] {
+                            "--run-id=run-1",
+                            "--records-per-subscription=9",
+                            "--hold-after-checkpoint-millis=15000"
+                        });
+        String tagged = "|" + RecoveryPayload.encode("message");
+        String before = RecoveryPayload.input(held, 0, 2) + tagged;
+        String replay = RecoveryPayload.input(held, 0, 3) + tagged;
+        String nextReplay = RecoveryPayload.input(held, 1, 4) + tagged;
+        RecoveryObserver observer = new RecoveryObserver(held);
+
+        // Nothing is held before a snapshot.
+        assertThat(observer.holdFor(replay)).isZero();
+        observer.checkpointTaken(1);
+        // A record outside the replay cohort neither holds nor uses up the hold.
+        assertThat(observer.holdFor(before)).isZero();
+        assertThat(observer.holdFor(replay)).isEqualTo(15000);
+        assertThat(observer.holdFor(nextReplay)).isZero();
+        // A notification that runs before any replay record disarms the hold, so no hold is
+        // logged for a checkpoint whose notification already ran.
+        observer.checkpointTaken(2);
+        observer.notifyCheckpointComplete(2);
+        assertThat(observer.holdFor(nextReplay)).isZero();
+        // An earlier checkpoint's notification leaves a later snapshot's hold armed.
+        observer.checkpointTaken(3);
+        observer.notifyCheckpointComplete(2);
+        assertThat(observer.holdFor(nextReplay)).isEqualTo(15000);
+        // The next snapshot arms it again.
+        observer.checkpointTaken(4);
+        assertThat(observer.holdFor(nextReplay)).isEqualTo(15000);
+    }
+
+    @Test
+    void holdsNothingWithoutAHoldOrAfterARestore() {
+        String tagged = "|" + RecoveryPayload.encode("message");
+        RecoveryOptions unheld =
+                RecoveryOptions.parse(
+                        new String[] {"--run-id=run-1", "--records-per-subscription=9"});
+        RecoveryObserver plain = new RecoveryObserver(unheld);
+        plain.checkpointTaken(1);
+        assertThat(plain.holdFor(RecoveryPayload.input(unheld, 0, 3) + tagged)).isZero();
+
+        RecoveryOptions held =
+                RecoveryOptions.parse(
+                        new String[] {
+                            "--run-id=run-1",
+                            "--records-per-subscription=9",
+                            "--hold-after-checkpoint-millis=15000"
+                        });
+        RecoveryObserver restored = new RecoveryObserver(held);
+        restored.markRestored();
+        restored.checkpointTaken(5);
+        assertThat(restored.holdFor(RecoveryPayload.input(held, 0, 3) + tagged)).isZero();
     }
 }

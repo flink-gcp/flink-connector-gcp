@@ -24,7 +24,7 @@ from flink_tier3 import render as command
 from flink_tier3.common import Failure
 from flink_tier3.model import validate_approval
 from flink_tier3.pubsub import plan
-from flink_tier3.pubsub.verdict import REACTIVE
+from flink_tier3.pubsub.verdict import ADAPTIVE
 
 
 @pytest.fixture
@@ -73,7 +73,7 @@ def renderer(monkeypatch):
         }
 
     def application(run_id, nonce, expiry, options, parallelism, phase, replicas=None):
-        reactive = options["pubsub_trial"] in REACTIVE
+        adaptive = options["pubsub_trial"] in ADAPTIVE
         replicas = parallelism if replicas is None else replicas
         spec = {
             "image": options["application_image"],
@@ -89,8 +89,14 @@ def renderer(monkeypatch):
                     f"--entry-point={options['pubsub_entry_point']}",
                     "--restore-deduplication="
                     + options["pubsub_restore_deduplication"],
-                    f"--replay-delay-millis={100 if reactive else 0}",
-                    f"--max-outstanding-messages={100000 if reactive else 1000}",
+                    f"--replay-delay-millis={100 if adaptive else 0}",
+                    f"--max-outstanding-messages={100000 if adaptive else 1000}",
+                    "--hold-after-checkpoint-millis="
+                    + str(
+                        ADAPTIVE[options["pubsub_trial"]]["hold_millis"]
+                        if adaptive
+                        else 0
+                    ),
                 ],
             },
         }
@@ -117,8 +123,19 @@ def renderer(monkeypatch):
     def render(run_id, nonce, expiry, seconds, **options):
         calls.append((run_id, nonce, expiry, seconds, options))
         kind = options["pubsub_trial"]
-        if kind in REACTIVE:
-            sizes = REACTIVE[kind]
+        if kind in ADAPTIVE and ADAPTIVE[kind]["scheduler"] == "adaptive":
+            # Native mode; the recovery manifest adds only the override.
+            sizes = ADAPTIVE[kind]
+            initial = application(
+                run_id, nonce, expiry, options, sizes["initial"], "initial"
+            )
+            initial["spec"]["flinkConfiguration"] = {"jobmanager.scheduler": "adaptive"}
+            recovery = copy.deepcopy(initial)
+            recovery["spec"]["flinkConfiguration"][
+                "pipeline.jobvertex-parallelism-overrides"
+            ] = f"1fc1e910bda7a08a74f8b1a434d3e9b9:{sizes['recovery']}"
+        elif kind in ADAPTIVE:
+            sizes = ADAPTIVE[kind]
             initial = application(
                 run_id, nonce, expiry, options, sizes["initial"], "initial"
             )
@@ -213,6 +230,9 @@ def renderer(monkeypatch):
 def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
     """The dispatch and actor tests stand on it, so it must pass as the CUE does."""
     inputs["trial"]["trial"] = kind
+    if kind in ADAPTIVE:
+        # An AdaptiveScheduler kind runs only on the DataStream entry point, with the setting on.
+        inputs["trial"].update(entry_point="datastream", restore_deduplication=True)
     proposal = plan.prepare(**inputs)["proposal"]
     assert proposal["approved"] is False
     assert renderer[0][4]["pubsub_trial"] == kind
@@ -225,23 +245,29 @@ def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
         ("tm-replacement", (2, "initial"), (2, "initial")),
         ("rescale-out", (1, "initial"), (2, "upgrade")),
         ("rescale-in", (2, "initial"), (1, "upgrade")),
-        # A reactive kind runs one job; only the TaskManagers change.
+        # An AdaptiveScheduler kind runs one job; only the TaskManagers or the
+        # parallelism override change.
         ("reactive-scale-out", (2, "initial"), (2, "initial")),
-        ("reactive-scale-in", (3, "initial"), (3, "initial")),
-        ("reactive-tm-eviction", (3, "initial"), (3, "initial")),
+        ("reactive-tm-kill", (3, "initial"), (3, "initial")),
+        ("adaptive-scale-in", (3, "initial"), (3, "initial")),
     ],
 )
 @pytest.mark.parametrize("deduplication", [False, True])
 def test_the_trial_fixes_each_manifests_job(
     trial, kind, initial, recovery, deduplication
 ):
+    adaptive = kind in ADAPTIVE
+    entry_point = "datastream" if adaptive else "table"
     trial.update(
         trial=kind,
-        entry_point="table",
+        entry_point=entry_point,
         records_per_subscription=40,
         restore_deduplication=deduplication,
     )
-    reactive = kind.startswith("reactive-")
+    if adaptive and not deduplication:
+        with pytest.raises(Failure, match="restore_deduplication = true"):
+            plan.manifest_jobs("run-1430", trial)
+        return
     jobs = plan.manifest_jobs("run-1430", trial)
     assert jobs == tuple(
         (
@@ -252,10 +278,12 @@ def test_the_trial_fixes_each_manifests_job(
                 "--records-per-subscription=40",
                 f"--parallelism={parallelism}",
                 f"--require-restored={str(phase == 'upgrade').lower()}",
-                "--entry-point=table",
+                f"--entry-point={entry_point}",
                 f"--restore-deduplication={str(deduplication).lower()}",
-                f"--replay-delay-millis={100 if reactive else 0}",
-                f"--max-outstanding-messages={100000 if reactive else 1000}",
+                f"--replay-delay-millis={100 if adaptive else 0}",
+                f"--max-outstanding-messages={100000 if adaptive else 1000}",
+                "--hold-after-checkpoint-millis="
+                + str(ADAPTIVE[kind]["hold_millis"] if adaptive else 0),
             ],
         )
         for parallelism, phase in (initial, recovery)
@@ -267,6 +295,9 @@ def test_rendered_manifests_run_the_trial_they_were_rendered_for(
     inputs, renderer, kind
 ):
     inputs["trial"]["trial"] = kind
+    if kind in ADAPTIVE:
+        # An AdaptiveScheduler kind runs only on the DataStream entry point, with the setting on.
+        inputs["trial"].update(entry_point="datastream", restore_deduplication=True)
     rendered = plan.prepare(**inputs)
     plan.require_trial_jobs(
         inputs["run_id"],
@@ -570,8 +601,8 @@ def test_a_reviewed_trial_file_that_is_not_utf8_is_refused(tmp_path):
         ("rescale-out", 7),
         # Three TaskManagers take one application slot more.
         ("reactive-scale-out", 8),
-        ("reactive-scale-in", 8),
-        ("reactive-tm-eviction", 8),
+        ("reactive-tm-kill", 8),
+        ("adaptive-scale-in", 8),
     ],
 )
 def test_the_estimate_charges_the_pod_budget_and_the_reserve(kind, slots):

@@ -33,9 +33,9 @@ These are local wiring and state-continuity checks; they do not measure real-ser
 
 [`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the relay on Flink 2.2.1 / Java 17.
 A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription`, `parallelism` and `entryPoint` inputs.
-The lifecycle delivery also supplies `restoreDeduplication`, `replayDelayMillis` and `maxOutstandingMessages`, and for a [reactive trial](#reactive-trials) `reactive` and `taskManagers`.
-The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade, parallelism 1/2 and entry-point combination, and the lifecycle tests render each reactive kind.
-The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs one of the ten [reviewed trials](../../lifecycle/README.md#reviewed-pubsub-trials) through the runner's [admission](#admission-and-effective-access) and the supervisor's [recovery exercise](#recovery-exercise).
+The lifecycle delivery also supplies `restoreDeduplication`, `replayDelayMillis`, `maxOutstandingMessages` and `holdAfterCheckpointMillis`, and for a [restore-deduplication trial](#restore-deduplication-trials) `reactive` and `taskManagers`, or `adaptive` and `parallelismOverride`.
+The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade, parallelism 1/2 and entry-point combination, and the lifecycle tests render each restore-deduplication kind.
+The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs one of the seven [reviewed trials](../../lifecycle/README.md#reviewed-pubsub-trials) through the runner's [admission](#admission-and-effective-access) and the supervisor's [recovery exercise](#recovery-exercise).
 
 The first verified image reference is:
 
@@ -104,9 +104,9 @@ It does not prove that the installed package, checkout or application image came
 | `tm-replacement` | 2 → 2 | Replace an active TM after an externally observed completed checkpoint |
 | `rescale-out` | 1 → 2 | Stop with a savepoint and restore the upgrade phase |
 | `rescale-in` | 2 → 1 | Stop with a savepoint and restore the upgrade phase |
-| `reactive-scale-out` | 2 → 3 TaskManagers | Patch the replica count of a [reactive](#reactive-trials) deployment |
-| `reactive-scale-in` | 3 → 2 TaskManagers | Patch the replica count of a reactive deployment |
-| `reactive-tm-eviction` | 3 → 3 TaskManagers | Delete a TaskManager Pod of a reactive deployment |
+| `reactive-scale-out` | 2 → 3 TaskManagers | Patch the replica count of a [reactive](#restore-deduplication-trials) deployment |
+| `reactive-tm-kill` | 3 → 3 TaskManagers | Delete a TaskManager Pod of a reactive deployment, without a grace period, inside a completed checkpoint's hold |
+| `adaptive-scale-in` | 3 → 2 | Patch the parallelism override of a native deployment under the AdaptiveScheduler |
 
 JM/TM proposals keep both manifests identical: recovery is performed by the existing deployment, with no upgrade submission.
 For rescaling, `recovery_application` is also stored under the shared delivery key `upgrade-application.json` and requires restored state.
@@ -131,10 +131,10 @@ Those requests are nearly free, and the trial's cost is bounded by its input dom
 
 The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
 Admission's temporary quotas hold seven Pods: three steady Flink Pods plus one Flink replacement allowance in `tier3-pubsub`, and the Operator, supervisor and one Operator replacement allowance in `tier3-system`; PVCs are zero.
-A reactive trial runs up to three TaskManagers, so its `tier3-pubsub` quota holds five Pods and the total is eight.
+A restore-deduplication trial runs up to three TaskManagers, so its `tier3-pubsub` quota holds five Pods and the total is eight.
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal, which is what the allowances are for.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-The proposal's `cost` is a planning estimate, USD 1.987 for every trial that is not reactive and USD 2.128 for a reactive one; the owner approves it before a dispatch, and nothing at run time compares spend against it.
+The proposal's `cost` is a planning estimate, USD 1.987 for every other trial and USD 2.128 for a restore-deduplication one; the owner approves it before a dispatch, and nothing at run time compares spend against it.
 It charges every Pod slot for the whole hour at the conservative CPU, memory and ephemeral-storage rates, the four or five application slots at the Flink shape and the three control slots at the Operator's, with no Spot or commitment discount, and adds a USD 1.00 reserve.
 The reserve covers what the input domain and the window bound, each a fraction of it at the largest domain of 10,000 records per subscription and at the [recovery exercise](#recovery-exercise)'s pulls, at most five batches of 100 per 15-second poll until cleanup: Pub/Sub throughput at USD 40 per TiB with a 1 KB minimum per request, Cloud Storage operations at USD 0.005 per 1,000 and storage, Cloud Logging ingestion, and the logs and evidence leaving Google Cloud at USD 0.12 per GiB.
 The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
@@ -155,6 +155,7 @@ The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the
 | `--restore-deduplication` | `false` by default, or `true`; sets the source's restore deduplication |
 | `--replay-delay-millis` | 0 to 1,000; defaults to 0. The observer sleeps this long for each input of the replay cohort, the middle third of each input's domain |
 | `--max-outstanding-messages` | 1 to 100,000; the source's flow-control element limit. Without it the connector's default applies |
+| `--hold-after-checkpoint-millis` | 0 to 600,000; defaults to 0. After each snapshot of an attempt that restored nothing, the observer holds the first replay-cohort input this long; see [Restore-deduplication trials](#restore-deduplication-trials) |
 
 Arguments use `--name=value`; unknown or repeated arguments fail.
 The fixed project is `flink-gcp`.
@@ -422,8 +423,9 @@ The retained checkpoint was seen completed before the supervisor wrote the repla
 | `jm-replacement` | Deletes the JobManager Pod | Every attempt before the fault | The replay cohort's observations |
 | `tm-replacement` | Deletes the TaskManager whose attempts processed most of the replay cohort | The attempts that Pod announced | The replay cohort's observations by those attempts |
 | `rescale-out`, `rescale-in` | Patches the job arguments, job parallelism and TaskManager replicas to the recovery manifest's, a savepoint upgrade | Every attempt before the fault | None: the savepoint completes, and acknowledges what it covers, before the job stops |
-| `reactive-scale-out`, `reactive-scale-in` | Patches the TaskManager replicas to the recovery manifest's, as soon as the replay cohort is published | Every attempt before the fault | None counted: see [Reactive trials](#reactive-trials) |
-| `reactive-tm-eviction` | Deletes the TaskManager whose attempts processed most of the replay cohort, as soon as it is published | Every attempt before the fault | None counted |
+| `reactive-scale-out` | Patches the TaskManager replicas to the recovery manifest's, as soon as the replay cohort is published | Every attempt before the fault | None counted: see [Restore-deduplication trials](#restore-deduplication-trials) |
+| `adaptive-scale-in` | Adds the recovery manifest's parallelism override, as soon as the replay cohort is published | Every attempt before the fault | None counted |
+| `reactive-tm-kill` | Deletes the TaskManager whose attempts processed most of the replay cohort without a grace period, inside the hold of a checkpoint triggered after replay-cohort output was seen | Every attempt before the fault | None counted |
 
 Each attempt is mapped to its Pod through the `pubsub-attempt` line the application logs when it initializes; an attempt announced by two Pods, or by another run, stops the trial.
 A TaskManager's loss may restart only the failover region on that Pod: in the DataStream topology each subtask's source, observer and sink form one region, so the other TaskManager's attempt keeps running without restoring anything, and its part of the replay cohort is acknowledged by the next checkpoint instead of redelivered.
@@ -443,37 +445,59 @@ An eviction, preemption, node shutdown or container restart at any stage, a Pod 
 The supervisor records the exercise's completion as its own success; the final receipt reports success only when the exercise's [verdict](#verdict) is `usable`.
 Synthetic tests run each trial through the supervisor's loop over a simulated relay, Operator and service, including a lost boundary, a population that never returns, a replay under new input message IDs, foreign output, connector metrics that never appear, a checkpoint outside the run's state, an unplanned replacement and a wrong savepoint; they do not establish real-service redelivery, failover scope or timing.
 
-### Reactive trials
+### Restore-deduplication trials
 
-The reactive kinds test the source's restore deduplication ([#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049)) in the case it exists for ([#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054)).
-Flink's reactive scheduler restarts the job from its latest checkpoint when its TaskManagers change, and a scale-out restarts it at the completion of a checkpoint.
-When the task thread is busy, the cancellation can then discard that checkpoint's completion notification before the source acknowledges what the checkpoint covered, and the service redelivers it to the restored job.
+These kinds test the source's restore deduplication ([#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049)) in the case it exists for ([#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054)): a restore of a checkpoint whose completion notification never ran, so that Pub/Sub redelivers what the checkpoint already covers.
+Each kind produces that case on purpose and runs only with the setting on, so a `usable` trial shows the ledger suppressing what the case redelivers; a trial with the setting off would show only the duplicate, and the delivery refuses it.
 The savepoint rescales above never lose that notification, so they cannot reach this case.
+All three run under Flink's AdaptiveScheduler, which restarts the whole job from its latest checkpoint for every rescale and failure.
 
-The application runs in the Operator's standalone mode with `scheduler-mode: reactive`.
+The two reactive kinds run in the Operator's standalone mode with `scheduler-mode: reactive`.
 Both manifests run the same job, and the recovery manifest differs only in `taskManager.replicas`, which the Operator applies to the TaskManager Deployment in place.
 The scheduler takes the job's parallelism from the TaskManagers, so a scale to three makes two subtasks read subscription 0, as the [split plan](../../../docs/content/docs/connectors/datastream/pubsub.md#subscriptions-splits-and-parallelism) assigns it.
 It waits 120 seconds for TaskManagers before it starts the job, so that one registering after the first checkpoint does not restart it before the fault.
 In standalone application mode, the Operator's `UserLibMountDecorator`, unchanged from 1.15.0 to 1.16.1, mounts an empty volume over `/opt/flink/usrlib` whenever `pipeline.classpaths` is set, which hides the relay's JAR and dependencies there, and the JobManager then fails to load its entry class and restarts; the first deployed run, `ps2056-rso-off-a1`, stopped on that restart.
 The decorator leaves alone a JobManager that already mounts a path under `/opt/flink/usrlib`, so the reactive JobManager template mounts an empty volume at `/opt/flink/usrlib/.operator-guard`.
 
-The observer sleeps 100 ms for each replay-cohort input, and the source's flow-control limit is 100,000 messages, so the replay cohort keeps the task thread busy for about 330 seconds on a subtask that reads a subscription alone.
+The adaptive kind runs in native mode with `jobmanager.scheduler: adaptive` and without reactive mode, because reactive mode refuses the resource-requirements change that a scale-in, as an autoscaler makes it, goes through.
+Its recovery manifest differs from the initial one only in `pipeline.jobvertex-parallelism-overrides`, which bounds the job's one vertex at two.
+The Operator treats that option as a scale in native mode and applies it in place through `PUT /jobs/:jobid/resource-requirements`; on an error it falls back to an ordinary upgrade, which replaces the JobManager or restores a savepoint and so stops the trial.
+The override names the vertex by an id Flink derives from the source's uid, which the relay pins in `PubSubRecoveryJob.DATASTREAM_VERTEX_ID`; a relay test holds the pin to the job graph, and a manifest test holds the rendered override to the pin.
+Both of its manifests name three TaskManager replicas: the resource manager releases the TaskManager the scale-in leaves idle once its idle timeout passes, and recovery is proven only once that Pod is gone.
+Like the reactive kinds, it waits 120 seconds for TaskManagers before it starts the job, so that one registering late does not rescale it, and restore it, before the fault.
+
+The completion notification reaches the source reader as a mail on the task thread, which runs only between records, and on the DataStream entry point the observer is chained to the source.
+After each snapshot of an attempt that restored nothing, the observer holds the first replay-cohort input for the kind's hold, so that checkpoint's notification stays queued behind it for that long, and logs `event=pubsub-hold` with the checkpoint id.
+No hold happens when no replay-cohort input follows the snapshot, and a notification that runs before one does disarms the hold, so a logged hold means the notification was still queued when the hold began; the verdict credits a checkpoint only when at least one attempt logged a hold after it.
+A restart or a TaskManager loss inside the hold therefore always finds the notification unrun: the cancellation drops a queued mail, and a restored task never receives the notification of the checkpoint it restored.
+The hold makes the race deterministic; without it, the cancellation reached the TaskManager about 30 ms after the completion in the deployed runs of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056), so with a 100 ms delay per record a subtask's notification could run first in roughly three tries of ten, an estimate from that gap.
+
+The observer also sleeps 100 ms for each replay-cohort input, and the source's flow-control limit is 100,000 messages, so the cohort keeps flowing for minutes, with inputs buffered behind the one in progress, and every checkpoint taken meanwhile covers some of it unacknowledged.
 The limit matters because the source acknowledges only at checkpoint completion, so the SDK's default of 1,000 would leave the thread idle for most of a 120-second interval.
-The exercise injects the fault as soon as the replay cohort is published rather than once it is processed, so the cohort is still in flight while Autopilot provisions a new TaskManager's node and while the scheduler waits for the new resources to settle and then for a checkpoint to complete before it rescales.
-In local cycles with an idle task thread, the notification always ran first and nothing was redelivered.
-The other cohorts carry no delay.
+The other cohorts carry no delay and no hold.
+
+- **`reactive-scale-out`**: the exercise patches the replica count as soon as the replay cohort is published.
+  Autopilot provisions the new TaskManager's node, the scheduler waits for the new resources to settle, and it restarts the job when its next checkpoint completes, within milliseconds and inside that checkpoint's 30-second hold.
+- **`adaptive-scale-in`**: the exercise adds the parallelism override as soon as the replay cohort is published, and the scheduler rescales when its next checkpoint completes, inside that checkpoint's 30-second hold, as for the scale-out.
+- **`reactive-tm-kill`**: the exercise waits for replay-cohort output and marks the checkpoints the job has reported, so that a checkpoint completing above the mark was triggered after some of the cohort was processed.
+  While at least 30 seconds of that checkpoint's 90-second hold remain, it deletes the TaskManager whose attempts processed most of the cohort without a grace period; a completion seen later is passed over for the next one, at most three times, after which the trial stops, because the cohort drains and a checkpoint taken after that has nothing to hold.
+  The 30 seconds also absorb the difference between the supervisor's clock, which times the deletion, and the JobManager's, which times the trigger.
+  The kubelet's shortest termination still signals the container, so whether the dying reader nacks its leases, and Pub/Sub redelivers at once, or leaves them to lapse is not controlled; either way that checkpoint's notification is lost.
 
 Recovery is proven by a restore of a checkpoint under the run's state prefix after the fault, with the same JobManager, and by every job vertex running at the kind's recovery TaskManagers.
-A scale also needs the Operator to report the new generation deployed with the recovery manifest, and an eviction needs the deleted Pod gone.
-An eviction can restart the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for every vertex to run at three; in both deployed evictions the replacement registered within the restart's 120-second resource stabilization, and the job restored once.
+A rescale also needs the Operator to report the new generation deployed with the recovery manifest, the adaptive scale-in also needs the idle TaskManager gone, and a kill needs the deleted Pod gone.
+A kill can restart the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for every vertex to run at three; in both evictions of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056) the replacement registered within the restart's 120-second resource stabilization, and the job restored once.
 While the trial recovers, every restore the job counts is accepted and recorded as `restores`; one after recovery still stops the trial.
 
-What a reactive restart displaces is redelivered, and the oracle's completeness check counts it.
-What the restored checkpoint had covered is the oracle's `covered_redeliveries`, which restore deduplication exists to suppress, and the comparison between the two settings reads that count.
-A scale-in or eviction restarts the job when a TaskManager disappears, at no particular point relative to a checkpoint, so it is not expected to reproduce the race and checks that deduplication loses nothing.
-Because the fault follows the cohort's publication within about half a minute, the checkpoint such a restart restores usually predates the cohort and covers no unacknowledged message, so its ledger is empty.
-The deployed trials of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056) bear that out, and their [findings](../../../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md) record one scale-out whose ledger suppressed 2,390 redeliveries against the 2,390 ids the restored checkpoint had covered.
-The verdict does not depend on the count.
+The case is the first restore after the fault, which the `recovery` outcome records as `first_restored`; a kill restores again when the replacement TaskManager registers after the scheduler's resource stabilization.
+The outcome's `hold` records the checkpoint the case needs, when it was triggered, the hold, the event that must fall inside it, and how many relay attempts logged a hold after that checkpoint: for a kill, the event is the deletion, inside the hold of the checkpoint it waited for, and for a rescale, the first restore, of the checkpoint whose completion triggered it, read from the job's checkpoint history.
+The hold is counted from the checkpoint's trigger, which precedes every subtask's snapshot, so the bound errs short.
+The `after` outcome's `deduplication` holds the source's `ledgerEntriesExpired` and `ledgerEntries`, summed over its subtasks when the trial completes, and as `redeliveriesSuppressed` the highest suppressed count, summed over subtasks, that any reading after the fault's first restore returned, with `suppressed_samples` readings behind it.
+The counter is per reader and starts at zero with every attempt, so the exercise reads it on every poll after that restore; a kill that restores twice would otherwise lose what the first restored attempts suppressed.
+It keeps the highest reading rather than a sum: Flink answers metrics from a store that may still hold an earlier attempt's value, which a sum would count twice and a maximum only repeats, and the attempts before the fault restored no ledger, so their counter stays at zero.
+The verdict asks only whether any restored attempt suppressed a redelivery, which the maximum answers; an attempt that ends between two polls can go unread, which errs towards `inconclusive`.
+A rescale's event is its restore rather than its cancellation, which the job's checkpoint statistics do not time; the deployed restores came about half a second after the completion, far inside the 30-second hold, and a slower one errs towards `inconclusive` too.
+What the restart displaces is redelivered, and the oracle's completeness check counts it; what the restored checkpoint had covered and the ledger missed is the oracle's `covered_redeliveries`.
 
 ### Verdict
 
@@ -490,7 +514,9 @@ The record adds the output oracle's account of every collected line, the observa
 | Each replayed observation came under an input message ID the input was processed under before the fault, asked when recovery is proven and again over everything collected by the end | `replay-ids-not-preserved` |
 | A rescale's recovery outcome expects no replay | `replay-unexpected` |
 | A rescale saw no replay-cohort output from the attempts it started, by the end | `replay-after-savepoint` |
-| A reactive trial's recovery ran at the kind's recovery TaskManagers, as the exercise read every vertex's parallelism | `rescale-unproven` |
+| A restore-deduplication trial's recovery ran at the kind's recovery parallelism, as the exercise read every vertex's | `rescale-unproven` |
+| A restore-deduplication trial's first restore after the fault was of the checkpoint its case names, at least one relay attempt logged a hold after that checkpoint, and the fault fell inside the hold | `case-unproduced` |
+| A restore-deduplication trial's restored ledger suppressed at least one redelivery | `suppression-unobserved` |
 | The fault names one of the seven kinds | `unknown-trial` |
 | Each family below was read in a sample before the fault and in one after recovery | `unsampled-<window>`, `unobserved-<family>-in-<window>` |
 
@@ -810,7 +836,7 @@ The scenario takes two inputs beyond the common ones.
 A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the dispatched commit, which the workflow checks out fresh.
 The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
 The owner approves the trial's estimate before dispatching it; dispatching is the approval.
-The reviewed trials are the four the campaign [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs and the six reactive ones of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054); the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
+The reviewed trials are the four the campaign [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs and the three restore-deduplication ones of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054); the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, so queueing before the job starts costs the run none of its startup budget.
 
