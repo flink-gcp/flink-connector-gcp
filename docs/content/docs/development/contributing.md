@@ -82,6 +82,10 @@ Connector verification commands and compatibility requirements live in
 [`.agents/references/repository-guide.md`]({{< param BookRepo >}}/blob/main/.agents/references/repository-guide.md).
 Ordinary builds and agent sessions use the committed copies without downloading them.
 
+Each flink-gcp-dev-tools release opens or updates a Draft PR from `flink-gcp-bot` on the
+`dev-tools/update` branch that performs the steps below for that release; the review it needs is in [`AGENTS.md`]({{< param BookRepo >}}/blob/main/AGENTS.md).
+Follow the steps by hand to select another reviewed commit or to roll back.
+
 To update them, choose a reviewed commit from dev-tools main, set its full SHA as
 `dev_tools_revision` in `justfile`, and run `just dev-tools-sync` from the repository root.
 The installer requires Bash, Git, `gh`, tar and just.

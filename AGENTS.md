@@ -175,6 +175,12 @@ green; use the clean-state procedures in that guide for such changes.
   not to read the PR or the agent memories
   (ADR-0130). Its findings are hypotheses, a defect it finds that predates the change is routed by
   the user, and a round that could not run is recorded rather than skipped in silence.
+- A dev-tools update PR that `flink-gcp-bot` opened from `dev-tools/update` and that holds only the
+  bot's commit needs `$self-review-round-two` and current aggregate `CI passed` before Ready: its
+  shared diff already passed every review round in flink-gcp-dev-tools, so round one and the
+  independent review are not repeated. Round two checks what the update changes here and whether
+  the description holds here. A maintainer commit on that branch, such as a migration, returns the
+  PR to the full flow above (ADR-0164).
 - Pin GitHub Actions with `just pin-actions` when adding a workflow or changing an action version.
 - Write commit messages, PR text, issues, code comments, and javadoc in English.
 
