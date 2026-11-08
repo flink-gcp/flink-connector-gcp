@@ -21,6 +21,8 @@ from .bigtable.lifecycle import BigtableLifecycle
 from .cloudtasks.lifecycle import CloudTasksLifecycle
 from .cloudtasks.queue import Queue
 from .common import Failure
+from .firestore.database import Databases
+from .firestore.lifecycle import FirestoreLifecycle
 from .google import actor_session
 from .quiesce import namespace_writers, poll_writers
 from .resource import RESOURCE_SCENARIOS
@@ -34,6 +36,7 @@ CONTROLLERS = {
     "cloudtasks-recovery": (Queue, CloudTasksLifecycle),
     "bigtable-recovery": (Instance, BigtableLifecycle),
     "spanner-recovery": (SpannerInstance, SpannerLifecycle),
+    "firestore-recovery": (Databases, FirestoreLifecycle),
 }
 
 
@@ -64,11 +67,11 @@ def barrier(env):
     What it proves, from a fresh listing on every call: no object that could
     run or restore a writer remains in the application namespace, whoever
     owns it. The workload's grants reach every resource of its kind, Cloud
-    Tasks queues project-wide, Bigtable's `bt1316-` instances and Spanner's
-    `sp1360-` instances, and any Pod running as the namespace's service
-    account holds them, so the whole namespace is what must be empty, as for
-    Pub/Sub. Deletes on this path are graceful, so a Pod leaving the API
-    means its containers terminated.
+    Tasks queues project-wide, Bigtable's `bt1316-` instances, Spanner's
+    `sp1360-` instances and Firestore's `fs1879-` databases, and any Pod
+    running as the namespace's service account holds them, so the whole
+    namespace is what must be empty, as for Pub/Sub. Deletes on this path are
+    graceful, so a Pod leaving the API means its containers terminated.
 
     What it does not prove: that no write a terminated Pod sent is still
     executing at the service. One that lands after the resource's deletion is

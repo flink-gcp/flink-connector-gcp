@@ -26,6 +26,7 @@ from .model import Phase
 from .policy import (
     BIGTABLE_OBSERVATIONS,
     CLOUDTASKS_OBSERVATIONS,
+    FIRESTORE_OBSERVATIONS,
     SPANNER_OBSERVATIONS,
 )
 from .rest import Unsent
@@ -62,6 +63,11 @@ RESOURCE_SCENARIOS = {
     ),
     "spanner-recovery": ResourceScenario(
         "spanner", "Spanner", "instance", SPANNER_OBSERVATIONS
+    ),
+    # One intent names both of the run's databases, which the runner creates
+    # one after the other under the same call marker.
+    "firestore-recovery": ResourceScenario(
+        "firestore", "Firestore", "databases", FIRESTORE_OBSERVATIONS
     ),
 }
 
@@ -318,7 +324,7 @@ class ResourceLifecycle:
         makes the oracle's reads, bounded by `deadline`, and a scenario may
         also make through it the supervisor's own writes its role allows:
         Spanner's supervisor creates its session and commits the late seed
-        rows through it.
+        rows through it, and Firestore's commits its late seed records.
         """
         self._role("supervisor")
         self._read()

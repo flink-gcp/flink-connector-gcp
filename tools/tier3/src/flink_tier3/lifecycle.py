@@ -40,6 +40,7 @@ from .bigquery import actors as bigquery_actors
 from .bigquery import plan as bigquery_plan
 from .bigtable import trial as bigtable_trial
 from .cloudtasks import trial as cloudtasks_trial
+from .firestore import trial as firestore_trial
 from .model import APPROVAL_VERSION, SCENARIOS
 from .policy import BIGQUERY, DIGEST, PUBSUB
 from .pubsub import actors as pubsub_actors
@@ -587,7 +588,7 @@ def start(args, store):
         and scenario not in RESOURCE_SCENARIOS
     ):
         raise rt.Failure(
-            "Only a Cloud Tasks, Bigtable or Spanner trial runs a campaign"
+            "Only a Cloud Tasks, Bigtable, Spanner or Firestore trial runs a campaign"
         )
     if scenario == "bigquery-recovery":
         return start_bigquery(args, store)
@@ -955,6 +956,10 @@ def main(argv=None):
     run.add_argument(
         "--spanner-trial",
         help="Spanner trial: " + ", ".join(spanner_trial.KINDS),
+    )
+    run.add_argument(
+        "--firestore-trial",
+        help="Firestore trial: " + ", ".join(firestore_trial.KINDS),
     )
     recovery = sub.add_parser("recover")
     recovery.add_argument("--source-id", required=True)

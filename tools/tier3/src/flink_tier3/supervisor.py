@@ -25,6 +25,7 @@ from .bigtable.exercise import BigtableExercise
 from .cleanup import Cleanup
 from .cloudtasks.exercise import CloudTasksExercise
 from .common import ApiError, Failure, transient, utc
+from .firestore.exercise import FirestoreExercise
 from .metrics import CHECKPOINTS_EVENT
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
@@ -39,6 +40,7 @@ RESOURCE_EXERCISES = {
     "cloudtasks-recovery": CloudTasksExercise,
     "bigtable-recovery": BigtableExercise,
     "spanner-recovery": SpannerExercise,
+    "firestore-recovery": FirestoreExercise,
 }
 
 
@@ -386,7 +388,8 @@ class Supervisor:
                         if isinstance(self.exercise, CloudTasksExercise):
                             self.exercise.verify_tasks()
                         if isinstance(
-                            self.exercise, (BigtableExercise, SpannerExercise)
+                            self.exercise,
+                            (BigtableExercise, SpannerExercise, FirestoreExercise),
                         ):
                             self.exercise.verify_tables()
                         success, reason = True, "recovery exercise finished"
