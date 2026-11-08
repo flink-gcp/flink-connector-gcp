@@ -95,7 +95,7 @@ The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`fires
 The `firestore-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-firestore` against two databases it creates for the run, measures the job before and after each recovery, and judges each of the four components on its own collection or kind.
 It is the trial set of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#firestore-recovery-trial) records its design ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
 It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
-Nothing in it has run against the service yet, and the [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixes its first deployed runs.
+The [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixes its deployed runs; the first pilot stopped on the Datastore-mode seed before the application existed, as its revision records.
 
 ### Trial and estimate
 
@@ -138,9 +138,10 @@ It then creates the Datastore-mode database the same way under the same marker; 
 A database reports no state while it is created, so existing is what admission waits for.
 
 The runner then writes each seed, 108,000 records in 216 commits of 500 writes, the most one commit takes: through the Firestore API's `documents:commit` in Native mode and the Datastore API's non-transactional `commit`, which names the database, in Datastore mode.
+Every Datastore API call also sends the `x-goog-request-params` routing header naming the database, without which the service refuses it with 400 "Missing routing header" ([#2130](https://github.com/flink-gcp/flink-connector-gcp/issues/2130)).
 Each write sets fixed values without a precondition, so a commit that failed transiently, or aborted and was answered 409, is repeated until the startup deadline.
 The receipt records each database's readback and the seed size the service accepted.
-Neither the creation nor the 432 commits has been measured; the startup budget is the Spanner scenario's 600 seconds.
+Neither the creation nor the 432 commits has been timed: the first pilot created both databases and wrote the Native-mode seed, but its evidence records no per-call time; the startup budget is the Spanner scenario's 600 seconds.
 Only then does the runner open the namespace quota for three Pods and create the FlinkDeployment.
 A database that already carries a run's name, and a Native-mode create the service refuses although the name read free, refuse the run and nothing is deleted; the marker stays until both databases have read back, because either create could still land behind cleanup until then.
 

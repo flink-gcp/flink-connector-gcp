@@ -37,7 +37,9 @@ class Firestore:
     A database created reads back `creating` seconds later, and one deleted
     reads back `deleting` more times before it is gone; a DELETE of a
     database that does not exist answers 404. A commit of more than 500
-    writes, or to a database that does not exist, is refused. A
+    writes, or to a database that does not exist, is refused, and so is a
+    Datastore API call without the routing header that names its database,
+    with the service's 400 and message. A
     Native-mode query answers an array, every element with the read time,
     and resumes after a document's full name; a Datastore-mode one answers a
     batch with an end cursor and whether more results follow. Each
@@ -51,7 +53,16 @@ class Firestore:
         self.calls, self.errors, self.writes, self.queries = [], {}, [], []
         self.creating, self.deleting, self.vanishing = 30, 0, {}
 
-    def request(self, method, url, json=None, params=None, **_):
+    def request(self, method, url, json=None, params=None, headers=None, **_):
+        if url.startswith(DATASTORE):
+            database = self.trial.database("datastore")
+            routing = f"project_id=flink-gcp&database_id={database}"
+            if (headers or {}).get("x-goog-request-params") != routing:
+                message = (
+                    "Missing routing header. Please fill in the request header"
+                    " with format x-goog-request-params:" + routing + "."
+                )
+                return Response({"error": {"code": 400, "message": message}}, 400)
         operation, mode = self._route(method, url, params, json)
         self.calls.append((operation, mode))
         if (operation, mode) in self.errors:

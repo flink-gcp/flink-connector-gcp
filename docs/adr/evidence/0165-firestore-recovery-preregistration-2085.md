@@ -266,3 +266,35 @@ The findings record each of these reads with its time.
 2. Acceptance is the receipt's `success` with the `usable` verdict and the fault read above; recovery durations, families, extra copies, split counts, spans and whether each copy was still reading at each recovery are published beside it, never pass or fail criteria.
 3. A missing input key or wrong sink value, and a missing, wrong or late copied record, are connector defects unless a condition above names the rig; the copies' extra deliveries are expected and counted, and how often a sink executed a write is not observed.
 4. The findings, including every inconclusive attempt and every reading above, are published beside this record as `0165-firestore-recovery-findings-2085.md`, and that change closes #2085 and #1879.
+
+## Revisions after dispatch
+
+The owner approved this record on 2026-11-08, and the pilot was dispatched as preregistered once its pins had merged.
+The revision below awaits the owner's approval on #1879, after the pilot stopped and before its re-run.
+
+**How the pilot ended.**
+`fs2085-jm-a1` ([run 42496716547](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42496716547)), dispatched at 2026-11-08T15:49Z on `main` at `310dab35ce7479e7164f472a6adbaa7f1a668530`, stopped before the application existed:
+
+- the runner created both databases and read both back, and wrote the Native-mode seed, so the creator role and the name-conditioned data grant held for those calls;
+- its first Datastore-mode seed commit, `POST datastore.googleapis.com/v1/projects/flink-gcp:commit`, was refused with HTTP 400, which the runner does not repeat;
+- cleanup deleted both databases, the run reached verified idle and released the lock, and the receipt records the databases `cleaned`.
+
+The rig's refusal kept only the status, so the cause was read from a probe the owner approved, run with the owner's own credentials rather than the runner's: a Datastore-mode database `fs1879-probe-2085-d` in `us-central1`, created at about 16:15Z and deleted by 16:19Z, took the rig's exact commit and answered 400 `INVALID_ARGUMENT` "Missing routing header", asking for `x-goog-request-params: project_id=flink-gcp&database_id=<database>`.
+The same commit with that header succeeded, and a `runQuery` without it was refused the same way, so the supervisor's late-seed commits and the oracle reads would have failed too.
+Under [Firestore conditions](#firestore-conditions) this is a seed commit refused with a status the runner does not repeat, a rig finding.
+
+**The repair.**
+[#2130](https://github.com/flink-gcp/flink-connector-gcp/issues/2130) sends the routing header on every Datastore API call the rig makes, and has the shared REST helper keep the service's own message in a call it sees refused, so the evidence names the cause of the next refusal whenever the first 8 KiB of the service's error body can be read and parsed within the call's deadline.
+It changes no input, timing, oracle or grant, and the application image is unchanged.
+Since the probe did not run as the runner, whether the Datastore API's calls are tested against the database-name condition, a premise under [What the pilot measures](#what-the-pilot-measures), is still open, and the re-run reads it.
+
+**The re-run.**
+The owner approves the pilot again, with everything else in this record unchanged:
+
+- inputs: `firestore_trial=jm-replacement`, `run_id=fs2085-jm-a2`, no `campaign` input, `repeats=0`, and the same `application_digest`, dispatched once #2130 has merged;
+- then, after it is read as [Before dispatch](#before-dispatch) describes, the campaign as preregistered, from `fs2085-tm-a1`;
+- at most one more attempt, so seven in all, `fs2085-jm-a1` included;
+- at most USD 3.07 more (`3.0714259`), so USD 21.50 (`21.4999813`) in all;
+- every attempt's window still ends before 2026-11-13T14:41:26Z, and the campaign is still dispatched no later than 2026-11-13T04:00Z.
+
+The reads of [Before dispatch](#before-dispatch) are made again before the re-run.
