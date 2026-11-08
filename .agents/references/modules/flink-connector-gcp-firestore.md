@@ -102,8 +102,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   the setter; a new path that builds a read time must truncate too.
 - **Cursors are the library's `startAfter(DocumentSnapshot)`** (`QueryCursors`), for pages and for
   checkpoints alike; a checkpoint also shrinks the `limit` and drops the `offset`. Do not hand-build
-  a cursor: the implicit ordering (inequality fields, then `__name__`) is the library's to derive.
-  The planner's probe refuses a query whose projection omits an ordered field.
+  a cursor. **Every query is ordered explicitly before it is read** (`QueryCursors.withCursorOrder`,
+  in the planner and when the split reader starts a split; #2088): an Enterprise-edition database
+  answers a query without `orderBy` in no name order, so an implicit first page loses documents.
+  The derivation mirrors the library's `createImplicitOrderBy` (pinned by `QueryCursorsTest`)
+  except that `!= null`/`!= NaN` count as inequalities, as the service counts them. The planner's
+  probe refuses a query whose projection omits an ordered field.
+- **An Enterprise-edition database refuses `PartitionQuery`** (`FAILED_PRECONDITION`); the planner
+  keeps that a planning failure and names `partitionCount(1)` (owner, 2026-11-07; ADR-0173).
 - **A page is materialised** (a read-time transaction has no streaming read), so `pageSize` bounds a
   fetch's memory — plus up to one page per mid-stream library retry, appended before the reader's
   cut — and a fetch is one request, which `wakeUp()` waits for.
@@ -208,8 +214,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and ranges on the id; coarse TIMESTAMP_LTZ as covering bounds.
 - **An inequality's field must stay in the mask** (`FirestoreCollectionQueryFactory`):
   `startAfter` takes the ordered field from the last document.
-- **Never send Native `!=` or `!= null`**: Enterprise returns documents lacking the field, from
-  which no cursor can be taken (the planner probe and every later page take one). `<>` goes as
+- **Never send Native `!=` or `!= null`**: `!=` matches values of every other type, which a
+  range does not (the old cursor reason lapsed with #2088's explicit ordering; ADR-0197). `<>` goes as
   `< v OR > v` (`OR = NaN` on DOUBLE), `IS NOT NULL` as `>=` the type's lowest value
   (`OR = NaN` on DOUBLE); a `<>` counts 2-3 toward the 30 disjuncts.
 - Declined on purpose: reference-marked columns, `IS NULL` (a missing field matches nothing),

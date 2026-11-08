@@ -108,15 +108,24 @@ A scan asks the service for `partitionCount` partitions, the source's parallelis
 It is an upper bound: a small collection group comes back in fewer partitions, and the subtasks left without one finish immediately, which the JobManager logs.
 Asking for more partitions than subtasks lets a subtask that finishes early take another partition while a slower one is still reading.
 The partitions are cut by document name at the time of planning, not at the read time, because the client library's partitioning call takes no read time; that moves nothing, because together they cover every name, so a document of the snapshot falls in exactly one of them.
+An Enterprise-edition database does not partition: the service answers the partitioning call with `FAILED_PRECONDITION` ("Service not implemented for Enterprise DB: PartitionQuery", measured 2026-11-07), so a scan that asks for more than one partition fails when it is planned, with a message naming the setting.
+Read such a group with `partitionCount(1)`, which takes no partitioning call and reads the group in one subtask.
 
 A reader fetches a split in pages of `pageSize` documents, one request each, continuing after the last document of the page before.
+The position after a document is taken in the query's own ordering, then by each field the query filters with an inequality (`!= null` and `!= NaN` included), then by document name, so every page has to read the query in that order, the first page included.
+The source therefore writes that ordering into every query before it reads it.
+The service applies the same ordering to a query that states none in a Standard-edition database, but answers such a query in no particular order in an Enterprise-edition database, where a read of more than one page would otherwise skip documents ([#2088]({{< param BookRepo >}}/issues/2088)).
+The written ordering is the one the service applies anyway, so it needs no index the query did not already need.
+In an Enterprise-edition database, ordering by a field also narrows a not-equal query: an unordered `!=` or `!= null` query there also matches documents that lack the field (measured for both; [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md)), while the ordered one, like any such query in a Standard-edition database, does not.
+A stored null still matches an ordered `!=` query in an Enterprise-edition database, and matches no ordered `!= null` query.
+The source reads the narrower result on every page; before [#2088]({{< param BookRepo >}}/issues/2088), a read of such a query longer than one page was not consistent either way: a `!=` query's first page alone was unordered, and a `!= null` query repeated and skipped documents.
 The client library retries a page whose stream breaks, from the page's last document, without lowering its limit; the reader keeps only the documents the page asked for, and the next page reads the rest.
 A page is held in memory whole before any of its documents is handed on, so `pageSize` times the largest document is what one fetch ordinarily holds; lower it for large documents.
 Until the reader cuts it, a retried page holds the retry's documents as well, up to one page more for each break, so a fetch that meets breaks can briefly hold a multiple of that bound.
 
 A checkpoint records, for each split being read, the query that is left: its start moved to just after the last document the job has passed, its `limit` reduced by the documents already passed, and its `offset` dropped.
 A restore resumes there, without reading a document twice and without skipping one.
-The one query this cannot continue is one whose projection leaves out a field it orders by or filters with an inequality (`<`, `<=`, `>`, `>=`, `!=`, `not-in`), because the position after a document is made of those fields' values.
+The one query this cannot continue is one whose projection leaves out a field it orders by or filters with an inequality (`<`, `<=`, `>`, `>=`, `!=`, `not-in`, `!= null`, `!= NaN`), because the position after a document is made of those fields' values.
 The source reads a document when it plans the read, and refuses such a query then, with a message naming the field to add.
 
 The design, and the alternatives it declined, are recorded in [ADR-0173]({{< param BookRepo >}}/blob/main/docs/adr/0173-the-firestore-source-reads-partition-cursor-ranges-at-one-read-time.md).
@@ -687,8 +696,8 @@ The source tests read through the production planner and page reader, and a Mini
 The endpoint reaches the client through the builder, never through `FIRESTORE_EMULATOR_HOST`.
 
 The gated suite runs the Native-mode sink and source against the service, over application-default credentials, when `FIRESTORE_IT_PROJECT` names a project and only through `just e2e`.
-Each gated class creates a Standard-edition database of its own, and the table's class also an Enterprise-edition one for the array inside an array, and deletes them afterwards ([ADR-0185]({{< param BookRepo >}}/blob/main/docs/adr/0185-the-firestore-e2e-suite-creates-an-ephemeral-database-per-gated-class.md)).
-It asserts the rejection table above, the request size and edition findings below, the service's partitioning, the read times it refuses, and the microsecond precision of version times and timestamp values.
+Each gated class creates a Standard-edition database of its own, and an Enterprise-edition one where a test measures that edition, and deletes them afterwards ([ADR-0185]({{< param BookRepo >}}/blob/main/docs/adr/0185-the-firestore-e2e-suite-creates-an-ephemeral-database-per-gated-class.md)).
+It asserts the rejection table above, the request size and edition findings below, the service's partitioning, the Enterprise edition's query order and partitioning refusal, the read times it refuses, and the microsecond precision of version times and timestamp values.
 The Datastore-mode tests run the same binary under `--database-mode=datastore-mode`, through the production client and MiniCluster jobs, the source's failing once after a checkpoint as the Native-mode one does; the legacy Datastore emulator, which Google's documentation directs Datastore-mode users away from, is not used.
 The gated suite covers Datastore mode as well, each class in a Datastore-mode database of its own: the refusal table above and what a refused commit applies, the writer's confirmation pass against it, the splitter's sampling, the key order, which query shapes the source can split, and the raw answers the source relies on.
 

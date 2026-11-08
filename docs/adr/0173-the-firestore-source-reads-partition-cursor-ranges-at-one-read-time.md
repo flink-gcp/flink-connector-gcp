@@ -22,8 +22,9 @@ limitations under the License.
   `google-cloud-cli:583.0.0-emulators`, one run; the source ITs re-run 2026-10-03 against
   `587.0.0-emulators` and unchanged); revised 2026-10-10 by [#1689] (a configured read time is
   truncated to the microsecond) and by [#1706] (partitioning and read times measured against the
-  service)
-- Issues: [#1541], [#355], [#1546], [#1689], [#1706]
+  service); revised 2026-11-07 by [#2088] (every query is ordered explicitly; Enterprise-edition
+  ordering and partitioning measured against the service)
+- Issues: [#1541], [#355], [#1546], [#1689], [#1706], [#2088]
 - Modules: firestore (`source`, `source.batch`); base (`lineage.internal`)
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Source
 
@@ -92,12 +93,38 @@ The decision rests on the read-time contract, not on how versions are stored: th
 With update times on whole microseconds, as `common.proto` implies and the emulator shows, the floored time reads exactly the data the time given names.
 The Table API's `scan.read-time` reaches the builder through `OptionSetters` and is truncated there too.
 
+### Every query is ordered explicitly ([#2088], 2026-11-07)
+
+The first page of a split carried the query as the user wrote it, and every later page and every resume point continued it with `startAfter`, which writes out the implicit ordering.
+That is correct only if the service answers the first page in the implicit ordering too.
+Measured on 2026-11-07 against ephemeral Standard- and Enterprise-edition databases with google-cloud-firestore 3.50.0, one run each:
+
+- A Standard-edition database answers a query without `orderBy` in name order, as the implicit ordering says.
+- An Enterprise-edition database answers it in no name order (ten documents came back as `d09, d05, d01, d08, d00, d04, ...`). A paged read of ten documents in pages of two returned two of them, without an error.
+- For `whereNotEqualTo("n", null)`, the library's `startAfter` leaves `n` out of the ordering, because its `UnaryFilterInternal.isInequalityFilter` answers `false`. The service treats the filter as an inequality: the Standard edition refused the second page with `INVALID_ARGUMENT: order by clause cannot contain more fields after the key`, and the Enterprise edition returned a document twice and skipped others.
+- An Enterprise-edition database refuses `PartitionQuery` with `FAILED_PRECONDITION: Service not implemented for Enterprise DB: PartitionQuery`.
+
+The source now writes the cursor ordering into each query before anything reads it (`QueryCursors.withCursorOrder`): the query's own `orderBy`, then each inequality-filtered field it does not order by, in field-path order, then `__name__`, the added fields in the direction of the last explicit ordering.
+This is the derivation of the library's `createImplicitOrderBy`, which is package-private, and `QueryCursorsTest` holds it equal to what `startAfter` produces for each query shape it lists, among them composites, descending and name orderings, and name ranges.
+The one deliberate difference is that `!= null` and `!= NaN` count as inequalities, as the service counts them; once the ordering is explicit, the library's cursor keeps it.
+The planner applies it before it resolves an `offset` and before it cuts splits, and the split reader applies it again when it starts a split, so that a split restored from a checkpoint taken before this revision is read in the same order.
+A collection-group scan's partitions were already ordered by `__name__` by the library.
+
+The written ordering is the one a Standard-edition database applies to the query anyway, so it needs no index the query did not need before.
+
+The partitioning refusal stays a failure of planning (owner's decision, 2026-11-07), as for the emulator's `UNIMPLEMENTED` in the declined alternatives; when `PartitionQuery` is refused with `FAILED_PRECONDITION`, the planner adds that an Enterprise-edition database must be read as one partition, which takes no call, and keeps the service's error as the cause.
+`FirestoreSourceRealGcpITCase` reads unfiltered, range-with-offset and `!= null` queries in pages of two on both editions, reads an Enterprise collection group as one partition in pages of seven, and pins the partitioning refusal and its message.
+With the ordering reverted, the `!= null` case failed on both editions as described above.
+
 ## Consequences
 
 - A read that outlasts the service's version window, or a restore from a checkpoint older than it, fails every remaining read; the job has to start over with a new read time. The docs state the window.
 - A page is materialised, so `pageSize` times the largest document is what one fetch ordinarily holds, and each mid-stream retry can add up to one page more.
 - Planning costs up to two document reads beyond the data, plus the documents an `offset` skips, which the service would read and bill for the offset anyway, and fails at planning if the user's query needs an index that does not exist.
-- Paging and resume need no knowledge of the query beyond what the library already applies, so filters, orderings, projections, cursors, `limit` and `offset` on a user query all resume correctly; a `limitToLast` query reads its documents in reverse.
+- Paging and resume need no knowledge of the query beyond its cursor ordering, which the source writes out, so filters, orderings, projections, cursors, `limit` and `offset` on a user query all resume correctly on either edition; a `limitToLast` query reads its documents in reverse.
+- A projection must include a field the query filters with `!= null` or `!= NaN`, as it must any other inequality-filtered field; the planner's probe refuses one that leaves it out.
+- A collection-group scan of an Enterprise-edition database runs in one subtask, with `partitionCount(1)`.
+- In an Enterprise-edition database, a `!=` or `!= null` query no longer returns documents that lack the field. Unordered, the edition matches them (ADR-0197 measured `!=` and `!= null`; this change's gated test pins `!= null`), but ordering by the field excludes them, as a Standard-edition database does for the same query (a probe on 2026-11-08 measured the ordered `!=` too, where a stored null still matched on Enterprise and not on Standard; the ordered `!= null` matched no stored null on either). No ordering keeps them and still continues the query on both editions: a cursor positions a document by the field's values, and a Standard-edition database refused to continue a `!= null` query that was not ordered by its field (measured above); for `!=` the client library already ordered every page after the first by the field. Before this revision a read longer than one page was inconsistent with itself either way: for `!=` only the first page was unordered and carried the wider result, and a `!= null` query, which the library continued by name alone, repeated and skipped documents (measured above). The Table API is unaffected, because it keeps every predicate as a Flink residual and Flink reads a missing field as `NULL`.
 - A restart before the first completed checkpoint reads at a new read time unless `readTime` is configured, so a sink that wrote the first attempt's records may hold two snapshots.
 - A cursor on some stored values names another position, so a read ordered by such a field can repeat or skip documents: the library narrows an `__int__` outside 32 bits, re-encodes a `__binary__` of subtype 0 as plain bytes, and decodes a vector's non-double elements as zero. A stored value it cannot decode at all, such as a `__binary__` with no bytes or a `__request_timestamp__` outside 32 unsigned bits, would fail the job with the library's own error once a page or a checkpoint continued after the document holding it. The service refuses to store every one of these forms, in a Standard-edition and an Enterprise-edition database alike and on the emulator (measured on 2026-10-03), so none written through the Firestore API reaches a read; writes through the Enterprise edition's MongoDB-compatible API were not tried, and the tests pin the library's handling in case one ever arrives.
 
@@ -119,3 +146,4 @@ The Table API's `scan.read-time` reaches the builder through `OptionSetters` and
 [#1589]: https://github.com/flink-gcp/flink-connector-gcp/issues/1589
 [#1689]: https://github.com/flink-gcp/flink-connector-gcp/issues/1689
 [#1706]: https://github.com/flink-gcp/flink-connector-gcp/issues/1706
+[#2088]: https://github.com/flink-gcp/flink-connector-gcp/issues/2088

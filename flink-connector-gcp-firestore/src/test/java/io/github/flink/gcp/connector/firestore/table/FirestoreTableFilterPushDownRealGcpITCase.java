@@ -235,14 +235,13 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
 
     /**
      * On both editions a pushed range, {@code <>}, {@code IN} and {@code IS NOT NULL} return the
-     * rows the same scan returns with {@code scan.filter-push-down.enabled} off, on Standard read
-     * in pages of two so that every query resumes at a cursor (an Enterprise read of several pages
-     * skips documents, #2088): what the emulator answered of integers and doubles comparing as
-     * numbers, UTF-8 string and unsigned byte order, a range matching no value of another type, and
-     * the explicit ordering a {@code != null} filter needs. On Enterprise a 32-bit BSON integer
-     * passes the ranges a {@code BIGINT} column pushes, and {@code !=} also returns a missing
-     * field, which the residual removes. On Standard, a range beside an equality on another field
-     * needs a composite index, and the job fails when it starts.
+     * rows the same scan returns with {@code scan.filter-push-down.enabled} off, read in pages of
+     * two so that every query resumes at a cursor: what the emulator answered of integers and
+     * doubles comparing as numbers, UTF-8 string and unsigned byte order, a range matching no value
+     * of another type, and the explicit ordering a {@code != null} filter needs. On Enterprise a
+     * 32-bit BSON integer passes the ranges a {@code BIGINT} column pushes. On Standard, a range
+     * beside an equality on another field needs a composite index, and the job fails when it
+     * starts.
      */
     @Test
     void pushedComparisonsReturnTheUnpushedRowsOnBothEditionsAndAnIndexIsRefusedLoudly()
@@ -262,9 +261,7 @@ class FirestoreTableFilterPushDownRealGcpITCase extends AbstractFirestoreRealGcp
                         + " PRIMARY KEY (id) NOT ENFORCED) ";
         for (DatabaseDestination database : List.of(database(), enterprise)) {
             String edition = database == enterprise ? "ent" : "std";
-            // An Enterprise-edition database returns a query without orderBy in no name order,
-            // so a read of several pages skips documents there (#2088); one page reads them all.
-            String paged = database == enterprise ? "" : ", 'scan.max-rows-per-fetch' = '2'";
+            String paged = ", 'scan.max-rows-per-fetch' = '2'";
             table.executeSql(
                     "CREATE TABLE pushed_" + edition + columns + with(database, collection, paged));
             table.executeSql(

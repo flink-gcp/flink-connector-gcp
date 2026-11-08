@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0197: The Firestore scan pushes equalities as necessary conditions
 
 - Status: Accepted
-- Date: 2026-11-05 (client library facts read in google-cloud-firestore 3.50.0; service behavior measured 2026-11-05 against ephemeral Standard- and Enterprise-edition Native-mode databases, one run each, and against the pinned emulator image); revised 2026-11-07 by [#2066] (the document id, fields of `ROW` columns, `CHAR` and `BINARY`, and the matcher shared with Datastore mode) and by [#2076] (ranges, `<>`, `IN`, `IS NOT NULL`, coarse timestamps and `scan.filter-push-down.enabled`, measured the same day on the emulator and on ephemeral Standard- and Enterprise-edition databases)
-- Issues: [#1830], [#1829] (the pushdown umbrella), [#1838] (LIMIT, which depends on this record), [#2066], [#2076]
+- Date: 2026-11-05 (client library facts read in google-cloud-firestore 3.50.0; service behavior measured 2026-11-05 against ephemeral Standard- and Enterprise-edition Native-mode databases, one run each, and against the pinned emulator image); revised 2026-11-07 by [#2066] (the document id, fields of `ROW` columns, `CHAR` and `BINARY`, and the matcher shared with Datastore mode) and by [#2076] (ranges, `<>`, `IN`, `IS NOT NULL`, coarse timestamps and `scan.filter-push-down.enabled`, measured the same day on the emulator and on ephemeral Standard- and Enterprise-edition databases); revised 2026-11-08 by [#2088] (the source orders every query, so the cursor reason for not sending `!=` lapsed and the ranges stay for the reason left)
+- Issues: [#1830], [#1829] (the pushdown umbrella), [#1838] (LIMIT, which depends on this record), [#2066], [#2076], [#2088]
 - Modules: firestore (`io.github.flink.gcp.connector.firestore.table.source`, `firestore.common.table`)
 - Current behavior: `docs/content/docs/connectors/table/firestore.md` § Filter pushdown
 
@@ -113,6 +113,13 @@ The service's answers were read through the client library on the pinned emulato
 
 `PredicateMatcherTest`, `TimestampBoundTest` (a property test of every operator against truncated reads), `OrderedStringsTest` and `FirestoreCollectionQueryFactoryTest` pin the search, the bounds, the string rule and the query; `FirestoreTableFilterPushDownPlanTest` the pushed and declined shapes and the option; `FirestoreTableFilterPushDownITCase` compares each new shape with its collection-group oracle, read in pages of two, with integers under `DOUBLE`, U+FFFD and an emoji, `0x7f` and `0x80`, and millisecond-column timestamps either side of a boundary, and the id ranges with filters on the document path; `FirestoreTableFilterPushDownRealGcpITCase` compares them on both editions with the same scan with the option off, a 32-bit integer on Enterprise included, and holds the Standard edition's refusal of a range beside an equality on another field.
 
+### The cursor reason lapsed ([#2088], 2026-11-08)
+
+[#2088] made the source order every query explicitly, by its inequality fields and then the document name, in the planner and in the split reader ([ADR-0173]).
+A `!=` or `!= null` query is therefore ordered by its field, and an Enterprise-edition database then leaves out a document lacking the field, as Standard does (measured for `!= null` on 2026-11-07 and for `!=` on 2026-11-08, when a stored null still matched the ordered `!=` on Enterprise, a value the cursor can take), so the cursor failure the `!=` row above records no longer arises.
+The ranges stay: a range matches only values of the literal's type, while `!=` also matches a value of every other type (a boolean and a string beside integers, on both editions on 2026-11-08), which the scan would then read and, under `type-mismatch-policy = 'fail'`, fail on.
+The gated class now reads both editions in pages of two.
+
 ## Consequences
 
 - A selective scan reads and is billed for fewer documents; the residual costs one comparison per document read.
@@ -137,3 +144,4 @@ The service's answers were read through the client library on the pinned emulato
 [#2050]: https://github.com/flink-gcp/flink-connector-gcp/issues/2050
 [#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066
 [#2076]: https://github.com/flink-gcp/flink-connector-gcp/issues/2076
+[#2088]: https://github.com/flink-gcp/flink-connector-gcp/issues/2088
