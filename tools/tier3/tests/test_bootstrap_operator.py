@@ -45,6 +45,7 @@ def documents():
         "tier3-pubsub",
         "tier3-bigtable",
         "tier3-spanner",
+        "tier3-firestore",
     ):
         objects.extend(
             [
@@ -93,7 +94,7 @@ def documents():
                     "namespace": "tier3-system",
                 },
                 "data": {
-                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner\n"
+                    "flink-conf.yaml": "kubernetes.operator.watched.namespaces: tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner,tier3-firestore\n"
                 },
             },
             {
@@ -369,6 +370,7 @@ def test_chart_download_falls_back_to_the_next_pinned_url(monkeypatch, tmp_path)
         "watch-missing-pubsub",
         "watch-missing-bigtable",
         "watch-missing-spanner",
+        "watch-missing-firestore",
         "watch-duplicate",
         "config-scalar",
         "binding-subject",
@@ -414,13 +416,14 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
     elif case.startswith("watch-"):
         watched = {
             "watch-all": "",
-            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner,default",
-            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner",
-            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks,tier3-pubsub,tier3-bigtable,tier3-spanner",
-            "watch-missing-pubsub": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-bigtable,tier3-spanner",
-            "watch-missing-bigtable": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-spanner",
-            "watch-missing-spanner": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable",
-            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner,tier3-bigquery",
+            "watch-extra": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner,tier3-firestore,default",
+            "watch-missing-cloudtasks": "tier3-smoke,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner,tier3-firestore",
+            "watch-missing-bigquery": "tier3-smoke,tier3-cloudtasks,tier3-pubsub,tier3-bigtable,tier3-spanner,tier3-firestore",
+            "watch-missing-pubsub": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-bigtable,tier3-spanner,tier3-firestore",
+            "watch-missing-bigtable": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-spanner,tier3-firestore",
+            "watch-missing-spanner": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-firestore",
+            "watch-missing-firestore": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner",
+            "watch-duplicate": "tier3-smoke,tier3-cloudtasks,tier3-bigquery,tier3-pubsub,tier3-bigtable,tier3-spanner,tier3-firestore,tier3-bigquery",
         }[case]
         objects[-2]["data"]["flink-conf.yaml"] = (
             "kubernetes.operator.watched.namespaces: " + watched
@@ -461,6 +464,8 @@ def test_rendered_chart_rejects_ownership_or_idle_violations(case):
         "bigtable-wrong-binding",
         "spanner-missing",
         "spanner-wrong-binding",
+        "firestore-missing",
+        "firestore-wrong-binding",
     ],
 )
 def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
@@ -478,6 +483,7 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             "tier3-pubsub": "pubsub",
             "tier3-bigtable": "bigtable",
             "tier3-spanner": "spanner",
+            "tier3-firestore": "firestore",
         }.get(namespace, "smoke")
         if (
             case == "cloudtasks-missing"
@@ -509,6 +515,12 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
             and kind == "serviceaccount"
         ):
             raise RuntimeError("Spanner ServiceAccount not found")
+        if (
+            case == "firestore-missing"
+            and namespace == "tier3-firestore"
+            and kind == "serviceaccount"
+        ):
+            raise RuntimeError("Firestore ServiceAccount not found")
         if case == "missing" and kind == "serviceaccount":
             raise RuntimeError("ServiceAccount not found")
         if kind == "crd":
@@ -548,6 +560,10 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                     )
                     or (
                         case == "spanner-wrong-binding" and namespace == "tier3-spanner"
+                    )
+                    or (
+                        case == "firestore-wrong-binding"
+                        and namespace == "tier3-firestore"
                     )
                     else account,
                     "namespace": namespace,
@@ -722,6 +738,33 @@ def test_operator_requires_completed_bootstrap(monkeypatch, tmp_path, case):
                 "-o",
                 "json",
             ),
+            (
+                "get",
+                "serviceaccount",
+                "firestore",
+                "--namespace",
+                "tier3-firestore",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "role",
+                "tier3-firestore-job",
+                "--namespace",
+                "tier3-firestore",
+                "-o",
+                "json",
+            ),
+            (
+                "get",
+                "rolebinding",
+                "tier3-firestore-job",
+                "--namespace",
+                "tier3-firestore",
+                "-o",
+                "json",
+            ),
         ]
     else:
         with pytest.raises(RuntimeError):
@@ -859,7 +902,7 @@ def test_post_apply_verification_reads_release_and_live_resources(
     monkeypatch.setattr(cluster, "kubectl", kubectl)
     if case == "idle":
         cluster.verify_operator()
-        assert len(calls) == 19
+        assert len(calls) == 21
     else:
         with pytest.raises(RuntimeError):
             cluster.verify_operator()

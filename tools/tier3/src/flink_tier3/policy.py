@@ -204,9 +204,7 @@ PUBSUB_ADMISSION = {
 
 
 # Application namespaces first, then the control namespace.
-# The Firestore namespace joins once it exists (#2083): every run's preflight
-# reads each namespace listed here.
-NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, BIGTABLE, SPANNER, SYSTEM)
+NAMESPACES = (SMOKE, CLOUDTASKS, BIGQUERY, PUBSUB, BIGTABLE, SPANNER, FIRESTORE, SYSTEM)
 
 
 RUN_ID = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\Z")
