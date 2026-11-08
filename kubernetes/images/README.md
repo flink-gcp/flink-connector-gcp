@@ -358,9 +358,9 @@ An [earlier dispatch](https://github.com/flink-gcp/flink-connector-gcp/actions/r
 | `spanner-recovery` | `sha256:858e05ac0672e46bc74e8a2a419ee2fd4336591a1840cfbbcd2674d3c03a2251` | 2026-11-05T16:11:52Z | 2026-11-12T16:11:52Z |
 
 The digests are the ones the `sha-d11be404…` tag resolves to, and `operator` and `flink` the ones their `1.15.0` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, and the Operator and Flink digests are unchanged, so the Helm pin and the `flink` pin stand.
-[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests and cites this run for the recreated `flink` version; the `bigquery-recovery` digest stays a dispatch input verified live.
-The same run republished the Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopts.
-A BigQuery trial checks the `operator` mirror, the lifecycle-tools pin and its `bigquery-recovery` image, so it must be admitted so that its window ends before 2026-11-11T16:10:41Z.
+[pins.cue](pins.cue) adopted the lifecycle-tools and smoke digests until the [Firestore recovery publication](#firestore-recovery-publication) below, and still cites this run for the recreated `flink` version; the `bigquery-recovery` digest stayed a dispatch input verified live.
+The same run republished the Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopted.
+A BigQuery trial, which checked the `operator` mirror, the lifecycle-tools pin and its `bigquery-recovery` image, had to be admitted so that its window ended before 2026-11-11T16:10:41Z.
 
 ### Pub/Sub reactive trial publication
 
@@ -380,8 +380,26 @@ It mirrored the Operator 1.16.1 image into the `operator` package and rebuilt th
 | `firestore-recovery` | `sha256:fbb33f946ccc71b46ae63ae10cfcf9fb6235b9ee521956165c77b208f371aa98` | 2026-11-07T14:42:36Z | 2026-11-14T14:42:36Z |
 
 The digests are the ones the `sha-4ab6d780…` tag resolves to, and `operator` the one its `1.16.1` tag resolves to, read from GAR after the run.
-Nothing adopts this run's lifecycle-tools or smoke digests: [pins.cue](pins.cue) still names those of the BigQuery uploader trial publication, which every reactive trial ran as its supervisor.
+Nothing adopted this run's lifecycle-tools or smoke digests: [pins.cue](pins.cue) named those of the BigQuery uploader trial publication, which every reactive trial ran as its supervisor, until the [Firestore recovery publication](#firestore-recovery-publication) below.
 The `pubsub-recovery` digest was a dispatch input verified live, and the six usable trials' [findings](../../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md) record it.
+
+### Firestore recovery publication
+
+The [Firestore recovery publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42484046881) built main commit `035622999a8e0612a71c5783a4caf780a5766179` on 2026-11-08 UTC, the first after the Firestore scenario of [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084) and the Operator's watch over its namespace of [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083) merged, for the recovery trials of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085); its `firestore-recovery` image is the one every one of those trials names as a dispatch input.
+The run kept the `operator` and `flink` versions already in GAR, so their creation times are earlier than its own: the `1.16.1` `operator` mirror was created by the [Pub/Sub reactive trial publication](#pubsub-reactive-trial-publication), and the `flink` version by the [BigQuery uploader trial publication](#bigquery-uploader-trial-publication).
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d` | 2026-11-07T14:41:26Z | 2026-11-14T14:41:26Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-11-05T16:10:42Z | 2026-11-12T16:10:42Z |
+| `lifecycle-tools` | `sha256:3ad53a9c6e2c5edac17228bc3b284ab43957db4e7287eef85fb77add89ee07db` | 2026-11-08T13:53:25Z | 2026-11-15T13:53:25Z |
+| `smoke` | `sha256:f8292e22306331c4c0ac38f44886c8d40690521729a09f2d217d57f853c73ed3` | 2026-11-08T13:53:39Z | 2026-11-15T13:53:39Z |
+| `firestore-recovery` | `sha256:2ccf5d437bc9ebd8a384fe1d0f47ff53c48494528b9d11410b433cb50897c300` | 2026-11-08T13:54:14Z | 2026-11-15T13:54:14Z |
+
+The digests are the ones the `sha-03562299…` tag resolves to, and `operator` and `flink` the ones their `1.16.1` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, the `operator` digest is the one the Operator's Helm values pin, and the `flink` digest is unchanged, so the Helm pin and the `flink` pin stand.
+[pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests; the `firestore-recovery` digest stays a dispatch input verified live.
+The same run republished the BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopts.
+A Firestore trial checks the `operator` mirror, the lifecycle-tools pin and its `firestore-recovery` image, so it must be admitted so that its window ends before 2026-11-13T14:41:26Z.
 
 For a shell or Docker build argument, read a pin with:
 
