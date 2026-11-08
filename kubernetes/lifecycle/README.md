@@ -294,10 +294,10 @@ The operation names the write that failed: `evidence:<event>` for an exported ob
 Each actor's first failure is also exported as an `evidence-failed` event, unless that failure was itself an exported observation's; the event is best effort because the evidence write may be what failed, and every failure is printed on the actor's standard output.
 A cleaned-record write that fails leaves the cause only in that event and on the supervisor's standard output.
 Read the receipt's `evidence_failure` first, then the `evidence-failed` events under the actor's receipts.
-The finalizer requires no workload Pods, PVCs or Flink objects, no non-baseline resources except zero-replica Operator ReplicaSets, and quotas observed back at their original values.
+The finalizer requires no workload Pods, PVCs or Flink objects and no non-baseline resources except zero-replica Operator ReplicaSets in the namespaces the approval recorded, its application namespace and `tier3-system`, and quotas observed back at their original values.
 After temporary objects disappear, recovery waits up to three minutes for Operator and quota status to reflect their restored specifications; identity changes, unexpected objects and API failures still fail immediately.
-It then changes to the read-only plan identity, checks all three refreshed infrastructure plans under the same retained lock, and changes back to the runner identity to write the immutable result and release control records.
-Any nonempty run-finalization plan retains the lock and fails the workflow.
+It then writes the immutable result and releases the control records and the lock.
+A run proves that it restored what it changed; it does not plan the infrastructure roots, so a change merged while it ran neither fails it nor keeps its lock ([#2115](https://github.com/flink-gcp/flink-connector-gcp/issues/2115)).
 
 Cancellation of the Actions runner does not cancel the supervisor Job.
 A `workflow_run` recovery starts when `Tier-3 run` or `CI` completes, including failure or cancellation.
@@ -308,8 +308,7 @@ An automatic completion event for an execution that does not own the lock is a n
 Recovery concurrency is grouped by source execution, so unrelated CI completions cannot replace a pending lock-holder recovery, and a second recovery of the same source waits for the first.
 Recovery requires that the source holds the lock and that the GitHub API reports its execution completed, then compares the saved lock and approval.
 It reads the approval as written, without checking it against the current policy, so a policy change merged while a run holds the lock does not strand that run's recovery.
-Adding a namespace to the shared inventory is the exception: recovery lists the new namespace, whose standing objects, such as its `kube-root-ca.crt` ConfigMap, the older approval's baseline lacks, so cleanup refuses them as non-baseline and keeps the lock.
-A dispatched execution records its baseline from its own checkout, the `rig_sha` it names or the dispatching commit, when it starts and before it takes the lock, so merge such a change only while no `Tier-3 run` execution is queued or in progress and no run holds the lock, and afterwards dispatch only from a commit that contains it.
+Cleanup reads only the namespaces the approval recorded, so a namespace added to the policy since the run started does not count against its baseline.
 Recovery requests cooperative stop and waits for Job completion when possible, then reconciles cleanup against actual state even if the record already says `cleaned`.
 It can clean concurrently with a supervisor; a recovery exercise's operations are guarded by the stop state and object UID/version.
 Before quota or scale writes, cleanup reads the resource version and then rechecks the exact environment-lock owner.
@@ -354,19 +353,19 @@ Deleting the environment lock by hand strands any run record recovery already wr
 
 ## Shared infrastructure ownership
 
-All three CI plan/apply roots acquire `_control/environment.json` using `ifGenerationMatch=0` before Kubernetes preflight or OpenTofu init and retain it through their operations and post-apply checks.
-Contention waits up to 20 minutes, then fails visibly; the lock has no expiry or age-based takeover.
-Each matrix job has its own owner nonce and releases only its own observed generation.
-Queued matrix jobs can exhaust that wait while another execution recovers; wait for lock-holder recovery to finish before rerunning a cancelled CI execution.
-Cancellation retains a lock until the completed-execution recovery checks it; cancelled applies also support explicit recovery.
+Only runs acquire `_control/environment.json`, using `ifGenerationMatch=0`; the lock has no expiry or age-based takeover.
+CI plans and applies take no lock ([#2115](https://github.com/flink-gcp/flink-connector-gcp/issues/2115)); an apply's post-apply idle and drift check is skipped while a run holds the lock, and one a run started during the check fails and is rerun.
+A lock an earlier plan or apply left is recovered as before, with refreshed plans.
+A run whose `rig_sha` predates that change still needs plans to finalize, so the run workflow refuses it before admission.
 The existing per-root OpenTofu state locks still protect state transactions.
 
 Temporary scale/quota patches are outside OpenTofu state and exist only while a lifecycle execution owns the shared lock.
-They restore the tracked zero-replica/zero-admission values before infrastructure resumes.
-Defer infrastructure PR merges while a smoke run holds the environment lock.
-An infrastructure change merged during that window cannot apply under the run lock and makes recovery's current-main plans nonempty; automatic recovery then retains the lock and requires coordinated incident repair.
+The run restores the tracked zero-replica/zero-admission values before it releases the lock.
+The environment lock only keeps two runs apart: a pull request's plan and a merge's apply take no lock and do not require an idle cluster, so infrastructure changes merge at any time.
+A `tier3-bootstrap` or `tier3-operator` apply during a trial can reset the quotas the trial raised or, through Helm, the Operator's scale; such a trial fails and is run again.
+A plan made during a trial can show the trial's temporary quotas and Operator scale.
 Raw administrative Kubernetes/OpenTofu commands can bypass this workflow protocol; coordinate them as maintenance and do not run them concurrently with a retained lifecycle lock.
-The plan and runtime identities are trusted control writers and can delete the environment lock; its absence alone is not an admission proof.
+The runtime identities are trusted control writers and can delete the environment lock; its absence alone is not an admission proof.
 The runner additionally checks unfinished durable approvals and live inventory.
 
 ## Local verification and evidence
@@ -377,7 +376,7 @@ Neither command creates a cloud workload.
 The wheel test installs the built artifact outside the source tree and checks CLI startup and policy/source resources using the test environment's installed SDKs.
 
 Evidence is under `gs://flink-gcp-tier3-evidence/runs/RUN_ID/`:
-`approval.json`, `application.json`, `images.json`, per-observation supervisor/runner receipts, and `result.json` after verified idle and empty plans.
+`approval.json`, `application.json`, `images.json`, per-observation supervisor/runner receipts, and `result.json` after verified idle.
 BigQuery, Pub/Sub and Cloud Tasks trials additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events; a Cloud Tasks trial also retains its task listing pages.
 Their final receipt requires the usable verdict their exercise decided as well as successful cleanup.
 Run evidence becomes deletion-eligible after 30 days; mutable `_control/` records have no automatic expiry.

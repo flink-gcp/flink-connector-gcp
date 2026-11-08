@@ -201,7 +201,7 @@ The namespace `resourceNames` of `tier3-bootstrap-reader` and `tier3-bootstrap-w
 CI imports the six prerequisites and creates five objects: the KSA, job Role/RoleBinding and lifecycle Role/RoleBinding; a local refreshed plan read `6 to import, 5 to add, 0 to change, 0 to destroy`.
 
 From the ClusterRole patch until the bootstrap PR merges, main's bootstrap plan removes the new namespace from both ClusterRoles.
-In that window a merge-triggered bootstrap apply fails its drift check, another PR's bootstrap plan reverts the patch, and a run-owned recovery refuses the non-empty plan.
+In that window a merge-triggered bootstrap apply fails its drift check and another PR's bootstrap plan reverts the patch.
 Immediately before each administrator mutation, confirm that the environment lock `gs://flink-gcp-tier3-evidence/_control/environment.json` is absent and no `OpenTofu apply` run is in progress, and merge no other `opentofu/tier3-bootstrap` change until the bootstrap PR has merged.
 
 After the merge-triggered apply, verify the namespace's zero quotas, empty workload inventory, expected KSA annotation and runner reads before adding the namespace to the shared preflight and the Helm watch set.
@@ -371,7 +371,7 @@ The GCP root owns the following new resources and grants.
 | `tier3-supervisor@flink-gcp.iam.gserviceaccount.com` | Storage access from the dedicated supervisor KSA; no GKE administration or image publication |
 | `gs://flink-gcp-tier3-evidence` | `us-central1`, STANDARD, uniform access, public access prevention, no soft delete or versioning |
 | Evidence `runs/` prefix | Both runtime identities can create and read objects; only the bucket lifecycle removes them, starting at age 30 days |
-| Evidence `_control/` prefix | Both runtime identities can update control records; the plan identity can mutate only `_control/environment.json` |
+| Evidence `_control/` prefix | Both runtime identities can update control records; the plan identity only reads them |
 | Existing smoke bucket | Both runtime identities can list/read objects and have Object User access under `runs/` for cleanup; no bucket administration |
 
 Object User includes object creation and update as well as deletion.

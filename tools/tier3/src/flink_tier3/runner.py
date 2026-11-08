@@ -511,13 +511,12 @@ class Runner:
         owned = self.cleanup.owned(items, ["supervisor", "config"])
         return not any(obj["metadata"]["uid"] in owned for obj in items)
 
-    def receipt(self, control, plans):
-        """The final receipt this run control record and plans produce."""
+    def receipt(self, control):
+        """The final receipt this run control record produces."""
         result = {
             "nonce": self.env.approval.nonce,
             "sha": self.env.approval.sha,
             "idle": True,
-            "plans": plans,
             "success": bool(
                 control.success
                 and not control.evidence_failed
@@ -582,7 +581,7 @@ class Runner:
                 result[scenario.field] = getattr(control, scenario.field)
         return result
 
-    def finalize(self, plans):
+    def finalize(self):
         """Write the final receipt, delete the control record and release the lock.
 
         A retry after a failure past the receipt keeps the receipt it finds:
@@ -591,19 +590,13 @@ class Runner:
         rt.EnvironmentLock(self.env.store).assert_owner(self.env.approval.lock_owner)
         control, generation = self.env.records.read()
         require_services_clean(control)
-        if (
-            plans.get("nonce") != self.env.approval.nonce
-            or plans.get("roots") != ["flink-gcp", "tier3-bootstrap", "tier3-operator"]
-            or not plans.get("empty")
-        ):
-            raise rt.Failure("All three refreshed empty plans are required")
         rt.verify_idle(self.env)
         if self.cleanup.remaining_state():
             raise rt.Failure("Run state reappeared")
         path = f"runs/{self.env.approval.run_id}/result.json"
         result, _ = self.env.store.read(path)
         if result is None:
-            result = self.receipt(control, plans)
+            result = self.receipt(control)
             write_artifact(
                 self.env.store, self.env.approval.run_id, "result.json", result
             )

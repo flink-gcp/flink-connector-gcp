@@ -302,13 +302,7 @@ def test_real_environment_and_handoff_complete_owned_cleanup(prepared, stored):
     assert supervisor.refresh().phase == Phase.CLEANED
     assert supervisor.refresh().bigquery["cleaned"]
     verify_idle(supervisor)
-    runner.finalize(
-        {
-            "nonce": environment.approval.nonce,
-            "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-            "empty": True,
-        }
-    )
+    runner.finalize()
     receipt, _ = environment.store.read(
         f"runs/{environment.approval.run_id}/result.json"
     )
@@ -556,7 +550,7 @@ def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, chang
     environment, *_ = prepared
     runner = Runner(environment)
     runner.cleanup.run("stopped before creation")
-    plans = lose_control_delete(environment, runner, monkeypatch)
+    lose_control_delete(environment, runner, monkeypatch)
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt, generation = environment.store.read(path)
     assert "bigquery" not in receipt
@@ -569,15 +563,14 @@ def test_final_receipt_retry_without_service_intent(prepared, monkeypatch, chang
     elif change == "idle":
         receipt["idle"] = False
     environment.store.write(path, receipt, generation)
-    plans = {**plans, "at": "2026-09-21T01:37:31Z"}
     if change == "none":
-        assert runner.finalize(plans) is False
+        assert runner.finalize() is False
         assert environment.store.read(path)[0] == receipt
         assert environment.store.read(environment.records.path)[0] is None
         assert environment.store.read(rt.ENVIRONMENT)[0] is None
     else:
         with pytest.raises(Failure, match="Final receipt conflicts"):
-            runner.finalize(plans)
+            runner.finalize()
         assert environment.store.read(environment.records.path)[0] is not None
         assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
@@ -591,13 +584,7 @@ def test_finalization_without_service_intent_keeps_concurrent_control(prepared):
     )
     # The control deletion is conditional on the generation the receipt read.
     with pytest.raises(rt.ApiError) as error:
-        runner.finalize(
-            {
-                "nonce": environment.approval.nonce,
-                "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-                "empty": True,
-            }
-        )
+        runner.finalize()
     assert error.value.status == 412
     control, _ = environment.store.read(environment.records.path)
     assert control["evidence_failed"]
@@ -610,28 +597,21 @@ def test_final_receipt_retry_after_control_deleted_before_lock_release(
     environment, *_ = prepared
     runner = Runner(environment)
     runner.cleanup.run("stopped before creation")
-    plans = lose_lock_release(environment, runner, monkeypatch)
+    first = lose_lock_release(environment, runner, monkeypatch)
     recovery = Runner(environment)
     recovery.restore_control()
     recovery.settle(request_stop=True)
-    plans = {**plans, "at": "2026-09-21T01:37:31Z"}
-    assert Runner(environment).finalize(plans) is False
+    assert Runner(environment).finalize() is False
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
     receipt, _ = environment.store.read(
         f"runs/{environment.approval.run_id}/result.json"
     )
-    assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
+    assert receipt == first
 
 
 def lose_lock_release(environment, runner, monkeypatch):
     """Finalize with the lock release failing, after control was deleted."""
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:30:00Z",
-    }
     original_delete = environment.store.delete
 
     def fail_lock(name, *args, **kwargs):
@@ -641,11 +621,11 @@ def lose_lock_release(environment, runner, monkeypatch):
 
     monkeypatch.setattr(environment.store, "delete", fail_lock)
     with pytest.raises(Failure, match="lock release unavailable"):
-        runner.finalize(plans)
+        runner.finalize()
     monkeypatch.setattr(environment.store, "delete", original_delete)
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-    return plans
+    return environment.store.read(f"runs/{environment.approval.run_id}/result.json")[0]
 
 
 @pytest.mark.parametrize("verdict", [rt.USABLE, INCONCLUSIVE])
@@ -653,31 +633,23 @@ def test_recovery_keeps_a_cleaned_bigquery_receipt(prepared, monkeypatch, verdic
     stored = {"stage": "complete", "verdict": verdict}
     environment, runner, *_ = service_cleaned(prepared, stored)
     control = environment.refresh().to_dict()
-    plans = lose_lock_release(environment, runner, monkeypatch)
+    first = lose_lock_release(environment, runner, monkeypatch)
     recovery = Runner(environment)
     # The restored record is the minimal one; the receipt carries the verdict.
     recovery.restore_control()
     recovery.settle(request_stop=True)
-    assert Runner(environment).finalize({**plans, "at": "2026-09-21T01:37:31Z"}) is (
-        verdict == rt.USABLE
-    )
+    assert Runner(environment).finalize() is (verdict == rt.USABLE)
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
     receipt, _ = environment.store.read(
         f"runs/{environment.approval.run_id}/result.json"
     )
-    assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
+    assert receipt == first
     assert receipt["bigquery"] == control["bigquery"]
 
 
 def lose_control_delete(environment, runner, monkeypatch):
     """Finalize with the control deletion failing, after the receipt was written."""
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:30:00Z",
-    }
     original_delete = environment.store.delete
 
     def fail_control(name, *args, **kwargs):
@@ -687,11 +659,11 @@ def lose_control_delete(environment, runner, monkeypatch):
 
     monkeypatch.setattr(environment.store, "delete", fail_control)
     with pytest.raises(Failure, match="control deletion unavailable"):
-        runner.finalize(plans)
+        runner.finalize()
     monkeypatch.setattr(environment.store, "delete", original_delete)
     assert environment.store.read(environment.records.path)[0] is not None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-    return plans
+    return environment.store.read(f"runs/{environment.approval.run_id}/result.json")[0]
 
 
 def recovery_runner(environment):
@@ -729,15 +701,15 @@ def stranded_receipt(prepared, monkeypatch, lost, verdict=rt.USABLE):
     stored = {"stage": "complete", "verdict": verdict}
     environment, runner, *_ = service_cleaned(prepared, stored)
     if lost == "control":
-        plans = lose_control_delete(environment, runner, monkeypatch)
+        first = lose_control_delete(environment, runner, monkeypatch)
     else:
-        plans = lose_lock_release(environment, runner, monkeypatch)
+        first = lose_lock_release(environment, runner, monkeypatch)
         recovery_runner(environment).restore_control()
     receipt, _ = environment.store.read(
         f"runs/{environment.approval.run_id}/result.json"
     )
     assert receipt["success"] is (verdict == rt.USABLE)
-    return environment, {**plans, "at": "2026-09-21T01:37:31Z"}
+    return environment, first
 
 
 def assert_retained(environment):
@@ -755,7 +727,7 @@ def assert_released(environment):
 def test_recovery_evidence_failure_keeps_a_success_verdict(
     prepared, monkeypatch, lost, event
 ):
-    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    environment, first = stranded_receipt(prepared, monkeypatch, lost)
     restore = fail_event(environment.store, monkeypatch, event)
     first = recovery_runner(environment)
     first.settle(request_stop=True)
@@ -763,7 +735,7 @@ def test_recovery_evidence_failure_keeps_a_success_verdict(
     assert first.env.evidence_failed
     assert environment.refresh().evidence_failed
     # The receipt predates this recovery's failure, and finalization keeps it.
-    assert recovery_runner(environment).finalize(plans) is True
+    assert recovery_runner(environment).finalize() is True
     assert_released(environment)
 
 
@@ -771,7 +743,7 @@ def test_recovery_evidence_failure_keeps_a_success_verdict(
 def test_recovery_state_cleanup_failure_keeps_a_success_verdict(
     prepared, monkeypatch, lost
 ):
-    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    environment, first = stranded_receipt(prepared, monkeypatch, lost)
     first = recovery_runner(environment)
     calls = []
 
@@ -784,7 +756,7 @@ def test_recovery_state_cleanup_failure_keeps_a_success_verdict(
     first.settle(request_stop=True)
     assert calls == [None]
     assert not environment.refresh().state_clean
-    assert recovery_runner(environment).finalize(plans) is True
+    assert recovery_runner(environment).finalize() is True
     assert_released(environment)
 
 
@@ -792,14 +764,14 @@ def test_recovery_state_cleanup_failure_keeps_a_success_verdict(
 def test_recovery_evidence_failure_under_an_unsuccessful_receipt_still_finalizes(
     prepared, monkeypatch, lost
 ):
-    environment, plans = stranded_receipt(prepared, monkeypatch, lost, INCONCLUSIVE)
+    environment, _ = stranded_receipt(prepared, monkeypatch, lost, INCONCLUSIVE)
     # No success to keep: the failure is recorded as before, here by the final
     # settled write alone, and the receipt derived from it is the stored one.
     restore = fail_event(environment.store, monkeypatch, "idle")
     recovery_runner(environment).settle(request_stop=True)
     restore()
     assert environment.refresh().evidence_failed
-    assert recovery_runner(environment).finalize(plans) is False
+    assert recovery_runner(environment).finalize() is False
     assert_released(environment)
 
 
@@ -807,7 +779,7 @@ def test_recovery_evidence_failure_under_an_unsuccessful_receipt_still_finalizes
 def test_recovery_refuses_remaining_state_without_lowering_the_verdict(
     prepared, monkeypatch, lost
 ):
-    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    environment, _ = stranded_receipt(prepared, monkeypatch, lost)
     state = f"runs/{environment.approval.run_id}/checkpoint"
     environment.store.write(state, {"saved": True}, bucket=BIGQUERY_STATE)
     original_delete = environment.store.delete
@@ -821,28 +793,28 @@ def test_recovery_refuses_remaining_state_without_lowering_the_verdict(
     with pytest.raises(Failure, match="Run state remains"):
         recovery_runner(environment).settle(request_stop=True)
     with pytest.raises(Failure, match="Run state reappeared"):
-        recovery_runner(environment).finalize(plans)
+        recovery_runner(environment).finalize()
     assert_retained(environment)
     # Once the state can be deleted, the receipt's verdict finalizes.
     monkeypatch.setattr(environment.store, "delete", original_delete)
     recovery_runner(environment).settle(request_stop=True)
-    assert recovery_runner(environment).finalize(plans) is True
+    assert recovery_runner(environment).finalize() is True
     assert_released(environment)
 
 
 @pytest.mark.parametrize("lost", ["control", "lock"])
 def test_recovery_refuses_an_unexpected_object(prepared, monkeypatch, lost):
-    environment, plans = stranded_receipt(prepared, monkeypatch, lost)
+    environment, _ = stranded_receipt(prepared, monkeypatch, lost)
     environment.kube.put(obj("ConfigMap", "stray", BIGQUERY))
     with pytest.raises(Failure, match="non-baseline object remains"):
         recovery_runner(environment).settle(request_stop=True)
     with pytest.raises(Failure, match="non-baseline object remains"):
-        recovery_runner(environment).finalize(plans)
+        recovery_runner(environment).finalize()
     assert_retained(environment)
 
 
 def test_recovery_does_not_keep_a_foreign_success_receipt(prepared, monkeypatch):
-    environment, plans = stranded_receipt(prepared, monkeypatch, "control")
+    environment, _ = stranded_receipt(prepared, monkeypatch, "control")
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt, generation = environment.store.read(path)
     receipt["nonce"] = "0" * 32
@@ -854,7 +826,7 @@ def test_recovery_does_not_keep_a_foreign_success_receipt(prepared, monkeypatch)
     restore()
     assert environment.refresh().evidence_failed
     with pytest.raises(Failure, match="Final receipt conflicts"):
-        recovery_runner(environment).finalize(plans)
+        recovery_runner(environment).finalize()
     assert_retained(environment)
 
 
@@ -885,7 +857,7 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
     environment.store.write(
         f"runs/{environment.approval.run_id}/approval.json", approval
     )
-    plans = lose_lock_release(environment, runner, monkeypatch)
+    first = lose_lock_release(environment, runner, monkeypatch)
     owner = approval["lock_owner"]
     monkeypatch.setenv("GITHUB_RUN_ID", "456")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
@@ -929,11 +901,6 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
     # Settlement ran over the restored record and rechecked state cleanup.
     assert restored["state_clean"]
     assert environment.store.read(rt.ENVIRONMENT)[0] == owner
-    (tmp_path / "plans.json").write_text(
-        json.dumps({**plans, "at": "2026-09-21T01:37:31Z"})
-    )
-    for root in cli.wf.ROOTS:
-        (tmp_path / (root + "-plan.log")).write_text("No changes.")
     cli.finish(args, environment.store)
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
@@ -941,4 +908,4 @@ def test_recovery_workflow_releases_a_lock_stranded_after_control_deletion(
         f"runs/{environment.approval.run_id}/result.json"
     )
     assert receipt["success"] is True
-    assert receipt["plans"]["at"] == "2026-09-21T01:30:00Z"
+    assert receipt == first

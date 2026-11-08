@@ -790,7 +790,7 @@ Message evidence has no separate cap; its size follows from the input domain and
 
 `Approval.pubsub_plan` and `PubSubLifecycle` derive service names and grants from the approval's identity.
 Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, and derives success only from the exercise's `usable` [verdict](#verdict).
-A finalization retry keeps the original receipt; the current plans must still prove the same nonce, all three foundation roots and an empty result.
+A finalization retry keeps the original receipt.
 
 The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch.
 The runner admits the trial and the supervisor joins it, as [admission](#admission-and-effective-access) describes, the supervisor runs the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.

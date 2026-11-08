@@ -481,8 +481,6 @@ class Cluster:
             raise RuntimeError(
                 "Authenticated principal does not match the selected plan/apply identity"
             )
-        self.quota()
-        self.idle()
         for namespace in NAMESPACES:
             self.can_i(True, "list", "apps", "deployments", namespace)
             self.can_i(True, "list", "flink.apache.org", "flinkdeployments", namespace)
@@ -521,9 +519,7 @@ class Cluster:
         self.can_i(False, "create", "apps", "deployments", "default")
         if self.root == "operator":
             self.operator_prerequisites()
-        print(
-            "Verified " + mode + " principal, Kubernetes permissions, and idle quotas"
-        )
+        print("Verified " + mode + " principal and Kubernetes permissions")
 
     def preflight(self):
         self.validate_target()

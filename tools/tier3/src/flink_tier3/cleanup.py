@@ -249,7 +249,12 @@ class Cleanup:
     def inventory(self):
         self.env.namespaces()
         self.env.refresh()
-        self.last_inventory = self.env.kube.inventory()
+        # Only the namespaces this run's approval recorded: those are the ones
+        # it changed, and a namespace added to the policy since it started has
+        # standing objects its baseline never saw.
+        self.last_inventory = self.env.kube.inventory(
+            tuple(self.env.approval.namespaces)
+        )
         known = ownership(
             self.last_inventory,
             set(self.env.observed) | {r["uid"] for r in self.env.roots.values()},
@@ -614,7 +619,7 @@ def verify_idle(env):
     control = env.refresh()
     require_services_clean(control)
     kube, approval = env.kube, env.approval
-    items = kube.inventory()
+    items = kube.inventory(tuple(approval.namespaces))
     baseline = set(approval.baseline_uids)
     for obj in items:
         uid = obj["metadata"]["uid"]

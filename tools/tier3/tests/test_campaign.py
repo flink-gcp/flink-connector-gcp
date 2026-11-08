@@ -100,13 +100,13 @@ def test_a_campaign_that_could_not_name_its_attempts_is_refused(
 
 def test_the_receipt_says_whether_the_application_was_created_and_why_it_stopped(env):
     runner = lifecycle(env, cli.runner_api.Runner)
-    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+    {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
     # The intent outlives a create that admission's last check stopped.
     seed_record(env, phase="cleaned", application_intent=True, reason=INTERRUPTED)
-    receipt = runner.receipt(runner.env.refresh(), plans)
+    receipt = runner.receipt(runner.env.refresh())
     assert (receipt["application_created"], receipt["reason"]) == (False, INTERRUPTED)
     seed_record(env, roots={"application": {"kind": "FlinkDeployment", "uid": "u"}})
-    assert runner.receipt(runner.env.refresh(), plans)["application_created"] is True
+    assert runner.receipt(runner.env.refresh())["application_created"] is True
 
 
 def test_next_prints_the_attempt_as_workflow_outputs(env, capsys, monkeypatch):

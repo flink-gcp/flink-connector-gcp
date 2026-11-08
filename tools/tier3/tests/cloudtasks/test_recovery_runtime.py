@@ -453,7 +453,7 @@ def test_an_uncleaned_queue_blocks_every_shared_completion_path(env, mutation):
     pending(runner.env)
     cleaned(runner.env)
     runner.env.records._change(mutation)
-    plans = {
+    {
         "nonce": env[2]["nonce"],
         "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
         "empty": True,
@@ -463,7 +463,7 @@ def test_an_uncleaned_queue_blocks_every_shared_completion_path(env, mutation):
         lambda: runner.env.records.set_phase(rt.Phase.CLEANED),
         lambda: runner.env.records.settled(None),
         lambda: rt.verify_idle(runner.env),
-        lambda: runner.finalize(plans),
+        lambda: runner.finalize(),
     ):
         with pytest.raises(Failure, match="Cloud Tasks queue cleanup"):
             call()

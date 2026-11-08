@@ -221,12 +221,6 @@ def test_receipt_retry_with_refreshed_plans(
     prepared, monkeypatch, change, service_intent
 ):
     environment, runner = settled(prepared, service_intent)
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:00:00Z",
-    }
     original_delete = environment.store.delete
 
     def fail_delete(name, *a, **kw):
@@ -236,7 +230,7 @@ def test_receipt_retry_with_refreshed_plans(
 
     monkeypatch.setattr(environment.store, "delete", fail_delete)
     with pytest.raises(Failure, match="control deletion unavailable"):
-        runner.finalize(plans)
+        runner.finalize()
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt, generation = environment.store.read(path)
     assert receipt["scenario"] == "pubsub-recovery"
@@ -248,15 +242,14 @@ def test_receipt_retry_with_refreshed_plans(
         receipt["idle"] = False
     environment.store.write(path, receipt, generation)
     monkeypatch.setattr(environment.store, "delete", original_delete)
-    plans = {**plans, "at": "2026-09-21T01:07:00Z"}
     if change == "none":
-        assert runner.finalize(plans) is False
+        assert runner.finalize() is False
         assert environment.store.read(environment.records.path)[0] is None
         assert environment.store.read(rt.ENVIRONMENT)[0] is None
-        assert environment.store.read(path)[0]["plans"]["at"] == "2026-09-21T01:00:00Z"
+        assert environment.store.read(path)[0] == receipt
     else:
         with pytest.raises(Failure, match="Final receipt conflicts"):
-            runner.finalize(plans)
+            runner.finalize()
         assert environment.store.read(environment.records.path)[0] is not None
         assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
@@ -348,13 +341,7 @@ def test_concurrent_control_change_retains_control_and_lock(prepared):
         {"operation": "synthetic", "cause": "concurrent"}
     )
     with pytest.raises(rt.ApiError) as error:
-        runner.finalize(
-            {
-                "nonce": environment.approval.nonce,
-                "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-                "empty": True,
-            }
-        )
+        runner.finalize()
     # The record is deleted only at the generation the receipt was derived from.
     assert error.value.status == 412
     assert environment.store.read(environment.records.path)[0] is not None
@@ -364,12 +351,6 @@ def test_concurrent_control_change_retains_control_and_lock(prepared):
 def lose_lock_release(environment, runner, monkeypatch):
     """Finalize with the lock release failing, after control was deleted."""
     control = environment.refresh().to_dict()
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:00:00Z",
-    }
     original_delete = environment.store.delete
 
     def fail_lock(name, *args, **kwargs):
@@ -379,11 +360,11 @@ def lose_lock_release(environment, runner, monkeypatch):
 
     monkeypatch.setattr(environment.store, "delete", fail_lock)
     with pytest.raises(Failure, match="lock release unavailable"):
-        runner.finalize(plans)
+        runner.finalize()
     monkeypatch.setattr(environment.store, "delete", original_delete)
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-    return control, plans
+    return control
 
 
 @pytest.mark.parametrize("service_intent", [False, True])
@@ -391,7 +372,7 @@ def test_recovery_restores_a_cleaned_record_and_keeps_the_receipt(
     prepared, monkeypatch, service_intent
 ):
     environment, runner = settled(prepared, service_intent)
-    _control, plans = lose_lock_release(environment, runner, monkeypatch)
+    lose_lock_release(environment, runner, monkeypatch)
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt = environment.store.read(path)[0]
     recovery = Runner(environment)
@@ -399,20 +380,17 @@ def test_recovery_restores_a_cleaned_record_and_keeps_the_receipt(
     restored = environment.refresh()
     assert restored.phase == Phase.CLEANED and restored.idle
     recovery.settle(request_stop=True)
-    assert (
-        Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"}) is False
-    )
+    assert Runner(environment).finalize() is False
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
     assert environment.store.read(path)[0] == receipt
-    assert receipt["plans"]["at"] == "2026-09-21T01:00:00Z"
 
 
 def test_recovery_evidence_failure_over_a_pubsub_receipt_still_finalizes(
     prepared, monkeypatch
 ):
     environment, runner = settled(prepared, True)
-    _control, plans = lose_lock_release(environment, runner, monkeypatch)
+    lose_lock_release(environment, runner, monkeypatch)
     Runner(environment).restore_control()
     # A Pub/Sub receipt never records success, so there is no verdict for
     # recovery's own evidence failure to lower: it is recorded, not raised.
@@ -422,9 +400,7 @@ def test_recovery_evidence_failure_over_a_pubsub_receipt_still_finalizes(
     assert environment.refresh().evidence_failed
     # Finalization runs in a new process, without this one's local failure.
     environment.evidence_failure = None
-    assert (
-        Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"}) is False
-    )
+    assert Runner(environment).finalize() is False
     assert environment.store.read(environment.records.path)[0] is None
     assert environment.store.read(rt.ENVIRONMENT)[0] is None
 
@@ -434,7 +410,7 @@ def test_recovery_refuses_a_receipt_from_another_run_or_not_idle(
     prepared, monkeypatch, change
 ):
     environment, runner = settled(prepared, True)
-    _control, plans = lose_lock_release(environment, runner, monkeypatch)
+    lose_lock_release(environment, runner, monkeypatch)
     path = f"runs/{environment.approval.run_id}/result.json"
     receipt, generation = environment.store.read(path)
     if change == "nonce":
@@ -446,7 +422,7 @@ def test_recovery_refuses_a_receipt_from_another_run_or_not_idle(
     recovery.restore_control()
     recovery.settle(request_stop=True)
     with pytest.raises(Failure, match="Final receipt conflicts"):
-        Runner(environment).finalize({**plans, "at": "2026-09-21T01:07:00Z"})
+        Runner(environment).finalize()
     assert environment.store.read(environment.records.path)[0] is not None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None
 
@@ -468,34 +444,4 @@ def test_recovery_restoration_never_replaces_a_record_that_reappeared(
         Runner(environment).restore_control()
     assert error.value.status == 412
     assert environment.store.read(environment.records.path)[0] == other
-    assert environment.store.read(rt.ENVIRONMENT)[0] is not None
-
-
-@pytest.mark.parametrize(
-    "key,value", [("nonce", "foreign"), ("roots", ["foreign"]), ("empty", False)]
-)
-def test_refreshed_time_does_not_admit_invalid_current_plans(
-    prepared, monkeypatch, key, value
-):
-    environment, runner = settled(prepared, False)
-    plans = {
-        "nonce": environment.approval.nonce,
-        "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-        "empty": True,
-        "at": "2026-09-21T01:00:00Z",
-    }
-    original = environment.store.delete
-
-    def fail_control(name, *args, **kwargs):
-        if name == environment.records.path:
-            raise Failure("control deletion unavailable")
-        return original(name, *args, **kwargs)
-
-    monkeypatch.setattr(environment.store, "delete", fail_control)
-    with pytest.raises(Failure, match="control deletion unavailable"):
-        runner.finalize(plans)
-    monkeypatch.setattr(environment.store, "delete", original)
-    with pytest.raises(Failure, match="All three refreshed empty plans are required"):
-        runner.finalize({**plans, "at": "2026-09-21T01:07:00Z", key: value})
-    assert environment.store.read(environment.records.path)[0] is not None
     assert environment.store.read(rt.ENVIRONMENT)[0] is not None

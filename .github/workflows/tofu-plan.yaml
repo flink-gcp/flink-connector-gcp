@@ -137,19 +137,9 @@ jobs:
           workload_identity_provider: ${{ steps.setup.outputs.gcp_workload_identity_provider }}
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
-      - name: Install environment-lock tools
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
-        with:
-          install_args: uv
-      - name: Acquire the shared Tier-3 environment lock
-        id: environment-lock
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle lock acquire
-          --file "$RUNNER_TEMP/tier3-environment-lock.json"
-          --kind plan --target "$TFACTION_WORKING_DIR"
-
+      # A plan reads and changes nothing, so it takes no environment lock and
+      # runs while a trial does; a trial's temporary quotas and Operator scale
+      # can then show in the plan, and the apply waits for the trial to end.
       - name: Install Kubernetes tools
         if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
@@ -236,12 +226,6 @@ jobs:
         with:
           action: plan
           github_token: ${{ github.token }}
-
-      - name: Release the environment lock owned by this job
-        if: ${{ !cancelled() && steps.environment-lock.outcome == 'success' }}
-        run: >-
-          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle lock release
-          --file "$RUNNER_TEMP/tier3-environment-lock.json"
 
   # This workflow's own verdict, which is what makes its result trustworthy
   # to ci.yaml's gate: a failed job already fails the workflow, but a plan
