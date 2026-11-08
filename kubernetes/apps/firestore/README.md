@@ -95,7 +95,7 @@ The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`fires
 The `firestore-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-firestore` against two databases it creates for the run, measures the job before and after each recovery, and judges each of the four components on its own collection or kind.
 It is the trial set of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#firestore-recovery-trial) records its design ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
 It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
-Nothing in it has run against the service yet, and the preregistration of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) is its first deployed run.
+Nothing in it has run against the service yet, and the [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixes its first deployed runs.
 
 ### Trial and estimate
 
@@ -121,7 +121,7 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
 The proposal is not an approval, as for the [Spanner trial](../spanner/README.md#trial-and-estimate).
 The estimate is the same for every kind, about USD 3.07: the Pods for the window as the Spanner estimate prices them, about USD 1.06, the planned operations, about USD 1.02, and a USD 1.00 reserve for storage, state, evidence and telemetry.
 The operations are 792,032 writes, each database's input, seed, late records and copies, at USD 0.09 per 100,000, and 1,008,032 reads, each copy's read of its seed and the oracles' reads of `input`, `seed` and `batch_out`, at USD 0.03 per 100,000.
-Both prices are planning assumptions for Standard-edition operations without the free tier, not read from the pricing page.
+Both prices are planning assumptions for Standard-edition operations without the free tier; on 2026-11-08 they matched the `us-central1` prices on the [pricing page](https://cloud.google.com/firestore/pricing), which the [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md#estimate) records.
 A database is billed by operation and storage, so the estimate has no instance hours.
 
 ### Dispatch

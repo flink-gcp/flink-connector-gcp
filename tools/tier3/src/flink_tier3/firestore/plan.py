@@ -61,7 +61,8 @@ INPUT = {"records": 180000, "records_per_second": 100}
 # in the slowest layout, at the 45 minutes rather than inside them.
 SEED = {"seed_records": 108000, "seed_records_per_second": 50}
 REVIEWED_AT = "2026-11-08T00:00:00Z"
-# Planning assumptions, not read from the pricing page: Standard-edition
+# Planning assumptions, which matched the us-central1 prices on the pricing
+# page on 2026-11-08 (the #2085 preregistration): Standard-edition
 # document or entity writes and reads, without the free tier.
 USD_PER_100K_WRITES = Decimal("0.09")
 USD_PER_100K_READS = Decimal("0.03")
