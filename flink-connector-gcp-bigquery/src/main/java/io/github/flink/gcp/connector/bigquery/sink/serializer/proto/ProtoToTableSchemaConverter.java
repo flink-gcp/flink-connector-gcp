@@ -57,6 +57,9 @@ import java.util.Set;
  *   <li>{@code google.protobuf.Struct}, {@code Value} and {@code ListValue} → {@code JSON}, with no
  *       configuration. They carry arbitrary JSON and are mutually recursive, so this is the only
  *       shape a BigQuery schema can represent them in at all
+ *   <li>a {@code Timestamp}, {@code Duration}, {@code FieldMask} or wrapper whose type {@link
+ *       ProtoSchemaOptions#getWellKnownTypesAsMessages} lists → {@code STRUCT}, expanded as the
+ *       ordinary message it is, to match a table another writer created
  *   <li>{@code google.protobuf.Any} → {@code STRUCT<type_url, value>}, deliberately not unpacked:
  *       the payload cannot be expanded without the descriptor its type URL names
  *   <li>message → {@code STRUCT}, recursively; map fields → {@code REPEATED STRUCT<key, value>}
@@ -117,7 +120,9 @@ public final class ProtoToTableSchemaConverter {
         if (configured != null) {
             return configured;
         }
-        return ProtoWellKnownType.of(field).isJsonMapped() ? TableFieldSchema.Type.JSON : null;
+        return ProtoWellKnownType.of(field, options).isJsonMapped()
+                ? TableFieldSchema.Type.JSON
+                : null;
     }
 
     /**
@@ -209,7 +214,7 @@ public final class ProtoToTableSchemaConverter {
         // consumes it sits within a few lines of it. Reaching expansion at all therefore means an
         // ordinary message: no case for JSON is possible below, because the branch above already
         // returned for it.
-        switch (ProtoWellKnownType.of(field)) {
+        switch (ProtoWellKnownType.of(field, options)) {
             case TIMESTAMP:
                 return builder.setType(TableFieldSchema.Type.TIMESTAMP).build();
             case DURATION:
@@ -307,11 +312,12 @@ public final class ProtoToTableSchemaConverter {
     /**
      * Expands an ordinary message field into a {@code STRUCT}, recursively.
      *
-     * <p>Only ever reached for a message that is <em>not</em> a recognised well-known type: {@link
-     * #convertField} settles those before calling this, so none of the guards below can fire on
-     * one. That ordering is deliberate — a well-known type is never expanded, so it can neither
-     * recurse nor collide by case, and checking here instead would reject a message carrying two
-     * {@code Timestamp}s on one path.
+     * <p>Reached for a recognised well-known type only where {@link
+     * ProtoSchemaOptions#getWellKnownTypesAsMessages} lists it: {@link #convertField} settles the
+     * others before calling this. None of the guards below can fire on an expanded one either —
+     * each has at least one field and no two of their fields differ only by case, and none
+     * recurses. A lookalike that passes the shape check but nests itself does recurse, and is
+     * rejected here as any recursive message is.
      */
     private static void expandMessageField(
             Descriptors.FieldDescriptor field,

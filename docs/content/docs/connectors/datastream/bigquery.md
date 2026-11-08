@@ -983,6 +983,47 @@ A `Duration` outside protobuf's valid range is a row-level failure routed to the
 joined exactly as declared, *not* lowerCamelCased the way protobuf's canonical JSON form renders
 them, so they come back as they were written.
 
+**An existing table can keep these types as `STRUCT`s.** Other writers expand them as ordinary
+messages. Avro's `ProtobufData` makes each one a record of its fields, so an Avro load gives a
+`Duration` the column `STRUCT<seconds INT64, nanos INT64>` and a wrapper `STRUCT<value T>`, with
+`REQUIRED` sub-fields. A `Timestamp` is a record too, unless the writer registered Avro's
+timestamp conversion. The flat mapping above gives those columns other types, and the sink cannot
+write such a table. With [schema updates](#schema-evolution) disabled, the default, the live schema
+wins and the write fails on the service. For a `StringValue` field `note`, a `FILE_LOADS` load job
+fails with `Field note has incompatible types. Configured schema: record; Avro file: string.`, and
+a Storage Write API append with `The proto field mismatched with BigQuery field at root.note`. With
+schema updates enabled, a `FILE_LOADS` commit refuses the table before it submits a load:
+
+```text
+The serializer schema changes the type of the field note from STRUCT to STRING; BigQuery column types cannot be changed
+```
+
+The Storage Write API writers reconcile only after a schema change or a rejected append (see
+[Schema evolution](#schema-evolution)), so their first failure can still be the append error above.
+Under `WRITE_TRUNCATE`, a `FILE_LOADS` load skips the union, carries the serializer's schema and
+replaces the table's, flattening the columns.
+
+`ProtoSchemaOptions.builder().wellKnownTypesAsMessages(...)` expands the listed types as the
+messages they are instead:
+
+| `WellKnownType` | Column when expanded |
+|---|---|
+| `TIMESTAMP` | `STRUCT<seconds INT64, nanos INT64>` |
+| `DURATION` | `STRUCT<seconds INT64, nanos INT64>` |
+| `FIELD_MASK` | `STRUCT<paths ARRAY<STRING>>` |
+| `WRAPPERS` | `STRUCT<value T>`, with `T` the wrapped scalar's column type above |
+
+An expanded type follows the rules for any other message field. An unset field is a NULL `STRUCT`.
+A set field writes its sub-fields, so `Int64Value.of(0)` is `{value: 0}`, and a `Duration` is
+written as its raw `seconds` and `nanos`, with no range check. Under
+[`deriveRequiredColumns()`](#nullability) the scalar sub-fields have no presence, so they are
+derived `REQUIRED` while the field itself stays `NULLABLE`; a `FieldMask`'s `paths` stays
+`REPEATED`. An existing table whose sub-fields are `REQUIRED` takes these rows with or without
+`deriveRequiredColumns()`, because an unset field is a NULL `STRUCT` and a set one writes every
+scalar sub-field. A configured JSON marking still
+wins. `Struct`, `Value` and `ListValue` cannot be expanded, since they are mutually recursive. The
+option applies to every write method, because `FILE_LOADS` stages Avro from the same derived schema.
+
 #### Nullability
 
 By default every non-repeated column is `NULLABLE`.

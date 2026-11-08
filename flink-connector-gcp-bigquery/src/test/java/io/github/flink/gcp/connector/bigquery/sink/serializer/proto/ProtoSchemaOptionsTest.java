@@ -305,6 +305,50 @@ class ProtoSchemaOptionsTest {
     }
 
     @Test
+    void expandsNoWellKnownTypeByDefault() {
+        assertThat(ProtoSchemaOptions.defaults().getWellKnownTypesAsMessages()).isEmpty();
+        assertThat(ProtoSchemaOptions.builder().build().getWellKnownTypesAsMessages()).isEmpty();
+    }
+
+    @Test
+    void wellKnownTypesAsMessagesAccumulateAcrossCalls() {
+        ProtoSchemaOptions options =
+                ProtoSchemaOptions.builder()
+                        .wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType.DURATION)
+                        .wellKnownTypesAsMessages(
+                                ProtoSchemaOptions.WellKnownType.WRAPPERS,
+                                ProtoSchemaOptions.WellKnownType.DURATION)
+                        .build();
+
+        assertThat(options.getWellKnownTypesAsMessages())
+                .containsExactlyInAnyOrder(
+                        ProtoSchemaOptions.WellKnownType.DURATION,
+                        ProtoSchemaOptions.WellKnownType.WRAPPERS);
+        assertThatThrownBy(
+                        () ->
+                                options.getWellKnownTypesAsMessages()
+                                        .add(ProtoSchemaOptions.WellKnownType.TIMESTAMP))
+                .isInstanceOf(UnsupportedOperationException.class);
+    }
+
+    @Test
+    void rejectsNullWellKnownTypes() {
+        assertThatThrownBy(
+                        () ->
+                                ProtoSchemaOptions.builder()
+                                        .wellKnownTypesAsMessages(
+                                                (ProtoSchemaOptions.WellKnownType[]) null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(
+                        () ->
+                                ProtoSchemaOptions.builder()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.DURATION, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("types must not contain null");
+    }
+
+    @Test
     void survivesJavaSerialization() throws Exception {
         // The options travel in the job graph inside the serializer, so every mechanism has to come
         // back after a round trip.
@@ -315,9 +359,13 @@ class ProtoSchemaOptionsTest {
                         .geographyFieldPath("boundary")
                         .geographyFieldOption(TestProtos.geographyOptionExtension())
                         .deriveRequiredColumns()
+                        .wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType.DURATION)
                         .build();
 
         ProtoSchemaOptions copy = InstantiationUtil.clone(options);
+
+        assertThat(copy.getWellKnownTypesAsMessages())
+                .containsExactly(ProtoSchemaOptions.WellKnownType.DURATION);
 
         assertThat(copy.getJsonFieldPaths()).containsExactly("payload");
         assertThat(copy.getJsonFieldOptions()).containsExactly(entry(50000, null));

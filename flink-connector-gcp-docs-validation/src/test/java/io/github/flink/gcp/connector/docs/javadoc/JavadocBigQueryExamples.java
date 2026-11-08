@@ -81,6 +81,18 @@ final class JavadocBigQueryExamples {
         return options;
     }
 
+    static ProtoSchemaOptions wellKnownTypesAsMessages() {
+        ProtoSchemaOptions options =
+                // tag::well-known-types-as-messages[]
+                ProtoSchemaOptions.builder()
+                        .wellKnownTypesAsMessages(
+                                ProtoSchemaOptions.WellKnownType.DURATION,
+                                ProtoSchemaOptions.WellKnownType.WRAPPERS)
+                        .build();
+        // end::well-known-types-as-messages[]
+        return options;
+    }
+
     static ProtoSchemaOptions geographyOption() {
         ProtoSchemaOptions options =
                 // tag::geography-option[]

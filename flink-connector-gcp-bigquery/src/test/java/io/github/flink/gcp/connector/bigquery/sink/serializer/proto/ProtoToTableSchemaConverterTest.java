@@ -19,11 +19,14 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Descriptors;
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -33,6 +36,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link ProtoToTableSchemaConverter}. */
 class ProtoToTableSchemaConverterTest {
+
+    private static final ProtoSchemaOptions ALL_AS_MESSAGES =
+            ProtoSchemaOptions.builder()
+                    .wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType.values())
+                    .build();
+
+    private static final TableFieldSchema.Mode NULLABLE = TableFieldSchema.Mode.NULLABLE;
+    private static final TableFieldSchema.Mode REPEATED = TableFieldSchema.Mode.REPEATED;
 
     private static final ProtoSchemaOptions DERIVE_REQUIRED =
             ProtoSchemaOptions.builder().deriveRequiredColumns().build();
@@ -884,6 +895,151 @@ class ProtoToTableSchemaConverterTest {
                                 "c_string", TableFieldSchema.Type.STRING),
                         org.assertj.core.groups.Tuple.tuple(
                                 "c_duration", TableFieldSchema.Type.INT64));
+    }
+
+    private static List<Tuple> columns(TableFieldSchema field) {
+        return field.getFieldsList().stream()
+                .map(f -> Tuple.tuple(f.getName(), f.getType(), f.getMode()))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * The shapes a table written through Avro's {@code ProtobufData} has, which is what the option
+     * exists to match. Every listed type is the STRUCT its fields describe; nothing else moves.
+     */
+    @Test
+    void expandsTheListedWellKnownTypesAsTheirMessages() {
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypesSchema(ALL_AS_MESSAGES));
+
+        Tuple seconds = Tuple.tuple("seconds", TableFieldSchema.Type.INT64, NULLABLE);
+        Tuple nanos = Tuple.tuple("nanos", TableFieldSchema.Type.INT64, NULLABLE);
+        for (String name : new String[] {"w_duration", "w_ts"}) {
+            assertThat(fields.get(name).getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+            assertThat(fields.get(name).getMode()).isEqualTo(NULLABLE);
+            assertThat(columns(fields.get(name))).containsExactly(seconds, nanos);
+        }
+        assertThat(columns(fields.get("w_mask")))
+                .containsExactly(Tuple.tuple("paths", TableFieldSchema.Type.STRING, REPEATED));
+
+        // The wrapped scalar keeps the column type it has unexpanded.
+        Map<String, TableFieldSchema.Type> wrapped = new LinkedHashMap<>();
+        wrapped.put("w_int32", TableFieldSchema.Type.INT64);
+        wrapped.put("w_uint32", TableFieldSchema.Type.INT64);
+        wrapped.put("w_int64", TableFieldSchema.Type.INT64);
+        wrapped.put("w_uint64", TableFieldSchema.Type.INT64);
+        wrapped.put("w_float", TableFieldSchema.Type.DOUBLE);
+        wrapped.put("w_double", TableFieldSchema.Type.DOUBLE);
+        wrapped.put("w_bool", TableFieldSchema.Type.BOOL);
+        wrapped.put("w_string", TableFieldSchema.Type.STRING);
+        wrapped.put("w_bytes", TableFieldSchema.Type.BYTES);
+        wrapped.forEach(
+                (name, type) -> {
+                    assertThat(fields.get(name).getType())
+                            .as(name)
+                            .isEqualTo(TableFieldSchema.Type.STRUCT);
+                    assertThat(columns(fields.get(name)))
+                            .as(name)
+                            .containsExactly(Tuple.tuple("value", type, NULLABLE));
+                });
+
+        // Struct, Value and ListValue are not expandable and stay JSON.
+        assertThat(fields.get("w_struct").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_rep_struct").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+    }
+
+    @Test
+    void expandsListedTypesWhenRepeatedInMapValuesAndBelowTheRoot() {
+        Map<String, TableFieldSchema> fields = byName(wellKnownTypesSchema(ALL_AS_MESSAGES));
+
+        assertThat(fields.get("w_rep_duration").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(fields.get("w_rep_duration").getMode()).isEqualTo(REPEATED);
+        assertThat(fields.get("w_rep_int64").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(fields.get("w_rep_int64").getMode()).isEqualTo(REPEATED);
+
+        TableFieldSchema mapValue = subFieldsByName(fields.get("w_map_int64")).get("value");
+        assertThat(mapValue.getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(columns(mapValue))
+                .containsExactly(Tuple.tuple("value", TableFieldSchema.Type.INT64, NULLABLE));
+
+        Map<String, TableFieldSchema> child = subFieldsByName(fields.get("w_child"));
+        assertThat(child.get("c_string").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(child.get("c_duration").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+    }
+
+    /** Each constant governs its own types only, so a table can mix the two forms. */
+    @Test
+    void expandsOnlyTheListedWellKnownTypes() {
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        wellKnownTypesSchema(
+                                ProtoSchemaOptions.builder()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.DURATION,
+                                                ProtoSchemaOptions.WellKnownType.WRAPPERS)
+                                        .build()));
+
+        assertThat(fields.get("w_duration").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(fields.get("w_int64").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
+        assertThat(fields.get("w_ts").getType()).isEqualTo(TableFieldSchema.Type.TIMESTAMP);
+        assertThat(fields.get("w_mask").getType()).isEqualTo(TableFieldSchema.Type.STRING);
+    }
+
+    /**
+     * An expanded type's sub-fields are proto3 scalars without presence, so under {@code
+     * deriveRequiredColumns()} they follow the ordinary rule; the field itself keeps presence.
+     */
+    @Test
+    void expandedSubFieldsFollowTheOrdinaryModeRule() {
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        wellKnownTypesSchema(
+                                ProtoSchemaOptions.builder()
+                                        .deriveRequiredColumns()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.WRAPPERS)
+                                        .build()));
+
+        assertThat(fields.get("w_int64").getMode()).isEqualTo(NULLABLE);
+        assertThat(subFieldsByName(fields.get("w_int64")).get("value").getMode())
+                .isEqualTo(TableFieldSchema.Mode.REQUIRED);
+
+        Map<String, TableFieldSchema> all =
+                byName(
+                        wellKnownTypesSchema(
+                                ProtoSchemaOptions.builder()
+                                        .deriveRequiredColumns()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.values())
+                                        .build()));
+        assertThat(columns(all.get("w_duration")))
+                .containsExactly(
+                        Tuple.tuple(
+                                "seconds",
+                                TableFieldSchema.Type.INT64,
+                                TableFieldSchema.Mode.REQUIRED),
+                        Tuple.tuple(
+                                "nanos",
+                                TableFieldSchema.Type.INT64,
+                                TableFieldSchema.Mode.REQUIRED));
+        // A repeated sub-field stays REPEATED: the docs single it out.
+        assertThat(columns(all.get("w_mask")))
+                .containsExactly(Tuple.tuple("paths", TableFieldSchema.Type.STRING, REPEATED));
+    }
+
+    /** A configured JSON marking wins over the option exactly as it wins over the default. */
+    @Test
+    void aConfiguredJsonPathWinsOverExpansion() {
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        wellKnownTypesSchema(
+                                ProtoSchemaOptions.builder()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.values())
+                                        .jsonFieldPath("w_int64")
+                                        .build()));
+
+        assertThat(fields.get("w_int64").getType()).isEqualTo(TableFieldSchema.Type.JSON);
+        assertThat(fields.get("w_int32").getType()).isEqualTo(TableFieldSchema.Type.STRUCT);
     }
 
     /**

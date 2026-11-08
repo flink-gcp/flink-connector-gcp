@@ -59,6 +59,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Tests for {@link ProtoRowConverter}. */
 class ProtoRowConverterTest {
 
+    private static final ProtoSchemaOptions ALL_AS_MESSAGES =
+            ProtoSchemaOptions.builder()
+                    .wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType.values())
+                    .build();
+
     private static final ProtoSchemaOptions OPTIONS =
             ProtoSchemaOptions.builder().jsonFieldPath("f_json").build();
 
@@ -866,6 +871,149 @@ class ProtoRowConverterTest {
 
         // Canonical protobuf JSON renders an int64 as a quoted string.
         assertThat(get(row, "w_int64")).isEqualTo("\"5\"");
+    }
+
+    /** An unset expanded field is a NULL STRUCT, as any unset singular message is. */
+    @Test
+    void leavesAnUnsetExpandedWellKnownTypeUnset() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ALL_AS_MESSAGES)
+                        .convert(WellKnownTypes.newBuilder().build());
+
+        for (String name : new String[] {"w_int64", "w_string", "w_duration", "w_ts", "w_mask"}) {
+            assertThat(has(row, name)).as(name).isFalse();
+            // The column is a STRUCT, so the unset field above is a NULL STRUCT and not the flat
+            // mapping's NULL scalar, which would pass the line above just as well.
+            assertThat(row.getDescriptorForType().findFieldByName(name).getJavaType())
+                    .as(name)
+                    .isEqualTo(Descriptors.FieldDescriptor.JavaType.MESSAGE);
+        }
+    }
+
+    /** Repeated elements, map values and nested fields are expanded by the same nested plan. */
+    @Test
+    void writesExpandedWellKnownTypesInsideRepeatedMapAndNestedFields() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ALL_AS_MESSAGES)
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .addWRepDuration(Duration.newBuilder().setSeconds(3))
+                                        .addWRepInt64(Int64Value.of(0L))
+                                        .putWMapInt64("k", Int64Value.of(7L))
+                                        .setWChild(
+                                                WellKnownTypesChild.newBuilder()
+                                                        .setCString(StringValue.of("c")))
+                                        .build());
+
+        DynamicMessage duration =
+                (DynamicMessage)
+                        row.getRepeatedField(
+                                row.getDescriptorForType().findFieldByName("w_rep_duration"), 0);
+        assertThat(get(duration, "seconds")).isEqualTo(3L);
+        assertThat(get(duration, "nanos")).isEqualTo(0L);
+        DynamicMessage int64 =
+                (DynamicMessage)
+                        row.getRepeatedField(
+                                row.getDescriptorForType().findFieldByName("w_rep_int64"), 0);
+        assertThat(get(int64, "value")).isEqualTo(0L);
+        assertThat(get((DynamicMessage) entryValue(row, "w_map_int64"), "value")).isEqualTo(7L);
+        DynamicMessage child = (DynamicMessage) get(row, "w_child");
+        assertThat(get((DynamicMessage) get(child, "c_string"), "value")).isEqualTo("c");
+        assertThat(has(child, "c_duration")).isFalse();
+    }
+
+    /** A JSON marking wins over the option on the value side too, as it does in the schema. */
+    @Test
+    void printsAJsonMarkedWrapperEvenWhenWrappersAreExpanded() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(
+                                ProtoSchemaOptions.builder()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.WRAPPERS)
+                                        .jsonFieldPath("w_int64")
+                                        .build())
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWInt64(Int64Value.of(5L))
+                                        .setWInt32(Int32Value.of(6))
+                                        .build());
+
+        assertThat(get(row, "w_int64")).isEqualTo("\"5\"");
+        assertThat(get((DynamicMessage) get(row, "w_int32"), "value")).isEqualTo(6L);
+    }
+
+    /**
+     * A set field writes its components: a wrapper holding the type default is {@code {value: 0}},
+     * not NULL, and a Duration and Timestamp are their raw seconds and nanos.
+     */
+    @Test
+    void writesTheComponentsOfASetExpandedWellKnownType() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ALL_AS_MESSAGES)
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWInt64(Int64Value.of(0L))
+                                        .setWUint32(UInt32Value.of(-1))
+                                        .setWString(StringValue.of("abc"))
+                                        .setWDuration(
+                                                Duration.newBuilder().setSeconds(90).setNanos(5))
+                                        .setWTs(Timestamp.newBuilder().setSeconds(7).setNanos(8))
+                                        .setWMask(FieldMask.newBuilder().addPaths("a.b"))
+                                        .build());
+
+        DynamicMessage int64 = (DynamicMessage) get(row, "w_int64");
+        assertThat(has(int64, "value")).isTrue();
+        assertThat(get(int64, "value")).isEqualTo(0L);
+        // The wrapped scalar is converted by the code a bare uint32 goes through.
+        assertThat(get((DynamicMessage) get(row, "w_uint32"), "value")).isEqualTo(4294967295L);
+        assertThat(get((DynamicMessage) get(row, "w_string"), "value")).isEqualTo("abc");
+
+        DynamicMessage duration = (DynamicMessage) get(row, "w_duration");
+        assertThat(get(duration, "seconds")).isEqualTo(90L);
+        assertThat(get(duration, "nanos")).isEqualTo(5L);
+        DynamicMessage ts = (DynamicMessage) get(row, "w_ts");
+        assertThat(get(ts, "seconds")).isEqualTo(7L);
+        assertThat(get(ts, "nanos")).isEqualTo(8L);
+        assertThat(get((DynamicMessage) get(row, "w_mask"), "paths"))
+                .isEqualTo(Arrays.asList("a.b"));
+    }
+
+    /**
+     * An expanded Duration is written as it is, without the range check of the microseconds
+     * mapping: the components are what the column holds, so there is nothing to overflow.
+     */
+    @Test
+    void writesAnOutOfRangeExpandedDurationAsItsComponents() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ALL_AS_MESSAGES)
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWDuration(
+                                                Duration.newBuilder()
+                                                        .setSeconds(Long.MAX_VALUE)
+                                                        .setNanos(-1))
+                                        .build());
+
+        DynamicMessage duration = (DynamicMessage) get(row, "w_duration");
+        assertThat(get(duration, "seconds")).isEqualTo(Long.MAX_VALUE);
+        assertThat(get(duration, "nanos")).isEqualTo(-1L);
+    }
+
+    /** The uint64 range check survives expansion, since the wrapped value is a bare uint64. */
+    @Test
+    void stillRejectsAnUnrepresentableExpandedUint64Wrapper() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ALL_AS_MESSAGES);
+
+        assertThatThrownBy(
+                        () ->
+                                converter.convert(
+                                        WellKnownTypes.newBuilder()
+                                                .setWUint64(UInt64Value.of(Long.MIN_VALUE))
+                                                .build()))
+                .isInstanceOf(IllegalArgumentException.class)
+                // The sub-field's path, which the flat mapping's check would not name.
+                .hasMessageContaining("w_uint64.value")
+                .hasMessageContaining("9223372036854775808");
     }
 
     private static ProtoRowConverter wellKnownTypesConverter(ProtoSchemaOptions options)
