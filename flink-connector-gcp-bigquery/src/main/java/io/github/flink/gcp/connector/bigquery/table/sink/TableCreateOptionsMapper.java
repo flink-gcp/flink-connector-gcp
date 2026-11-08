@@ -86,7 +86,8 @@ public final class TableCreateOptionsMapper {
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_DESCRIPTION,
-                    BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS);
+                    BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS,
+                    BigQueryConnectorOptions.SINK_TABLE_CREATE_KMS_KEY_NAME);
 
     private TableCreateOptionsMapper() {}
 
@@ -108,8 +109,8 @@ public final class TableCreateOptionsMapper {
      * @param rowType the table's physical columns, which a partitioning or clustering column must
      *     be one of, and whose types decide whether BigQuery can partition or cluster on it
      * @return the creation settings, or {@code null} when no {@code sink.table-create.*} option is
-     *     set, which leaves a created table unpartitioned, unclustered and without a description or
-     *     labels
+     *     set, which leaves a created table unpartitioned, unclustered, without a description or
+     *     labels, and encrypted with its dataset's default
      */
     @Nullable
     public static TableCreateOptions map(ReadableConfig config, RowType rowType) {
@@ -195,6 +196,10 @@ public final class TableCreateOptionsMapper {
                 builder::description);
         OptionSetters.apply(
                 config, BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS, builder::labels);
+        OptionSetters.apply(
+                config,
+                BigQueryConnectorOptions.SINK_TABLE_CREATE_KMS_KEY_NAME,
+                builder::kmsKeyName);
         return builder.build();
     }
 

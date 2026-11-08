@@ -109,6 +109,7 @@ sys.exit(status)
                 "BQ_IT_GCS_BUCKET",
                 "BQ_IT_ICEBERG_CONNECTION",
                 "BQ_IT_ICEBERG_BUCKET",
+                "BQ_IT_KMS_KEY",
                 "PUBSUB_IT_PROJECT",
                 "BIGTABLE_IT_PROJECT",
                 "SPANNER_IT_PROJECT",

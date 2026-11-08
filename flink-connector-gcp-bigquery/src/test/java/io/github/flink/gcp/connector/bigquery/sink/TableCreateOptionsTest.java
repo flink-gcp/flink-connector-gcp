@@ -59,6 +59,27 @@ class TableCreateOptionsTest {
     }
 
     @Test
+    void theKmsKeyNameRoundTripsAndTakesPartInEquality() {
+        TableCreateOptions keyed = TableCreateOptions.builder().kmsKeyName("k1").build();
+
+        assertThat(TableCreateOptions.defaults().getKmsKeyName()).isNull();
+        assertThat(keyed.getKmsKeyName()).isEqualTo("k1");
+        assertThat(keyed)
+                .isEqualTo(TableCreateOptions.builder().kmsKeyName("k1").build())
+                .hasSameHashCodeAs(TableCreateOptions.builder().kmsKeyName("k1").build())
+                .isNotEqualTo(TableCreateOptions.builder().kmsKeyName("k2").build())
+                .isNotEqualTo(TableCreateOptions.defaults());
+        assertThat(keyed.toString()).contains("kmsKeyName=k1");
+    }
+
+    @Test
+    void rejectsABlankKmsKeyName() {
+        assertThatThrownBy(() -> TableCreateOptions.builder().kmsKeyName(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("kmsKeyName must not be blank");
+    }
+
+    @Test
     void rejectsABlankDescription() {
         assertThatThrownBy(() -> TableCreateOptions.builder().description(" "))
                 .isInstanceOf(IllegalArgumentException.class)

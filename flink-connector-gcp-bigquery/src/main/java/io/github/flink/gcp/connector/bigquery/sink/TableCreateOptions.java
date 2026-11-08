@@ -35,8 +35,8 @@ import java.util.Objects;
 
 /**
  * Options applied when the sink creates a destination table under {@link
- * CreateDisposition#CREATE_IF_NEEDED}: time partitioning, clustering, and the table's description
- * and labels.
+ * CreateDisposition#CREATE_IF_NEEDED}: time partitioning, clustering, the table's description and
+ * labels, and the Cloud KMS key that encrypts it.
  *
  * <p>The table <em>schema</em> is not part of these options — it always comes from {@link
  * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema#getTableSchema}.
@@ -104,6 +104,7 @@ public final class TableCreateOptions implements Serializable {
     @Nullable private final String description;
 
     private final Map<String, String> labels;
+    @Nullable private final String kmsKeyName;
 
     private TableCreateOptions(Builder builder) {
         this.timePartitioningType = builder.timePartitioningType;
@@ -113,11 +114,12 @@ public final class TableCreateOptions implements Serializable {
                 Collections.unmodifiableList(new ArrayList<>(builder.clusteredFields));
         this.description = builder.description;
         this.labels = Collections.unmodifiableMap(new LinkedHashMap<>(builder.labels));
+        this.kmsKeyName = builder.kmsKeyName;
     }
 
     /**
-     * Returns options creating a plain table: no partitioning, no clustering, no description and no
-     * labels.
+     * Returns options creating a plain table: no partitioning, no clustering, no description, no
+     * labels and no key of its own.
      */
     public static TableCreateOptions defaults() {
         return DEFAULTS;
@@ -169,6 +171,15 @@ public final class TableCreateOptions implements Serializable {
         return labels;
     }
 
+    /**
+     * Returns the resource name of the Cloud KMS key that encrypts a created table, or {@code null}
+     * when none is configured.
+     */
+    @Nullable
+    public String getKmsKeyName() {
+        return kmsKeyName;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -183,7 +194,8 @@ public final class TableCreateOptions implements Serializable {
                 && Objects.equals(timePartitioningExpirationMs, that.timePartitioningExpirationMs)
                 && clusteredFields.equals(that.clusteredFields)
                 && Objects.equals(description, that.description)
-                && labels.equals(that.labels);
+                && labels.equals(that.labels)
+                && Objects.equals(kmsKeyName, that.kmsKeyName);
     }
 
     @Override
@@ -194,7 +206,8 @@ public final class TableCreateOptions implements Serializable {
                 timePartitioningExpirationMs,
                 clusteredFields,
                 description,
-                labels);
+                labels,
+                kmsKeyName);
     }
 
     @Override
@@ -211,6 +224,8 @@ public final class TableCreateOptions implements Serializable {
                 + description
                 + ", labels="
                 + getLabels()
+                + ", kmsKeyName="
+                + kmsKeyName
                 + "}";
     }
 
@@ -224,6 +239,7 @@ public final class TableCreateOptions implements Serializable {
         private List<String> clusteredFields = Collections.emptyList();
         private String description;
         private Map<String, String> labels = Collections.emptyMap();
+        private String kmsKeyName;
 
         private Builder() {}
 
@@ -335,6 +351,27 @@ public final class TableCreateOptions implements Serializable {
                         RESERVED_CDC_LABEL);
             }
             this.labels = copy;
+            return this;
+        }
+
+        /**
+         * Sets the Cloud KMS key that encrypts a created table, as the key's resource name {@code
+         * projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>}.
+         *
+         * <p>The key encrypts a table the sink creates, and {@code FILE_LOADS} states it on the
+         * jobs that fill the temporary tables it stages that table's data in. It is never applied
+         * to a table that already exists. The key must be in the dataset's location, and BigQuery's
+         * encryption service account needs the {@code roles/cloudkms.cryptoKeyEncrypterDecrypter}
+         * role on it; both are BigQuery's answer, given when the table is created.
+         *
+         * @param kmsKeyName the key's resource name, not blank
+         * @return this builder
+         */
+        public Builder kmsKeyName(String kmsKeyName) {
+            Preconditions.checkArgument(
+                    !StringUtils.isNullOrWhitespaceOnly(kmsKeyName),
+                    "kmsKeyName must not be blank");
+            this.kmsKeyName = kmsKeyName;
             return this;
         }
 

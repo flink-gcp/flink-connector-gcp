@@ -27,6 +27,7 @@ import com.google.cloud.bigquery.TestJobs;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery;
 import io.github.flink.gcp.connector.bigquery.StubBigQuery.TableAnswer;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,6 +89,31 @@ class BigQueryQueryRunnerTest {
         // The expiration is the only cleanup this path has, so the attempt to set it is not
         // optional. The stub answers "gone", which is the branch that must not fail the job.
         assertThat(client.getTableCalls).singleElement().isEqualTo(sent.getDestinationTable());
+    }
+
+    @Test
+    void encryptsTheResultWithTheKeyInTheNamedOrTheAnonymousDataset() {
+        String key = "projects/p/locations/l/keyRings/r/cryptoKeys/k";
+
+        assertThat(
+                        BigQueryQueryRunner.configuration(
+                                        new QuerySpec(SQL, "p", null, "scratch")
+                                                .withResultKmsKeyName(key),
+                                        "job")
+                                .getDestinationEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
+        assertThat(
+                        BigQueryQueryRunner.configuration(
+                                        new QuerySpec(SQL, "p", null, null)
+                                                .withResultKmsKeyName(key),
+                                        "job")
+                                .getDestinationEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
+        assertThat(
+                        BigQueryQueryRunner.configuration(
+                                        new QuerySpec(SQL, "p", null, null), "job")
+                                .getDestinationEncryptionConfiguration())
+                .isNull();
     }
 
     @Test

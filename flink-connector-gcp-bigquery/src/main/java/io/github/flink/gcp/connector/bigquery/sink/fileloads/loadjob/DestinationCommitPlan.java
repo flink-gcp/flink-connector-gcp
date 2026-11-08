@@ -58,6 +58,12 @@ final class DestinationCommitPlan {
 
     @Nullable Schema reconciledSchema;
 
+    /**
+     * The Cloud KMS key that encrypts the destination, or {@code null} for none of its own; set
+     * with {@code reconciledSchema}.
+     */
+    @Nullable String kmsKeyName;
+
     DestinationCommitPlan(
             TableDestination destination, List<PlannedLoad> loads, @Nullable DestinationCopy copy) {
         this.destination = destination;

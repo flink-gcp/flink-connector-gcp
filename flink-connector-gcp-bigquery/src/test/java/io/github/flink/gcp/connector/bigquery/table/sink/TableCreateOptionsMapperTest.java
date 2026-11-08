@@ -94,6 +94,9 @@ class TableCreateOptionsMapperTest {
         SETTER_TO_OPTIONS.put(
                 "labels",
                 Collections.singletonList(BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS));
+        SETTER_TO_OPTIONS.put(
+                "kmsKeyName",
+                Collections.singletonList(BigQueryConnectorOptions.SINK_TABLE_CREATE_KMS_KEY_NAME));
     }
 
     private static final String TYPE =
@@ -468,6 +471,31 @@ class TableCreateOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'sink.table-create.description' is invalid")
                 .hasMessageContaining("description must not be blank");
+    }
+
+    @Test
+    void aBlankKmsKeyNameIsRenamedToItsOptionKey() {
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.table-create.kms-key-name", " ");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.table-create.kms-key-name' is invalid")
+                .hasMessageContaining("kmsKeyName must not be blank");
+    }
+
+    @Test
+    void aKmsKeyNameAlongsideAnExplicitCreateNeverIsRejected() {
+        // The key applies to a table the sink creates; the jobs that fill temporary tables state
+        // the destination's own key whatever is configured, so under create-never the option
+        // would do nothing.
+        Map<String, String> options = new HashMap<>();
+        options.put("sink.table-create.kms-key-name", "k");
+        options.put("sink.create-disposition", "create-never");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("sink.table-create.kms-key-name");
     }
 
     @Test

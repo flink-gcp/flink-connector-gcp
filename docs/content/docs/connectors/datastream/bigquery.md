@@ -411,6 +411,17 @@ dataset must already exist, must be in the query's own location, and must live i
 The expiration cannot cut a read short: a read session lasts six hours and a bounded read has to
 finish inside that anyway.
 
+`queryResultKmsKeyName(...)` encrypts the result with a Cloud KMS key, in `queryResultDataset` and in
+the anonymous dataset alike (measured).
+The key must be in the query's location, and BigQuery's encryption service account needs the
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` role on it.
+A query that names no table runs in the US multi-region unless `queryLocation(...)` says otherwise,
+and BigQuery refuses a regional key there (measured), so set the location with a regional key.
+BigQuery keys its result cache by the key: a query that states no key is not answered from a keyed
+run's cached result, and a re-run with the same key is.
+Without it, a result in `queryResultDataset` takes that dataset's default key, and an anonymous result
+takes the project's default key if one is set.
+
 #### Reusing the query job across a failover
 
 By default the query job's id is random and a previous attempt is never re-attached to: a
@@ -1493,8 +1504,8 @@ avoids both.
 Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with a
 [missing-table verdict](#a-missing-table-does-not-say-not_found) is
 recovered on the task thread: the destination table is created through the BigQuery REST API
-(schema from the serializer's `getTableSchema`; partitioning, clustering, description and labels
-from `tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
+(schema from the serializer's `getTableSchema`; partitioning, clustering, description, labels and
+Cloud KMS key from `tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
 destination's stream writer is rebuilt, and the failed batch is re-appended with backoff while
 table metadata propagates to the Storage Write API backend. Creation is idempotent across
 parallel subtasks (HTTP 409 is treated as success); the credentials need
@@ -1533,11 +1544,76 @@ For a destination resolver that opens a new table later, such as
 [a table per day]({{< relref "docs/examples/bigquery" >}}#a-table-per-day), it is only when that
 table first receives rows.
 
-A table that already exists keeps the description and labels it has, as it keeps its partitioning
-and clustering: these are creation options, and `TableCreateOptions` never updates an existing
+A table that already exists keeps the description and labels it has, as it keeps its partitioning,
+clustering and encryption: these are creation options, and `TableCreateOptions` never updates an existing
 table.
 (The CDC contract is separate: under `RECONCILE` it may change an existing CDC table's provisioning
 label and maximum staleness, as [Change data capture](#change-data-capture) describes.)
+
+#### Customer-managed encryption keys
+
+A table the sink creates is encrypted with the Cloud KMS key that `TableCreateOptions.kmsKeyName(...)`
+names, given as the key's resource name
+`projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>`.
+This covers every path that creates a table: the Storage Write API methods, CDC table
+provisioning, and `FILE_LOADS`.
+The key must be in the dataset's location, and BigQuery's encryption service account
+(`bq-<project number>@bigquery-encryption.iam.gserviceaccount.com`) needs the
+`roles/cloudkms.cryptoKeyEncrypterDecrypter` role on it.
+BigQuery checks both when it creates the table, so a wrong key fails the job at creation rather than
+when the job is built.
+
+Like the rest of `TableCreateOptions`, the key is a creation option: the connector does not change
+the encryption of a table that already exists, with the two exceptions `WRITE_TRUNCATE` brings below.
+A configured key that differs from an existing table's own key is not an error; the existing key
+wins.
+
+`FILE_LOADS` needs more than the created table's key, because two of BigQuery's behaviors meet in
+its commit protocol (both measured):
+
+- a job that states a key other than its existing destination's fails with "Existing table
+  encryption settings do not match encryption settings specified in the request", unless the job
+  replaces the table;
+- a `WRITE_TRUNCATE` load, copy or query that states no key replaces its destination's encryption
+  with the default, so a table encrypted with a customer-managed key silently loses it.
+
+The commit therefore reads the destination's key with its schema and states it on every
+`WRITE_TRUNCATE` job.
+Its temporary tables are written only by such jobs, so they are encrypted with the destination's key
+too, and under `WriteDisposition.WRITE_TRUNCATE` the destination keeps its key across commits.
+Appends, `WRITE_EMPTY` and the `WRITE_TRUNCATE_DATA` query keep the destination's encryption without
+a key and state none.
+A destination without a key of its own states none, and its temporary tables take the default
+encryption described below.
+
+`WRITE_TRUNCATE` has two exceptions to "the connector does not change an existing table's
+encryption", both because a replacing job sets the table's encryption whatever it states:
+
+- a destination encrypted with a Google-owned key takes the default encryption, because a job
+  cannot state "no customer-managed key", so a dataset or project default key set since the table
+  was created applies;
+- the key is read when the commit reconciles the destination, so a key an operator changes during
+  the commit is set back by that commit's replacing job, and the next commit reads the restored
+  key, so the operator's key is lost until it is set again; a key changed between commits is
+  kept.
+
+A commit retried after an earlier attempt filled some of its temporary tables re-attaches to those
+loads rather than running them again, so those tables keep the encryption they had then, for
+example none of their own when the commit was in flight across an upgrade to a version with this
+behavior.
+They are working tables that the commit deletes once it succeeds, on a best-effort basis.
+A table whose delete fails stays until it expires: a table laid out after a partitioned or
+clustered destination carries `tempTableExpiration`, while any other expires only by its dataset's
+default table expiration, and without one it stays until deleted by hand.
+The destination's key is decided only by the final job: an append states none, and a
+`WRITE_TRUNCATE` copy states the current key.
+
+Without `kmsKeyName(...)`, BigQuery's own defaults apply: the dataset's default key, else the
+project's default key (`region-<location>.default_kms_key_name`), else a Google-owned key.
+The objects `FILE_LOADS` stages in Cloud Storage are encrypted with the staging bucket's default
+key; the connector has no option for them, because they are deleted once their commit succeeds.
+A deployment that requires a customer-managed key for staged data sets that key as the bucket's
+default.
 
 #### Losing the creation race costs a retry, not the job
 
@@ -3357,6 +3433,12 @@ credential-less CI:
   message (`BigQueryIcebergManagedTableRealGcpITCase`, also gated on `BQ_IT_ICEBERG_CONNECTION`
   and `BQ_IT_ICEBERG_BUCKET`, which name the connection as `project.location.connection` and the
   bucket that holds the tables' files)
+- customer-managed encryption keys: a `FILE_LOADS` commit under every write disposition keeps an
+  existing destination's key and encrypts its temporary tables with it, a created destination and
+  its temporary tables take the configured key, a truncating load keeps the destination's key, a
+  table the Storage Write API sink creates takes the configured key, and a query result in the
+  anonymous dataset takes `queryResultKmsKeyName(...)` (`BigQueryFileLoadsEncryptionRealGcpITCase`
+  and `BigQueryEncryptionRealGcpITCase`, also gated on `BQ_IT_KMS_KEY`, the key's resource name)
 
 These gated ITCases run weekly in the E2E workflow via Workload Identity Federation
 ([#28]({{< param BookRepo >}}/issues/28)); `just e2e` is the local equivalent.

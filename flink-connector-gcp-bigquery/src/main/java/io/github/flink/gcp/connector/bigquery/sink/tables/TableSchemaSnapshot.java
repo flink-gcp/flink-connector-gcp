@@ -20,8 +20,11 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
+import com.google.cloud.bigquery.EncryptionConfiguration;
 import com.google.cloud.bigquery.Table;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
+
+import javax.annotation.Nullable;
 
 /**
  * A point-in-time read of a destination table's schema, as returned by {@link
@@ -36,7 +39,9 @@ import com.google.cloud.bigquery.storage.v1.TableSchema;
  * never submitted.
  *
  * <p>It also carries the table's {@link TableLayout}, read from the same table, which {@code
- * FILE_LOADS} loads its temporary tables with so they can be copied into it.
+ * FILE_LOADS} loads its temporary tables with so they can be copied into it, and the Cloud KMS key
+ * that encrypts the table, which {@code FILE_LOADS} encrypts its temporary tables and every job
+ * that replaces a table with.
  */
 @Internal
 public final class TableSchemaSnapshot {
@@ -44,43 +49,54 @@ public final class TableSchemaSnapshot {
     private final TableSchema schema;
     private final Table table;
     private final TableLayout layout;
+    @Nullable private final String kmsKeyName;
 
-    private TableSchemaSnapshot(TableSchema schema, Table table, TableLayout layout) {
+    private TableSchemaSnapshot(
+            TableSchema schema, Table table, TableLayout layout, @Nullable String kmsKeyName) {
         this.schema = schema;
         this.table = table;
         this.layout = layout;
+        this.kmsKeyName = kmsKeyName;
     }
 
     /**
-     * Creates a snapshot whose layout is read from {@code table}, or is {@link TableLayout#NONE}
-     * without one.
+     * Creates a snapshot whose layout and key are read from {@code table}, or are {@link
+     * TableLayout#NONE} and none without one.
      *
      * @param schema the schema in Storage API form
      * @param table the REST table the schema was read from, or {@code null}
      * @return the snapshot
      */
     public static TableSchemaSnapshot of(TableSchema schema, Table table) {
-        return of(
-                schema,
-                table,
-                table == null ? TableLayout.NONE : TableLayout.of(table.getDefinition()));
+        return table == null
+                ? of(schema, null, TableLayout.NONE, null)
+                : of(schema, table, TableLayout.of(table.getDefinition()), kmsKeyNameOf(table));
     }
 
     /**
-     * Creates a snapshot with an explicit layout, for a test double that has no REST table to read
-     * it from.
+     * Creates a snapshot with an explicit layout and key, for a test double that has no REST table
+     * to read them from, or that sets them apart from the table it carries.
      *
      * @param schema the schema in Storage API form
      * @param table the REST table the schema was read from, or {@code null}
      * @param layout the table's layout
+     * @param kmsKeyName the Cloud KMS key that encrypts the table, or {@code null} for none
      * @return the snapshot
      */
     @VisibleForTesting
-    public static TableSchemaSnapshot of(TableSchema schema, Table table, TableLayout layout) {
+    public static TableSchemaSnapshot of(
+            TableSchema schema, Table table, TableLayout layout, @Nullable String kmsKeyName) {
         return new TableSchemaSnapshot(
                 Preconditions.checkNotNull(schema, "schema must not be null"),
                 table,
-                Preconditions.checkNotNull(layout, "layout must not be null"));
+                Preconditions.checkNotNull(layout, "layout must not be null"),
+                kmsKeyName);
+    }
+
+    @Nullable
+    private static String kmsKeyNameOf(Table table) {
+        EncryptionConfiguration encryption = table.getEncryptionConfiguration();
+        return encryption == null ? null : encryption.getKmsKeyName();
     }
 
     /** Returns the schema in Storage API form. */
@@ -96,5 +112,14 @@ public final class TableSchemaSnapshot {
     /** Returns the table's partitioning and clustering. */
     public TableLayout getLayout() {
         return layout;
+    }
+
+    /**
+     * Returns the resource name of the Cloud KMS key that encrypts the table, or {@code null} when
+     * the table is encrypted with a Google-owned key.
+     */
+    @Nullable
+    public String getKmsKeyName() {
+        return kmsKeyName;
     }
 }

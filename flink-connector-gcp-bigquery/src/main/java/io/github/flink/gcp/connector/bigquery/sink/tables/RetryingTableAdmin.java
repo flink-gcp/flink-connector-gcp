@@ -33,6 +33,8 @@ import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -58,9 +60,9 @@ import java.util.List;
  * structural: a site cannot pass the wrong schedule, because no site passes one.
  *
  * <p>{@link #create}, {@link #ensureCdcTable} and {@link #prepareTemporaryTable(TableDestination,
- * Schema, TableLayout, Duration)} retry; the last covers both the creation and the extension of an
- * existing table's expiration. {@link #getPrimaryKey(TableDestination)} retries too: it runs where
- * a destination is opened, beside the provisioning read that does. {@link
+ * Schema, TableLayout, String, Duration)} retry; the last covers both the creation and the
+ * extension of an existing table's expiration. {@link #getPrimaryKey(TableDestination)} retries
+ * too: it runs where a destination is opened, beside the provisioning read that does. {@link
  * #getSchema(TableDestination)} and {@link #updateSchema} pass straight through — the latter
  * reports its own lost race as {@code false} for the caller to re-read and re-derive from, which a
  * blind repeat here would turn into a stale-proposal loop.
@@ -229,7 +231,11 @@ public final class RetryingTableAdmin implements TableAdmin {
 
     @Override
     public long prepareTemporaryTable(
-            TableDestination table, Schema schema, TableLayout layout, Duration expiration)
+            TableDestination table,
+            Schema schema,
+            TableLayout layout,
+            @Nullable String kmsKeyName,
+            Duration expiration)
             throws IOException {
         long[] creationTime = new long[1];
         retry(
@@ -237,7 +243,8 @@ public final class RetryingTableAdmin implements TableAdmin {
                 "prepare temporary",
                 () ->
                         creationTime[0] =
-                                delegate.prepareTemporaryTable(table, schema, layout, expiration));
+                                delegate.prepareTemporaryTable(
+                                        table, schema, layout, kmsKeyName, expiration));
         return creationTime[0];
     }
 

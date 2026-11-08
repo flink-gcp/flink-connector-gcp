@@ -182,6 +182,49 @@ class BigQueryTableAdminTest {
     }
 
     @Test
+    void encryptsACreatedTableWithTheConfiguredKeyOnly() {
+        String key = "projects/p/locations/l/keyRings/r/cryptoKeys/k";
+        TableCreateOptions keyed = TableCreateOptions.builder().kmsKeyName(key).build();
+
+        assertThat(
+                        BigQueryTableAdmin.buildTableInfo(DESTINATION, SCHEMA, keyed)
+                                .getEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
+        assertThat(
+                        BigQueryTableAdmin.buildTableInfo(
+                                        DESTINATION,
+                                        SCHEMA,
+                                        keyed,
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(Arrays.asList("event_ts"))
+                                                .build())
+                                .getEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
+        assertThat(
+                        BigQueryTableAdmin.buildTableInfo(
+                                        DESTINATION, SCHEMA, TableCreateOptions.defaults())
+                                .getEncryptionConfiguration())
+                .isNull();
+    }
+
+    @Test
+    void theSnapshotCarriesTheKeyThatEncryptsTheTable() throws Exception {
+        String key = "projects/p/locations/l/keyRings/r/cryptoKeys/k";
+        StubBigQuery client = new StubBigQuery();
+        StandardTableDefinition definition =
+                StandardTableDefinition.of(
+                        com.google.cloud.bigquery.Schema.of(
+                                Field.of("event_ts", StandardSQLTypeName.TIMESTAMP)));
+        client.tablesAnswering(
+                StubBigQuery.TableAnswer.encrypted(definition, key),
+                StubBigQuery.TableAnswer.existing(definition, null, null, null));
+        BigQueryTableAdmin admin = new BigQueryTableAdmin(client);
+
+        assertThat(admin.getSchema(DESTINATION).getKmsKeyName()).isEqualTo(key);
+        assertThat(admin.getSchema(DESTINATION).getKmsKeyName()).isNull();
+    }
+
+    @Test
     void appliesIngestionTimePartitioning() {
         TableCreateOptions options =
                 TableCreateOptions.builder()
@@ -1137,7 +1180,7 @@ class BigQueryTableAdminTest {
         long creationTime =
                 new BigQueryTableAdmin(client)
                         .prepareTemporaryTable(
-                                DESTINATION, TEMP_SCHEMA, TEMP_LAYOUT, Duration.ofHours(6));
+                                DESTINATION, TEMP_SCHEMA, TEMP_LAYOUT, null, Duration.ofHours(6));
 
         long after = System.currentTimeMillis();
         assertThat(creationTime).isEqualTo(123L);
@@ -1154,7 +1197,22 @@ class BigQueryTableAdminTest {
         assertThat(definition.getTimePartitioning().getExpirationMs())
                 .isEqualTo(TableLayout.TEMPORARY_PARTITION_EXPIRATION_MS);
         assertThat(definition.getClustering()).isEqualTo(TEMP_LAYOUT.getClustering());
+        assertThat(created.getEncryptionConfiguration()).isNull();
         assertThat(client.updatedTables).isEmpty();
+    }
+
+    @Test
+    void aTemporaryTableIsEncryptedWithTheDestinationsKey() throws Exception {
+        String key = "projects/p/locations/l/keyRings/r/cryptoKeys/k";
+        StubBigQuery client = new StubBigQuery();
+        client.createdTableCreationTime = 123L;
+
+        new BigQueryTableAdmin(client)
+                .prepareTemporaryTable(
+                        DESTINATION, TEMP_SCHEMA, TEMP_LAYOUT, key, Duration.ofHours(6));
+
+        assertThat(client.createdTables.get(0).getEncryptionConfiguration())
+                .isEqualTo(BigQueryTableAdmin.encryptionConfiguration(key));
     }
 
     @Test
@@ -1167,7 +1225,11 @@ class BigQueryTableAdminTest {
         long creationTime =
                 new BigQueryTableAdmin(client)
                         .prepareTemporaryTable(
-                                DESTINATION, TEMP_SCHEMA, TEMP_LAYOUT, Duration.ofHours(6));
+                                DESTINATION,
+                                TEMP_SCHEMA,
+                                TEMP_LAYOUT,
+                                "projects/p/locations/l/keyRings/r/cryptoKeys/k",
+                                Duration.ofHours(6));
 
         // The incarnation an earlier attempt created, so its jobs are re-attached to.
         assertThat(creationTime).isEqualTo(77L);
@@ -1178,11 +1240,14 @@ class BigQueryTableAdminTest {
                         before + Duration.ofHours(6).toMillis(),
                         System.currentTimeMillis() + Duration.ofHours(6).toMillis());
         assertThat(patch.getTableId()).isEqualTo(BigQueryTableAdmin.toTableId(DESTINATION));
-        // Nothing but the expiration: no schema, partitioning or clustering is sent back.
+        // Nothing but the expiration: no schema, partitioning, clustering or key is sent back. A
+        // job
+        // that fills the table again states the key and re-keys it; one re-attached to is not run.
         StandardTableDefinition definition = patch.getDefinition();
         assertThat(definition.getSchema()).isNull();
         assertThat(definition.getTimePartitioning()).isNull();
         assertThat(definition.getClustering()).isNull();
+        assertThat(patch.getEncryptionConfiguration()).isNull();
     }
 
     @Test
@@ -1199,6 +1264,7 @@ class BigQueryTableAdminTest {
                                                 DESTINATION,
                                                 TEMP_SCHEMA,
                                                 TEMP_LAYOUT,
+                                                null,
                                                 Duration.ofHours(1)))
                 .isInstanceOf(RetriableTableAdminException.class);
     }
@@ -1218,6 +1284,7 @@ class BigQueryTableAdminTest {
                                                 DESTINATION,
                                                 TEMP_SCHEMA,
                                                 TEMP_LAYOUT,
+                                                null,
                                                 Duration.ofHours(1)))
                 .isInstanceOf(RetriableTableAdminException.class)
                 .hasMessageContaining("Failed to extend the expiration");
@@ -1236,6 +1303,7 @@ class BigQueryTableAdminTest {
                                                 DESTINATION,
                                                 TEMP_SCHEMA,
                                                 TEMP_LAYOUT,
+                                                null,
                                                 Duration.ofHours(1)))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("no creation time");
@@ -1255,6 +1323,7 @@ class BigQueryTableAdminTest {
                                                 DESTINATION,
                                                 TEMP_SCHEMA,
                                                 TEMP_LAYOUT,
+                                                null,
                                                 Duration.ofHours(1)))
                 .isInstanceOf(IOException.class)
                 .isNotInstanceOf(RetriableTableAdminException.class)

@@ -50,6 +50,9 @@ public final class FakeTableAdmin implements TableAdmin {
      */
     public final Map<TableDestination, TableLayout> layouts = new HashMap<>();
 
+    /** Cloud KMS keys of the tables above; a table without an entry has none of its own. */
+    public final Map<TableDestination, String> kmsKeyNames = new HashMap<>();
+
     public final List<TableDestination> created = new ArrayList<>();
     public final Map<TableDestination, TableCreateOptions> createOptions = new HashMap<>();
     public final List<TableDestination> schemaUpdates = new ArrayList<>();
@@ -63,6 +66,9 @@ public final class FakeTableAdmin implements TableAdmin {
             TableDestination destination, TableSchema schema, TableCreateOptions options) {
         if (tables.putIfAbsent(destination, schema) == null) {
             layouts.put(destination, layoutOf(options));
+            if (options.getKmsKeyName() != null) {
+                kmsKeyNames.put(destination, options.getKmsKeyName());
+            }
         }
         created.add(destination);
         createOptions.put(destination, options);
@@ -90,17 +96,23 @@ public final class FakeTableAdmin implements TableAdmin {
     public final List<TableLayout> preparedLayouts = new ArrayList<>();
     public final List<Schema> preparedSchemas = new ArrayList<>();
     public final List<Duration> preparedExpirations = new ArrayList<>();
+    public final List<String> preparedKmsKeyNames = new ArrayList<>();
 
     /** The creation time the next created temporary table takes, less one. */
     public long clock = 1_000;
 
     @Override
     public long prepareTemporaryTable(
-            TableDestination table, Schema schema, TableLayout layout, Duration expiration) {
+            TableDestination table,
+            Schema schema,
+            TableLayout layout,
+            String kmsKeyName,
+            Duration expiration) {
         preparedTemporaryTables.add(table);
         preparedLayouts.add(layout);
         preparedSchemas.add(schema);
         preparedExpirations.add(expiration);
+        preparedKmsKeyNames.add(kmsKeyName);
         return temporaryTables.computeIfAbsent(table, unused -> ++clock);
     }
 
@@ -127,7 +139,10 @@ public final class FakeTableAdmin implements TableAdmin {
         return schema == null
                 ? null
                 : TableSchemaSnapshot.of(
-                        schema, null, layouts.getOrDefault(destination, TableLayout.NONE));
+                        schema,
+                        null,
+                        layouts.getOrDefault(destination, TableLayout.NONE),
+                        kmsKeyNames.get(destination));
     }
 
     /** The layout {@code BigQueryTableAdmin} would create a table with from these options. */

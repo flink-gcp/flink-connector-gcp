@@ -69,6 +69,7 @@ public final class BigQueryDynamicSource
     private final boolean materializeViews;
     @Nullable private final String queryLocation;
     @Nullable private final String queryResultDataset;
+    @Nullable private final String queryResultKmsKeyName;
     @Nullable private final Duration reuseQueryResultWithin;
     @Nullable private final String rowRestriction;
     @Nullable private final Instant snapshotTime;
@@ -98,6 +99,7 @@ public final class BigQueryDynamicSource
         this.materializeViews = builder.materializeViews;
         this.queryLocation = builder.queryLocation;
         this.queryResultDataset = builder.queryResultDataset;
+        this.queryResultKmsKeyName = builder.queryResultKmsKeyName;
         this.reuseQueryResultWithin = builder.reuseQueryResultWithin;
         this.rowRestriction = builder.rowRestriction;
         this.snapshotTime = builder.snapshotTime;
@@ -186,6 +188,10 @@ public final class BigQueryDynamicSource
                 queryResultDataset,
                 builder::queryResultDataset);
         OptionSetters.accept(
+                BigQueryConnectorOptions.SCAN_QUERY_RESULT_KMS_KEY_NAME.key(),
+                queryResultKmsKeyName,
+                builder::queryResultKmsKeyName);
+        OptionSetters.accept(
                 BigQueryConnectorOptions.SCAN_REUSE_QUERY_RESULT_WITHIN.key(),
                 reuseQueryResultWithin,
                 builder::reuseQueryResultWithin);
@@ -267,6 +273,7 @@ public final class BigQueryDynamicSource
                 .materializeViews(materializeViews)
                 .queryLocation(queryLocation)
                 .queryResultDataset(queryResultDataset)
+                .queryResultKmsKeyName(queryResultKmsKeyName)
                 .reuseQueryResultWithin(reuseQueryResultWithin)
                 .rowRestriction(rowRestriction)
                 .snapshotTime(snapshotTime)
@@ -307,6 +314,7 @@ public final class BigQueryDynamicSource
                 && parentProject.equals(that.parentProject)
                 && Objects.equals(queryLocation, that.queryLocation)
                 && Objects.equals(queryResultDataset, that.queryResultDataset)
+                && Objects.equals(queryResultKmsKeyName, that.queryResultKmsKeyName)
                 && Objects.equals(reuseQueryResultWithin, that.reuseQueryResultWithin)
                 && Objects.equals(rowRestriction, that.rowRestriction)
                 && Objects.equals(snapshotTime, that.snapshotTime)
@@ -335,6 +343,7 @@ public final class BigQueryDynamicSource
                 materializeViews,
                 queryLocation,
                 queryResultDataset,
+                queryResultKmsKeyName,
                 reuseQueryResultWithin,
                 rowRestriction,
                 snapshotTime,
@@ -376,6 +385,7 @@ public final class BigQueryDynamicSource
         private boolean materializeViews;
         @Nullable private String queryLocation;
         @Nullable private String queryResultDataset;
+        @Nullable private String queryResultKmsKeyName;
         @Nullable private Duration reuseQueryResultWithin;
         @Nullable private String rowRestriction;
         @Nullable private Instant snapshotTime;
@@ -470,6 +480,18 @@ public final class BigQueryDynamicSource
          */
         public Builder queryResultDataset(@Nullable String queryResultDataset) {
             this.queryResultDataset = queryResultDataset;
+            return this;
+        }
+
+        /**
+         * Sets the Cloud KMS key that encrypts the query's result, or {@code null} for the default
+         * encryption.
+         *
+         * @param queryResultKmsKeyName the key's resource name, or {@code null}
+         * @return this builder
+         */
+        public Builder queryResultKmsKeyName(@Nullable String queryResultKmsKeyName) {
+            this.queryResultKmsKeyName = queryResultKmsKeyName;
             return this;
         }
 

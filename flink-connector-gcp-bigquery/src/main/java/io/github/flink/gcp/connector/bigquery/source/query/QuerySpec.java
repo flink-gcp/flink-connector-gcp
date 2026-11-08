@@ -39,6 +39,7 @@ public final class QuerySpec {
     private final String project;
     @Nullable private final String location;
     @Nullable private final String resultDataset;
+    @Nullable private final String resultKmsKeyName;
     @Nullable private final QueryJobIdentity jobIdentity;
 
     /**
@@ -53,7 +54,7 @@ public final class QuerySpec {
      */
     public QuerySpec(
             String sql, String project, @Nullable String location, @Nullable String resultDataset) {
-        this(sql, project, location, resultDataset, null);
+        this(sql, project, location, resultDataset, null, null);
     }
 
     private QuerySpec(
@@ -61,12 +62,30 @@ public final class QuerySpec {
             String project,
             @Nullable String location,
             @Nullable String resultDataset,
+            @Nullable String resultKmsKeyName,
             @Nullable QueryJobIdentity jobIdentity) {
         this.sql = Preconditions.checkNotNull(sql, "sql must not be null");
         this.project = Preconditions.checkNotNull(project, "project must not be null");
         this.location = location;
         this.resultDataset = resultDataset;
+        this.resultKmsKeyName = resultKmsKeyName;
         this.jobIdentity = jobIdentity;
+    }
+
+    /**
+     * Returns a copy whose result is encrypted with {@code resultKmsKeyName}.
+     *
+     * <p>Refused once an identity is set: the identity's digest covers the key, so a key set after
+     * it would reuse a job that ran under another one.
+     *
+     * @param resultKmsKeyName the Cloud KMS key, or {@code null} for the default encryption
+     * @return the copy
+     */
+    public QuerySpec withResultKmsKeyName(@Nullable String resultKmsKeyName) {
+        Preconditions.checkState(
+                jobIdentity == null,
+                "The result key must be set before the job identity, whose digest covers it.");
+        return new QuerySpec(sql, project, location, resultDataset, resultKmsKeyName, jobIdentity);
     }
 
     /**
@@ -85,6 +104,7 @@ public final class QuerySpec {
                 project,
                 location,
                 resultDataset,
+                resultKmsKeyName,
                 Preconditions.checkNotNull(identity, "identity must not be null"));
     }
 
@@ -183,6 +203,16 @@ public final class QuerySpec {
     }
 
     /**
+     * Returns the Cloud KMS key that encrypts the result, or {@code null} for the default
+     * encryption: the result dataset's default key, or for the anonymous dataset the project's
+     * default key.
+     */
+    @Nullable
+    public String getResultKmsKeyName() {
+        return resultKmsKeyName;
+    }
+
+    /**
      * Returns the identity a reusable job is submitted and looked up under, or {@code null} for a
      * random id with no reuse — the default, and the fallback where no job name was readable.
      */
@@ -199,6 +229,7 @@ public final class QuerySpec {
                 + location
                 + ", resultDataset="
                 + (resultDataset == null ? "<anonymous>" : resultDataset)
+                + (resultKmsKeyName == null ? "" : ", resultKmsKeyName=" + resultKmsKeyName)
                 + ", sql="
                 + sql
                 + "}";

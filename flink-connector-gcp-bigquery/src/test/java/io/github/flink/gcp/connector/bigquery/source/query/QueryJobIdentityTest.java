@@ -39,6 +39,14 @@ class QueryJobIdentityTest {
     private static final long NOW = DAY.toMillis() * 20_000 + DAY.toMillis() / 2;
 
     @Test
+    void aSpecWithoutAKeyKeepsTheIdItHadBeforeTheKeyWasDigested() {
+        // Pinned from the digest that covered no key, so a job an earlier connector version
+        // submitted is still found and reused after an upgrade.
+        assertThat(QueryJobIdentity.of("pipeline", SPEC, DAY, NOW).getCurrentJobId())
+                .isEqualTo("flink_bigquery_source_pipeline_1573c3801f74c33d_20000");
+    }
+
+    @Test
     void theSameInputsAlwaysDeriveTheSameId() {
         QueryJobIdentity first = QueryJobIdentity.of("pipeline", SPEC, DAY, NOW);
         // A failover re-derives minutes later, not at the same millisecond.
@@ -90,6 +98,11 @@ class QueryJobIdentityTest {
                                         NOW)
                                 .getCurrentJobId())
                 .as("the result dataset")
+                .isNotEqualTo(base);
+        assertThat(
+                        QueryJobIdentity.of("pipeline", SPEC.withResultKmsKeyName("k"), DAY, NOW)
+                                .getCurrentJobId())
+                .as("the result's key")
                 .isNotEqualTo(base);
         // Two windows whose buckets coincide at this instant (12h / 10h = 12h / 11h = bucket 1),
         // so the digest is the only thing keeping the two configurations apart — a bucket-only

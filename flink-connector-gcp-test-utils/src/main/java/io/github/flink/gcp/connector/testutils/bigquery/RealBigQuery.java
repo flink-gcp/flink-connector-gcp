@@ -33,6 +33,8 @@ import com.google.cloud.bigquery.TableInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -227,6 +229,50 @@ public final class RealBigQuery {
     /** Returns the labels stored on {@code table}. */
     public static Map<String, String> tableLabels(String table) {
         return tableInfo(table).getLabels();
+    }
+
+    /**
+     * Returns the Cloud KMS key that encrypts {@code table}, or {@code null} when a Google-owned
+     * key does.
+     */
+    @Nullable
+    public static String tableKmsKeyName(String table) {
+        return kmsKeyNameOf(tableInfo(table));
+    }
+
+    /**
+     * Returns the Cloud KMS key that encrypts the result table of the one query job created since
+     * {@code sinceMillis} whose SQL contains {@code marker}, or {@code null} when a Google-owned
+     * key does. The job is found through {@code jobs.list}, which, unlike {@code
+     * INFORMATION_SCHEMA.JOBS}, lists a job as soon as it exists.
+     */
+    @Nullable
+    public static String queryResultKmsKeyName(String marker, long sinceMillis) {
+        List<TableId> results = new ArrayList<>();
+        for (com.google.cloud.bigquery.Job job :
+                client().listJobs(
+                                BigQuery.JobListOption.minCreationTime(sinceMillis),
+                                BigQuery.JobListOption.stateFilter(
+                                        com.google.cloud.bigquery.JobStatus.State.DONE))
+                        .iterateAll()) {
+            if (job.getConfiguration() instanceof QueryJobConfiguration) {
+                QueryJobConfiguration query = job.getConfiguration();
+                if (query.getQuery().contains(marker) && query.getDestinationTable() != null) {
+                    results.add(query.getDestinationTable());
+                }
+            }
+        }
+        assertThat(results).as("query jobs whose SQL contains %s", marker).hasSize(1);
+        Table result = client().getTable(results.get(0));
+        assertThat(result).as("result table %s exists", results.get(0)).isNotNull();
+        return kmsKeyNameOf(result);
+    }
+
+    @Nullable
+    private static String kmsKeyNameOf(Table table) {
+        return table.getEncryptionConfiguration() == null
+                ? null
+                : table.getEncryptionConfiguration().getKmsKeyName();
     }
 
     /** Returns the constraints stored on {@code table}. */

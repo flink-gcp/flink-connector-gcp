@@ -236,6 +236,12 @@ public final class BigQueryQueryRunner implements QueryRunner {
                             TableId.of(spec.getProject(), spec.getResultDataset(), queryJobId))
                     .setWriteDisposition(JobInfo.WriteDisposition.WRITE_TRUNCATE);
         }
+        if (spec.getResultKmsKeyName() != null) {
+            // Applies to the anonymous dataset's result too (measured), and BigQuery keys its
+            // result cache by it, so a run without the key never returns a keyed run's result.
+            configuration.setDestinationEncryptionConfiguration(
+                    BigQueryTableAdmin.encryptionConfiguration(spec.getResultKmsKeyName()));
+        }
         return configuration.build();
     }
 

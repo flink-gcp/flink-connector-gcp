@@ -178,13 +178,13 @@ jobs:
           tool: just
 
       # Not secrets: the values name resources declared in opentofu/flink-gcp
-      # (it-resources.tf, bigquery-iceberg.tf, main.tf). Set here rather than
-      # in repository variables so the workflow file is the single place that
-      # says what this workflow runs against. Every gate is named after the
-      # variable holding its project, so the job sets that one from the gate's
-      # name, and a new gate needs a line here only for a companion variable,
-      # as BigQuery's dataset, buckets and Iceberg connection are. Each job
-      # demands and reads only its own gate's.
+      # (it-resources.tf, bigquery-iceberg.tf, bigquery-cmek.tf, main.tf). Set
+      # here rather than in repository variables so the workflow file is the
+      # single place that says what this workflow runs against. Every gate is
+      # named after the variable holding its project, so the job sets that one
+      # from the gate's name, and a new gate needs a line here only for a
+      # companion variable, as BigQuery's dataset, buckets, Iceberg connection
+      # and key are. Each job demands and reads only its own gate's.
       - name: Run the gate's real-GCP ITCases
         env:
           GATE: ${{ matrix.gate }}
@@ -192,6 +192,7 @@ jobs:
           BQ_IT_GCS_BUCKET: flink-gcp
           BQ_IT_ICEBERG_CONNECTION: flink-gcp.us-central1.flink_gcp_iceberg
           BQ_IT_ICEBERG_BUCKET: flink-gcp-iceberg
+          BQ_IT_KMS_KEY: projects/flink-gcp/locations/us-central1/keyRings/flink-gcp-it/cryptoKeys/flink-gcp-it-cmek
         run: |
           export "$GATE=flink-gcp"
           just e2e-gate "$GATE"

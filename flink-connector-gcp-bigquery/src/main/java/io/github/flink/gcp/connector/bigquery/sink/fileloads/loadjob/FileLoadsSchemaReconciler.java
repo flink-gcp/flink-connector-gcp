@@ -36,6 +36,8 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableSchemaSnapshot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 
 /**
@@ -97,15 +99,27 @@ final class FileLoadsSchemaReconciler {
         return ensureFinalTable(destination);
     }
 
-    /** The schema and layout one destination's reconciliation settled on. */
+    /**
+     * The schema one destination's reconciliation settled on, with the layout and the Cloud KMS key
+     * of the table snapshot that decision used.
+     */
     static final class ReconciledTable {
 
         final Schema schema;
         final TableLayout layout;
 
-        ReconciledTable(Schema schema, TableLayout layout) {
+        /**
+         * The key that encrypts the destination, or {@code null} for none of its own. Every job
+         * that replaces a table on the destination's behalf states it, because a {@code
+         * WRITE_TRUNCATE} job without a key replaces the table's encryption with the default
+         * (measured).
+         */
+        @Nullable final String kmsKeyName;
+
+        ReconciledTable(Schema schema, TableSchemaSnapshot snapshot) {
             this.schema = schema;
-            this.layout = layout;
+            this.layout = snapshot.getLayout();
+            this.kmsKeyName = snapshot.getKmsKeyName();
         }
     }
 
@@ -155,8 +169,7 @@ final class FileLoadsSchemaReconciler {
             }
         }
         if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE) {
-            return new ReconciledTable(
-                    StorageSchemaConverter.toBigQuerySchema(desired), snapshot.getLayout());
+            return new ReconciledTable(StorageSchemaConverter.toBigQuerySchema(desired), snapshot);
         }
         if (!config.getSchemaUpdateOptions().isEnabled()) {
             try {
@@ -173,8 +186,7 @@ final class FileLoadsSchemaReconciler {
                         e.getMessage());
             }
             return new ReconciledTable(
-                    StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema()),
-                    snapshot.getLayout());
+                    StorageSchemaConverter.toBigQuerySchema(snapshot.getSchema()), snapshot);
         }
         for (int attempt = 1; attempt <= schemaReconcileSchedule.maxAttempts(); attempt++) {
             SchemaUnifier.UnionResult union =
@@ -183,8 +195,7 @@ final class FileLoadsSchemaReconciler {
             if (!union.isChanged()
                     || tableAdmin.updateSchema(destination, snapshot, union.getSchema())) {
                 return new ReconciledTable(
-                        StorageSchemaConverter.toBigQuerySchema(union.getSchema()),
-                        snapshot.getLayout());
+                        StorageSchemaConverter.toBigQuerySchema(union.getSchema()), snapshot);
             }
             Retries.sleep(
                     schemaReconcileSchedule.backoffMs(attempt),

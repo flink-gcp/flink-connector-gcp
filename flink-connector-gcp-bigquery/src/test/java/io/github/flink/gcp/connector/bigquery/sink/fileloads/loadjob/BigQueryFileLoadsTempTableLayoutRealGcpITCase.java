@@ -365,7 +365,7 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                     public long prepare(TableDestination temp) throws IOException {
                         TABLES.add(temp.getTable());
                         return admin.prepareTemporaryTable(
-                                temp, SCHEMA, layout, Duration.ofDays(1));
+                                temp, SCHEMA, layout, null, Duration.ofDays(1));
                     }
                 });
         BigQueryLoadJobRunner earlier = new BigQueryLoadJobRunner(null, POLL);

@@ -419,6 +419,11 @@ class BigQuerySourceBuilderTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining(
                         "queryResultDataset(...) applies to query(...) or materializeViews() only");
+        assertThatThrownBy(() -> builder().queryResultKmsKeyName("k").build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "queryResultKmsKeyName(...) applies to query(...) or materializeViews()"
+                                + " only");
         // Silently ignoring it would leave a test pointing half its traffic at the emulator and
         // half at BigQuery, which is the shape that reads as a flake rather than as
         // misconfiguration.
@@ -557,6 +562,9 @@ class BigQuerySourceBuilderTest {
         assertThatThrownBy(() -> builder().queryResultDataset(" "))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("queryResultDataset must not be blank");
+        assertThatThrownBy(() -> builder().queryResultKmsKeyName(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("queryResultKmsKeyName must not be blank");
     }
 
     private static BigQuerySourceBuilder<GenericRecord> builder() {

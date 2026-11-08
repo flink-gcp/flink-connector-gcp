@@ -41,6 +41,7 @@ public final class LoadJobSpec {
     private final List<JobInfo.SchemaUpdateOption> schemaUpdateOptions;
     private final StagingFormat format;
     @Nullable private final TableLayout layout;
+    @Nullable private final String kmsKeyName;
 
     @VisibleForTesting
     LoadJobSpec(
@@ -71,6 +72,28 @@ public final class LoadJobSpec {
             List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
             StagingFormat format,
             @Nullable TableLayout layout) {
+        this(
+                destination,
+                sourceUris,
+                schema,
+                createDisposition,
+                writeDisposition,
+                schemaUpdateOptions,
+                format,
+                layout,
+                null);
+    }
+
+    private LoadJobSpec(
+            TableDestination destination,
+            List<String> sourceUris,
+            Schema schema,
+            JobInfo.CreateDisposition createDisposition,
+            JobInfo.WriteDisposition writeDisposition,
+            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
+            StagingFormat format,
+            @Nullable TableLayout layout,
+            @Nullable String kmsKeyName) {
         this.destination = destination;
         this.sourceUris = List.copyOf(sourceUris);
         this.schema = schema;
@@ -79,6 +102,26 @@ public final class LoadJobSpec {
         this.schemaUpdateOptions = List.copyOf(schemaUpdateOptions);
         this.format = format;
         this.layout = layout;
+        this.kmsKeyName = kmsKeyName;
+    }
+
+    /**
+     * Returns this spec stating {@code kmsKeyName} as the job's destination encryption.
+     *
+     * @param kmsKeyName the Cloud KMS key, or {@code null} to state none
+     * @return the spec
+     */
+    LoadJobSpec withKmsKeyName(@Nullable String kmsKeyName) {
+        return new LoadJobSpec(
+                destination,
+                sourceUris,
+                schema,
+                createDisposition,
+                writeDisposition,
+                schemaUpdateOptions,
+                format,
+                layout,
+                kmsKeyName);
     }
 
     /** Returns the destination table. */
@@ -126,6 +169,17 @@ public final class LoadJobSpec {
         return layout;
     }
 
+    /**
+     * Returns the Cloud KMS key the job states as its destination encryption, or {@code null} to
+     * state none. Only a job that replaces its destination states one: such a job without a key
+     * replaces the table's encryption with the default, while a job that appends to a table with a
+     * key other than the table's own fails (both measured).
+     */
+    @Nullable
+    public String getKmsKeyName() {
+        return kmsKeyName;
+    }
+
     @Override
     public String toString() {
         return "LoadJobSpec{destination="
@@ -141,6 +195,7 @@ public final class LoadJobSpec {
                 + ", format="
                 + format
                 + (layout != null ? ", layout=" + layout : "")
+                + (kmsKeyName != null ? ", kmsKeyName=" + kmsKeyName : "")
                 + "}";
     }
 }
