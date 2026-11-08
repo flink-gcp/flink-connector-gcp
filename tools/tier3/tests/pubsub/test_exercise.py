@@ -947,14 +947,7 @@ def test_a_rescale_that_restores_another_savepoint_is_refused(admitting, monkeyp
 
 
 def receipt(world, control):
-    return world.a.runner.receipt(
-        control,
-        {
-            "nonce": world.a.environment.approval.nonce,
-            "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-            "empty": True,
-        },
-    )
+    return world.a.runner.receipt(control)
 
 
 @one("jm-replacement")

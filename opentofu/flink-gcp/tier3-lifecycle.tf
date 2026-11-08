@@ -130,19 +130,6 @@ resource "google_storage_bucket_iam_member" "tier3_control" {
   }
 }
 
-# Like the existing state lock, coordination requires a written object.
-# Planning receives no mutation rights over run evidence or Kubernetes.
-resource "google_storage_bucket_iam_member" "tier3_plan_lock" {
-  bucket = google_storage_bucket.tier3_evidence.name
-  role   = "roles/storage.objectUser"
-  member = google_service_account.opentofu_plan.member
-  condition {
-    title       = "environment-lock-only"
-    description = "Coordinate infrastructure plans with lifecycle execution"
-    expression  = "resource.name == 'projects/_/buckets/${google_storage_bucket.tier3_evidence.name}/objects/_control/environment.json'"
-  }
-}
-
 resource "google_storage_bucket_iam_member" "tier3_state_reader" {
   for_each = local.tier3_lifecycle_members
   bucket   = google_storage_bucket.tier3_smoke.name

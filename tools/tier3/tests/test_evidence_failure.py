@@ -151,8 +151,8 @@ def test_the_receipt_carries_the_cause_beside_a_usable_verdict(env):
     }
     seed_record(env, phase="cleaned", idle=True, success=True)
     runner.env.records.mark_evidence_failed(failure)
-    plans = {"nonce": env[2]["nonce"], **PLANS}
-    assert runner.finalize(plans) is False
+    {"nonce": env[2]["nonce"], **PLANS}
+    assert runner.finalize() is False
     receipt = env[1].read("runs/test-1310/result.json")[0]
     assert receipt["success"] is False
     assert receipt["evidence_failure"] == failure
@@ -161,7 +161,7 @@ def test_the_receipt_carries_the_cause_beside_a_usable_verdict(env):
 def test_a_receipt_without_a_failure_names_none(env):
     runner = lifecycle(env, cli.runner_api.Runner)
     seed_record(env, phase="cleaned", idle=True, success=True)
-    assert runner.finalize({"nonce": env[2]["nonce"], **PLANS}) is True
+    assert runner.finalize() is True
     assert "evidence_failure" not in env[1].read("runs/test-1310/result.json")[0]
 
 

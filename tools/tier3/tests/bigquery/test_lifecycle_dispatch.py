@@ -326,8 +326,8 @@ def test_the_plain_fallback_leaves_a_run_the_workflow_finalizes(
         cli.start(args(tmp_path), cluster.store)
     approval = json.loads((tmp_path / "approval.json").read_text())
     assert cluster.store.read(cli.rt.ENVIRONMENT)[0] == approval["lock_owner"]
-    plans = {"nonce": approval["nonce"], "roots": list(cli.wf.ROOTS), "empty": True}
-    assert RUNNER_FOR(approval, cluster.kube, cluster.store).finalize(plans) is False
+    {"nonce": approval["nonce"], "roots": list(cli.wf.ROOTS), "empty": True}
+    assert RUNNER_FOR(approval, cluster.kube, cluster.store).finalize() is False
     assert not [key for key in cluster.store.data if key[1].startswith("_control/")]
 
 

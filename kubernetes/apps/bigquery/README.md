@@ -543,7 +543,7 @@ Each query was already refused above its own `maximum_bytes_billed`, and the slo
 A re-collected observation returns on the evidence pointer it already holds and is not counted again, and the total is restated from each query's recorded figure rather than accumulated into, because a conflicting write re-applies the same edit against a record that already carries it.
 
 The shared final receipt records the BigQuery scenario and approved trial, with `success` taken from the execution verdict under *Deployed verdict* below.
-A finalization retry keeps the original receipt and still requires the current plans to be empty for the approved nonce and all three roots.
+A finalization retry keeps the original receipt.
 
 ## Approval-bound delivery
 
@@ -586,7 +586,7 @@ The window starts when dispatch admits the run, on the whole second, and lasts e
 The checks that need neither the cluster nor the lock run first: the trial and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
 Dispatch then snapshots the foundation, renders and verifies the proposal, takes live image receipts, builds and validates the approval and binds the delivery with the approval embedded, so a ConfigMap size refusal also arrives before the lock.
 It then acquires the environment lock, checks the foundation again, writes the run documents and runs the runner inside its session, minting the runner token in this process.
-If the actor cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still proves the plans empty, writes an unsuccessful receipt and releases the lock.
+If the actor cannot be built after the lock is taken, dispatch settles the run through the plain runner and reports the environment idle before it fails, so the workflow's finalization still writes an unsuccessful receipt and releases the lock.
 
 The in-cluster entrypoint verifies the mounted application and upgrade against the mounted approval's pins, refusing a missing document by name, then builds the supervisor with its quiescence barrier and exercise and holds that session open for the whole supervision.
 It is constructed without the runner token and adopts it from the binding, as [Query requests and runner release](#query-requests-and-runner-release) describes.

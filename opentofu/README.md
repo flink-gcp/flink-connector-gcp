@@ -402,7 +402,7 @@ The GCP root adds `tier3-runner` and `tier3-supervisor` service accounts and the
 Run evidence under `runs/` becomes deletion-eligible after 30 days, with soft delete and versioning disabled.
 Runtime identities can create and read that evidence but cannot overwrite or delete it.
 Mutable coordination records live under `_control/` and are excluded from automatic expiry.
-Authorized control writers, including the plan identity for the environment lock, can still update or delete those records.
+Authorized control writers, the runtime identities, can still update or delete those records.
 Admission must check durable run records and live inventory even when the lock is absent.
 The lifecycle implementation must explicitly remove completed control records.
 These resources carry no workload admission or execution by themselves.

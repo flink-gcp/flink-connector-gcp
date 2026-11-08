@@ -214,10 +214,9 @@ def test_repository_rejected_before_cloud_access(monkeypatch, tmp_path, capsys):
                 "--repository",
                 str(tmp_path),
                 "lifecycle",
-                "lock",
-                "release",
-                "--file",
-                "owner.json",
+                "next",
+                "--run-id",
+                "r",
             ]
         )
     assert error.value.code == 2

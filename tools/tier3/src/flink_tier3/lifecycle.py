@@ -725,13 +725,20 @@ def recover(args, store):
     # installed image may differ from main after an interrupted upgrade; the
     # refreshed plan reports that drift without blocking lock release.
     wf.save(args.directory / "recovered.json", {"nonce": owner["nonce"]})
-    idle_output()
+    idle_output(infrastructure=owner["kind"] in ("plan", "apply"))
 
 
-def idle_output():
+def idle_output(infrastructure=False):
+    """Report idle, and whether the lock was an infrastructure operation's.
+
+    Only an infrastructure lock's recovery records refreshed plans; a run
+    proves its own restoration instead.
+    """
     if os.environ.get("GITHUB_OUTPUT"):
         with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
             output.write("idle=true\n")
+            if infrastructure:
+                output.write("infrastructure=true\n")
 
 
 def next_attempt(args, store):
@@ -758,69 +765,41 @@ def next_attempt(args, store):
 
 def finish(args, store):
     owner = json.loads((args.directory / "owner.json").read_text())
-    plans_receipt = json.loads((args.directory / "plans.json").read_text())
     approval_path = args.directory / "approval.json"
     success = True
     if approval_path.exists():
         approval = json.loads(approval_path.read_text())
         runner = runner_for(approval, external(args.kubeconfig), store)
-        runner.env.records.evidence(
-            "empty-plans",
-            {
-                "receipt": plans_receipt,
-                "logs": {
-                    root: (args.directory / (root + "-plan.log")).read_text()
-                    for root in wf.ROOTS
-                },
-            },
-            "runner",
-        )
-        success = runner.finalize(plans_receipt)
+        # A run proves it restored what it changed (its quotas, the Operator's
+        # scale, its workloads), not that the infrastructure matches main: a
+        # merge during the run is applied once the lock is released.
+        success = runner.finalize()
         # The receipt is written and the lock released: a campaign may go on.
         if os.environ.get("GITHUB_OUTPUT"):
             with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
                 output.write("finished=true\n")
+    elif owner["kind"] == "run":
+        # A run that never wrote its approval admitted nothing.
+        external(args.kubeconfig, idle=True)
+        rt.EnvironmentLock(store).release(owner)
     else:
+        plans_receipt = json.loads((args.directory / "plans.json").read_text())
         if (
             plans_receipt.get("nonce") != owner["nonce"]
             or plans_receipt.get("roots") != wf.ROOTS
-            or (owner["kind"] == "run" and not plans_receipt.get("empty"))
         ):
             raise rt.Failure("Missing idle infrastructure proof")
         external(args.kubeconfig, idle=True)
-        if owner["kind"] in ("plan", "apply"):
-            store.write(
-                f"runs/infrastructure-{owner['github_run_id']}-{os.environ['GITHUB_RUN_ID']}/recovery.json",
-                {"owner": owner, "plans": plans_receipt, "idle": True},
-            )
+        store.write(
+            f"runs/infrastructure-{owner['github_run_id']}-{os.environ['GITHUB_RUN_ID']}/recovery.json",
+            {"owner": owner, "plans": plans_receipt, "idle": True},
+        )
         rt.EnvironmentLock(store).release(owner)
         success = plans_receipt["empty"]
     if not success:
         raise rt.Failure(
             "Environment restored to idle, but the run failed; see immutable evidence"
         )
-
-
-def lock(args, store):
-    if args.operation == "acquire":
-        owner = wf.execution(args.kind, uuid.uuid4().hex) | {"target": args.target}
-        wf.save(args.file, owner)
-        deadline = time.time() + 1200
-        while True:
-            try:
-                rt.EnvironmentLock(store).acquire(owner, inspect_runs=False)
-                return
-            except rt.ApiError as error:
-                if error.status not in (409, 412) or time.time() >= deadline:
-                    raise
-                time.sleep(15)
-    else:
-        if not args.file.exists():
-            return
-        owner = json.loads(args.file.read_text())
-        actual, _ = store.read(rt.ENVIRONMENT)
-        if actual == owner:
-            rt.EnvironmentLock(store).release(owner)
 
 
 # Only the checkout commands authenticate to the cluster or plan the roots, so
@@ -965,23 +944,15 @@ def main(argv=None):
     recovery.add_argument("--source-id", required=True)
     sub.add_parser("plans")
     sub.add_parser("finish")
-    locking = sub.add_parser("lock")
-    locking.add_argument("operation", choices=("acquire", "release"))
-    locking.add_argument("--file", type=Path, required=True)
-    locking.add_argument("--kind", choices=("plan", "apply"))
-    locking.add_argument("--target")
     args = parser.parse_args(argv)
-    if args.command not in ("lock", "next") and args.kubeconfig is None:
+    if args.command != "next" and args.kubeconfig is None:
         parser.error("--kubeconfig is required")
-    if args.command == "lock" and args.operation == "acquire" and args.kind is None:
-        parser.error("lock acquire requires --kind")
     store = rt.Storage()
     {
         "start": start,
         "recover": recover,
         "plans": plans,
         "finish": finish,
-        "lock": lock,
         "next": next_attempt,
     }[args.command](args, store)
 

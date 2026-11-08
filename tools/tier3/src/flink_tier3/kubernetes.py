@@ -443,10 +443,10 @@ class Kubernetes:
             if not token:
                 return result
 
-    def inventory(self):
+    def inventory(self, namespaces=NAMESPACES):
         return [
             item
-            for namespace in NAMESPACES
+            for namespace in namespaces
             for kind in INVENTORY
             for item in self.items(kind, namespace)
         ]

@@ -101,19 +101,8 @@ jobs:
           workload_identity_provider: ${{ steps.setup.outputs.gcp_workload_identity_provider }}
           service_account: ${{ steps.setup.outputs.gcp_service_account }}
 
-      - name: Install environment-lock tools
-        uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
-        with:
-          install_args: uv
-      - name: Acquire the shared Tier-3 environment lock
-        id: environment-lock
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle lock acquire
-          --file "$RUNNER_TEMP/tier3-environment-lock.json"
-          --kind apply --target "$TFACTION_WORKING_DIR"
-
+      # An apply takes no environment lock: a trial an apply disturbs is
+      # simply run again.
       - name: Install Kubernetes tools
         if: contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
@@ -154,13 +143,13 @@ jobs:
       # cannot block an apply that does not touch App Engine.
       #
       # TODO: sweep-e2e.yaml (every three hours) and the E2E run's cleanup stop
-      # the fixture without taking the Tier-3 environment lock this job holds.
+      # the fixture without coordinating with this job.
       # One landing between this start and the version update sends the update
       # into a stopped version again (ADR-0063, "Deployment into the serving
       # version"); conversely, this job's stop can end a running E2E's fixture.
-      # Closing both windows needs the E2E run to hold the lock from its
-      # fixture start through its tests and cleanup, and the sweep's stop to
-      # take it; locking only the stops would leave a running E2E exposed.
+      # Closing both windows needs a lock this job, the E2E run (from its
+      # fixture start through its tests and cleanup) and the sweep's stop all
+      # take; locking only the stops would leave a running E2E exposed.
       - name: Start the App Engine fixture if the plan updates its version
         if: matrix.target.working_directory == 'opentofu/flink-gcp'
         env:
@@ -241,9 +230,15 @@ jobs:
           CLOUDTASKS_IT_PROJECT: flink-gcp
         run: scripts/appengine-e2e-fixture.sh stop
 
-      - name: Verify Kubernetes root is idle and has no drift
+      - name: Verify Kubernetes root has no drift
         if: steps.apply.outcome == 'success' && contains(fromJSON('["opentofu/tier3-bootstrap","opentofu/tier3-operator"]'), matrix.target.working_directory)
         run: |
+          # A trial raises quotas and scales the Operator up, which this check
+          # would report as drift; the trial's own finalizer restores them.
+          if gcloud storage ls gs://flink-gcp-tier3-evidence/_control/environment.json >/dev/null 2>&1; then
+            echo "::notice::A Tier-3 run holds the environment lock; skipping the idle and drift check"
+            exit 0
+          fi
           tier3_root="${TFACTION_WORKING_DIR##*/tier3-}"
           uv run --locked --package flink-tier3 --no-dev flink-tier3 bootstrap --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" --root "$tier3_root" access apply
           if [[ "$tier3_root" == operator ]]; then
@@ -251,8 +246,3 @@ jobs:
           fi
           tofu -chdir="$TFACTION_WORKING_DIR" plan -input=false -detailed-exitcode -no-color
 
-      - name: Release the environment lock owned by this job
-        if: ${{ !cancelled() && steps.environment-lock.outcome == 'success' }}
-        run: >-
-          uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle lock release
-          --file "$RUNNER_TEMP/tier3-environment-lock.json"

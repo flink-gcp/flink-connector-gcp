@@ -52,8 +52,10 @@ jobs:
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
           --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig"
           recover --source-id "$SOURCE_ID"
+      # Only an interrupted infrastructure operation's lock records refreshed
+      # plans; a run's recovery proves the run's own restoration.
       - name: Authenticate for read-only infrastructure verification
-        if: ${{ !cancelled() && steps.lifecycle.outputs.idle == 'true' }}
+        if: ${{ !cancelled() && steps.lifecycle.outputs.idle == 'true' && steps.lifecycle.outputs.infrastructure == 'true' }}
         id: plan-auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -66,7 +68,7 @@ jobs:
           uv run --locked --package flink-tier3 --no-dev flink-tier3 lifecycle
           --kubeconfig "$RUNNER_TEMP/tier3-kubeconfig" plans
       - name: Authenticate to write the final evidence receipt
-        if: ${{ !cancelled() && steps.plans.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.lifecycle.outputs.idle == 'true' && (steps.lifecycle.outputs.infrastructure != 'true' || steps.plans.outcome == 'success') }}
         id: receipt-auth
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:

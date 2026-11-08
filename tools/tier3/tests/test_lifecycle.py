@@ -214,22 +214,29 @@ class Kube:
     def get(self, kind, namespace, name):
         return copy.deepcopy(self.data.get((kind, namespace, name)))
 
-    def inventory(self):
+    def everything(self):
         return copy.deepcopy(
             [value for value in self.data.values() if value["kind"] != "ResourceQuota"]
         )
 
+    def inventory(self, namespaces=rt.NAMESPACES):
+        return [
+            item
+            for item in self.everything()
+            if item["metadata"].get("namespace") in namespaces
+        ]
+
     def items(self, kind, namespace):
         return [
             item
-            for item in self.inventory()
+            for item in self.everything()
             if item["kind"] == kind and item["metadata"]["namespace"] == namespace
         ]
 
     def node_events(self, reason):
         return [
             item
-            for item in self.inventory()
+            for item in self.everything()
             if item["kind"] == "Event"
             and item["metadata"]["namespace"] == "default"
             and item.get("reason") == reason
@@ -744,6 +751,16 @@ def test_uid_replacement_is_not_force_deleted(env):
     assert ("scale", 0) not in env[0].calls
 
 
+def test_idle_reads_only_the_namespaces_the_approval_recorded(env):
+    # A namespace added to the policy after the run started holds standing
+    # objects its baseline never saw; they are not the run's to clean.
+    env[0].put(obj("ConfigMap", "kube-root-ca.crt", "tier3-bigquery"))
+    rt.verify_idle(rt.Environment(*env[:3]))
+    env[0].put(obj("ConfigMap", "stray", rt.SMOKE))
+    with pytest.raises(rt.Failure, match="non-baseline"):
+        rt.verify_idle(rt.Environment(*env[:3]))
+
+
 def test_orphaned_ha_metadata_blocks_idle_without_becoming_owned(env):
     runner = lifecycle(env)
     value = app(env)
@@ -831,17 +848,11 @@ def test_recovery_does_not_retry_identity_failure_as_controller_lag(env, pending
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
 
 
-def test_final_receipt_requires_three_empty_plans(env):
+def test_final_receipt_needs_no_infrastructure_plans(env):
+    # A run proves its own restoration; a merge during it is applied later.
     runner = lifecycle(env, cli.runner_api.Runner)
     seed_record(env, success=True)
-    with pytest.raises(rt.Failure, match="three"):
-        runner.finalize(
-            {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS[:2], "empty": True}
-        )
-    assert env[1].read(rt.ENVIRONMENT)[0] is not None
-    assert runner.finalize(
-        {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-    )
+    assert runner.finalize()
     assert env[1].read(rt.ENVIRONMENT)[0] is None
     assert env[1].read("runs/test-1310/result.json")[0]["idle"]
 
@@ -850,9 +861,7 @@ def test_failed_receipt_write_retains_lock_after_paid_workloads_stop(env):
     runner = lifecycle(env, cli.runner_api.Runner)
     env[1].fail_evidence = True
     with pytest.raises(rt.Failure, match="Evidence unavailable"):
-        runner.finalize(
-            {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-        )
+        runner.finalize()
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     rt.verify_idle(rt.Environment(*env[:3]))
 
@@ -1797,21 +1806,38 @@ def test_workflows_hold_the_lock_around_infrastructure_and_preserve_main_boundar
     import yaml
 
     workflows = Path(__file__).parents[3] / ".github/workflows"
+    # Neither a plan nor an apply takes the environment lock: a trial an
+    # apply disturbs is run again.
     for mode in ("plan", "apply"):
-        source = yaml.safe_load((workflows / f"tofu-{mode}.yaml").read_text())
-        steps = source["jobs"][mode]["steps"]
-        acquire = next(
-            i for i, step in enumerate(steps) if step.get("id") == "environment-lock"
-        )
-        init = next(
-            i for i, step in enumerate(steps) if step.get("name") == "tofu init"
-        )
-        release = next(
-            i for i, step in enumerate(steps) if "lock release" in step.get("run", "")
-        )
-        assert acquire < init < release
-        assert "!cancelled()" in steps[release]["if"]
-        assert source["jobs"][mode]["permissions"]["actions"] == "read"
+        assert "lifecycle lock" not in (workflows / f"tofu-{mode}.yaml").read_text()
+    # The post-apply idle and drift check stands aside while a run holds it.
+    apply = yaml.safe_load((workflows / "tofu-apply.yaml").read_text())
+    verify = next(
+        step
+        for step in apply["jobs"]["apply"]["steps"]
+        if step.get("name") == "Verify Kubernetes root has no drift"
+    )
+    assert verify["run"].index("_control/environment.json") < verify["run"].index(
+        "access apply"
+    )
+    # A rig older than plan-free finalization would keep its lock, so a run
+    # refuses it right after checking it out.
+    run_steps = yaml.safe_load((workflows / "tier3-run.yaml").read_text())["jobs"][
+        "lifecycle"
+    ]["steps"]
+    refuse = next(
+        i
+        for i, step in enumerate(run_steps)
+        if step.get("name") == "Refuse a rig that predates plan-free finalization"
+    )
+    assert "def finalize(self):" in run_steps[refuse]["run"]
+    assert refuse < next(
+        i for i, step in enumerate(run_steps) if step.get("id") == "lifecycle"
+    )
+    assert (
+        "    def finalize(self):"
+        in (Path(__file__).parents[1] / "src/flink_tier3/runner.py").read_text()
+    )
     for name in ("run", "recover"):
         source = yaml.safe_load((workflows / f"tier3-{name}.yaml").read_text())
         job = source["jobs"]["lifecycle"]
@@ -1822,9 +1848,15 @@ def test_workflows_hold_the_lock_around_infrastructure_and_preserve_main_boundar
             for step in steps
             if "service_account" in step.get("with", {})
         ]
+        # Only recovery of an infrastructure lock plans the roots; a run proves
+        # its own restoration.
         assert accounts == [
             "tier3-runner@flink-gcp.iam.gserviceaccount.com",
-            "opentofu-plan@flink-gcp.iam.gserviceaccount.com",
+            *(
+                ["opentofu-plan@flink-gcp.iam.gserviceaccount.com"]
+                if name == "recover"
+                else []
+            ),
             "tier3-runner@flink-gcp.iam.gserviceaccount.com",
         ]
         refs = [
@@ -3883,30 +3915,6 @@ def test_config_creation_intent_pins_data_without_copying_source(
     assert ("config" in control.roots) == (not changed_data)
 
 
-def test_cli_lock_release_preserves_a_replacement_owner(env, monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
-    store = Store()
-    owner = env[2]["lock_owner"] | {"kind": "plan"}
-    monkeypatch.setattr(cli.wf, "execution", lambda _kind, _nonce: owner)
-    args = SimpleNamespace(
-        operation="acquire",
-        kind="plan",
-        target="tier3-bootstrap",
-        file=tmp_path / "owner.json",
-    )
-    cli.lock(args, store)
-    saved = json.loads(args.file.read_text())
-    assert store.read(rt.ENVIRONMENT)[0] == saved
-    args.operation = "release"
-    cli.lock(args, store)
-    assert store.read(rt.ENVIRONMENT)[0] is None
-    replacement = saved | {"nonce": "replacement"}
-    store.write(rt.ENVIRONMENT, replacement)
-    cli.lock(args, store)
-    assert store.read(rt.ENVIRONMENT)[0] == replacement
-
-
 @pytest.mark.parametrize("has_approval", [False, True])
 def test_cli_completed_recovery_reaches_idle_and_retains_lock_for_plans(
     env, monkeypatch, tmp_path, has_approval
@@ -4304,32 +4312,6 @@ def test_cli_start_accepts_the_inputs_the_workflow_passes(
         cli.main()
 
 
-def test_cli_lock_acquire_requires_kind_before_cloud_access(
-    monkeypatch, tmp_path, capsys
-):
-    import sys
-
-    def cloud_access():
-        raise AssertionError("Argument rejection must precede cloud access")
-
-    monkeypatch.setattr(rt, "Storage", cloud_access)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "tier3-lifecycle.py",
-            "lock",
-            "acquire",
-            "--file",
-            str(tmp_path / "owner.json"),
-        ],
-    )
-    with pytest.raises(SystemExit) as error:
-        cli.main()
-    assert error.value.code == 2
-    assert "lock acquire requires --kind" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize("kind", ["plan", "apply"])
 def test_infrastructure_recovery_allows_idle_operator_image_drift(
     env, monkeypatch, tmp_path, kind
@@ -4541,9 +4523,7 @@ def test_pending_pubsub_cleanup_blocks_operator_shutdown_and_finalization(env, s
         runner.cleanup.scale_operator(0)
     assert ("scale", 0) not in env[0].calls
     with pytest.raises(rt.Failure, match="Pub/Sub resource cleanup is incomplete"):
-        runner.finalize(
-            {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
-        )
+        runner.finalize()
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     assert env[1].read(runner.env.records.path)[0] is not None
     assert env[1].read("runs/test-1310/result.json")[0] is None
@@ -4567,7 +4547,7 @@ def test_cleaned_pubsub_record_allows_normal_settlement(env):
     saved = runner.env.refresh().pubsub
     runner.cleanup.scale_operator(0)
     assert ("scale", 0) in env[0].calls
-    runner.finalize({"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True})
+    runner.finalize()
     assert env[1].read(rt.ENVIRONMENT)[0] is None
     assert env[1].read(runner.env.records.path)[0] is None
 
@@ -4591,7 +4571,7 @@ def test_a_finalization_retry_keeps_the_receipt_it_finds(env, success):
     }
     path = "runs/test-1310/result.json"
     env[1].write(path, receipt)
-    assert runner.finalize(plans) is success
+    assert runner.finalize() is success
     assert env[1].read(path)[0] == receipt
     assert env[1].read(rt.ENVIRONMENT)[0] is None
     assert env[1].read(runner.env.records.path)[0] is None
@@ -4605,7 +4585,7 @@ def test_a_receipt_of_another_run_refuses_finalization(env):
         {"nonce": "f" * 32, "idle": True, "success": True, "plans": plans},
     )
     with pytest.raises(rt.Failure, match="Final receipt conflicts"):
-        runner.finalize(plans)
+        runner.finalize()
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     assert env[1].read(runner.env.records.path)[0] is not None
 
@@ -4622,13 +4602,13 @@ def test_finalization_keeps_a_record_changed_after_its_receipt_was_derived(env):
     env[1].before_write = lambda: runner.env.records._change(
         lambda record: setattr(record, "reason", "late write")
     )
-    plans = {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
+    {"nonce": env[2]["nonce"], "roots": cli.wf.ROOTS, "empty": True}
     with pytest.raises(rt.ApiError) as refused:
-        runner.finalize(plans)
+        runner.finalize()
     assert refused.value.status == 412
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     assert runner.env.refresh().reason == "late write"
-    assert runner.finalize(plans) is False
+    assert runner.finalize() is False
     assert env[1].read(rt.ENVIRONMENT)[0] is None
 
 
@@ -4638,14 +4618,13 @@ def test_finalization_keeps_a_record_changed_after_its_receipt_was_derived(env):
         (["--kubeconfig", "k", "recover", "--source-id", "1"], "recover"),
         (["--kubeconfig", "k", "plans"], "plans"),
         (["--kubeconfig", "k", "finish"], "finish"),
-        (["lock", "--file", "f", "--kind", "plan", "acquire"], "lock"),
     ],
 )
 def test_every_command_dispatches_to_its_handler(monkeypatch, argv, handler):
     """The table is built on every call, so a dangling entry breaks every command."""
     called = []
     monkeypatch.setattr(cli.rt, "Storage", lambda: "store")
-    for name in ("start", "recover", "plans", "finish", "lock"):
+    for name in ("start", "recover", "plans", "finish"):
         monkeypatch.setattr(
             cli, name, lambda args, store, name=name: called.append((name, store))
         )

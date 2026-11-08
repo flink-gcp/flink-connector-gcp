@@ -192,16 +192,7 @@ def test_runner_releases_before_supervisor_cleanup_and_complete_settlement(runti
     saved = copy.deepcopy(a.sender.env.refresh().pubsub)
     # Settlement success is not a deployed recovery verdict: the receipt reports
     # success only for a usable verdict, which this run's record carries none of.
-    assert (
-        runner.finalize(
-            {
-                "nonce": a.approval.nonce,
-                "roots": ["flink-gcp", "tier3-bootstrap", "tier3-operator"],
-                "empty": True,
-            }
-        )
-        is False
-    )
+    assert runner.finalize() is False
     result = a.store.read("runs/" + a.approval.run_id + "/result.json")[0]
     assert result["pubsub"] == saved and result["idle"]
     assert a.store.read(runner.env.records.path)[0] is None

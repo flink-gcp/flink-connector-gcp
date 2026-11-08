@@ -154,7 +154,7 @@ Once an attempt is idle and has released the lock, its receipt decides the next 
 
 The owner approves the campaign's estimate once, for its kinds and its repeats, by dispatching it.
 A cause that recurs before the application exists, such as a refused grant, spends the repeats, which bound what it costs.
-Three things end a campaign early, each before its next attempt holds anything: a CI plan or apply that takes the environment lock between attempts, another dispatch of the run workflow while a campaign runs, which GitHub's one pending run in the concurrency group replaces or is replaced by, and a run ID that would exceed 26 characters or already has evidence.
+Two things end a campaign early, each before its next attempt holds anything: another dispatch of the run workflow while a campaign runs, which GitHub's one pending run in the concurrency group replaces or is replaced by, and a run ID that would exceed 26 characters or already has evidence.
 Each attempt checks out `main` as it is at its own dispatch unless `rig_sha` names a commit, so merge no rig change while a campaign runs.
 For example, `bigtable_trial=tm-replacement`, `run_id=bt1855-tm-a4`, `campaign=rescale-out,rescale-in` and `repeats=2` run the three remaining trials from one dispatch, for at most five attempts.
 

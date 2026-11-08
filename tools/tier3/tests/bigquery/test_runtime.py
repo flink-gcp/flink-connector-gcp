@@ -353,7 +353,7 @@ def test_incomplete_bigquery_blocks_all_shared_completion_paths(env, mutation):
         lambda: runner.env.records.set_phase(rt.Phase.CLEANED),
         lambda: runner.env.records.settled(None),
         lambda: rt.verify_idle(runner.env),
-        lambda: runner.finalize(plans(env)),
+        lambda: runner.finalize(),
     ):
         with pytest.raises(rt.Failure, match="BigQuery resource cleanup"):
             call()
@@ -372,14 +372,14 @@ def test_finalize_retains_bigquery_control_that_changed_after_the_receipt(env):
     )
     # The control deletion is conditional on the generation the receipt read.
     with pytest.raises(rt.ApiError) as error:
-        runner.finalize(plans(env))
+        runner.finalize()
     assert error.value.status == 412
     receipt = env[1].read("runs/test-1310/result.json")[0]
     assert receipt["bigquery"] == saved
     assert env[1].read(rt.ENVIRONMENT)[0] is not None
     assert env[1].read(runner.env.records.path)[0]["bigquery"] != saved
     # A retry keeps the receipt it finds rather than derive another.
-    assert runner.finalize(plans(env)) is False
+    assert runner.finalize() is False
     assert env[1].read(rt.ENVIRONMENT)[0] is None
     assert env[1].read(runner.env.records.path)[0] is None
     assert env[1].read("runs/test-1310/result.json")[0] == receipt

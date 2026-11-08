@@ -103,6 +103,30 @@ def test_authorization_transport_failure_is_not_a_denial(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["plan", "apply"])
+def test_access_never_requires_an_idle_cluster(monkeypatch, tmp_path, mode):
+    # Neither a plan nor an apply waits for a trial; one it disturbs is rerun.
+    cluster = bootstrap.Cluster(tmp_path / "kubeconfig")
+    monkeypatch.setattr(cluster, "validate_target", lambda: None)
+
+    def busy():
+        raise RuntimeError("Tier-3 has workload objects")
+
+    monkeypatch.setattr(cluster, "quota", busy)
+    monkeypatch.setattr(cluster, "idle", busy)
+    monkeypatch.setattr(cluster, "can_i", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        cluster,
+        "kubectl",
+        lambda *args: result(
+            json.dumps(
+                {"status": {"userInfo": {"username": bootstrap.PRINCIPALS[mode]}}}
+            )
+        ),
+    )
+    cluster.access(mode)
+
+
+@pytest.mark.parametrize("mode", ["plan", "apply"])
 def test_access_before_crds_exist_uses_explicit_authorization_attributes(
     monkeypatch, tmp_path, mode
 ):
