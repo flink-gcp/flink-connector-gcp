@@ -76,10 +76,10 @@ import java.util.Objects;
  * properties through the lookup's property mask instead, which keeps every entity whole in that
  * respect: it returns the entity whatever its indexes, and an array whole.
  *
- * <p>Predicates reach the service as the equality filters {@link DatastoreFilterPushDown}
- * translates: one on the key always, and those on properties only when {@code
- * scan.filter-push-down.enabled} is set, because a filter never matches a value excluded from
- * indexes and the option asserts that the filtered properties are indexed.
+ * <p>Predicates reach the service as the filters {@link DatastoreFilterPushDown} translates: an
+ * equality on the key always, and the rest only when {@code scan.filter-push-down.enabled} is set,
+ * because a filter never matches a value excluded from indexes and the option asserts that the
+ * filtered properties are indexed. A filter other than an equality makes the query one split.
  *
  * <p>A limit the planner pushes bounds the query, which the source then reads as one split instead
  * of in key ranges, so a scan reads at most that many entities ({@code docs/adr/0201}). Flink keeps
@@ -198,8 +198,13 @@ public final class DatastoreDynamicSource
         if (!namespace.isEmpty()) {
             builder.namespace(namespace);
         }
-        // A limited query is read as one split.
-        scanConfig.applyTo(builder, filtered != null || limit == null);
+        // A limited query, or one a pushed filter other than an equality filters, is read as
+        // one split, which scan.partition.max-partitions then has nothing to divide.
+        scanConfig.applyTo(
+                builder,
+                filtered != null
+                        ? SplittableQueries.whyNotSplittable(filtered) == null
+                        : limit == null);
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
@@ -294,9 +299,9 @@ public final class DatastoreDynamicSource
     }
 
     /**
-     * Pushes the equalities {@link DatastoreFilterPushDown} translates: one on the key always, and
-     * those on properties when {@code scan.filter-push-down.enabled} is set; every predicate stays
-     * a residual either way.
+     * Pushes the filters {@link DatastoreFilterPushDown} translates: an equality on the key always,
+     * and the rest when {@code scan.filter-push-down.enabled} is set; every predicate stays a
+     * residual either way.
      */
     @Override
     public Result applyFilters(List<ResolvedExpression> filters) {

@@ -219,6 +219,124 @@ class DatastoreTableRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     }
 
     /**
+     * With the option, a pushed range, {@code <>}, {@code IN}, {@code IS NOT NULL}, an integral
+     * {@code DOUBLE} equality and a key range return the rows of the scan without it, which pushes
+     * none: what the emulator answered of the service ordering every integer below every double,
+     * integers among timestamps, strings and blobs by their bytes, and a key name range. A range
+     * beside an equality on another property needs a composite index, and the job fails when it
+     * starts.
+     */
+    @Test
+    void pushedComparisonsReturnTheUnpushedRowsAndAnIndexIsRefusedLoudly() throws Exception {
+        String kind = uniqueKind();
+        client().put(
+                        entity(kind, "missing").build(),
+                        entity(kind, "low")
+                                .set("n", 3L)
+                                .set("d", 7L)
+                                .set("s", "\uFFFD")
+                                .set("y", Blob.copyFrom(new byte[] {0x7f}))
+                                .set(
+                                        "ts3",
+                                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
+                                                1_000, 123_456_000))
+                                .build(),
+                        entity(kind, "high")
+                                .set("n", 7L)
+                                .set("d", -1.5d)
+                                .set("s", "\uD83D\uDE00")
+                                .set("y", Blob.copyFrom(new byte[] {(byte) 0x80}))
+                                .set(
+                                        "ts3",
+                                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
+                                                1_000, 123_999_000))
+                                .build(),
+                        entity(kind, "match")
+                                .set("n", 5L)
+                                .set("d", 5.0d)
+                                .set("s", "x")
+                                .set(
+                                        "ts3",
+                                        com.google.cloud.Timestamp.ofTimeSecondsAndNanos(
+                                                1_000, 124_000_000))
+                                .build(),
+                        entity(kind, "zeros").set("d", 0L).set("n", 0L).build(),
+                        entity(kind, "negativeZero").set("d", -0.0d).build(),
+                        entity(kind, "positiveZero").set("d", 0.0d).build(),
+                        entity(kind, "six").set("d", 6L).build(),
+                        entity(kind, "minusOne").set("d", -1L).build(),
+                        entity(kind, "notANumber").set("d", Double.NaN).build(),
+                        entity(kind, "fraction").set("d", 5.5d).set("n", 5.5d).set("s", 5L).build(),
+                        entity(kind, "text")
+                                .set("n", "7")
+                                .set("d", "7")
+                                .set("y", "\u0080")
+                                .set("ts3", 1_000_123_500L)
+                                .build());
+        TableEnvironment batch =
+                TableEnvironment.create(EnvironmentSettings.newInstance().inBatchMode().build());
+        String columns =
+                "(id STRING NOT NULL, n BIGINT, d DOUBLE, s STRING, y BYTES, ts3 TIMESTAMP_LTZ(3),"
+                        + " PRIMARY KEY (id) NOT ENFORCED) ";
+        batch.executeSql(
+                "CREATE TABLE pushed "
+                        + columns
+                        + with(
+                                kind,
+                                "'type-mismatch-policy' = 'null'",
+                                "'scan.filter-push-down.enabled' = 'true'",
+                                "'scan.partition.max-partitions' = '4'"));
+        batch.executeSql(
+                "CREATE TABLE unpushed " + columns + with(kind, "'type-mismatch-policy' = 'null'"));
+        String[] predicates = {
+            "n > 4",
+            "n <= 5",
+            "n <> 5",
+            "n IN (5, 7)",
+            "n IS NOT NULL",
+            "d = 5",
+            "d = 0",
+            "d > 5",
+            "d > 5.1",
+            "d > -1.5",
+            "d >= -1.5",
+            "d <> 5",
+            "d < 5.5",
+            "s > 'z'",
+            "s < 'x '",
+            "y > x'7f'",
+            "ts3 = CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+            "ts3 <= CAST(TIMESTAMP '1970-01-01 00:16:40.123' AS TIMESTAMP_LTZ(3))",
+            "id > 'm'",
+            "id <= 'l'"
+        };
+        for (String predicate : predicates) {
+            assertThat(batch.explainSql("SELECT id FROM pushed WHERE " + predicate))
+                    .containsPattern("filter=\\[[^\\]]");
+            assertThat(collect(batch, "SELECT id FROM pushed WHERE " + predicate))
+                    .as(predicate)
+                    .containsExactlyInAnyOrderElementsOf(
+                            collect(batch, "SELECT id FROM unpushed WHERE " + predicate));
+        }
+        // Firing control: the rows a narrower service match would miss.
+        assertThat(collect(batch, "SELECT id FROM unpushed WHERE d > 5"))
+                .containsExactlyInAnyOrder(Row.of("low"), Row.of("fraction"), Row.of("six"));
+        assertThat(collect(batch, "SELECT id FROM unpushed WHERE d > -1.5"))
+                .contains(Row.of("minusOne"));
+        assertThat(collect(batch, "SELECT id FROM unpushed WHERE d = 0"))
+                .containsExactlyInAnyOrder(
+                        Row.of("zeros"), Row.of("negativeZero"), Row.of("positiveZero"));
+        assertThat(collect(batch, "SELECT id FROM unpushed WHERE d <> 5"))
+                .contains(Row.of("notANumber"));
+        assertThat(collect(batch, "SELECT id FROM unpushed WHERE s > 'z'"))
+                .containsExactlyInAnyOrder(Row.of("low"), Row.of("high"));
+
+        assertThatThrownBy(() -> collect(batch, "SELECT id FROM pushed WHERE n = 5 AND d > 1"))
+                .hasStackTraceContaining("FAILED_PRECONDITION")
+                .hasStackTraceContaining("index");
+    }
+
+    /**
      * A key equality and a key range together need no composite index, and admit only the root
      * entity of the name; nor do equalities on property paths with a key range. A filter's property
      * is never quoted: a dotted name matches both the property of that name and the embedded

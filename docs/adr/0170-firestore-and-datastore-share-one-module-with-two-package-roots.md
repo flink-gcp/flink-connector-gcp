@@ -73,7 +73,7 @@ Status last checked on 2026-10-18: Change Streams are in Preview, and `google/fi
 ### The shared package ([#2066], 2026-11-07)
 
 The decision above lets a helper move into a shared place once it has a second consumer, without saying where.
-The first such helper is the Table API scans' search for pushable equalities (`EqualityMatcher` and `PushedFilters`), which the Native-mode and the Datastore-mode filter pushdowns had each written out (ADR-0197, ADR-0184).
+The first such helper is the Table API scans' search for pushable equalities (`EqualityMatcher`, renamed `PredicateMatcher` when [#2076] widened it to ranges, and `PushedFilters`), which the Native-mode and the Datastore-mode filter pushdowns had each written out (ADR-0197, ADR-0184).
 Both consumers are in this module, so the helper does not go into `flink-connector-gcp-base`, which every connector builds against.
 
 **Code both roots share lives under `io.github.flink.gcp.connector.firestore.common`**, here `firestore.common.table`, and is `@Internal` (owner's choice, 2026-11-07).
@@ -102,3 +102,4 @@ A package under the Datastore root, where `PropertyPaths` lives because only Dat
 [#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066
 [apache/beam#23551]: https://github.com/apache/beam/issues/23551
 [DataflowTemplates]: https://github.com/GoogleCloudPlatform/DataflowTemplates/tree/main/v2/mongodb-to-mongodb
+[#2076]: https://github.com/flink-gcp/flink-connector-gcp/issues/2076

@@ -49,16 +49,19 @@ public final class FirestoreScanConfig implements Serializable {
     @Nullable private final Integer maxPartitions;
     @Nullable private final Instant readTime;
     @Nullable private final Integer maxRowsPerFetch;
+    private final boolean filterPushDown;
 
     private FirestoreScanConfig(
             boolean collectionGroup,
             @Nullable Integer maxPartitions,
             @Nullable Instant readTime,
-            @Nullable Integer maxRowsPerFetch) {
+            @Nullable Integer maxRowsPerFetch,
+            boolean filterPushDown) {
         this.collectionGroup = collectionGroup;
         this.maxPartitions = maxPartitions;
         this.readTime = readTime;
         this.maxRowsPerFetch = maxRowsPerFetch;
+        this.filterPushDown = filterPushDown;
     }
 
     /**
@@ -91,7 +94,8 @@ public final class FirestoreScanConfig implements Serializable {
                         maxPartitions,
                         readTime,
                         config.getOptional(FirestoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH)
-                                .orElse(null));
+                                .orElse(null),
+                        config.get(FirestoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED));
         options.applyTo(FirestoreSource.builder(), true);
         return options;
     }
@@ -137,6 +141,14 @@ public final class FirestoreScanConfig implements Serializable {
         return collectionGroup;
     }
 
+    /**
+     * Returns whether predicates other than an equality, or IN, on the document id reach the
+     * service, which {@code scan.filter-push-down.enabled} decides.
+     */
+    public boolean isFilterPushDown() {
+        return filterPushDown;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -149,11 +161,13 @@ public final class FirestoreScanConfig implements Serializable {
         return collectionGroup == that.collectionGroup
                 && Objects.equals(maxPartitions, that.maxPartitions)
                 && Objects.equals(readTime, that.readTime)
-                && Objects.equals(maxRowsPerFetch, that.maxRowsPerFetch);
+                && Objects.equals(maxRowsPerFetch, that.maxRowsPerFetch)
+                && filterPushDown == that.filterPushDown;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(collectionGroup, maxPartitions, readTime, maxRowsPerFetch);
+        return Objects.hash(
+                collectionGroup, maxPartitions, readTime, maxRowsPerFetch, filterPushDown);
     }
 }

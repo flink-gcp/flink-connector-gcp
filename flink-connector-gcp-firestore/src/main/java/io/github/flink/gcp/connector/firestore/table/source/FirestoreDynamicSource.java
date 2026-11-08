@@ -54,7 +54,7 @@ import io.github.flink.gcp.connector.firestore.table.FirestoreScanConfig;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableLineage;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableSchema;
 import io.github.flink.gcp.connector.firestore.table.TypeMismatchPolicy;
-import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldEquality;
+import io.github.flink.gcp.connector.firestore.table.source.FirestoreFilterPushDown.FieldFilter;
 
 import javax.annotation.Nullable;
 
@@ -75,9 +75,10 @@ import java.util.Set;
  * document of the collection by its id. Each reads only the fields of the columns it produces: the
  * declared columns, or the projected ones when the planner pushed a projection down, a projected
  * field of a ROW column read as its nested path where {@code fieldMask} says so. A
- * single-collection scan also adds the equality filters {@link FirestoreFilterPushDown} translates,
- * each a necessary condition that Flink evaluates again; a collection-group scan pushes none
- * ({@code docs/adr/0197}).
+ * single-collection scan also adds the filters {@link FirestoreFilterPushDown} translates, each a
+ * necessary condition that Flink evaluates again, all but an equality on the document id only under
+ * {@code scan.filter-push-down.enabled}; a collection-group scan pushes none ({@code
+ * docs/adr/0197}).
  *
  * <p>A limit the planner pushes bounds the query, and a collection-group scan given one reads the
  * group as one limited query instead of as partitions, so a scan reads at most that many documents
@@ -110,7 +111,7 @@ public final class FirestoreDynamicSource
 
     private List<String> metadataKeys = List.of();
     private DataType producedDataType;
-    private PushedFilters<FieldEquality> filterState = PushedFilters.empty();
+    private PushedFilters<FieldFilter> filterState = PushedFilters.empty();
     @Nullable private Integer limit;
 
     /**
@@ -377,7 +378,8 @@ public final class FirestoreDynamicSource
         filterState =
                 scanConfig.isCollectionGroup()
                         ? PushedFilters.declined(filters)
-                        : FirestoreFilterPushDown.translate(schema, filters);
+                        : FirestoreFilterPushDown.translate(
+                                schema, scanConfig.isFilterPushDown(), filters);
         return filterState.result();
     }
 

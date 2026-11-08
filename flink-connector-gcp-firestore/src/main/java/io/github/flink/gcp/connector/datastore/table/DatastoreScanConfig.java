@@ -96,8 +96,8 @@ public final class DatastoreScanConfig implements Serializable {
     }
 
     /**
-     * Returns whether the scan pushes equality predicates into its query, the user having asserted
-     * that the filtered properties are indexed on every entity.
+     * Returns whether the scan pushes predicates on properties, and ranges on the key, into its
+     * query, the user having asserted that the filtered properties are indexed on every entity.
      */
     public boolean isFilterPushDown() {
         return filterPushDown;

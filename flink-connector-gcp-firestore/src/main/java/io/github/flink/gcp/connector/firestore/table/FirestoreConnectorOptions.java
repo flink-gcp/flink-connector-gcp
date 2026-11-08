@@ -137,6 +137,20 @@ public final class FirestoreConnectorOptions {
                                     + " partitioned collection-group scan, rather than the one"
                                     + " collection as a single split.");
 
+    /**
+     * Whether a single-collection scan hands predicates to the service as filters of its query, so
+     * documents that cannot match are not read. A Standard-edition database needs a composite index
+     * for some combinations, such as an equality on one field beside a range on another; without
+     * the index the job fails when it starts, and the service's message names the index to create.
+     * Disabled, the scan pushes only an equality, or IN, on the document id, which needs no index.
+     */
+    public static final ConfigOption<Boolean> SCAN_FILTER_PUSH_DOWN_ENABLED =
+            ConfigOptions.key("scan.filter-push-down.enabled")
+                    .booleanType()
+                    .defaultValue(true)
+                    .withDescription(
+                            "Whether a single-collection scan hands predicates to the service as filters of its query, so documents that cannot match are not read. A Standard-edition database needs a composite index for some combinations, such as an equality on one field beside a range on another; without the index the job fails when it starts, and the service's message names the index to create. Disabled, the scan pushes only an equality, or IN, on the document id, which needs no index.");
+
     /** The desired maximum number of partitions of a collection-group scan. */
     public static final ConfigOption<Integer> SCAN_PARTITION_MAX_PARTITIONS =
             ConfigOptions.key("scan.partition.max-partitions")

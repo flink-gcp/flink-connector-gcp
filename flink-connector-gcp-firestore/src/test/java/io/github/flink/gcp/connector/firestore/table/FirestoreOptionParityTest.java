@@ -138,6 +138,7 @@ class FirestoreOptionParityTest {
                         "scan.partition.max-partitions",
                         "scan.read-time",
                         "scan.max-rows-per-fetch",
+                        "scan.filter-push-down.enabled",
                         "lookup.async");
         FirestoreDynamicTableFactory factory = new FirestoreDynamicTableFactory();
         Set<String> accepted =
