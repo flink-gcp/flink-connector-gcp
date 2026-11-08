@@ -255,7 +255,7 @@ The [BigQuery namespace prerequisites](tier3-bootstrap/README.md#administrator-p
 The administrator extends the two existing ClusterRoles before that plan; after refresh their rules should already match, with only possible metadata reconciliation.
 Review the actual plans before merge and verify successful applies, idle inventory and empty refreshed plans afterward.
 The [foundation apply](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35482844068) completed with empty refreshed bootstrap and GCP plans; runner-impersonated reads verified the new namespace's zero quota and empty workload inventory.
-That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extended that scope, the [Bigtable preparation](#bigtable-tier-3-preparation) extended it again, and the [Spanner preparation](#spanner-tier-3-preparation) extends it to the current one.
+That acceptance added BigQuery as the fourth namespace inspected by the helper and the third watched application namespace; Pub/Sub acceptance below extended that scope, the [Bigtable](#bigtable-tier-3-preparation) and [Spanner](#spanner-tier-3-preparation) preparations extended it again, and the [Firestore preparation](#firestore-tier-3-preparation) extends it to the current one.
 Application publication and runtime admission are separate from this foundation, and each paid trial dispatch needs its own execution approval.
 
 ### Pub/Sub Tier-3 preparation
@@ -380,7 +380,7 @@ That the create is checked on the project alone, and that a Datastore-mode datab
 Merging applies 15 additions: the GSA, the bucket, its workload grant, the KSA trust, two custom roles, five project bindings and four lifecycle bucket grants.
 IAM roles and bindings are free, and the bucket holds only one run's state at a time.
 [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#firestore-recovery-foundation) records the grants' reasons and premises.
-The `tier3-firestore` namespace, its KSA and RBAC follow in the bootstrap root after their administrator prerequisites ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
+The `tier3-firestore` namespace, its `firestore` KSA and RBAC are in the [bootstrap root](tier3-bootstrap/README.md#firestore-recovery-foundation) ([#2109](https://github.com/flink-gcp/flink-connector-gcp/issues/2109)), and the common helper inspects the namespace and the [idle Operator configuration](tier3-operator/README.md) watches it ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
 
 ### Operator installation follows the cluster
 

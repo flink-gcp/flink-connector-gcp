@@ -196,6 +196,7 @@ def test_wrong_principal_stops_before_permission_or_inventory_checks(
         "tier3-pubsub",
         "tier3-bigtable",
         "tier3-spanner",
+        "tier3-firestore",
     ],
 )
 @pytest.mark.parametrize("kind", ["Pod", "FlinkDeployment"])
@@ -395,6 +396,7 @@ def test_ci_access_failure_does_not_publish_a_wrapper(monkeypatch, tmp_path):
         "tier3-pubsub",
         "tier3-bigtable",
         "tier3-spanner",
+        "tier3-firestore",
     ],
 )
 def test_application_quota_must_be_zero_and_observed(

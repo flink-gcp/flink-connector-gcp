@@ -88,7 +88,7 @@ Progress lines use the `firestore-progress` event in the shape the shared recove
 The run, both databases and the input form the trial identity that the restored input state must match; the phase, parallelism and seed pace may change in an upgrade.
 The check runs only while the input is active: once the input has finished, Flink restores its vertex as finished without initializing its state, so a later restore is not checked.
 
-The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`firestore-recovery`](../../lifecycle/firestore.cue) delivery are in place; the namespace and the Operator watch set follow in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083).
+The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`firestore-recovery`](../../lifecycle/firestore.cue) delivery are in place, and so are the namespace and the Operator's watch over it ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
 
 ## Recovery trial
 
@@ -128,7 +128,7 @@ A database is billed by operation and storage, so the estimate has no instance h
 
 A run is dispatched as the [Spanner trial](../spanner/README.md#dispatch) is, with `firestore_trial` naming the kind and `application_digest` the published `firestore-recovery` GAR digest.
 Any run ID fits, because the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, at most 49 of the 63 characters a database ID takes.
-A dispatch needs the `tier3-firestore` namespace, its place in the shared preflight's inventory and the Operator's watch over it, which [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083) adds; until then the runner refuses to touch the namespace.
+The `tier3-firestore` namespace, its place in the shared preflight's inventory and the Operator's watch over it are in place ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
 
 ### Database lifecycle
 

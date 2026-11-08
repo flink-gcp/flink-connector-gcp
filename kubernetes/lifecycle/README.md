@@ -134,7 +134,7 @@ Every run's inventory lists `tier3-spanner`.
 The [`firestore-recovery`](firestore.cue) delivery of the Firestore recovery trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) renders its initial and upgrade phases in `tier3-firestore` from the optional `firestore_records` and `firestore_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, and the optional `firestore_seed_records_per_second` tag, each seed copy's pace per reading subtask, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass.
 Its `firestore_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, which a run ID of the full 40 characters keeps within Firestore's 63-character database IDs.
 Dispatch renders it at the dispatched kind and the input and seed pace every kind shares, and the [recovery trial runbook](../apps/firestore/README.md#recovery-trial) describes the databases and their seeds, the exercise and the verdict ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
-The namespace it renders into, and its place in every run's inventory and the Operator's watch set, follow in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083).
+The namespace it renders into is in every run's inventory and the Operator's watch set ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -308,6 +308,8 @@ An automatic completion event for an execution that does not own the lock is a n
 Recovery concurrency is grouped by source execution, so unrelated CI completions cannot replace a pending lock-holder recovery, and a second recovery of the same source waits for the first.
 Recovery requires that the source holds the lock and that the GitHub API reports its execution completed, then compares the saved lock and approval.
 It reads the approval as written, without checking it against the current policy, so a policy change merged while a run holds the lock does not strand that run's recovery.
+Adding a namespace to the shared inventory is the exception: recovery lists the new namespace, whose standing objects, such as its `kube-root-ca.crt` ConfigMap, the older approval's baseline lacks, so cleanup refuses them as non-baseline and keeps the lock.
+A dispatched execution records its baseline from its own checkout, the `rig_sha` it names or the dispatching commit, when it starts and before it takes the lock, so merge such a change only while no `Tier-3 run` execution is queued or in progress and no run holds the lock, and afterwards dispatch only from a commit that contains it.
 Recovery requests cooperative stop and waits for Job completion when possible, then reconciles cleanup against actual state even if the record already says `cleaned`.
 It can clean concurrently with a supervisor; a recovery exercise's operations are guarded by the stop state and object UID/version.
 Before quota or scale writes, cleanup reads the resource version and then rechecks the exact environment-lock owner.

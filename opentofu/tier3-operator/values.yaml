@@ -30,6 +30,7 @@ watchNamespaces:
   - tier3-pubsub
   - tier3-bigtable
   - tier3-spanner
+  - tier3-firestore
 webhook:
   create: false
 image:

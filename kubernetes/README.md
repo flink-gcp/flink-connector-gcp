@@ -230,8 +230,8 @@ It cannot declare the bootstrap resource kinds, which prevents accidental owners
 
 The bootstrap runbook documents credentials, RBAC, initial administrator permission grants, adoption of existing resources and CI plan/apply.
 The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
-The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable` and `tier3-spanner`.
-All six application namespaces retain zero Pod/PVC quotas until separately approved admission.
+The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable`, `tier3-spanner` and `tier3-firestore`.
+All seven application namespaces retain zero Pod/PVC quotas until separately approved admission.
 After calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed.
 The `tier3-cloudtasks` namespace runs the `cloudtasks-recovery` scenario, the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); its [runbook](apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict, and its [findings](../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record its result.
 The [Cloud Tasks fault trial publication](images/README.md#cloud-tasks-fault-trial-publication) carries the `--sink-parallelism` argument into the TaskManager replacement and rescale trials of [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778), and the [Cloud Tasks INTERNAL retry publication](images/README.md#cloud-tasks-internal-retry-publication) their later attempts; the [findings](../docs/adr/evidence/0165-cloudtasks-fault-trials-findings-1778.md) record their results.
@@ -263,7 +263,7 @@ Its four trials each reached `usable`, as the [Spanner recovery trial findings](
 The [Firestore recovery application](apps/firestore/README.md) supplies the one graph that the trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) share: the Native-mode and Datastore-mode sinks and a paced batch-read copy in each mode.
 Build it with `just tier3-firestore-verify`.
 Its tests run the production graph against the Firestore emulator in both modes through savepoint upgrades and both rescales and pin the graph.
-The [`firestore-recovery`](lifecycle/firestore.cue) delivery runs it in the `tier3-firestore` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-firestore.tf), and the rig scenario of [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084) creates each run's databases and judges the trial, as the [recovery trial runbook](apps/firestore/README.md#recovery-trial) describes; the namespace follows in [#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083).
+The [`firestore-recovery`](lifecycle/firestore.cue) delivery runs it in the `tier3-firestore` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-firestore.tf), and the rig scenario of [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084) creates each run's databases and judges the trial, as the [recovery trial runbook](apps/firestore/README.md#recovery-trial) describes; the namespace, its place in the shared preflight and the Operator's watch over it are in place ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
 
 ## Pub/Sub recovery application
 

@@ -41,6 +41,7 @@ NAMESPACES = (
     "tier3-pubsub",
     "tier3-bigtable",
     "tier3-spanner",
+    "tier3-firestore",
 )
 OPERATOR_WATCH_NAMESPACES = {
     "tier3-smoke",
@@ -49,6 +50,7 @@ OPERATOR_WATCH_NAMESPACES = {
     "tier3-pubsub",
     "tier3-bigtable",
     "tier3-spanner",
+    "tier3-firestore",
 }
 OPERATOR_RESOURCES_LIMIT = {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"}
 CRDS = tuple(
@@ -75,6 +77,7 @@ OPERATOR_RESOURCES = {
     ("Role", "tier3-pubsub", "flink-operator"),
     ("Role", "tier3-bigtable", "flink-operator"),
     ("Role", "tier3-spanner", "flink-operator"),
+    ("Role", "tier3-firestore", "flink-operator"),
     ("RoleBinding", "tier3-system", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-smoke", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-cloudtasks", "flink-operator-role-binding"),
@@ -82,6 +85,7 @@ OPERATOR_RESOURCES = {
     ("RoleBinding", "tier3-pubsub", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-bigtable", "flink-operator-role-binding"),
     ("RoleBinding", "tier3-spanner", "flink-operator-role-binding"),
+    ("RoleBinding", "tier3-firestore", "flink-operator-role-binding"),
 }
 
 
@@ -547,6 +551,7 @@ class Cluster:
             ("tier3-pubsub", "pubsub", "tier3-pubsub-job"),
             ("tier3-bigtable", "bigtable", "tier3-bigtable-job"),
             ("tier3-spanner", "spanner", "tier3-spanner-job"),
+            ("tier3-firestore", "firestore", "tier3-firestore-job"),
         ):
             for kind, name in (
                 ("serviceaccount", account),
