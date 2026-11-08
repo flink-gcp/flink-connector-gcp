@@ -19,8 +19,9 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-10-10; revised 2026-10-11 by [#1707] (the Datastore-mode harness), 2026-10-17 by
   [#1819] (an Enterprise-edition database for the array inside an array) and 2026-10-24 by [#1895]
-  (either Standard-edition answer accepted)
-- Issues: [#1546], [#1705], [#1706], [#1707], [#1819], [#1895]
+  (either Standard-edition answer accepted), and 2026-11-08 by [#2079] (writes that arrange data
+  retried while throttled)
+- Issues: [#1546], [#1705], [#1706], [#1707], [#1819], [#1895], [#2079]
 - Modules: firestore (tests), `opentofu/`, `scripts/`
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Testing; the
   `just e2e` entry of `.agents/references/repository-guide.md` § Build
@@ -52,6 +53,16 @@ resource to name. What is Firestore's own:
   exists for fixtures billed while they stand; a database bills for what it stores and the
   operations run on it, so an abandoned one costs fractions of a cent until the next gated class
   removes it.
+- **A write that arranges a test's data is sent again while the service throttles it** ([#2079]).
+  `ThrottledWrites` retries a write answered `RESOURCE_EXHAUSTED` or `UNAVAILABLE`, with a backoff
+  from one second doubling to sixteen, and starts no attempt after two minutes. Both answers ask
+  the client to retry, and the connector's own writers do. Each harness's direct writes go through
+  it, a write a test expects to be refused included, since no refusal status is one it retries.
+  Every such write is an upsert, so one applied despite its answer is applied again harmlessly.
+  The calls of the connector under test do not, and the two over-10-MiB probes keep their own
+  loops, because
+  they must tell the throttle from a size refusal: a write is retried only on `UNAVAILABLE` or on a
+  `RESOURCE_EXHAUSTED` whose message names the write bandwidth.
 - **`roles/datastore.admin` on the E2E account** ([#1705]). Of the Datastore and Firestore roles,
   only admin and owner carry `datastore.databases.delete`; the clone and restore roles carry the
   create without it, and the Firebase admin roles that also carry it span every Firebase product.
@@ -105,7 +116,23 @@ modes answered alike. The
 documentation page records this rather than a test asserting it every week, because keeping a
 database standing for it was declined below.
 
+**Throttling of a fresh database.** No gated run up to 2026-10-31 inclusive logged a throttled write. The
+scheduled run of 2026-11-07 did, one second after the database was created:
+`RESOURCE_EXHAUSTED` ("This database has exceeded their maximum bandwidth for writes, please retry
+with exponential backoff") for five of the over-10-MiB probe's twelve writes. A manual run of
+2026-11-08 got the same answer for a 3,000-document seed in 500-write batches 8 seconds after
+creation and for every probe write 11 and 18 seconds after, then `UNAVAILABLE` ("The service is
+temporarily unavailable. Please retry with exponential backoff.") for one write of the probe's
+third attempt, 27 seconds after. Every run from 2026-10-11 on wrote from the same two forks to
+fresh databases at once, so that layout alone does not explain the change. On 2026-11-08 a single
+fresh database written from a workstation answered all 39 writes of its first three minutes, a
+single write, 500 small writes and four of 500 KiB about every 14 seconds, so the throttle is not a
+fixed warm-up after creation that a wait could cover. What triggers it was not established.
+
 ## Alternatives declined
+
+- **Waiting after a database is created until it accepts writes.** The single-database measurement
+  above found no warm-up to wait out, so no condition such a wait could test was known.
 
 - **A standing database, with or without point-in-time recovery, in `opentofu/flink-gcp`.** It is
   the only way to assert the one-hour and seven-day read-time windows every week, since a database
@@ -116,8 +143,8 @@ database standing for it was declined below.
   whose purpose is billed idle fixtures, for a resource that is not one.
 - **A negative IAM probe.** The E2E account holds `roles/datastore.admin`, so nothing in the suite
   can be refused for permissions; measuring `PERMISSION_DENIED` would need a second identity, as
-  for Spanner. Ramp-up throttling and `RESOURCE_EXHAUSTED` stay unmeasured too: the suite writes
-  far below the 500 operations a second that the service's ramp-up guidance starts from.
+  for Spanner. The service's ramp-up behaviour is not asserted either: the throttle the suite met is
+  retried as described above, not measured.
 
 [#1546]: https://github.com/flink-gcp/flink-connector-gcp/issues/1546
 [#1705]: https://github.com/flink-gcp/flink-connector-gcp/issues/1705
@@ -125,6 +152,7 @@ database standing for it was declined below.
 [#1707]: https://github.com/flink-gcp/flink-connector-gcp/issues/1707
 [#1819]: https://github.com/flink-gcp/flink-connector-gcp/issues/1819
 [#1895]: https://github.com/flink-gcp/flink-connector-gcp/issues/1895
+[#2079]: https://github.com/flink-gcp/flink-connector-gcp/issues/2079
 [ADR-0044]: 0044-the-e2e-suite-creates-an-ephemeral-bigtable-instance-per-gated-class.md
 [ADR-0088]: 0088-the-spanner-e2e-suite-creates-an-ephemeral-standard-edition-instance-per-gated-class.md
 [ADR-0119]: 0119-a-scheduled-source-derived-sweep-returns-billed-e2e-fixtures-to-their-idle-state.md

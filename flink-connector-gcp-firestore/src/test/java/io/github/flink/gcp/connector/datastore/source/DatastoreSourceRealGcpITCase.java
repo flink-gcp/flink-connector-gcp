@@ -139,9 +139,9 @@ class DatastoreSourceRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         // U+FF01 sorts after U+1F600's leading surrogate in Java's string order, and before it in
         // UTF-8 byte order; KeyRanges re-sorts the splitter's boundaries on the byte order.
         String kind = uniqueKind();
-        client().put(
-                        Entity.newBuilder(key(kind, "a！")).set("n", 1L).build(),
-                        Entity.newBuilder(key(kind, "a😀")).set("n", 2L).build());
+        put(
+                Entity.newBuilder(key(kind, "a！")).set("n", 1L).build(),
+                Entity.newBuilder(key(kind, "a😀")).set("n", 2L).build());
         assertThat("a！".compareTo("a😀")).isPositive();
 
         List<String> ordered = new ArrayList<>();
@@ -237,12 +237,12 @@ class DatastoreSourceRealGcpITCase extends AbstractDatastoreRealGcpITCase {
             batch.add(Entity.newBuilder(key(kind, name)).set("n", n).set("m", n % 7).build());
             names.add(name);
             if (batch.size() == 500) {
-                client().put(batch.toArray(new FullEntity<?>[0]));
+                put(batch.toArray(new FullEntity<?>[0]));
                 batch.clear();
             }
         }
         if (!batch.isEmpty()) {
-            client().put(batch.toArray(new FullEntity<?>[0]));
+            put(batch.toArray(new FullEntity<?>[0]));
         }
         return names;
     }

@@ -65,7 +65,7 @@ class DatastoreWriterRealGcpITCase extends AbstractDatastoreRealGcpITCase {
 
     @Test
     void onlyTheDuplicateInsertIsRoutedAlthoughTheRefusedCommitWroteTheOthers() throws Exception {
-        client().put(Entity.newBuilder(key(kind, "existing")).set("v", 0L).build());
+        put(Entity.newBuilder(key(kind, "existing")).set("v", 0L).build());
 
         try (DatastoreWriter<DatastoreMutation> writer = writer()) {
             writer.write(DatastoreMutation.insert(entity("new1", 1)), TestContexts.NO_OP);
@@ -108,7 +108,7 @@ class DatastoreWriterRealGcpITCase extends AbstractDatastoreRealGcpITCase {
 
     @Test
     void routesOnlyTheRefusedWritesAndAppliesTheRestOfTheirCommit() throws Exception {
-        client().put(Entity.newBuilder(key(kind, "existing")).set("v", 0L).build());
+        put(Entity.newBuilder(key(kind, "existing")).set("v", 0L).build());
 
         try (DatastoreWriter<DatastoreMutation> writer = writer()) {
             writer.write(DatastoreMutation.upsert(entity("a", 1)), TestContexts.NO_OP);

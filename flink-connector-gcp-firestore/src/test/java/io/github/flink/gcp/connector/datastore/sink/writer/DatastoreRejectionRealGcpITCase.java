@@ -29,6 +29,7 @@ import com.google.firestore.admin.v1.Database;
 import io.github.flink.gcp.connector.datastore.AbstractDatastoreRealGcpITCase;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.sink.DatastoreMutation;
+import io.github.flink.gcp.connector.firestore.ThrottledWrites;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -73,7 +74,7 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     void openAccess() throws Exception {
         access = RejectionProbes.open(database());
         kind = uniqueKind();
-        client().put(Entity.newBuilder(key(kind, "existing")).set("v", 1L).build());
+        put(Entity.newBuilder(key(kind, "existing")).set("v", 1L).build());
     }
 
     @AfterEach
@@ -214,8 +215,10 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         // bandwidth for writes"; 2026-11-07, FirestoreRejectionRealGcpITCase), and a commit has no
         // per-write answer, so the throttle would fail the whole commit. Such a commit is sent
         // again whole with backoff, still over 10 MiB, which is safe because every write is an
-        // upsert. Only a failure whose message names the write bandwidth counts as the throttle;
-        // any other failure, a RESOURCE_EXHAUSTED for the message size included, fails the test.
+        // upsert. Only a failure whose message names the write bandwidth counts as the throttle,
+        // and UNAVAILABLE, which the Native-mode twin saw on a retry (2026-11-08) and no size
+        // refusal answers; any other failure, a RESOURCE_EXHAUSTED for the message size included,
+        // fails the test.
         List<EncodedMutation> writes = new ArrayList<>();
         String nineHundredKiB = "z".repeat(900 * 1024);
         for (int i = 0; i < 12; i++) {
@@ -236,8 +239,10 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                 LOG.info("Attempt {}: the commit of about 10.5 MiB was applied.", attempt);
                 break;
             } catch (RuntimeException e) {
-                if (DatastoreErrorClassifier.statusCode(e) != StatusCode.Code.RESOURCE_EXHAUSTED
-                        || !namesWriteBandwidth(e)) {
+                StatusCode.Code code = DatastoreErrorClassifier.statusCode(e);
+                if (code != StatusCode.Code.UNAVAILABLE
+                        && (code != StatusCode.Code.RESOURCE_EXHAUSTED
+                                || !namesWriteBandwidth(e))) {
                     throw e;
                 }
                 LOG.info("Attempt {}: the commit was throttled: {}", attempt, e.toString());
@@ -267,7 +272,7 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     }
 
     @Test
-    void anArrayInsideAnArrayIsStoredOrRefusedAndTheLookupAnswersNoEntity() {
+    void anArrayInsideAnArrayIsStoredOrRefusedAndTheLookupAnswersNoEntity() throws Exception {
         // Sent as a raw commit, because the client library will not build such a value. Google's
         // documentation says a Standard-edition database refuses one, and a Datastore-mode database
         // cannot be Enterprise edition, but the service's answer has changed twice: stored when
@@ -304,14 +309,18 @@ class DatastoreRejectionRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                         .build();
 
         @Nullable RuntimeException refusal = null;
+        // Through ThrottledWrites, so a throttle is sent again rather than taken for the refusal.
         try {
-            rpc().commit(
-                            CommitRequest.newBuilder()
-                                    .setProjectId(PROJECT)
-                                    .setDatabaseId(database().getDatabaseId())
-                                    .setMode(CommitRequest.Mode.NON_TRANSACTIONAL)
-                                    .addMutations(Mutation.newBuilder().setUpsert(entity))
-                                    .build());
+            ThrottledWrites.retry(
+                    () ->
+                            rpc().commit(
+                                            CommitRequest.newBuilder()
+                                                    .setProjectId(PROJECT)
+                                                    .setDatabaseId(database().getDatabaseId())
+                                                    .setMode(CommitRequest.Mode.NON_TRANSACTIONAL)
+                                                    .addMutations(
+                                                            Mutation.newBuilder().setUpsert(entity))
+                                                    .build()));
         } catch (RuntimeException e) {
             refusal = e;
         }

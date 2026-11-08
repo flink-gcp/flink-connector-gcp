@@ -123,11 +123,11 @@ class DatastoreQueryRealGcpITCase extends AbstractDatastoreRealGcpITCase {
     void projectedTimestampsAndBlobsComeBackAsIndexValuesAndEveryResultCarriesItsKey() {
         // One property per projection: projecting both at once needs a composite index.
         String kind = uniqueKind();
-        client().put(
-                        Entity.newBuilder(key(kind, "a"))
-                                .set("ts", com.google.cloud.Timestamp.ofTimeMicroseconds(5L))
-                                .set("b", Blob.copyFrom(new byte[] {1, 2}))
-                                .build());
+        put(
+                Entity.newBuilder(key(kind, "a"))
+                        .set("ts", com.google.cloud.Timestamp.ofTimeMicroseconds(5L))
+                        .set("b", Blob.copyFrom(new byte[] {1, 2}))
+                        .build());
 
         com.google.datastore.v1.Entity timestamp = projectOne(kind, "ts");
         com.google.datastore.v1.Entity blob = projectOne(kind, "b");
@@ -203,14 +203,14 @@ class DatastoreQueryRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         String kind = uniqueKind();
         String halfMebibyte = "z".repeat(512 * 1024);
         for (int i = 0; i < 12; i++) {
-            client().put(
-                            Entity.newBuilder(key(kind, "big" + i))
-                                    .set(
-                                            "s",
-                                            StringValue.newBuilder(halfMebibyte)
-                                                    .setExcludeFromIndexes(true)
-                                                    .build())
-                                    .build());
+            put(
+                    Entity.newBuilder(key(kind, "big" + i))
+                            .set(
+                                    "s",
+                                    StringValue.newBuilder(halfMebibyte)
+                                            .setExcludeFromIndexes(true)
+                                            .build())
+                            .build());
         }
 
         QueryResultBatch batch =
@@ -230,17 +230,17 @@ class DatastoreQueryRealGcpITCase extends AbstractDatastoreRealGcpITCase {
         // first page takes and its continuation has something to return.
         seed(uniqueKind(), 1);
         seed(uniqueKind(), 1);
-        client().put(
-                        Entity.newBuilder(
-                                        Key.newBuilder(
-                                                        PROJECT,
-                                                        uniqueKind(),
-                                                        "n",
-                                                        database().getDatabaseId())
-                                                .setNamespace("tenant-metadata")
-                                                .build())
-                                .set("v", 1L)
-                                .build());
+        put(
+                Entity.newBuilder(
+                                Key.newBuilder(
+                                                PROJECT,
+                                                uniqueKind(),
+                                                "n",
+                                                database().getDatabaseId())
+                                        .setNamespace("tenant-metadata")
+                                        .build())
+                        .set("v", 1L)
+                        .build());
 
         for (String metadata : new String[] {"__kind__", "__namespace__", "__property__"}) {
             // All three at one read time, so a kind or property appearing between them cannot
@@ -364,7 +364,7 @@ class DatastoreQueryRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                 com.google.cloud.Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 123_456_789);
         com.google.cloud.Timestamp floored =
                 com.google.cloud.Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 123_456_000);
-        client().put(Entity.newBuilder(key(kind, "a")).set("t", fine).build());
+        put(Entity.newBuilder(key(kind, "a")).set("t", fine).build());
 
         assertThat(read(key(kind, "a")).getTimestamp("t")).isEqualTo(floored);
         assertThat(matches(kind, fine)).isOne();
@@ -425,6 +425,6 @@ class DatastoreQueryRealGcpITCase extends AbstractDatastoreRealGcpITCase {
                             .set("n", n)
                             .build());
         }
-        client().put(batch.toArray(new FullEntity<?>[0]));
+        put(batch.toArray(new FullEntity<?>[0]));
     }
 }

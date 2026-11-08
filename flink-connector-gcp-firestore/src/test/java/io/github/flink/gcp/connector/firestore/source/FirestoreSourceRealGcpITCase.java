@@ -27,7 +27,6 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryPartition;
 import com.google.cloud.firestore.TransactionOptions;
-import com.google.cloud.firestore.WriteBatch;
 import com.google.cloud.firestore.WriteResult;
 import com.google.firestore.admin.v1.Database;
 import io.github.flink.gcp.connector.firestore.AbstractFirestoreRealGcpITCase;
@@ -47,6 +46,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -238,14 +238,14 @@ class FirestoreSourceRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     }
 
     private static void seedReversed(Firestore direct, String collection) throws Exception {
-        WriteBatch batch = direct.batch();
+        Map<String, Map<String, Object>> documents = new LinkedHashMap<>();
         for (int i = 0; i < ORDERED_DOCUMENTS; i++) {
-            batch.set(
-                    direct.document(collection + "/d" + String.format("%02d", i)),
+            documents.put(
+                    collection + "/d" + String.format("%02d", i),
                     Map.of("n", (long) (ORDERED_DOCUMENTS - i), "kind", "doc"));
         }
-        batch.set(direct.document(collection + "/d10"), Map.of("kind", "doc"));
-        batch.commit().get(60, TimeUnit.SECONDS);
+        documents.put(collection + "/d10", Map.of("kind", "doc"));
+        setInOneBatch(direct, documents);
     }
 
     private static List<String> paths(Query query) throws Exception {
@@ -329,7 +329,7 @@ class FirestoreSourceRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         // Sent through a read-only transaction, which passes the protobuf read time unchanged: the
         // builders truncate a configured read time, so the source never sends one.
         DocumentReference document = client().document(uniqueCollection() + "/a");
-        Instant written = updateTime(document.set(Map.of("v", 1)).get(30, TimeUnit.SECONDS));
+        Instant written = updateTime(write(() -> document.set(Map.of("v", 1))));
 
         // The same instant on a whole microsecond is answered, so the refusal is the precision's.
         assertThat(readAt(document, written).exists()).isTrue();
@@ -347,7 +347,7 @@ class FirestoreSourceRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         // The premise behind "the truncated read time reads the same data": a version's time is a
         // whole microsecond, so no write falls between a sub-microsecond read time and its floor.
         DocumentReference document = client().document(uniqueCollection() + "/a");
-        Instant written = updateTime(document.set(Map.of("v", 1)).get(30, TimeUnit.SECONDS));
+        Instant written = updateTime(write(() -> document.set(Map.of("v", 1))));
 
         assertThat(written.getNano() % 1_000).isZero();
         assertThat(readAt(document, written).exists()).isTrue();
@@ -362,7 +362,7 @@ class FirestoreSourceRealGcpITCase extends AbstractFirestoreRealGcpITCase {
         DocumentReference document = client().document(uniqueCollection() + "/a");
         Timestamp fine = Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 123_456_789);
         Timestamp floored = Timestamp.ofTimeSecondsAndNanos(1_700_000_000L, 123_456_000);
-        document.set(Map.of("t", fine)).get(30, TimeUnit.SECONDS);
+        write(() -> document.set(Map.of("t", fine)));
 
         assertThat(read(document.getPath()).getTimestamp("t")).isEqualTo(floored);
         assertThat(matches(document, fine)).isZero();
@@ -425,21 +425,21 @@ class FirestoreSourceRealGcpITCase extends AbstractFirestoreRealGcpITCase {
     /** As {@link #seed(String, int)}, in the database of the given client. */
     private static List<String> seed(Firestore direct, String group, int count) throws Exception {
         List<String> paths = new ArrayList<>();
-        WriteBatch batch = direct.batch();
+        Map<String, Map<String, Object>> batch = new LinkedHashMap<>();
         for (int n = 0; n < count; n++) {
             String path =
                     n % 2 == 0
                             ? group + "/d" + String.format("%05d", n)
                             : "parents/p" + (n % 7) + "/" + group + "/d" + String.format("%05d", n);
-            batch.set(direct.document(path), Map.of("n", n));
+            batch.put(path, Map.of("n", n));
             paths.add(path);
-            if (batch.getMutationsSize() == 500) {
-                batch.commit().get(60, TimeUnit.SECONDS);
-                batch = direct.batch();
+            if (batch.size() == 500) {
+                setInOneBatch(direct, batch);
+                batch = new LinkedHashMap<>();
             }
         }
-        if (batch.getMutationsSize() > 0) {
-            batch.commit().get(60, TimeUnit.SECONDS);
+        if (!batch.isEmpty()) {
+            setInOneBatch(direct, batch);
         }
         return paths;
     }
