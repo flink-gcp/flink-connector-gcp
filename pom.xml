@@ -151,7 +151,7 @@ limitations under the License.
              the second flag itself for 1.x versions); see the version policy in AGENTS.md
              and issue #32. -->
         <flink.compat>flink2</flink.compat>
-        <google-cloud-libraries-bom.version>26.91.0</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.93.0</google-cloud-libraries-bom.version>
         <!-- OpenTelemetry, whose Metrics API base's ClientMetrics implements (#713, ADR-0186)
              and which most Google Cloud clients bring in transitively, their built-in metrics
              export using the SDK. libraries-bom manages none of it, so this import is what keeps the
