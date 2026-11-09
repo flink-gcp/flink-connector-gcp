@@ -401,6 +401,28 @@ The digests are the ones the `sha-03562299…` tag resolves to, and `operator` a
 The same run republished the BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopts.
 A Firestore trial checks the `operator` mirror, the lifecycle-tools pin and its `firestore-recovery` image, so it must be admitted so that its window ends before 2026-11-13T14:41:26Z.
 
+### Pub/Sub restore-deduplication trial publication
+
+The [Pub/Sub restore-deduplication trial publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42536863603) built main commit `f2ebb1af059872138209aaa3dfe86e2d0a225bd3`, the merge of [#2129](https://github.com/flink-gcp/flink-connector-gcp/pull/2129), which built the held relay of [#2126](https://github.com/flink-gcp/flink-connector-gcp/issues/2126), between 2026-11-08T23:47Z and 2026-11-09T00:28Z, for the trials of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127); its `pubsub-recovery` image is the first whose relay accepts `--hold-after-checkpoint-millis`, so each of those trials names it as a dispatch input.
+The run kept the `operator` and `flink` versions already in GAR, so their creation times are earlier than its own, as for the [Firestore recovery publication](#firestore-recovery-publication) above.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d` | 2026-11-07T14:41:26Z | 2026-11-14T14:41:26Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-11-05T16:10:42Z | 2026-11-12T16:10:42Z |
+| `lifecycle-tools` | `sha256:b653c0a3dae61da16f7b5d738f30810de5bbb13b3a4a5a1b3ba7ce58968dd79b` | 2026-11-09T00:26:44Z | 2026-11-16T00:26:44Z |
+| `smoke` | `sha256:10a3886363c944282f851b66f83c2af07b86d4c1cbc3bf02a2cb2f617b5a8fbc` | 2026-11-09T00:27:02Z | 2026-11-16T00:27:02Z |
+| `bigquery-recovery` | `sha256:0806da83b95c59bc9e3ae6825072eee8ca4ff18987ee07959ba40fc8f5ba878e` | 2026-11-09T00:27:11Z | 2026-11-16T00:27:11Z |
+| `pubsub-recovery` | `sha256:66bdf70a584f64f1c75731d16a77b294e781be5c45347376f7b7b352c2f2894b` | 2026-11-09T00:27:17Z | 2026-11-16T00:27:17Z |
+| `cloudtasks-recovery` | `sha256:5ffe2015844d9ce677443ab0bbff314ab4bdf1f8662069aa9043f61b65f9c643` | 2026-11-09T00:27:23Z | 2026-11-16T00:27:23Z |
+| `bigtable-recovery` | `sha256:f7dd63e5935e817ad6f6518dc515eccb1406c83afa8f225c4625227e216f2e1d` | 2026-11-09T00:27:30Z | 2026-11-16T00:27:30Z |
+| `spanner-recovery` | `sha256:a1fc9f8f7e9b0a0ae3368dfefe124af196dcb4708ca38fe861ba14bfb5e19cc9` | 2026-11-09T00:27:36Z | 2026-11-16T00:27:36Z |
+| `firestore-recovery` | `sha256:ec65ac5a2189d18c798769288353aaa247cf79b8578476206fd47dd86594674d` | 2026-11-09T00:27:44Z | 2026-11-16T00:27:44Z |
+
+The digests are the ones the `sha-f2ebb1af…` tag resolves to, and `operator` and `flink` the ones their `1.16.1` and `2.2.1` tags resolve to, read from GAR after the run; the `operator` and `flink` digests are unchanged, so the Helm pin and the `flink` pin stand.
+Nothing adopts this run's lifecycle-tools or smoke digests: [pins.cue](pins.cue) keeps those of the Firestore recovery publication, which every one of the trials ran as its supervisor, because the supervisor's code reaches it through its ConfigMap.
+The `pubsub-recovery` digest was a dispatch input verified live, and the three usable trials' [findings](../../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) record it.
+
 For a shell or Docker build argument, read a pin with:
 
 ```sh
