@@ -18,7 +18,8 @@ runs in the workflows (#111). `just --list` is the index; run `mise x -- just <r
 without mise activated. Add a command here rather than to a workflow `run:` block.
 
 - `just verify` — full build (`./mvnw -ntp verify`): spotless/checkstyle (validate), unit tests,
-  integration tests, apache-rat license-header check. Requires JDK 17; `mise.toml` pins java/maven
+  integration tests, apache-rat license-header check. Requires JDK 21 or 17 (the build compiles
+  with `maven.compiler.release` 17); `mise.toml` pins java (Temurin 21)/maven
 - `just format` — run before committing; CI fails on unformatted code
 - `just verify-flink 2.3.0` / `just verify-module flink-connector-gcp-bigquery` — one Flink
   version, one module. A 1.x version also selects the `flink1` compat source root (see the

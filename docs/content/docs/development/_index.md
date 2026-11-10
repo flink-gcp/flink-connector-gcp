@@ -34,7 +34,9 @@ toolchain and the build.
 
 ## Toolchain
 
-- **JDK 17 or 21.** The build targets bytecode 17; Java 11 is not supported — see
+- **JDK 21 by default, or 17.** `mise.toml` pins Temurin 21, and the build compiles against the
+  Java 17 class library (`maven.compiler.release` 17), so a jar built on either JDK runs on
+  Java 17. Java 11 is not supported — see
   [Supported versions]({{< relref "/" >}}#supported-versions).
 - **Maven**, through the included wrapper `./mvnw`.
 - **[just](https://just.systems/)** as the command entrypoint and
@@ -75,15 +77,15 @@ most easily forgotten in a raw Maven call.
 [Supported versions]({{< relref "/" >}}#supported-versions) states the user-facing contract and
 how the weekly build verifies the range.
 
-Run `just format` before committing — CI fails on unformatted code. Format under a JDK 17:
-the inherited build skips Spotless on Java 21 (google-java-format does not run there), so on
-a 21-only toolchain both `just format` and `just verify` pass with unformatted Java and the
-JDK 17 CI lane fails it.
+Run `just format` before committing — CI fails on unformatted code. Spotless formats and
+checks on JDK 17 and 21 alike: the root POM turns back on the Spotless execution that the
+inherited build skips on Java 21, and on JDK 21 it finds nothing to change in the tree
+formatted on JDK 17.
 
 ## Working in an IDE
 
-Import the root `pom.xml` as a Maven project on a JDK 17. Nothing else is required: the
-formatter is Spotless, applied by `just format` and enforced by the JDK 17 build, so an IDE
+Import the root `pom.xml` as a Maven project on a JDK 21 or 17. Nothing else is required: the
+formatter is Spotless, applied by `just format` and enforced by the build, so an IDE
 formatter profile is a convenience rather than a correctness requirement; Checkstyle also runs
 in the build, and an IDE plugin can point at its configuration in
 `tools/maven/checkstyle.xml` to surface violations while editing.

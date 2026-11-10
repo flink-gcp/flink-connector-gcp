@@ -165,6 +165,6 @@ The `plan` step's log lists the selected versions and source commits, and the up
 
 For a local reproduction, run `just docs-site plan /tmp/docs-plan.json` from a checkout with fetched release tags and authenticated `gh`.
 For each entry, create a disposable checkout at its recorded SHA and run `just docs-site build /tmp/docs-plan.json <id> <source-checkout> /tmp/docs-lines` from the controller checkout.
-The build requires JDK 17, Docker and that source's mise tools; it modifies release metadata in the disposable checkout.
+The build requires Docker and that source's mise tools, including the JDK it pins; it modifies release metadata in the disposable checkout.
 Finally run `just docs-site assemble /tmp/docs-plan.json /tmp/docs-lines /tmp/docs-site` with a destination that does not exist.
 Each command is the same helper CI runs, and a failed build must be retried in a fresh source checkout.

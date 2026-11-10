@@ -141,7 +141,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       # uv runs scripts/stage-release-guard.py inside the recipe. Shims stay
       # off the PATH so mise's java can never shadow the setup-java JDK the

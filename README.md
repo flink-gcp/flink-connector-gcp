@@ -28,7 +28,7 @@ BigQuery, Cloud Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore.
 
 ## Build
 
-Requires JDK 17 or 21 and Maven (or use the included wrapper):
+Requires JDK 21 (the `mise.toml` default) or 17, and Maven (or use the included wrapper):
 
 ```sh
 ./mvnw verify

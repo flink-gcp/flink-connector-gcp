@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-25 ([#102], settled by measurement on PR
-  [#108](https://github.com/flink-gcp/flink-connector-gcp/pull/108))
-- Issues: [#102], [#29], [#39] (publishing deferred there)
+  [#108](https://github.com/flink-gcp/flink-connector-gcp/pull/108)); revised 2026-11-11
+  ([#2132]: Temurin 21 builds, so the floor row and the `binary_compat` rerun carry JDK 17)
+- Issues: [#102], [#29], [#39] (publishing deferred there), [#2132]
 - Modules: all (build/CI)
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
   § Supported versions
@@ -64,8 +65,11 @@ rest on annotations alone. Before [#102] the working assumption was a per-minor 
     dependabot does not see workflow env — so the release check below is what tells a
     maintainer that `FLINK_CEILING` or `FLINK_LTS` is behind.
   - The `floor` row passes no `-Dflink.version` at all, so the pom stays the single source of
-    truth for it, and it runs on JDK 21 because floor-on-17 is already covered by `verify.yaml`
-    and by `binary_compat`.
+    truth for it, and it runs on JDK 17 because floor-on-21 is already covered by `verify.yaml`
+    and by `binary_compat`'s build. Until [#2132]
+    made Temurin 21 the default JDK, the two were the other way round.
+  - `binary_compat` builds on JDK 21, as the release does, and reruns on JDK 17, so its rerun
+    also shows that JDK 21-built bytecode loads on Java 17 ([#2132]).
   - The `next` row is upstream early-warning and is deliberately **not** `continue-on-error`.
 - **`scripts/check-flink-release.sh` (the `new_release_check` job) announces new upstream
   minors**, because suppressing the dependabot minor PR removed the only thing that did. It
@@ -103,3 +107,4 @@ row goes red.
 [#102]: https://github.com/flink-gcp/flink-connector-gcp/issues/102
 [#181]: https://github.com/flink-gcp/flink-connector-gcp/issues/181
 [#932]: https://github.com/flink-gcp/flink-connector-gcp/issues/932
+[#2132]: https://github.com/flink-gcp/flink-connector-gcp/issues/2132

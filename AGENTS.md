@@ -26,7 +26,8 @@ In a shell without mise activated, use `mise x -- just <recipe>`.
 
 - `just format`: format code; run before committing.
 - `just verify`: full Maven verification with formatting, checkstyle, unit tests, integration
-  tests, packaging, and apache-rat. It requires JDK 17 and Docker but no GCP credentials.
+  tests, packaging, and apache-rat. It requires JDK 21 or 17 and Docker but no GCP
+  credentials.
 - `just verify-module <module>`: verify a module and its reactor dependencies; keep its `-am`.
 - Scope local test runs to what changed: targeted `-Dtest=...` while iterating, one module's
   tests before committing. Run the full `just verify` locally only when the change touches what
