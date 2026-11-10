@@ -16,7 +16,7 @@ limitations under the License.
 
 # Pub/Sub restore deduplication under the reactive scheduler: findings
 
-This records the deployed reactive-mode trials of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056), which ran the [reactive Pub/Sub kinds](../../../kubernetes/apps/pubsub/README.md#reactive-trials) with the source's restore deduplication ([ADR-0198](../0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md)) off and on, as [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054) asked.
+This records the deployed reactive-mode trials of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056), which ran the [reactive Pub/Sub kinds](../../../kubernetes/apps/pubsub/README.md#restore-deduplication-trials) with the source's restore deduplication ([ADR-0198](../0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md)) off and on, as [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054) asked.
 The six trials ran between 2026-11-07 15:06Z and 2026-11-08 11:56Z, all reached a `usable` verdict, and none lost an input.
 One scale-out lost a completed checkpoint's notification to the rescale, and the ledger suppressed 2,390 redeliveries, as many as the ids that checkpoint had covered; no other trial gave the ledger anything to suppress.
 Times are UTC.
@@ -78,7 +78,7 @@ Each recovery verified idle and empty plans, wrote the receipt and released the 
 | `ps2056-tme-off-a1` | 20,000 | 21,178 | 0 | 1,178 | 0 | 0 |
 | `ps2056-tme-on-a2` | 20,000 | 21,015 | 0 | 1,015 | 0 | 0 |
 
-Covered redeliveries are inputs that a restored attempt processed again although an earlier run had processed them before a barrier in the restored checkpoint's lineage, which is what restore deduplication exists to suppress; the [oracle](../../../kubernetes/apps/pubsub/README.md#reactive-trials) defines them.
+Covered redeliveries are inputs that a restored attempt processed again although an earlier run had processed them before a barrier in the restored checkpoint's lineage, which is what restore deduplication exists to suppress; the [oracle](../../../kubernetes/apps/pubsub/README.md#restore-deduplication-trials) defines them.
 Repeated processing also counts inputs processed after the restored checkpoint's barrier and before the restart, which at-least-once delivery processes again by design.
 The last column sums duplicate input publications, duplicate output publications and repeated output deliveries.
 
@@ -115,6 +115,7 @@ None of those came back, so the notification had acknowledged them before the ca
 The two settings therefore did not meet the same event, and the pair compares no duplicate counts.
 What the on attempt shows is the event [#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049) reported, on the deployed service and with real Pod scheduling, and the ledger removing all of it without losing an input.
 Had the setting been off in that attempt, its 2,390 suppressed deliveries would have been processed again.
+The trials of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127) make that case occur on every run, as their [findings](0198-pubsub-restore-deduplication-trial-findings-2127.md) record.
 The report in [#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049) lost the race in one of three reactive scale-outs; two deployed scale-outs say nothing about the rate.
 
 ## The scale-in and eviction gave the ledger nothing to hold

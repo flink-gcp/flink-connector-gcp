@@ -63,6 +63,7 @@ The logical input domain and restart count do not bound elapsed execution or bil
 
 Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
 The deployed recovery trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran on the DataStream entry point, one of each kind, and lost no message; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the verdicts, every attempt and what they leave unobserved; the replacement reruns of [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720) observed the redelivery those trials did not, as their [findings](../../../docs/adr/evidence/0165-pubsub-redelivery-findings-1720.md) record.
+The [restore-deduplication trials](#restore-deduplication-trials) of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127) each restored a checkpoint whose completion notification had not run, and the source suppressed as many redeliveries as its ledger held message ids, as their [findings](../../../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) record.
 The Table entry point has no deployed trial.
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
@@ -486,7 +487,7 @@ The other cohorts carry no delay and no hold.
 
 Recovery is proven by a restore of a checkpoint under the run's state prefix after the fault, with the same JobManager, and by every job vertex running at the kind's recovery TaskManagers.
 A rescale also needs the Operator to report the new generation deployed with the recovery manifest, the adaptive scale-in also needs the idle TaskManager gone, and a kill needs the deleted Pod gone.
-A kill can restart the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for every vertex to run at three; in both evictions of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056) the replacement registered within the restart's 120-second resource stabilization, and the job restored once.
+A kill can restart the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for every vertex to run at three; in both evictions of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056) and in the kill of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127) the replacement registered within the restart's 120-second resource stabilization, and the job restored once.
 While the trial recovers, every restore the job counts is accepted and recorded as `restores`; one after recovery still stops the trial.
 
 The case is the first restore after the fault, which the `recovery` outcome records as `first_restored`; a kill restores again when the replacement TaskManager registers after the scheduler's resource stabilization.
