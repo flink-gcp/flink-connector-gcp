@@ -22,6 +22,7 @@ limitations under the License.
 - Updated: 2026-10-27 (every component that owns a Bigtable data client takes both options, refined by [#1903])
 - Updated: 2026-10-28 (every component that builds a Spanner client takes both options, [#712])
 - Updated: 2026-10-28 (an enumerator's client metrics belong to its metric group, not its source object; [ADR-0188], [#1908])
+- Updated: 2026-11-11 (google-cloud-bigtable 2.88.0 decides the session path from the session diversion alone, [#2134])
 - Issues: [#713], [#1902], [#1903], [#1908], [#712], [#715], [#714], [#1815]
 - Modules: base, bigtable, cloudtasks, spanner, `scripts/`, root POM
 - Current behavior: `docs/content/docs/connectors/datastream/bigtable.md` and
@@ -295,8 +296,9 @@ metric group. Four findings shaped it.
   The scan reader registers only `ReadRows`, so with the exporter on such reads are dropped with
   one `WARN`; registering ten series per reader for a path that is off by default was not worth
   it. Nothing calls `MutateRow`. The client takes that path only when the
-  service's client configuration sets a non-zero `session_load`, and the configuration the client
-  ships sets 0. Forcing the classic path would take the `@InternalApi` `setSessionsEnabled(false)`;
+  service's client configuration diverts a non-zero session load to the method, and the
+  configuration the client ships diverts none. Since google-cloud-bigtable 2.88.0 only the session
+  diversion counts, globally or per method; the deprecated flat `session_load` is ignored ([#2134]). Forcing the classic path would take the `@InternalApi` `setSessionsEnabled(false)`;
   the owner declined a workaround on 2026-10-27 because the defect is the client's, and the docs
   state the effect instead. It was not measured against the service.
 
@@ -367,6 +369,7 @@ found again through the identity of a subgroup it holds. `EnumeratorClientMetric
 [#1902]: https://github.com/flink-gcp/flink-connector-gcp/issues/1902
 [#1903]: https://github.com/flink-gcp/flink-connector-gcp/issues/1903
 [#1908]: https://github.com/flink-gcp/flink-connector-gcp/issues/1908
+[#2134]: https://github.com/flink-gcp/flink-connector-gcp/pull/2134
 [ADR-0010]: 0010-pubsub-sink-metric-placements.md
 [ADR-0128]: 0128-an-enumerators-closeable-seam-is-minted-per-enumerator.md
 [ADR-0038]: 0038-metric-names-are-per-connector-inventories-in-one-shape-without-flinks-num-prefix.md
