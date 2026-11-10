@@ -24,6 +24,10 @@ import requests
 from .common import ApiError, Failure, TransportError
 from .policy import HTTP_TIMEOUT, MIB
 
+# A refusal's body read for its message, and the part of the message kept.
+ERROR_BODY_BYTES = 8192
+ERROR_MESSAGE_CHARS = 500
+
 
 class Unsent(Failure):
     """A call refused before its request was sent, so it reached no service."""
@@ -52,11 +56,21 @@ class JsonService:
             raise error(f"{self.label} operation deadline exceeded")
         return min(HTTP_TIMEOUT, remaining)
 
-    def _call(self, method, path, body=None, params=None, absent=False, shape=dict):
+    def _call(
+        self,
+        method,
+        path,
+        body=None,
+        params=None,
+        absent=False,
+        shape=dict,
+        headers=None,
+    ):
         """The decoded response, or None for a 404 when `absent` allows one.
 
         `shape` is the JSON type the response must have; a streaming method
-        such as Bigtable's ReadRows answers with an array.
+        such as Bigtable's ReadRows answers with an array. A refusal raises
+        `ApiError` with the service's own message, when its body names one.
         """
         timeout = self._remaining(Unsent)
         try:
@@ -68,12 +82,18 @@ class JsonService:
                 timeout=timeout,
                 allow_redirects=False,
                 stream=True,
+                headers=headers,
             ) as response:
                 self._remaining()
                 if absent and response.status_code == 404:
                     return None
                 if not 200 <= response.status_code < 300:
-                    raise ApiError(response.status_code, method, path)
+                    raise ApiError(
+                        response.status_code,
+                        method,
+                        path,
+                        message=self._error_message(response),
+                    )
                 data = bytearray()
                 for chunk in response.iter_content(8192):
                     self._remaining()
@@ -99,6 +119,40 @@ class JsonService:
             ) from error
         except (ValueError, UnicodeError) as error:
             raise Failure(f"Invalid {self.label} JSON response") from error
+
+    def _error_message(self, response):
+        """A Google API error body's `error.message`, shortened, or None.
+
+        Best effort: the body is gathered across its chunks up to
+        `ERROR_BODY_BYTES`, and the call's deadline is checked between them as
+        for a successful response, so a slow body can overrun the deadline by
+        one read at most. Only the first `ERROR_BODY_BYTES` are parsed, and
+        what does not parse, cannot be read in time or names no message
+        leaves the refusal its status alone.
+        """
+        data = bytearray()
+        try:
+            for chunk in response.iter_content(1024):
+                self._remaining()
+                data.extend(chunk)
+                if len(data) >= ERROR_BODY_BYTES:
+                    break
+            body = json.loads(data[:ERROR_BODY_BYTES])
+        except (
+            Failure,
+            ValueError,
+            UnicodeError,
+            requests.exceptions.RequestException,
+        ):
+            return None
+        error = body.get("error") if isinstance(body, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if not isinstance(message, str) or not message.strip():
+            return None
+        message = " ".join(message.split())
+        if len(message) > ERROR_MESSAGE_CHARS:
+            message = message[:ERROR_MESSAGE_CHARS] + "…"
+        return message
 
 
 class TrialService(JsonService):

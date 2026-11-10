@@ -104,6 +104,23 @@ class Databases(TrialService):
     def resource_name(trial):
         return [trial.database_path(mode) for mode in MODES]
 
+    def _datastore_post(self, method, body):
+        """One Datastore API call on the run's Datastore-mode database.
+
+        The request body names the database, but the service still routes a
+        named database by the `x-goog-request-params` header and refuses a
+        call without it with 400 "Missing routing header" (#2130).
+        """
+        database = self.trial.database("datastore")
+        return self._call(
+            "POST",
+            DATASTORE_API + f"projects/{PROJECT}:{method}",
+            body,
+            headers={
+                "x-goog-request-params": f"project_id={PROJECT}&database_id={database}"
+            },
+        )
+
     def database(self, mode):
         """One mode's database, or None when it does not exist."""
         return self._call("GET", API + self.trial.database_path(mode), absent=True)
@@ -152,9 +169,8 @@ class Databases(TrialService):
         else:
             database = self.trial.database(mode)
             partition = {"projectId": PROJECT, "databaseId": database}
-            response = self._call(
-                "POST",
-                DATASTORE_API + f"projects/{PROJECT}:commit",
+            response = self._datastore_post(
+                "commit",
                 {
                     "databaseId": database,
                     "mode": "NON_TRANSACTIONAL",
@@ -287,9 +303,7 @@ class Databases(TrialService):
         }
         if read_time is not None:
             body["readOptions"] = {"readTime": read_time}
-        batch = self._call(
-            "POST", DATASTORE_API + f"projects/{PROJECT}:runQuery", body
-        )["batch"]
+        batch = self._datastore_post("runQuery", body)["batch"]
         found = [
             (
                 _name(result["entity"]["key"]["path"]),
