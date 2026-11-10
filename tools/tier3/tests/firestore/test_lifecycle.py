@@ -14,6 +14,7 @@
 # limitations under the License.
 """The run's two databases and their seeds, through the REST client."""
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -75,15 +76,15 @@ def test_admission_creates_both_databases_and_seeds_each(env, service):
     runner = controller(env, service)
     runner.initialize()
     receipt = runner.provision(DEADLINE)
-    # Neither name is taken, the Native-mode database is created and read
-    # until it exists, then the Datastore-mode one under the same marker.
-    assert service.calls[:4] == [
+    # Neither name is taken, and both databases are created under the same
+    # marker before either is read back, so the two creates run together.
+    assert service.calls[:5] == [
         ("get", "native"),
         ("get", "datastore"),
         ("create", "native"),
+        ("create", "datastore"),
         ("get", "native"),
     ]
-    assert ("create", "datastore") in service.calls
     assert receipt["databases"]["native"]["type"] == "FIRESTORE_NATIVE"
     assert receipt["databases"]["datastore"]["type"] == "DATASTORE_MODE"
     for mode in MODES:
@@ -101,6 +102,82 @@ def test_admission_creates_both_databases_and_seeds_each(env, service):
         f"projects/flink-gcp/databases/fs1879-fs-lifecycle-{suffix}"
         for suffix in ("n", "d")
     ]
+    # The evidence times the creates and readbacks apart from the seeds.
+    assert [event for event, _ in env.events if event.startswith("firestore-")] == [
+        "firestore-databases-read-back",
+        "firestore-databases-admitted",
+    ]
+
+
+def test_the_two_seeds_are_written_side_by_side(env, service):
+    """Every commit to one database waits for its partner to the other."""
+    commit, pair = service.commit, threading.Barrier(len(MODES), timeout=5)
+
+    def paired(mode, body):
+        pair.wait()
+        return commit(mode, body)
+
+    service.commit = paired
+    runner = controller(env, service)
+    runner.initialize()
+    runner.provision(DEADLINE)
+    for mode in MODES:
+        assert service.data[mode]["seed"].keys() == TRIAL.seed_keys().keys()
+
+
+def test_admission_is_checked_before_every_pair_of_commits(env, service):
+    """A run that lost admission after the first pair sends no other."""
+    admission_open = env.admission_open
+
+    def losing():
+        # Read on this thread between pairs, once both commits returned.
+        if len(service.writes) == len(MODES):
+            env.owner = False
+        admission_open()
+
+    env.admission_open = losing
+    runner = controller(env, service)
+    runner.initialize()
+    with pytest.raises(Failure, match="ownership lost"):
+        runner.provision(DEADLINE)
+    assert len(service.writes) == len(MODES)
+
+
+def test_admission_is_checked_before_a_commit_is_sent_again(env, service):
+    """A run that lost admission while it paused does not repeat the commit."""
+    service.errors[("commit", "datastore")] = 409
+    sleep = env.sleep
+
+    def losing(seconds):
+        sleep(seconds)
+        # Only the pause before the repeat; the readbacks pause too.
+        if ("commit", "datastore") in service.calls:
+            env.owner = False
+
+    env.sleep = losing
+    runner = controller(env, service)
+    runner.initialize()
+    with pytest.raises(Failure, match="ownership lost"):
+        runner.provision(DEADLINE)
+    assert service.calls.count(("commit", "datastore")) == 1
+
+
+@pytest.mark.parametrize("mode", MODES)
+def test_a_commit_refused_beside_its_partner_fails_after_both_return(
+    env, service, mode
+):
+    """The refusal is raised, and no commit is sent after the pair in flight."""
+    service.errors[("commit", mode)] = 400
+    runner = controller(env, service)
+    runner.initialize()
+    with pytest.raises(ApiError):
+        runner.provision(DEADLINE)
+    # Only the first pair was sent, and the partner's commit returned.
+    assert [call for call in service.calls if call[0] == "commit"].count(
+        ("commit", mode)
+    ) == 1
+    assert len([call for call in service.calls if call[0] == "commit"]) == len(MODES)
+    assert len(service.writes) == len(MODES) - 1
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -225,16 +302,21 @@ def test_a_refused_readback_after_an_unanswered_create_keeps_its_marker(env, ser
     assert env.refresh().firestore["inflight"] is not None
 
 
+@pytest.mark.parametrize("mode", MODES)
 @pytest.mark.parametrize("error", [409, requests.exceptions.ReadTimeout()])
-def test_a_seed_commit_that_aborted_or_did_not_answer_is_repeated(env, service, error):
-    service.errors[("commit", "datastore")] = error
+def test_a_seed_commit_that_aborted_or_did_not_answer_is_repeated(
+    env, service, error, mode
+):
+    service.errors[("commit", mode)] = error
     runner = controller(env, service)
     runner.initialize()
     runner.provision(DEADLINE)
-    assert service.data["datastore"]["seed"].keys() == TRIAL.seed_keys().keys()
-    # The one refused commit is sent again.
+    for each in MODES:
+        assert service.data[each]["seed"].keys() == TRIAL.seed_keys().keys()
+    # The one refused commit is sent again, and its partner is not.
     commits = TRIAL.seed_records // 500
-    assert service.calls.count(("commit", "datastore")) == commits + 1
+    for each in MODES:
+        assert service.calls.count(("commit", each)) == commits + (each == mode)
 
 
 def test_cleanup_deletes_both_databases_and_retries_until_they_are_gone(env, service):

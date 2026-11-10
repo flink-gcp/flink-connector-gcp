@@ -171,8 +171,9 @@ SPANNER_OBSERVATIONS = {
 
 FIRESTORE_OBSERVATIONS = {
     # From admission to the application's creation, as for Spanner: here the
-    # run's two databases created and read back and both seeds written, 432
-    # commits of at most 500 writes each, which nothing has measured yet.
+    # run's two databases created and read back and both seeds written, 216
+    # commits of at most 500 writes into each, the two databases together
+    # (#2135).
     "startup_seconds": 600,
     "input_seconds": 1200,
     "recovery_seconds": 600,

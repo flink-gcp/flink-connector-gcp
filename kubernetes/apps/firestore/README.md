@@ -133,15 +133,15 @@ The `tier3-firestore` namespace, its place in the shared preflight's inventory a
 ### Database lifecycle
 
 After the supervisor heartbeats and the Operator is ready, the runner records the intent, which names both databases, reads that neither name is taken, and records the creation intent and a call marker in one control write.
-It creates the Native-mode database with the Firestore Admin API's `databases.create`, Standard edition in `us-central1` without point-in-time recovery or delete protection, and reads it until it exists, rather than polling the create's long-running operation, which neither role may read.
-It then creates the Datastore-mode database the same way under the same marker; a create that failed transiently, timed out or answered 409 is read back, and repeated while the database is absent, until the startup deadline.
+It creates the Native-mode database with the Firestore Admin API's `databases.create`, Standard edition in `us-central1` without point-in-time recovery or delete protection, and then at once the Datastore-mode database the same way under the same marker, so that the two creates run together ([#2135](https://github.com/flink-gcp/flink-connector-gcp/issues/2135)); a create that failed transiently, timed out or answered 409 is read back, and repeated while the database is absent, until the startup deadline.
+It then reads each database until it exists, rather than polling the create's long-running operation, which neither role may read, and emits `firestore-databases-read-back`.
 A database reports no state while it is created, so existing is what admission waits for.
 
-The runner then writes each seed, 108,000 records in 216 commits of 500 writes, the most one commit takes: through the Firestore API's `documents:commit` in Native mode and the Datastore API's non-transactional `commit`, which names the database, in Datastore mode.
+The runner then writes the two seeds together, 108,000 records each in 216 commits of 500 writes, the most one commit takes, one commit to each database at a time, side by side, with admission checked before every pair: through the Firestore API's `documents:commit` in Native mode and the Datastore API's non-transactional `commit`, which names the database, in Datastore mode.
 Every Datastore API call also sends the `x-goog-request-params` routing header naming the database, without which the service refuses it with 400 "Missing routing header" ([#2130](https://github.com/flink-gcp/flink-connector-gcp/issues/2130)).
-Each write sets fixed values without a precondition, so a commit that failed transiently, or aborted and was answered 409, is repeated until the startup deadline.
+Each write sets fixed values without a precondition, so a commit that failed transiently, or aborted and was answered 409, is sent again, while its partner waits, until the startup deadline.
 The receipt records each database's readback and the seed size the service accepted.
-Neither the creation nor the 432 commits has been timed: the first pilot created both databases and wrote the Native-mode seed, but its evidence records no per-call time; the startup budget is the Spanner scenario's 600 seconds.
+The startup budget is the Spanner scenario's 600 seconds; the evidence events `firestore-databases-read-back` and `firestore-databases-admitted` time the creates and readbacks apart from the seeds ([#2135](https://github.com/flink-gcp/flink-connector-gcp/issues/2135)).
 Only then does the runner open the namespace quota for three Pods and create the FlinkDeployment.
 A database that already carries a run's name, and a Native-mode create the service refuses although the name read free, refuse the run and nothing is deleted; the marker stays until both databases have read back, because either create could still land behind cleanup until then.
 

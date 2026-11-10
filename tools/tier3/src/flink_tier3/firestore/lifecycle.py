@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from ..common import ApiError, Failure, transient
 from ..resource import InstanceLifecycle
 from ..rest import Unsent
@@ -27,10 +29,12 @@ from .trial import MODES
 class FirestoreLifecycle(InstanceLifecycle):
     """The run's two databases, from intent to deletion, in the run's control record.
 
-    The runner creates the Native-mode database, then the Datastore-mode one
-    under the same call marker, reads each back until it exists, and writes
-    each seed, all before the application exists. Neither role may read a
-    create's long-running operation, so a database is waited for by reading
+    The runner creates the Native-mode database, then at once the
+    Datastore-mode one under the same call marker, reads each back until it
+    exists, and writes the two seeds side by side, all before the application
+    exists: each database takes its own ramp of writes, so the two together
+    should take about as long as one (#2135). Neither role may read a create's
+    long-running operation, so a database is waited for by reading
     it, as the shared lifecycle waits for an instance, and the marker stays
     until both databases read back: a create whose outcome is unknown could
     still land behind cleanup. The receipt records the databases read back
@@ -40,14 +44,13 @@ class FirestoreLifecycle(InstanceLifecycle):
     scenario = "firestore-recovery"
 
     def _landed(self, api, deadline):
-        """Read the Native-mode database back, then create and read the other.
+        """Create the Datastore-mode database, then read both back.
 
         A second create whose first attempt was never sent, or was refused by
         the service with a client error, cannot land, so it is left to `_populate` to raise:
         the shared provision then clears the marker, and cleanup deletes the
         Native-mode database alone. Any other failure keeps the marker.
         """
-        self.readback = {"native": self._readback(api, "native", deadline)}
         self.refused = None
         attempts = []
 
@@ -67,24 +70,43 @@ class FirestoreLifecycle(InstanceLifecycle):
                 self.refused = error
 
         self._created(create, lambda: api.database("datastore"), deadline)
+        self.readback = {"native": self._readback(api, "native", deadline)}
         if self.refused is not None:
             return
         self.readback["datastore"] = self._readback(api, "datastore", deadline)
+        self.env.emit("firestore-databases-read-back", {})
 
     def _populate(self, api, deadline):
-        """Write both seeds into the databases read back."""
+        """Write both seeds into the databases read back, the two together.
+
+        Only the commits run on the pool: admission, the pause, the clock and
+        the evidence stay on this thread, so admission is read once before
+        every pair of commits. A commit that aborted or said nothing is sent
+        again while its partner waits at the same chunk.
+        """
         if self.refused is not None:
             raise self.refused
         records = self.trial.seed_records
-        for mode in MODES:
+        with ThreadPoolExecutor(max_workers=len(MODES)) as pool:
             for start in range(0, records, COMMIT_WRITES):
                 numbers = range(start, min(start + COMMIT_WRITES, records))
-                # An aborted commit, answered 409, is repeated like a silent one.
-                self._settled(
-                    lambda mode=mode, numbers=numbers: api.write_seed(mode, numbers),
-                    deadline,
-                    retryable_commit,
-                )
+                owed = list(MODES)
+                while owed:
+                    self.env.admission_open()
+                    sent = {m: pool.submit(api.write_seed, m, numbers) for m in owed}
+                    for mode, commit in sent.items():
+                        try:
+                            commit.result()
+                        except Failure as error:
+                            if (
+                                not retryable_commit(error)
+                                or self.env.clock() >= deadline
+                            ):
+                                raise
+                            continue
+                        owed.remove(mode)
+                    if owed:
+                        self._pause(deadline)
         return {"databases": self.readback, "seed_records": records}
 
     def _readback(self, api, mode, deadline):
