@@ -25,6 +25,7 @@ Every event name and stage comes from ``flink_tier3.firestore.verdict``,
 which the exercise writes from, so a rename cannot reach only one side.
 """
 
+from ..common import UNPLANNED_EVENT
 from ..recovery_analysis import (
     measurements,
     missing_samples,
@@ -96,8 +97,25 @@ def _verdict(run):
         "reasons": decided["reasons"],
         "problems": sorted(verdict_problems(record, decided, complete)),
         "oracles": oracles if isinstance(oracles, dict) else None,
+        "unplanned": _unplanned(run, outcomes),
         "samples": samples,
     }
+
+
+def _unplanned(run, outcomes):
+    """The causes a run carried on through, from its record and its events.
+
+    The record a run last wrote can predate a cause, if it stopped while it
+    waited one out, and an export can lack event files, so both are read;
+    only text causes count.
+    """
+    recorded = outcomes.get("unplanned") if isinstance(outcomes, dict) else None
+    seen = [entry["payload"].get("cause") for entry in run.events_of(UNPLANNED_EVENT)]
+    causes = []
+    for cause in [*(recorded if isinstance(recorded, list) else []), *seen]:
+        if isinstance(cause, str) and cause not in causes:
+            causes.append(cause)
+    return causes
 
 
 def assess_runs(runs):
@@ -128,9 +146,9 @@ def render(assessments):
         (
             "| run | verdict | stored | samples | native sink | datastore sink | "
             "native batch | native extra | native read s | datastore batch | "
-            "datastore extra | datastore read s | reasons | problems |"
+            "datastore extra | datastore read s | unplanned | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracles = item.get("oracles")
@@ -145,6 +163,7 @@ def render(assessments):
             f"| {item['run_id']} | {item['verdict'] or '-'} | {item['stored'] or '-'} "
             f"| {item['samples']} | {verdicts['native_sink']} | "
             f"{verdicts['datastore_sink']} | {batches} | "
+            f"{', '.join(item.get('unplanned') or []) or '-'} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
         )
     lines.extend(
@@ -156,6 +175,10 @@ def render(assessments):
                 "`input` and every seed record was copied with its value and no "
                 "late record; extra copies are reported, not failed, and the "
                 "sinks' executions are not observable."
+            ),
+            (
+                "`unplanned` names each interruption after the last window that "
+                "the run carried on through, which the same oracles checked."
             ),
             (
                 "Each family is required in the "

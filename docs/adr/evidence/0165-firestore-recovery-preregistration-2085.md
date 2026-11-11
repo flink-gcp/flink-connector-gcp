@@ -270,7 +270,7 @@ The findings record each of these reads with its time.
 ## Revisions after dispatch
 
 The owner approved this record on 2026-11-08, and the pilot was dispatched as preregistered once its pins had merged.
-The first revision below was approved on #1879 on 2026-11-10, after the pilot stopped and before its re-run; the second awaits the owner's approval there, after the re-run stopped.
+The first revision below was approved on #1879 on 2026-11-10, after the pilot stopped and before its re-run, and the second on 2026-11-11, after the re-run stopped; the third, after the second re-run stopped, reduces what is approved rather than widening it, and awaits the owner's approval there.
 
 **How the pilot ended.**
 `fs2085-jm-a1` ([run 42496716547](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42496716547)), dispatched at 2026-11-08T15:49Z on `main` at `310dab35ce7479e7164f472a6adbaa7f1a668530`, stopped before the application existed:
@@ -327,3 +327,30 @@ The owner approves the pilot again, with everything else in this record unchange
 - every attempt's window still ends before 2026-11-13T14:41:26Z, and the campaign is still dispatched no later than 2026-11-13T04:00Z.
 
 The reads of [Before dispatch](#before-dispatch) are made again before the second re-run.
+
+**How the second re-run ended.**
+`fs2085-jm-a3` ([run 42936263803](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42936263803)), dispatched at 2026-11-11T01:04Z on `main` at `ccf04a89b4da3ea9de2044aa706c02b55bf9928a`, whose only change since #2136 was the `libraries-bom` update of #2134, outside the rig's paths:
+
+- its window started at 01:05:28Z; the databases read back at 01:09:41Z and were admitted with both seeds at 01:12:28Z, 420 seconds in, so the startup budget held;
+- the supervisor's Datastore-mode late-seed commit and `batch_out` query succeeded, so the database-name condition admits those calls;
+- the upgrade restored savepoint 15 after 42.3 s and the JobManager failover restored checkpoint 26 after 36.6 s, both proved;
+- at 01:41:59Z, in the `finishing` stage after its window had closed, the platform preempted the JobManager Pod, and the run stopped as "Unplanned workload interruption; trial is inconclusive"; the preemptor was most likely a `konnectivity-agent` Pod displaced by the autoscaler's scale-down of a `pool-1` node, though that Pod was gone before its UID could be matched;
+- cleanup deleted both databases, the run reached verified idle and released the lock.
+
+Under [Firestore conditions](#firestore-conditions) this is a system Pod preempting a workload Pod after the application exists; the oracles never ran.
+
+**The repair.**
+[#2140](https://github.com/flink-gcp/flink-connector-gcp/issues/2140) has the Firestore exercise wait out the platform's interruption of a workload Pod, and what follows it, once both recoveries are proved and the `finishing` window has closed, as ADR-0165's "Unplanned job restarts" describes.
+From then on that condition no longer stops a run: an attempt that carries on is accepted as [Acceptance criteria](#acceptance-criteria) describes, and the findings report its causes and extra copies.
+Before that point, and for a restart with no platform interruption before it, the conditions read as before.
+It changes no input, budget, window, oracle or grant, and the application image is unchanged.
+
+**The third re-run.**
+The pilot is repeated once more as a repeat the owner approves by hand, within the eight attempts already approved:
+
+- inputs: `firestore_trial=jm-replacement`, `run_id=fs2085-jm-a4`, no `campaign` input, `repeats=0`, and the same `application_digest`, dispatched once #2140 has merged;
+- then, after it is read as [Before dispatch](#before-dispatch) describes, the campaign from `fs2085-tm-a1` with `campaign=rescale-out,rescale-in` and `repeats=1` rather than 2, so that it makes at most four attempts and the total stays at eight;
+- no more money: still at most USD 24.57 (`24.5714072`) in all;
+- every attempt's window still ends before 2026-11-13T14:41:26Z, and the campaign is still dispatched no later than 2026-11-13T04:00Z.
+
+The reads of [Before dispatch](#before-dispatch) are made again before the third re-run.

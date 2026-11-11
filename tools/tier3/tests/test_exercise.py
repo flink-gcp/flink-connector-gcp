@@ -1113,3 +1113,170 @@ def test_a_restore_without_its_count_is_refused(world):
     restarted(world, None)
     with pytest.raises(Failure, match="no restore count"):
         world.observe()
+
+
+class Recovering(Exercise):
+    waits_out_interruptions = True
+
+
+def past_the_last_window(world, margin=0):
+    """Both recoveries proved and the last window closed, `margin` s past its margin.
+
+    The generic exercise samples nothing, so it is given a sampling one's
+    post-recovery window, which the failover's proof then opens as it would.
+    """
+    world.baseline()
+    world.upgraded()
+    world.exercise.measurement_event = "recovering-measurement"
+    world.exercise.timing = {**world.exercise.timing, "post_recovery_seconds": 300}
+    del world.pods["jm-2"]
+    world.pod("jm-3", "jobmanager")
+    world.failed_over()
+    assert world.exercise.stage == "finishing"
+    assert world.exercise.post_until == world.env.clock() + 300
+    world.advance(300 + world.exercise.timing["measure_seconds"] + margin)
+
+
+def preempted(world, name):
+    """The scheduler's preemption of a Pod, which the platform marks on it."""
+    world.pods[name]["status"]["conditions"] = [
+        {
+            "type": "DisruptionTarget",
+            "status": "True",
+            "reason": "PreemptionByScheduler",
+        }
+    ]
+
+
+def poll(world):
+    world.exercise.scheduling(copy.deepcopy(list(world.pods.values())))
+
+
+@pytest.mark.parametrize("world", [{"exercise": Recovering}], indirect=True)
+def test_a_preempted_jobmanager_after_the_last_window_is_waited_out(world, monkeypatch):
+    """As in fs2085-jm-a3: the job comes back, finishes and is judged (#2140)."""
+    past_the_last_window(world)
+    emitted = []
+    monkeypatch.setattr(
+        world.env, "emit", lambda event, payload: emitted.append((event, payload))
+    )
+    preempted(world, "jm-3")
+    # Seen on two polls, recorded once.
+    poll(world)
+    poll(world)
+    assert world.exercise.rest_may_vanish()
+    assert world.exercise.tolerate_rest(TransportError("GET proxy: reset"))
+    # Its replacement, and the new JobMaster's restore.
+    del world.pods["jm-3"]
+    world.pod("jm-4", "jobmanager")
+    poll(world)
+    restarted(world, 1)
+    world.observe()
+    world.advance(5)
+    world.processed = world.exercise.records - 100
+    world.progress("tm-2", "upgrade")
+    world.app["status"]["jobStatus"]["state"] = "FINISHED"
+    assert world.observe() is True
+    # A preempted Pod's disruption also reads as an eviction.
+    causes = [
+        "Unplanned workload interruption",
+        "Unplanned workload eviction",
+        "Unplanned workload replacement",
+        "Unplanned job restart",
+    ]
+    assert world.exercise.outcomes["unplanned"] == causes
+    assert [p["cause"] for e, p in emitted if e == "unplanned-recovery"] == causes
+
+
+@pytest.mark.parametrize("world", [{"exercise": Recovering}], indirect=True)
+def test_a_reclaimed_node_after_the_last_window_is_a_platform_interruption(world):
+    """Flink replaced the Pod before a poll saw it; the node's shutdown names it."""
+    past_the_last_window(world)
+    place(world, "tm-2", "spot-node")
+    poll(world)
+    del world.pods["tm-2"]
+    world.pod("tm-3", "taskmanager")
+    shutdown(world, 16)
+    poll(world)
+    assert world.exercise.outcomes["unplanned"] == ["Unplanned workload interruption"]
+
+
+@pytest.mark.parametrize("world", [{"exercise": Recovering}], indirect=True)
+@pytest.mark.parametrize(
+    "cause",
+    ["restore", "replacement", "eviction", "container restart"],
+)
+def test_a_failure_with_no_platform_interruption_before_it_still_stops(world, cause):
+    """A restart the platform did not cause may be the application's own."""
+    past_the_last_window(world)
+    if cause == "restore":
+        restarted(world, 2)
+        with pytest.raises(Failure, match="Unplanned job restart"):
+            world.observe()
+        return
+    if cause == "replacement":
+        del world.pods["tm-2"]
+        world.pod("tm-3", "taskmanager")
+    elif cause == "eviction":
+        world.pods["tm-2"]["status"]["reason"] = "Evicted"
+    else:
+        world.pods["tm-2"]["status"]["containerStatuses"] = [{"restartCount": 1}]
+    # An endpoint lost now, with no platform interruption, is not waited out.
+    assert not world.exercise.rest_may_vanish()
+    with pytest.raises(Failure, match="Unplanned workload|Unplanned container"):
+        poll(world)
+    assert "unplanned" not in world.exercise.outcomes
+
+
+@pytest.mark.parametrize("world", [{"exercise": Recovering}], indirect=True)
+def test_an_interruption_inside_the_margin_still_stops_the_run(world):
+    """The poll may see an interruption late, so the window's margin still stops."""
+    past_the_last_window(world, margin=-1)
+    preempted(world, "jm-3")
+    with pytest.raises(Failure, match="Unplanned workload interruption"):
+        poll(world)
+    assert not world.exercise.rest_may_vanish()
+
+
+@pytest.mark.parametrize("world", [{"exercise": Recovering}], indirect=True)
+def test_only_the_finishing_stage_waits_out(world):
+    past_the_last_window(world)
+    world.exercise.stage = "documents"
+    preempted(world, "jm-3")
+    with pytest.raises(Failure, match="Unplanned workload interruption"):
+        poll(world)
+
+
+def test_a_scenario_that_does_not_opt_in_still_stops(world):
+    past_the_last_window(world)
+    preempted(world, "jm-3")
+    with pytest.raises(Failure, match="Unplanned workload interruption"):
+        poll(world)
+
+
+@pytest.mark.parametrize("world", [{"exercise": Recovering}], indirect=True)
+def test_a_restart_before_the_failover_is_proved_still_stops(world):
+    world.baseline()
+    world.upgraded()
+    restarted(world, 2)
+    with pytest.raises(Failure, match="Unplanned job restart"):
+        world.observe()
+
+
+def test_only_the_firestore_scenario_carries_on_after_its_windows():
+    """The other scenarios' findings were read under the stop at any stage."""
+    from flink_tier3 import supervisor
+
+    exercises = {
+        cls
+        for cls in vars(supervisor).values()
+        if inspect.isclass(cls) and issubclass(cls, RecoveryExercise)
+    }
+    assert len(exercises) > 3
+    opted = {cls for cls in exercises if cls.waits_out_interruptions}
+    assert {cls.__name__ for cls in opted} == {"FirestoreExercise"}
+    # Its real timing opens the post-recovery window the margin follows.
+    (firestore,) = opted
+    assert firestore.measurement_event
+    assert firestore.timing["post_recovery_seconds"] > 0
+    assert firestore.timing["measure_seconds"] > 0

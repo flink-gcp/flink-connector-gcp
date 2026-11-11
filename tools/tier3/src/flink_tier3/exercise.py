@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass
 
 from .common import (
+    UNPLANNED_EVENT,
     ApiError,
     Failure,
     TransportError,
@@ -182,6 +183,9 @@ class RecoveryExercise:
     # The failover regions a TaskManager's loss restarts, each restoring the
     # job's checkpoint once: one for a connected graph.
     failover_regions = 1
+    # Whether `waits_out` may wait out a platform interruption after the last
+    # window; only Firestore's opts in (#2140).
+    waits_out_interruptions = False
 
     def __init__(self, env, upgrade, *, failover="jobmanager", rescale=None):
         if self.measurement_event and (
@@ -230,6 +234,48 @@ class RecoveryExercise:
     @property
     def recovering(self):
         return self.stage in ("upgrade", "failover")
+
+    def waits_out(self):
+        """Whether an unplanned interruption now is waited out, not a stop.
+
+        Only once both planned recoveries are proved and the last window has
+        closed, with one measurement interval of margin for a poll that sees
+        a cause late. A cause first seen later than that is waited out even
+        if it began inside the window.
+        """
+        return (
+            self.waits_out_interruptions
+            and self.stage == "finishing"
+            and self.post_until is not None
+            and self.env.clock() >= self.post_until + self.timing["measure_seconds"]
+        )
+
+    def rest_may_vanish(self):
+        """Whether the job's REST endpoint may be missing now without a stop.
+
+        After the windows, only once a platform interruption is recorded: an
+        endpoint lost without one could hide a restore the application made.
+        """
+        return self.recovering or (
+            self.waits_out() and bool(self.outcomes.get("unplanned"))
+        )
+
+    def unplanned(self, message, platform=False):
+        """Stop the run with `message`, unless the exercise waits it out.
+
+        Only the platform's own interruption is waited out, and what follows
+        it: a replacement, eviction, container restart or restore with no
+        such interruption before it may be the application's failure, so it
+        still stops the run. Each cause waited out is recorded once, in the
+        evidence and in the record's outcomes.
+        """
+        causes = self.outcomes.get("unplanned", [])
+        if not self.waits_out() or not (platform or causes):
+            raise Failure(message)
+        cause = message.split(";")[0]
+        if cause not in causes:
+            self.outcomes["unplanned"] = [*causes, cause]
+            self.env.emit(UNPLANNED_EVENT, {"stage": self.stage, "cause": cause})
 
     def keeps_jobmaster(self):
         """Whether the failover under way is a TaskManager replacement.
@@ -294,7 +340,7 @@ class RecoveryExercise:
                     "expected": expected,
                 },
             )
-            raise Failure("Unplanned job restart; trial is inconclusive")
+            self.unplanned("Unplanned job restart; trial is inconclusive")
         self.last_restore = {
             "at": at,
             "count": count,
@@ -481,11 +527,11 @@ class RecoveryExercise:
                 c.get("restartCount", 0) for c in status.get("containerStatuses", [])
             )
         if interrupted:
-            raise Failure(INTERRUPTED)
+            self.unplanned(INTERRUPTED, platform=True)
         if evicted:
-            raise Failure("Unplanned workload eviction; trial is inconclusive")
+            self.unplanned("Unplanned workload eviction; trial is inconclusive")
         if restarted:
-            raise Failure("Unplanned container restart; trial is inconclusive")
+            self.unplanned("Unplanned container restart; trial is inconclusive")
         identities = {p["metadata"]["uid"] for p in smoke} - self.retiring_pods
         if (
             self.stable_pods is None
@@ -506,8 +552,9 @@ class RecoveryExercise:
             )
         ):
             if self.reclaimed(self.stable_pods - identities):
-                raise Failure(INTERRUPTED)
-            raise Failure(REPLACED)
+                self.unplanned(INTERRUPTED, platform=True)
+            else:
+                self.unplanned(REPLACED)
 
     def reclaimed(self, lost):
         """Whether a lost Pod's node shut down gracefully after the Pod was bound there.
@@ -1068,7 +1115,7 @@ class RecoveryExercise:
 
     def tolerate_rest(self, error):
         self.check_open()
-        return self.recovering and (
+        return self.rest_may_vanish() and (
             isinstance(error, TransportError)
             or isinstance(error, ApiError)
             and error.status in (404, 502, 503, 504)
