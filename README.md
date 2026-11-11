@@ -49,8 +49,11 @@ The Flink range mirrors Flink's own support policy — the current and the previ
 release — so a new Flink minor moves both ends of the range. Moving it is a deliberate change
 backed by a weekly build over every supported version, never an automatic bump. Flink 1.20 is
 supported from the same source (`just verify-flink 1.20.5` builds and tests for it) and its
-lane is verified on Java 17 — the Java 21 row is a 2.x claim. Java 11 is not supported even
-though Flink 2.x declares it.
+lane is verified on Java 17 — the Java 21 row is a 2.x claim. Java 8 and 11 are not supported
+on either line, even though Flink 1.20 supports both and Flink 2.x supports Java 11. A Flink
+1.20 cluster therefore needs a Java 17 runtime such as the official `flink:1.20-java17` image,
+because the default `flink:1.20` image runs Java 11 and Flink 1.20 treats Java 17 as
+experimental.
 See [Supported versions](https://flink-gcp.github.io/flink-connector-gcp/#supported-versions)
 for how the range is verified and why a single artifact covers the 2.x range.
 

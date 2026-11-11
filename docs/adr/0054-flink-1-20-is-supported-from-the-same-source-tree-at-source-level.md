@@ -22,9 +22,11 @@ limitations under the License.
   each release also publishes the per-major LTS jar as `X.Y.Z-1.20` — support stays
   source-level and per-major, and no cross-major binary claim is added; revised by [#1635]
   (2026-10-04): the shared Table source forwards Flink 2.x watermark declarations; revised by
-  [#1977] (2026-11-01): the weekly release check fails on a newer patch of the LTS minor
+  [#1977] (2026-11-01): the weekly release check fails on a newer patch of the LTS minor;
+  revised by [#2138] (2026-11-11): the 1.20 line requires Java 17, which Flink 1.20 calls
+  experimental
 - Issues: [#32], [#29], [#39] (the `X.Y.Z-1.20` publishing suffix decided there), [#404], [#724], [#1635],
-  [#1977]
+  [#1977], [#2138]
 - Modules: all connectors, base
 - Current behavior: `docs/content/_index.md` supported-versions table, `README.md`
   § Supported versions
@@ -74,6 +76,13 @@ watched, because 1.20 is the last 1.x minor. Every `X.Y.Z-1.20` release is compi
 that pin and the weekly `lts` row tests at it — Flink itself is `provided` and never shipped —
 so a stale pin publishes connectors that were never built against the current patch.
 Flink 1.20.5 stayed on Maven Central for nearly five months before anyone noticed ([#1973]).
+
+**The 1.20 line requires Java 17, the same as the 2.x line.** Both lines inherit the parent's
+Java 17 bytecode target, so an `X.Y.Z-1.20` jar does not load on Java 8 or 11. Flink 1.20
+supports both and recommends Java 11, which its default Docker image runs, and it calls Java
+17 experimental. The supported-versions page names the official `flink:1.20-java17` image for
+that reason. A separate Java 11 target for the 1.20 line was declined ([#2138]): the owner
+judged Java 11 support impractical, and a 1.20 deployment can select a Java 17 image instead.
 
 ## Evidence
 
@@ -146,3 +155,4 @@ carries `@SuppressWarnings("deprecation")` — which is the intent, not a gap: 1
 [#1635]: https://github.com/flink-gcp/flink-connector-gcp/issues/1635
 [#1973]: https://github.com/flink-gcp/flink-connector-gcp/issues/1973
 [#1977]: https://github.com/flink-gcp/flink-connector-gcp/issues/1977
+[#2138]: https://github.com/flink-gcp/flink-connector-gcp/issues/2138
