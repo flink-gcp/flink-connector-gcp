@@ -80,6 +80,9 @@ def job_finished(job):
 # the analyzer itself is not part of what the supervisor mounts.
 USABLE = "usable"
 INCONCLUSIVE = "inconclusive"
+# The evidence event a recovery exercise emits once for each unplanned cause
+# it waits out, which the offline analysis reads back (#2140).
+UNPLANNED_EVENT = "unplanned-recovery"
 
 
 class ApiError(Failure):

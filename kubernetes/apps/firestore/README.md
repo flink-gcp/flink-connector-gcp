@@ -168,6 +168,10 @@ Its families are each of the four component vertices' task, network and connecto
 The connector family is each mode's writer metrics, which the input sink and the batch copy both register, and for a copy also its reader's `documentsRead` or `entitiesRead`; the enumerators register on the JobManager, which no vertex reading reaches.
 A lost TaskManager restarts the input's failover region and the two copy subtasks it held, which share no edge with any other, so the exercise accepts up to three restores for it.
 
+Unlike the other scenarios, the Firestore exercise waits out the platform's interruption of a workload Pod once both recoveries are proved and the `finishing` window has closed, plus one 60-second measurement interval ([#2140](https://github.com/flink-gcp/flink-connector-gcp/issues/2140)).
+The interruption, and the replacement, eviction, container restart and restore that follow it, are each emitted once as `unplanned-recovery` and kept in `outcomes.unplanned`, the REST endpoint's absence is tolerated meanwhile, and the run goes on to the job's end and the oracles before the cleanup start; the analysis lists the causes in its `unplanned` column.
+A restart with no platform interruption before it, and any interruption before that point, still stops the run as inconclusive.
+
 Before the upgrade, once a query of one document or entity in a database's `batch_out` returns one, the supervisor writes the 16 late seed records, numbered 108,000 to 108,015, into that database's `seed` in one commit.
 A copy exists only after the batch read planned its read time, so the late records are committed after that time.
 The record keeps `late_seed`, each mode's commit time (in Datastore mode, whose non-transactional commit answers none, the latest update time of its writes) and record count, and the upgrade begins only once both are written; a call that fails transiently, or a commit that aborts and is answered 409, emits `firestore-late-seed-pending` and is repeated at the next poll.

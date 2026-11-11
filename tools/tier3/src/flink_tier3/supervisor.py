@@ -347,7 +347,11 @@ class Supervisor:
                         self.env.approval.application_namespace,
                         self.env.approval.run_id + "-rest",
                     )
-                    if not service and self.exercise and self.exercise.recovering:
+                    if (
+                        not service
+                        and self.exercise
+                        and self.exercise.rest_may_vanish()
+                    ):
                         service = None
                     elif not service or service["metadata"][
                         "uid"

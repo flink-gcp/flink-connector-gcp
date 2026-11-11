@@ -14,7 +14,11 @@
 # limitations under the License.
 """Vertex discovery by name, the families a reading covers, and the verdict."""
 
+import json
+
+from flink_tier3 import runs
 from flink_tier3.common import USABLE
+from flink_tier3.firestore import analyze, plan
 from flink_tier3.firestore.observe import (
     COMPONENTS,
     CONNECTOR_METRICS,
@@ -22,6 +26,8 @@ from flink_tier3.firestore.observe import (
     vertices,
 )
 from flink_tier3.firestore.verdict import OBSERVED, SAMPLED_STAGES, summarize, verdict
+
+from ..test_analyze import write_run
 
 # The chained vertex names of the application's README.
 NAMES = {
@@ -139,3 +145,77 @@ def test_a_component_family_never_read_leaves_the_run_unusable():
         for window in SAMPLED_STAGES
         for component in ("datastore_sink", "datastore_batch")
     ]
+
+
+def test_the_report_has_a_column_for_them():
+    item = {
+        "run_id": "fs-a1",
+        "verdict": "usable",
+        "stored": "usable",
+        "samples": 21,
+        "oracles": None,
+        "unplanned": ["Unplanned job restart"],
+        "reasons": [],
+        "problems": [],
+        "recoveries": [],
+    }
+    row = next(line for line in analyze.render([item]).splitlines() if "fs-a1" in line)
+    assert "| Unplanned job restart | - | - |" in row
+
+
+def test_an_exported_run_reports_the_causes_its_events_name(tmp_path):
+    """Read from the events, which a run stopped mid-wait still exported."""
+
+    def waited(cause):
+        return {
+            "event": "unplanned-recovery",
+            "at": "2026-11-11T01:42:00Z",
+            "payload": {"stage": "finishing", "cause": cause},
+        }
+
+    run_dir = write_run(
+        tmp_path,
+        run_id="fs-a1",
+        scenario="firestore-recovery",
+        events=[
+            waited("Unplanned workload interruption"),
+            waited(None),
+            waited(["not", "text"]),
+            waited("Unplanned workload interruption"),
+        ],
+    )
+    # The receipt keeps the record as the finishing stage last wrote it.
+    result = json.loads((run_dir / "result.json").read_text())
+    result["recovery"] = {"stage": "finishing", "coverage": {}, "outcomes": {}}
+    (run_dir / "result.json").write_text(json.dumps(result))
+    approval = json.loads((run_dir / "approval.json").read_text())
+    approval["firestore_trial"] = plan.trial("jm-replacement")
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
+    assert assessed["unplanned"] == ["Unplanned workload interruption"]
+    assert "| Unplanned workload interruption |" in analyze.render([assessed])
+
+
+def test_a_completed_record_names_its_causes_without_their_events(tmp_path):
+    """An export that lost the event files still has the record's causes."""
+    run_dir = write_run(
+        tmp_path,
+        run_id="fs-a2",
+        scenario="firestore-recovery",
+        events=[
+            {
+                "event": "recovery-complete",
+                "at": "2026-11-11T02:00:00Z",
+                "payload": {
+                    "stage": "complete",
+                    "coverage": {},
+                    "outcomes": {"unplanned": ["Unplanned job restart", None]},
+                },
+            }
+        ],
+    )
+    approval = json.loads((run_dir / "approval.json").read_text())
+    approval["firestore_trial"] = plan.trial("jm-replacement")
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
+    assert assessed["unplanned"] == ["Unplanned job restart"]

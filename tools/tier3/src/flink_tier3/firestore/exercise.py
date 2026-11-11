@@ -66,6 +66,10 @@ class FirestoreExercise(FiniteInputExercise):
     # restarts the input's region and its own two copy subtasks, which share
     # no edge with any other.
     failover_regions = 3
+    # What is left after the last window is the job's end and the oracles,
+    # which check every record through another recovery too, and report its
+    # extra copies.
+    waits_out_interruptions = True
 
     def __init__(self, env, upgrade, databases):
         if env.approval.scenario != "firestore-recovery":
