@@ -41,21 +41,12 @@ python = "3.12"
 # changes resolution behaviour must not fail an unchanged pull request — while
 # pytest's version lives in uv.lock, which is the lockfile's job.
 uv = "0.12.1"
-# Lints the rendered markdown (docs/content/ and the READMEs; scope and the
-# rule deviations live in .markdownlint-cli2.jsonc). Exactly pinned for the
-# same reason as shellcheck: a release that gains a rule (MD060 arrived this
-# way) would fail a pull request that changed nothing. The npm backend rides
-# the node entry below.
-# fastq 1.20.2, pulled transitively by markdownlint-cli2, dropped the npm
-# provenance metadata that 1.20.0 and 1.20.1 carried. Its registry integrity
-# and runtime sources match upstream tag v1.20.2, and 1.20.3 restores
-# provenance with the same runtime sources. Exempt only the reviewed release;
-# every other version stays under aube's no-downgrade policy.
-"npm:markdownlint-cli2" = { version = "0.23.2", trust_policy_excludes = ["fastq@1.20.2"] }
-# Runtime for the npm backend above — nothing else here uses node. Pinned to a
-# major: markdownlint-cli2's behavior is its own version's, and a node patch
-# cannot add a lint rule.
-node = "24"
+# Lints the rendered markdown (docs/content/, the ADRs and the READMEs; scope
+# and the rule deviations live in .rumdl.toml). Exactly pinned for the same
+# reason as shellcheck: a release that changes a rule's behaviour would fail a
+# pull request that changed nothing. A single binary, so the repository needs
+# no Node.js runtime.
+rumdl = "0.3.3"
 # Runs the opentofu/ roots through their local commands and the
 # tofu-plan/tofu-apply workflows. Each root's required_version repeats this
 # exact pin, so a version bump updates all root constraints together.

@@ -97,7 +97,7 @@ both directions.
 
 - `docs/adr/*.md` carry the Apache-2.0 HTML-comment header (apache-rat scans them; only
   `README.md` is rat-excluded by pattern) and explicit issue links (GitHub renders these files).
-- markdownlint covers `docs/adr/**/*.md` via `.markdownlint-cli2.jsonc`; `lint.yaml`'s
+- The Markdown linter covers `docs/adr/**/*.md` through `.rumdl.toml`; `lint.yaml`'s
   push-trigger paths list the directory.
 - The hand-maintained index table in `docs/adr/README.md` is the discovery surface; keeping it
   current is part of adding an ADR.

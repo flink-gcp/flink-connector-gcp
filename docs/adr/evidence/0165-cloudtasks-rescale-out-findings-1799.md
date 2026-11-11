@@ -23,7 +23,7 @@ With the TaskManager replacement and the rescale in of [#1778](0165-cloudtasks-f
 ## Result
 
 | Run ID | Image | Verdict | Listed, missing, repeated, foreign, dispatched |
-| --- | --- | --- | --- | --- |
+| --- | --- | --- | --- |
 | `ct1799-rescale-out-a2` | [CANCELLED retry publication](../../../kubernetes/images/README.md#cloud-tasks-cancelled-retry-publication) (`526a186f0`) | `usable` | 180,000, 0, 0, 0, 0 |
 
 The final receipt and `just tier3-analyze` agree on `usable`, and the three reads under the preregistration's [acceptance criteria](0165-cloudtasks-rescale-out-preregistration-1799.md#acceptance-criteria) pass:

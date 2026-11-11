@@ -1,0 +1,12 @@
+# The Hugo pages link through shortcodes (`[text]({{< relref "page" >}})`). A
+# CommonMark parser cannot read such a destination, so with shortcut-syntax on
+# every one reads as an undefined `[text]` reference (measured: 745 false
+# positives in 48 files). Full and collapsed references are still checked here.
+#
+# Keep `extends`: without it this file replaces the root configuration for
+# docs/content instead of overriding one option, and rumdl's defaults return
+# there (measured: MD013 and a front-matter-title MD025 on every page).
+extends = "../../.rumdl.toml"
+
+[MD052]
+shortcut-syntax = false

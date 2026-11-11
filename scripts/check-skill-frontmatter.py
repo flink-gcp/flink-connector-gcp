@@ -30,8 +30,8 @@ ordinary meaning of its own format, which is worth refusing on a directory whose
 whole purpose is to be read by tools.
 
 The reason to bother: a frontmatter that any reader disagrees about fails
-silently. The file stays valid markdown, no build step reads it, markdownlint's
-globs exclude it, and a skill that did not load looks exactly like a skill
+silently. The file stays valid markdown, no build step reads it, rumdl's
+include list leaves it out, and a skill that did not load looks exactly like a skill
 Claude chose not to use.
 
 Three rules, none of which needs an allowlist, because a frontmatter either

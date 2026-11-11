@@ -738,7 +738,7 @@ jobs:
 
   # Is every skill's frontmatter strict YAML (ADR-0069)? A skill that any reader
   # disagrees about fails silently: the file stays valid markdown, no build step
-  # reads it, markdownlint's globs exclude SKILL.md, and a skill that did not
+  # reads it, rumdl's include list leaves SKILL.md out, and a skill that did not
   # load looks like Claude choosing not to use it.
   #
   # A job here rather than part of `just lint` for api_tiers' reason exactly:
@@ -774,7 +774,7 @@ jobs:
   # A job here for the same reason as api_tiers above, plus one of its own: its
   # inputs are the Java main sources *and* docs/content/, and pull requests
   # reach this workflow through ci.yaml with no filter at all, while
-  # lint.yaml's push-side paths carry docs/content only for markdownlint and
+  # lint.yaml's push-side paths carry docs/content only for rumdl and
   # would have had to grow to every Java source. Not behind the changes job,
   # like api_tiers and for the same reasons.
   option_docs:
@@ -811,7 +811,7 @@ jobs:
   #
   # A job here for exactly option_docs's reasons: its inputs are the Java main
   # sources *and* docs/content/ — lint.yaml's push-side paths carry
-  # docs/content only for markdownlint and would have had to grow to every
+  # docs/content only for rumdl and would have had to grow to every
   # Java source, while pull requests reach this workflow through ci.yaml with
   # no filter at all. Not behind the changes job: the gate requires its
   # success, it costs seconds, and a job that sometimes skips would reopen
