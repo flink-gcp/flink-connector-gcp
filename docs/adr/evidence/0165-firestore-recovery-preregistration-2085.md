@@ -270,7 +270,7 @@ The findings record each of these reads with its time.
 ## Revisions after dispatch
 
 The owner approved this record on 2026-11-08, and the pilot was dispatched as preregistered once its pins had merged.
-The revision below awaits the owner's approval on #1879, after the pilot stopped and before its re-run.
+The first revision below was approved on #1879 on 2026-11-10, after the pilot stopped and before its re-run; the second awaits the owner's approval there, after the re-run stopped.
 
 **How the pilot ended.**
 `fs2085-jm-a1` ([run 42496716547](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42496716547)), dispatched at 2026-11-08T15:49Z on `main` at `310dab35ce7479e7164f472a6adbaa7f1a668530`, stopped before the application existed:
@@ -298,3 +298,32 @@ The owner approves the pilot again, with everything else in this record unchange
 - every attempt's window still ends before 2026-11-13T14:41:26Z, and the campaign is still dispatched no later than 2026-11-13T04:00Z.
 
 The reads of [Before dispatch](#before-dispatch) are made again before the re-run.
+
+**How the re-run ended.**
+`fs2085-jm-a2` ([run 42846539231](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/42846539231)), dispatched at 2026-11-10T15:38Z on `main` at `b1d2514957b8d1d7684a892e7a844c25b67d33f1` after the reads of [Before dispatch](#before-dispatch), also stopped before the application existed:
+
+- its window started at 15:40:55Z; the runner created both databases, read both back, wrote the Native-mode seed and was writing the Datastore-mode seed when it raised "Firestore operation deadline exceeded", and the supervisor stopped admission at 15:51:07Z, the 600-second startup deadline;
+- no Datastore API call was refused with a status the runner does not repeat, as the 400 "Missing routing header" was, so the routing header holds; a refusal the runner repeats, such as 429 or 503, leaves no record; how many Datastore-mode commits landed is not recorded, so whether the database-name condition admits the runner's Datastore calls is still open;
+- cleanup deleted both databases, the run reached verified idle and released the lock, and the receipt records the databases `cleaned`.
+
+Under [Firestore conditions](#firestore-conditions) this is the startup budget overrun, a timing finding.
+The runner created the databases, read them back and wrote the two seeds one after another: in `fs2085-jm-a1`, the creates and the Native-mode seed alone had taken until about 470 seconds into its window, when its first Datastore-mode commit was refused.
+
+**The repair.**
+That condition widens the budget, but the budget cannot widen alone: the rig's timing policy ends the slowest job about 3,100 seconds into the 5,400-second window and gives the oracles 1,200 seconds before the cleanup start at 4,500, so a longer startup also needs a longer window, a new estimate and longer campaign bounds.
+The owner chose instead to shorten admission.
+[#2135](https://github.com/flink-gcp/flink-connector-gcp/issues/2135) sends the Datastore-mode create right after the Native-mode one, so the two creates run together, then writes the two seeds together, one commit to each database at a time with admission checked before every pair, since each database takes its own ramp of writes.
+It also emits `firestore-databases-read-back`, so that with the existing `firestore-databases-admitted` the next run times the creates and readbacks apart from the seeds.
+It changes no input, budget, window, oracle or grant, and the application image is unchanged.
+Whether the two together fit in the 600 seconds is unmeasured, and a second overrun is read by this condition again, with those events to size the budget.
+
+**The second re-run.**
+The owner approves the pilot again, with everything else in this record unchanged:
+
+- inputs: `firestore_trial=jm-replacement`, `run_id=fs2085-jm-a3`, no `campaign` input, `repeats=0`, and the same `application_digest`, dispatched once #2135 has merged;
+- then, after it is read as [Before dispatch](#before-dispatch) describes, the campaign as preregistered, from `fs2085-tm-a1`;
+- at most one more attempt, so eight in all, `fs2085-jm-a1` and `fs2085-jm-a2` included;
+- at most USD 3.07 more (`3.0714259`), so USD 24.57 (`24.5714072`) in all;
+- every attempt's window still ends before 2026-11-13T14:41:26Z, and the campaign is still dispatched no later than 2026-11-13T04:00Z.
+
+The reads of [Before dispatch](#before-dispatch) are made again before the second re-run.
