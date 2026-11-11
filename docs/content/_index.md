@@ -57,8 +57,11 @@ the oldest supported minor and re-runs the entire test suite with the newest one
 classpath without recompiling, and also builds against the next unreleased Flink so that
 upstream changes surface before they ship.
 
-Java 11 is not supported even though Flink 2.x declares it, because the build targets bytecode
-17.
+Java 11 is not supported even though Flink 2.x declares it, because the jars are compiled for
+Java 17.
+They are built on JDK 21 against the Java 17 class library, so they load on Java 17 and 21 alike.
+The weekly build tests every supported Flink version on Java 17, and runs the JDK 21-built 2.x
+classes on Java 17 in the same rerun that checks the newest minor.
 
 Flink 1.20, the 1.x LTS release, is supported from this same source rather than from a
 dedicated branch: the connectors use only APIs that exist identically in 1.20 and 2.x, apart

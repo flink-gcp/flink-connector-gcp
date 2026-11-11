@@ -151,6 +151,16 @@ limitations under the License.
              the second flag itself for 1.x versions); see the version policy in AGENTS.md
              and issue #32. -->
         <flink.compat>flink2</flink.compat>
+        <!-- Compile against the Java 17 class library, not only to its class-file version.
+             The parent sets source 11 and target 17 without release, so javac links against
+             the JDK it runs on: a JDK 21 build could then call an API that Java 17 lacks
+             (List.getFirst(), for one) and fail on a Java 17 JVM with NoSuchMethodError.
+             The default JDK is 21 while the published jars must load on 17 (issue #2132), so
+             release is what keeps that true. It also raises the source level from 11 to 17,
+             which the target already required of every runtime. -->
+        <maven.compiler.release>17</maven.compiler.release>
+        <!-- Read by the Spotless plugin configuration below. -->
+        <spotless.skip>false</spotless.skip>
         <google-cloud-libraries-bom.version>26.93.0</google-cloud-libraries-bom.version>
         <!-- OpenTelemetry, whose Metrics API base's ClientMetrics implements (#713, ADR-0186)
              and which most Google Cloud clients bring in transitively, their built-in metrics
@@ -487,6 +497,22 @@ limitations under the License.
     <build>
         <pluginManagement>
             <plugins>
+                <plugin>
+                    <!-- The parent's java11 profile appends an add-exports of
+                         java.base/sun.net.util to javadoc's options, and javadoc refuses to
+                         export a system package under the release 17 that
+                         maven.compiler.release passes it (issue #2132). Nothing here
+                         documents against sun.net.util, so the list is taken over and keeps
+                         only the parent's -Xdoclint:none. This reaches the API reference and
+                         the release's javadoc jars alike. -->
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <configuration>
+                        <additionalJOptions combine.self="override">
+                            <additionalJOption>-Xdoclint:none</additionalJOption>
+                        </additionalJOptions>
+                    </configuration>
+                </plugin>
                 <!-- The three plugins below are the shared half of every
                      flink-sql-connector-gcp-* pom, configured here rather than in the
                      shaded modules. Only the module list differs between the bundles; the
@@ -999,6 +1025,14 @@ limitations under the License.
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
+                <configuration>
+                    <!-- The parent's java21 profile skips Spotless on JDK 21 or newer, because
+                         the google-java-format it once pinned did not run there. The pinned
+                         version does, and JDK 21 is the default build JDK (issue #2132), so
+                         formatting is applied and checked on both JDKs. Through the property,
+                         -Dspotless.skip still turns it off by hand. -->
+                    <skip>${spotless.skip}</skip>
+                </configuration>
             </plugin>
 
             <plugin>
@@ -1162,9 +1196,9 @@ limitations under the License.
                      automatic platform links, so the count is identical either way. What the
                      default adds is a second mechanism for the same links — the plugin passes
                      -linkoffline against an element-list it unpacks from its own jar. That
-                     list is bundled for Java 10 to 15 only, so the day maven.compiler.source
-                     moves past 15 the default stops being satisfiable from the jar, and this
-                     is one fewer thing to discover then. Note it is *not* a network fetch:
+                     list is bundled for Java 10 to 15 only, so with maven.compiler.release at
+                     17 (issue #2132) the default is no longer satisfiable from the jar. Note
+                     it is *not* a network fetch:
                      only <links>, which this build does not use, probes a remote site.
 
                      doctitle/windowtitle are set because the defaults are
@@ -1278,11 +1312,11 @@ limitations under the License.
                 </property>
             </activation>
             <properties>
-                <!-- The parent's release profile downgrades maven.compiler.target to 11,
-                     which would ship bytecode no CI lane has tested; re-pin the ordinary
-                     build's 17 (the parent's own default outside that profile). The
-                     parent's release enforcer reads the same property as its JDK floor,
-                     so the release build requires JDK 17, like every other build here. -->
+                <!-- The parent's release profile downgrades maven.compiler.target to 11.
+                     The compiler no longer reads it, because maven.compiler.release takes
+                     precedence (issue #2132), but the parent's release enforcer reads it
+                     as its JDK floor; re-pin the ordinary build's 17 so that floor matches
+                     the bytecode. -->
                 <maven.compiler.target>17</maven.compiler.target>
             </properties>
             <build>

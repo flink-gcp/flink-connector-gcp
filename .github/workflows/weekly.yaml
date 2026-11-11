@@ -81,11 +81,11 @@ jobs:
           # The floor is not named anywhere in this workflow: its row passes no
           # -Dflink.version, so what gets tested is whatever the pom pins.
           #
-          # On JDK 21 rather than 17, because floor-on-17 is what verify.yaml runs on
-          # every push and what binary_compat rebuilds below — floor-on-21 is the
-          # corner of the matrix nothing else reaches.
+          # On JDK 17 rather than 21, because floor-on-21 is what verify.yaml runs
+          # on every push and what binary_compat builds below — floor-on-17 is the
+          # corner of the matrix nothing else reaches (issue #2132).
           - role: floor
-            jdk: '21'
+            jdk: '17'
           - role: ceiling
             jdk: '17'
           # Flink 2.x declares Java 11/17/21, but flink-connector-parent compiles
@@ -104,7 +104,8 @@ jobs:
           # the flink1 compat root, so this is source-level support — no
           # cross-major binary claim, which is why binary_compat below does not
           # involve it. JDK 17 only: it is the one JDK both supported majors
-          # share with verify.yaml.
+          # share. The release builds this line on JDK 21 with
+          # maven.compiler.release 17; this row builds and tests it on 17.
           - role: lts
             jdk: '17'
     steps:
@@ -209,9 +210,11 @@ jobs:
   #
   # Floor and ceiling are the only two supported minors, so there is one pair to
   # check and no matrix. Widening the policy past two would bring one back.
+  #
+  # Built on JDK 21 and rerun on JDK 17; ADR-0053 says why (#2132).
   binary_compat:
     if: github.repository_id == '1305440656'
-    name: Binary compat (floor-built, run on the ceiling)
+    name: Binary compat (floor-built on JDK 21, run on the ceiling on JDK 17)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -219,10 +222,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      # The last version listed becomes JAVA_HOME and builds; the rerun takes
+      # JAVA_HOME_17_X64.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: |
+            17
+            21
           cache: maven
 
       # Unpinned, and install-action rather than mise: see the note on the same
@@ -239,7 +246,7 @@ jobs:
       # constraints are written down. The cost is that a failure here says which
       # `==>` phase failed rather than which step.
       - name: Build on the floor, re-run on Flink ${{ env.FLINK_CEILING }}
-        run: just binary-compat "$FLINK_CEILING"
+        run: just binary-compat "$FLINK_CEILING" "${JAVA_HOME_17_X64:?setup-java did not export the JDK 17 home}"
 
   # Nothing else would tell us a new Flink minor or 1.x LTS patch shipped.
   #
@@ -296,7 +303,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
           cache: maven
 
       # Unpinned, and install-action rather than mise: see the note on the same

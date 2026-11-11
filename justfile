@@ -276,9 +276,15 @@ format:
 # install more than asked and leave this recipe green, hiding itself. Assigning
 # first fails the line instead.
 #
+# The optional rerun_java_home runs the rerun on another JDK (ADR-0053, #2132);
+# empty keeps JAVA_HOME. When it is given, every report must then name that
+# JDK's specification version: surefire overwrites reports but never clears the
+# directory, so a report the rerun did not rewrite still carries the build JDK.
+#
 # Check that a floor-built jar still runs on Flink <ceiling>, uncompiled.
-binary-compat ceiling:
+binary-compat ceiling rerun_java_home="":
     @echo '==> Build against the floor (the Flink version pinned in pom.xml)'
+    {{ mvn }} -version
     {{ mvn }} verify
     @echo '==> Install what the goal-only rerun cannot resolve from the reactor'
     modules="$(scripts/ci-maven-args.py --install-modules)" && {{ mvn }} -pl "$modules" -DskipTests install
@@ -286,10 +292,12 @@ binary-compat ceiling:
     @mkdir -p target
     scripts/surefire-fingerprint.sh > target/floor-tests.txt
     @echo '==> Re-run the floor-built classes on Flink {{ ceiling }}'
-    {{ mvn }} -Dflink.version={{ ceiling }} surefire:test@default-test surefire:test@integration-tests
+    {{ if rerun_java_home != "" { "JAVA_HOME=" + quote(rerun_java_home) } else { "" } }} {{ mvn }} -version
+    {{ if rerun_java_home != "" { "JAVA_HOME=" + quote(rerun_java_home) } else { "" } }} {{ mvn }} -Dflink.version={{ ceiling }} surefire:test@default-test surefire:test@integration-tests
     @echo '==> Assert the same tests ran'
     scripts/surefire-fingerprint.sh > target/ceiling-tests.txt
     diff -u target/floor-tests.txt target/ceiling-tests.txt || { echo "::error::A different set of tests ran on Flink {{ ceiling }} than on the floor, so this run proves nothing about binary compatibility."; exit 1; }
+    {{ if rerun_java_home == "" { "true" } else { "scripts/surefire-reports-jdk.sh " + quote(rerun_java_home) } }}
     @echo "Same tests ran on both: $(wc -l < target/floor-tests.txt | tr -d ' ') classes."
 
 # The ceiling and the LTS default to the ones the weekly workflow verifies, so

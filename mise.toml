@@ -1,5 +1,5 @@
 [tools]
-java = "temurin-17"
+java = "temurin-21"
 maven = "latest"
 # Documentation site (docs/). hugo-book requires Hugo extended >= 0.158.0, and
 # Hugo needs Go to resolve the theme as a Hugo module.

@@ -145,7 +145,7 @@ jobs:
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       # Not setup-java's `cache: maven`, which stood here before: its key is a
       # hash of the POMs and it carries no restore-keys, so every pull request
