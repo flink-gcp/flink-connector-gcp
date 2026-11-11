@@ -40,8 +40,10 @@ runs. Everything here writes to real Google Cloud — to run without touching a 
 
 ## Before you start
 
-- **JDK 17 or 21.** Java 11 is not supported even though Flink 2.x declares it; the jars are
-  compiled for Java 17.
+- **JDK 17 or 21.** Java 8 and 11 are not supported, even though Flink 1.20 supports both
+  and Flink 2.x supports Java 11; the jars are compiled for Java 17. On Flink 1.20 that means
+  a Java 17 runtime, which the default `flink:1.20` image is not — see
+  [Supported versions]({{< relref "/" >}}#supported-versions).
 - **Apache Flink 2.2 or 2.3**, or 1.20 (the 1.x LTS) — see
   [Supported versions]({{< relref "/" >}}#supported-versions) for how the range is verified. The
   jobs run on the embedded MiniCluster that `StreamExecutionEnvironment` starts from an IDE, so no

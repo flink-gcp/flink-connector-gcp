@@ -57,8 +57,9 @@ the oldest supported minor and re-runs the entire test suite with the newest one
 classpath without recompiling, and also builds against the next unreleased Flink so that
 upstream changes surface before they ship.
 
-Java 11 is not supported even though Flink 2.x declares it, because the jars are compiled for
+Java 8 and 11 are not supported on either version line, because the jars are compiled for
 Java 17.
+That holds even though Flink 2.x supports Java 11 and Flink 1.20 supports Java 8 and 11.
 They are built on JDK 21 against the Java 17 class library, so they load on Java 17 and 21 alike.
 The weekly build tests every supported Flink version on Java 17, and runs the JDK 21-built 2.x
 classes on Java 17 in the same rerun that checks the newest minor.
@@ -69,6 +70,13 @@ from a small seam of per-major source files selected at build time, so the weekl
 compiles the whole suite against 1.20 as well. This is source-level support — a jar is
 compiled per major, and the one-artifact claim above spans the 2.x range only. The 1.20 lane
 is verified on Java 17; the Java 21 row above is a 2.x claim.
+
+A 1.20 cluster therefore has to run on Java 17, which
+[Flink 1.20 itself calls experimental](https://nightlies.apache.org/flink/flink-docs-release-1.20/docs/deployment/java_compatibility/)
+and does not run by default.
+The default `flink:1.20` Docker image runs Java 11, where loading a connector class fails with
+`UnsupportedClassVersionError`.
+Use the official `flink:1.20-java17` image, or another Java 17 runtime, instead.
 
 Building for 1.20 means selecting that seam along with the version — `just verify-flink 1.20.5`
 does both, and the raw Maven form is `./mvnw verify -Dflink.version=1.20.5
