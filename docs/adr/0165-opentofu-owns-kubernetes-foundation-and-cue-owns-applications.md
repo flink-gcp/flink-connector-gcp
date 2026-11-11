@@ -123,6 +123,10 @@ limitations under the License.
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
 
+Partially superseded by [ADR-0204](0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md):
+recovery trials no longer end on unplanned interruptions or restarts, are judged only by the data the job wrote, inject every fault kind in one short run, and are bounded by a one-hour time limit instead of a spend estimate.
+The sections on the recovery exercise and its fault kinds, measurement windows, recovery timing, unplanned restarts, the verdicts and measurements, campaign dispatch and spend approval record the rules as they stood until [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146) implements ADR-0204; the foundation, ownership, cleanup and admission decisions remain in force.
+
 ## Context
 
 The static CUE foundation initially included CRD installation data and assigned every non-Helm Kubernetes object to CUE.
