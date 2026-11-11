@@ -328,13 +328,14 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   `BigtableDataClients.applyClientMetrics` is the one place both are applied, and the emulator builder
   has already disabled the exporter, so a settings test reads production settings. On the session
   (vRPC) path, `MetricsImpl.newTableTracer` returns a no-op tracer when internal metrics are
-  disabled (2.85.0; unchanged in 2.86.0), so turning the Cloud Monitoring export off also hides
+  disabled (2.85.0; unchanged through 2.88.0), so turning the Cloud Monitoring export off also hides
   session calls from the Flink export: the lookups' reads, and a scan's single-row-key reads, which
   the client records as `ReadRow` (unregistered on the reader, so dropped with one `WARN` even with
   the export on). 2.86.0 also routes `CheckAndMutateRow` and `ReadModifyWriteRow` through the
   session shim when the service enables the path for those methods (`CheckAndMutateRowShim`,
-  `ReadModifyWriteRowShim`; per-method load only, no client-wide fallback, in `ShimImpl`), under
-  their own method names, so the conditional and
+  `ReadModifyWriteRowShim`), under their own method names. Since 2.88.0 all four methods resolve
+  their load through `SessionScope` alone: the service's session diversion, global or per method;
+  the deprecated flat `session_load` no longer diverts any of them. So the conditional and
   read-modify-write components lose their series the same way. The owner declined a workaround.
   Re-read both facts on a client upgrade.
 - Only the at-least-once batch factory closes its client metrics. The other components leave theirs
