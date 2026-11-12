@@ -354,3 +354,7 @@ The pilot is repeated once more as a repeat the owner approves by hand, within t
 - every attempt's window still ends before 2026-11-13T14:41:26Z, and the campaign is still dispatched no later than 2026-11-13T04:00Z.
 
 The reads of [Before dispatch](#before-dispatch) are made again before the third re-run.
+
+**How the trials ended.**
+The owner paused the trials on 2026-11-11 after `fs2085-tm-a1`, and a single run under [ADR-0204](../0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) replaced them.
+Its [findings](0204-firestore-fault-sequence-findings-2147.md) replace the findings file item 4 of [Interpretations the owner must confirm](#interpretations-the-owner-must-confirm) names, list every attempt, and say which promised readings they do not report.
