@@ -27,7 +27,7 @@ from ..policy import (
     WINDOWS,
 )
 from ..proposal import check_inputs, render_verified
-from .trial import KINDS, LATE_RECORDS, MODES, Trial
+from .trial import KINDS, LATE_RECORDS, MODES, SEQUENCE_KIND, Trial
 
 NAMESPACE = FIRESTORE
 WINDOW_SECONDS = WINDOWS["firestore-recovery"]
@@ -69,6 +69,15 @@ USD_PER_100K_READS = Decimal("0.03")
 RESERVE_USD = Decimal("1.00")
 
 
+# The fault sequence's input and seed (ADR-0204): ten minutes of input at 10
+# records a second, which outlasts the five faults, and a seed each reading
+# subtask copies at 5 records a second, so the copy outlasts them too, ten
+# minutes with two subtasks and twenty with one, well inside the hour the
+# read time stays valid.
+SEQUENCE_INPUT = {"records": 6000, "records_per_second": 10}
+SEQUENCE_SEED = {"seed_records": 6000, "seed_records_per_second": 5}
+
+
 def trial(kind, started_at=None):
     """The approved trial of one kind: its fault, the fixed input and seed.
 
@@ -76,6 +85,8 @@ def trial(kind, started_at=None):
     """
     if kind not in KINDS:
         raise ValueError("Unknown Firestore trial: " + str(kind))
+    if kind == SEQUENCE_KIND:
+        return {"kind": kind, **SEQUENCE_INPUT, **SEQUENCE_SEED}
     return {"kind": kind, **INPUT, **SEED}
 
 
@@ -86,12 +97,11 @@ def validate_trial(value):
         raise ValueError(
             "Firestore trial must be one of "
             + ", ".join(KINDS)
-            + " with 180,000 records at 100 records per second and 108,000 seed"
-            " records copied at 50 records per second per subtask"
+            + " with its fixed input and seed"
         )
 
 
-def operations():
+def operations(sizes):
     """The document or entity writes and reads the trial plans, in both databases.
 
     Each database takes the input, the seed and its late records, and one
@@ -100,13 +110,13 @@ def operations():
     again and the sinks' replays are not counted: at most a checkpoint
     interval of records each, a few thousand.
     """
-    records, seed = INPUT["records"], SEED["seed_records"]
+    records, seed = sizes["records"], sizes["seed_records"]
     writes = records + seed + LATE_RECORDS + seed
     reads = seed + records + seed + LATE_RECORDS + seed
     return {"writes": len(MODES) * writes, "reads": len(MODES) * reads}
 
 
-def estimate():
+def estimate(sizes):
     """Planning estimate for the trial; not a bound on bills.
 
     Compute for the window, as the Spanner estimate prices it, the planned
@@ -118,7 +128,7 @@ def estimate():
         *[POD_RESOURCES["smoke"]] * 3,
     ]
     compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    counts = operations()
+    counts = operations(sizes)
     usage = (
         Decimal(counts["writes"]) * USD_PER_100K_WRITES
         + Decimal(counts["reads"]) * USD_PER_100K_READS
@@ -194,9 +204,9 @@ def prepare(
         "observations": dict(FIRESTORE_OBSERVATIONS),
         "cost": {
             "kind": "planning-estimate",
-            "usd": str(estimate()),
+            "usd": str(estimate(trial)),
             "reviewed_at": REVIEWED_AT,
-            "operations": operations(),
+            "operations": operations(trial),
             "usd_per_100k_writes": str(USD_PER_100K_WRITES),
             "usd_per_100k_reads": str(USD_PER_100K_READS),
             "other_reserve_usd": str(RESERVE_USD),

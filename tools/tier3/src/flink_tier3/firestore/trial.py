@@ -41,7 +41,9 @@ BATCH = "batch_out"
 LATE_RECORDS = 16
 # Seven digits number every seed record, the late ones included.
 MAX_SEED_RECORDS = 10**7 - LATE_RECORDS
-KINDS = tuple(FAULTS)
+# The fault-sequence trial of ADR-0204, which injects every kind in one run.
+SEQUENCE_KIND = "sequence"
+KINDS = (*FAULTS, SEQUENCE_KIND)
 
 
 def record_key(n):
@@ -94,16 +96,25 @@ class Trial:
     @property
     def failover(self):
         """The Pod the second recovery deletes, as the shared exercise names it."""
-        return FAULTS[self.kind].failover
+        return FAULTS[self.fault].failover
 
     @property
     def rescale(self):
         """The direction the upgrade rescales the job in, or None."""
-        return FAULTS[self.kind].rescale
+        return FAULTS[self.fault].rescale
+
+    @property
+    def fault(self):
+        """The kind whose sizes the run starts and upgrades at.
+
+        The fault sequence starts and upgrades at two, as a JobManager
+        replacement does, and patches its rescales itself.
+        """
+        return DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind
 
     def parallelism(self, phase):
         """Every vertex but the input's subtasks, and the TaskManagers running them."""
-        return FAULTS[self.kind].parallelism(phase)
+        return FAULTS[self.fault].parallelism(phase)
 
     def database(self, mode):
         """The database ID of one mode."""

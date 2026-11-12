@@ -97,6 +97,19 @@ It is the trial set of [#1879](https://github.com/flink-gcp/flink-connector-gcp/
 It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
 The [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixes its deployed runs; the first pilot stopped on the Datastore-mode seed before the application existed, as its revision records.
 
+### Fault sequence
+
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+Once a completed checkpoint follows the initial input and both late seeds are written, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
+Before each fault, and before the end, the supervisor waits until the job runs again, which includes progress logged after a restore that followed the fault.
+It records each fault as `recovery-<kind>` and its return as `recovery-recovered-<kind>`, and records the rest without judging it: an interruption as `unplanned-recovery`, a restore as `job-restore`, a patch that conflicted with the Operator's own write or whose answer was lost unapplied as `patch-conflict` or `patch-unconfirmed`, sent again, a Pod gone or not deleted as `fault-target-gone`, injected again, and a job restarted before its first checkpoint, which reads its input again under a new lineage, as `fresh-start`; REST and API failures are waited out, and the job's restart strategy is unbounded.
+
+The input is 6,000 records at 10 records per second, ten minutes of input, and each database's seed 6,000 records copied at 5 records per second per reading subtask, ten minutes with two subtasks and twenty with one, so both outlast the five faults and the read time stays inside its hour.
+When the job has finished its whole input after the last fault, the four oracles below read the databases, and `usable` means all four pass.
+A `FINISHED` state counts only once the job's own progress shows the whole input done and, after a savepoint fault, the replacement job's own REST status is `FINISHED`, since the Operator may still report the stopped job's.
+A run stops abnormally when the job reaches `FAILED`, the application is deleted or rolled back, or an hour has passed since its admission, and without a verdict when the job finishes with its input done before it ran again after the last fault; no fault is injected once the input is done.
+`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+
 ### Trial and estimate
 
 Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and the same seed in each database, 108,000 records copied at 50 records per second per reading subtask.

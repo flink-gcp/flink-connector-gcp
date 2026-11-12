@@ -70,3 +70,25 @@ def verdict(recovery):
             reasons.append(component + "-oracle-not-passed")
     reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_STAGES, OBSERVED))
     return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+
+
+def sequence_verdict(recovery):
+    """A fault-sequence run's verdict: its data alone (ADR-0204).
+
+    `usable` says the run completed and every component's oracle passed in
+    both databases; interruptions, restarts, timings and metrics decide
+    nothing.
+    """
+    record = recovery if isinstance(recovery, dict) else {}
+    outcomes = record.get("outcomes")
+    outcomes = outcomes if isinstance(outcomes, dict) else {}
+    reasons = []
+    if record.get("stage") != COMPLETE_STAGE:
+        reasons.append("recovery-incomplete")
+    oracles = outcomes.get("oracles")
+    oracles = oracles if isinstance(oracles, dict) else {}
+    for component in COMPONENTS:
+        report = oracles.get(component)
+        if not isinstance(report, dict) or report.get("verdict") != "pass":
+            reasons.append(component + "-oracle-not-passed")
+    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}

@@ -123,6 +123,8 @@ limitations under the License.
 - Supersedes: the CUE ownership of persistent Kubernetes resources in [ADR-0063](0063-persistent-gcp-infrastructure-is-one-tofu-root-module-applied-by-tfaction-over-wif.md#cue-manifest-management)
 - Current behavior: [Bootstrap runbook](../../opentofu/tier3-bootstrap/README.md), [Operator runbook](../../opentofu/tier3-operator/README.md), [application manifests](../../kubernetes/README.md)
 
+Partially superseded by [ADR-0204](0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) for the recovery trials that have moved to it; the foundation, ownership, cleanup and admission decisions remain in force.
+
 ## Context
 
 The static CUE foundation initially included CRD installation data and assigned every non-Helm Kubernetes object to CUE.
