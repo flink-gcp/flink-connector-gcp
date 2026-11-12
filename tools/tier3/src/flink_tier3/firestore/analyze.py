@@ -37,12 +37,13 @@ from ..recovery_analysis import (
     verdict_problems,
 )
 from .observe import COMPONENTS
-from .trial import Trial
+from .trial import SEQUENCE_KIND, Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
 )
@@ -62,9 +63,26 @@ def _trial(run):
 
 
 def assess(run):
-    """One Firestore run's verdict, beside its recoveries' timing."""
+    """One Firestore run's verdict, beside its recoveries' timing.
+
+    A fault-sequence run (ADR-0204) lists the faults it injected instead,
+    and has no recovery proofs to time.
+    """
     record = recovery_record(run, COMPLETE_EVENT)
+    if _sequence(run):
+        outcomes = record.get("outcomes") if isinstance(record, dict) else None
+        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+        return {
+            **_verdict(run),
+            "faults": faults if isinstance(faults, list) else [],
+            "recoveries": [],
+        }
     return {**_verdict(run), "recoveries": recovery_timings(run, record)}
+
+
+def _sequence(run):
+    trial = _trial(run)
+    return trial is not None and trial.kind == SEQUENCE_KIND
 
 
 def _verdict(run):
@@ -82,12 +100,16 @@ def _verdict(run):
         return unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
     if not complete and record.get("stage") == COMPLETE_STAGE:
         return unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    # Decide over the coverage the readings support, never the coverage the
-    # record claims.
-    coverage = rebuild(readings, summarize)
-    if missing := missing_samples(record.get("coverage"), coverage):
-        return unreadable(run, record, [f"missing-samples:{missing}"], samples)
-    decided = verdict({**record, "coverage": coverage})
+    if _sequence(run):
+        # Decided by the data alone; nothing was sampled.
+        decided = sequence_verdict(record)
+    else:
+        # Decide over the coverage the readings support, never the coverage
+        # the record claims.
+        coverage = rebuild(readings, summarize)
+        if missing := missing_samples(record.get("coverage"), coverage):
+            return unreadable(run, record, [f"missing-samples:{missing}"], samples)
+        decided = verdict({**record, "coverage": coverage})
     outcomes = record.get("outcomes")
     oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
     return {

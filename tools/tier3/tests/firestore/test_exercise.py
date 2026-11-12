@@ -19,10 +19,15 @@ from types import SimpleNamespace
 
 import pytest
 from flink_tier3.common import TransportError
-from flink_tier3.exercise import RecoveryExercise
+from flink_tier3.exercise import TIME_LIMIT_SECONDS, RecoveryExercise
 from flink_tier3.firestore import database
 from flink_tier3.firestore.database import Databases
-from flink_tier3.firestore.exercise import ORACLE_STAGE, FirestoreExercise
+from flink_tier3.firestore.exercise import (
+    ORACLE_STAGE,
+    FirestoreExercise,
+    FirestoreSequenceExercise,
+    firestore_exercise,
+)
 from flink_tier3.firestore.trial import LATE_RECORDS, MODES, Trial
 from flink_tier3.firestore.verdict import OBSERVED, SAMPLED_STAGES
 
@@ -196,3 +201,82 @@ def test_each_batch_plan_is_read_from_the_jobmanager_log(baseline):
         "native": {"splits": 1, "read_time": "2026-10-28T00:22:00Z", "plans": 2},
         "datastore": {"splits": 1, "read_time": "2026-10-28T00:21:00Z", "plans": 2},
     }
+
+
+def built(prepared, monkeypatch, kind):
+    """The exercise the supervisor builds for a small trial of `kind`."""
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    small = Trial(environment.approval.run_id, 5, 1, 6, 1, kind=kind)
+    environment.approval = dataclasses.replace(
+        environment.approval, scenario="firestore-recovery"
+    )
+    monkeypatch.setattr(
+        type(environment.approval), "firestore_plan", property(lambda self: small)
+    )
+    service = Firestore(environment.clock, small)
+    service.databases = {mode: {} for mode in MODES}
+    service.ready_at = {mode: 0 for mode in MODES}
+    service.data = stored(small)
+    controller = SimpleNamespace(
+        env=environment,
+        trial=small,
+        listing=lambda until: Databases(service, small, until, environment.clock),
+    )
+    environment.records.set_phase(rt.Phase.READY)
+    environment.records.set_phase(rt.Phase.RUNNING)
+    value = firestore_exercise(environment, upgrade, controller)
+    value.persist("baseline")
+    return value, service
+
+
+@pytest.fixture
+def sequence(prepared, monkeypatch):
+    """The fault-sequence exercise over the same small input."""
+    return built(prepared, monkeypatch, "sequence")
+
+
+@pytest.mark.parametrize("kind", ["jm-replacement", "tm-replacement", "rescale-in"])
+def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
+    value, _ = built(prepared, monkeypatch, kind)
+    assert type(value) is FirestoreExercise
+
+
+def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
+    value, _ = sequence
+    assert isinstance(value, FirestoreSequenceExercise)
+    assert value.measurement_event is None
+    assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
+
+
+def test_the_first_fault_waits_for_both_late_seeds(sequence):
+    value, service = sequence
+    service.data = stored(value.trial, late=False)
+    # The Datastore-mode read has not copied yet, so its read time is unplanned.
+    copies = service.data["datastore"]["batch_out"]
+    service.data["datastore"]["batch_out"] = {}
+    assert value.ready_for_sequence() is False
+    assert set(value.outcomes["late_seed"]) == {"native"}
+    service.data["datastore"]["batch_out"] = copies
+    assert value.ready_for_sequence() is True
+
+
+def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
+    """No coverage, proofs or restore counts; the four oracles decide."""
+    value, _ = sequence
+    late = {"commit_time": COMMITTED, "records": LATE_RECORDS}
+    value.outcomes.update(late_seed={mode: late for mode in MODES})
+    value.outcomes["unplanned"] = ["Unplanned workload interruption"]
+    value.env.sleep(10)
+    value.samples[("tm", 0)] = {
+        "at": value.env.clock(),
+        "phase": "upgrade",
+        "processed": 5,
+        "lineage": "x",
+        "sequence": 4,
+        "pod_uid": "tm",
+    }
+    value.persist("complete")
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert record["verdict"] == "usable", record["reasons"]

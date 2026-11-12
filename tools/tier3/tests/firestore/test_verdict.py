@@ -25,7 +25,13 @@ from flink_tier3.firestore.observe import (
     observation,
     vertices,
 )
-from flink_tier3.firestore.verdict import OBSERVED, SAMPLED_STAGES, summarize, verdict
+from flink_tier3.firestore.verdict import (
+    OBSERVED,
+    SAMPLED_STAGES,
+    sequence_verdict,
+    summarize,
+    verdict,
+)
 
 from ..test_analyze import write_run
 
@@ -219,3 +225,55 @@ def test_a_completed_record_names_its_causes_without_their_events(tmp_path):
     (run_dir / "approval.json").write_text(json.dumps(approval))
     (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
     assert assessed["unplanned"] == ["Unplanned job restart"]
+
+
+def test_a_sequence_run_is_assessed_by_its_oracles_without_samples(tmp_path):
+    """A fault-sequence run (ADR-0204) samples nothing and lists its faults."""
+    passed = {"verdict": "pass"}
+    record = {
+        "stage": "complete",
+        "verdict": "usable",
+        "reasons": [],
+        "outcomes": {
+            "oracles": {component: passed for component in COMPONENTS},
+            "faults": [{"kind": "upgrade", "at": "2026-11-12T02:00:00Z"}],
+        },
+    }
+    run_dir = write_run(
+        tmp_path,
+        run_id="fs-s1",
+        scenario="firestore-recovery",
+        events=[
+            {
+                "event": "recovery-complete",
+                "at": "2026-11-12T02:20:00Z",
+                "payload": record,
+            }
+        ],
+    )
+    approval = json.loads((run_dir / "approval.json").read_text())
+    approval["firestore_trial"] = plan.trial("sequence")
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
+    assert assessed["verdict"] == USABLE
+    assert assessed["problems"] == []
+    assert assessed["faults"] == record["outcomes"]["faults"]
+    failing = {**passed, "verdict": "fail"}
+    assert sequence_verdict(
+        {
+            **record,
+            "outcomes": {
+                "oracles": {**record["outcomes"]["oracles"], "native_sink": failing}
+            },
+        }
+    )["reasons"] == ["native_sink-oracle-not-passed"]
+
+
+def test_a_sequence_run_stopped_before_its_verdict_is_not_usable():
+    """Four passing reports in a record that never completed decide nothing."""
+    passed = {"verdict": "pass"}
+    record = {
+        "stage": "documents",
+        "outcomes": {"oracles": {component: passed for component in COMPONENTS}},
+    }
+    assert sequence_verdict(record)["reasons"] == ["recovery-incomplete"]

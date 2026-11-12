@@ -25,7 +25,7 @@ from .bigtable.exercise import BigtableExercise
 from .cleanup import Cleanup
 from .cloudtasks.exercise import CloudTasksExercise
 from .common import ApiError, Failure, transient, utc
-from .firestore.exercise import FirestoreExercise
+from .firestore.exercise import FirestoreExercise, firestore_exercise
 from .metrics import CHECKPOINTS_EVENT
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
@@ -40,7 +40,7 @@ RESOURCE_EXERCISES = {
     "cloudtasks-recovery": CloudTasksExercise,
     "bigtable-recovery": BigtableExercise,
     "spanner-recovery": SpannerExercise,
-    "firestore-recovery": FirestoreExercise,
+    "firestore-recovery": firestore_exercise,
 }
 
 
@@ -347,15 +347,15 @@ class Supervisor:
                         self.env.approval.application_namespace,
                         self.env.approval.run_id + "-rest",
                     )
-                    if (
-                        not service
-                        and self.exercise
-                        and self.exercise.rest_may_vanish()
-                    ):
-                        service = None
-                    elif not service or service["metadata"][
+                    owned = bool(service) and service["metadata"][
                         "uid"
-                    ] not in self.cleanup.owned(items, ["application"]):
+                    ] in self.cleanup.owned(items, ["application"])
+                    if not owned and self.exercise and self.exercise.rest_may_vanish():
+                        # Missing, or recreated after this poll's inventory
+                        # read: no REST read this poll, and nothing unowned is
+                        # read.
+                        service = None
+                    elif not owned:
                         raise Failure("REST service has no verified workload owner")
                     try:
                         if not service:

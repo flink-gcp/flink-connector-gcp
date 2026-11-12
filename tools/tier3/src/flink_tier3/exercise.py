@@ -186,6 +186,10 @@ class RecoveryExercise:
     # Whether `waits_out` may wait out a platform interruption after the last
     # window; only Firestore's opts in (#2140).
     waits_out_interruptions = False
+    # Whether a progress line's restored flag must match its phase: an initial
+    # line from a restored job is an unplanned restore. The fault sequence
+    # waits restores out, so it does not check (ADR-0204).
+    checks_restores = True
 
     def __init__(self, env, upgrade, *, failover="jobmanager", rescale=None):
         if self.measurement_event and (
@@ -464,8 +468,9 @@ class RecoveryExercise:
                 raise Failure("Recovery progress predates this run")
             if phase == "upgrade" and self.stage == "baseline":
                 raise Failure("Upgrade progress appeared before its approved operation")
-            if (phase == "initial" and restored != "false") or (
-                phase == "upgrade" and restored != "true"
+            if self.checks_restores and (
+                (phase == "initial" and restored != "false")
+                or (phase == "upgrade" and restored != "true")
             ):
                 raise Failure("Unexpected fresh start or unplanned initial recovery")
             processed, sequence = int(processed), int(sequence)
@@ -1143,6 +1148,9 @@ class FiniteInputExercise(RecoveryExercise):
 
     service: str
     oracle_stage: str
+    # Whether the first progress line's lineage is recorded and every later
+    # one must match it; the fault sequence fixes it at its first fault.
+    records_lineage = True
 
     def __init__(self, env, upgrade, trial):
         self.trial = trial
@@ -1164,7 +1172,11 @@ class FiniteInputExercise(RecoveryExercise):
                 valid = False
             if sample["at"] > self.env.clock():
                 raise Failure(f"{self.service} progress is dated in the future")
-            if not valid or (lineage is not None and sample["lineage"] != lineage):
+            if not valid:
+                raise Failure(f"{self.service} input lineage changed or is invalid")
+            if not self.records_lineage:
+                continue
+            if lineage is not None and sample["lineage"] != lineage:
                 raise Failure(f"{self.service} input lineage changed or is invalid")
             if lineage is None:
                 self.env.records.record_lineage(sample["lineage"])
@@ -1233,3 +1245,421 @@ class FiniteInputExercise(RecoveryExercise):
         RecoveryExercise.persist(
             self, COMPLETE_STAGE, processed=self.records, coverage=coverage, **decided
         )
+
+
+# The faults one run injects under ADR-0204, in order, and the parallelism the
+# job runs at once each has been injected: the run starts at two, as a
+# JobManager replacement trial does, and the two rescales move it to one and
+# back.
+SEQUENCE = ("upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out")
+SEQUENCE_PARALLELISM = {
+    "upgrade": 2,
+    "jobmanager": 2,
+    "taskmanager": 2,
+    "rescale-in": 1,
+    "rescale-out": 2,
+}
+# The faults that change the application, which the Operator applies as a
+# savepoint upgrade.
+SAVEPOINT_FAULTS = ("upgrade", "rescale-in", "rescale-out")
+# How long a run may take from its admission to its verdict (ADR-0204).
+TIME_LIMIT_SECONDS = 3600
+# The input finished while a fault was still to come or awaited, so the job
+# could not be seen running again after it.
+UNCONFIRMED = "Input finished before the fault sequence did; unconfirmed"
+
+
+class FaultSequence:
+    """One run that injects every fault kind and waits out everything else.
+
+    Mixed in ahead of a scenario's `FiniteInputExercise` (ADR-0204). The run
+    starts at parallelism 2, and once a completed checkpoint follows flowing
+    input, and the scenario's own preparation is done, it injects each fault
+    of `SEQUENCE` in turn: the savepoint upgrade, the JobManager's deletion,
+    the deletion of the TaskManager reporting the input, and a rescale to one
+    and back to two, each a patch of the approved upgrade manifest that
+    changes only the parallelism.
+
+    Before each fault, and before completion, it waits until the job runs
+    again: `RUNNING`, reconciled to the last patch, with a JobManager and as
+    many TaskManagers as the parallelism, and with progress logged after a
+    restore that followed the fault. A line logged before that restore, by
+    the job the fault stopped, is not the job running again.
+
+    Anything else is recorded and waited out, however often it happens: an
+    interruption, a replacement, an eviction, a container restart, a restore,
+    a patch that conflicted, a Pod already gone, or a REST or API failure.
+    Nothing judges restores, proves a recovery, samples metrics or opens a
+    window; the base class's stage-machine state is unused. The run ends when
+    the job has finished with its whole input after the last fault, and the
+    scenario's `verdict` decides by the data; it stops abnormally when the job
+    fails, the application is deleted or rolled back, or the time limit
+    passes, and without a verdict when the input finishes first.
+    """
+
+    measurement_event = None
+    checks_restores = False
+    records_lineage = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.deadline = min(
+            self.env.schedule.started + TIME_LIMIT_SECONDS,
+            self.env.schedule.cleanup_at,
+        )
+        self.parallelism = SEQUENCE_PARALLELISM["upgrade"]
+        self.step = 0
+        # The fault the job is recovering from: its kind and when it was
+        # injected, and for a patch the spec and the generation it waits for.
+        self.awaiting = None
+        # The latest restore the job's statistics showed, in seconds.
+        self.restored_at = None
+        # The input lineage the faults run on, fixed by the first fault.
+        self.lineage = None
+
+    @property
+    def recovering(self):
+        return self.awaiting is not None
+
+    def rest_may_vanish(self):
+        return True
+
+    def check_open(self):
+        """The base check, worded for the time limit that bounds the deadline."""
+        self.env.require_running("Recovery exercise has been stopped")
+        if self.env.clock() >= self.deadline:
+            raise Failure("Run reached its time limit at stage " + self.stage)
+
+    def unplanned(self, message, platform=False):
+        """Record one cause the run waits out; nothing is a stop."""
+        cause = message.split(";")[0]
+        causes = self.outcomes.get("unplanned", [])
+        if cause not in causes:
+            self.outcomes["unplanned"] = [*causes, cause]
+            self.env.emit(UNPLANNED_EVENT, {"stage": self.stage, "cause": cause})
+
+    def restarts(self, rest):
+        """Record each restore the job's statistics show; none is judged."""
+        restored = (rest.get("latest") or {}).get("restored")
+        at = restored.get("restore_timestamp") if restored else None
+        if type(at) is not int or (
+            self.restored_at is not None and at / 1000 <= self.restored_at
+        ):
+            return
+        self.restored_at = at / 1000
+        self.env.emit(
+            "job-restore",
+            {
+                "stage": self.stage,
+                "restored": restored,
+                "count": (rest.get("counts") or {}).get("restored"),
+            },
+        )
+
+    def scheduling(self, pods):
+        """Record what the platform did, then take the Pods as they now are.
+
+        Pods only going away, as an idle TaskManager does after a rescale in
+        or once the input is done, or only arriving, as at startup, are not a
+        replacement; the platform's own interruptions are recorded from their
+        events and conditions either way.
+        """
+        if self.awaiting is None and self.stable_pods is not None:
+            current = {
+                p["metadata"]["uid"]
+                for p in pods
+                if p["metadata"]["namespace"] == self.namespace
+            } - self.retiring_pods
+            if current <= self.stable_pods or self.stable_pods <= current:
+                self.rebaseline(pods)
+        super().scheduling(pods)
+        if self.awaiting is None:
+            self.rebaseline(pods)
+
+    def progress(self, pod, text):
+        """Read progress; before the first fault a fresh start may replace the lineage.
+
+        A job restarted before its first completed checkpoint starts its input
+        again under a new lineage, which writes the same records; once the
+        first fault lands, the lineage is fixed.
+        """
+        super().progress(pod, text)
+        if self.lineage is None:
+            if not self.samples:
+                return
+            latest = max(self.samples.values(), key=lambda s: s["at"])["lineage"]
+            stale = [k for k, s in self.samples.items() if s["lineage"] != latest]
+            if stale:
+                self.env.emit("fresh-start", {"lineage": latest})
+            for key in stale:
+                del self.samples[key]
+        elif any(s["lineage"] != self.lineage for s in self.samples.values()):
+            raise Failure("Input lineage changed after the first fault")
+
+    def input_complete(self):
+        """Whether the latest progress read shows the whole input.
+
+        A restore may go back to a checkpoint before a completion the stopped
+        attempt logged, and the replay then logs a lower count after it. A
+        restore that does not replay the input (another region's, or a
+        finished input's) logs nothing, so the completion stands.
+        """
+        if not self.samples:
+            return False
+        latest = max(self.samples.values(), key=lambda s: (s["at"], s["processed"]))
+        return latest["processed"] == self.records
+
+    def ready_for_sequence(self):
+        """Whether a scenario's own preparation lets the first fault go ahead."""
+        return True
+
+    def oracle_window(self):
+        """The oracle's reads end within the time limit, before the record's write."""
+        return min(
+            self.env.clock() + self.timing["visibility_seconds"],
+            self.deadline - RECORD_SECONDS,
+        )
+
+    def observe(self, app, rest, pods):
+        self.check_open()
+        if not self.initialized:
+            self.persist("baseline")
+        if app["metadata"].get("deletionTimestamp"):
+            raise Failure("Application deletion started during the exercise")
+        status = app.get("status", {}).get("jobStatus", {}).get("state", "")
+        savepoint = self.awaiting and self.awaiting["kind"] in SAVEPOINT_FAULTS
+        if status == "FAILED" or (
+            status in ("CANCELED", "SUSPENDED") and not savepoint
+        ):
+            raise Failure("Unexpected Flink state: " + status)
+        if app.get("status", {}).get("reconciliationStatus", {}).get("state") in (
+            "ROLLING_BACK",
+            "ROLLED_BACK",
+        ):
+            raise Failure("Operator rolled back the approved upgrade")
+        complete = self.input_complete()
+        if savepoint and self.awaiting["generation"] is None:
+            # A patch not yet applied, so no upgrade is in flight and the
+            # state is the running job's own.
+            if status == "FINISHED" and complete:
+                raise Failure(UNCONFIRMED)
+            if status == "RUNNING" and not complete:
+                self.patch(app)
+            return False
+        if self.awaiting is not None and (
+            self.running_again(app, status, pods)
+            # The input ran out after the restore; idle TaskManagers may go.
+            or (complete and self.reconciled(app) and self.ran_after_restore())
+        ):
+            self.recovered(pods)
+        if status == "FINISHED":
+            # The stopped job's FINISHED may still be reported while the next
+            # one starts (ADR-0165), and a restore may replay the input before
+            # it logs again: only a finished current job with the whole input
+            # read settles the run.
+            if not (complete and self.finished()):
+                return False
+            if self.awaiting is not None or self.step < len(SEQUENCE):
+                # No progress can follow, so the job could never be seen
+                # running again after the remaining faults.
+                raise Failure(UNCONFIRMED)
+            self.persist(COMPLETE_STAGE, processed=self.records)
+            return True
+        if (
+            status == "RUNNING"
+            and self.awaiting is None
+            and self.step < len(SEQUENCE)
+            and not complete
+            and self.ready(rest, pods)
+        ):
+            self.inject(SEQUENCE[self.step], app, pods)
+        return False
+
+    def ready(self, rest, pods):
+        """Whether the next fault may land: the job runs with input flowing."""
+        if self.jobmanager(pods) is None:
+            return False
+        if self.step == 0:
+            progress = self.fresh_progress("initial")
+            if not progress or not self.completed(rest, min(s["at"] for s in progress)):
+                return False
+            return self.ready_for_sequence()
+        return True
+
+    def attach_rest(self, service, job_id):
+        """Keep a REST reader for the job the loop verified, measured or not."""
+        if self.track_rest(service, job_id) and self.measurement_event:
+            self.vertices = None
+
+    def finished(self):
+        """Whether the job the Operator names has finished, by its own REST status.
+
+        Only a savepoint fault's upgrade leaves the stopped job's FINISHED in
+        the Operator's status, also once the replacement was seen running
+        again; after one, the replacement's own status decides, and a read
+        that fails is waited out.
+        """
+        faults = self.outcomes.get("faults") or [{}]
+        if faults[-1].get("kind") not in SAVEPOINT_FAULTS:
+            return True
+        if self.rest is None:
+            return False
+        try:
+            return self.rest.job("").get("state") == "FINISHED"
+        except (ApiError, TransportError):
+            return False
+
+    def ran_after_restore(self):
+        """Whether the job restored after the awaited fault and then logged progress."""
+        at = self.restored_at
+        return (
+            at is not None
+            and at > self.awaiting["at"]
+            and any(
+                s["phase"] == "upgrade" and s["at"] > at for s in self.samples.values()
+            )
+        )
+
+    def reconciled(self, app):
+        """Whether a patch the job awaits is what the Operator has deployed."""
+        awaited = self.awaiting
+        if awaited["kind"] not in SAVEPOINT_FAULTS:
+            return True
+        status = app.get("status", {})
+        return (
+            status.get("observedGeneration", 0) >= awaited["generation"]
+            and status.get("reconciliationStatus", {}).get("state") == "DEPLOYED"
+        )
+
+    def running_again(self, app, status, pods):
+        """Whether the job runs again after the awaited fault, whatever restarted it."""
+        return (
+            status == "RUNNING"
+            and self.reconciled(app)
+            and self.jobmanager(pods) is not None
+            and len(self.running(pods, "taskmanager")) >= self.parallelism
+            and self.ran_after_restore()
+        )
+
+    def recovered(self, pods):
+        """Record that the job runs again, and take its Pods as the stable set."""
+        fault = self.awaiting
+        self.outcomes["faults"][-1]["running_again_at"] = utc(self.env.clock())
+        self.awaiting = None
+        self.rebaseline(pods)
+        self.persist("recovered-" + fault["kind"])
+
+    def inject(self, kind, app, pods):
+        """Inject one fault of the sequence and wait for the job to run again."""
+        target = None
+        if kind == "jobmanager":
+            target = self.jobmanager(pods)
+        elif kind == "taskmanager":
+            target = self.taskmanager(pods)
+            if target is None:
+                return
+        fault = {"kind": kind, "at": utc(self.env.clock())}
+        if target is not None:
+            fault["pod"] = {
+                "name": target["metadata"]["name"],
+                "uid": target["metadata"]["uid"],
+            }
+        awaiting = {"kind": kind, "at": self.env.clock()}
+        if kind in SAVEPOINT_FAULTS:
+            awaiting.update(
+                spec=self.sequence_spec(SEQUENCE_PARALLELISM[kind]), generation=None
+            )
+        if self.lineage is None:
+            latest = max(self.samples.values(), key=lambda s: s["at"])
+            self.lineage = latest["lineage"]
+            self.env.records.record_lineage(self.lineage)
+        self.parallelism = SEQUENCE_PARALLELISM[kind]
+        self.boundary = self.env.clock()
+        self.outcomes.setdefault("faults", []).append(fault)
+        self.awaiting = awaiting
+        self.step += 1
+        self.persist(kind)
+        if kind in SAVEPOINT_FAULTS:
+            self.patch(app)
+        elif not self.delete(target):
+            # Gone before its deletion, as the platform may take a Pod, or not
+            # deleted: the fault is injected again once the job runs.
+            self.outcomes["faults"].pop()
+            self.awaiting = None
+            self.step -= 1
+            self.env.emit("fault-target-gone", {"kind": kind, **fault["pod"]})
+
+    def sequence_spec(self, parallelism):
+        """The approved upgrade spec at `parallelism`: its sizes and argument only."""
+        spec = copy.deepcopy(self.upgrade["spec"])
+        spec["job"]["parallelism"] = parallelism
+        spec["taskManager"]["replicas"] = parallelism
+        args = spec["job"]["args"]
+        if args.count("--parallelism") != 1:
+            raise Failure("Approved upgrade does not name its parallelism once")
+        args[args.index("--parallelism") + 1] = str(parallelism)
+        return spec
+
+    def patch(self, app):
+        """Patch the application to the awaited spec, and wait for its generation.
+
+        A patch that conflicts with the Operator's own write of the
+        application is sent again from the next poll's copy; one whose answer
+        was lost counts only if the application now holds the spec.
+        """
+        spec = self.awaiting["spec"]
+        operations = [
+            {"op": "replace", "path": "/spec/job/args", "value": spec["job"]["args"]},
+            {
+                "op": "replace",
+                "path": "/spec/job/parallelism",
+                "value": spec["job"]["parallelism"],
+            },
+            {
+                "op": "replace",
+                "path": "/spec/taskManager/replicas",
+                "value": spec["taskManager"]["replicas"],
+            },
+        ]
+        try:
+            updated = self.env.kube.patch(
+                app, operations, before_repeat=self.check_open
+            )
+        except (ApiError, TransportError) as error:
+            if isinstance(error, ApiError) and error.status in (409, 422):
+                self.env.emit(
+                    "patch-conflict",
+                    {"kind": self.awaiting["kind"], "status": error.status},
+                )
+                return
+            if isinstance(error, ApiError) and error.status not in (500, 502, 503, 504):
+                raise
+            updated = self.env.root("application")
+            if not updated or updated["metadata"].get("deletionTimestamp"):
+                raise Failure("Application gone while it was patched") from error
+            if not contains(updated["spec"], spec):
+                # Not applied: the same patch is sent again from the next poll.
+                self.env.emit(
+                    "patch-unconfirmed",
+                    {"kind": self.awaiting["kind"], "cause": str(error)},
+                )
+                return
+        self.awaiting["generation"] = updated["metadata"]["generation"]
+
+    def delete(self, pod):
+        """Delete one Pod of the sequence; False when it was not deleted.
+
+        A Pod already gone, or one still running after an answer was lost, is
+        injected again from a later poll.
+        """
+        try:
+            return self.env.kube.delete(pod) is not False
+        except (ApiError, TransportError) as error:
+            if isinstance(error, ApiError) and error.status not in (500, 502, 503, 504):
+                raise
+            current = self.env.kube.get("Pod", self.namespace, pod["metadata"]["name"])
+            return not (
+                current
+                and current["metadata"]["uid"] == pod["metadata"]["uid"]
+                and not current["metadata"].get("deletionTimestamp")
+            )

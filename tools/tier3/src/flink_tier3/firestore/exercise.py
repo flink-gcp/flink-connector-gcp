@@ -19,13 +19,13 @@ from __future__ import annotations
 import re
 
 from ..common import Failure, timestamp
-from ..exercise import FiniteInputExercise
+from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import FIRESTORE, FIRESTORE_OBSERVATIONS, FIRESTORE_STATE, POLL
 from ..spanner.instance import retryable_commit
 from .observe import observation, vertices
 from .oracle import BatchCopy, Seed, Sink
-from .trial import BATCH, INPUT, LATE_RECORDS, MODES, SEED
-from .verdict import MEASUREMENT_EVENT, summarize, verdict
+from .trial import BATCH, INPUT, LATE_RECORDS, MODES, SEED, SEQUENCE_KIND
+from .verdict import MEASUREMENT_EVENT, sequence_verdict, summarize, verdict
 
 # The stage between the finished application and the read collections.
 ORACLE_STAGE = "documents"
@@ -117,14 +117,20 @@ class FirestoreExercise(FiniteInputExercise):
                 "plans": plans.get(mode, {}).get("plans", 0) + 1,
             }
 
+    # The verdict the oracles' record is judged by.
+    verdict = staticmethod(verdict)
+
     def begin_upgrade(self, app, cp, progress, pods):
         """Write the late seed records first; the upgrade waits for their record."""
-        late = self.outcomes.get("late_seed", {})
-        for mode in MODES:
-            if mode not in late:
-                self.seed_late(mode)
-        if all(mode in self.outcomes.get("late_seed", {}) for mode in MODES):
+        if self.late_seeds_written():
             super().begin_upgrade(app, cp, progress, pods)
+
+    def late_seeds_written(self):
+        """Write each database's missing late seed records; whether both are written."""
+        for mode in MODES:
+            if mode not in self.outcomes.get("late_seed", {}):
+                self.seed_late(mode)
+        return all(mode in self.outcomes.get("late_seed", {}) for mode in MODES)
 
     def seed_late(self, mode):
         """Add one database's late seed records once its read has planned its time.
@@ -203,7 +209,7 @@ class FirestoreExercise(FiniteInputExercise):
             oracles[mode + "_sink"] = checks[INPUT].report()
             oracles[mode + "_batch"] = batch
         self.outcomes["oracles"] = oracles
-        self.complete(verdict)
+        self.complete(self.verdict)
 
     def late_after_plan(self, mode):
         """Whether a database's late commit followed its plan's read time, or None unread."""
@@ -215,3 +221,24 @@ class FirestoreExercise(FiniteInputExercise):
             return timestamp(late["commit_time"]) > timestamp(plan["read_time"])
         except Failure:
             return None
+
+
+class FirestoreSequenceExercise(FaultSequence, FirestoreExercise):
+    """The Firestore trial as one fault sequence, judged by its data (ADR-0204).
+
+    The late seed records are written before the first fault, as before the
+    upgrade of a single-fault trial, and the oracles are the same four.
+    """
+
+    verdict = staticmethod(sequence_verdict)
+
+    def ready_for_sequence(self):
+        """The first fault waits for both databases' late seed records."""
+        return self.late_seeds_written()
+
+
+def firestore_exercise(env, upgrade, databases):
+    """The exercise the approved Firestore trial names."""
+    if env.approval.firestore_plan.kind == SEQUENCE_KIND:
+        return FirestoreSequenceExercise(env, upgrade, databases)
+    return FirestoreExercise(env, upgrade, databases)

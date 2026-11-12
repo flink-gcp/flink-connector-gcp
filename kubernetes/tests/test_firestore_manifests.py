@@ -106,7 +106,7 @@ def firestore_configuration(run_id):
         "high-availability.type": "kubernetes",
         "high-availability.storageDir": f"{storage}/ha",
         "restart-strategy.type": "fixed-delay",
-        "restart-strategy.fixed-delay.attempts": "3",
+        "restart-strategy.fixed-delay.attempts": "2147483647",
         "restart-strategy.fixed-delay.delay": "10 s",
     }
 
@@ -444,3 +444,27 @@ def test_firestore_window_is_ninety_minutes(module, active_seconds, admitted):
     assert (result.returncode == 0) is admitted, result.stderr
     if not admitted:
         assert f"invalid value {active_seconds} (out of bound" in result.stderr
+
+
+def test_the_sequence_trial_starts_and_upgrades_at_two(module):
+    """The fault sequence (ADR-0204) patches its own rescales from the upgrade."""
+    result = proposal(
+        module,
+        firestore_trial="sequence",
+        firestore_records="6000",
+        firestore_records_per_second="10",
+        firestore_seed_records_per_second="5",
+    )
+    assert result.returncode == 0, result.stderr
+    initial, upgrade, _ = json.loads(result.stdout)
+    for app, phase in ((initial, "initial"), (upgrade, "upgrade")):
+        assert_firestore_application(
+            app,
+            "proposal-1879",
+            "2026-09-20T00:00:00Z",
+            phase,
+            records=6000,
+            rate=10,
+            parallelism=2,
+            seed=5,
+        )
