@@ -399,7 +399,7 @@ The run kept the `operator` and `flink` versions already in GAR, so their creati
 The digests are the ones the `sha-03562299…` tag resolves to, and `operator` and `flink` the ones their `1.16.1` and `2.2.1` tags resolve to, read from GAR after the run; they match the run log, the `operator` digest is the one the Operator's Helm values pin, and the `flink` digest is unchanged, so the Helm pin and the `flink` pin stand.
 [pins.cue](pins.cue) adopts the lifecycle-tools and smoke digests; the `firestore-recovery` digest stays a dispatch input verified live.
 The same run republished the BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopts.
-A Firestore trial checks the `operator` mirror, the lifecycle-tools pin and its `firestore-recovery` image, so it must be admitted so that its window ends before 2026-11-13T14:41:26Z.
+A Firestore trial checks the `operator` mirror, the lifecycle-tools pin and its `firestore-recovery` image, so it had to be admitted so that its window ended before 2026-11-13T14:41:26Z.
 
 ### Pub/Sub restore-deduplication trial publication
 
@@ -422,6 +422,25 @@ The run kept the `operator` and `flink` versions already in GAR, so their creati
 The digests are the ones the `sha-f2ebb1af…` tag resolves to, and `operator` and `flink` the ones their `1.16.1` and `2.2.1` tags resolve to, read from GAR after the run; the `operator` and `flink` digests are unchanged, so the Helm pin and the `flink` pin stand.
 Nothing adopts this run's lifecycle-tools or smoke digests: [pins.cue](pins.cue) keeps those of the Firestore recovery publication, which every one of the trials ran as its supervisor, because the supervisor's code reaches it through its ConfigMap.
 The `pubsub-recovery` digest was a dispatch input verified live, and the three usable trials' [findings](../../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) record it.
+
+### Firestore fault sequence publication
+
+The [Firestore fault sequence publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/43250902436) built main commit `6f7c1463eb815429bba31540884ca2467f4fe30a`, the merge of [#2155](https://github.com/flink-gcp/flink-connector-gcp/pull/2155), on 2026-11-12 UTC, for the fault sequence run of [#2147](https://github.com/flink-gcp/flink-connector-gcp/issues/2147), as that issue planned, so that the run exercised the connectors at that commit; the [Firestore recovery publication](#firestore-recovery-publication)'s image, built from `03562299…`, was still admissible.
+The run kept the `operator` and `flink` versions already in GAR, as for the [Firestore recovery publication](#firestore-recovery-publication) above.
+
+| Package | Digest | Created (UTC) | Deletion-eligible (UTC) |
+| --- | --- | --- | --- |
+| `operator` | `sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d` | 2026-11-07T14:41:26Z | 2026-11-14T14:41:26Z |
+| `flink` | `sha256:a093c60a9ab038f8821a3bfce4c3236ce37c2ac8e2a94f741f49cb1689baa3cd` | 2026-11-05T16:10:42Z | 2026-11-12T16:10:42Z |
+| `lifecycle-tools` | `sha256:4b93794e9f7a4ed82016e41cf68792c6534743b98972f30cbd4b6911b9a95d56` | 2026-11-12T16:17:10Z | 2026-11-19T16:17:10Z |
+| `smoke` | `sha256:b31006c46e512ea958e5be8041f1238d813462867a077e8d61109b1ebb1732dc` | 2026-11-12T16:17:30Z | 2026-11-19T16:17:30Z |
+| `firestore-recovery` | `sha256:bff4b450c47c46e8d6d0588e3cc0d4ece1885151505b5d4163e16641b90ee7d1` | 2026-11-12T16:18:09Z | 2026-11-19T16:18:09Z |
+
+The digests are the ones the `sha-6f7c1463…` tag resolves to, and `operator` and `flink` the ones their `1.16.1` and `2.2.1` tags resolve to, read from GAR after the run; the `operator` and `flink` digests are unchanged, so the Helm pin and the `flink` pin stand.
+Nothing adopts this run's lifecycle-tools or smoke digests: [pins.cue](pins.cue) keeps those of the Firestore recovery publication, which the run ran as its supervisor, because the supervisor's code reaches it through its ConfigMap.
+The same run republished the BigQuery, Pub/Sub, Cloud Tasks, Bigtable and Spanner application images, which nothing adopts.
+The `firestore-recovery` digest was a dispatch input verified live, and the run's [findings](../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) record it.
+The run did not renew the `operator` mirror, so a Firestore run on these images must still be admitted so that its window ends before 2026-11-13T14:41:26Z.
 
 For a shell or Docker build argument, read a pin with:
 

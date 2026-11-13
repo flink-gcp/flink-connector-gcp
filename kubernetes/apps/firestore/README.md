@@ -95,7 +95,7 @@ The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`fires
 The `firestore-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-firestore` against two databases it creates for the run, measures the job before and after each recovery, and judges each of the four components on its own collection or kind.
 It is the trial set of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#firestore-recovery-trial) records its design ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
 It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
-The [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixes its deployed runs; the first pilot stopped on the Datastore-mode seed before the application existed, as its revision records.
+The [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixed its deployed single-fault runs, which stopped when the owner paused them for the rework of [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143); the [findings](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) list every attempt.
 
 ### Fault sequence
 
@@ -109,6 +109,7 @@ When the job has finished its whole input after the last fault, the four oracles
 A `FINISHED` state counts only once the job's own progress shows the whole input done and, after a savepoint fault, the replacement job's own REST status is `FINISHED`, since the Operator may still report the stopped job's.
 A run stops abnormally when the job reaches `FAILED`, the application is deleted or rolled back, or an hour has passed since its admission, and without a verdict when the job finishes with its input done before it ran again after the last fault; no fault is injected once the input is done.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+The first `sequence` run, `fs2147-seq-a1`, reached `usable`, as its [findings](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) record.
 
 ### Trial and estimate
 

@@ -20,6 +20,7 @@ limitations under the License.
 - Date: 2026-11-12
 - Issues: [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143), [#2144](https://github.com/flink-gcp/flink-connector-gcp/issues/2144), [#2145](https://github.com/flink-gcp/flink-connector-gcp/issues/2145), [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)
 - Modules: tools/tier3, kubernetes
+- Evidence: [Firestore fault sequence findings](evidence/0204-firestore-fault-sequence-findings-2147.md)
 - Partially supersedes: [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md)'s rules for ending an attempt, its measurement windows and verdicts, one fault per trial, its input sizes, and spend approval from an estimate
 
 ## Context
