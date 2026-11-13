@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Render synthetic Hugo sites and execute the published navigation JavaScript."""
+"""Render synthetic Hugo sites and check the published navigation JavaScript."""
 
 import importlib.util
 import json
@@ -165,7 +165,7 @@ def test_hugo_links_follow_the_selected_base_url(tmp_path, path):
     assert "/unused/" not in text
 
 
-def test_legacy_redirect_preserves_encoded_query_and_api_fragment():
+def test_legacy_redirect_forwards_query_and_fragment():
     spec = importlib.util.spec_from_file_location(
         "docs_site", ROOT / "scripts/docs-site.py"
     )
@@ -173,52 +173,47 @@ def test_legacy_redirect_preserves_encoded_query_and_api_fragment():
     spec.loader.exec_module(helper)
     page = helper.redirect("/project/1.0/api/java/Type.html")
     script = page.split("<script>", 1)[1].split("</script>", 1)[0]
-    program = """
-const vm = require('node:vm');
-const assert = require('node:assert/strict');
-let actual;
-const location = {search: '?q=A%26B', hash: '#set(java.lang.String)', replace: x => actual = x};
-vm.runInNewContext(SCRIPT, {location});
-assert.equal(actual, '/project/1.0/api/java/Type.html?q=A%26B#set(java.lang.String)');
-""".replace("SCRIPT", json.dumps(script))
-    subprocess.run(["node", "-e", program], check=True)
+    # The query and the fragment (an API member anchor) are appended unchanged,
+    # so an encoded query such as ?q=A%26B reaches the target as it was.
+    assert script == (
+        'location.replace("/project/1.0/api/java/Type.html"'
+        "+location.search+location.hash)"
+    )
 
 
-@pytest.mark.parametrize("same_page", [True, False])
-def test_version_dropdown_preserves_context_only_for_matching_pages(same_page):
-    script = (ROOT / "docs/versioning/docs-version.js").read_text()
-    program = """
-const vm = require('node:vm');
-const assert = require('node:assert/strict');
-let change, pageShow, actual;
-const option = {value: SAME_PAGE ? '/project/1.1/docs/shared/' : '/project/1.1/',
-  hasAttribute: name => { assert.equal(name, 'data-same-page'); return SAME_PAGE; }};
-const currentOption = {value: '/project/1.2/docs/shared/',
-  hasAttribute: name => { assert.equal(name, 'data-same-page'); return true; }};
-const select = {hidden: true, selectedOptions: [currentOption],
-  querySelector: selector => {
-    assert.equal(selector, 'option[selected]');
-    return currentOption;
-  },
-  addEventListener: (type, callback) => { assert.equal(type, 'change'); change = callback; }};
-const window = {addEventListener: (type, callback) => {
-  assert.equal(type, 'pageshow'); pageShow = callback;
-}};
-const document = {querySelectorAll: selector => {
-  assert.equal(selector, '.docs-version select'); return [select]; }};
-const location = {href: 'https://example.org/project/1.2/docs/shared/',
-  search: '', hash: '', assign: url => actual = url};
-vm.runInNewContext(SCRIPT, {document, window, location, URL});
-assert.equal(select.hidden, false);
-location.search = '?q=A%26B';
-location.hash = '#delivery';
-select.selectedOptions = [option];
-change();
-assert.equal(actual, SAME_PAGE
-  ? 'https://example.org/project/1.1/docs/shared/?q=A%26B#delivery'
-  : 'https://example.org/project/1.1/');
-select.value = option.value;
-pageShow();
-assert.equal(select.value, '/project/1.2/docs/shared/');
-""".replace("SCRIPT", json.dumps(script)).replace("SAME_PAGE", json.dumps(same_page))
-    subprocess.run(["node", "-e", program], check=True)
+# The repository tooling carries no JavaScript runtime, so the version dropdown
+# script is compared with its reviewed text rather than executed.
+EXPECTED_VERSION_SCRIPT = (
+    "document.querySelectorAll('.docs-version select').forEach((select) => {"
+    " const current = select.querySelector('option[selected]').value;"
+    " window.addEventListener('pageshow', () => { select.value = current; });"
+    " select.addEventListener('change', () => {"
+    " const option = select.selectedOptions[0];"
+    " const target = new URL(option.value, location.href);"
+    " if (option.hasAttribute('data-same-page')) {"
+    " target.search = location.search; target.hash = location.hash; }"
+    " location.assign(target.href); });"
+    " select.hidden = false; });"
+)
+
+
+def normalized_version_script():
+    """docs-version.js without its licence block and comment lines.
+
+    Only lines that start with `//` are dropped: stripping `//` mid-line would
+    let a string literal hide code from the comparison.
+    """
+    text = (ROOT / "docs/versioning/docs-version.js").read_text()
+    assert text.lstrip().startswith("/*"), "docs-version.js lost its licence block"
+    text = text[text.index("*/") + 2 :]
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
+    return " ".join(" ".join(lines).split())
+
+
+def test_version_dropdown_script_matches_reviewed_text():
+    assert normalized_version_script() == EXPECTED_VERSION_SCRIPT, (
+        "docs-version.js changed. Check that the dropdown is shown only after the"
+        " script runs, keeps the query and fragment only for data-same-page"
+        " options, and restores its selection on pageshow, then update"
+        " EXPECTED_VERSION_SCRIPT in the same diff."
+    )

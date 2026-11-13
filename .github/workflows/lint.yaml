@@ -2,7 +2,7 @@ name: Lint
 
 # Linters for the parts of the repository Maven does not cover. Spotless and
 # checkstyle handle the Java sources inside `just verify` (verify.yaml); this
-# runs shellcheck, ruff, actionlint and markdownlint. OpenTofu validation,
+# runs shellcheck, ruff, actionlint and rumdl. OpenTofu validation,
 # formatting and TFLint run in tofu-plan for each selected root.
 #
 # A workflow of its own rather than jobs in verify.yaml so it reports in
@@ -49,11 +49,11 @@ on:
       # Markdown and the App Engine Python fixture remain general lint inputs.
       - 'opentofu/**/*.md'
       - 'opentofu/flink-gcp/appengine-e2e/*.py'
-      # markdownlint reads its config and the rendered markdown — the docs
+      # rumdl reads its config and the rendered markdown — the docs
       # sources, the ADRs, the READMEs and CONTRIBUTING.md. CLAUDE.md files are deliberately
-      # outside its globs (see .markdownlint-cli2.jsonc), so they are not
-      # inputs here.
-      - '.markdownlint-cli2.jsonc'
+      # outside its include list (see .rumdl.toml), so they are not
+      # inputs here. docs/content/.rumdl.toml is under docs/content/**.
+      - '.rumdl.toml'
       - 'docs/content/**'
       - 'docs/adr/**'
       - 'README.md'
@@ -85,7 +85,7 @@ jobs:
       # install by default, keyed partly on install_args.
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
-          install_args: shellcheck actionlint ruff node npm:markdownlint-cli2
+          install_args: shellcheck actionlint ruff rumdl
 
       # just comes from install-action even though mise is right here, so that
       # every workflow installs it the same way. See the note in verify.yaml.

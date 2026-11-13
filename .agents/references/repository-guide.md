@@ -252,20 +252,22 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   the whole-tree coverage; this check closes the narrower completeness gap with no allowlist or
   judgment. It runs at the start of `just verify`, and its parser tests use synthetic trees
 - `just lint` — shellcheck over `scripts/*.sh`, ruff over `scripts/` (check *and* format), actionlint
-  over `.github/workflows/`, markdownlint (markdownlint-cli2, pinned via mise's npm backend) over
-  the **rendered** markdown — `docs/content/`, `docs/adr/`, the READMEs and CONTRIBUTING.md,
-  never agent
-  guidance or its detailed references — at strict defaults except MD013 and MD060 (declined) and MD052's
-  `shortcut_syntax` (enabled for the ADRs' `[#N]` idiom, opted back out for `docs/content/`
-  through the same file's `overrides` entry, micromark being unable to parse a Hugo shortcode
-  destination), each with its reasons in `.markdownlint-cli2.jsonc` (#1035); a nested
-  `.markdownlint.jsonc` is the trap — it replaces the rule set rather than merging. MD051's in-page anchor check is the half Hugo's build does not
-  cover (`relref` validates cross-page links only), and a *cross-page* link carrying a
-  `#fragment` is checked by **neither** — it can point at nothing while both stay green, which
-  is why #90 resolved them by hand against the built `docs/public` and deferred a checker until
-  the pages actually rot. OpenTofu validation, formatting and TFLint run in `tofu-plan` after
-  initialization for the selected root, not in general lint. The plan job uses tfaction's test
-  action when an App token is available and checking-only commands otherwise.
+  over `.github/workflows/`, rumdl (a single binary pinned in `mise.toml`; the repository needs
+  no Node.js) over the **rendered** markdown — `docs/content/`, `docs/adr/`, the READMEs and
+  CONTRIBUTING.md, never agent guidance or its detailed references — with the rule set and
+  defaults of the markdownlint 0.41.1 it replaced, except MD013 and MD060 (declined) and MD052's
+  `shortcut-syntax` (enabled for the ADRs' `[#N]` idiom, opted back out for `docs/content/` in
+  `docs/content/.rumdl.toml`, a CommonMark parser being unable to read a Hugo shortcode
+  destination), each with its reasons in `.rumdl.toml` (#1035); the nested file must keep its
+  `extends` line, without which it replaces the root configuration rather than overriding one
+  option. MD051's in-page anchor check is the half Hugo's build does not cover (`relref`
+  validates cross-page links only). rumdl also resolves the `#fragment` of a plain relative link
+  to another linted file, but a `relref` link carrying a `#fragment` is checked by **neither** —
+  it can point at nothing while both stay green, which is why #90 resolved them by hand against
+  the built `docs/public` and deferred a checker until the pages actually rot. OpenTofu
+  validation, formatting and TFLint run in `tofu-plan` after initialization for the selected
+  root, not in general lint. The plan job uses tfaction's test action when an App token is
+  available and checking-only commands otherwise.
   Deliberately does **not** run `just --fmt --check` — an unstable feature, excluded from
   just's compatibility guarantee (ADR-0057). actionlint is handed
   `-shellcheck "$(mise which shellcheck)"` rather than letting it find the runner image's own.
@@ -276,8 +278,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `description:` carrying a `: ` that PyYAML rejects outright was loaded by Claude Code with its
   description intact, so its reader is the more tolerant of the two and this check cannot tell you
   what it would refuse (ADR-0069). What it buys is that a file every tool agrees about cannot fail
-  silently — the file stays valid markdown, no build step reads it, markdownlint's globs exclude
-  it, and a skill that did not load looks like Claude choosing not to use it. Parses with
+  silently — the file stays valid markdown, no build step reads it, rumdl's include list leaves
+  it out, and a skill that did not load looks like Claude choosing not to use it. Parses with
   **PyYAML** rather than a hand-rolled approximation (a second, diverging parser is the failure
   this repository has paid for elsewhere), declared in the script's own **PEP 723** header, so the
   root project does not take PyYAML as a *runtime* dependency and this one script runs as

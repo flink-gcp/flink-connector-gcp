@@ -444,9 +444,9 @@ sweep-e2e *args:
 # OpenTofu validation, formatting and TFLint run in tofu-plan after init,
 # scoped to the selected root. General lint does not initialize providers.
 #
-# markdownlint's file set, rule deviations and docs/content's MD052 opt-out
-# all live in .markdownlint-cli2.jsonc (#1035), discovered from the working
-# directory.
+# rumdl's file set and rule deviations live in .rumdl.toml (#1035), discovered
+# from the working directory, and docs/content's MD052 opt-out in
+# docs/content/.rumdl.toml.
 #
 # Lint the shell and Python scripts, the workflows and the markdown.
 lint:
@@ -457,7 +457,8 @@ lint:
     mise x ruff -- ruff check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x ruff -- ruff format --check scripts/ docs/tests/ kubernetes/tests/ tools/tier3/ opentofu/flink-gcp/appengine-e2e/main.py
     mise x actionlint -- actionlint -shellcheck "$(mise which shellcheck)"
-    mise x npm:markdownlint-cli2 -- markdownlint-cli2
+    mise x rumdl -- rumdl --version
+    mise x rumdl -- rumdl check .
 
 # Does every skill's frontmatter parse, so Claude Code can load it at all? A
 # broken one is invisible: the file stays valid markdown, no build step reads
@@ -742,9 +743,10 @@ docs-javadoc:
 docs:
     mise x hugo-extended go -- hugo --cleanDestinationDir --gc --minify --source docs --panicOnWarning
 
-# Test versioned Hugo links and browser navigation against synthetic pages.
+# Test versioned Hugo links against synthetic pages, and check the statements
+# of the navigation scripts; the repository has no JavaScript runtime to run them.
 test-doc-versions:
-    mise x hugo-extended go node uv -- uv run --locked pytest docs/tests/test_versioning.py
+    mise x hugo-extended go uv -- uv run --locked pytest docs/tests/test_versioning.py
 
 # Build one version or assemble the retained documentation lines (ADR-0159).
 [positional-arguments]

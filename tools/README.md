@@ -65,7 +65,7 @@ The internal [BigQuery resource adapter](../kubernetes/apps/bigquery/README.md#r
 The [resource controller](../kubernetes/apps/bigquery/README.md#durable-resource-controller) adds durable intents, query slots, evidence pointers and cleanup after the [quiescence barrier](../kubernetes/apps/bigquery/README.md#quiescence-barrier), which the supervisor factory builds from the run's own identity; the BigQuery runner and supervisor use explicit actor handoffs, and the production dispatch and supervisor entrypoints build them through the actor factories.
 The [actor factories](../kubernetes/apps/bigquery/README.md#internal-actors) bind external approvals and BigQuery sessions to those internal loops; the production entrypoints build them, and building them does not approve a run.
 The render-only [BigQuery execution proposal](../kubernetes/apps/bigquery/README.md#offline-execution-proposal) binds the resource plan and both application phases to a reviewable supervisor bundle without creating an approval.
-The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/README.md#approval-bound-delivery-bundle) prepares and verifies delivery against a separately supplied approval without admitting execution.
+The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/README.md#approval-bound-delivery) prepares and verifies delivery against a separately supplied approval without admitting execution.
 
 The internal [BigQuery recovery exercise](../kubernetes/apps/bigquery/README.md#internal-recovery-execution) coordinates table provisioning, state-preserving recovery and bounded final queries.
 
