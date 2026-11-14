@@ -23,16 +23,6 @@ cluster: {
 	context: "gke_flink-gcp_us-central1_flink-tier3"
 }
 
-// Smaller values render first; resource keys break ties deterministically.
-delivery: order: {
-	ConfigMap:       30
-	Service:         70
-	Pod:             75
-	Deployment:      80
-	Job:             80
-	FlinkDeployment: 90
-}
-
 // A leaf adds named resources; its ancestors supply constraints.
 delivery: resources: [string]: schemas.#Object & {
 	metadata: labels: {

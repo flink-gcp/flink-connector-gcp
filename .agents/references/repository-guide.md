@@ -638,8 +638,7 @@ Use `just tier3-smoke-verify` for its opt-in Maven build and local recovery test
 module's main sources are held by both Flink API tier checkers like a connector's: every
 top-level type carries a tier annotation, and an unstable Flink import needs its entry in
 `scripts/config/flink-api-tiers.toml`, classified at the root pom's `flink.version`.
-`just tier3-check` validates the static layer,
-`just tier3-render <leaf>` prints an ordinary `runs/` delivery as a YAML document stream, and
+`just tier3-check` validates the static layer, and
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
 The parameterized lifecycle delivery uses `flink-tier3 render` to supply package-source JSON;

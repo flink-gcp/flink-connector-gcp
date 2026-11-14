@@ -60,7 +60,7 @@ In the table, `<c>` is the connector's directory name, `bigquery`, `pubsub`, `cl
 | `docs/adr/evidence/NNNN-<c>-<topic>-<issue>.md` | A preregistration or findings record, numbered for the ADR it supports |
 
 At run time a connector's scenario is `<c>-recovery` in namespace `tier3-<c>`, under ServiceAccount `<c>`, with its image from GAR package `<c>-recovery`.
-The smoke application uses the same Kubernetes, manifest-test and OpenTofu paths as `smoke` and keeps its static deliveries in `runs/generic-smoke/`; it has no rig subpackage, rig tests or recovery trial, and its scenario, ServiceAccount and GAR package are all `smoke`.
+The smoke application uses the same Kubernetes, manifest-test and OpenTofu paths as `smoke`; it has no rig subpackage, rig tests or recovery trial, and its scenario, ServiceAccount and GAR package are all `smoke`.
 The shared files that name every connector are the tables a scenario is registered in, such as the run workflow's inputs, the scenario list and windows in `lifecycle/delivery.cue`, the namespace policy in `runs/common.cue`, `flink_tier3/policy.toml`, the Operator's watch set, and the rig modules that choose a scenario's plan, actors and analysis.
 
 A recovery runbook opens with what the application is for and then has these sections in this order: `Build and local validation`; the layout of what the run writes to, such as `Instance layout`; the graph and what each destination records; `Arguments`; `Deployment definition`, where the runbook has one; and `Recovery trial`, whose subsections cover dispatch, the lifecycle of the run's resources, the exercise and its oracles, and the verdict and analysis.
@@ -83,8 +83,8 @@ kubernetes/
   gen/flink/v1beta1/             # Generated CRD validation definitions
   schemas/objects.cue            # Supported Kubernetes kinds
   pkg/flink/                     # Standard Flink application defaults
-  common.cue                     # Cluster identity, resource types, labels and order
-  cli_tool.cue                   # The render command
+  common.cue                     # Cluster identity, resource types and labels
+  cli_tool.cue                   # The render command the manifest tests use
   runs/common.cue                # Run inputs and the environment policy every delivery applies
   lifecycle/delivery.cue         # Lifecycle inputs, ConfigMap and supervisor Job
   lifecycle/faults.cue           # Fault kinds and each phase's sizes
@@ -98,26 +98,13 @@ kubernetes/
 Both are ordinary directories in this module, separate from the deprecated `cue.mod/{gen,pkg,usr}` layout.
 The native Kubernetes definitions are a versioned module dependency.
 
-A delivery is one output file's worth of Kubernetes resources.
-Each delivery directory contains a `delivery.cue` file and can split its remaining definitions across other CUE files.
-The root and delivery directories use the same `package tier3`.
-Loading a delivery directory also loads that package from its ancestors up to the module root.
-The root partially defines `delivery.resources: [string]: ...`; descendants add named resources to that same struct.
-Sibling delivery directories remain separate instances.
-Concrete deliveries must be leaves: CI rejects a `delivery.cue` below another delivery directory.
-Intermediate directories can hold shared `common.cue` definitions without becoming separate output units.
+A delivery is one output file's worth of Kubernetes resources, defined in a directory whose CUE files share `package tier3`.
+Loading that directory also loads the package from its ancestors up to the module root: the root partially defines `delivery.resources: [string]: ...`, and the delivery adds named resources to that same struct.
+`lifecycle/` is the one committed delivery.
+The manifest tests also build disposable deliveries below `runs/`, where `runs/common.cue` applies the run policy that every lifecycle scenario imports.
 
-`delivery.resources` is a map of internal keys to Kubernetes objects.
-The keys organize the source and break output-order ties; they are not Kubernetes names.
-The CLI prints only the resources, leaving `cluster`, `run`, `delivery.order` and other configuration out of the YAML.
-It prints a YAML document stream with `---` separators, suitable for redirecting to one file.
-
-`delivery.order` assigns a priority to each supported Kind, with smaller values first.
-ConfigMaps precede Services and workloads.
-ConfigMaps precede FlinkDeployments even when their internal keys sort in the opposite order.
-Equal priorities sort by internal resource key.
-The shared root defines these priorities for all deliveries.
-Ordering the YAML does not wait for workload readiness; the bounded lifecycle runner performs that check before Flink admission.
+`delivery.resources` is a map of internal keys to Kubernetes objects; the keys organize the source and are not Kubernetes names.
+The `render` command of `cli_tool.cue` prints only the resources, leaving `cluster`, `run` and other configuration out, as a YAML document stream.
 
 ## Standard Flink applications
 
@@ -140,10 +127,7 @@ delivery: resources: app: flink.#Application & {
 ```
 
 This example is exercised as a disposable test delivery; its JAR and image are not provided by this static layer.
-For a real application, put its definitions below `runs/`, name one file `delivery.cue`, and supply its actual JAR and ServiceAccount.
-Define the concrete `run.id`, `run.expiresAt` and `run.image` used by this example in that directory or shared ancestor definitions before committing the delivery.
-No Python test needs to be added for each application: CI discovers delivery directories automatically.
-The lifecycle delivery uses the same run constraints and is rendered with synthetic dispatch inputs during that check.
+A real application is rendered by the lifecycle, from the paths the [layout](#layout-per-connector) gives it.
 
 | Field | Package default |
 | --- | --- |
@@ -170,7 +154,6 @@ In `tier3-spanner` it requires the `spanner` ServiceAccount, the `spanner-recove
 In `tier3-firestore` it requires the `firestore` ServiceAccount, the `firestore-recovery` GAR package, parallelism one or two and `v2_2`.
 Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the lifecycle must supply and verify those images before execution.
 Each delivery supplies its application's complete image; the [image runbook](images/README.md) describes publication and the [pins](images/pins.cue) of the Flink base, supervisor and smoke images.
-The smoke application's committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries share concrete run inputs and the `images.smoke` pin, and its [runbook](apps/smoke/README.md#deployment-and-storage) gives their render commands.
 The common and manager-specific Flink Pod templates select AMD64 and carry the run label; the TaskManager template adds Spot, and the JobManager template selects no capacity class, which is how a Pod asks Autopilot for normal capacity.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
@@ -185,29 +168,10 @@ mise x -- just tier3-check
 mise x -- just tier3-schemas check
 ```
 
-`tier3-render` calls the `render` command in `cli_tool.cue`.
-For an application whose run inputs are not already concrete, invoke it with CUE tags:
-
-```sh
-mise x cue -- cue -C kubernetes cmd render ./runs/example \
-  -t run_id="$RUN_ID" -t expires_at="$EXPIRES_AT" -t image="$IMAGE_DIGEST" \
-  > /tmp/example.yaml
-```
-
-Here `RUN_ID`, `EXPIRES_AT` and `IMAGE_DIGEST` are the chosen run identifier, deadline and full GAR image URL including its digest.
-The example delivery path is illustrative; the committed generic smoke deliveries already define their inputs and render without tags.
-Render one directory per invocation so one delivery maps to one output file.
-Output redirection may create an empty destination file when validation fails; require a successful command exit before consuming it.
-Rendered YAML is build output and must stay outside source control.
-
-`tier3-check` checks CUE formatting and runs the Python validation suite.
-That suite finds every `delivery.cue` under `runs/` and `lifecycle/` and renders each directory separately.
-Run deliveries use `cue cmd render`; lifecycle uses `cue export` with installed package-source JSON, followed by YAML serialization.
-Ordinary `runs/` deliveries receive no tags or placeholder inputs and must define all values needed to render their resources.
-The lifecycle delivery instead receives synthetic dispatch inputs to validate its parameterized bundle; missing required values fail validation just as they do in the CLI.
-CI discards the rendered output and never applies it.
-Directories containing only shared definitions have no `delivery.cue` and are not rendered by this check.
-The remaining synthetic cases test our package defaults, policy, inheritance, output ordering and discovery behaviour.
+`tier3-check` checks CUE formatting and runs the manifest tests.
+They export the lifecycle delivery through `cue export` with synthetic dispatch inputs and installed package-source JSON, as dispatch does, so a missing required input fails them; CI discards the output and never applies it.
+The other tests render the disposable deliveries with the `render` command of `cli_tool.cue` to test the package defaults, the run policy and inheritance.
+To render the lifecycle delivery offline, use the `flink-tier3 render` command that the [lifecycle runbook](lifecycle/README.md#local-verification-and-evidence) gives; it prints JSON resources, which are build output and stay outside source control.
 
 CUE is pinned to 0.17.1, and native Kubernetes definitions to `cue.dev/x/k8s.io@v0.6.0` in `cue.mod/module.cue`.
 The first load can download that module from the public CUE registry.

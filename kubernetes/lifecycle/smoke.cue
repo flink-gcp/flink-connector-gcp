@@ -21,7 +21,7 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// Use the same namespace, image, Spot and schema constraints as ordinary runs.
+// Apply the run policy of runs/common.cue: namespace, image, Spot and schema constraints.
 // Each scenario declares its application expression and its application.json
 // entry inside one body: a field declared in a comprehension body is visible
 // only to references inside that body.

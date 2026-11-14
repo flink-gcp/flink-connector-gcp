@@ -518,11 +518,6 @@ tier3-check:
     mise x cue -- cue -C kubernetes fmt --check --files . cue.mod/module.cue
     mise x cue uv -- uv run --locked pytest kubernetes/tests -q
 
-# Emit delivery resources as a YAML stream. Rendering never contacts the cluster.
-[positional-arguments]
-tier3-render leaf:
-    mise x cue -- cue -C kubernetes cmd render "./$1"
-
 # Use a dedicated kubeconfig and execution-time ADC/WIF credentials.
 [positional-arguments]
 tier3-auth kubeconfig:

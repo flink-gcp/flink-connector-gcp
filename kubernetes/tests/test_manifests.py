@@ -407,17 +407,15 @@ def test_cluster_scoped_objects_are_not_application_resources(module, obj):
     assert cue(module, "cmd", "render", invalid).returncode != 0
 
 
-def test_delivery_renders_only_resources_in_kind_then_key_order(module):
+def test_delivery_renders_only_resources(module):
     document = workload()
     resources = document["delivery"]["resources"]
-    resources["a-job"] = resources.pop("job")
-    for key, name in (("z-config", "a-config"), ("m-config", "z-config")):
-        resources[key] = {
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {"name": name},
-            "data": {"example": "value"},
-        }
+    resources["config"] = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "config"},
+        "data": {"example": "value"},
+    }
     document["delivery"]["description"] = "This is not a Kubernetes resource"
     path = leaf(module, "runs/example", document)
     first = cue(module, "cmd", "render", path)
@@ -425,16 +423,7 @@ def test_delivery_renders_only_resources_in_kind_then_key_order(module):
     assert first.returncode == second.returncode == 0, first.stderr + second.stderr
     assert first.stdout == second.stdout
     output = list(yaml.safe_load_all(first.stdout))
-    assert [obj["kind"] for obj in output] == [
-        "ConfigMap",
-        "ConfigMap",
-        "FlinkDeployment",
-    ]
-    assert [obj["metadata"]["name"] for obj in output] == [
-        "z-config",
-        "a-config",
-        "smoke-001",
-    ]
+    assert sorted(obj["kind"] for obj in output) == ["ConfigMap", "FlinkDeployment"]
     assert all(
         set(obj) <= {"apiVersion", "kind", "metadata", "spec", "data"} for obj in output
     )
@@ -511,138 +500,6 @@ def test_application_defaults_can_change_within_environment_policy(module):
     invalid = cue(module, "cmd", "render", path)
     assert invalid.returncode != 0
     assert not invalid.stdout.strip()
-
-
-def render_deliveries(module):
-    outputs = {}
-    for tree in ("runs", "lifecycle"):
-        for source in sorted((module / tree).rglob("delivery.cue")):
-            for ancestor in source.parent.parents:
-                if ancestor == module:
-                    break
-                assert not (ancestor / "delivery.cue").is_file(), (
-                    f"Nested delivery {source.relative_to(module)} inside "
-                    f"{ancestor.relative_to(module)}; use shared common.cue files "
-                    "in ancestors and delivery.cue only at delivery leaves"
-                )
-            directory = "./" + source.parent.relative_to(module).as_posix()
-            # Lifecycle inputs are dispatch-owned; only this synthetic render
-            # supplies them, once per scenario, and the default scenario is the
-            # directory's entry. Ordinary run deliveries retain their concrete
-            # inputs.
-            if tree == "lifecycle":
-                for scenario in SCENARIOS:
-                    result = cue(
-                        module,
-                        "export",
-                        directory,
-                        "-e",
-                        "delivery.resources",
-                        "--out",
-                        "json",
-                        *lifecycle_tags(scenario),
-                    )
-                    assert result.returncode == 0, (
-                        f"{directory} ({scenario}): {result.stderr}"
-                    )
-                    outputs.setdefault(
-                        directory,
-                        yaml.safe_dump_all(json.loads(result.stdout).values()),
-                    )
-            else:
-                result = cue(module, "cmd", "render", directory)
-                assert result.returncode == 0, f"{directory}: {result.stderr}"
-                outputs[directory] = result.stdout
-    return outputs
-
-
-def test_ci_renders_concrete_run_inputs(module):
-    application_leaf(module)
-    (module / "runs/example/application.cue").rename(
-        module / "runs/example/delivery.cue"
-    )
-    outputs = render_deliveries(module)
-    [app] = list(yaml.safe_load_all(outputs["./runs/example"]))
-    assert app["metadata"]["name"] == "smoke-001"
-    assert (
-        app["metadata"]["annotations"]["flink-gcp.io/expires-at"]
-        == workload()["run"]["expiresAt"]
-    )
-    assert (
-        app["spec"]["image"]
-        == workload()["delivery"]["resources"]["job"]["spec"]["image"]
-    )
-
-
-def test_committed_deliveries_render():
-    if not render_deliveries(KUBERNETES):
-        pytest.skip(
-            "No committed application deliveries yet; synthetic fixtures cover rendering"
-        )
-
-
-@pytest.mark.parametrize("missing", ["id", "expiresAt", "image"])
-def test_ci_rejects_missing_run_inputs(module, missing):
-    application_leaf(module)
-    directory = module / "runs/example"
-    (directory / "application.cue").rename(directory / "delivery.cue")
-    inputs = json.loads((directory / "fixture.cue").read_text().split("\n", 1)[1])
-    del inputs["run"][missing]
-    (directory / "fixture.cue").write_text("package tier3\n" + json.dumps(inputs))
-    with pytest.raises(AssertionError, match="runs/example"):
-        render_deliveries(module)
-
-
-def test_ci_checks_added_delivery_directories_individually(module):
-    for path, run_id in (("first", "first"), ("nested/second", "second")):
-        inputs = {"run": {**workload()["run"], "id": run_id}}
-        inputs["run"]["image"] = workload()["delivery"]["resources"]["job"]["spec"][
-            "image"
-        ]
-        leaf(module, "runs/" + path, inputs)
-        shutil.copyfile(
-            KUBERNETES / "tests/fixtures/application.cue",
-            module / "runs" / path / "delivery.cue",
-        )
-    outputs = render_deliveries(module)
-    for path, run_id in (("./runs/first", "first"), ("./runs/nested/second", "second")):
-        [app] = list(yaml.safe_load_all(outputs[path]))
-        assert app["kind"] == "FlinkDeployment"
-        assert app["metadata"]["name"] == run_id
-    bad = module / "runs/nested/second/bad.cue"
-    bad.write_text(
-        "package tier3\ndelivery: resources: app: spec: job: parallelism: 3\n"
-    )
-    with pytest.raises(AssertionError, match="runs/nested/second"):
-        render_deliveries(module)
-
-
-def test_ci_rejects_a_delivery_inside_another_delivery(module):
-    parent = leaf(
-        module,
-        "runs/parent",
-        {
-            "run": workload()["run"],
-            "delivery": {
-                "resources": {
-                    "settings": {
-                        "apiVersion": "v1",
-                        "kind": "ConfigMap",
-                        "metadata": {"name": "settings"},
-                    }
-                }
-            },
-        },
-    )
-    directory = module / parent
-    (directory / "fixture.cue").rename(directory / "delivery.cue")
-    child = directory / "child"
-    child.mkdir()
-    shutil.copyfile(
-        KUBERNETES / "tests/fixtures/application.cue", child / "delivery.cue"
-    )
-    with pytest.raises(AssertionError, match="Nested delivery"):
-        render_deliveries(module)
 
 
 def test_cue_sources_are_formatted():
@@ -878,8 +735,10 @@ def test_lifecycle_configmap_keeps_data_headroom(module, scenario):
     assert len(json.dumps(config).encode("utf-8")) < 1024 * 1024
 
 
-def test_ci_discovers_and_renders_lifecycle(module):
-    documents = list(yaml.safe_load_all(render_deliveries(module)["./lifecycle"]))
+def test_the_lifecycle_delivery_renders(module):
+    result = lifecycle_export(module, "delivery.resources")
+    assert result.returncode == 0, result.stderr
+    documents = list(json.loads(result.stdout).values())
     assert [item["kind"] for item in documents] == ["ConfigMap", "Job"]
     app = json.loads(documents[0]["data"]["application.json"])
     assert app["metadata"]["labels"]["flink-gcp.io/run-id"] == "probe"
