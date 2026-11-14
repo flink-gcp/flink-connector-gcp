@@ -21,6 +21,23 @@ on:
         description: Full reviewed main commit to publish
         required: true
         type: string
+      # A trial needs only its own application's image. Every dispatch still copies
+      # the Operator and Flink mirrors and builds the lifecycle-tools image, whose
+      # pin a trial may need to renew.
+      application:
+        description: Application to verify and publish, or all of them
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - smoke
+          - bigquery
+          - pubsub
+          - cloudtasks
+          - bigtable
+          - spanner
+          - firestore
 
 permissions:
   contents: read
@@ -41,9 +58,9 @@ jobs:
   publish:
     if: github.repository_id == '1305440656' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Seven application verifications, each building its connector with -am, bring the job to
-    # about 32 minutes (25 for the six before Firestore's, whose own CI lane takes about 7);
-    # this leaves room for a slow runner.
+    # Seven application verifications, each building its connector with -am, bring an `all`
+    # dispatch to about 32 minutes (25 for the six before Firestore's, whose own CI lane takes
+    # about 7); this leaves room for a slow runner. One application takes a fraction of that.
     timeout-minutes: 45
     permissions:
       contents: read
@@ -91,9 +108,11 @@ jobs:
           restore-keys: maven-verify-
 
       - name: Verify the smoke application payload
+        if: inputs.application == 'all' || inputs.application == 'smoke'
         run: just tier3-smoke-verify
 
       - name: Verify the BigQuery recovery payload
+        if: inputs.application == 'all' || inputs.application == 'bigquery'
         run: just tier3-bigquery-verify
 
       - name: Read the reviewed recovery application base
@@ -102,18 +121,23 @@ jobs:
           printf 'image=%s/flink@%s\n' "$GAR" "${FLINK_SOURCE##*@}" >> "$GITHUB_OUTPUT"
 
       - name: Verify the Pub/Sub recovery payload
+        if: inputs.application == 'all' || inputs.application == 'pubsub'
         run: just tier3-pubsub-verify
 
       - name: Verify the Cloud Tasks recovery payload
+        if: inputs.application == 'all' || inputs.application == 'cloudtasks'
         run: just tier3-cloudtasks-verify
 
       - name: Verify the Bigtable recovery payload
+        if: inputs.application == 'all' || inputs.application == 'bigtable'
         run: just tier3-bigtable-verify
 
       - name: Verify the Spanner recovery payload
+        if: inputs.application == 'all' || inputs.application == 'spanner'
         run: just tier3-spanner-verify
 
       - name: Verify the Firestore recovery payload
+        if: inputs.application == 'all' || inputs.application == 'firestore'
         run: just tier3-firestore-verify
 
       - name: Export the locked lifecycle dependencies
@@ -121,6 +145,7 @@ jobs:
 
       - name: Read the reviewed Flink base
         id: smoke_base
+        if: inputs.application == 'all' || inputs.application == 'smoke'
         run: |
           echo "image=$(cue -C kubernetes export ./images -e flink --out text)" >> "$GITHUB_OUTPUT"
 
@@ -162,12 +187,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: smoke_meta
+        if: inputs.application == 'all' || inputs.application == 'smoke'
         with:
           images: ${{ env.GAR }}/smoke
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: smoke_build
+        if: inputs.application == 'all' || inputs.application == 'smoke'
         with:
           context: kubernetes/apps/smoke
           platforms: linux/amd64
@@ -178,12 +205,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: bigquery_meta
+        if: inputs.application == 'all' || inputs.application == 'bigquery'
         with:
           images: ${{ env.GAR }}/bigquery-recovery
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: bigquery_build
+        if: inputs.application == 'all' || inputs.application == 'bigquery'
         with:
           context: kubernetes/apps/bigquery
           platforms: linux/amd64
@@ -196,12 +225,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: pubsub_meta
+        if: inputs.application == 'all' || inputs.application == 'pubsub'
         with:
           images: ${{ env.GAR }}/pubsub-recovery
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: pubsub_build
+        if: inputs.application == 'all' || inputs.application == 'pubsub'
         with:
           context: kubernetes/apps/pubsub
           platforms: linux/amd64
@@ -214,12 +245,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: cloudtasks_meta
+        if: inputs.application == 'all' || inputs.application == 'cloudtasks'
         with:
           images: ${{ env.GAR }}/cloudtasks-recovery
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: cloudtasks_build
+        if: inputs.application == 'all' || inputs.application == 'cloudtasks'
         with:
           context: kubernetes/apps/cloudtasks
           platforms: linux/amd64
@@ -232,12 +265,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: bigtable_meta
+        if: inputs.application == 'all' || inputs.application == 'bigtable'
         with:
           images: ${{ env.GAR }}/bigtable-recovery
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: bigtable_build
+        if: inputs.application == 'all' || inputs.application == 'bigtable'
         with:
           context: kubernetes/apps/bigtable
           platforms: linux/amd64
@@ -250,12 +285,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: spanner_meta
+        if: inputs.application == 'all' || inputs.application == 'spanner'
         with:
           images: ${{ env.GAR }}/spanner-recovery
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: spanner_build
+        if: inputs.application == 'all' || inputs.application == 'spanner'
         with:
           context: kubernetes/apps/spanner
           platforms: linux/amd64
@@ -268,12 +305,14 @@ jobs:
 
       - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         id: firestore_meta
+        if: inputs.application == 'all' || inputs.application == 'firestore'
         with:
           images: ${{ env.GAR }}/firestore-recovery
           tags: type=sha,format=long
 
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: firestore_build
+        if: inputs.application == 'all' || inputs.application == 'firestore'
         with:
           context: kubernetes/apps/firestore
           platforms: linux/amd64
@@ -286,28 +325,32 @@ jobs:
 
       - name: Show published image digests
         env:
+          APPLICATION: ${{ inputs.application }}
           LIFECYCLE_DIGEST: ${{ steps.build.outputs.digest }}
           SMOKE_DIGEST: ${{ steps.smoke_build.outputs.digest }}
           BIGQUERY_DIGEST: ${{ steps.bigquery_build.outputs.digest }}
-          RECOVERY_BASE: ${{ steps.recovery_base.outputs.image }}
           PUBSUB_DIGEST: ${{ steps.pubsub_build.outputs.digest }}
           CLOUDTASKS_DIGEST: ${{ steps.cloudtasks_build.outputs.digest }}
           BIGTABLE_DIGEST: ${{ steps.bigtable_build.outputs.digest }}
           SPANNER_DIGEST: ${{ steps.spanner_build.outputs.digest }}
           FIRESTORE_DIGEST: ${{ steps.firestore_build.outputs.digest }}
         run: |
+          printf 'Application: %s\n\n' "$APPLICATION" >> "$GITHUB_STEP_SUMMARY"
           for image in "$OPERATOR_IMAGE" "$FLINK_IMAGE"; do
             digest="$(crane digest "$image")"
             printf '%s@%s\n\n' "${image%:*}" "$digest" >> "$GITHUB_STEP_SUMMARY"
           done
+          # A step the application input skipped leaves its digest empty.
+          published() {
+            if [ -n "$2" ]; then printf '%s/%s@%s\n' "$GAR" "$1" "$2"; fi
+          }
           {
-            printf '%s/lifecycle-tools@%s\n' "$GAR" "$LIFECYCLE_DIGEST"
-            printf '%s/smoke@%s\n' "$GAR" "$SMOKE_DIGEST"
-            printf '%s\n' "$RECOVERY_BASE"
-            printf '%s/bigquery-recovery@%s\n' "$GAR" "$BIGQUERY_DIGEST"
-            printf '%s/pubsub-recovery@%s\n' "$GAR" "$PUBSUB_DIGEST"
-            printf '%s/cloudtasks-recovery@%s\n' "$GAR" "$CLOUDTASKS_DIGEST"
-            printf '%s/bigtable-recovery@%s\n' "$GAR" "$BIGTABLE_DIGEST"
-            printf '%s/spanner-recovery@%s\n' "$GAR" "$SPANNER_DIGEST"
-            printf '%s/firestore-recovery@%s\n' "$GAR" "$FIRESTORE_DIGEST"
+            published lifecycle-tools "$LIFECYCLE_DIGEST"
+            published smoke "$SMOKE_DIGEST"
+            published bigquery-recovery "$BIGQUERY_DIGEST"
+            published pubsub-recovery "$PUBSUB_DIGEST"
+            published cloudtasks-recovery "$CLOUDTASKS_DIGEST"
+            published bigtable-recovery "$BIGTABLE_DIGEST"
+            published spanner-recovery "$SPANNER_DIGEST"
+            published firestore-recovery "$FIRESTORE_DIGEST"
           } >> "$GITHUB_STEP_SUMMARY"
