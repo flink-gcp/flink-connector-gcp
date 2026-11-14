@@ -73,21 +73,22 @@ It has Writer access to the Tier-3 GAR repository only.
 Its WIF binding selects this repository's exact `tier3-images.yaml` workflow, `workflow_dispatch` and `refs/heads/main`.
 Publication does not use infrastructure or workload credentials.
 
-Dispatch the workflow against the reviewed main commit:
+Dispatch the workflow against the reviewed main commit, naming the application to publish:
 
 ```sh
 gh workflow run tier3-images.yaml --repo flink-gcp/flink-connector-gcp \
-  --ref main -f expected_sha="$REVIEWED_MAIN_SHA"
+  --ref main -f expected_sha="$REVIEWED_MAIN_SHA" -f application=firestore
 ```
 
-Every dispatch verifies smoke, BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes lifecycle tools and all seven application images with BuildKit.
+The `application` input is `all`, the default, or one of `smoke`, `bigquery`, `pubsub`, `cloudtasks`, `bigtable`, `spanner` and `firestore`.
+A dispatch verifies the named application with its `just tier3-<application>-verify` recipe, or all seven for `all`, before authenticating with WIF and Docker's login action, copies Operator and Flink, then builds and pushes the lifecycle-tools image and that application's image, or all seven, with BuildKit.
+Every dispatch builds the lifecycle-tools image, about 20 seconds, because a trial runs the supervisor image that [pins.cue](pins.cue) pins, the preflight refuses one that becomes deletion-eligible within a day of the run's expiry, and renewing the pin takes a new image and a reviewed change to the pin.
 BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore publication require separate approval before dispatch; adding this path does not authorize a publication or trial.
 It uses one standard Ubuntu runner, permits one publication at a time and has a 45-minute job timeout.
 The fixed source digests define what is transferred; there is no custom image-content inspector, capacity quota or intermediate receipt format.
 Docker's login action logs out when the job ends.
 
-A successful run lists the Operator, Flink, lifecycle tools and smoke digest references in the GitHub Actions job summary.
-It also lists the shared recovery application base once, followed by the BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore recovery application digests.
+A successful run names its `application` input in the GitHub Actions job summary, and lists the Operator and Flink digest references and the digest of each image it built: lifecycle tools, smoke and the recovery applications.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
 The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
 The build action also supplies its standard build summary.
