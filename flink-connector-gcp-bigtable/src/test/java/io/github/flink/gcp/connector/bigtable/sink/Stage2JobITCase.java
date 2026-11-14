@@ -362,8 +362,24 @@ class Stage2JobITCase {
 
     /**
      * The firing control for issue #1464: the default commit concurrency must reach the committer,
-     * so more requests are in flight at once than the campaign's largest value of 16 allowed. A
-     * local run on 2026-09-23 peaked at 100 and admitted 11,738 of the 50,000-entry inventory.
+     * so a commit invocation keeps more requests pending at once than the campaign's largest value
+     * of 16 allowed. A local run on 2026-09-23 peaked at 100 outstanding at the fake service.
+     *
+     * <p>The assertion counts the committer's pending requests, those sent and not yet waited on,
+     * which only its bound and the batch's size decide. The count outstanding at the fake service
+     * also depends on timing: the fake answers each request after 5 ms, so that count passes 16
+     * only if the committer sends 17 requests before the first of them is answered.
+     *
+     * <p>The source admits 10,000 inputs per second (issue #2167). Staging an entry sends no
+     * request, and while the source runs the writer hands over what it staged only at a checkpoint
+     * barrier. Nothing here bounds when the next barrier arrives, because a checkpoint starts only
+     * after the previous one completes, so an unpaced source stages as fast as it can poll: a CI
+     * run staged 44,156 entries in 0.8 s, before its first checkpoint completed, and reached the
+     * writer's 64 MiB staging bound. The pace is an average from the first admission, so the 1.5 s
+     * window admits at most about 15,000 entries however late a barrier arrives. That is about 23
+     * MB staged and under a third of the 50,000-entry inventory. At the 100 ms interval a batch
+     * holds about 1,000 entries, and a late barrier only makes it larger; the assertion needs a
+     * batch of more than 16.
      */
     @Test
     void stagedRunAtTheDefaultConcurrencyKeepsMoreThanSixteenCommitsInFlight() throws Exception {
@@ -385,18 +401,27 @@ class Stage2JobITCase {
                                         1000,
                                         50_000,
                                         5,
-                                        false));
+                                        false,
+                                        10_000));
         assertThat(output)
                 .as("the run was censored; raise the inventory")
                 .doesNotContain("STAGE2_CENSORED")
                 .doesNotContain("STAGE2,staged,CENSORED");
         assertThat(output)
-                .as("the probe echoes its argument; peakActive below is what shows it arrived")
+                .as(
+                        "the probe echoes its argument; peakPending below shows it reached the committer")
                 .contains(" inFlight=100 ");
-        JsonNode client = clientFinal(output);
+        assertThat(output)
+                .as("the probe echoes the pace that bounds what the run stages")
+                .contains(" admitPerSecond=10000 ");
+        assertThat(finalRecord(output, "STAGE2_INPUT_FINAL").path("admittedInputs").asLong())
+                .as(
+                        "admissions in the 1.5 s window at 10,000 per second; more means it ran unpaced")
+                .isLessThanOrEqualTo(15_001L);
+        JsonNode client = finalRecord(output, "STAGE2_CLIENT_FINAL");
         assertThat(client.path("peakActive").asInt())
-                .as("peak outstanding commits at a requested concurrency of 100")
-                .isGreaterThan(16)
+                .as("peak commits outstanding at the fake service, which the bound of 100 caps")
+                .isPositive()
                 .isLessThanOrEqualTo(100);
         assertThat(client.path("completionHoldNanos").path("count").asLong())
                 .as("completions whose instrument hold was recorded")
@@ -409,21 +434,30 @@ class Stage2JobITCase {
                 .isNotEmpty()
                 .allSatisfy(line -> assertThat(line).contains("\"successful\":true"));
         long threadCpu = 0;
+        long largestBatch = 0;
+        long peakPending = 0;
         for (String line :
                 output.lines().filter(l -> l.startsWith("STAGE2_COMMIT_BATCH ")).toList()) {
-            long reading =
-                    new ObjectMapper()
-                            .readTree(line.substring("STAGE2_COMMIT_BATCH ".length()))
-                            .path("threadCpuNanos")
-                            .asLong();
+            JsonNode batch =
+                    new ObjectMapper().readTree(line.substring("STAGE2_COMMIT_BATCH ".length()));
+            long reading = batch.path("threadCpuNanos").asLong();
             assertThat(reading)
                     .as("committing thread's CPU time; negative means this JVM cannot measure it")
                     .isNotNegative();
             threadCpu += reading;
+            largestBatch = Math.max(largestBatch, batch.path("entries").asLong());
+            peakPending = Math.max(peakPending, batch.path("peakPending").asLong());
         }
         assertThat(threadCpu)
                 .as("CPU time the committing thread spent across all commits")
                 .isPositive();
+        assertThat(largestBatch)
+                .as("no commit invocation held more than 16 entries, so none could show the bound")
+                .isGreaterThan(16L);
+        assertThat(peakPending)
+                .as("most commits one invocation had pending at a requested concurrency of 100")
+                .isGreaterThan(16L)
+                .isLessThanOrEqualTo(100L);
     }
 
     /** The bulk sink's default of 1,000 in-flight entries is the bound's stated purpose. */
@@ -477,16 +511,19 @@ class Stage2JobITCase {
         }
     }
 
-    private static JsonNode clientFinal(String output) throws Exception {
+    /** The JSON the probe printed after {@code prefix} and a space. */
+    private static JsonNode finalRecord(String output, String prefix) throws Exception {
         String line =
                 output.lines()
-                        .filter(candidate -> candidate.startsWith("STAGE2_CLIENT_FINAL "))
+                        .filter(candidate -> candidate.startsWith(prefix + " "))
                         .findFirst()
                         .orElseThrow(
                                 () ->
                                         new AssertionError(
-                                                "No STAGE2_CLIENT_FINAL line; the run printed:\n"
+                                                "No "
+                                                        + prefix
+                                                        + " line; the run printed:\n"
                                                         + output));
-        return new ObjectMapper().readTree(line.substring("STAGE2_CLIENT_FINAL ".length()));
+        return new ObjectMapper().readTree(line.substring(prefix.length() + 1));
     }
 }

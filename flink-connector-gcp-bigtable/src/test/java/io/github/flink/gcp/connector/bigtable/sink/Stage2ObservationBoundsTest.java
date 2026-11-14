@@ -82,6 +82,33 @@ class Stage2ObservationBoundsTest {
     }
 
     @Test
+    void aPaceThatLeavesAReaderUnpacedIsRejectedBeforeCreatingWork() {
+        Path work = directory.resolve("pace");
+        assertThatThrownBy(
+                        () ->
+                                BigtableStage2Probe.timed(
+                                        null,
+                                        "pace",
+                                        work,
+                                        true,
+                                        false,
+                                        "127.0.0.1:1",
+                                        1024,
+                                        4,
+                                        4,
+                                        1000,
+                                        0,
+                                        1000,
+                                        1000,
+                                        0,
+                                        false,
+                                        3))
+                .as("3 inputs per second gives the fourth of four readers no share")
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(work).doesNotExist();
+    }
+
+    @Test
     void sustainedObservationIsBoundedBeforeCreatingWork() {
         Path work = directory.resolve("sustained");
         assertThatThrownBy(
