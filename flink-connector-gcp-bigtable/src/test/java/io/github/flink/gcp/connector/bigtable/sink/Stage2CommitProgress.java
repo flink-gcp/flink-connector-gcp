@@ -97,6 +97,8 @@ final class Stage2CommitProgress {
                                     : threadCpuNanos - batch.threadCpuNanos)
                             + ",\"sends\":"
                             + batch.sends
+                            + ",\"peakPending\":"
+                            + batch.peakPending
                             + ",\"sendPhaseNanos\":"
                             + ((batch.sends == 0 ? now : batch.lastSend) - batch.started)
                             + ",\"drainPhaseNanos\":"
@@ -125,6 +127,11 @@ final class Stage2CommitProgress {
      * Records a conditional write the calling thread's invocation sends, and returns that
      * invocation for the request to report its completion and the committer's wait on it; {@code
      * null} outside an invocation. Every wait before a send was a wait at the in-flight bound.
+     *
+     * <p>The invocation's {@code peakPending} is the most requests it had sent and not yet waited
+     * on at once, which is the committer's own pending count. The production committer waits on a
+     * request only at its bound or when it drains, never because the service has answered one, so
+     * the count does not depend on how quickly answers arrive.
      */
     Invocation sent() {
         Invocation batch = current.get();
@@ -132,6 +139,7 @@ final class Stage2CommitProgress {
             return null;
         }
         batch.sends++;
+        batch.peakPending = Math.max(batch.peakPending, batch.sends - batch.reaped);
         batch.lastSend = System.nanoTime();
         batch.boundWaitNanos += batch.waitSinceSend;
         batch.boundBlocked += batch.blockedSinceSend;
@@ -215,6 +223,7 @@ final class Stage2CommitProgress {
         // Confined to the invocation's thread until finished() reads them on that same thread.
         private long lastSend;
         private long sends;
+        private long peakPending;
         private long reaped;
         private long waitSinceSend;
         private long blockedSinceSend;

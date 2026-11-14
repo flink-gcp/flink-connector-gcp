@@ -32,6 +32,7 @@ import static io.github.flink.gcp.connector.testutils.Awaits.await;
 
 /** Standalone Stage 2 entry point; service commands require a separately created lease manifest. */
 public final class BigtableStage2Probe {
+    static final long ORDINARY_MEASUREMENT_MILLIS = 300_000L;
     static final long ORDINARY_SAMPLE_BYTES = 8L * 1024 * 1024;
     static final long SUSTAINED_SAMPLE_BYTES = 64L * 1024 * 1024;
 
@@ -203,9 +204,16 @@ public final class BigtableStage2Probe {
                 capacity,
                 delayMillis,
                 hot,
-                Stage2RunLimits.historical(capacity));
+                admitPerSecond(parallelism));
     }
 
+    /**
+     * As {@link #timed(Stage2Lease, String, Path, boolean, boolean, String, int, int, int, long,
+     * long, long, int, long, boolean)}, with the source admitting {@code admitPerSecond} inputs per
+     * second across its readers in place of the rate {@code -Dstage2.admitPerSecond} sets. 0 is
+     * unpaced; a negative rate, or a positive one below {@code parallelism}, would leave a reader
+     * unpaced and is refused.
+     */
     static void timed(
             Stage2Lease lease,
             String table,
@@ -222,7 +230,7 @@ public final class BigtableStage2Probe {
             int capacity,
             long delayMillis,
             boolean hot,
-            Stage2RunLimits limits)
+            long admitPerSecond)
             throws Exception {
         timedRun(
                 Stage2RunLease.legacy(lease),
@@ -240,7 +248,10 @@ public final class BigtableStage2Probe {
                 capacity,
                 delayMillis,
                 hot,
-                limits);
+                Stage2RunLimits.historical(capacity),
+                ORDINARY_MEASUREMENT_MILLIS,
+                ORDINARY_SAMPLE_BYTES,
+                admitPerSecond);
     }
 
     static boolean timedRun(
@@ -278,8 +289,9 @@ public final class BigtableStage2Probe {
                 delayMillis,
                 hot,
                 limits,
-                300_000L,
-                ORDINARY_SAMPLE_BYTES);
+                ORDINARY_MEASUREMENT_MILLIS,
+                ORDINARY_SAMPLE_BYTES,
+                admitPerSecond(parallelism));
     }
 
     /** Runs a separately reserved hot-row phase through the same production instrument. */
@@ -313,7 +325,8 @@ public final class BigtableStage2Probe {
                 true,
                 limits,
                 3_600_000L,
-                SUSTAINED_SAMPLE_BYTES);
+                SUSTAINED_SAMPLE_BYTES,
+                admitPerSecond(parallelism));
     }
 
     private static boolean timedRun(
@@ -334,7 +347,8 @@ public final class BigtableStage2Probe {
             boolean hot,
             Stage2RunLimits limits,
             long maximumMeasurementMillis,
-            long maximumSampleBytes)
+            long maximumSampleBytes,
+            long admitPerSecond)
             throws Exception {
         if ((bytes != 1024 && bytes != 65536)
                 || parallelism < 1
@@ -350,7 +364,8 @@ public final class BigtableStage2Probe {
                 || delayMillis < 0
                 || delayMillis > 1000
                 || capacity < 1
-                || capacity != limits.inventoryEntries) {
+                || capacity != limits.inventoryEntries
+                || !pacesEveryReader(admitPerSecond, parallelism)) {
             throw new IllegalArgumentException(
                     "Stage 2 local calibration configuration is outside its limits");
         }
@@ -358,7 +373,6 @@ public final class BigtableStage2Probe {
                 Math.addExact(Math.addExact(warmupMillis, measurementMillis), limits.drainMillis),
                 1_000_000L);
         boolean light = lightInstrument(lease != null || emulator);
-        long admitPerSecond = admitPerSecond(parallelism);
         Stage2CommitProgress.enableWaitAccounting();
         Stage2Harness.checkDistribution();
         Files.createDirectories(directory.getParent());
@@ -724,11 +738,18 @@ public final class BigtableStage2Probe {
             throw new IllegalArgumentException(
                     "stage2.admitPerSecond must be a whole number: " + value, failure);
         }
-        if (rate < 0 || (rate > 0 && rate < parallelism)) {
+        if (!pacesEveryReader(rate, parallelism)) {
             throw new IllegalArgumentException(
                     "stage2.admitPerSecond must be 0 or at least the parallelism: " + rate);
         }
         return rate;
+    }
+
+    /**
+     * Whether {@code rate} is 0, for unpaced, or gives each of {@code parallelism} readers a share.
+     */
+    private static boolean pacesEveryReader(long rate, int parallelism) {
+        return rate == 0 || (rate > 0 && rate >= parallelism);
     }
 
     /** Sets the run's instrument mode and admission rate before any reader or writer exists. */
