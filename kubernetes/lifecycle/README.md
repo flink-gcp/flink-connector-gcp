@@ -346,7 +346,7 @@ The runner additionally checks unfinished durable approvals and live inventory.
 ## Local verification and evidence
 
 `just test-scripts` includes the tests in `tools/tier3/tests/` and runs synthetic fault injection with fake GCS generations, Kubernetes UIDs and time.
-`just tier3-check` discovers the lifecycle delivery alongside ordinary runs, renders its bundle, verifies source embedding and normal/Spot separation, and rejects malformed inputs against the shared run policy and pinned schemas.
+`just tier3-check` renders the lifecycle bundle, verifies source embedding and normal/Spot separation, and rejects malformed inputs against the shared run policy and pinned schemas.
 Neither command creates a cloud workload.
 The wheel test installs the built artifact outside the source tree and checks CLI startup and policy/source resources using the test environment's installed SDKs.
 

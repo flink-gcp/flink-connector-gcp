@@ -18,7 +18,7 @@ import smoke "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/smoke"
 
 let inputs = run
 let application = smoke.#Application & {
-	run: {id: inputs.id, image: inputs.image, phase: inputs.phase}
+	run: {id: inputs.id, image: inputs.image}
 }
 
 delivery: resources: app: application.resource

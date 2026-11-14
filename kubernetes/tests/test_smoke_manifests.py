@@ -29,10 +29,8 @@ from test_manifests import (
 from test_manifests import module as module  # noqa: PLC0414
 
 
-@pytest.mark.parametrize("phase", ["initial", "upgrade"])
-def test_smoke_application_preserves_state_and_bounds_resources(module, phase):
+def test_smoke_application_preserves_state_and_bounds_resources(module):
     inputs = workload()["run"]
-    inputs["phase"] = phase
     inputs["image"] = workload()["delivery"]["resources"]["job"]["spec"]["image"]
     path = leaf(module, "runs/smoke", {"run": inputs})
     shutil.copyfile(
@@ -54,13 +52,13 @@ def test_smoke_application_preserves_state_and_bounds_resources(module, phase):
         "--run-id",
         "smoke-001",
         "--phase",
-        phase,
+        "initial",
         "--records",
         "18000",
         "--records-per-second",
         "10",
         "--require-restored",
-        str(phase == "upgrade").lower(),
+        "false",
     ]
     config = spec["flinkConfiguration"]
     assert config["high-availability.type"] == "kubernetes"
@@ -92,10 +90,8 @@ def test_smoke_application_preserves_state_and_bounds_resources(module, phase):
 
 def test_smoke_cannot_use_the_flink_base_without_an_application(module):
     inputs = workload()["run"]
-    inputs.update(
-        phase="initial",
-        image="us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink@sha256:"
-        + "a" * 64,
+    inputs["image"] = (
+        "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/flink@sha256:" + "a" * 64
     )
     path = leaf(module, "runs/smoke", {"run": inputs})
     shutil.copyfile(

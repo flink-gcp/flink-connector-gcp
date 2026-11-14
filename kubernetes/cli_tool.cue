@@ -16,7 +16,6 @@ package tier3
 
 import (
 	"encoding/yaml"
-	"list"
 	"tool/cli"
 )
 
@@ -24,20 +23,6 @@ command: render: {
 	$usage: "render [package]"
 	$short: "Render delivery resources as a YAML document stream"
 	print: cli.Print & {
-		text: yaml.MarshalStream([
-			for entry in list.Sort([
-				for name, resource in delivery.resources {
-					key:   name
-					order: delivery.order[resource.kind]
-					value: resource
-				},
-			], {
-				x: {key: string, order: int, ...}
-				y: {key: string, order: int, ...}
-				less: x.order < y.order || (x.order == y.order && x.key < y.key)
-			}) {
-				entry.value
-			},
-		])
+		text: yaml.MarshalStream([for _, resource in delivery.resources {resource}])
 	}
 }

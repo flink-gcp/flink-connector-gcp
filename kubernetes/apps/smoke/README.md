@@ -1,7 +1,7 @@
 # Generic Tier-3 smoke application
 
-This internal application prepares the stateful workload for [issue #1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309).
-It uses Flink 2.2.1 on Java 17 and is built only through the `tier3-smoke` Maven profile.
+This internal application is the stateful workload of the lifecycle's `smoke` scenario, which checks the Tier-3 environment itself without a connector.
+It was first built for [issue #1309](https://github.com/flink-gcp/flink-connector-gcp/issues/1309), uses Flink 2.2.1 on Java 17 and is built only through the `tier3-smoke` Maven profile.
 It is not a published connector artifact.
 
 ## Build and inspect
@@ -45,39 +45,23 @@ The verifier also logs `event=smoke-snapshot` with the checkpoint ID and process
 An observed snapshot is not evidence that a checkpoint completed.
 Progress logs can repeat after recovery and are not a transactional output sink.
 
-A recovery oracle compares lineage before and after the disruption, requires `restored=true`, checks that the recovered checkpoint covered nonzero progress, and observes continued sequence validation and a later completed checkpoint.
-The lifecycle runner must also inspect Flink job/checkpoint status and reject a terminal failure or an unexpected fresh lineage.
-`--require-restored=true` protects the upgrade delivery from accidentally starting it as a new job; an initial delivery can recover after a JM failure and will report that restoration.
+The lifecycle's supervisor reads these lines: a smoke run succeeds when the job finishes, its progress establishes one lineage and at least one checkpoint completes, and progress from another run or phase, or a changed lineage, fails it.
+The `upgrade` phase and `--require-restored=true` serve the local savepoint-upgrade tests, which refuse a fresh start without state; the deployed scenario always runs the `initial` phase.
 Local tests cover state continuity and the missing-state rejection, not GKE scheduling, IAM or Operator reconciliation.
 
 ## Deployment and storage
 
-`pkg/smoke.#Application` in the [CUE module](../../README.md) accepts `run.id`, `run.image` and `run.phase` and exposes the FlinkDeployment as `resource`.
+`pkg/smoke.#Application` in the [CUE module](../../README.md) accepts `run.id`, `run.image` and `run.records` and exposes the FlinkDeployment as `resource`.
 Only a `smoke@sha256:...` reference in the existing GAR repository is accepted.
-The committed [`initial`](../../runs/generic-smoke/initial/delivery.cue) and [`upgrade`](../../runs/generic-smoke/upgrade/delivery.cue) deliveries select the published `images.smoke` digest and share their [run inputs](../../runs/generic-smoke/common.cue).
-They are sequential updates of one deployment, not two applications to run together.
-The upgrade changes the phase and requires restored state while retaining the savepoint upgrade mode and `allowNonRestoredState=false`.
-
-The planned run ID is `smoke-1309-20260916`, with expiry `2026-09-16T16:30:00Z` (September 17, 01:30 JST), for execution within two to three days of September 14.
-Render each phase independently from the repository root:
-
-```sh
-mise x -- just tier3-render runs/generic-smoke/initial > /tmp/smoke-initial.yaml
-mise x -- just tier3-render runs/generic-smoke/upgrade > /tmp/smoke-upgrade.yaml
-```
-
-Rendering supplies no execution authorization and does not contact the cluster.
-The expiry is an admission and supervision input, not a scheduled start or an automatic stop implemented by these manifests.
-If execution is postponed beyond this window, review a fresh run ID and deadline and recheck live image availability and retention before admission.
-Do not reuse this run ID for a separate experiment: it also identifies the recovery state in GCS.
+The lifecycle's [`smoke`](../../lifecycle/smoke.cue) scenario renders it with the `images.smoke` pin, under the run policy of `runs/common.cue`, and the [lifecycle runbook](../../lifecycle/README.md) describes its dispatch, supervision and cleanup.
+The package always passes `--phase initial` and `--require-restored false`, with the savepoint upgrade mode and `allowNonRestoredState=false`.
 
 The definition requests one JM and one TM, each with 1 CPU and 2 GiB, one TM slot and parallelism one.
 The common run policy selects AMD64 Spot nodes and adds the run label and expiry annotation.
 The main containers request and limit 1 GiB of ephemeral storage; no PVC is used.
 Checkpoints run every 30 seconds, with at most one in flight, two retained checkpoints and two consecutive failed checkpoints tolerated before the job restarts; Kubernetes HA stores its metadata in GCS.
 The application restart strategy permits three retries with a ten-second delay.
-The `generic-recovery` lifecycle scenario that [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran rendered its own initial/upgrade inputs with 12,000 records at ten per second; the scenario was removed after that run, and the `upgrade` phase and `--require-restored` remain for a delivery that needs them.
-The committed ordinary deliveries above retain their 18,000-record input.
+The smoke scenario runs the package's default input, 18,000 records at ten per second, which is 30 minutes of input.
 
 The GCP root defines `flink-gcp-tier3-smoke` in `us-central1` as a STANDARD bucket with uniform access and public access prevention.
 The workload GSA has bucket-scoped `roles/storage.objectUser`, without bucket administration, object IAM changes or connector data permissions.
@@ -92,15 +76,5 @@ The lifecycle stage must export evidence before cleanup and keep the run within 
 
 ## Publication and execution boundary
 
-Merge the reviewed application/identity change and verify the GCP and bootstrap CI applies and empty refreshed plans before publishing.
-Review the exact new bucket/GSA and the publication scope before approving those operations.
-Publication uses the existing serialized, main-only workflow with its 45-minute timeout and seven-day GAR cleanup policy.
-After a successful publication, verify the recorded smoke digest in GAR and adopt it with concrete run IDs and expiries in a separate reviewed delivery change.
-Do not insert a stand-in digest or create `ci.cue` to make a delivery render before publication.
-
-The [successful smoke publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/34768916308) built main commit `053e23835782059830f871ca53f90fba43efa324` after successful GCP/bootstrap applies and empty refreshed plans.
-A GAR read confirmed the digest that [pins.cue](../../images/pins.cue) selected until the Cloud Tasks measurement publication republished the smoke image from a later commit; both committed phases consume whichever digest that pin names, without command-line tags.
-
-This preparation leaves the Operator at zero replicas and both namespaces' Pod/PVC quotas at zero.
-[Issue #1310](https://github.com/flink-gcp/flink-connector-gcp/issues/1310) supplies admission, expiry/failure supervision and cleanup; [issue #1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) supplied the separately approved GKE execution on 2026-09-17.
-Neither consuming all input nor a bucket lifecycle rule terminates the Kubernetes resources.
+The [image publication workflow](../../../.github/workflows/tier3-images.yaml) publishes this application as `smoke`, and a reviewed change to [pins.cue](../../images/pins.cue) adopts a new digest; the smoke scenario runs whichever digest that pin names.
+Neither consuming all input nor a bucket lifecycle rule terminates the Kubernetes resources: the lifecycle's cleanup removes them.

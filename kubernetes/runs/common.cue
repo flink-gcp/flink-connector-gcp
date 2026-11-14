@@ -20,10 +20,10 @@ import (
 )
 
 run: {
-	id:        string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$" @tag(run_id)
-	expiresAt: time.Time                                         @tag(expires_at)
+	id:        string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+	expiresAt: time.Time
 	namespace: *"tier3-smoke" | "tier3-bigquery" | "tier3-pubsub" | "tier3-cloudtasks" | "tier3-bigtable" | "tier3-spanner" | "tier3-firestore"
-	image:     string @tag(image)
+	image:     string
 }
 
 let flinkPodPolicy = {

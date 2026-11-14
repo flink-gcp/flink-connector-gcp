@@ -90,7 +90,7 @@ Docker's login action logs out when the job ends.
 
 A successful run names its `application` input in the GitHub Actions job summary, and lists the Operator and Flink digest references and the digest of each image it built: lifecycle tools, smoke and the recovery applications.
 Update the Operator digest in `opentofu/tier3-operator/values.yaml` and the Flink/lifecycle-tools references in [pins.cue](pins.cue) through a reviewed PR.
-The `smoke` reference in the same package supplies the complete application image to the committed [generic smoke deliveries](../runs/generic-smoke/common.cue).
+The `smoke` reference in the same package supplies the complete application image that the lifecycle's `smoke` scenario runs.
 The build action also supplies its standard build summary.
 A failed run can leave already-published images in GAR; check the failed step and rerun the reviewed workflow as needed.
 Do not adopt image pins from an incomplete run.
