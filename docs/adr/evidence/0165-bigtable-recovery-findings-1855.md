@@ -30,7 +30,7 @@ Reaching them took eleven attempts; the [list of attempts](#every-admitted-attem
 | `rescale-out` | `bt1855-ro-a1` | `usable` | 180,000, 0 | 180,000, 0, 2,253 | 180,000, 0, 3,000 |
 | `rescale-in` | `bt1855-ri-a3` | `usable` | 180,000, 0 | 180,000, 0, 2,741 | 180,000, 0, 3,006 |
 
-Every trial ran the `bigtable-recovery` image `sha256:f041f5486adbbe505d98ed112a7bf270f506863c5ad1cafefbcfbfac6cadf2bf` from the [Bigtable recovery publication](../../../kubernetes/images/README.md#bigtable-recovery-publication) of main `ed422edd4`.
+Every trial ran the `bigtable-recovery` image `sha256:f041f5486adbbe505d98ed112a7bf270f506863c5ad1cafefbcfbfac6cadf2bf` from the [Bigtable recovery publication](0165-tier3-image-publications.md#bigtable-recovery-publication) of main `ed422edd4`.
 No oracle found a foreign row or family, an `eo` row whose SUM differed from its contributions, a second marker, or a relayed change `eo` had not applied.
 Each relay was judged: the input finished 1,250 to 1,485 seconds before the change stream's end, more than the 120 seconds the relay needs.
 

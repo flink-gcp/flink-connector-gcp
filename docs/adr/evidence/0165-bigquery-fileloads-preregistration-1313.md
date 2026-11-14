@@ -51,7 +51,7 @@ A repeat adds USD 2.35 and is approved before its dispatch like any other.
 
 ## Campaign window
 
-Every image the trial pulls — `operator`, `lifecycle-tools` for the supervisor and `bigquery-recovery` — comes from the [FILE_LOADS trial publication](../../../kubernetes/images/README.md#bigquery-file_loads-trial-publication), which ran when the registry held no version at all, so the `operator` mirror got a fresh creation time without a manual deletion.
+Every image the trial pulls — `operator`, `lifecycle-tools` for the supervisor and `bigquery-recovery` — comes from the [FILE_LOADS trial publication](0165-tier3-image-publications.md#bigquery-file_loads-trial-publication), which ran when the registry held no version at all, so the `operator` mirror got a fresh creation time without a manual deletion.
 The oldest of the three is `operator`, created 2026-10-09T16:22:01Z (UTC; `gcloud` prints local time unless asked), and dispatch refuses an image unless the run's window ends a day before its seven-day deletion eligibility, so every attempt's window, which ends 90 minutes after admission, must end before 2026-10-15T16:22:01Z.
 An attempt whose window would end later needs a new publication and a reviewed change adopting its `lifecycle-tools` digest in `pins.cue`; since copying a digest the registry still holds keeps its creation time, that publication waits for the registry to delete the current versions or for them to be deleted by hand.
 The `bigquery-recovery` image was built from main `ef183e0c6`, which carries the FILE_LOADS mode of [#1549](https://github.com/flink-gcp/flink-connector-gcp/issues/1549).

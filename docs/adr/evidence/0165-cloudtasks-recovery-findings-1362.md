@@ -32,7 +32,7 @@ The final receipt records the `usable` verdict with no reasons, the queue releas
 `just tier3-analyze` over the exported evidence, 966 events, recomputed `usable` from the exported listing pages, with the same report and no reasons or problems.
 The receipt and the analyzer agree on `usable` and every cleanup check below passed, so the attempt is accepted under the preregistration.
 
-The approval bound the application, operator and supervisor images; the application image `cloudtasks-recovery@sha256:cc66ba84…` of the [Cloud Tasks recovery trial publication](../../../kubernetes/images/README.md#cloud-tasks-recovery-trial-publication), created on 2026-10-12, runs Flink 2.2.1, as the JobManager log reports.
+The approval bound the application, operator and supervisor images; the application image `cloudtasks-recovery@sha256:cc66ba84…` of the [Cloud Tasks recovery trial publication](0165-tier3-image-publications.md#cloud-tasks-recovery-trial-publication), created on 2026-10-12, runs Flink 2.2.1, as the JobManager log reports.
 The window, from 15:22:42 to 16:52:42, ended inside the 2026-10-15T16:22:01Z deadline; the run finished at 16:08:35, 46 minutes into the window and 47 minutes after dispatch.
 
 ### Timeline
@@ -109,7 +109,7 @@ The evidence reused is #1245's [recovery protocol](0158-cloudtasks-recovery-1245
 | #1362 acceptance item | Where it stands |
 | --- | --- |
 | Reuse the completed smoke, the Cloud Tasks KSA and GSA, CUE delivery, image publication, external state, admission and cleanup, without another lease framework | This trial: it ran on the shared lifecycle the smoke proved, under the environment lock; [#1767](https://github.com/flink-gcp/flink-connector-gcp/issues/1767) to [#1769](https://github.com/flink-gcp/flink-connector-gcp/issues/1769) added only the application and its image publication, per-run queue grants, the delivery and the scenario |
-| Freeze source and image digests, Flink and API coverage | This trial: the receipt binds the rig commit and the approval the image digests; the application image runs Flink 2.2.1, and the [publication record](../../../kubernetes/images/README.md#cloud-tasks-recovery-trial-publication) names its source commit |
+| Freeze source and image digests, Flink and API coverage | This trial: the receipt binds the rig commit and the approval the image digests; the application image runs Flink 2.2.1, and the [publication record](0165-tier3-image-publications.md#cloud-tasks-recovery-trial-publication) names its source commit |
 | DataStream entry point with native workload credentials and checkpoint-coordinated named-task creation | This trial |
 | Table entry point | Set aside on the rig; #1245's recovery protocol covers Table-mode recovery with controlled oracles on Flink 1.20.4 and 2.2.1 |
 | Eager at-least-once baseline; persisted random names | Set aside on the rig; #1245's recovery protocol covers staged recovery with persisted random names on both lines, and #1246's assessment measured the staged sink's throughput and latency against the unnamed and named at-least-once arms on a single VM, without recovery, so nothing covers eager duplicates under recovery |

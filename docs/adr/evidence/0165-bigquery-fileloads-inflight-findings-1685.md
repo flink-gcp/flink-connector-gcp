@@ -31,7 +31,7 @@ Times are UTC.
 The reads before dispatch passed at 06:21: no environment lock or run record existed, the preceding Pub/Sub trial `ps1720-jm-a1` of [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720) had finished and released its lock, the weekly E2E was not running, and the rig commit had passed its review rounds and CI.
 The final receipt records `success: true`, the `usable` verdict with no reasons, verified idle, and empty plans for `flink-gcp`, `tier3-bootstrap` and `tier3-operator`, read at 07:16:46.
 `just tier3-analyze` over the exported evidence recomputed `usable`, with 25 measurement samples and no reasons or problems.
-The attempt used the application image `bigquery-recovery@sha256:a8d13036…` of the [FILE_LOADS trial publication](../../../kubernetes/images/README.md#bigquery-file_loads-trial-publication); its window ended at 07:53:11, inside the 2026-10-15T16:22:01Z deadline.
+The attempt used the application image `bigquery-recovery@sha256:a8d13036…` of the [FILE_LOADS trial publication](0165-tier3-image-publications.md#bigquery-file_loads-trial-publication); its window ended at 07:53:11, inside the 2026-10-15T16:22:01Z deadline.
 
 ### Query oracle
 

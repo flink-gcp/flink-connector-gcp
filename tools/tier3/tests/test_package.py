@@ -76,7 +76,6 @@ def test_wheel_installs_cli_policy_and_complete_source_bundle(tmp_path):
         ["supervisor"],
         ["render"],
         ["analyze"],
-        ["vm-analyze"],
         ["bigquery"],
     ):
         result = run(str(command), *arguments, "--help", cwd=tmp_path, env=environment)
@@ -92,11 +91,10 @@ import json
 from pathlib import Path
 import flink_tier3
 from flink_tier3.bundle import package_sources
-from flink_tier3.cloudtasks.protocol import load
 from flink_tier3.policy import WINDOWS
 print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
                   "sources": package_sources(),
-                  "smoke": WINDOWS["smoke"], "protocol_cells": len(load()["cells"])}))
+                  "smoke": WINDOWS["smoke"]}))
 """,
         cwd=tmp_path,
         env=environment,
@@ -105,7 +103,6 @@ print(json.dumps({"file": str(Path(flink_tier3.__file__).resolve()),
     assert Path(payload["file"]).is_relative_to(installed)
     assert payload["sources"] == package_sources()
     assert payload["smoke"] == 3600
-    assert payload["protocol_cells"] == 420
 
 
 def rooted_modules():

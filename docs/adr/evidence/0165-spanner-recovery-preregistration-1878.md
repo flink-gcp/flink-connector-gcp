@@ -126,7 +126,7 @@ A refuted grant premise stops the trials before any further dispatch, as [Stop c
 
 ## Campaign window
 
-The trials pull `spanner-recovery` from the [publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40916550826) of main commit `34be4f08c691bfa7955b52bbc02955185271be8b` on 2026-10-29 UTC, the first after the scenario merged, which the images README records under [Spanner recovery publication](../../../kubernetes/images/README.md#spanner-recovery-publication).
+The trials pull `spanner-recovery` from the [publication](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/40916550826) of main commit `34be4f08c691bfa7955b52bbc02955185271be8b` on 2026-10-29 UTC, the first after the scenario merged, which the images README records under [Spanner recovery publication](0165-tier3-image-publications.md#spanner-recovery-publication).
 The Operator runs the `operator` mirror and the supervisor the `lifecycle-tools` image that [pins.cue](../../../kubernetes/images/pins.cue) and the Operator's Helm values select; pins.cue adopted that run's lifecycle-tools digest, and the Operator's digest is unchanged, so its Helm pin stands.
 A Spanner dispatch checks these three images:
 

@@ -31,9 +31,9 @@ from flink_tier3.firestore.exercise import (
 from flink_tier3.firestore.trial import LATE_RECORDS, MODES, Trial
 from flink_tier3.firestore.verdict import OBSERVED, SAMPLED_STAGES
 
-from ..cloudtasks.test_recovery_plan import inputs as inputs  # noqa: PLC0414
-from ..cloudtasks.test_recovery_plan import renderer as renderer  # noqa: PLC0414
-from ..cloudtasks.test_recovery_runtime import prepared as prepared  # noqa: PLC0414
+from ..cloudtasks.test_plan import inputs as inputs  # noqa: PLC0414
+from ..cloudtasks.test_plan import renderer as renderer  # noqa: PLC0414
+from ..cloudtasks.test_runtime import prepared as prepared  # noqa: PLC0414
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
 from .test_documents import COMMITTED, READ_AT, Firestore, stored

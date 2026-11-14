@@ -142,7 +142,9 @@ A database is billed by operation and storage, so the estimate has no instance h
 
 A run is dispatched as the [Spanner trial](../spanner/README.md#dispatch) is, with `firestore_trial` naming the kind and `application_digest` the published `firestore-recovery` GAR digest.
 Any run ID fits, because the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, at most 49 of the 63 characters a database ID takes.
-The `tier3-firestore` namespace, its place in the shared preflight's inventory and the Operator's watch over it are in place ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
+
+The [`firestore-recovery`](../../lifecycle/firestore.cue) delivery takes the input from the optional `firestore_records` and `firestore_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input; each seed copy's pace per reading subtask from the optional `firestore_seed_records_per_second` tag, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass; and the kind from the `firestore_trial` tag, `jm-replacement` unless given, which sizes every vertex but the input and the TaskManagers from [faults.cue](../../lifecycle/faults.cue), where `sequence` (ADR-0204) takes `jm-replacement`'s sizes.
+Dispatch renders it at the dispatched kind and the input and seed pace every kind shares.
 
 ### Database lifecycle
 

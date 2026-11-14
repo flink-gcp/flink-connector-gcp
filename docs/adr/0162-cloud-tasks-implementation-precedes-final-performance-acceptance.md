@@ -28,6 +28,7 @@ limitations under the License.
 - Updated: 2026-10-11 (the cluster session path is removed; the VM rig keeps what it took from it, revised by [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723))
 - Updated: 2026-10-12 (#1362 ran one savepoint upgrade and one JobManager failover; TaskManager replacement and rescale are no longer its, revised by [#1770](https://github.com/flink-gcp/flink-connector-gcp/issues/1770))
 - Updated: 2026-10-13 (TaskManager replacement and rescale are #1777's and #1778's again, and the replay budget a recovery spends is bounded from Flink's timestamps, revised by [#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777))
+- Updated: 2026-11-14 (the measurement application and the single-host rig are removed; the result stands on its recorded evidence, revised by [#2160](https://github.com/flink-gcp/flink-connector-gcp/issues/2160))
 - Issues: [#1238](https://github.com/flink-gcp/flink-connector-gcp/issues/1238), [#1241](https://github.com/flink-gcp/flink-connector-gcp/issues/1241), [#1246](https://github.com/flink-gcp/flink-connector-gcp/issues/1246), [#1444](https://github.com/flink-gcp/flink-connector-gcp/issues/1444), [#1457](https://github.com/flink-gcp/flink-connector-gcp/issues/1457), [#1458](https://github.com/flink-gcp/flink-connector-gcp/issues/1458), [#1448](https://github.com/flink-gcp/flink-connector-gcp/issues/1448), [#1723](https://github.com/flink-gcp/flink-connector-gcp/issues/1723), [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), [#1770](https://github.com/flink-gcp/flink-connector-gcp/issues/1770), [#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777)
 - Evidence: [calibration preregistration](evidence/0162-cloudtasks-assessment-1246.md)
 - Supersedes: only the Cloud Tasks requirement in [ADR-0104](0104-exactly-once-modes-use-service-native-replay-protection-and-pass-a-performance-gate.md) and [ADR-0158](0158-cloud-tasks-checkpointed-creation-stages-named-tasks-and-commits-after-the-checkpoint.md) for a separate primitive performance pass before implementation, connector-level evaluation or release
@@ -133,6 +134,13 @@ The trial measured neither recovery time nor the replay budget a recovery consum
 
 On 2026-10-13 every Tier-3 connector trial was aligned on one measurement set, and the scenario regained both: [#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777) adds TaskManager replacement and a rescale from two sink subtasks to one and from one to two, and [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778) runs them.
 The poller problem above is settled by not relying on the gauge: a recovery's replay runs after its restore and before the restored job's first checkpoint is triggered, so the trials bound what it spends of the budget from those Flink timestamps, as [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-fault-kinds-and-measurement-windows) records, and read the deduplication counter for how many creates it found existing.
+
+## Measurement code removed (2026-11-14)
+
+The assessment's decision was taken on 2026-09-24, and no open issue measures the staged mode again.
+[#2160](https://github.com/flink-gcp/flink-connector-gcp/issues/2160) therefore removed the code that only the measurement used: the measurement job and its observation classes, the lean probe the rig forked, the rig's campaign controller, evidence reconciler, grouping and offline analyzer, the preregistered protocol file, the `just tier3-vm-analyze` recipe, and the weekly floor and LTS builds of the module that the measurement added for its two images, together with the release check's Flink 1.20 build of the module and the API tier checker's way of reading a Tier-3 module at that line.
+The result above stands on its [recorded evidence](evidence/0162-cloudtasks-assessment-1246.md); measuring the mode again starts from the revision before that removal.
+The module keeps the recovery application of #1362.
 
 ## Consequences
 

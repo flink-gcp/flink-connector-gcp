@@ -33,9 +33,9 @@ from flink_tier3.exercise import (
 )
 from flink_tier3.policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE
 
-from .cloudtasks.test_recovery_plan import inputs as inputs  # noqa: PLC0414
-from .cloudtasks.test_recovery_plan import renderer as renderer  # noqa: PLC0414
-from .cloudtasks.test_recovery_runtime import prepared as prepared  # noqa: PLC0414
+from .cloudtasks.test_plan import inputs as inputs  # noqa: PLC0414
+from .cloudtasks.test_plan import renderer as renderer  # noqa: PLC0414
+from .cloudtasks.test_runtime import prepared as prepared  # noqa: PLC0414
 from .test_lifecycle import env as env  # noqa: PLC0414
 from .test_lifecycle import rt
 

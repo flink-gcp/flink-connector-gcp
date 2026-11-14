@@ -478,7 +478,7 @@ check-skill-frontmatter:
 tier3-smoke-verify:
     just verify -P tier3-smoke -pl kubernetes/apps/smoke -am clean
 
-# Build the Cloud Tasks measurement and recovery applications and test them without GCP.
+# Build the Cloud Tasks recovery application and test it without GCP.
 tier3-cloudtasks-verify:
     just verify -P tier3-cloudtasks -pl kubernetes/apps/cloudtasks -am clean
 
@@ -553,11 +553,6 @@ tier3-schemas mode='check' *args:
 [positional-arguments]
 tier3-analyze directory:
     mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 analyze --evidence "$1"
-
-# Offline analysis of collected single-host campaign directories; contacts nothing.
-[positional-arguments]
-tier3-vm-analyze out +campaigns:
-    mise x uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 vm-analyze --out "$@"
 
 # Regenerates the resolved-licence report first, because the check is only as
 # current as that file — a stale one would report a bundle that no longer exists.

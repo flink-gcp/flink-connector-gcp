@@ -39,10 +39,10 @@ import java.util.function.ToLongFunction;
 /**
  * An in-process {@code CreateTask} server, so a test can run the whole job without an emulator.
  *
- * <p>It answers the one method the measurement and recovery paths call: it names an unnamed task,
- * refuses a name it has already accepted with {@code ALREADY_EXISTS}, and records what it took.
- * That is enough for the connector's eager and staged writers alike, and it keeps this module free
- * of testcontainers and of Docker.
+ * <p>It answers the one method the recovery job calls: it names an unnamed task, refuses a name it
+ * has already accepted with {@code ALREADY_EXISTS}, and records what it took. That is enough for
+ * the connector's eager and staged writers alike, and it keeps this module free of testcontainers
+ * and of Docker.
  */
 final class FakeCloudTasks implements AutoCloseable {
     private final Map<Long, Task> accepted = new ConcurrentHashMap<>();
@@ -50,10 +50,6 @@ final class FakeCloudTasks implements AutoCloseable {
     private final AtomicLong refused = new AtomicLong();
     private final ToLongFunction<Task> sequence;
     private final Server server;
-
-    FakeCloudTasks() throws IOException {
-        this(task -> MeasurementPayload.read(task.getHttpRequest().getBody()).sequence());
-    }
 
     /** A server that reads each task's input sequence with the given function. */
     FakeCloudTasks(ToLongFunction<Task> sequence) throws IOException {
@@ -117,8 +113,8 @@ final class FakeCloudTasks implements AutoCloseable {
 
     /**
      * Shuts the server down and insists it actually terminated: netty builds its own event loop
-     * groups here, and a module run starts fifteen of these, so a wedged one is a leak worth
-     * hearing about rather than a thread nobody counts.
+     * groups here, and a module run starts one for each test that runs the job, so a wedged one is
+     * a leak worth hearing about rather than a thread nobody counts.
      */
     @Override
     public void close() throws InterruptedException {

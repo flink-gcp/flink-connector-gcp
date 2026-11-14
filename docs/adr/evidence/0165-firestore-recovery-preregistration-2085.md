@@ -122,7 +122,7 @@ A refuted grant premise stops the trials before any further dispatch, as [Stop c
 
 ## Campaign window
 
-The trials pull `firestore-recovery` from the publication of main commit `035622999a8e0612a71c5783a4caf780a5766179` on 2026-11-08 UTC, the first after the scenario merged, which the images README records under [Firestore recovery publication](../../../kubernetes/images/README.md#firestore-recovery-publication).
+The trials pull `firestore-recovery` from the publication of main commit `035622999a8e0612a71c5783a4caf780a5766179` on 2026-11-08 UTC, the first after the scenario merged, which the images README records under [Firestore recovery publication](0165-tier3-image-publications.md#firestore-recovery-publication).
 The supervisor runs the `lifecycle-tools` image that [pins.cue](../../../kubernetes/images/pins.cue) adopted from that run, and the Operator the 1.16.1 `operator` mirror that its Helm values pin.
 A Firestore dispatch checks these three images:
 

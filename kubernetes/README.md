@@ -14,43 +14,83 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Tier-3 Kubernetes manifests
+# Tier-3 on Kubernetes
 
-This CUE module supplies the static manifest layer for [issue #38](https://github.com/flink-gcp/flink-connector-gcp/issues/38).
-It reuses the [existing GKE foundation](../opentofu/README.md#tier-3-kubernetes-environment).
-The render and schema commands remain credential-free.
-The [OpenTofu bootstrap runbook](../opentofu/tier3-bootstrap/README.md) covers persistent prerequisites and authentication.
+Tier-3 runs each connector's Flink job on the GKE Autopilot cluster `flink-tier3`, injects faults on purpose, and then reads back what the job wrote.
+It asks whether the connector keeps working through faults on real Kubernetes without losing data; it is neither a load test nor a test of long-running behavior.
+[ADR-0204](../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) sets the rules a trial is judged by, and a scenario that has not moved to it yet keeps the rules of [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) until its issue under [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143) moves it.
+ADR-0165 also divides ownership: OpenTofu owns the persistent foundation, and this directory owns the applications and what each run deploys.
 
-## Packages and deliveries
+This directory holds the Flink applications, their CUE manifests and the image pins.
+The rig that dispatches, supervises and judges a run is the `flink-tier3` Python package in [`tools/tier3`](../tools/README.md#tier-3), and the [lifecycle runbook](lifecycle/README.md) describes how a run is dispatched, bounded and cleaned up.
+Rendering and schema checks contact no cluster; the [OpenTofu bootstrap runbook](../opentofu/tier3-bootstrap/README.md) covers the persistent prerequisites and authentication.
+
+## Scenarios
+
+The `scenario` input of the `Tier-3 run` workflow selects one scenario per run, and each runs in a namespace of its own.
+Every connector has one; `smoke` runs a generic stateful application without a connector, to check the environment itself.
+
+| Scenario | Namespace | Runbook | Rules | Findings |
+| --- | --- | --- | --- | --- |
+| `smoke` | `tier3-smoke` | [Smoke](apps/smoke/README.md) | | |
+| `bigquery-recovery` | `tier3-bigquery` | [BigQuery](apps/bigquery/README.md) | ADR-0165 until [#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150) | [#1312](../docs/adr/evidence/0165-bigquery-trial-findings-1312.md), [#1313](../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md), [#1685](../docs/adr/evidence/0165-bigquery-fileloads-inflight-findings-1685.md), [#1779](../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md), [#2034](../docs/adr/evidence/0195-fileloads-uploader-recovery-2034.md) |
+| `pubsub-recovery` | `tier3-pubsub` | [Pub/Sub](apps/pubsub/README.md) | ADR-0165 until [#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151) | [#1361](../docs/adr/evidence/0165-pubsub-trial-findings-1361.md), [#1720](../docs/adr/evidence/0165-pubsub-redelivery-findings-1720.md), [#2056](../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md), [#2127](../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) |
+| `cloudtasks-recovery` | `tier3-cloudtasks` | [Cloud Tasks](apps/cloudtasks/README.md) | ADR-0165 until [#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152) | [#1362](../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md), [#1778](../docs/adr/evidence/0165-cloudtasks-fault-trials-findings-1778.md), [#1799](../docs/adr/evidence/0165-cloudtasks-rescale-out-findings-1799.md) |
+| `bigtable-recovery` | `tier3-bigtable` | [Bigtable](apps/bigtable/README.md) | ADR-0165 until [#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153) | [#1855](../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) |
+| `spanner-recovery` | `tier3-spanner` | [Spanner](apps/spanner/README.md) | ADR-0165 until [#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154) | [#1878](../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) |
+| `firestore-recovery` | `tier3-firestore` | [Firestore](apps/firestore/README.md) | ADR-0204 for the `sequence` kind; ADR-0165 for the single-fault kinds | [#2147](../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) |
+
+Each findings link names the issue whose trials it reports.
+The exactly-once scenario of [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148) is not designed yet.
+
+## Layout per connector
+
+Every connector's scenario is laid out the same way, so a change to one connector touches that connector's paths and, beyond them, only the entries that name the connector in shared files.
+In the table, `<c>` is the connector's directory name, `bigquery`, `pubsub`, `cloudtasks`, `bigtable`, `spanner` or `firestore`.
+
+| Path | What it holds |
+| --- | --- |
+| `kubernetes/apps/<c>/` | The Flink application: a Maven module that only the `tier3-<c>` profile builds, through `just tier3-<c>-verify`; its `Dockerfile` and `.dockerignore`; and its `README.md`, the scenario's runbook |
+| `kubernetes/pkg/<c>/application.cue` | The application's FlinkDeployment contract |
+| `kubernetes/lifecycle/<c>.cue` | The scenario's dispatch inputs and the applications the lifecycle delivery renders for it |
+| `kubernetes/tests/fixtures/<c>.cue`, `kubernetes/tests/test_<c>_manifests.py` | The scenario's manifest tests |
+| `tools/tier3/src/flink_tier3/<c>/` | The scenario's part of the rig |
+| `tools/tier3/tests/<c>/` | The tests of that part |
+| `opentofu/flink-gcp/tier3-<c>.tf`, `opentofu/tier3-bootstrap/<c>.tf` | The scenario's GCP grants and resources, and its namespace's Kubernetes identity and permissions |
+| `docs/adr/evidence/NNNN-<c>-<topic>-<issue>.md` | A preregistration or findings record, numbered for the ADR it supports |
+
+At run time a connector's scenario is `<c>-recovery` in namespace `tier3-<c>`, under ServiceAccount `<c>`, with its image from GAR package `<c>-recovery`.
+The smoke application uses the same Kubernetes, manifest-test and OpenTofu paths as `smoke` and keeps its static deliveries in `runs/generic-smoke/`; it has no rig subpackage, rig tests or recovery trial, and its scenario, ServiceAccount and GAR package are all `smoke`.
+The shared files that name every connector are the tables a scenario is registered in, such as the run workflow's inputs, the scenario list and windows in `lifecycle/delivery.cue`, the namespace policy in `runs/common.cue`, `flink_tier3/policy.toml`, the Operator's watch set, and the rig modules that choose a scenario's plan, actors and analysis.
+
+A recovery runbook opens with what the application is for and then has these sections in this order: `Build and local validation`; the layout of what the run writes to, such as `Instance layout`; the graph and what each destination records; `Arguments`; `Deployment definition`, where the runbook has one; and `Recovery trial`, whose subsections cover dispatch, the lifecycle of the run's resources, the exercise and its oracles, and the verdict and analysis.
+Code that two scenarios share belongs to the shared layers below or to the package root of `flink_tier3` and its tests, not to one connector's directory for another to import.
+
+Some paths predate these rules. Each scenario's rework under [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143) brings its own paths in line, and code another connector imports moves to the shared layers before the rework that changes it:
+
+- `kubernetes/lifecycle/pubsub-trials/` holds Pub/Sub's reviewed trial files, which its dispatch names instead of a trial input ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151));
+- the rig tests of other connectors, the shared exercise tests and `test_records.py` and `test_rest.py` take fixtures from `tools/tier3/tests/bigquery/` ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)) and `tools/tier3/tests/cloudtasks/` ([#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152));
+- Firestore's oracles build on `flink_tier3.spanner.oracle`, and its lifecycle and exercise on `flink_tier3.spanner.instance` ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154));
+- the BigQuery and Pub/Sub runbooks do not follow the section order ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150), [#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)), and BigQuery's uploader findings keep the name `0195-fileloads-uploader-recovery-2034.md` they were published under.
+
+## Shared layers
+
+Everything outside the connector paths is shared by every scenario:
 
 ```text
 kubernetes/
   cue.mod/module.cue             # Module identity and pinned dependencies
   gen/flink/v1beta1/             # Generated CRD validation definitions
   schemas/objects.cue            # Supported Kubernetes kinds
-  pkg/flink/application.cue      # Standard Flink application defaults
-  pkg/smoke/application.cue      # Generic stateful smoke application contract
-  pkg/bigquery/application.cue   # Finite BigQuery recovery trial contract
-  pkg/pubsub/application.cue     # Pub/Sub recovery contract
-  pkg/cloudtasks/application.cue # Cloud Tasks recovery trial contract
-  pkg/bigtable/application.cue   # Bigtable recovery trial contract
-  pkg/spanner/application.cue    # Spanner recovery trial contract
-  pkg/firestore/application.cue  # Firestore recovery trial contract
-  apps/smoke/                    # Internal Java application and image payload
-  apps/bigquery/                 # Finite BigQuery recovery application and local tests
-  apps/pubsub/                   # Pub/Sub relay, output oracle and local tests
-  apps/cloudtasks/               # Cloud Tasks measurement and recovery applications and local tests
-  apps/bigtable/                 # Bigtable sink and Change Streams recovery application and local tests
-  apps/spanner/                  # Spanner sink, Change Streams and batch-read recovery application and local tests
-  apps/firestore/                # Firestore Native and Datastore-mode sink and batch-read recovery application and local tests
-  images/pins.cue                # Published Flink base and lifecycle runtime digests
+  pkg/flink/                     # Standard Flink application defaults
   common.cue                     # Cluster identity, resource types, labels and order
   cli_tool.cue                   # The render command
-  runs/common.cue                # Run inputs and environment constraints
-  lifecycle/delivery.cue         # Shared lifecycle ConfigMap and supervisor
-  lifecycle/faults.cue           # Recovery fault kinds and each phase's sizes
-  lifecycle/{smoke,bigquery,pubsub,cloudtasks,bigtable,spanner,firestore}.cue # Scenario inputs and applications
-  tests/                         # CI delivery discovery and synthetic regression cases
+  runs/common.cue                # Run inputs and the environment policy every delivery applies
+  lifecycle/delivery.cue         # Lifecycle inputs, ConfigMap and supervisor Job
+  lifecycle/faults.cue           # Fault kinds and each phase's sizes
+  images/                        # Image pins and the lifecycle-tools image
+  tests/fixtures/application.cue # The standard application the shared tests render
+  tests/test_manifests.py        # Tests of the shared layers, and the helpers and `module` fixture the scenario tests import
   upstream.toml                  # Operator chart version, mirror URLs and SHA-512
 ```
 
@@ -123,20 +163,14 @@ The root supplies common project labels.
 `runs/common.cue` adds the run ID, RFC 3339 expiry and application namespace (`tier3-smoke` by default, `tier3-bigquery`, `tier3-pubsub`, `tier3-cloudtasks`, `tier3-bigtable`, `tier3-spanner` or `tier3-firestore`) to resource metadata.
 For FlinkDeployments it constrains `spec.image` to a GAR digest and requires a nonempty ServiceAccount and `allowNonRestoredState: false`; in `tier3-smoke` it also requires parallelism from one to two and `v2_2`.
 In `tier3-bigquery` it requires the `bigquery` ServiceAccount, the `bigquery-recovery` GAR package, parallelism one or two and `v2_2`.
+In `tier3-cloudtasks` it requires the `cloudtasks` ServiceAccount, the `cloudtasks-recovery` GAR package, parallelism one or two and `v2_2`.
 The `tier3-pubsub` namespace requires the `pubsub` ServiceAccount, parallelism one to three and `v2_2`; three is for the restore-deduplication trials.
 In `tier3-bigtable` it requires the `bigtable` ServiceAccount, the `bigtable-recovery` GAR package, parallelism one or two and `v2_2`.
 In `tier3-spanner` it requires the `spanner` ServiceAccount, the `spanner-recovery` GAR package, parallelism one or two and `v2_2`.
 In `tier3-firestore` it requires the `firestore` ServiceAccount, the `firestore-recovery` GAR package, parallelism one or two and `v2_2`.
-The [Pub/Sub application package](apps/pubsub/README.md#deployment-definition) adds the relay image, argument, state-storage and resource contract; its [offline proposal](apps/pubsub/README.md#offline-trial-proposal) renders a reviewable delivery, and [dispatch](apps/pubsub/README.md#approval-dispatch) runs a reviewed trial through the runner's [admission](apps/pubsub/README.md#admission-and-effective-access) and the supervisor's [recovery exercise](apps/pubsub/README.md#recovery-exercise).
-Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the image/lifecycle stage must supply and verify those images before execution.
-The [image publication path](images/README.md) prepares the Operator, Flink and supervisor runtime environment through a dedicated publisher.
-[Published runtime pins](images/pins.cue) are available as the `images` CUE package for Flink application-image builds and lifecycle tooling.
-The Flink base image has no application JAR; each actual delivery still supplies its own complete image, and admission/retention checks belong to the lifecycle stage.
-The [generic smoke application](apps/smoke/README.md) supplies that JAR, a dedicated workload identity and a reusable `pkg/smoke.#Application` definition.
-Its committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries share concrete run inputs and the published `images.smoke` pin.
-They update the same deployment sequentially; the [application runbook](apps/smoke/README.md#deployment-and-storage) records the planned window, expiry and independent render commands.
-The [BigQuery application package](apps/bigquery/README.md#deployment-definition) supplies initial and savepoint-upgrade definitions for its three delivery methods, ALO, EO and FILE_LOADS, at both destination counts.
-Its synthetic deliveries are checked locally, and [production dispatch](apps/bigquery/README.md#production-dispatch) renders and admits an approved trial's delivery.
+Images in extra Pod-template containers and generic Jobs/Deployments are not constrained by this policy; the lifecycle must supply and verify those images before execution.
+Each delivery supplies its application's complete image; the [image runbook](images/README.md) describes publication and the [pins](images/pins.cue) of the Flink base, supervisor and smoke images.
+The smoke application's committed `runs/generic-smoke/initial` and `runs/generic-smoke/upgrade` deliveries share concrete run inputs and the `images.smoke` pin, and its [runbook](apps/smoke/README.md#deployment-and-storage) gives their render commands.
 The common and manager-specific Flink Pod templates select AMD64 and carry the run label; the TaskManager template adds Spot, and the JobManager template selects no capacity class, which is how a Pod asks Autopilot for normal capacity.
 These environment constraints apply even when a delivery changes a package default.
 Services in runs are ClusterIP-only; persistent identities, quotas, RBAC and cluster-scoped resources belong to OpenTofu.
@@ -215,12 +249,7 @@ A previously downloaded archive can be checked without downloading it again:
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 schemas check --chart /path/to/chart.tgz
 ```
 
-## Bounded execution
-
-The [lifecycle runbook](lifecycle/README.md) defines dispatch, the quota-bounded resource budget, the shared infrastructure lock, the supervisor, cleanup and recovery.
-Its implementation is locally validated, and deployed runs have exercised it on the cluster, from the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) on 2026-09-17 to the BigQuery and Pub/Sub trials.
-
-## Ownership and remaining stages
+## Ownership
 
 [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) separates application management from the persistent Kubernetes foundation.
 [The OpenTofu bootstrap root](../opentofu/tier3-bootstrap/README.md) owns namespaces, CRDs, persistent workload identities/RBAC and quotas.
@@ -229,46 +258,6 @@ CUE owns Flink applications and application-specific ConfigMaps, Services, Deplo
 It cannot declare the bootstrap resource kinds, which prevents accidental ownership overlap.
 
 The bootstrap runbook documents credentials, RBAC, initial administrator permission grants, adoption of existing resources and CI plan/apply.
-The idle Helm release follows successful bootstrap; GAR image and lifecycle tooling, and a separately approved generic smoke run follow the idle installation.
-The Operator namespace is `tier3-system`; it watches `tier3-smoke`, `tier3-cloudtasks`, `tier3-bigquery`, `tier3-pubsub`, `tier3-bigtable`, `tier3-spanner` and `tier3-firestore`.
-All seven application namespaces retain zero Pod/PVC quotas until separately approved admission.
-After calibration sessions on this cluster, the Cloud Tasks performance assessment ran on a single-VM rig, as [ADR-0162](../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md#execution-moves-to-a-lean-single-vm-rig-2026-09-21) records, and the cluster session path was removed.
-The `tier3-cloudtasks` namespace runs the `cloudtasks-recovery` scenario, the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362); its [runbook](apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict, and its [findings](../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record its result.
-The [Cloud Tasks fault trial publication](images/README.md#cloud-tasks-fault-trial-publication) carries the `--sink-parallelism` argument into the TaskManager replacement and rescale trials of [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778), and the [Cloud Tasks INTERNAL retry publication](images/README.md#cloud-tasks-internal-retry-publication) their later attempts; the [findings](../docs/adr/evidence/0165-cloudtasks-fault-trials-findings-1778.md) record their results.
-Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a later command contacts the cluster.
-
-The [BigQuery recovery application](apps/bigquery/README.md) supplies the finite dynamic-destination workload for [issue #1312](https://github.com/flink-gcp/flink-connector-gcp/issues/1312).
-Its tests cover input restoration, emulator sink wiring and appender observations.
-The [trial publication](images/README.md#bigquery-trial-publication) carried the appender observations into the Storage Write trials of [#1427](https://github.com/flink-gcp/flink-connector-gcp/issues/1427); the [FILE_LOADS trial publication](images/README.md#bigquery-file_loads-trial-publication) carried the FILE_LOADS mode into the `fl-10` trial of [#1552](https://github.com/flink-gcp/flink-connector-gcp/issues/1552), whose [findings](../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md) record its result.
-The [fault trial publication](images/README.md#bigquery-fault-trial-publication) carries the `--parallelism` argument into the `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779).
-
-## Bigtable recovery application
-
-The [Bigtable recovery application](apps/bigtable/README.md) supplies the one graph that the trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) share: the sink in both delivery modes and a Change Streams relay.
-Build it with `just tier3-bigtable-verify`.
-Its tests cover input restoration and rescaling with in-memory connectors and pin the production graph.
-The [`bigtable-recovery`](lifecycle/bigtable.cue) delivery runs it in the `tier3-bigtable` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-bigtable.tf), and the rig scenario of [#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/bigtable/README.md#recovery-trial) describes.
-Its four trials each reached `usable`, as the [Bigtable recovery trial findings](../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) record.
-
-## Spanner recovery application
-
-The [Spanner recovery application](apps/spanner/README.md) supplies the one graph that the trials of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) share: the sink, a Change Streams relay and a paced batch-read copy.
-Build it with `just tier3-spanner-verify`.
-Its tests run the production graph against the Spanner emulator through savepoint upgrades and both rescales and pin the graph.
-The [`spanner-recovery`](lifecycle/spanner.cue) delivery runs it in the `tier3-spanner` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-spanner.tf), and the rig scenario of [#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877) creates each run's instance and judges the trial, as the [recovery trial runbook](apps/spanner/README.md#recovery-trial) describes.
-Its four trials each reached `usable`, as the [Spanner recovery trial findings](../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) record.
-
-## Firestore recovery application
-
-The [Firestore recovery application](apps/firestore/README.md) supplies the one graph that the trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) share: the Native-mode and Datastore-mode sinks and a paced batch-read copy in each mode.
-Build it with `just tier3-firestore-verify`.
-Its tests run the production graph against the Firestore emulator in both modes through savepoint upgrades and both rescales and pin the graph.
-The [`firestore-recovery`](lifecycle/firestore.cue) delivery runs it in the `tier3-firestore` namespace under its [GCP grants](../opentofu/flink-gcp/tier3-firestore.tf), and the rig scenario of [#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084) creates each run's databases and judges the trial, as the [recovery trial runbook](apps/firestore/README.md#recovery-trial) describes; the namespace, its place in the shared preflight and the Operator's watch over it are in place ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
-
-## Pub/Sub recovery application
-
-The [internal DataStream/Table relay and output oracle](apps/pubsub/README.md) prepare [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) using the production connector and local emulator recovery tests.
-Build them with `just tier3-pubsub-verify`.
-The [first image publication](apps/pubsub/README.md#deployment-definition) is complete.
-The [offline trial proposal](apps/pubsub/README.md#offline-trial-proposal) freezes one JM/TM replacement or savepoint rescaling trial, with unapproved numeric limits and exact manifests.
-The relay's unbounded runtime still requires resource/permission provisioning, application admission and independent lifecycle supervision before real execution.
+The Operator namespace is `tier3-system`, and the Operator watches the seven namespaces of the [scenario table](#scenarios).
+Each of them keeps zero Pod and PVC quotas except while a run holds the environment lock.
+Use a dedicated kubeconfig and explicitly select `gke_flink-gcp_us-central1_flink-tier3` whenever a command contacts the cluster.

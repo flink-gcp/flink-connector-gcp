@@ -163,8 +163,8 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
   `flink.version` (never class files: their constant pool lists method-level annotations too,
   the #103 miscount). Each import is classified at the floor `flink.version` and at
   `weekly.yaml`'s `FLINK_LTS` wherever its source root is compiled at them, and the weakest tier
-  governs (#1714); `source_versions()` holds the per-root map, and the TOML's
-  `lts_tier3_modules` names the Tier-3 modules also built at the LTS. The weekly ceiling and
+  governs (#1714); `source_versions()` holds the per-root map, and reads a Tier-3 job module at
+  `flink.version` alone, since nothing builds one at the LTS. The weekly ceiling and
   snapshot builds are not classified. A Tier-3 module pinning another `flink.version` stops it
   with exit 2, since its imports would be classified at the wrong version. `@Internal`, `@Experimental` and
   unannotated types each need a reasoned allowlist entry in `scripts/config/flink-api-tiers.toml`;
@@ -627,9 +627,14 @@ without mise activated. Add a command here rather than to a workflow `run:` bloc
 ## Infrastructure (OpenTofu and Kubernetes)
 
 Tier-3 Kubernetes manifests live in `kubernetes/`; read its README and ADR-0165 before changing
-the CUE hierarchy or the OpenTofu/CUE ownership split. Before changing the smoke application,
-its image or workload identity, also read `kubernetes/apps/smoke/README.md`. Use
-`just tier3-smoke-verify` for its opt-in Maven build and local recovery tests. A Tier-3 job
+the CUE hierarchy or the OpenTofu/CUE ownership split, and ADR-0204 before changing how a trial
+runs or is judged: a scenario follows ADR-0204 once its issue under #2143 has moved it, and the
+README's scenario table says which have. A connector's Tier-3 files go where the README's
+"Layout per connector" section puts them; beyond them a change for one connector edits only its
+own entries in the shared files that name every connector, and code two scenarios share goes to
+the shared layers rather than into one connector's directory for another to import. Before changing the
+smoke application, its image or workload identity, also read `kubernetes/apps/smoke/README.md`.
+Use `just tier3-smoke-verify` for its opt-in Maven build and local recovery tests. A Tier-3 job
 module's main sources are held by both Flink API tier checkers like a connector's: every
 top-level type carries a tier annotation, and an unstable Flink import needs its entry in
 `scripts/config/flink-api-tiers.toml`, classified at the root pom's `flink.version`.
@@ -638,29 +643,15 @@ top-level type carries a tier annotation, and an unstable Flink import needs its
 `just tier3-schemas check` verifies generated CRD packages against the checksum-pinned chart. These commands do not contact a cluster,
 but can download the pinned schema module, Python dependencies and chart from public registries.
 The parameterized lifecycle delivery uses `flink-tier3 render` to supply package-source JSON;
-see `kubernetes/lifecycle/README.md` for the complete offline command. The cluster rig's
-Cloud Tasks recovery trial (#1362) is the `cloudtasks-recovery` scenario in `tier3-cloudtasks`;
-its dispatch names one of four fault kinds (#1777). Read
-`kubernetes/apps/cloudtasks/README.md#recovery-trial` and ADR-0165 before changing its
-queue lifecycle, oracle, fault kinds or measurement windows. The Bigtable recovery trials
-(#1316, #1317) have their `bigtable-recovery` CUE delivery, GCP grants, namespace (#1860) and
-rig scenario (#1854). The Spanner recovery trials (#1360, #1872) have their
-`spanner-recovery` CUE delivery, GCP grants (#1874), namespace (#1875), which the shared
-preflight and the Operator's watch set include (#1876), and rig scenario (#1877); read
-`kubernetes/apps/spanner/README.md#recovery-trial` before changing its oracles or timings.
-The Firestore recovery trials (#1879) have their application (#2082), GCP grants (#2096),
-`firestore-recovery` CUE delivery (#2104), namespace (#2109), which the shared preflight and
-the Operator's watch set include (#2083), and rig scenario (#2084). Read `kubernetes/apps/firestore/README.md#recovery-trial`
-before changing its seed, oracles or timings: the seed and pace are sized against the service's
+see `kubernetes/lifecycle/README.md` for the complete offline command. Read a scenario's runbook,
+`kubernetes/apps/<connector>/README.md`, before changing its resources, oracles, fault kinds,
+sizes or timings; the Firestore seed and pace are sized against the service's
 one-hour read-time bound.
 The `pubsub-recovery` dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`; read the [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials)
-and `kubernetes/apps/pubsub/README.md` before adding one. Create the directory with its first
-reviewed trial, and keep it TOML so it carries the licence
+and `kubernetes/apps/pubsub/README.md` before adding one. Keep it TOML so it carries the licence
 header apache-rat requires. A file there is runnable
 once admission opens, so test trials belong under `tools/tier3/tests/fixtures/`. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
 offline; it never contacts a cluster or a bucket.
-`just tier3-vm-analyze <out> <campaign>...` does the same for single-host campaign directories
-(`flink_tier3.cloudtasks.vmanalyze`, ADR-0162).
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied
 dedicated kubeconfig; GKE API discovery verifies that endpoint.

@@ -30,7 +30,7 @@ Reaching them took nine attempts; the [list of attempts](#every-admitted-attempt
 | `rescale-out` | `sp1878-ro-a3` | `usable` | 180,000, 0; one each | 180,000, 0; 3,000 | 120,000, 0; 38,677, 56,425 |
 | `rescale-in` | `sp1878-ri-a3` | `usable` | 180,000, 0; one each | 180,000, 0; 3,000 | 120,000, 0; 40,417, 57,741 |
 
-Every trial ran the `spanner-recovery` image `sha256:75a2d78a2315c02406c3dbc5dc7576d245f68ad110a23d94628541faffcf5c1f` from the [Spanner recovery publication](../../../kubernetes/images/README.md#spanner-recovery-publication) of main `34be4f08c`.
+Every trial ran the `spanner-recovery` image `sha256:75a2d78a2315c02406c3dbc5dc7576d245f68ad110a23d94628541faffcf5c1f` from the [Spanner recovery publication](0165-tier3-image-publications.md#spanner-recovery-publication) of main `34be4f08c`.
 No oracle found a foreign key, a wrong value, a relayed commit after the change stream's end, or a copied late row.
 In each trial the seed report matched all 120,016 rows, the 120,000 seeded and the 16 late ones.
 Each relay was judged: the input finished 1,262 to 1,472 seconds before the change stream's end, more than the 120 seconds the oracle needs, and the source's watermark rose from the `baseline` window to the `upgraded` one and again to the `finishing` one.

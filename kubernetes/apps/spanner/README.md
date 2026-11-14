@@ -158,6 +158,9 @@ The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
 Any run ID fits, because the run's instance is `sp1360-<run-id>`, at most 47 of the 64 characters an instance ID takes.
 One dispatch can carry a campaign of the remaining kinds and a repeat budget, as the [Bigtable dispatch section](../bigtable/README.md#dispatch) describes; for example, `spanner_trial=jm-replacement`, `run_id=sp1878-jm-a1`, `campaign=tm-replacement,rescale-out,rescale-in` and `repeats=2` run the four trials from one dispatch, for at most six attempts.
 
+The [`spanner-recovery`](../../lifecycle/spanner.cue) delivery takes the input and seed pace that the [deployment definition](#deployment-definition) describes from the optional `spanner_records`, `spanner_records_per_second` and `spanner_seed_rows_per_second` tags, the last at most 1,000, the change-stream end from the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and the kind from the `spanner_trial` tag, `jm-replacement` unless given, which sizes every vertex but the input and the TaskManagers from [faults.cue](../../lifecycle/faults.cue).
+Dispatch renders it at the dispatched kind, the input and seed pace every kind shares and a change-stream end 3,900 seconds into the run's window.
+
 ### Instance lifecycle
 
 After the supervisor heartbeats and the Operator is ready, the runner records the instance's intent, reads that the name is free, and records the creation intent and a call marker in one control write.

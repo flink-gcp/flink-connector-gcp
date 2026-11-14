@@ -24,8 +24,8 @@ limitations under the License.
         <relativePath>../../../pom.xml</relativePath>
     </parent>
     <artifactId>flink-gcp-tier3-cloudtasks</artifactId>
-    <name>Flink GCP : Tier-3 Cloud Tasks applications</name>
-    <description>Internal Cloud Tasks measurement and recovery applications for the on-demand Tier-3 rigs.</description>
+    <name>Flink GCP : Tier-3 Cloud Tasks recovery application</name>
+    <description>Internal Cloud Tasks recovery application for the on-demand Tier-3 rig.</description>
     <properties>
         <!-- The application follows the image runtime, independently of connector compatibility. -->
         <maven.compiler.source>17</maven.compiler.source>
@@ -73,7 +73,7 @@ limitations under the License.
         </dependency>
     </dependencies>
     <build>
-        <finalName>cloudtasks-measurement</finalName>
+        <finalName>cloudtasks-recovery</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

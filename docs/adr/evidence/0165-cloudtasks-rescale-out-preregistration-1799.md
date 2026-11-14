@@ -67,9 +67,9 @@ Each repeat is approved before its dispatch, except a redispatch after a supervi
 
 ## Image and window
 
-The trial pulls a `cloudtasks-recovery` image that carries #1796, which the images of the [#1778 publications](../../../kubernetes/images/README.md#cloud-tasks-internal-retry-publication) do not.
-It is published from `main` after this record is fixed, and its digest is recorded as the [Cloud Tasks CANCELLED retry publication](../../../kubernetes/images/README.md#cloud-tasks-cancelled-retry-publication) before the first dispatch, which names it as `application_digest`.
-The `operator` mirror the Operator runs and the `lifecycle-tools` image for the supervisor stay those of the [BigQuery fault trial publication](../../../kubernetes/images/README.md#bigquery-fault-trial-publication), because the lifecycle image's inputs are unchanged, as a read before each dispatch confirms; the rig's own code, including the changes of #1797 and #1798, reaches the supervisor in the run's delivery rather than in the image.
+The trial pulls a `cloudtasks-recovery` image that carries #1796, which the images of the [#1778 publications](0165-tier3-image-publications.md#cloud-tasks-internal-retry-publication) do not.
+It is published from `main` after this record is fixed, and its digest is recorded as the [Cloud Tasks CANCELLED retry publication](0165-tier3-image-publications.md#cloud-tasks-cancelled-retry-publication) before the first dispatch, which names it as `application_digest`.
+The `operator` mirror the Operator runs and the `lifecycle-tools` image for the supervisor stay those of the [BigQuery fault trial publication](0165-tier3-image-publications.md#bigquery-fault-trial-publication), because the lifecycle image's inputs are unchanged, as a read before each dispatch confirms; the rig's own code, including the changes of #1797 and #1798, reaches the supervisor in the run's delivery rather than in the image.
 
 The `operator` mirror was created at 2026-10-14T12:17:04Z, and a publication copies it without renewing its creation time while the registry still holds that digest.
 Dispatch refuses an image unless the run's window ends a day before its seven-day deletion eligibility, so every attempt's window, which ends 90 minutes after admission, must end before 2026-10-20T12:17:04Z.
@@ -81,7 +81,7 @@ If the trial has no `usable` attempt when no window can end before that time, it
 Each attempt is dispatched only after these are read, in this order, immediately before it:
 
 - The `main` commit the workflow will run contains #1797's and #1798's merges, `fd39079a4` and `4644db4ec`, and, from the second attempt on, #1828's, `917dac357`; its `pins.cue` names `lifecycle-tools@sha256:4f5ec406125a5eccddf8e95bd5f1a6cc355d7609f7322fdb4539434e5a003c2c`, which is still in the registry; and `git diff 25260e678 <commit> -- kubernetes/images/lifecycle uv.lock pyproject.toml tools/tier3/pyproject.toml` is empty, so that image still matches the rig's dependencies.
-- The `cloudtasks-recovery` digest named as `application_digest` is the one the [Cloud Tasks CANCELLED retry publication](../../../kubernetes/images/README.md#cloud-tasks-cancelled-retry-publication) lists, built from a commit that contains #1796's merge, `d042b096c`, and it is still in the registry.
+- The `cloudtasks-recovery` digest named as `application_digest` is the one the [Cloud Tasks CANCELLED retry publication](0165-tier3-image-publications.md#cloud-tasks-cancelled-retry-publication) lists, built from a commit that contains #1796's merge, `d042b096c`, and it is still in the registry.
 - The environment lock `_control/environment.json` and every `_control/runs/` record are absent from `gs://flink-gcp-tier3-evidence`, every earlier `approval.json` has its `result.json`, and no other `tier3-run` workflow run is queued or in progress.
 - `runs/<run-id>/` is absent from the evidence bucket, and no queue named `ct1362-<run-id>` exists in `flink-gcp/us-central1`.
 - The custom roles read back as [#1768](https://github.com/flink-gcp/flink-connector-gcp/issues/1768) applied them, each bound only to its service account, as the [#1778 preregistration lists them](0165-cloudtasks-fault-trials-preregistration-1778.md#before-dispatch).

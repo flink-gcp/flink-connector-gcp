@@ -116,7 +116,7 @@ def test_the_first_actor_to_begin_cleanup_names_the_stop():
     """The supervisor stops on the exercise's cause; the runner settles after it."""
     from flink_tier3.exercise import INTERRUPTED
 
-    from .cloudtasks.test_recovery_lifecycle import Environment
+    from .cloudtasks.test_lifecycle import Environment
 
     env = Environment()
     env.records.begin_cleanup(INTERRUPTED)
@@ -143,7 +143,7 @@ def test_updates_that_never_answer_still_fail():
 @pytest.mark.parametrize("fates", [["landed"], ["lost"], ["lost", 503], ["lost"] * 3])
 def test_an_unanswered_evidence_event_is_written_once_or_fails(fates):
     """A 412 on a repeat is the first attempt landing; nothing else is."""
-    from .cloudtasks.test_recovery_lifecycle import Environment
+    from .cloudtasks.test_lifecycle import Environment
 
     env = Environment()
     write = env.store.write

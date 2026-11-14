@@ -169,10 +169,8 @@ jobs:
       #
       # The documentation examples are not in this build: the next step owns them.
       - name: Build and verify
-        env:
-          CLOUDTASKS_PROFILE: ${{ (matrix.role == 'floor' || matrix.role == 'lts') && '-Ptier3-cloudtasks' || '' }}
         run: >-
-          just verify -fae ${CLOUDTASKS_PROFILE:+"$CLOUDTASKS_PROFILE"} -Dtest.excluded.groups=gated
+          just verify -fae -Dtest.excluded.groups=gated
           ${{ steps.resolve.outputs.args }}
 
       # The documentation examples depend on all six connectors, so -fae alone

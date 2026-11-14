@@ -26,9 +26,9 @@ from flink_tier3.spanner.instance import Instance
 from flink_tier3.spanner.trial import LATE_ROWS, Trial, row_key
 from flink_tier3.spanner.verdict import OBSERVED, SAMPLED_STAGES
 
-from ..cloudtasks.test_recovery_plan import inputs as inputs  # noqa: PLC0414
-from ..cloudtasks.test_recovery_plan import renderer as renderer  # noqa: PLC0414
-from ..cloudtasks.test_recovery_runtime import prepared as prepared  # noqa: PLC0414
+from ..cloudtasks.test_plan import inputs as inputs  # noqa: PLC0414
+from ..cloudtasks.test_plan import renderer as renderer  # noqa: PLC0414
+from ..cloudtasks.test_runtime import prepared as prepared  # noqa: PLC0414
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
 from .test_tables import READ_AT, Database

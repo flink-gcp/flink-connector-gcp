@@ -19,8 +19,7 @@ The analyzer reads a local mirror of ``gs://flink-gcp-tier3-evidence/runs/``
 BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore recovery run's
 assessment from its exported evidence. It never contacts a cluster or a
 bucket, keeps every ratio a ``Fraction`` until rendering, and writes
-byte-identical reports for identical input. Single-host Cloud Tasks campaigns
-have their own analyzer, ``cloudtasks.vmanalyze``.
+byte-identical reports for identical input.
 """
 
 from __future__ import annotations

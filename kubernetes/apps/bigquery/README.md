@@ -17,9 +17,9 @@ The Dockerfile places these JARs in `/opt/flink/usrlib/` over the reviewed Flink
 The entry point is `io.github.flink.gcp.connector.tier3.bigquery.BigQueryRecoveryJob`; the job URI is `local:///opt/flink/usrlib/bigquery-recovery.jar`.
 No dependency download is needed at Pod startup.
 The [manual publication workflow](../../../.github/workflows/tier3-images.yaml) verifies and builds this payload as the `bigquery-recovery` GAR package.
-The [trial publication](../../images/README.md#bigquery-trial-publication) built commit `8bfe56d5154d40b2ccef81f16129ea873ead43a5` with the appender observations for the Storage Write trials, and has since been deleted.
-The [FILE_LOADS trial publication](../../images/README.md#bigquery-file_loads-trial-publication) built commit `ef183e0c63d273e59b05599d064caf79e79dfc22` with the FILE_LOADS mode; its image refuses the `--parallelism` argument every delivery renders since [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782).
-The [fault trial publication](../../images/README.md#bigquery-fault-trial-publication) built commit `25260e67823edc4efd60cc12a0db1f4d12912161`, the first image that accepts it, and records its digest and retention; dispatch names the digest through `application_digest` and verifies it live, and it is not pinned.
+The [trial publication](../../../docs/adr/evidence/0165-tier3-image-publications.md#bigquery-trial-publication) built commit `8bfe56d5154d40b2ccef81f16129ea873ead43a5` with the appender observations for the Storage Write trials, and has since been deleted.
+The [FILE_LOADS trial publication](../../../docs/adr/evidence/0165-tier3-image-publications.md#bigquery-file_loads-trial-publication) built commit `ef183e0c63d273e59b05599d064caf79e79dfc22` with the FILE_LOADS mode; its image refuses the `--parallelism` argument every delivery renders since [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782).
+The [fault trial publication](../../../docs/adr/evidence/0165-tier3-image-publications.md#bigquery-fault-trial-publication) built commit `25260e67823edc4efd60cc12a0db1f4d12912161`, the first image that accepts it, and records its digest and retention; dispatch names the digest through `application_digest` and verifies it live, and it is not pinned.
 The application CI lane builds the Dockerfile against the same public Flink 2.2.1 digest without publishing or using GCP credentials.
 
 Unit tests cover argument bounds, destination identities, serialized row sizes, Java serialization, input gaps and checkpoint state incompatibility.

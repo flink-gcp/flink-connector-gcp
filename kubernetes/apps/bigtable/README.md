@@ -158,6 +158,9 @@ Two things end a campaign early, each before its next attempt holds anything: an
 Each attempt checks out `main` as it is at its own dispatch unless `rig_sha` names a commit, so merge no rig change while a campaign runs.
 For example, `bigtable_trial=tm-replacement`, `run_id=bt1855-tm-a4`, `campaign=rescale-out,rescale-in` and `repeats=2` run the three remaining trials from one dispatch, for at most five attempts.
 
+The [`bigtable-recovery`](../../lifecycle/bigtable.cue) delivery takes the input that the [deployment definition](#deployment-definition) describes from the optional `bigtable_records` and `bigtable_records_per_second` tags, the change-stream end from the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and the kind from the `bigtable_trial` tag, `jm-replacement` unless given, which sizes every vertex but the input and the TaskManagers from [faults.cue](../../lifecycle/faults.cue).
+Dispatch renders it at the dispatched kind, the input every kind shares and a change-stream end 3,900 seconds into the run's window.
+
 ### Instance lifecycle
 
 After the supervisor heartbeats and the Operator is ready, the runner records the instance's intent, reads that the name is free, and records the creation intent and a call marker in one control write.
