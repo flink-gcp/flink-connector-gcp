@@ -26,9 +26,9 @@ from flink_tier3.model import APPROVAL_VERSION, Approval, validate_approval
 from flink_tier3.policy import CLOUDTASKS, SMOKE, WINDOWS
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
-from .test_recovery_plan import inputs as inputs  # noqa: PLC0414
-from .test_recovery_plan import renderer as renderer  # noqa: PLC0414
-from .test_recovery_runtime import prepared as prepared  # noqa: PLC0414
+from .test_plan import inputs as inputs  # noqa: PLC0414
+from .test_plan import renderer as renderer  # noqa: PLC0414
+from .test_runtime import prepared as prepared  # noqa: PLC0414
 
 DIGEST = "sha256:" + "d" * 64
 SHA = "e" * 40

@@ -31,7 +31,7 @@ from flink_tier3.cloudtasks.verdict import (
 )
 from flink_tier3.runs import discover_runs
 
-from .test_recovery_oracle import reading
+from .test_oracle import reading
 
 TRIAL = Trial("ct-analyze", 4, 1)
 PREFIX = TRIAL.queue_path + "/tasks/"

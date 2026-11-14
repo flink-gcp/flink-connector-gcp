@@ -38,7 +38,6 @@ def main(argv=None):
         "supervisor",
         "render",
         "analyze",
-        "vm-analyze",
         "bigquery",
     ):
         commands.add_parser(command, add_help=False)
@@ -49,7 +48,7 @@ def main(argv=None):
         "." + DISPATCHED.get(args.command, args.command), __package__
     )
     # The supervisor runs in-cluster; offline analysis commands need no checkout.
-    if args.command not in ("supervisor", "analyze", "vm-analyze", "bigquery"):
+    if args.command not in ("supervisor", "analyze", "bigquery"):
         root = args.repository.resolve()
         if not any(flag in remaining for flag in ("--help", "-h")) and not (
             (root / "kubernetes/cue.mod/module.cue").is_file()

@@ -49,7 +49,7 @@ A repeat adds USD 2.35 and is approved before its dispatch like any other.
 
 ## Campaign window
 
-Every image a trial pulls (`operator`, `lifecycle-tools` for the supervisor and `bigquery-recovery`) comes from the [fault trial publication](../../../kubernetes/images/README.md#bigquery-fault-trial-publication), which built main `25260e678` after [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) merged.
+Every image a trial pulls (`operator`, `lifecycle-tools` for the supervisor and `bigquery-recovery`) comes from the [fault trial publication](0165-tier3-image-publications.md#bigquery-fault-trial-publication), which built main `25260e678` after [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) merged.
 Its `bigquery-recovery` image is the first that accepts the `--parallelism` argument every BigQuery delivery renders since #1782, so an earlier image would fail at job start.
 The oldest of the three images, the `operator` mirror, was created at 2026-10-14T12:17:04Z (UTC; `gcloud` prints local time unless asked), and dispatch refuses an image unless the run's window ends a day before its seven-day deletion eligibility, so every attempt's window, which ends 90 minutes after admission, must end before 2026-10-20T12:17:04Z.
 The three trials take about six hours of serial dispatch; the [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778) Cloud Tasks trials take the same environment lock, so the two campaigns interleave rather than overlap.
@@ -59,7 +59,7 @@ The three trials take about six hours of serial dispatch; the [#1778](https://gi
 Each attempt is dispatched only after these are read, in this order, immediately before it:
 
 - `pins.cue` at the dispatched `main` commit names `lifecycle-tools@sha256:4f5ec406125a5eccddf8e95bd5f1a6cc355d7609f7322fdb4539434e5a003c2c`.
-- The `bigquery-recovery` digest named as `application_digest` is the one the [fault trial publication](../../../kubernetes/images/README.md#bigquery-fault-trial-publication) lists, and it is still in the registry.
+- The `bigquery-recovery` digest named as `application_digest` is the one the [fault trial publication](0165-tier3-image-publications.md#bigquery-fault-trial-publication) lists, and it is still in the registry.
 - The environment lock `_control/environment.json` and every `_control/runs/` record are absent, and every earlier `approval.json` has its `result.json`.
 - The window, admission plus 90 minutes, ends before the deadline under [Campaign window](#campaign-window).
 

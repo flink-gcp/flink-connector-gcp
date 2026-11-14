@@ -26,8 +26,8 @@ from flink_tier3.spanner.lifecycle import SpannerLifecycle
 from flink_tier3.spanner.trial import Trial
 
 from ..bigquery.test_resources import Response
-from ..cloudtasks.test_recovery_lifecycle import NOW
-from ..cloudtasks.test_recovery_lifecycle import Environment as QueueEnvironment
+from ..cloudtasks.test_lifecycle import NOW
+from ..cloudtasks.test_lifecycle import Environment as QueueEnvironment
 
 # The seed every dispatched trial writes.
 TRIAL = Trial("sp-lifecycle", 100, 10, "2026-10-28T01:05:00Z", **plan.SEED)

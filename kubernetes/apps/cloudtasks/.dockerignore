@@ -14,5 +14,5 @@
 
 **
 !Dockerfile
-!target/cloudtasks-measurement.jar
+!target/cloudtasks-recovery.jar
 !target/image-lib/*.jar

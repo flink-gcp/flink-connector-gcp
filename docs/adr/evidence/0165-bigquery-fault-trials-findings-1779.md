@@ -32,7 +32,7 @@ Times are UTC.
 Each final receipt records `success: true`, stage `complete`, verified idle and empty plans for `flink-gcp`, `tier3-bootstrap` and `tier3-operator`.
 `just tier3-analyze` at the rig commit recomputed the same verdict for each from the three exported evidence prefixes, with 25, 26 and 25 measurement samples and no reasons or problems; the [deployed verdict](../0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigquery-deployed-verdict) section says which revision reads archived evidence.
 Each receipt's `bigquery_trial.fault` and the analyzer's timing table name the trial's fault, which the preregistration's [acceptance criteria](0165-bigquery-fault-trials-preregistration-1779.md#acceptance-criteria) require because the verdict does not check it.
-All three pulled the images of the [fault trial publication](../../../kubernetes/images/README.md#bigquery-fault-trial-publication).
+All three pulled the images of the [fault trial publication](0165-tier3-image-publications.md#bigquery-fault-trial-publication).
 The pilot was `usable`, so the other two ran; their estimate was the preregistered USD 7.05, and the actual charges were not read from billing.
 
 ### Query oracle

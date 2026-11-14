@@ -31,17 +31,7 @@ from test_manifests import (
     lifecycle_export,
     workload,
 )
-
-
-@pytest.fixture
-def module(tmp_path):
-    """A disposable copy of the CUE module, as test_manifests.py's fixture makes."""
-    destination = tmp_path / "module"
-    shutil.copytree(
-        KUBERNETES, destination, ignore=shutil.ignore_patterns("tests", "target")
-    )
-    return destination
-
+from test_manifests import module as module  # noqa: PLC0414
 
 SPANNER_IMAGE = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/spanner-recovery"
 END = "2026-10-20T01:30:00Z"

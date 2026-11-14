@@ -35,10 +35,10 @@ The recovery scenarios take their fault kinds and each phase's sizes from [fault
 The runner selects the scenario through its existing input.
 
 The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
-Its `scenario` input selects the generic smoke application's ordinary completion (`smoke`, the default), or a BigQuery, Pub/Sub or Cloud Tasks recovery trial.
+Its `scenario` input selects the generic smoke application's ordinary completion (`smoke`, the default) or one connector's recovery trial, as the [scenario table](../README.md#scenarios) lists.
 The [flink-tier3 workspace member](../../tools/tier3/pyproject.toml) owns the CLI, bootstrap/schema commands, runner and supervisor.
 Its [source package](../../tools/tier3/src/flink_tier3/) uses ordinary imports, with `Supervisor`, `Runner` and `Cleanup` composed through `Environment`.
-BigQuery, Pub/Sub and Cloud Tasks each have a service subpackage, and the Cloud Tasks one also holds the single-host rig of [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md); shared lifecycle and infrastructure modules remain at the package root.
+Each connector's scenario has a subpackage of its own, as the [layout](../README.md#layout-per-connector) describes, and the shared lifecycle and infrastructure modules are at the package root.
 The delivered source inventory uses relative paths, including subdirectories.
 ConfigMap keys replace `/` with `.`, and volume projection restores the directories before the supervisor imports them.
 The installed `flink-tier3` CLI is the entry point; [workspace instructions](../../tools/README.md) cover building a wheel and selecting a repository checkout.
@@ -55,86 +55,61 @@ The data budget counts values as Kubernetes does, excluding the extra quoting an
 Data headroom and JSON overhead are guarded separately, because JSON quoting and escaping can push the wire form over a 768 KiB guard the data stays under: with the Pub/Sub handoff module a 32-cell Cloud Tasks delivery measured 737,522 data bytes and 789,286 JSON bytes, and after that scenario's removal the smoke delivery measured 526,309 and 553,425.
 Third-party dependencies remain preinstalled in the pinned image; package source changes need no image rebuild or startup installation.
 
-| File | Responsibility |
+| Module in `flink_tier3` | Responsibility |
 | --- | --- |
-| `flink_tier3/policy.toml` | Reviewed environment names, conservative cost rates, each scenario's window and Pod resources |
-| `flink_tier3/google.py` | Google credentials, standard authorized session and generation-checked GCS operations |
-| `flink_tier3/kubernetes.py` | Kubernetes SDK calls, API collection mapping, UID/version conditions and log limits |
-| `flink_tier3/model.py` | Approval, schedule and typed control-record transitions |
-| `flink_tier3/records.py` | GCS control CAS, evidence and the shared environment lock |
-| `flink_tier3/environment.py` | Actor dependencies, identity/admission checks and bounded waits |
-| `flink_tier3/cleanup.py` | Ownership-aware cleanup and idle verification |
-| `flink_tier3/supervisor.py` | Progress/checkpoint observation and supervision |
-| `flink_tier3/exercise.py` | The recovery exercise base the BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore exercises share, with the finite-input exercise all but Pub/Sub's build on: recorded operation intents, the owned savepoint upgrade (a rescale when the trial approves one), the measurement windows of the scenarios that sample the job (a baseline, one after the upgrade and one after the deletion), JobManager or TaskManager deletion, and scheduling evidence |
-| `flink_tier3/runs.py`, `flink_tier3/analyze.py` | Downloaded run directories and the offline analysis of deployed BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner and Firestore runs |
-| `flink_tier3/cloudtasks/` | The recovery trial of #1362 (trial, plan, queue, lifecycle, actors, exercise, oracle, verdict and analysis), and the single-host #1246 rig: the pinned protocol, campaign journal and controller, row and receipt reconciliation, and the offline verdict analysis |
-| `flink_tier3/bigtable/` | The recovery trials of #1316 and #1317 (trial, plan, instance, lifecycle, exercise, observation, oracle, verdict and analysis) |
-| `flink_tier3/spanner/` | The recovery trials of #1360 and #1872 (trial, plan, instance, lifecycle, exercise, observation, oracle, verdict and analysis) |
-| `flink_tier3/firestore/` | The recovery trials of #1879 (trial, plan, database, lifecycle, exercise, observation, oracle, verdict and analysis) |
-| `flink_tier3/bigquery/oracle.py` | Offline BigQuery recovery SQL generation and aggregate completeness/routing/duplicate checks |
-| `flink_tier3/bigquery/plan.py` | Offline, unapproved BigQuery trial proposal and initial/upgrade/supervisor bundle |
-| `flink_tier3/bigquery/lifecycle.py` | Durable BigQuery intents, query slots, evidence and cleanup after the quiescence barrier |
-| `flink_tier3/bigquery/handoff.py` | Query requests and runner release, attached explicitly to common settlement/supervisor cleanup; shared completion guards retain pending BigQuery control |
-| `flink_tier3/bigquery/exercise.py` | Warmup, recovery and final query sequencing with explicit actor handoffs, built by the production supervisor entrypoint |
-| `flink_tier3/lifecycle.py` | The Actions frontend: dispatch, which binds a rendered delivery's approval, Job deadline and ConfigMap size limit, then recovery, plans and finalization |
-| `flink_tier3/bigquery/resources.py` | Internal BigQuery table creation and deletion, query slots and budget, and paginated result operations |
-| `flink_tier3/bigquery/actors.py` | The BigQuery runner and supervisor the production entrypoints run, over the shared authorized session |
-| `flink_tier3/bigquery/quiesce.py` | The supervisor's quiescence barrier: re-lists writer-capable objects in the application namespace and refuses while any of this run's remains |
-| `flink_tier3/bigquery/observe.py`, `bigquery/verdict.py` | Sampling the deployed sink through the job's REST service, and whether a run is a usable measurement |
-| `flink_tier3/bigquery/analyze.py` | Offline recomputation of a deployed BigQuery run's verdict from its exported evidence |
-| `flink_tier3/pubsub/resources.py` | Internal Pub/Sub topic/subscription ownership, fixed-settings and explicit IAM readback, scoped data-grant installation and partial-work cleanup; not wired into admission |
-| `flink_tier3/pubsub/plan.py` | Offline, unapproved Pub/Sub trial, reviewed trial files, finite input cohorts, proposed limits and initial/recovery/supervisor delivery |
-| `flink_tier3/pubsub/lifecycle.py` | Internal durable Pub/Sub preparation claim, service/policy observations and cleanup after external quiescence; shared settlement gates, without runnable scenario admission |
-| `flink_tier3/pubsub/messages.py` | Internal single-attempt input publication and independent output collection with durable evidence before ACK; caller-owned admission |
-| `flink_tier3/pubsub/handoff.py` | Process-owned preparation/message calls, each admitted by its begin marker, and releases attached to common settlement/supervisor cleanup |
-| `flink_tier3/pubsub/actors.py`, `pubsub/session.py`, `pubsub/guard.py`, `pubsub/quiesce.py` | The Pub/Sub runner and supervisor, their session's record of unsettled writes, the guard that holds each Pub/Sub request to its deadline, and the namespace-wide cleanup barrier |
-| `flink_tier3/pubsub/admission.py`, `pubsub/access.py`, `pubsub/probe.py` | Pub/Sub admission's ordered preparation, each identity's effective-access probe, and the workload probe Pod's program |
+| `__init__.py`, `cli.py`, `__main__.py`, `runtime.py` | The package's shared exports, the CLI, its entry point in the projected package, and the supervisor's entrypoint |
+| `lifecycle.py` | The Actions frontend: dispatch, which binds a rendered delivery's approval, Job deadline and ConfigMap size limit, then recovery, plans and finalization |
+| `workflow.py` | GitHub, CUE and OpenTofu integration for that frontend |
+| `campaign.py` | The next attempt of a campaign that one dispatch carries |
+| `render.py`, `bundle.py` | The rendered lifecycle delivery, and the package source it projects to the supervisor |
+| `proposal.py` | Rendering and checking an offline trial proposal's manifests |
+| `policy.py`, `policy.toml` | Reviewed environment names, conservative cost rates, each scenario's window and Pod resources |
+| `model.py` | Approval, schedule and typed control-record transitions |
+| `records.py` | GCS control CAS, evidence and the shared environment lock |
+| `google.py` | Google credentials, standard authorized session and generation-checked GCS operations |
+| `kubernetes.py` | Kubernetes SDK calls, API collection mapping, UID/version conditions and log limits |
+| `environment.py` | Actor dependencies, identity/admission checks and bounded waits |
+| `runner.py` | External admission, settlement and finalization |
+| `supervisor.py` | Progress/checkpoint observation and supervision |
+| `cleanup.py` | Ownership-aware cleanup and idle verification |
+| `exercise.py` | The recovery exercise every scenario builds on: recorded operation intents, the owned savepoint upgrade and rescales, Pod deletion and scheduling evidence, with the measurement windows of the scenarios still under ADR-0165 and the fault sequence of [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) |
+| `metrics.py` | Flink metric primitives and the observation coverage built from them |
+| `resource.py`, `actors.py`, `rest.py` | What the scenarios whose runner creates one service resource share: its lifecycle from intent to deletion, the actors that own it, and deadline-bounded REST calls |
+| `quiesce.py` | The writer listings and retrying poll that the quiescence barriers share |
+| `analyze.py`, `runs.py`, `recovery_analysis.py` | Downloaded run directories and the offline analysis of deployed recovery runs |
+| `bootstrap.py`, `chart.py`, `schemas.py` | The idle bootstrap and Operator roots, the checksum-pinned Operator chart, and the generated CRD packages |
+| `common.py`, `repository.py` | Shared helpers, and the repository checkout the checkout commands read |
+| `<connector>/` | One connector's scenario: its trial, plan, the lifecycle of the resources it creates, exercise, observation, oracles, verdict and analysis |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.
 The smoke workload remains the [source-backed generic smoke application](../apps/smoke/README.md).
-The `generic-recovery` scenario that took it through one savepoint upgrade and one JobManager failover was removed once the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) had run it, on 2026-09-17 in [run 35169364218](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/35169364218); the BigQuery and Pub/Sub exercises build on the recovery exercise it introduced.
 Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
 
-The owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
-The estimate is `estimated_cost` over the window for smoke, and `bigquery_plan.estimate`, `pubsub_plan.estimate` or `cloudtasks_plan.estimate` for a service trial, which their rendered proposals carry.
+For a scenario still under ADR-0165, the owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
+The estimate is `estimated_cost` over the window for smoke, and the scenario's plan estimate for a recovery trial, which its rendered proposal carries.
+[ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) drops the estimate and its approval: a scenario moved to it is bounded by its one-hour time limit instead, although a Firestore proposal still carries the scenario's estimate until the last scenario moves.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
+A run under ADR-0204 also stops as abnormal one hour after admission if it has no verdict by then.
 
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
 The Job replaces no Pod: a preempted supervisor ends the Job, the runner settles the run, and the owner redispatches it under a new run ID.
 
-After approving the estimate, use the Actions UI or this command:
+Dispatch through the Actions UI or with this command:
 
 ```sh
 gh workflow run tier3-run.yaml --repo flink-gcp/flink-connector-gcp --ref main \
   -f run_id=APPROVED_RUN_ID
 ```
 
-The cluster rig's Cloud Tasks measurement session was removed once [ADR-0162](../../docs/adr/0162-cloud-tasks-implementation-precedes-final-performance-acceptance.md) moved the assessment to a single VM.
-The [`cloudtasks-recovery`](cloudtasks.cue) delivery of the recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) renders its initial and upgrade phases in `tier3-cloudtasks` from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given, refuses more than 30 minutes of input, and names the run's queue `ct1362-<run-id>`.
-Its `cloudtasks_trial` tag, `jm-replacement` unless given, sizes each phase's sink and TaskManagers from [faults.cue](faults.cue).
-Dispatch renders it at the dispatched kind and the input every kind shares, and the [recovery trial runbook](../apps/cloudtasks/README.md#recovery-trial) describes the queue, the exercise and the verdict.
-Every run's inventory lists `tier3-cloudtasks`.
-
-The [`bigtable-recovery`](bigtable.cue) delivery of the Bigtable recovery trials of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317) renders its initial and upgrade phases in `tier3-bigtable` from the optional `bigtable_records` and `bigtable_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, and the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops.
-Its `bigtable_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `bt1316-<run-id>`, so the run ID has at most 26 characters.
-Dispatch renders it at the dispatched kind, the input every kind shares and a change-stream end 3,900 seconds into the run's window, and the [recovery trial runbook](../apps/bigtable/README.md#recovery-trial) describes the instance, the exercise and the verdict ([#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854)).
-Every run's inventory lists `tier3-bigtable`.
-
-The [`spanner-recovery`](spanner.cue) delivery of the Spanner recovery trials of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872) renders its initial and upgrade phases in `tier3-spanner` from the optional `spanner_records` and `spanner_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, the optional `spanner_seed_rows_per_second` tag, the seed copy's pace per reading subtask, 50 unless given and at most 1,000, and the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops.
-Its `spanner_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), and the instance is `sp1360-<run-id>`, which a run ID of the full 40 characters keeps within Spanner's 64-character instance IDs.
-Dispatch renders it at the dispatched kind, the input and seed pace every kind shares and a change-stream end 3,900 seconds into the run's window, and the [recovery trial runbook](../apps/spanner/README.md#recovery-trial) describes the instance and its database, the exercise and the verdict ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
-Every run's inventory lists `tier3-spanner`.
-
-The [`firestore-recovery`](firestore.cue) delivery of the Firestore recovery trials of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879) renders its initial and upgrade phases in `tier3-firestore` from the optional `firestore_records` and `firestore_records_per_second` tags, with the Cloud Tasks delivery's defaults and 30-minute input bound, and the optional `firestore_seed_records_per_second` tag, each seed copy's pace per reading subtask, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass.
-Its `firestore_trial` tag, `jm-replacement` unless given, sizes every vertex but the input and the TaskManagers from [faults.cue](faults.cue), where `sequence` (ADR-0204) takes `jm-replacement`'s sizes, and the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, which a run ID of the full 40 characters keeps within Firestore's 63-character database IDs.
-Dispatch renders it at the dispatched kind and the input and seed pace every kind shares, and the [recovery trial runbook](../apps/firestore/README.md#recovery-trial) describes the databases and their seeds, the exercise and the verdict ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
-The namespace it renders into is in every run's inventory and the Operator's watch set ([#2083](https://github.com/flink-gcp/flink-connector-gcp/issues/2083)).
+Each connector's scenario renders its applications from its own file here in its own namespace.
+The Cloud Tasks, Bigtable, Spanner and Firestore runbooks list the tags their file takes in their dispatch sections; the BigQuery and Pub/Sub dispatches derive theirs from the trial they are given, as those runbooks describe.
+Every run's inventory lists every application namespace.
 
 Run IDs contain lowercase ASCII letters, digits and internal hyphens, with at most 40 characters.
 A retained approval without a final idle receipt blocks another run, including reuse of that ID.
@@ -204,7 +179,7 @@ The Operator's Scale API can omit `spec.replicas` when it is zero; lifecycle rea
 The scale patch retains UID and resource-version conditions, and cleanup skips the write when the Operator is already at zero.
 
 For ordinary smoke, the supervisor observes the application and writes Kubernetes only toward idle.
-The BigQuery, Pub/Sub and Cloud Tasks recovery exercises also permit the recorded operations their runbooks describe.
+Each recovery exercise also permits the recorded operations its runbook describes.
 Both supervisor and recovery use `Cleanup`; concurrent cleanup repeats the same UID-checked deletes and original quota/replica values.
 Generation conflicts merge roots and observations without replacing recorded identities, and phase transitions never return from cleanup to admission.
 The supervisor uses the projected Kubernetes service-account token against the in-cluster API and Google metadata credentials for GCS.
@@ -377,16 +352,16 @@ The wheel test installs the built artifact outside the source tree and checks CL
 
 Evidence is under `gs://flink-gcp-tier3-evidence/runs/RUN_ID/`:
 `approval.json`, `application.json`, `images.json`, per-observation supervisor/runner receipts, and `result.json` after verified idle.
-BigQuery, Pub/Sub and Cloud Tasks trials additionally retain `upgrade-application.json`, operation intents, phase proofs and scheduling Events; a Cloud Tasks trial also retains its task listing pages.
+A recovery trial additionally retains `upgrade-application.json`, operation intents, its exercise's records and scheduling Events, and what its oracles read, such as a Cloud Tasks trial's task listing pages.
 Their final receipt requires the usable verdict their exercise decided as well as successful cleanup.
 Run evidence becomes deletion-eligible after 30 days; mutable `_control/` records have no automatic expiry.
 An unsuccessful run can still have an idle result: check both `success` and `idle`, together with the three plan receipts.
 After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
 Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
 `just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` writes `report.json` and `report.md` into an `analysis` directory beside the run, without contacting any service.
-It reports a deployed BigQuery or Pub/Sub run's verdict, recomputed from its exported evidence rather than read from its receipt, with the reasons behind it and the verdict the run stored beside it; a stored verdict other than the recomputed one is named as a problem, an evidence set without what the verdict is decided from has no verdict, and a run that simply did not complete is inconclusive.
+It reports a deployed recovery run's verdict, recomputed from its exported evidence rather than read from its receipt, with the reasons behind it and the verdict the run stored beside it; a stored verdict other than the recomputed one is named as a problem, an evidence set without what the verdict is decided from has no verdict, and a run that simply did not complete is inconclusive.
 The analyzer's rules are part of the commit the approval's `sha` names, so the approval still pins the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set.
-Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs such as the [#1311 exercise](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) can show.
+Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs can show.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
 

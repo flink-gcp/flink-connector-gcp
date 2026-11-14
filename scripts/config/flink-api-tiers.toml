@@ -53,8 +53,8 @@
 # flink-avro owns GenericRecordAvroTypeInfo, the one type the BigQuery source's
 # GenericRecord deserializer needs (issue #390). flink-table-api-java-bridge owns
 # DataStreamSinkProvider, used by the Pub/Sub table sink's ordering-key route (#143).
-# flink-connector-datagen owns DataGeneratorSource and GeneratorFunction, which of
-# the main sources only the Tier-3 job modules under kubernetes/apps import (#1567).
+# flink-connector-datagen owns DataGeneratorSource, which of the main sources only
+# the Tier-3 job modules under kubernetes/apps import (#1567).
 #
 # Each import is classified at the floor (the pom's flink.version) and at the 1.x
 # LTS (weekly.yaml's FLINK_LTS) where its source root is compiled at them, and
@@ -79,13 +79,6 @@ artifacts = [
     "flink-avro",
     "flink-connector-datagen",
 ]
-
-# The Tier-3 job modules that are also built at the LTS: weekly.yaml's lts row
-# passes -Ptier3-cloudtasks, so the module compiles against FLINK_LTS there.
-# Every other Tier-3 module is classified at flink.version alone. A name with no
-# kubernetes/apps/<name>/src/main fails the audit; a module listed here that is
-# not really built at the LTS can fail it too, as a type absent at the LTS.
-lts_tier3_modules = ["cloudtasks"]
 
 # ---------------------------------------------------------------------------
 # @Internal — Flink reserves the right to change these in any release.
@@ -219,18 +212,12 @@ reason = """
 The input of the smoke, BigQuery recovery, Cloud Tasks, Bigtable, Spanner and
 Firestore recovery jobs
 (kubernetes/apps/{smoke,bigquery,cloudtasks,bigtable,spanner,firestore}): a bounded,
-checkpointed, rate-limited sequence. The rate is what the Cloud Tasks and BigQuery
-campaigns offer and measure, and what spreads the smoke run and the Bigtable, Spanner
-and Firestore recovery trials across their planned disruptions. The @Public
+checkpointed, rate-limited sequence. The rate is what spreads each run's input
+across the faults it injects. The @Public
 NumberSequenceSource has no rate control, so replacing it means writing a rate-limited
 source. A Flink change that breaks it surfaces in that module's just tier3-*-verify
 lane, which CI selects on any change to the module or the root pom, and the job adapts
 there."""
-
-[experimental."org.apache.flink.connector.datagen.source.GeneratorFunction"]
-reason = """
-DataGeneratorSource's element function; the Cloud Tasks measurement job's
-MeasurementInput implements it. Same exposure as DataGeneratorSource."""
 
 [experimental."org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy"]
 reason = """

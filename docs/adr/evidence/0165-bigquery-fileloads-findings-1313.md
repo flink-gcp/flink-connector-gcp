@@ -32,7 +32,7 @@ The preregistration's reads before dispatch passed between the OpenTofu apply th
 The final receipt records the `usable` verdict with no reasons, verified idle, and empty plans for `flink-gcp`, `tier3-bootstrap` and `tier3-operator`, read at 01:51:47.
 `just tier3-analyze` over the exported evidence recomputed `usable`, with 26 measurement samples and no reasons or problems.
 The verdict's six families are the sink's task, network and connector metrics, TaskManager memory, the committer's metrics and per-subtask checkpoint statistics.
-The attempt used the application image `bigquery-recovery@sha256:a8d13036…` of the [FILE_LOADS trial publication](../../../kubernetes/images/README.md#bigquery-file_loads-trial-publication), created on 2026-10-09; its window ended at 02:34:44, inside the 2026-10-15T16:22:01Z deadline.
+The attempt used the application image `bigquery-recovery@sha256:a8d13036…` of the [FILE_LOADS trial publication](0165-tier3-image-publications.md#bigquery-file_loads-trial-publication), created on 2026-10-09; its window ended at 02:34:44, inside the 2026-10-15T16:22:01Z deadline.
 
 ### Query oracle
 

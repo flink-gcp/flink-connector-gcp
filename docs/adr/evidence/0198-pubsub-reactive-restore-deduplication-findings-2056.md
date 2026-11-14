@@ -31,7 +31,7 @@ The trial files are the six `reactive-*` files under [`kubernetes/lifecycle/pubs
 - **`reactive-scale-in`**: three TaskManagers patched to two.
 - **`reactive-tm-eviction`**: three TaskManagers, one Pod deleted and replaced by its Deployment.
 
-Every usable attempt pulled the `pubsub-recovery` image `sha256:4faf9b7dbeadeee4721d42f69c229bab6a3802181ae35bc565f94252874a0734` and the Operator 1.16.1 mirror `sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d` of the [Pub/Sub reactive trial publication](../../../kubernetes/images/README.md#pubsub-reactive-trial-publication), and the pinned `lifecycle-tools` image `sha256:3ecd5d8572105d7502ac9ba71940627d6299ac7b63d8bf4fd69d919184471dfb`.
+Every usable attempt pulled the `pubsub-recovery` image `sha256:4faf9b7dbeadeee4721d42f69c229bab6a3802181ae35bc565f94252874a0734` and the Operator 1.16.1 mirror `sha256:91250bb08c4f1ea358b201680e355139a530cb7318439926d62c6387d7c1369d` of the [Pub/Sub reactive trial publication](0165-tier3-image-publications.md#pubsub-reactive-trial-publication), and the pinned `lifecycle-tools` image `sha256:3ecd5d8572105d7502ac9ba71940627d6299ac7b63d8bf4fd69d919184471dfb`.
 Each was dispatched from `main`, so the rig commit moved between attempts; the commits after `163b2d1b6` that touched `tools/tier3`, `kubernetes` or the run workflow added the Firestore scenario and its namespace, and none changed the Pub/Sub scenario.
 
 ## Attempts

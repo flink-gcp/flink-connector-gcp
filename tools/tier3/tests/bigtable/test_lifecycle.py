@@ -23,8 +23,8 @@ from flink_tier3.bigtable.trial import Trial
 from flink_tier3.common import ApiError, Failure, TransportError, digest
 from flink_tier3.resource import require_resources_clean
 
-from ..cloudtasks.test_recovery_lifecycle import NOW
-from ..cloudtasks.test_recovery_lifecycle import Environment as QueueEnvironment
+from ..cloudtasks.test_lifecycle import NOW
+from ..cloudtasks.test_lifecycle import Environment as QueueEnvironment
 
 TRIAL = Trial("bt-lifecycle", 100, 10, "2026-10-20T01:05:00Z")
 DEADLINE = NOW + 600

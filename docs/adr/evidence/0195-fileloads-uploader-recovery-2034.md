@@ -24,7 +24,7 @@ Times are UTC.
 
 Each trial is `fl-10` with `--background-staging-upload-enabled true` and `--max-in-flight-upload-operations 2`: FILE_LOADS into 10 destinations, 1,843,200 records of about 1 KiB at a fixed 1 MiB/s, Avro staging with Zstandard, a 120-second checkpoint interval, 16 MiB rolls, two writer subtasks, and two recoveries per run.
 The cells and their trial names come from [#2033](https://github.com/flink-gcp/flink-connector-gcp/issues/2033).
-Every attempt pulled the `bigquery-recovery` image `sha256:0c273fb480dc04b3dd60bd6d19a02dc1bbe0b8d5725f8e412d5c6caef3962361` of the [BigQuery uploader trial publication](../../../kubernetes/images/README.md#bigquery-uploader-trial-publication), built from main `d11be40422901cd305ed70fdf4b90f0be6c5a4ec`.
+Every attempt pulled the `bigquery-recovery` image `sha256:0c273fb480dc04b3dd60bd6d19a02dc1bbe0b8d5725f8e412d5c6caef3962361` of the [BigQuery uploader trial publication](0165-tier3-image-publications.md#bigquery-uploader-trial-publication), built from main `d11be40422901cd305ed70fdf4b90f0be6c5a4ec`.
 The attempts ran the rig at the head of [#2044](https://github.com/flink-gcp/flink-connector-gcp/pull/2044) through `rig_sha`, before it merged, because `pins.cue` on `main` still named the earlier publication's lifecycle-tools image, too close to deletion for dispatch to admit.
 `9a22a0bd4` and `913f3e200` differ only in prose; both carry the 600-second recovery deadline.
 

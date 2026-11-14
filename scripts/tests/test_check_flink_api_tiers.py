@@ -77,9 +77,9 @@ def write_weekly(root, lts):
     weekly.write_text(f"env:\n  FLINK_LTS: '{lts}'\n  OTHER: 'x'\n")
 
 
-def collect(module, lts=VERSION, lts_modules=()):
+def collect(module, lts=VERSION):
     """The imports collect_imports() finds, with the versions each is read at."""
-    return module.collect_imports(VERSION, lts, set(lts_modules))
+    return module.collect_imports(VERSION, lts)
 
 
 def write_import(root, fqcn, module="conn", tree="java", name="User.java"):
@@ -707,13 +707,11 @@ def test_each_source_root_is_read_at_the_versions_that_build_it(
     write_import(root, "org.apache.flink.demo.One", tree="java-flink1", name="B.java")
     write_import(root, "org.apache.flink.demo.Two", tree="java-flink2", name="C.java")
     write_import(root, "org.apache.flink.demo.Job", module="kubernetes/apps/smoke")
-    write_import(root, "org.apache.flink.demo.Lts", module="kubernetes/apps/cloudtasks")
-    assert collect(check_flink_api_tiers, lts=LTS, lts_modules=["cloudtasks"]) == {
+    assert collect(check_flink_api_tiers, lts=LTS) == {
         "org.apache.flink.demo.Shared": {VERSION, LTS},
         "org.apache.flink.demo.One": {LTS},
         "org.apache.flink.demo.Two": {VERSION},
         "org.apache.flink.demo.Job": {VERSION},
-        "org.apache.flink.demo.Lts": {VERSION, LTS},
     }
 
 
@@ -863,68 +861,7 @@ def test_an_import_missing_at_the_lts_names_the_version(
     )
 
 
-def test_a_tier3_module_named_for_the_lts_must_exist(
-    root, check_flink_api_tiers, capsys
-):
-    audit_tree(root, "Public")
-    with (root / "tiers.toml").open("a") as config:
-        config.write('lts_tier3_modules = ["gone"]\n')
-    assert exit_code(check_flink_api_tiers) == 2
-    assert "lts_tier3_modules names gone" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("value", ['"cloudtasks"', "[1]"])
-def test_lts_tier3_modules_must_be_a_list_of_names(
-    root, check_flink_api_tiers, capsys, value
-):
-    audit_tree(root, "Public")
-    with (root / "tiers.toml").open("a") as config:
-        config.write(f"lts_tier3_modules = {value}\n")
-    assert exit_code(check_flink_api_tiers) == 2
-    assert "lts_tier3_modules must be a list of module names" in (
-        capsys.readouterr().err
-    )
-
-
-@pytest.mark.parametrize("alias", ["cloudtasks/", "./cloudtasks", "x/../cloudtasks"])
-def test_a_tier3_module_is_named_exactly_not_as_a_path(
-    root, check_flink_api_tiers, capsys, alias
-):
-    # Each alias resolves to the directory but would never equal the module
-    # name the version mapping compares, dropping the LTS without a word.
-    (root / "kubernetes/apps/cloudtasks/src/main").mkdir(parents=True)
-    audit_tree(root, "Public")
-    with (root / "tiers.toml").open("a") as config:
-        config.write(f'lts_tier3_modules = ["{alias}"]\n')
-    assert exit_code(check_flink_api_tiers) == 2
-    assert f"lts_tier3_modules names {alias}" in capsys.readouterr().err
-
-
-def test_a_tier3_module_named_for_the_lts_needs_main_sources(
-    root, check_flink_api_tiers, capsys
-):
-    (root / "kubernetes/apps/cloudtasks/src/test").mkdir(parents=True)
-    audit_tree(root, "Public")
-    with (root / "tiers.toml").open("a") as config:
-        config.write('lts_tier3_modules = ["cloudtasks"]\n')
-    assert exit_code(check_flink_api_tiers) == 2
-    assert "lts_tier3_modules names cloudtasks" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(("module", "code"), [("cloudtasks", 1), ("smoke", 0)])
-def test_a_tier3_module_is_read_at_the_lts_only_when_listed(
-    root, check_flink_api_tiers, module, code
-):
-    audit_two_versions(
-        root, "java", "Public", "Internal", module=f"kubernetes/apps/{module}"
-    )
-    with (root / "tiers.toml").open("a") as config:
-        config.write('lts_tier3_modules = ["cloudtasks"]\n')
-    (root / "kubernetes/apps/cloudtasks/src/main").mkdir(parents=True, exist_ok=True)
-    assert exit_code(check_flink_api_tiers) == code
-
-
-def test_an_unlisted_tier3_modules_java_flink1_root_is_built_by_nothing(
+def test_a_tier3_modules_java_flink1_root_is_built_by_nothing(
     root, check_flink_api_tiers, capsys
 ):
     write_import(

@@ -31,7 +31,7 @@ No attempt, before it or in it, showed a connector defect.
 | `fs2147-seq-a1` | [43257321939](https://github.com/flink-gcp/flink-connector-gcp/actions/runs/43257321939) | `usable` | 6,000, 0; 6,000, 0 | 6,000, 0, 0; 6,000, 0, 0 | 120; 0 |
 
 The run was dispatched on 2026-11-12 on `main` at `6f7c1463eb815429bba31540884ca2467f4fe30a`, the merge of [#2155](https://github.com/flink-gcp/flink-connector-gcp/pull/2155).
-It ran the `firestore-recovery` image `sha256:bff4b450c47c46e8d6d0588e3cc0d4ece1885151505b5d4163e16641b90ee7d1` from the [Firestore fault sequence publication](../../../kubernetes/images/README.md#firestore-fault-sequence-publication) of the same commit.
+It ran the `firestore-recovery` image `sha256:bff4b450c47c46e8d6d0588e3cc0d4ece1885151505b5d4163e16641b90ee7d1` from the [Firestore fault sequence publication](0165-tier3-image-publications.md#firestore-fault-sequence-publication) of the same commit.
 The input was 6,000 records at 10 records per second, and each database's seed was 6,000 records, copied at 5 records per second per reading subtask.
 
 No oracle found a foreign key, a wrong value or a copied late row.

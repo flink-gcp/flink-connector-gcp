@@ -158,7 +158,6 @@ reuses them.
 
   just check-flink-api-tiers
   just verify-flink $latest_lts clean
-  just verify clean -Ptier3-cloudtasks -pl kubernetes/apps/cloudtasks -am -Dflink.version=$latest_lts -Dflink.compat=flink1
   just check-doc-snippets clean -Dflink.version=$latest_lts -Dflink.compat=flink1
 MSG
     fi

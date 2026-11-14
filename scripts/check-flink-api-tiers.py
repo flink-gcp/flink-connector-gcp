@@ -27,9 +27,8 @@ An import is classified at each of the two versions a published line compiles
 its source root at, and the weakest tier governs (issue #1714): the shared
 src/main/java roots at both pom.xml's flink.version (the 2.x floor) and the 1.x
 LTS pinned by weekly.yaml's FLINK_LTS, java-flink1 at the LTS alone, java-flink2
-at flink.version alone. A Tier-3 job module is built at flink.version, and at
-the LTS too when the config's lts_tier3_modules names it; its roots are read
-only at the versions it is built at. The weekly ceiling and snapshot builds are
+at flink.version alone. A Tier-3 job module is built at flink.version alone,
+so its roots are read only there. The weekly ceiling and snapshot builds are
 not classified here.
 
 Sources jars, never class files: a class file's constant pool lists every
@@ -153,17 +152,13 @@ def lts_version() -> str:
     return version
 
 
-def source_versions(
-    source: Path, root_version: str, lts: str, lts_modules: set[str]
-) -> frozenset[str]:
+def source_versions(source: Path, root_version: str, lts: str) -> frozenset[str]:
     """The Flink versions one main source compiles against."""
     parts = source.relative_to(ROOT).parts
     tier3 = parts[:2] == ("kubernetes", "apps")
     # <module>/src/main/<root>/... or kubernetes/apps/<module>/src/main/<root>/...
     tree = parts[5] if tier3 else parts[3]
-    built = (
-        {root_version} if tier3 and parts[2] not in lts_modules else {root_version, lts}
-    )
+    built = {root_version} if tier3 else {root_version, lts}
     by_root = {"java": built, "java-flink1": {lts}, "java-flink2": {root_version}}
     if tree not in by_root:
         infra(
@@ -174,7 +169,7 @@ def source_versions(
     if not versions:
         infra(
             f"{source.relative_to(ROOT)}: nothing builds the {tree} root of this "
-            f"module; name the module in lts_tier3_modules, or remove the root."
+            f"module; remove the root."
         )
     return frozenset(versions)
 
@@ -198,14 +193,12 @@ def pinned_versions(root_version: str) -> list[str]:
     return mismatched
 
 
-def collect_imports(
-    root_version: str, lts: str, lts_modules: set[str]
-) -> dict[str, set[str]]:
+def collect_imports(root_version: str, lts: str) -> dict[str, set[str]]:
     """Each concrete Flink import across java_ast.API_TIER_SOURCE_PATTERNS,
     with every Flink version a source importing it compiles against."""
     found: dict[str, set[str]] = {}
     for source in api_tier_sources(ROOT):
-        versions = source_versions(source, root_version, lts, lts_modules)
+        versions = source_versions(source, root_version, lts)
         try:
             parsed = JavaSource.parse(source.relative_to(ROOT), source.read_bytes())
         except JavaSyntaxError as error:
@@ -331,8 +324,7 @@ def resolve(
         f"Either the type moved between Flink artifacts or a new package "
         f"family arrived: extend the artifacts list in {CONFIG.name}. If "
         f"nothing builds the importing source at that version, the version "
-        f"mapping is wrong instead: check source_versions() and "
-        f"lts_tier3_modules."
+        f"mapping is wrong instead: check source_versions()."
     )
 
 
@@ -406,7 +398,7 @@ def main() -> int:
             infra(f"{CONFIG.name} is not valid TOML: {error}")
     # A typo'd table name would otherwise sit ignored while its types get
     # reported as unlisted — fail on the typo itself, which is the fixable end.
-    unknown = set(config) - {"artifacts", "lts_tier3_modules", *ALLOWLISTED.values()}
+    unknown = set(config) - {"artifacts", *ALLOWLISTED.values()}
     if unknown:
         infra(f"{CONFIG.name} has unknown top-level entries: {sorted(unknown)}.")
     if not isinstance(config.get("artifacts"), list) or not config["artifacts"]:
@@ -418,25 +410,6 @@ def main() -> int:
                     f"{CONFIG.name}: [{table}] entry {fqcn} needs a table with a "
                     f"reason. The reason is the point of the allowlist; write one."
                 )
-    lts_modules = config.get("lts_tier3_modules", [])
-    if not isinstance(lts_modules, list) or not all(
-        isinstance(name, str) for name in lts_modules
-    ):
-        infra(f"{CONFIG.name}: lts_tier3_modules must be a list of module names.")
-    # Matched against the module directory names themselves, not resolved as a
-    # path: "cloudtasks/" would find the directory and then never equal the
-    # name source_versions() compares, silently dropping the LTS.
-    tier3_modules = {
-        path.name
-        for path in ROOT.glob("kubernetes/apps/*")
-        if (path / "src" / "main").is_dir()
-    }
-    for name in lts_modules:
-        if name not in tier3_modules:
-            infra(
-                f"{CONFIG.name}: lts_tier3_modules names {name}, but "
-                f"kubernetes/apps/{name} has no main sources. Remove the entry."
-            )
     version = flink_version()
     lts = lts_version()
     mismatched = pinned_versions(version)
@@ -447,7 +420,7 @@ def main() -> int:
             f"classify that module at its own; the artifacts comment in "
             f"{CONFIG.name} records the coupling."
         )
-    imports = collect_imports(version, lts, set(lts_modules))
+    imports = collect_imports(version, lts)
     imported_versions = set().union(*imports.values())
     versions = [v for v in dict.fromkeys([version, lts]) if v in imported_versions]
     indexes = {v: build_index(config["artifacts"], v) for v in versions}

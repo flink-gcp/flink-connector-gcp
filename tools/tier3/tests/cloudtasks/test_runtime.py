@@ -44,8 +44,8 @@ from flink_tier3.runner import Runner
 
 from ..test_lifecycle import app, lifecycle, prepared_supervisor, rt
 from ..test_lifecycle import env as env  # noqa: PLC0414 - shared fixture
-from .test_recovery_plan import inputs as inputs  # noqa: PLC0414
-from .test_recovery_plan import renderer as renderer  # noqa: PLC0414
+from .test_plan import inputs as inputs  # noqa: PLC0414
+from .test_plan import renderer as renderer  # noqa: PLC0414
 
 
 @pytest.fixture

@@ -17,5 +17,5 @@ FROM ${FLINK_IMAGE}
 ARG FLINK_VERSION=2.2.1
 RUN test -f "/opt/flink/opt/flink-gs-fs-hadoop-${FLINK_VERSION}.jar"
 ENV ENABLE_BUILT_IN_PLUGINS=flink-gs-fs-hadoop-${FLINK_VERSION}.jar
-COPY --chown=flink:flink target/cloudtasks-measurement.jar /opt/flink/usrlib/cloudtasks-recovery.jar
+COPY --chown=flink:flink target/cloudtasks-recovery.jar /opt/flink/usrlib/cloudtasks-recovery.jar
 COPY --chown=flink:flink target/image-lib/*.jar /opt/flink/usrlib/

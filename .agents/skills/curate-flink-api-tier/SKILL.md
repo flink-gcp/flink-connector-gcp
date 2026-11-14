@@ -80,5 +80,6 @@ it. Putting the dependency behind the compat roots instead (the stable 2.x form
 in `java-flink2`, a 1.x alternative in `java-flink1`, ADR-0054) is the
 cross-major form of rung 1.
 
-A Tier-3 job module is read at the LTS only when `lts_tier3_modules` names it;
-name one there exactly when `tier3-images.yaml` builds it at 1.20.
+A Tier-3 job module is read at `flink.version` alone, because nothing builds one
+at 1.20; a module that starts being built there needs `source_versions()` to
+read it at the LTS too.

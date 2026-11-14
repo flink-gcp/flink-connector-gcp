@@ -24,8 +24,8 @@ The rescale out reached no verdict in six attempts, and the owner ended its atte
 
 | Trial | Run ID | Image | Verdict | Listed, missing, repeated, foreign, dispatched |
 | --- | --- | --- | --- | --- |
-| `tm-replacement` (pilot) | `ct1778-tm-replacement-a1` | [fault trial publication](../../../kubernetes/images/README.md#cloud-tasks-fault-trial-publication) (`3546b6ed8`) | `usable` | 180,000, 0, 0, 0, 0 |
-| `rescale-in` | `ct1778-rescale-in-a2` | [INTERNAL retry publication](../../../kubernetes/images/README.md#cloud-tasks-internal-retry-publication) (`3a5832b88`) | `usable` | 180,000, 0, 0, 0, 0 |
+| `tm-replacement` (pilot) | `ct1778-tm-replacement-a1` | [fault trial publication](0165-tier3-image-publications.md#cloud-tasks-fault-trial-publication) (`3546b6ed8`) | `usable` | 180,000, 0, 0, 0, 0 |
+| `rescale-in` | `ct1778-rescale-in-a2` | [INTERNAL retry publication](0165-tier3-image-publications.md#cloud-tasks-internal-retry-publication) (`3a5832b88`) | `usable` | 180,000, 0, 0, 0, 0 |
 | `rescale-out` | `ct1778-rescale-out-a1` to `-a6` | `3546b6ed8` for a1 to a4, `3a5832b88` for a5 and a6 | `inconclusive` six times | no listing |
 
 For both `usable` runs the final receipt and `just tier3-analyze` agree, and the fault and proof reads under the preregistration's acceptance criteria pass:

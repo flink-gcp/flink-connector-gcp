@@ -30,7 +30,6 @@ ENTRYPOINTS = ("__main__", "__init__", "cli")
 DISPATCHED = {
     "supervisor": "runtime",
     "bigquery": "bigquery.oracle",
-    "vm-analyze": "cloudtasks.vmanalyze",
 }
 # The Pod's command is fixed by the manifest. Only its module seeds the walk;
 # naming a command the Pod never runs would carry that command's modules into
