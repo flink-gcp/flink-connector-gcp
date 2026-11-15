@@ -425,6 +425,9 @@ class Stage2CommitProgressTest {
         JsonNode record = json(progress.finishedRecords().get(0));
         long held = TimeUnit.MILLISECONDS.toNanos(15);
         assertThat(record.path("sends").asInt()).isEqualTo(4);
+        assertThat(record.path("peakPending").asInt())
+                .as("the bound of two, though every second request is answered at once")
+                .isEqualTo(2);
         assertThat(record.path("boundBlockedWaits").asInt()).isEqualTo(1);
         assertThat(record.path("completedBehindAtBound").asInt())
                 .as("the second request had completed while the committer waited on the first")
@@ -478,11 +481,35 @@ class Stage2CommitProgressTest {
         progress.finished(committer, true, 1_000, -1);
         JsonNode record = json(progress.finishedRecords().get(0));
         assertThat(record.path("sends").asInt()).isEqualTo(4);
+        assertThat(record.path("peakPending").asInt())
+                .as("three sent before the first wait; the fourth after two were collected")
+                .isEqualTo(3);
         assertThat(record.path("boundWaitNanos").asLong()).isEqualTo(105);
         assertThat(record.path("drainWaitNanos").asLong()).isEqualTo(30);
         assertThat(record.path("boundBlockedWaits").asInt()).isEqualTo(1);
         assertThat(record.path("drainBlockedWaits").asInt()).isEqualTo(1);
         assertThat(record.path("completedBehindAtBound").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void peakPendingCountsRequestsAnsweredBeforeTheCommitterWaitsOnThem() throws Exception {
+        Stage2CommitProgress progress = new Stage2CommitProgress();
+        Object committer = new Object();
+        progress.started(committer, 3, 0, -1);
+        // Each request is answered before the next goes out, so the service never has more than
+        // one outstanding; the committer has waited on none of them yet.
+        Stage2CommitProgress.Invocation invocation = progress.sent();
+        invocation.completed();
+        progress.sent();
+        invocation.completed();
+        progress.sent();
+        invocation.completed();
+        for (int i = 0; i < 3; i++) {
+            invocation.waited(0, false, 0);
+        }
+        progress.finished(committer, true, 1, -1);
+        JsonNode record = json(progress.finishedRecords().get(0));
+        assertThat(record.path("peakPending").asInt()).isEqualTo(3);
     }
 
     @Test
@@ -506,6 +533,7 @@ class Stage2CommitProgressTest {
         assertThat(progress.sent()).as("the finished invocation is no longer current").isNull();
         JsonNode record = json(progress.finishedRecords().get(0));
         assertThat(record.path("sends").asInt()).isZero();
+        assertThat(record.path("peakPending").asInt()).isZero();
         assertThat(record.path("boundWaitNanos").asLong()).isZero();
         assertThat(record.path("drainWaitNanos").asLong()).isZero();
         assertThat(record.path("boundBlockedWaits").asInt()).isZero();

@@ -204,7 +204,7 @@ The instrument gained four things for it:
 - the time each completion spent in the instrument's bookkeeping is recorded apart from the request's round trip
 - the peak of outstanding writes is reported whether a run succeeds or fails, a report added after the staged matrix ran
 
-A test in `Stage2JobITCase` drives a staged run at 100 and fails unless more than 16 requests are outstanding at once.
+A test in `Stage2JobITCase` drives a staged run at 100 and fails unless one commit invocation has more than 16 requests sent and not yet waited on at once.
 
 The first staged pass is not used as a measurement of the default.
 Its runtime was built from compiled test classes that still held a mutation from checking that test, which capped the sink's `maxInFlightRequests` at 16.
