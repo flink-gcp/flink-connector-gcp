@@ -14,9 +14,13 @@
 # limitations under the License.
 """Vertex discovery by name, the families and watermark a reading covers, and the verdict."""
 
+import json
+
 import pytest
-from flink_tier3.common import USABLE
+from flink_tier3 import runs
+from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.metrics import metric_name
+from flink_tier3.spanner import analyze, plan
 from flink_tier3.spanner.observe import (
     CONNECTOR_METRICS,
     FAMILIES,
@@ -27,9 +31,12 @@ from flink_tier3.spanner.verdict import (
     NO_WATERMARK,
     OBSERVED,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
 )
+
+from ..test_analyze import write_run
 
 # The chained vertex names of the application's README.
 NAMES = {
@@ -207,3 +214,82 @@ def test_a_component_family_never_read_leaves_the_run_unusable():
     assert result["reasons"] == [
         f"unobserved-batch-connector-in-{window}" for window in SAMPLED_STAGES
     ]
+
+
+def test_a_sequence_run_is_assessed_by_its_oracles_without_samples(tmp_path):
+    """A fault-sequence run (ADR-0204) samples nothing and lists its faults."""
+    record = {
+        "stage": "complete",
+        "verdict": "usable",
+        "reasons": [],
+        "outcomes": {
+            "oracles": {
+                "sink": {"verdict": "pass"},
+                "change_stream": {"verdict": "pass", "judged": True},
+                "batch": {"verdict": "pass"},
+            },
+            "faults": [{"kind": "upgrade", "at": "2026-11-16T02:00:00Z"}],
+        },
+    }
+    run_dir = write_run(
+        tmp_path,
+        run_id="sp-s1",
+        scenario="spanner-recovery",
+        events=[
+            {
+                "event": "recovery-complete",
+                "at": "2026-11-16T02:30:00Z",
+                "payload": record,
+            }
+        ],
+    )
+    approval = json.loads((run_dir / "approval.json").read_text())
+    approval["spanner_trial"] = plan.trial("sequence", "2026-11-16T01:50:00Z")
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
+    assert assessed["verdict"] == USABLE
+    assert assessed["problems"] == []
+    assert assessed["faults"] == record["outcomes"]["faults"]
+    # The report lists the faults rather than claiming windows it never had.
+    [row] = [
+        line for line in analyze.render([assessed]).splitlines() if "sp-s1" in line
+    ]
+    assert "| upgrade |" in row
+
+
+PASSED = {
+    "sink": {"verdict": "pass"},
+    "change_stream": {"verdict": "pass", "judged": True},
+    "batch": {"verdict": "pass"},
+}
+
+
+@pytest.mark.parametrize(
+    ("stage", "component", "report", "reason"),
+    [
+        ("tables", None, None, "recovery-incomplete"),
+        ("complete", "sink", {"verdict": "fail"}, "sink-oracle-not-passed"),
+        ("complete", "batch", {"verdict": "fail"}, "batch-oracle-not-passed"),
+        (
+            "complete",
+            "change_stream",
+            {"verdict": "fail", "judged": True},
+            "change_stream-oracle-not-passed",
+        ),
+        (
+            "complete",
+            "change_stream",
+            {"verdict": "pass", "judged": False},
+            "change_stream-oracle-unjudged",
+        ),
+    ],
+)
+def test_a_sequence_run_is_usable_only_complete_with_every_oracle_passed(
+    stage, component, report, reason
+):
+    """Lost data in any one table, or a relay not judged, withholds `usable`."""
+    oracles = {**PASSED, **({component: report} if component else {})}
+    decided = sequence_verdict({"stage": stage, "outcomes": {"oracles": oracles}})
+    assert decided == {"verdict": INCONCLUSIVE, "reasons": [reason]}
+    passed = sequence_verdict({"stage": "complete", "outcomes": {"oracles": PASSED}})
+    assert passed == {"verdict": USABLE, "reasons": []}

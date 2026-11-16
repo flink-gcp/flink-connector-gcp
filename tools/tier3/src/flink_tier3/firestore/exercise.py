@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import re
 
-from ..common import Failure, timestamp
+from ..common import Failure, retryable_commit, timestamp
 from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import FIRESTORE, FIRESTORE_OBSERVATIONS, FIRESTORE_STATE, POLL
-from ..spanner.instance import retryable_commit
 from .observe import observation, vertices
 from .oracle import BatchCopy, Seed, Sink
 from .trial import BATCH, INPUT, LATE_RECORDS, MODES, SEED, SEQUENCE_KIND

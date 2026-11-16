@@ -1259,6 +1259,9 @@ SEQUENCE_PARALLELISM = {
     "rescale-in": 1,
     "rescale-out": 2,
 }
+# The trial kind a scenario names the fault sequence by, beside its single-fault
+# kinds; it starts and upgrades at the default fault's sizes.
+SEQUENCE_KIND = "sequence"
 # The faults that change the application, which the Operator applies as a
 # savepoint upgrade.
 SAVEPOINT_FAULTS = ("upgrade", "rescale-in", "rescale-out")

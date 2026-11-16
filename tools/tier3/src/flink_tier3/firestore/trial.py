@@ -16,7 +16,7 @@
 
 from dataclasses import dataclass
 
-from ..exercise import DEFAULT_FAULT, FAULTS
+from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND
 from ..policy import PROJECT, RUN_ID
 
 # The application's bounds (kubernetes/apps/firestore RecoveryOptions) and the
@@ -41,8 +41,7 @@ BATCH = "batch_out"
 LATE_RECORDS = 16
 # Seven digits number every seed record, the late ones included.
 MAX_SEED_RECORDS = 10**7 - LATE_RECORDS
-# The fault-sequence trial of ADR-0204, which injects every kind in one run.
-SEQUENCE_KIND = "sequence"
+# The single-fault kinds and the fault sequence of ADR-0204.
 KINDS = (*FAULTS, SEQUENCE_KIND)
 
 

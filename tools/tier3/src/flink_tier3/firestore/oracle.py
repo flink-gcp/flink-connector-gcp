@@ -14,16 +14,16 @@
 # limitations under the License.
 """Judge each collection against the run's input and seed, one database at a time.
 
-The checks are the Spanner trial's, which take a collection's rows page by
+The checks build on the shared ones, which take a collection's rows page by
 page and report counts and the first few offending keys. Each mode's
 collections are checked on their own, the same way: the input sink writes one
 document or entity per record, and the batch copy one per delivery, which a
 key's copies count.
 """
 
+from .. import oracle
 from ..common import Failure, timestamp, utc
-from ..spanner import oracle as spanner
-from ..spanner.oracle import Check, Seed
+from ..oracle import Check, Seed
 
 __all__ = ("BatchCopy", "Seed", "Sink")
 
@@ -47,7 +47,7 @@ class Sink(Check):
         return super().report(("foreign", "wrong_value"))
 
 
-class BatchCopy(spanner.BatchCopy):
+class BatchCopy(oracle.BatchCopy):
     """`batch_out`: every seed record copied with its value, and no late record.
 
     The copy reads `seed` at the read time it planned, before the late
@@ -84,8 +84,6 @@ class BatchCopy(spanner.BatchCopy):
         first copy, to the last copy.
         """
         result = super().report(seed)
-        # The Spanner split points' prefixes divide nothing here.
-        result.pop("replays_by_prefix")
         start, since = self.first, "first_copy"
         if read_time is not None:
             try:

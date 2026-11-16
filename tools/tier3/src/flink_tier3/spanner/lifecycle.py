@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import re
 
-from ..common import ApiError, Failure, transient
+from ..common import ApiError, Failure, retryable_commit, transient
 from ..resource import InstanceLifecycle
-from .instance import RETENTION, TABLES, retryable_commit
+from .instance import RETENTION, TABLES
 from .trial import CHANGE_STREAM
 
 # Seed rows per commit: two mutations each, 20,000 of the 80,000 a commit

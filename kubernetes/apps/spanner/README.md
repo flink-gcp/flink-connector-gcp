@@ -119,6 +119,26 @@ The `spanner-recovery` scenario of the [lifecycle](../../lifecycle/README.md) ru
 It is the trial set of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-trial) records its design ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
 It follows the [Bigtable recovery trial](../bigtable/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
 
+### Fault sequence
+
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+Once a completed checkpoint follows the initial input and the late seed rows are written, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
+Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
+
+The input is 3,600 records at 10 records per second, six minutes of input, and the seed 3,600 rows copied at 5 rows per second per reading subtask, six minutes with two subtasks.
+A restore reads each partition in flight again from its start, as [#1878's findings](../../../docs/adr/evidence/0165-spanner-recovery-findings-1878.md#batch-read) record, so the copy is expected to outlast the input, which is sized to outlast the five faults.
+The change stream ends 1,800 seconds after the window's start, and the job cannot finish before it.
+The input is short because it must finish well before that end.
+The instances of #1878 were admitted 336 to 472 seconds into the window, and its four usable trials planned their batch reads, which the job does as it starts, 61 to 180 seconds after admission.
+The [Firestore fault sequence run](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md#the-fault-sequence)'s ten-minute input took four minutes longer than its length through the five faults, so six minutes of input, about four of the faults' downtime and the relay's 120-second commit margin leave seven to eleven minutes for interruptions.
+A run should therefore reach its verdict about 31 minutes into its window.
+
+When the job has finished after the last fault, with its whole input processed, the three oracles below read the tables, and `usable` means all three pass.
+The reports carry no watermark or partition readings, since nothing samples the job.
+The Change Streams oracle is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end, because a commit after the end is not relayed; a restore after the input finished can replay it and write its rows again, so the latest line counts, not the first.
+A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
+`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+
 ### Trial and estimate
 
 Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and the same seed, 120,000 rows copied at 50 rows per second per reading subtask.

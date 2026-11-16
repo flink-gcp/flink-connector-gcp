@@ -18,14 +18,27 @@ from __future__ import annotations
 
 import re
 
-from ..common import Failure, timestamp, utc
-from ..exercise import FiniteInputExercise
+from ..common import Failure, retryable_commit, timestamp, utc
+from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import POLL, SPANNER, SPANNER_OBSERVATIONS, SPANNER_STATE
-from .instance import retryable_commit
 from .observe import observation, vertices
 from .oracle import BatchCopy, ChangeStream, Seed, Sink, micros
-from .trial import BATCH_TABLE, INPUT_TABLE, LATE_ROWS, RELAY_TABLE, SEED_TABLE
-from .verdict import MEASUREMENT_EVENT, maxima, summarize, verdict, watermark_advanced
+from .trial import (
+    BATCH_TABLE,
+    INPUT_TABLE,
+    LATE_ROWS,
+    RELAY_TABLE,
+    SEED_TABLE,
+    SEQUENCE_KIND,
+)
+from .verdict import (
+    MEASUREMENT_EVENT,
+    maxima,
+    sequence_verdict,
+    summarize,
+    verdict,
+    watermark_advanced,
+)
 
 # The stage between the finished application and the read tables.
 ORACLE_STAGE = "tables"
@@ -91,6 +104,8 @@ class SpannerExercise(FiniteInputExercise):
         return observation(rest, state)
 
     summarize = staticmethod(summarize)
+    # The verdict the oracles' record is judged by.
+    verdict = staticmethod(verdict)
 
     def progress(self, pod, text):
         """Read the input's progress, and the batch read's plan from the JobManager.
@@ -124,10 +139,14 @@ class SpannerExercise(FiniteInputExercise):
 
     def begin_upgrade(self, app, cp, progress, pods):
         """Write the late seed rows first; the upgrade waits for their record."""
+        if self.late_seed_written():
+            super().begin_upgrade(app, cp, progress, pods)
+
+    def late_seed_written(self):
+        """Write the late seed rows unless written; whether they are."""
         if "late_seed" not in self.outcomes:
             self.seed_late()
-        if "late_seed" in self.outcomes:
-            super().begin_upgrade(app, cp, progress, pods)
+        return "late_seed" in self.outcomes
 
     def seed_late(self):
         """Add the late seed rows once the batch read has planned its snapshot.
@@ -191,26 +210,24 @@ class SpannerExercise(FiniteInputExercise):
                 check.add(rows)
                 if after is None:
                     break
-        finished = min(
-            sample["at"]
-            for sample in self.fresh_progress("upgrade")
-            if sample["processed"] == self.records
-        )
+        finished = self.input_finished_at()
         judged = finished + COMMIT_SECONDS <= timestamp(self.trial.change_stream_end)
         relay = checks[RELAY_TABLE]
         stream = relay.report(judged)
-        stream.update(
-            watermark=maxima(self.coverage, "watermark"),
-            watermark_advanced=watermark_advanced(self.coverage),
-            partitions_discovered=maxima(self.coverage, "partitions_discovered"),
-        )
         batch = checks[BATCH_TABLE].report(checks[SEED_TABLE].report())
         batch.update(
             plan=self.outcomes.get("batch_plan")
             or {"unavailable": "no plan line read from the JobManager"},
             late_after_plan=self.late_after_plan(),
-            partitions_reread=maxima(self.coverage, "partitions_reread"),
         )
+        # Only a run that samples the job has window readings to report.
+        if self.measurement_event:
+            stream.update(
+                watermark=maxima(self.coverage, "watermark"),
+                watermark_advanced=watermark_advanced(self.coverage),
+                partitions_discovered=maxima(self.coverage, "partitions_discovered"),
+            )
+            batch.update(partitions_reread=maxima(self.coverage, "partitions_reread"))
         self.outcomes["oracles"] = {
             "read_timestamp": snapshot,
             "input_finished_at": utc(finished),
@@ -219,7 +236,15 @@ class SpannerExercise(FiniteInputExercise):
             "change_stream": stream,
             "batch": batch,
         }
-        self.complete(verdict)
+        self.complete(self.verdict)
+
+    def input_finished_at(self):
+        """When the upgraded job first showed its whole input processed."""
+        return min(
+            sample["at"]
+            for sample in self.fresh_progress("upgrade")
+            if sample["processed"] == self.records
+        )
 
     def late_after_plan(self):
         """Whether the late commit followed the plan's read timestamp, or None unread."""
@@ -230,3 +255,37 @@ class SpannerExercise(FiniteInputExercise):
             return micros(late["commit_timestamp"]) > micros(plan["read_timestamp"])
         except Failure:
             return None
+
+
+class SpannerSequenceExercise(FaultSequence, SpannerExercise):
+    """The Spanner trial as one fault sequence, judged by its data (ADR-0204).
+
+    The late seed rows are written before the first fault, as before the
+    upgrade of a single-fault trial, and the oracles are the same three. No
+    window samples the job, so the reports carry no watermark or partition
+    readings, and the relay is judged when the input's latest progress line,
+    the one that showed it whole, came the commit margin before the change
+    stream's end.
+    """
+
+    verdict = staticmethod(sequence_verdict)
+
+    def ready_for_sequence(self):
+        """The first fault waits for the late seed rows."""
+        return self.late_seed_written()
+
+    def input_finished_at(self):
+        """When the latest progress line showed the whole input.
+
+        A restore after an earlier completion may replay the input and finish
+        it again, writing its rows again, so the latest line is the one the
+        relay must have time for.
+        """
+        return max(sample["at"] for sample in self.samples.values())
+
+
+def spanner_exercise(env, upgrade, instance):
+    """The exercise the approved Spanner trial names."""
+    if env.approval.spanner_plan.kind == SEQUENCE_KIND:
+        return SpannerSequenceExercise(env, upgrade, instance)
+    return SpannerExercise(env, upgrade, instance)

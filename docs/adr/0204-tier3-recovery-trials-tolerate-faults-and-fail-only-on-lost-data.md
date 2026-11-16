@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-11-12
-- Issues: [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143), [#2144](https://github.com/flink-gcp/flink-connector-gcp/issues/2144), [#2145](https://github.com/flink-gcp/flink-connector-gcp/issues/2145), [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)
+- Issues: [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143), [#2144](https://github.com/flink-gcp/flink-connector-gcp/issues/2144), [#2145](https://github.com/flink-gcp/flink-connector-gcp/issues/2145), [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146), [#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)
 - Modules: tools/tier3, kubernetes
 - Evidence: [Firestore fault sequence findings](evidence/0204-firestore-fault-sequence-findings-2147.md)
 - Partially supersedes: [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md)'s rules for ending an attempt, its measurement windows and verdicts, one fault per trial, its input sizes, and spend approval from an estimate
@@ -73,6 +73,7 @@ A kind that cannot apply to a scenario is left out, and the scenario's runbook s
 The rig injects them itself because the platform may not interrupt a short run at all; injecting each kind once guarantees the run went through every fault.
 Before each fault, and before completion, the rig waits until the job is running again, whatever caused the last restart: running, reconciled to the last change of the application, with a JobManager and the TaskManagers the run's parallelism needs, and logging progress after a restore that followed the fault, since the stopped job may still log for a while.
 The input and a batch read's seed are sized to outlast the fault sequence; an input that finishes before the job is running again after the last fault leaves the run unconfirmed.
+A change-stream source stops at an end the plan fixes from the window's start, and the job cannot finish before it, so that end leaves the input room to finish and its last commit room to be relayed; a run whose input finished too close to the end cannot judge its relay, which no commit after the end reaches, so it is not usable and can run again as it is.
 The run records which faults it injected and when.
 
 Everything else is waited out at any stage and recorded, however often it happens: a preemption, a Spot reclamation, a node shutdown, an eviction, or a Pod, container or Flink job restart, whatever its cause.
@@ -109,8 +110,8 @@ Spend is no longer estimated or approved per dispatch.
 Attempts are no longer spent on events the trials are meant to survive, and one run covers every fault kind.
 Tier-3 no longer reports how fast a connector recovers or what its metrics did, and a regression that only slows recovery or adds restarts goes unnoticed by its verdict.
 The restarts a run records still show where a connector failed and recovered, as the Cloud Tasks committer defects did ([#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794), [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796)), and the findings report them.
-Firestore's `sequence` trial is the first scenario on these rules ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)); each other scenario keeps ADR-0165's rules until its own issue moves it, and the single-fault trials, campaigns, estimates and windows are removed once none uses them.
-Until then every Firestore proposal, the `sequence` one included, still carries the scenario's estimate, which nothing approves.
+Firestore's `sequence` trial is the first scenario on these rules ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)) and Spanner's the second ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)); each other scenario keeps ADR-0165's rules until its own issue moves it, and the single-fault trials, campaigns, estimates and windows are removed once none uses them.
+Until then every Firestore and Spanner proposal, the `sequence` ones included, still carries the scenario's estimate, which nothing approves.
 Past evidence keeps the interpretation of the revision that produced it.
 
 ## Alternatives declined

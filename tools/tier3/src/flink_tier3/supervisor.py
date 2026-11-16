@@ -33,13 +33,13 @@ from .pubsub.exercise import PubSubExercise
 from .pubsub.guard import PubSubGuard, admission_deadline
 from .pubsub.handoff import runner_released
 from .resource import RESOURCE_SCENARIOS
-from .spanner.exercise import SpannerExercise
+from .spanner.exercise import SpannerExercise, spanner_exercise
 
 # The exercise of each scenario whose runner creates one resource.
 RESOURCE_EXERCISES = {
     "cloudtasks-recovery": CloudTasksExercise,
     "bigtable-recovery": BigtableExercise,
-    "spanner-recovery": SpannerExercise,
+    "spanner-recovery": spanner_exercise,
     "firestore-recovery": firestore_exercise,
 }
 

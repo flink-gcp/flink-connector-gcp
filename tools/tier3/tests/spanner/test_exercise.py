@@ -19,12 +19,18 @@ from types import SimpleNamespace
 
 import pytest
 from flink_tier3.common import TransportError, timestamp, utc
-from flink_tier3.exercise import RecoveryExercise
+from flink_tier3.exercise import TIME_LIMIT_SECONDS, RecoveryExercise
 from flink_tier3.spanner import instance
-from flink_tier3.spanner.exercise import ORACLE_STAGE, SpannerExercise
+from flink_tier3.spanner.exercise import (
+    COMMIT_SECONDS,
+    ORACLE_STAGE,
+    SpannerExercise,
+    SpannerSequenceExercise,
+)
 from flink_tier3.spanner.instance import Instance
 from flink_tier3.spanner.trial import LATE_ROWS, Trial, row_key
 from flink_tier3.spanner.verdict import OBSERVED, SAMPLED_STAGES
+from flink_tier3.supervisor import RESOURCE_EXERCISES
 
 from ..cloudtasks.test_plan import inputs as inputs  # noqa: PLC0414
 from ..cloudtasks.test_plan import renderer as renderer  # noqa: PLC0414
@@ -216,3 +222,109 @@ def test_the_batch_plan_is_read_from_the_jobmanager_log(baseline):
         "read_timestamp": "2026-10-28T14:43:09.123456000Z",
         "plans": 1,
     }
+
+
+def built(prepared, monkeypatch, kind):
+    """The exercise the supervisor builds for a small trial of `kind`."""
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    # The sequence's end, well inside the run's time limit.
+    end = utc(environment.clock() + 1800)
+    small = Trial(environment.approval.run_id, 5, 1, end, 6, 1, kind=kind)
+    environment.approval = dataclasses.replace(
+        environment.approval, scenario="spanner-recovery"
+    )
+    monkeypatch.setattr(
+        type(environment.approval), "spanner_plan", property(lambda self: small)
+    )
+    database = Database(tables(small, late=False))
+    controller = SimpleNamespace(
+        env=environment,
+        trial=small,
+        listing=lambda until: Instance(database, small, until, environment.clock),
+    )
+    environment.records.set_phase(rt.Phase.READY)
+    environment.records.set_phase(rt.Phase.RUNNING)
+    value = RESOURCE_EXERCISES[environment.approval.scenario](
+        environment, upgrade, controller
+    )
+    value.persist("baseline")
+    return value, database
+
+
+@pytest.fixture
+def sequence(prepared, monkeypatch):
+    """The fault-sequence exercise over the same small input."""
+    return built(prepared, monkeypatch, "sequence")
+
+
+@pytest.mark.parametrize("kind", ["jm-replacement", "tm-replacement", "rescale-in"])
+def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
+    value, _ = built(prepared, monkeypatch, kind)
+    assert type(value) is SpannerExercise
+
+
+def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
+    value, _ = sequence
+    assert isinstance(value, SpannerSequenceExercise)
+    assert value.measurement_event is None
+    assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
+
+
+def test_the_first_fault_waits_for_the_late_seed_rows(sequence):
+    """Rows written before the read planned its snapshot would be copied."""
+    value, database = sequence
+    copies, database.tables["batch_out"] = database.tables["batch_out"], []
+    assert value.ready_for_sequence() is False
+    assert database.commits == []
+    database.tables["batch_out"] = copies
+    assert value.ready_for_sequence() is True
+    assert value.outcomes["late_seed"]["rows"] == LATE_ROWS
+
+
+def finish(value, database, at):
+    """The tables a usable run leaves, and the input finished at `at`."""
+    database.tables = {name: sorted(rows) for name, rows in tables(value.trial).items()}
+    value.outcomes.update(
+        late_seed={"commit_timestamp": utc(value.env.clock()), "rows": LATE_ROWS}
+    )
+    value.samples[("tm", 0)] = {
+        "at": at,
+        "phase": "upgrade",
+        "processed": 5,
+        "lineage": "x",
+        "sequence": 4,
+        "pod_uid": "tm",
+    }
+    value.persist("complete")
+
+
+def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
+    """No coverage, proofs or watermark; the three oracles decide."""
+    value, database = sequence
+    value.env.sleep(10)
+    finish(value, database, value.env.clock())
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert (record["verdict"], record["reasons"]) == ("usable", [])
+    oracles = record["outcomes"]["oracles"]
+    assert oracles["change_stream"]["judged"] is True
+    assert "watermark" not in oracles["change_stream"]
+    assert "partitions_reread" not in oracles["batch"]
+
+
+def test_the_relay_is_judged_from_the_latest_progress_line(sequence):
+    """A restore after the input finished may write its rows again later."""
+    value, database = sequence
+    end = timestamp(value.trial.change_stream_end)
+    finish(value, database, end - COMMIT_SECONDS - 60)
+    # The input finished again after a restore, too close to the end.
+    value.samples[("tm", 1)] = {
+        **value.samples[("tm", 0)],
+        "at": end - 60,
+        "sequence": 5,
+    }
+    value.env.clock = lambda: end
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert record["reasons"] == ["change_stream-oracle-unjudged"]
