@@ -100,7 +100,7 @@ def spanner_configuration(run_id):
         "high-availability.type": "kubernetes",
         "high-availability.storageDir": f"{storage}/ha",
         "restart-strategy.type": "fixed-delay",
-        "restart-strategy.fixed-delay.attempts": "3",
+        "restart-strategy.fixed-delay.attempts": "2147483647",
         "restart-strategy.fixed-delay.delay": "10 s",
     }
 
@@ -454,3 +454,27 @@ def test_spanner_window_is_ninety_minutes(module, active_seconds, admitted):
     assert (result.returncode == 0) is admitted, result.stderr
     if not admitted:
         assert f"invalid value {active_seconds} (out of bound" in result.stderr
+
+
+def test_the_sequence_trial_starts_and_upgrades_at_two(module):
+    """The fault sequence (ADR-0204) patches its own rescales from the upgrade."""
+    result = proposal(
+        module,
+        spanner_trial="sequence",
+        spanner_records="3600",
+        spanner_records_per_second="10",
+        spanner_seed_rows_per_second="5",
+    )
+    assert result.returncode == 0, result.stderr
+    initial, upgrade, _ = json.loads(result.stdout)
+    for app, phase in ((initial, "initial"), (upgrade, "upgrade")):
+        assert_spanner_application(
+            app,
+            "proposal-1360",
+            "2026-09-20T00:00:00Z",
+            phase,
+            records=3600,
+            rate=10,
+            parallelism=2,
+            seed=5,
+        )

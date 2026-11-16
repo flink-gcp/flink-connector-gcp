@@ -105,6 +105,18 @@ def transient(error):
     )
 
 
+def retryable_commit(error):
+    """Whether a commit of fixed values may be repeated after `error`.
+
+    A single-use read-write commit can still abort, which Spanner's and
+    Firestore's REST APIs answer with 409, and a failure that says nothing
+    may have committed or not. A commit that writes fixed values with
+    insert-or-update or upsert semantics writes nothing new on a repeat
+    either way.
+    """
+    return transient(error) or (isinstance(error, ApiError) and error.status == 409)
+
+
 def encoded(value):
     return urllib.parse.quote(value, safe="")
 

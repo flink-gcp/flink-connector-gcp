@@ -37,7 +37,7 @@ Every connector has one; `smoke` runs a generic stateful application without a c
 | `pubsub-recovery` | `tier3-pubsub` | [Pub/Sub](apps/pubsub/README.md) | ADR-0165 until [#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151) | [#1361](../docs/adr/evidence/0165-pubsub-trial-findings-1361.md), [#1720](../docs/adr/evidence/0165-pubsub-redelivery-findings-1720.md), [#2056](../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md), [#2127](../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) |
 | `cloudtasks-recovery` | `tier3-cloudtasks` | [Cloud Tasks](apps/cloudtasks/README.md) | ADR-0165 until [#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152) | [#1362](../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md), [#1778](../docs/adr/evidence/0165-cloudtasks-fault-trials-findings-1778.md), [#1799](../docs/adr/evidence/0165-cloudtasks-rescale-out-findings-1799.md) |
 | `bigtable-recovery` | `tier3-bigtable` | [Bigtable](apps/bigtable/README.md) | ADR-0165 until [#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153) | [#1855](../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) |
-| `spanner-recovery` | `tier3-spanner` | [Spanner](apps/spanner/README.md) | ADR-0165 until [#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154) | [#1878](../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) |
+| `spanner-recovery` | `tier3-spanner` | [Spanner](apps/spanner/README.md) | ADR-0204 for the `sequence` kind ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)); ADR-0165 for the single-fault kinds | [#1878](../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) |
 | `firestore-recovery` | `tier3-firestore` | [Firestore](apps/firestore/README.md) | ADR-0204 for the `sequence` kind; ADR-0165 for the single-fault kinds | [#2147](../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) |
 
 Each findings link names the issue whose trials it reports.
@@ -70,7 +70,6 @@ Some paths predate these rules. Each scenario's rework under [#2143](https://git
 
 - `kubernetes/lifecycle/pubsub-trials/` holds Pub/Sub's reviewed trial files, which its dispatch names instead of a trial input ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151));
 - the rig tests of other connectors, the shared exercise tests and `test_records.py` and `test_rest.py` take fixtures from `tools/tier3/tests/bigquery/` ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)) and `tools/tier3/tests/cloudtasks/` ([#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152));
-- Firestore's oracles build on `flink_tier3.spanner.oracle`, and its lifecycle and exercise on `flink_tier3.spanner.instance` ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154));
 - the BigQuery and Pub/Sub runbooks do not follow the section order ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150), [#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)), and BigQuery's uploader findings keep the name `0195-fileloads-uploader-recovery-2034.md` they were published under.
 
 ## Shared layers

@@ -28,7 +28,7 @@ from ..policy import (
 )
 from ..proposal import check_inputs, render_verified
 from .instance import PROCESSING_UNITS
-from .trial import KINDS, Trial
+from .trial import KINDS, SEQUENCE_KIND, Trial
 
 NAMESPACE = SPANNER
 WINDOW_SECONDS = WINDOWS["spanner-recovery"]
@@ -45,6 +45,13 @@ SEED = {"seed_rows": 120000, "seed_rows_per_second": 50}
 # before the cleanup start at 4,500 seconds, and an input that starts late and has
 # two slow recoveries can finish past it.
 CHANGE_STREAM_END_SECONDS = 3900
+# The fault sequence's input, seed and change-stream end (ADR-0204). The job
+# cannot finish before the change stream's end, which the input must precede
+# by the relay's commit margin, so the input and the seed copy are six minutes
+# each; the runbook's "Fault sequence" section gives the timing behind them.
+SEQUENCE_INPUT = {"records": 3600, "records_per_second": 10}
+SEQUENCE_SEED = {"seed_rows": 3600, "seed_rows_per_second": 5}
+SEQUENCE_CHANGE_STREAM_END_SECONDS = 1800
 REVIEWED_AT = "2026-10-28T00:00:00Z"
 # 100 processing units of a regional Standard instance in us-central1: the
 # 90-minute window rounded up to hours, on the unmeasured assumption that the
@@ -58,6 +65,14 @@ def trial(kind, started_at):
     """The approved trial of one kind: its fault, the fixed input, seed and end."""
     if kind not in KINDS:
         raise ValueError("Unknown Spanner trial: " + str(kind))
+    if kind == SEQUENCE_KIND:
+        end = utc(timestamp(started_at) + SEQUENCE_CHANGE_STREAM_END_SECONDS)
+        return {
+            "kind": kind,
+            **SEQUENCE_INPUT,
+            **SEQUENCE_SEED,
+            "change_stream_end": end,
+        }
     end = utc(timestamp(started_at) + CHANGE_STREAM_END_SECONDS)
     return {"kind": kind, **INPUT, **SEED, "change_stream_end": end}
 
@@ -69,9 +84,8 @@ def validate_trial(value, started_at):
         raise ValueError(
             "Spanner trial must be one of "
             + ", ".join(KINDS)
-            + " with 180,000 records at 100 records per second and 120,000 seed"
-            " rows copied at 50 rows per second per subtask, ending its change"
-            " stream 3,900 seconds into the window"
+            + " with its fixed input and seed, ending its change stream at its"
+            " fixed offset into the window"
         )
 
 

@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from ..common import ApiError, Failure, transient
+from ..common import Failure
 from ..policy import MIB, PROJECT
 from ..rest import TrialService
 from .trial import (
@@ -64,17 +64,6 @@ STATEMENTS = (
         f" SET OPTIONS (version_retention_period = '{RETENTION}')"
     ),
 )
-
-
-def retryable_commit(error):
-    """Whether a seed commit may be repeated after `error`.
-
-    A single-use read-write commit can still abort, which REST answers with
-    409, and a failure that says nothing may have committed or not. Every seed
-    commit is an insert-or-update of fixed values, so a repeat writes nothing
-    new either way.
-    """
-    return transient(error) or (isinstance(error, ApiError) and error.status == 409)
 
 
 # An oracle page: at most this many rows, one single-use query each. A page of

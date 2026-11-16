@@ -30,3 +30,10 @@ faultKinds: {
 // The kind of a trial that names none; a BigQuery, Cloud Tasks, Bigtable, Spanner or Firestore
 // trial of it runs the upgrade and then the JobManager failover.
 defaultFault: "jm-replacement"
+// The kinds of a scenario that also runs the fault sequence of ADR-0204: the single-fault kinds
+// and `sequence`, which runs every fault in one run, starting and upgrading at two as the default
+// fault does; the exercise patches its rescales from the upgrade.
+sequenceKinds: {
+	faultKinds
+	sequence: faultKinds[defaultFault]
+}

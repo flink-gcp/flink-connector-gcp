@@ -18,10 +18,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from ..common import ApiError, Failure, transient
+from ..common import ApiError, Failure, retryable_commit, transient
 from ..resource import InstanceLifecycle
 from ..rest import Unsent
-from ..spanner.instance import retryable_commit
 from .database import COMMIT_WRITES, READBACK
 from .trial import MODES
 

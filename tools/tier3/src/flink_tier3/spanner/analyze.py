@@ -37,12 +37,13 @@ from ..recovery_analysis import (
     verdict_problems,
 )
 from .observe import COMPONENTS
-from .trial import Trial
+from .trial import SEQUENCE_KIND, Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
     watermark_advanced,
@@ -63,9 +64,26 @@ def _trial(run):
 
 
 def assess(run):
-    """One Spanner run's verdict, beside its recoveries' timing."""
+    """One Spanner run's verdict, beside its recoveries' timing.
+
+    A fault-sequence run (ADR-0204) lists the faults it injected instead,
+    and has no recovery proofs to time.
+    """
     record = recovery_record(run, COMPLETE_EVENT)
+    if _sequence(run):
+        outcomes = record.get("outcomes") if isinstance(record, dict) else None
+        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+        return {
+            **_verdict(run),
+            "faults": faults if isinstance(faults, list) else [],
+            "recoveries": [],
+        }
     return {**_verdict(run), "recoveries": recovery_timings(run, record)}
+
+
+def _sequence(run):
+    trial = _trial(run)
+    return trial is not None and trial.kind == SEQUENCE_KIND
 
 
 def _verdict(run):
@@ -83,12 +101,16 @@ def _verdict(run):
         return unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
     if not complete and record.get("stage") == COMPLETE_STAGE:
         return unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    # Decide over the coverage the readings support, never the coverage the
-    # record claims.
     coverage = rebuild(readings, summarize)
-    if missing := missing_samples(record.get("coverage"), coverage):
-        return unreadable(run, record, [f"missing-samples:{missing}"], samples)
-    decided = verdict({**record, "coverage": coverage})
+    if _sequence(run):
+        # Decided by the data alone; nothing was sampled.
+        decided = sequence_verdict(record)
+    else:
+        # Decide over the coverage the readings support, never the coverage
+        # the record claims.
+        if missing := missing_samples(record.get("coverage"), coverage):
+            return unreadable(run, record, [f"missing-samples:{missing}"], samples)
+        decided = verdict({**record, "coverage": coverage})
     outcomes = record.get("outcomes")
     oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
     return {
@@ -115,6 +137,16 @@ def _figure(oracles, component, *keys):
     return "-" if value is None or isinstance(value, (dict, list)) else value
 
 
+def _faults(item):
+    """A sequence run's injected faults in order, or `-` for a single-fault run."""
+    kinds = [
+        fault.get("kind")
+        for fault in item.get("faults") or []
+        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
+    ]
+    return ", ".join(kinds) or "-"
+
+
 def render(assessments):
     """The report's Spanner section, or nothing when it holds no such run."""
     if not assessments:
@@ -132,9 +164,9 @@ def render(assessments):
         (
             "| run | verdict | stored | samples | sink | sink extra executions | "
             "change stream | replays | watermark advanced | batch | batch extra | "
-            "partitions | reasons | problems |"
+            "partitions | faults | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracles = item.get("oracles")
@@ -147,26 +179,33 @@ def render(assessments):
             f"{verdicts['change_stream']} | {_figure(oracles, 'change_stream', 'replays')} | "
             f"{'-' if advanced is None else str(advanced).lower()} | "
             f"{verdicts['batch']} | {_figure(oracles, 'batch', 'extra_deliveries')} | "
-            f"{_figure(oracles, 'batch', 'plan', 'partitions')} | "
+            f"{_figure(oracles, 'batch', 'plan', 'partitions')} | {_faults(item)} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
         )
     lines.extend(
         [
             "",
             (
-                "A usable verdict establishes that through both recoveries every "
-                "input record's key holds its sequence in `input`, every input key "
-                "was relayed from the change stream at least once with no commit "
-                "after its end while the source's watermark advanced after each "
-                "recovery, and every seed row was copied with its value and no "
-                "late row; extra executions, replays and extra copies are "
-                "reported, not failed, and the executions are a lower bound."
+                "A usable single-fault verdict establishes that through both "
+                "recoveries every input record's key holds its sequence in "
+                "`input`, every input key was relayed from the change stream at "
+                "least once with no commit after its end while the source's "
+                "watermark advanced after each recovery, and every seed row was "
+                "copied with its value and no late row; extra executions, replays "
+                "and extra copies are reported, not failed, and the executions are "
+                "a lower bound."
             ),
             (
-                "Each family is required in the "
+                "For a single-fault run, each family is required in the "
                 + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
                 + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
                 + "only where a reading returned it."
+            ),
+            (
+                "A usable `sequence` verdict (ADR-0204) establishes the same of "
+                "the three tables through the faults listed, except the "
+                "watermark: the run is judged by its data alone, so it reads no "
+                "watermark and samples no window."
             ),
         ]
     )
