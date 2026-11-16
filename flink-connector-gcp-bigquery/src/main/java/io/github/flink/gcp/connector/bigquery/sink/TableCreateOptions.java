@@ -307,6 +307,10 @@ public final class TableCreateOptions implements Serializable {
          * into the table read no rows from it and need no filter. {@code true} requires time
          * partitioning to be configured.
          *
+         * <p>A CDC sink refuses {@code true} for the tables it creates: BigQuery merges a CDC
+         * table's unapplied upserts at query time without pruning partitions, so it would refuse
+         * even a filtered query until they are applied (ADR-0205).
+         *
          * @param requirePartitionFilter whether a query must filter on the partitioning
          * @return this builder
          */

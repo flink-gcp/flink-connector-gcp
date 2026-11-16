@@ -713,6 +713,65 @@ class CdcTableProvisionerTest {
         assertThat(service.creates).isZero();
     }
 
+    /**
+     * A per-destination provider is resolved only when a table is created, so this is where a
+     * partition filter requirement on a CDC table is refused (ADR-0205), before tables.insert.
+     */
+    @Test
+    void aPartitionFilterRequirementRequestsNoCreation() {
+        FakeService service = new FakeService();
+
+        assertThatThrownBy(
+                        () ->
+                                new CdcTableProvisioner(service)
+                                        .ensure(
+                                                DESTINATION,
+                                                SCHEMA,
+                                                destination ->
+                                                        TableCreateOptions.builder()
+                                                                .timePartitioning(
+                                                                        TableCreateOptions
+                                                                                .TimePartitioningType
+                                                                                .DAY)
+                                                                .requirePartitionFilter(true)
+                                                                .build(),
+                                                options(TEN_MINUTES),
+                                                CreateDisposition.CREATE_IF_NEEDED,
+                                                CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .isNotInstanceOf(TableAdminException.class)
+                .hasMessageContaining(DESTINATION.toString())
+                .hasMessageContaining(
+                        "requirePartitionFilter(true), returned by tableCreateOptionsProvider(...),"
+                                + " is refused")
+                .hasMessageContaining("ALTER TABLE");
+        assertThat(service.creates).isZero();
+    }
+
+    @Test
+    void partitioningWithoutTheRequirementStillCreatesACdcTable() throws Exception {
+        FakeService service = new FakeService();
+        TableCreateOptions partitioned =
+                TableCreateOptions.builder()
+                        .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                        .build();
+
+        boolean requested =
+                new CdcTableProvisioner(service)
+                        .ensure(
+                                DESTINATION,
+                                SCHEMA,
+                                destination -> partitioned,
+                                options(TEN_MINUTES),
+                                CreateDisposition.CREATE_IF_NEEDED,
+                                CdcTableReconciliationPolicy.VERIFY_ONLY);
+
+        assertThat(requested).isTrue();
+        assertThat(service.creates).isOne();
+        // The options resolved ahead of the request are the ones the table is created with.
+        assertThat(service.createdWith).isEqualTo(partitioned);
+    }
+
     private static boolean ensure(
             FakeService service,
             CdcTableOptions options,
@@ -774,6 +833,7 @@ class CdcTableProvisionerTest {
         private boolean disappearsAfterDdl;
         private boolean maxStalenessNeverConverges;
         private int creates;
+        @Nullable private TableCreateOptions createdWith;
         private int maxStalenessChecks;
         private int etag = 1;
 
@@ -790,6 +850,7 @@ class CdcTableProvisionerTest {
                 CdcTableOptions cdcOptions,
                 String provisioningLabel) {
             creates++;
+            createdWith = createOptions;
             if (!createWins) {
                 state = stateAfterCreateConflict;
                 return false;

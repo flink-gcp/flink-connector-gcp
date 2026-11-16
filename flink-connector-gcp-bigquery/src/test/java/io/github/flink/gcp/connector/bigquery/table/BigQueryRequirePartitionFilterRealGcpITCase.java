@@ -55,8 +55,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@code sink.table-create.require-partition-filter} against real BigQuery (#2169): a table each
- * write method creates, and one the CDC provisioning creates, refuses a query without a partition
- * filter, while the sink's own writes into it succeed.
+ * write method creates refuses a query without a partition filter, while the sink's own writes into
+ * it succeed. A CDC table refuses even a filtered query, which is why CDC provisioning refuses the
+ * requirement (#2175).
  *
  * <p>Real GCP because the emulator is not evidence for it: whether the service keeps the
  * requirement on the created table, and whether each write method's appends, loads and commits go
@@ -83,7 +84,11 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
     private static final String COLUMNS =
             "id BIGINT NOT NULL, name STRING, event_ts TIMESTAMP_LTZ(6)";
 
-    /** The creation options every case shares: day partitions on the timestamp, filter required. */
+    /** A filter on the partitioning column that every row the cases write satisfies. */
+    private static final String RECENT_ROWS =
+            " WHERE event_ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)";
+
+    /** The creation options the sink-created cases share: day partitions on the timestamp. */
     private static final String[] CREATION =
             new String[] {
                 "sink.table-create.time-partitioning.type",
@@ -178,8 +183,7 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
                         RealBigQuery.queryLongs(
                                 "SELECT COUNT(*) FROM "
                                         + RealBigQuery.tablePath(table)
-                                        + " WHERE event_ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(),"
-                                        + " INTERVAL 2 DAY)"))
+                                        + RECENT_ROWS))
                 .as(table)
                 .containsExactly(rows);
     }
@@ -245,13 +249,31 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
     }
 
     /**
-     * CDC provisioning creates the table through a path of its own, with the primary key, and its
-     * upserts go through the requirement too: two keys written, one of them overwritten. No delete:
-     * on Flink 1.20 the planner keeps {@code ChangelogNormalize}, which gives a key-only delete the
-     * sequence of the change it deletes, so the count would depend on the Flink version.
+     * Why the sink refuses the requirement on a table its CDC provisioning creates (ADR-0205): a
+     * CDC table that carries it refuses a query, filtered or not, while upserts wait to be applied,
+     * because BigQuery merges them at query time without pruning partitions. The table is created
+     * here, outside the sink, as a user who accepts that would, and the sink writes it under {@code
+     * create-never}. If this fails because the filtered query is answered, either the service now
+     * prunes during that merge, and ADR-0205 and the rejection change with it, or a background
+     * apply ran within seconds of the write, which ADR-0205's measurements never saw.
      */
     @Test
-    void aTableTheCdcProvisioningCreatesRequiresAPartitionFilter() throws Exception {
+    void aCdcTableThatRequiresAPartitionFilterRefusesEvenAFilteredQuery() throws Exception {
+        RealBigQuery.queryRows(
+                "CREATE TABLE "
+                        + RealBigQuery.tablePath(CDC)
+                        + " (id INT64 NOT NULL, name STRING, event_ts TIMESTAMP,"
+                        + " PRIMARY KEY (id) NOT ENFORCED)"
+                        + " PARTITION BY DATE(event_ts)"
+                        + " OPTIONS (require_partition_filter = TRUE)");
+        // The filter prunes this table while it has nothing to merge, so a refusal of the same
+        // filter below is the merge's doing, not the filter's.
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM "
+                                        + RealBigQuery.tablePath(CDC)
+                                        + RECENT_ROWS))
+                .containsExactly(0L);
         Instant now = Instant.now();
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
@@ -289,22 +311,31 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
                                 RealBigQuery.project(),
                                 RealBigQuery.dataset(),
                                 CDC,
-                                TableDdl.concat(
-                                        CREATION,
-                                        new String[] {
-                                            "sink.cdc.enabled",
-                                            "true",
-                                            "sink.location",
-                                            RealBigQuery.datasetLocation()
-                                        })));
+                                "sink.cdc.enabled",
+                                "true",
+                                "sink.create-disposition",
+                                "create-never",
+                                "sink.location",
+                                RealBigQuery.datasetLocation()));
 
+        // The writes themselves go through.
         tEnv.executeSql(
                         "INSERT INTO current_rows"
                                 + " SELECT id, name, event_ts, sequence FROM changes")
                 .await();
 
-        assertThat(RealBigQuery.tableConstraints(CDC).getPrimaryKey().getColumns())
-                .containsExactly("id");
-        assertRequiresAPartitionFilter(CDC, 2);
+        for (String filter : new String[] {"", RECENT_ROWS}) {
+            assertThatThrownBy(
+                            () ->
+                                    RealBigQuery.queryLongs(
+                                            "SELECT COUNT(*) FROM "
+                                                    + RealBigQuery.tablePath(CDC)
+                                                    + filter),
+                            "%s refuses the query '%s'",
+                            CDC,
+                            filter)
+                    .hasMessageContaining("requires partition filter")
+                    .hasMessageContaining("unapplied upsert data");
+        }
     }
 }

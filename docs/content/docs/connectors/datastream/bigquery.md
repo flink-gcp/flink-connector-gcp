@@ -1531,6 +1531,22 @@ reports nothing, so `build()` rejects the combination.
 The sink's own writes read no rows from the table and need no filter, under every write method,
 including the copies and the terminal query that finish a `FILE_LOADS` commit (measured).
 
+A CDC sink refuses the requirement for the tables it creates.
+A query on a CDC table merges the upserts BigQuery has not applied yet whenever `max_staleness` is
+unset or the last background apply is older than it, and that merge prunes no partitions, so
+BigQuery refuses the query even when it filters on the partitioning column.
+Google's
+[change data capture documentation](https://cloud.google.com/bigquery/docs/change-data-capture)
+lists the `requirePartitionFilter` table option among what such a table cannot support.
+Measured after one write, with a filtered query every 30 seconds: refused throughout without
+`max_staleness` (6 minutes observed) and with a 2-minute one (13 minutes), and with a 5-minute one
+answered correctly only after the first background apply, about 13 minutes after the write.
+Under `CREATE_IF_NEEDED`, `build()` therefore rejects `requirePartitionFilter(true)` together with
+`cdcOptions(...)`, and a `tableCreateOptionsProvider(...)` that returns it fails the creation of that
+CDC table.
+A user who accepts those refusals can add the requirement to an existing table with `ALTER TABLE`,
+since the sink never applies creation options to an existing table.
+
 #### Table metadata
 
 A table the sink creates carries the `description` and `labels` of its `TableCreateOptions`.

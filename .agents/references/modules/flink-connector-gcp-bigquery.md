@@ -548,6 +548,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   BigQuery drops it silently on an unpartitioned table (measured; ADR-0033's 2026-11-16
   revision). `buildTableInfo` sets it on the table, never on `TimePartitioning`, whose field the
   REST API deprecates; temporary tables never take it (`docs/adr/0183`).
+- A CDC sink never creates a table with `requirePartitionFilter` (`docs/adr/0205`): a CDC table's
+  query-time merge of unapplied upserts prunes no partitions, so BigQuery refuses even filtered
+  queries. The mapper, `BigQuerySinkBuilder.build()` (fixed options, under `CREATE_IF_NEEDED`)
+  and `CdcTableProvisioner` (provider options, before `tables.insert`) each refuse it; do not relax
+  it for `max_staleness` without re-measuring, and `BigQueryRequirePartitionFilterRealGcpITCase`
+  pins the refusal.
 - The uber-jar inherits `docs/adr/0015`; its own record — the slf4j exclusion, the two named
   commons relocations, the relocated Avro trade-off, the Arrow/netty weight it accepts — is
   `docs/adr/0035`. **Read both before changing this module's pom.** The shared half of that pom
