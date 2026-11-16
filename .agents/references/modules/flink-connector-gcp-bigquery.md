@@ -544,6 +544,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `sink.table-create.*` checks shape, never the clusterable scalar type list; the
   field-without-granularity rejection has no builder backstop and is load-bearing
   (`docs/adr/0033`).
+- `requirePartitionFilter(true)` without time partitioning is rejected by `build()` because
+  BigQuery drops it silently on an unpartitioned table (measured; ADR-0033's 2026-11-16
+  revision). `buildTableInfo` sets it on the table, never on `TimePartitioning`, whose field the
+  REST API deprecates; temporary tables never take it (`docs/adr/0183`).
 - The uber-jar inherits `docs/adr/0015`; its own record — the slf4j exclusion, the two named
   commons relocations, the relocated Avro trade-off, the Arrow/netty weight it accepts — is
   `docs/adr/0035`. **Read both before changing this module's pom.** The shared half of that pom

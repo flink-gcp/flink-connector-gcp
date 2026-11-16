@@ -62,8 +62,9 @@ import java.util.Optional;
  *       the builder's two {@code timePartitioning} overloads make the pair unrepresentable, so
  *       there is no exception to inherit and this check is the only thing between a DDL and a
  *       silently unpartitioned table;
- *   <li>an expiration without a granularity, which {@code build()} does reject — but naming {@code
- *       timePartitioningExpiration}, a method a SQL user cannot act on;
+ *   <li>an expiration, or a partition filter requirement, without a granularity, which {@code
+ *       build()} does reject — but naming {@code timePartitioningExpiration} or {@code
+ *       requirePartitionFilter}, methods a SQL user cannot act on;
  *   <li>a partitioning or clustering column BigQuery cannot use — one the table does not declare,
  *       one whose type it cannot partition on, an {@code hour} granularity over a {@code DATE}
  *       column, or a repeated or nested column. Real BigQuery refuses each at creation and the
@@ -84,6 +85,7 @@ public final class TableCreateOptionsMapper {
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_TYPE,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION,
+                    BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_DESCRIPTION,
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_LABELS,
@@ -129,6 +131,9 @@ public final class TableCreateOptionsMapper {
         Optional<Duration> expiration =
                 config.getOptional(
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION);
+        Optional<Boolean> requirePartitionFilter =
+                config.getOptional(
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER);
         List<String> clusteredFields =
                 config.getOptional(BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS)
                         .orElse(null);
@@ -142,6 +147,11 @@ public final class TableCreateOptionsMapper {
                     expiration.isPresent(),
                     BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION,
                     "there are no partitions to expire");
+            // Only true needs partitions; false asks for what an unpartitioned table already is.
+            checkNeedsGranularity(
+                    requirePartitionFilter.orElse(false),
+                    BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER,
+                    "there are no partitions for a query to filter on");
         }
 
         field.ifPresent(
@@ -187,6 +197,10 @@ public final class TableCreateOptionsMapper {
                 expiration.orElse(null),
                 builder::timePartitioningExpiration);
         OptionSetters.accept(
+                BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER.key(),
+                requirePartitionFilter.orElse(null),
+                builder::requirePartitionFilter);
+        OptionSetters.accept(
                 BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS.key(),
                 clusteredFields,
                 builder::clusteredFields);
@@ -216,8 +230,8 @@ public final class TableCreateOptionsMapper {
     }
 
     private static void checkNeedsGranularity(
-            boolean isSet, ConfigOption<?> option, String because) {
-        if (isSet) {
+            boolean needsGranularity, ConfigOption<?> option, String because) {
+        if (needsGranularity) {
             throw new ValidationException(
                     String.format(
                             "Option '%s' requires '%s': without a granularity %s.",

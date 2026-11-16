@@ -1428,6 +1428,7 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put("sink.table-create.time-partitioning.type", "day");
         options.put("sink.table-create.time-partitioning.field", "event_ts");
+        options.put("sink.table-create.require-partition-filter", "true");
         options.put("sink.table-create.clustered-fields", "id");
         BigQueryDefaultStreamSink<?> built =
                 (BigQueryDefaultStreamSink<?>) built(PARTITIONABLE, options);
@@ -1436,6 +1437,7 @@ class BigQueryDynamicTableFactoryTest {
         assertThat(created.getTimePartitioningType())
                 .isEqualTo(TableCreateOptions.TimePartitioningType.DAY);
         assertThat(created.getTimePartitioningField()).isEqualTo("event_ts");
+        assertThat(created.isRequirePartitionFilter()).isTrue();
         assertThat(created.getClusteredFields()).containsExactly("id");
     }
 

@@ -91,10 +91,16 @@ class BigQueryTableCreateOptionsITCase extends BigQueryTableTestBase {
 
         tEnv.executeSql(
                 "CREATE TABLE events (name STRING) "
-                        + withOptions(table, "sink.table-create.time-partitioning.type", "month"));
+                        + withOptions(
+                                table,
+                                "sink.table-create.time-partitioning.type",
+                                "month",
+                                "sink.table-create.require-partition-filter",
+                                "true"));
 
         tEnv.executeSql("INSERT INTO events VALUES ('alice')").await();
 
+        assertThat(tableOf(table).getRequirePartitionFilter()).isTrue();
         StandardTableDefinition definition = definitionOf(table);
         assertThat(definition.getTimePartitioning()).isNotNull();
         assertThat(definition.getTimePartitioning().getType())
@@ -168,8 +174,12 @@ class BigQueryTableCreateOptionsITCase extends BigQueryTableTestBase {
     }
 
     private static StandardTableDefinition definitionOf(String table) {
+        return tableOf(table).getDefinition();
+    }
+
+    private static Table tableOf(String table) {
         Table live = restClient.getTable(TableId.of(DATASET, table));
         assertThat(live).as("table %s exists", table).isNotNull();
-        return live.getDefinition();
+        return live;
     }
 }

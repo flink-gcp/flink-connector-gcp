@@ -137,12 +137,16 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
 
     private static final long EXPIRING_PARTITION_MS = 36_500L * 24 * 60 * 60 * 1000;
 
-    /** The destination the commit itself creates, from {@link #CREATE_OPTIONS}. */
+    /**
+     * The destination the commit itself creates, from {@link #CREATE_OPTIONS}, which include a
+     * partition filter requirement its temporary tables do not take.
+     */
     private static final String CREATED = "created";
 
     private static final TableCreateOptions CREATE_OPTIONS =
             TableCreateOptions.builder()
                     .timePartitioning(TableCreateOptions.TimePartitioningType.DAY, "ts")
+                    .requirePartitionFilter(true)
                     .clusteredFields(List.of("region"))
                     .description(DESCRIPTION)
                     .labels(LABELS)
@@ -218,6 +222,12 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                                         "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(expiring)))
                 .hasMessageContaining("without a filter");
         assertDestination(created, CREATED_LAYOUT, 3);
+        // So did the one the commit created the destination with.
+        assertThatThrownBy(
+                        () ->
+                                RealBigQuery.queryLongs(
+                                        "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(created)))
+                .hasMessageContaining("without a filter");
     }
 
     /**

@@ -103,6 +103,7 @@ class BigQueryTableAdminTest {
         assertThat(definition.getClustering()).isNull();
         assertThat(tableInfo.getDescription()).isNull();
         assertThat(tableInfo.getLabels()).isEmpty();
+        assertThat(tableInfo.getRequirePartitionFilter()).isNull();
     }
 
     @Test
@@ -222,6 +223,49 @@ class BigQueryTableAdminTest {
 
         assertThat(admin.getSchema(DESTINATION).getKmsKeyName()).isEqualTo(key);
         assertThat(admin.getSchema(DESTINATION).getKmsKeyName()).isNull();
+    }
+
+    /**
+     * The requirement travels on the table, under every creation path, and not on the partitioning
+     * spec, whose own field the REST API deprecates.
+     */
+    @Test
+    void requiresAPartitionFilterOnTheCreatedTable() {
+        TableCreateOptions options =
+                TableCreateOptions.builder()
+                        .timePartitioning(TableCreateOptions.TimePartitioningType.DAY, "event_ts")
+                        .requirePartitionFilter(true)
+                        .build();
+
+        TableInfo tableInfo = BigQueryTableAdmin.buildTableInfo(DESTINATION, SCHEMA, options);
+        TableInfo cdcTableInfo =
+                BigQueryTableAdmin.buildTableInfo(
+                        DESTINATION,
+                        SCHEMA,
+                        options,
+                        CdcTableOptions.builder()
+                                .primaryKeyColumns(Arrays.asList("event_ts"))
+                                .build());
+
+        assertThat(tableInfo.getRequirePartitionFilter()).isTrue();
+        assertThat(
+                        tableInfo
+                                .<StandardTableDefinition>getDefinition()
+                                .getTimePartitioning()
+                                .getRequirePartitionFilter())
+                .isNull();
+        assertThat(cdcTableInfo.getRequirePartitionFilter()).isTrue();
+        assertThat(
+                        BigQueryTableAdmin.buildTableInfo(
+                                        DESTINATION,
+                                        SCHEMA,
+                                        TableCreateOptions.builder()
+                                                .timePartitioning(
+                                                        TableCreateOptions.TimePartitioningType.DAY,
+                                                        "event_ts")
+                                                .build())
+                                .getRequirePartitionFilter())
+                .isNull();
     }
 
     @Test

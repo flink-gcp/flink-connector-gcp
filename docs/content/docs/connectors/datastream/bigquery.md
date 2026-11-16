@@ -1504,8 +1504,9 @@ avoids both.
 Under the default `CreateDisposition.CREATE_IF_NEEDED`, an append failing with a
 [missing-table verdict](#a-missing-table-does-not-say-not_found) is
 recovered on the task thread: the destination table is created through the BigQuery REST API
-(schema from the serializer's `getTableSchema`; partitioning, clustering, description, labels and
-Cloud KMS key from `tableCreateOptions(...)` or a per-destination `tableCreateOptionsProvider(...)`), the
+(schema from the serializer's `getTableSchema`; partitioning, partition filter requirement,
+clustering, description, labels and Cloud KMS key from `tableCreateOptions(...)` or a
+per-destination `tableCreateOptionsProvider(...)`), the
 destination's stream writer is rebuilt, and the failed batch is re-appended with backoff while
 table metadata propagates to the Storage Write API backend. Creation is idempotent across
 parallel subtasks (HTTP 409 is treated as success); the credentials need
@@ -1519,6 +1520,16 @@ durably, and relaxing a column afterwards is a schema update rather than an edit
 `WRITE_TRUNCATE_DATA` replaces only the data and preserves the existing schema and constraints.
 
 With `CreateDisposition.CREATE_NEVER`, writing to a missing table fails the job immediately.
+
+`TableCreateOptions.requirePartitionFilter(true)` makes BigQuery refuse a query on a created table
+that does not filter on its partitioning column, or on the `_PARTITIONTIME` pseudocolumn for a table
+partitioned on ingestion time.
+A table that a destination resolver opens later is therefore guarded from its creation, with no
+`ALTER TABLE` after its first write.
+The requirement needs time partitioning: BigQuery creates an unpartitioned table without it and
+reports nothing, so `build()` rejects the combination.
+The sink's own writes read no rows from the table and need no filter, under every write method,
+including the copies and the terminal query that finish a `FILE_LOADS` commit (measured).
 
 #### Table metadata
 
