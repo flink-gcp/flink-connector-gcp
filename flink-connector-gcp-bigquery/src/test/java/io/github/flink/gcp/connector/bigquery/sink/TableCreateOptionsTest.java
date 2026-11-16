@@ -38,6 +38,7 @@ class TableCreateOptionsTest {
         assertThat(options.getTimePartitioningType()).isNull();
         assertThat(options.getTimePartitioningField()).isNull();
         assertThat(options.getTimePartitioningExpirationMs()).isNull();
+        assertThat(options.isRequirePartitionFilter()).isFalse();
         assertThat(options.getClusteredFields()).isEmpty();
         assertThat(options.getDescription()).isNull();
         assertThat(options.getLabels()).isEmpty();
@@ -165,6 +166,52 @@ class TableCreateOptionsTest {
                                         .build())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("requires timePartitioning");
+    }
+
+    @Test
+    void thePartitionFilterRequirementRoundTripsAndTakesPartInEquality() {
+        TableCreateOptions required =
+                TableCreateOptions.builder()
+                        .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                        .requirePartitionFilter(true)
+                        .build();
+        TableCreateOptions partitioned =
+                TableCreateOptions.builder()
+                        .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                        .build();
+
+        assertThat(required.isRequirePartitionFilter()).isTrue();
+        assertThat(partitioned.isRequirePartitionFilter()).isFalse();
+        assertThat(required)
+                .isEqualTo(
+                        TableCreateOptions.builder()
+                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                                .requirePartitionFilter(true)
+                                .build())
+                .hasSameHashCodeAs(
+                        TableCreateOptions.builder()
+                                .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                                .requirePartitionFilter(true)
+                                .build())
+                .isNotEqualTo(partitioned);
+        assertThat(required.toString()).contains("requirePartitionFilter=true");
+    }
+
+    /**
+     * BigQuery creates an unpartitioned table without the requirement and reports nothing, so the
+     * builder refuses what the service would silently drop.
+     */
+    @Test
+    void aPartitionFilterRequirementRequiresPartitioning() {
+        assertThatThrownBy(() -> TableCreateOptions.builder().requirePartitionFilter(true).build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("requirePartitionFilter requires timePartitioning");
+    }
+
+    @Test
+    void noPartitionFilterRequirementNeedsNoPartitioning() {
+        assertThat(TableCreateOptions.builder().requirePartitionFilter(false).build())
+                .isEqualTo(TableCreateOptions.defaults());
     }
 
     /**

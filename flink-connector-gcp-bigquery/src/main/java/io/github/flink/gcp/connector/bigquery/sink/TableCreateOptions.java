@@ -35,8 +35,8 @@ import java.util.Objects;
 
 /**
  * Options applied when the sink creates a destination table under {@link
- * CreateDisposition#CREATE_IF_NEEDED}: time partitioning, clustering, the table's description and
- * labels, and the Cloud KMS key that encrypts it.
+ * CreateDisposition#CREATE_IF_NEEDED}: time partitioning and whether a query must filter on it,
+ * clustering, the table's description and labels, and the Cloud KMS key that encrypts it.
  *
  * <p>The table <em>schema</em> is not part of these options — it always comes from {@link
  * io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema#getTableSchema}.
@@ -100,6 +100,7 @@ public final class TableCreateOptions implements Serializable {
     private final TimePartitioningType timePartitioningType;
     private final String timePartitioningField;
     private final Long timePartitioningExpirationMs;
+    private final boolean requirePartitionFilter;
     private final List<String> clusteredFields;
     @Nullable private final String description;
 
@@ -110,6 +111,7 @@ public final class TableCreateOptions implements Serializable {
         this.timePartitioningType = builder.timePartitioningType;
         this.timePartitioningField = builder.timePartitioningField;
         this.timePartitioningExpirationMs = builder.timePartitioningExpirationMs;
+        this.requirePartitionFilter = builder.requirePartitionFilter;
         this.clusteredFields =
                 Collections.unmodifiableList(new ArrayList<>(builder.clusteredFields));
         this.description = builder.description;
@@ -155,6 +157,14 @@ public final class TableCreateOptions implements Serializable {
         return timePartitioningExpirationMs;
     }
 
+    /**
+     * Returns whether a created table requires every query to filter on its partitioning, so that
+     * the query can prune partitions. {@code false} unless configured.
+     */
+    public boolean isRequirePartitionFilter() {
+        return requirePartitionFilter;
+    }
+
     /** Returns the clustering columns, in precedence order; empty when unclustered. */
     public List<String> getClusteredFields() {
         return clusteredFields;
@@ -192,6 +202,7 @@ public final class TableCreateOptions implements Serializable {
         return timePartitioningType == that.timePartitioningType
                 && Objects.equals(timePartitioningField, that.timePartitioningField)
                 && Objects.equals(timePartitioningExpirationMs, that.timePartitioningExpirationMs)
+                && requirePartitionFilter == that.requirePartitionFilter
                 && clusteredFields.equals(that.clusteredFields)
                 && Objects.equals(description, that.description)
                 && labels.equals(that.labels)
@@ -204,6 +215,7 @@ public final class TableCreateOptions implements Serializable {
                 timePartitioningType,
                 timePartitioningField,
                 timePartitioningExpirationMs,
+                requirePartitionFilter,
                 clusteredFields,
                 description,
                 labels,
@@ -218,6 +230,8 @@ public final class TableCreateOptions implements Serializable {
                 + timePartitioningField
                 + ", timePartitioningExpirationMs="
                 + timePartitioningExpirationMs
+                + ", requirePartitionFilter="
+                + requirePartitionFilter
                 + ", clusteredFields="
                 + clusteredFields
                 + ", description="
@@ -236,6 +250,7 @@ public final class TableCreateOptions implements Serializable {
         private TimePartitioningType timePartitioningType;
         private String timePartitioningField;
         private Long timePartitioningExpirationMs;
+        private boolean requirePartitionFilter;
         private List<String> clusteredFields = Collections.emptyList();
         private String description;
         private Map<String, String> labels = Collections.emptyMap();
@@ -281,6 +296,22 @@ public final class TableCreateOptions implements Serializable {
         public Builder timePartitioningExpiration(Duration expiration) {
             OptionChecks.checkAtLeastOneMilli(expiration, "timePartitioningExpiration");
             this.timePartitioningExpirationMs = expiration.toMillis();
+            return this;
+        }
+
+        /**
+         * Sets whether a created table requires every query to filter on its partitioning: on the
+         * partitioning column, or on the {@code _PARTITIONTIME} pseudocolumn for a table
+         * partitioned on ingestion time. BigQuery then refuses a query that cannot prune
+         * partitions, which guards the table against an unintended full scan. The sink's own writes
+         * into the table read no rows from it and need no filter. {@code true} requires time
+         * partitioning to be configured.
+         *
+         * @param requirePartitionFilter whether a query must filter on the partitioning
+         * @return this builder
+         */
+        public Builder requirePartitionFilter(boolean requirePartitionFilter) {
+            this.requirePartitionFilter = requirePartitionFilter;
             return this;
         }
 
@@ -384,6 +415,11 @@ public final class TableCreateOptions implements Serializable {
             Preconditions.checkState(
                     timePartitioningExpirationMs == null || timePartitioningType != null,
                     "timePartitioningExpiration requires timePartitioning to be set.");
+            // BigQuery creates an unpartitioned table without the requirement and says nothing,
+            // so the table a caller asked to guard would accept every query (measured).
+            Preconditions.checkState(
+                    !requirePartitionFilter || timePartitioningType != null,
+                    "requirePartitionFilter requires timePartitioning to be set.");
             return new TableCreateOptions(this);
         }
     }

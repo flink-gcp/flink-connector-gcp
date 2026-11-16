@@ -677,6 +677,10 @@ public class BigQueryTableAdmin implements TableAdmin {
             definition.setClustering(clustering);
         }
         TableInfo.Builder table = TableInfo.newBuilder(toTableId(destination), definition.build());
+        if (options.isRequirePartitionFilter()) {
+            // The table-level field: TimePartitioning's own is deprecated in the REST API.
+            table.setRequirePartitionFilter(true);
+        }
         if (options.getDescription() != null) {
             table.setDescription(options.getDescription());
         }

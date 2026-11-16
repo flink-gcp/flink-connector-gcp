@@ -475,6 +475,19 @@ public final class BigQueryConnectorOptions {
                                     + " 'sink.table-create.time-partitioning.type'.");
 
     /**
+     * Whether a created table requires every query to filter on its partitioning. Requires
+     * 'sink.table-create.time-partitioning.type' when true.
+     */
+    public static final ConfigOption<Boolean> SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER =
+            ConfigOptions.key("sink.table-create.require-partition-filter")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether a created table requires every query to filter on its"
+                                    + " partitioning. Requires"
+                                    + " 'sink.table-create.time-partitioning.type' when true.");
+
+    /**
      * The columns a created table is clustered on, in precedence order. BigQuery takes at most
      * four, and they must be top-level columns of the table.
      */

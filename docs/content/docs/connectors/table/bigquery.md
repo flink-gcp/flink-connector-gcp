@@ -901,6 +901,12 @@ They do not *authorize* creation: `sink.create-disposition` does, and it default
 `create-if-needed`, so the settings alone configure the table an unconfigured DDL already creates.
 Setting any of them beside an explicit `create-never` is rejected.
 
+`sink.table-create.require-partition-filter` makes BigQuery refuse a query on a created table that
+does not filter on its partitioning column, or on the `_PARTITIONTIME` pseudocolumn for a table
+partitioned on ingestion time.
+The sink's own writes need no such filter, under every write method.
+An existing table keeps its own requirement.
+
 `sink.table-create.description` and `sink.table-create.labels` set the created table's description
 and labels; an existing table keeps its own.
 A label BigQuery rejects fails the job when the table is created, not when the DDL is planned.
@@ -929,6 +935,7 @@ refuse a table BigQuery would have created.
 | `sink.table-create.time-partitioning.type` | Enum | `TableCreateOptions.timePartitioning(...)` — `hour`, `day`, `month` or `year` |
 | `sink.table-create.time-partitioning.field` | String | The `TIMESTAMP`, `TIMESTAMP_LTZ` or `DATE` column to partition on; a `DATE` column takes no `hour` granularity. Left out, the table is partitioned on **ingestion time** — the case `PARTITIONED BY` could not express. Requires the granularity above |
 | `sink.table-create.time-partitioning.expiration` | Duration | `TableCreateOptions.timePartitioningExpiration(...)`. Requires the granularity above |
+| `sink.table-create.require-partition-filter` | Boolean | `TableCreateOptions.requirePartitionFilter(...)`. Requires the granularity above when `true` |
 | `sink.table-create.clustered-fields` | List&lt;String&gt; | `TableCreateOptions.clusteredFields(...)`, in precedence order; BigQuery takes at most four top-level columns |
 | `sink.table-create.description` | String | `TableCreateOptions.description(...)` |
 | `sink.table-create.labels` | Map | `TableCreateOptions.labels(...)`, written `'key1:value1,key2:value2'`. The key `flink_gcp_cdc` is reserved for CDC table provisioning |

@@ -62,5 +62,19 @@ new.
   replaced by a named-argument holder plus a reflective check that every field of the sink is
   actually varied.
 
+## Revision: a partition filter requirement needs a granularity (2026-11-16)
+
+[#2169] added `sink.table-create.require-partition-filter`, which maps onto
+`TableCreateOptions.requirePartitionFilter(boolean)`.
+`build()` rejects a requirement without time partitioning, because BigQuery would drop it silently:
+on 2026-11-16 a `tables.insert` request carrying `requirePartitionFilter: true` and no partitioning
+created the table, and `tables.get` returned it without the field, while the same request with day
+partitioning kept it.
+The mapper restates that rejection in option keys, as it does for an expiration without a
+granularity, so it now owns eight rejections.
+An explicit `false` without a granularity is accepted by both, since it asks for nothing an
+unpartitioned table lacks.
+
 [#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
 [#289]: https://github.com/flink-gcp/flink-connector-gcp/issues/289
+[#2169]: https://github.com/flink-gcp/flink-connector-gcp/issues/2169

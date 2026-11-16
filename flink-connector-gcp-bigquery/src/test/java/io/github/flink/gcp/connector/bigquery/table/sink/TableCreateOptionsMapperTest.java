@@ -85,6 +85,10 @@ class TableCreateOptionsMapperTest {
                 Collections.singletonList(
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION));
         SETTER_TO_OPTIONS.put(
+                "requirePartitionFilter",
+                Collections.singletonList(
+                        BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER));
+        SETTER_TO_OPTIONS.put(
                 "clusteredFields",
                 Collections.singletonList(
                         BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS));
@@ -105,6 +109,8 @@ class TableCreateOptionsMapperTest {
             BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_FIELD.key();
     private static final String EXPIRATION =
             BigQueryConnectorOptions.SINK_TABLE_CREATE_TIME_PARTITIONING_EXPIRATION.key();
+    private static final String REQUIRE_PARTITION_FILTER =
+            BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER.key();
     private static final String CLUSTERED =
             BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS.key();
     private static final String DISPOSITION =
@@ -168,6 +174,7 @@ class TableCreateOptionsMapperTest {
         options.put(TYPE, "day");
         options.put(FIELD, "event_ts");
         options.put(EXPIRATION, "90 d");
+        options.put(REQUIRE_PARTITION_FILTER, "true");
         options.put(CLUSTERED, "region;name");
 
         TableCreateOptions mapped = map(options);
@@ -177,6 +184,7 @@ class TableCreateOptionsMapperTest {
         assertThat(mapped.getTimePartitioningField()).isEqualTo("event_ts");
         assertThat(mapped.getTimePartitioningExpirationMs())
                 .isEqualTo(Duration.ofDays(90).toMillis());
+        assertThat(mapped.isRequirePartitionFilter()).isTrue();
         assertThat(mapped.getClusteredFields()).containsExactly("region", "name");
     }
 
@@ -204,6 +212,7 @@ class TableCreateOptionsMapperTest {
         assertThat(mapped.getTimePartitioningType()).isNull();
         assertThat(mapped.getTimePartitioningField()).isNull();
         assertThat(mapped.getTimePartitioningExpirationMs()).isNull();
+        assertThat(mapped.isRequirePartitionFilter()).isFalse();
     }
 
     @Test
@@ -256,6 +265,39 @@ class TableCreateOptionsMapperTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining(EXPIRATION)
                 .hasMessageContaining(TYPE);
+    }
+
+    @Test
+    void aPartitionFilterRequirementWithoutAGranularityIsRejectedInOptionKeys() {
+        // The builder rejects this too, but names requirePartitionFilter.
+        Map<String, String> options = new HashMap<>();
+        options.put(REQUIRE_PARTITION_FILTER, "true");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(REQUIRE_PARTITION_FILTER)
+                .hasMessageContaining(TYPE)
+                .hasMessageNotContaining("requirePartitionFilter");
+    }
+
+    @Test
+    void noPartitionFilterRequirementNeedsNoGranularity() {
+        Map<String, String> options = new HashMap<>();
+        options.put(REQUIRE_PARTITION_FILTER, "false");
+
+        assertThat(map(options)).isEqualTo(TableCreateOptions.defaults());
+    }
+
+    @Test
+    void aPartitionFilterRequirementOnIngestionTimePartitioningIsMapped() {
+        Map<String, String> options = new HashMap<>();
+        options.put(TYPE, "day");
+        options.put(REQUIRE_PARTITION_FILTER, "true");
+
+        TableCreateOptions mapped = map(options);
+
+        assertThat(mapped.getTimePartitioningField()).isNull();
+        assertThat(mapped.isRequirePartitionFilter()).isTrue();
     }
 
     @Test

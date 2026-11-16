@@ -33,6 +33,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Does BigQuery <em>accept</em> the create request {@code sink.table-create.*} builds?
@@ -85,6 +86,8 @@ class BigQueryTableCreationFidelityITCase {
                                 "event_ts",
                                 "sink.table-create.time-partitioning.expiration",
                                 "90 d",
+                                "sink.table-create.require-partition-filter",
+                                "true",
                                 "sink.table-create.clustered-fields",
                                 "region;name"));
 
@@ -105,9 +108,19 @@ class BigQueryTableCreationFidelityITCase {
         assertThat(definition.getClustering()).isNotNull();
         assertThat(definition.getClustering().getFields()).containsExactly("region", "name");
 
+        // The partition filter requirement is honoured: a query has to prune partitions.
+        assertThatThrownBy(
+                        () ->
+                                RealBigQuery.queryRows(
+                                        "SELECT name FROM "
+                                                + RealBigQuery.tablePath(PARTITIONED_TABLE)))
+                .hasMessageContaining("without a filter");
         assertThat(
                         RealBigQuery.queryRows(
-                                "SELECT name FROM " + RealBigQuery.tablePath(PARTITIONED_TABLE)))
+                                "SELECT name FROM "
+                                        + RealBigQuery.tablePath(PARTITIONED_TABLE)
+                                        + " WHERE event_ts > TIMESTAMP_SUB(CURRENT_TIMESTAMP,"
+                                        + " INTERVAL 1 DAY)"))
                 .hasSize(1);
     }
 
