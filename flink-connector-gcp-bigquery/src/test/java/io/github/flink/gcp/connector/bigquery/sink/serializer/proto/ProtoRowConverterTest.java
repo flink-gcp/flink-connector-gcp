@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 
 import com.google.cloud.bigquery.storage.v1.BQTableSchemaToProtoDescriptor;
+import com.google.cloud.bigquery.storage.v1.BigQuerySchemaUtil;
 import com.google.protobuf.Any;
 import com.google.protobuf.BoolValue;
 import com.google.protobuf.ByteString;
@@ -39,6 +40,8 @@ import com.google.protobuf.UInt64Value;
 import com.google.protobuf.UninitializedMessageException;
 import com.google.protobuf.Value;
 import com.google.protobuf.util.Timestamps;
+import io.github.flink.gcp.connector.bigquery.testproto.MixedCase;
+import io.github.flink.gcp.connector.bigquery.testproto.MixedCaseChild;
 import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Child;
@@ -51,6 +54,7 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -155,6 +159,84 @@ class ProtoRowConverterTest {
                 .contains("\"n\":\"9\"");
 
         assertThat(get(row, "f_rep_ts")).isEqualTo(Arrays.asList(expectedMicros, expectedMicros));
+    }
+
+    /**
+     * The client library lower-cases the row descriptor's field names with the <em>default</em>
+     * locale, so under {@code tr_TR} the row field for the column {@code userId} carries the column
+     * name {@code userıd} (dotless i), which no name lower-cased under {@link Locale#ROOT} matches.
+     * Pairing by position makes that a non-event, and only a test under such a locale can tell the
+     * two apart (#2179).
+     */
+    @Test
+    void pairsFieldsWithUpperCaseLettersUnderALocaleThatLowerCasesDifferently() throws Exception {
+        Locale previous = Locale.getDefault();
+        try {
+            Locale.setDefault(new Locale("tr", "TR"));
+            Descriptors.Descriptor source = MixedCase.getDescriptor();
+            Descriptors.Descriptor target =
+                    BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
+                            ProtoToTableSchemaConverter.convert(
+                                    source, ProtoSchemaOptions.defaults()));
+            Descriptors.FieldDescriptor items = target.getFields().get(3);
+            Descriptors.FieldDescriptor userId = target.getFields().get(5);
+            // The premise, so that this test cannot pass without exercising the divergence.
+            assertThat(BigQuerySchemaUtil.getFieldName(items)).isEqualTo("\u0131tems");
+            assertThat(BigQuerySchemaUtil.getFieldName(userId)).isEqualTo("user\u0131d");
+
+            DynamicMessage row =
+                    new ProtoRowConverter(source, target, ProtoSchemaOptions.defaults())
+                            .convert(
+                                    MixedCase.newBuilder()
+                                            .addItems(
+                                                    MixedCaseChild.newBuilder()
+                                                            .setInnerValue("c")
+                                                            .setCount(3L))
+                                            .setUserId(5L)
+                                            .build());
+
+            assertThat(row.getField(userId)).isEqualTo(5L);
+            DynamicMessage item = (DynamicMessage) row.getRepeatedField(items, 0);
+            assertThat(item.getField(item.getDescriptorForType().getFields().get(0)))
+                    .isEqualTo("c");
+            assertThat(item.getField(item.getDescriptorForType().getFields().get(1))).isEqualTo(3L);
+        } finally {
+            Locale.setDefault(previous);
+        }
+    }
+
+    /**
+     * Position is exact only for a target derived from this source. A target whose field count or
+     * field names differ from the source's is refused when the plan is built, rather than written
+     * into the wrong fields; the guards compare nothing else, so a target with the same names and a
+     * different type would pass them.
+     */
+    @Test
+    void refusesATargetDerivedFromAnotherMessage() throws Exception {
+        Descriptors.Descriptor nested =
+                TestProtos.allTypes().getFile().findMessageTypeByName("Nested");
+        Descriptors.Descriptor nestedTarget =
+                BQTableSchemaToProtoDescriptor.convertBQTableSchemaToProtoDescriptor(
+                        ProtoToTableSchemaConverter.convert(nested, ProtoSchemaOptions.defaults()));
+
+        assertThatThrownBy(
+                        () ->
+                                new ProtoRowConverter(
+                                        MixedCaseChild.getDescriptor(),
+                                        nestedTarget,
+                                        ProtoSchemaOptions.defaults()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage(
+                        "Row descriptor field s does not match field innerValue of"
+                                + " test.MixedCaseChild at <root>");
+        assertThatThrownBy(
+                        () ->
+                                new ProtoRowConverter(
+                                        MixedCase.getDescriptor(),
+                                        nestedTarget,
+                                        ProtoSchemaOptions.defaults()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("The row descriptor has 2 fields where test.MixedCase at <root> has 6");
     }
 
     @Test

@@ -951,6 +951,11 @@ message into the protobuf row the Storage Write API accepts.
 | message or string marked by `ProtoSchemaOptions` | `JSON`, see [JSON columns](#json-columns) |
 | string marked by `ProtoSchemaOptions` | `GEOGRAPHY`, see [Geography columns](#geography-columns) |
 
+Each column takes its field's name as declared, upper-case letters included, so the field `hasNext`
+writes the column `hasNext`. BigQuery matches column names case-insensitively, so the field also
+writes an existing column spelled in another case, such as `hasnext`, and the column keeps that
+spelling unless the write replaces the schema, as `FILE_LOADS` with `WRITE_TRUNCATE` does.
+
 A recursive message is rejected — BigQuery schemas cannot represent one — as are sibling fields
 whose names differ only by case, which the Storage API cannot tell apart because it lowercases
 descriptor field names, and a message with no fields at all, `google.protobuf.Empty` among them,

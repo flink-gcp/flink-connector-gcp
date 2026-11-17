@@ -25,6 +25,9 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
+import io.github.flink.gcp.connector.bigquery.testproto.MixedCase;
+import io.github.flink.gcp.connector.bigquery.testproto.MixedCaseChild;
 import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.Test;
 
@@ -35,6 +38,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -649,6 +653,65 @@ class ProtoToAvroConverterTest {
         GenericRecord convertedItem = (GenericRecord) convertedItems.get(0);
         assertThat(convertedItem.get("name")).isEqualTo("apple");
         assertThat(convertedItem.get("count")).isEqualTo(3L);
+    }
+
+    /**
+     * The protobuf serializer's columns keep the field names as written while its row descriptor's
+     * field names are lower-cased, so each column is paired with its field ignoring case and the
+     * staged record carries the column's own name (#2179). That pairing lower-cases under {@code
+     * Locale.ROOT} while the library lower-cases under the default locale, so this test pins an
+     * English default locale: under {@code tr_TR} the column {@code Items} finds no field, for any
+     * serializer whose descriptor the client library derives (ADR-0024, revision for #2179).
+     */
+    @Test
+    void convertsAProtoSerializersRowWithUpperCaseFieldNames() throws Exception {
+        Locale previous = Locale.getDefault();
+        GenericRecord record;
+        try {
+            Locale.setDefault(Locale.US);
+            ProtoMessageSerializationSchema<MixedCase> serializer =
+                    ProtoMessageSerializationSchema.of(MixedCase.class);
+            TableSchema schema = serializer.getTableSchema(null);
+            ProtoToAvroConverter converter =
+                    new ProtoToAvroConverter(
+                            schema,
+                            serializer.getDescriptor(null),
+                            TableSchemaToAvroConverter.convert(schema));
+            record =
+                    converter.convert(
+                            serializer.serializeToMessage(
+                                    MixedCase.newBuilder()
+                                            .setId("a")
+                                            .setHasNext(true)
+                                            .setBeforeUpdate(
+                                                    MixedCaseChild.newBuilder()
+                                                            .setInnerValue("b")
+                                                            .setCount(2L))
+                                            .addItems(
+                                                    MixedCaseChild.newBuilder()
+                                                            .setInnerValue("c")
+                                                            .setCount(3L))
+                                            .putCountsByName("k", 4L)
+                                            .setUserId(5L)
+                                            .build()));
+        } finally {
+            Locale.setDefault(previous);
+        }
+
+        assertThat(record.get("id").toString()).isEqualTo("a");
+        assertThat(record.get("hasNext")).isEqualTo(true);
+        GenericRecord beforeUpdate = (GenericRecord) record.get("beforeUpdate");
+        assertThat(beforeUpdate.get("innerValue").toString()).isEqualTo("b");
+        assertThat(beforeUpdate.get("Count")).isEqualTo(2L);
+        List<?> items = (List<?>) record.get("Items");
+        assertThat(items).hasSize(1);
+        assertThat(((GenericRecord) items.get(0)).get("innerValue").toString()).isEqualTo("c");
+        assertThat(((GenericRecord) items.get(0)).get("Count")).isEqualTo(3L);
+        List<?> countsByName = (List<?>) record.get("countsByName");
+        assertThat(countsByName).hasSize(1);
+        assertThat(((GenericRecord) countsByName.get(0)).get("key").toString()).isEqualTo("k");
+        assertThat(((GenericRecord) countsByName.get(0)).get("value")).isEqualTo(4L);
+        assertThat(record.get("userId")).isEqualTo(5L);
     }
 
     @Test

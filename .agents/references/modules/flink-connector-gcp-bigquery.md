@@ -112,6 +112,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   widen either trust. A new built-in serializer implements `ProtoRowMessageProvider`, so that
   `FILE_LOADS` converts its message instead of parsing its bytes, and that writer reads the base
   and the tail through `SerializedRow`, which tolerates a descriptor instance other than its own.
+- **A converter writing into the row descriptor derived from its own front end's table schema
+  pairs fields by position, never by name** (`docs/adr/0024`, revision for #2179):
+  `ProtoRowConverter`, `AvroRowConverter`, `RowDataToProtoConverter`, and a new built-in
+  serializer's converter. `BQTableSchemaToProtoDescriptor` lower-cases every field name with the
+  default locale, so no name lookup is exact. `ProtoToAvroConverter` is not one of them: it reads
+  any serializer's own descriptor, whose order it cannot assume, and pairs by `Locale.ROOT` name.
 - **The protobuf mapping is normative for every serializer**; `NULLABLE` is the default mode and
   `deriveRequiredColumns()` the opt-in on both proto and Avro sides — neither default is to be
   flipped per format again, and the method name went through two rejected candidates

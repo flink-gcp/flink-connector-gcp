@@ -70,3 +70,25 @@ message Recursive {
 // TestProtos — which is the honest shape of the case anyway, because a
 // descriptor that can carry the collision is one that came from a
 // FileDescriptorSet or was built at runtime, never from a generated class.
+
+// Field names with upper-case letters, at the root and below it, as messages
+// that predate the protobuf style guide carry them. The columns keep the names
+// as written, while the client library lower-cases the row descriptor's field
+// names, so the converter cannot pair the two by exact name. `userId` holds an
+// upper-case I, which a Turkish default locale lower-cases to a dotless i.
+// Fields are numbered out of declaration order, as fields added later often
+// are, because the row descriptor numbers its fields by position: pairing by
+// field number would agree with pairing by position on an in-order message.
+message MixedCaseChild {
+  string innerValue = 2;
+  int64 Count = 1;
+}
+
+message MixedCase {
+  string id = 1;
+  bool hasNext = 2;
+  MixedCaseChild beforeUpdate = 4;
+  repeated MixedCaseChild Items = 5;
+  map<string, int64> countsByName = 6;
+  int64 userId = 3;
+}
