@@ -129,15 +129,15 @@ The input is 3,600 records at 10 records per second, six minutes of input, and t
 A restore reads each partition in flight again from its start, as [#1878's findings](../../../docs/adr/evidence/0165-spanner-recovery-findings-1878.md#batch-read) record, so the copy is expected to outlast the input, which is sized to outlast the five faults.
 The change stream ends 1,800 seconds after the window's start, and the job cannot finish before it.
 The input is short because it must finish well before that end.
-The instances of #1878 were admitted 336 to 472 seconds into the window, and its four usable trials planned their batch reads, which the job does as it starts, 61 to 180 seconds after admission.
-The [Firestore fault sequence run](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md#the-fault-sequence)'s ten-minute input took four minutes longer than its length through the five faults, so six minutes of input, about four of the faults' downtime and the relay's 120-second commit margin leave seven to eleven minutes for interruptions.
-A run should therefore reach its verdict about 31 minutes into its window.
+In the first `sequence` run the input began 677 seconds into the window, once the TaskManagers had started and received their tasks, 111 seconds after the JobManager planned the batch read.
+Its six minutes took 10 minutes 23 seconds through the five faults and finished 499 seconds before the end, which left about six minutes for interruptions beyond the relay's 120-second commit margin, and the run reached its verdict 30.2 minutes into its window.
 
 When the job has finished after the last fault, with its whole input processed, the three oracles below read the tables, and `usable` means all three pass.
 The reports carry no watermark or partition readings, since nothing samples the job.
 The Change Streams oracle is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end, because a commit after the end is not relayed; a restore after the input finished can replay it and write its rows again, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+The first `sequence` run, `sp2154-seq-a1`, reached `usable`, as its [findings](../../../docs/adr/evidence/0204-spanner-fault-sequence-findings-2154.md) record.
 
 ### Trial and estimate
 
