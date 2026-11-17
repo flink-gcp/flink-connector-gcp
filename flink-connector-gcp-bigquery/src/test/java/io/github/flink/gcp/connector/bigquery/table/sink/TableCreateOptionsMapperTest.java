@@ -280,6 +280,55 @@ class TableCreateOptionsMapperTest {
                 .hasMessageNotContaining("requirePartitionFilter");
     }
 
+    /** ADR-0205: a CDC table refuses even a filtered query while upserts are unapplied. */
+    @Test
+    void aPartitionFilterRequirementOnACdcTableIsRejectedInOptionKeys() {
+        Map<String, String> options = new HashMap<>();
+        options.put(TYPE, "day");
+        options.put(REQUIRE_PARTITION_FILTER, "true");
+        options.put(BigQueryConnectorOptions.SINK_CDC_ENABLED.key(), "true");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(REQUIRE_PARTITION_FILTER)
+                .hasMessageContaining(BigQueryConnectorOptions.SINK_CDC_ENABLED.key())
+                .hasMessageContaining("ALTER TABLE")
+                .hasMessageNotContaining("requirePartitionFilter");
+    }
+
+    @Test
+    void theCdcRejectionComesBeforeTheMissingGranularity() {
+        // Adding a granularity would not make this valid, so that is not the message to give.
+        Map<String, String> options = new HashMap<>();
+        options.put(REQUIRE_PARTITION_FILTER, "true");
+        options.put(BigQueryConnectorOptions.SINK_CDC_ENABLED.key(), "true");
+
+        assertThatThrownBy(() -> map(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining(BigQueryConnectorOptions.SINK_CDC_ENABLED.key())
+                .hasMessageNotContaining("without a granularity");
+    }
+
+    @Test
+    void theRequirementWithCdcExplicitlyOffIsMapped() {
+        Map<String, String> options = new HashMap<>();
+        options.put(TYPE, "day");
+        options.put(REQUIRE_PARTITION_FILTER, "true");
+        options.put(BigQueryConnectorOptions.SINK_CDC_ENABLED.key(), "false");
+
+        assertThat(map(options).isRequirePartitionFilter()).isTrue();
+    }
+
+    @Test
+    void aCdcTableWithoutTheRequirementIsMapped() {
+        Map<String, String> options = new HashMap<>();
+        options.put(TYPE, "day");
+        options.put(REQUIRE_PARTITION_FILTER, "false");
+        options.put(BigQueryConnectorOptions.SINK_CDC_ENABLED.key(), "true");
+
+        assertThat(map(options).isRequirePartitionFilter()).isFalse();
+    }
+
     @Test
     void noPartitionFilterRequirementNeedsNoGranularity() {
         Map<String, String> options = new HashMap<>();

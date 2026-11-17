@@ -135,16 +135,17 @@ final class CdcTableProvisioner {
             return false;
         }
 
-        // Both refusals — CREATE_NEVER, and a creation with no declared primary key — are decided
-        // before the service is asked for anything, so they propagate as themselves and are not
-        // creation requests. Past this line the request has been made, and every failure after it
+        // The three refusals (CREATE_NEVER, a creation with no declared primary key, and creation
+        // options that require a partition filter) are decided before anything is created, so they
+        // propagate as themselves and are not creation requests. Past this line
+        // the request has been made, and every failure after it
         // has to say so: the metric counts requests, not successes, and a table that was asked for
         // and then failed to provision is still a table this job asked BigQuery to create.
         String initialLabel = plannedInitialLabel(destination, cdcOptions, createDisposition);
+        TableCreateOptions createOptions = plannedCreateOptions(destination, createOptionsProvider);
         try {
             Creation creation =
-                    createMissing(
-                            destination, schema, createOptionsProvider, cdcOptions, initialLabel);
+                    createMissing(destination, schema, createOptions, cdcOptions, initialLabel);
             reconcile(
                     destination,
                     cdcOptions,
@@ -167,10 +168,10 @@ final class CdcTableProvisioner {
     /**
      * The provisioning label a missing table would be created with.
      *
-     * <p>Split from {@link #createMissing} so that the two conditions which refuse to create run
-     * before anything is requested of the service. A refusal is not a creation request, and keeping
-     * the two apart is what lets the caller decide that by position rather than by inspecting a
-     * flag.
+     * <p>Split from {@link #createMissing}, with {@link #plannedCreateOptions}, so that the
+     * conditions which refuse to create run before the creation is requested. A refusal is not a
+     * creation request, and keeping the refusals ahead of the request is what lets the caller
+     * decide that by position rather than by inspecting a flag.
      *
      * @throws IOException if the disposition forbids creation, or no primary key is declared
      */
@@ -197,6 +198,36 @@ final class CdcTableProvisioner {
     }
 
     /**
+     * The creation options a missing table would be created with, refused like {@link
+     * #plannedInitialLabel} before the creation is requested.
+     *
+     * @throws IOException if the options require a partition filter, which a CDC table cannot
+     *     honour (ADR-0205)
+     */
+    private static TableCreateOptions plannedCreateOptions(
+            TableDestination destination, TableCreateOptionsProvider createOptionsProvider)
+            throws IOException {
+        TableCreateOptions createOptions =
+                Preconditions.checkNotNull(
+                        createOptionsProvider.optionsFor(destination),
+                        "TableCreateOptionsProvider returned null for %s",
+                        destination);
+        if (createOptions.isRequirePartitionFilter()) {
+            throw new IOException(
+                    "Creating missing BigQuery CDC table "
+                            + destination
+                            + " with TableCreateOptions.requirePartitionFilter(true), returned by"
+                            + " tableCreateOptionsProvider(...), is refused:"
+                            + " BigQuery merges a CDC table's unapplied upserts at query time"
+                            + " without pruning partitions, so it would refuse even a filtered"
+                            + " query until they are applied. If that is acceptable, add the"
+                            + " requirement to the table with ALTER TABLE; the sink never applies"
+                            + " creation options to an existing table.");
+        }
+        return createOptions;
+    }
+
+    /**
      * Creates the missing table under {@code initialLabel} and reads back the state to reconcile
      * from.
      *
@@ -208,15 +239,10 @@ final class CdcTableProvisioner {
     private Creation createMissing(
             TableDestination destination,
             TableSchema schema,
-            TableCreateOptionsProvider createOptionsProvider,
+            TableCreateOptions createOptions,
             CdcTableOptions cdcOptions,
             String initialLabel)
             throws IOException {
-        TableCreateOptions createOptions =
-                Preconditions.checkNotNull(
-                        createOptionsProvider.optionsFor(destination),
-                        "TableCreateOptionsProvider returned null for %s",
-                        destination);
         boolean createWon =
                 service.tryCreate(destination, schema, createOptions, cdcOptions, initialLabel);
         TableState state = service.read(destination);

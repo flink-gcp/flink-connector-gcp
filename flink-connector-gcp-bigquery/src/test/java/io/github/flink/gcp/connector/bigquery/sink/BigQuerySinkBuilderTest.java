@@ -355,6 +355,69 @@ class BigQuerySinkBuilderTest {
                 .isEqualTo("A");
     }
 
+    /** ADR-0205: a CDC table refuses even a filtered query while upserts are unapplied. */
+    @Test
+    void aPartitionFilterRequirementIsRejectedWithCdcOptions() {
+        CdcOptions<String> options =
+                CdcOptions.<String>builder(CdcChangeTypeProvider.upsertOnly())
+                        .sequenceNumberProvider(element -> "A")
+                        .build();
+        TableCreateOptions required =
+                TableCreateOptions.builder()
+                        .timePartitioning(TableCreateOptions.TimePartitioningType.DAY)
+                        .requirePartitionFilter(true)
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                BigQuerySink.<String>builder()
+                                        .table(DESTINATION)
+                                        .serializer(new TestSerializer())
+                                        .tableCreateOptions(required)
+                                        .cdcOptions(options)
+                                        .build())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(
+                        "TableCreateOptions.requirePartitionFilter(true) cannot be combined with"
+                                + " cdcOptions(...)")
+                .hasMessageContaining("ALTER TABLE");
+        // Without CDC the same options build, and so do they under CREATE_NEVER, which creates
+        // nothing they could apply to.
+        assertThat(
+                        BigQuerySink.<String>builder()
+                                .table(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .tableCreateOptions(required)
+                                .build())
+                .isNotNull();
+        assertThat(
+                        BigQuerySink.<String>builder()
+                                .table(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .createDisposition(CreateDisposition.CREATE_NEVER)
+                                .tableCreateOptions(required)
+                                .cdcOptions(options)
+                                .build())
+                .isNotNull();
+        // A provider replacing the fixed options is left to the CDC provisioning, which refuses
+        // the requirement when it would create the table (CdcTableProvisionerTest).
+        BigQueryDefaultStreamSink<?> provided =
+                (BigQueryDefaultStreamSink<?>)
+                        BigQuerySink.<String>builder()
+                                .table(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .tableCreateOptions(required)
+                                .tableCreateOptionsProvider(destination -> required)
+                                .cdcOptions(options)
+                                .build();
+        assertThat(
+                        provided.getConfig()
+                                .getTableCreateOptionsProvider()
+                                .optionsFor(DESTINATION)
+                                .isRequirePartitionFilter())
+                .isTrue();
+    }
+
     @Test
     void cdcOptionsRejectNullAndNonDefaultStreamWriteMethods() {
         assertThatThrownBy(() -> BigQuerySink.<String>builder().cdcOptions(null))

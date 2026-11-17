@@ -53,7 +53,7 @@ import java.util.Optional;
  * DDL already creates. What is rejected is combining them with an explicit {@code create-never},
  * which never creates a table they could apply to.
  *
- * <p>Four rules are owned here rather than left to the builder, each because its message has to
+ * <p>Five rules are owned here rather than left to the builder, each because its message has to
  * name option keys:
  *
  * <ul>
@@ -65,6 +65,10 @@ import java.util.Optional;
  *   <li>an expiration, or a partition filter requirement, without a granularity, which {@code
  *       build()} does reject — but naming {@code timePartitioningExpiration} or {@code
  *       requirePartitionFilter}, methods a SQL user cannot act on;
+ *   <li>a partition filter requirement on a CDC table, which the sink builder and the CDC
+ *       provisioning also reject (ADR-0205), but naming builder methods: BigQuery merges a CDC
+ *       table's unapplied upserts at query time without pruning partitions, so it refuses even a
+ *       filtered query until they are applied;
  *   <li>a partitioning or clustering column BigQuery cannot use — one the table does not declare,
  *       one whose type it cannot partition on, an {@code hour} granularity over a {@code DATE}
  *       column, or a repeated or nested column. Real BigQuery refuses each at creation and the
@@ -138,6 +142,8 @@ public final class TableCreateOptionsMapper {
                 config.getOptional(BigQueryConnectorOptions.SINK_TABLE_CREATE_CLUSTERED_FIELDS)
                         .orElse(null);
 
+        // Before the granularity checks: no granularity makes this combination valid.
+        checkNoPartitionFilterOnCdc(config, requirePartitionFilter.orElse(false));
         if (!type.isPresent()) {
             checkNeedsGranularity(
                     field.isPresent(),
@@ -226,6 +232,25 @@ public final class TableCreateOptionsMapper {
                                     + " 'create-never'. Remove the options or use"
                                     + " 'create-if-needed'.",
                             present, BigQueryConnectorOptions.SINK_CREATE_DISPOSITION.key()));
+        }
+    }
+
+    private static void checkNoPartitionFilterOnCdc(
+            ReadableConfig config, boolean requirePartitionFilter) {
+        if (requirePartitionFilter
+                && config.getOptional(BigQueryConnectorOptions.SINK_CDC_ENABLED).orElse(false)) {
+            throw new ValidationException(
+                    String.format(
+                            "Option '%s' = 'true' cannot be combined with '%s' = 'true': BigQuery"
+                                    + " merges a CDC table's unapplied upserts at query time"
+                                    + " without pruning partitions, so it would refuse even a"
+                                    + " filtered query until they are applied. If that is"
+                                    + " acceptable, add the requirement to the table with ALTER"
+                                    + " TABLE; the sink never applies creation options to an"
+                                    + " existing table.",
+                            BigQueryConnectorOptions.SINK_TABLE_CREATE_REQUIRE_PARTITION_FILTER
+                                    .key(),
+                            BigQueryConnectorOptions.SINK_CDC_ENABLED.key()));
         }
     }
 

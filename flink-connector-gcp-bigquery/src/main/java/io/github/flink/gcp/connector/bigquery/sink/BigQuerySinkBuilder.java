@@ -64,6 +64,7 @@ public class BigQuerySinkBuilder<T> {
     private CreateDisposition createDisposition = CreateDisposition.CREATE_IF_NEEDED;
     private TableCreateOptionsProvider tableCreateOptionsProvider =
             new FixedTableCreateOptionsProvider(TableCreateOptions.defaults());
+    @Nullable private TableCreateOptions fixedTableCreateOptions = TableCreateOptions.defaults();
     private SchemaUpdateOptions schemaUpdateOptions = SchemaUpdateOptions.defaults();
     private FailureHandler<? super BigQueryFailure> failureHandler = FailureHandler.failJob();
     private String location;
@@ -239,18 +240,28 @@ public class BigQuerySinkBuilder<T> {
      * Defaults to {@link TableCreateOptions#defaults()} (plain tables). CDC primary-key and
      * maximum-staleness properties belong to {@link CdcTableOptions} instead.
      *
+     * <p>With {@link #cdcOptions(CdcOptions)} under {@link CreateDisposition#CREATE_IF_NEEDED},
+     * {@link #build()} rejects options that require a partition filter: BigQuery merges a CDC
+     * table's unapplied upserts at query time without pruning partitions, so it would refuse even a
+     * filtered query until they are applied.
+     *
      * @param tableCreateOptions the creation options
      * @return this builder
      */
     public BigQuerySinkBuilder<T> tableCreateOptions(TableCreateOptions tableCreateOptions) {
         Preconditions.checkNotNull(tableCreateOptions, "tableCreateOptions must not be null");
         this.tableCreateOptionsProvider = new FixedTableCreateOptionsProvider(tableCreateOptions);
+        this.fixedTableCreateOptions = tableCreateOptions;
         return this;
     }
 
     /**
      * Resolves creation options per destination for tables created under {@link
      * CreateDisposition#CREATE_IF_NEEDED}. Overrides any previously set options or provider.
+     *
+     * <p>With {@link #cdcOptions(CdcOptions)}, options that require a partition filter fail the
+     * creation of the CDC table they are resolved for, for the reason {@link
+     * #tableCreateOptions(TableCreateOptions)} gives.
      *
      * @param tableCreateOptionsProvider the provider
      * @return this builder
@@ -260,6 +271,7 @@ public class BigQuerySinkBuilder<T> {
         this.tableCreateOptionsProvider =
                 Preconditions.checkNotNull(
                         tableCreateOptionsProvider, "tableCreateOptionsProvider must not be null");
+        this.fixedTableCreateOptions = null;
         return this;
     }
 
@@ -516,6 +528,18 @@ public class BigQuerySinkBuilder<T> {
                 "CDC table reconciliation requires CdcTableOptions.primaryKeyColumns(...). A"
                         + " cdcTableOptionsProvider(...) must return primary-key columns for every"
                         + " destination.");
+        // A provider's options are checked where the CDC table is created (ADR-0205).
+        Preconditions.checkState(
+                cdcOptions == null
+                        || createDisposition != CreateDisposition.CREATE_IF_NEEDED
+                        || fixedTableCreateOptions == null
+                        || !fixedTableCreateOptions.isRequirePartitionFilter(),
+                "TableCreateOptions.requirePartitionFilter(true) cannot be combined with"
+                        + " cdcOptions(...): BigQuery merges a CDC table's unapplied upserts at"
+                        + " query time without pruning partitions, so it would refuse even a"
+                        + " filtered query until they are applied. If that is acceptable, add the"
+                        + " requirement to the table with ALTER TABLE; the sink never applies"
+                        + " creation options to an existing table.");
         // FILE_LOADS stages to Cloud Storage and submits load jobs; no emulator here stands in for
         // GCS, so an endpoint would be honored by the metadata half of that write method and
         // silently ignored by the half that actually moves the rows.

@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0033: `sink.table-create.*` checks shape in the mapper, never a clonable type list
 
 - Status: Accepted
-- Date: 2026-08-06
-- Issues: [#289] (under [#57]; the missing-table masking that issue also produced is ADR-0030)
+- Date: 2026-08-06; refined 2026-11-16 ([#2169]) and 2026-11-17 ([#2175])
+- Issues: [#289] (under [#57]; the missing-table masking that issue also produced is ADR-0030),
+  [#2169], [#2175]
 - Modules: bigquery (`table.sink`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
@@ -75,6 +76,17 @@ granularity, so it now owns eight rejections.
 An explicit `false` without a granularity is accepted by both, since it asks for nothing an
 unpartitioned table lacks.
 
+## Revision: a partition filter requirement is refused on a CDC table (2026-11-17)
+
+[#2175] added a ninth rejection: `sink.table-create.require-partition-filter = 'true'` together with
+`sink.cdc.enabled = 'true'`, which
+[ADR-0205](0205-bigquery-cdc-tables-are-not-created-with-a-partition-filter-requirement.md) records.
+The sink builder and the CDC provisioning refuse it too, so the mapper's rejection restates theirs in
+option keys.
+It runs before the granularity checks, because adding a granularity would not make the combination
+valid.
+
 [#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
 [#289]: https://github.com/flink-gcp/flink-connector-gcp/issues/289
 [#2169]: https://github.com/flink-gcp/flink-connector-gcp/issues/2169
+[#2175]: https://github.com/flink-gcp/flink-connector-gcp/issues/2175
