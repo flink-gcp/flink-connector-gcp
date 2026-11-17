@@ -40,11 +40,16 @@ import java.util.List;
  * compatible target descriptor (as produced by {@code BQTableSchemaToProtoDescriptor} from the
  * schema derived by {@link ProtoToTableSchemaConverter}).
  *
- * <p>All descriptor-dependent decisions — source/target field pairing (via {@link
- * BigQuerySchemaUtil#getFieldName}, which tracks the library's field-naming contract), value
- * conversion kinds, JSON selection, well-known-type sub-field descriptors — are resolved once into
- * a conversion plan at construction time; per-record conversion is a flat loop over the plan with
- * no lookups, string building or name comparisons.
+ * <p>All descriptor-dependent decisions — source/target field pairing, value conversion kinds, JSON
+ * selection, well-known-type sub-field descriptors — are resolved once into a conversion plan at
+ * construction time; per-record conversion is a flat loop over the plan with no lookups, string
+ * building or name comparisons.
+ *
+ * <p>Fields are paired by position, never by name. The target descriptor holds one field per source
+ * field, in the same order, but the client library lower-cases its field names with the default
+ * locale: a field {@code hasNext} is the target field {@code hasnext}, and under {@code tr_TR} the
+ * target field for {@code userId} carries the column name {@code userıd}. The column keeps the name
+ * as written, and BigQuery matches column names case-insensitively.
  *
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
  * flattened to validated epoch microseconds ({@link Timestamps#toMicros}) and {@code Duration}
@@ -127,16 +132,31 @@ public final class ProtoRowConverter {
             Descriptors.Descriptor target,
             ProtoSchemaOptions options,
             String parentPath) {
-        List<FieldPlan> fieldPlans = new ArrayList<>(target.getFields().size());
-        for (Descriptors.FieldDescriptor targetField : target.getFields()) {
-            String sourceName = BigQuerySchemaUtil.getFieldName(targetField);
-            Descriptors.FieldDescriptor sourceField = source.findFieldByName(sourceName);
+        // Paired by position, never by name; the class Javadoc says why.
+        List<Descriptors.FieldDescriptor> sourceFields = source.getFields();
+        List<Descriptors.FieldDescriptor> targetFields = target.getFields();
+        String at = parentPath.isEmpty() ? "<root>" : parentPath;
+        Preconditions.checkState(
+                sourceFields.size() == targetFields.size(),
+                "The row descriptor has %s fields where %s at %s has %s",
+                targetFields.size(),
+                source.getFullName(),
+                at,
+                sourceFields.size());
+        List<FieldPlan> fieldPlans = new ArrayList<>(targetFields.size());
+        for (int i = 0; i < targetFields.size(); i++) {
+            Descriptors.FieldDescriptor sourceField = sourceFields.get(i);
+            Descriptors.FieldDescriptor targetField = targetFields.get(i);
+            // A guard on the pairing, not its key. equalsIgnoreCase folds each character without a
+            // locale, so the dotless i of a tr_TR lower-casing still equals the I it came from.
+            String targetName = BigQuerySchemaUtil.getFieldName(targetField);
             Preconditions.checkState(
-                    sourceField != null,
-                    "No source field named %s in %s for target field %s",
-                    sourceName,
+                    targetName.equalsIgnoreCase(sourceField.getName()),
+                    "Row descriptor field %s does not match field %s of %s at %s",
+                    targetName,
+                    sourceField.getName(),
                     source.getFullName(),
-                    targetField.getName());
+                    at);
             String path =
                     parentPath.isEmpty()
                             ? sourceField.getName()

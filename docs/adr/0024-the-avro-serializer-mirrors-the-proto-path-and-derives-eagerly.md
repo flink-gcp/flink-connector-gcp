@@ -17,11 +17,13 @@ limitations under the License.
 # ADR-0024: The Avro serializer accepts `IndexedRecord`, derives eagerly, and rejects unstorable logical types
 
 - Status: Accepted
-- Date: 2026-07-26; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Date: 2026-07-26; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200) and [#2179] (2026-11-17: the protobuf converter pairs by position)
 - Issues: [#66] (Avro half); the shared holder extracted by [#828] (2026-08-18); the
-  compatibility record corrected by [#998] (2026-08-22), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
-- Modules: bigquery (`sink.serializer.avro`)
-- Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Avro records
+  compatibility record corrected by [#998] (2026-08-22), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071); the
+  protobuf converter's field pairing revised by [#2179] (2026-11-17)
+- Modules: bigquery (`sink.serializer.avro`; `sink.serializer.proto` since [#2179])
+- Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Avro records and
+  § Protobuf messages
 
 ## Decision
 
@@ -101,6 +103,42 @@ Evidence caught in self-review and worth not re-deriving:
   here precisely because the descriptor is always derived from the table schema this connector
   just produced.
 
+## Revision for #2179: the protobuf converter pairs by position too
+
+`ProtoRowConverter` paired each row descriptor field with its source field by exact name. The row
+descriptor's field names are lower-cased, so a message with an upper-case letter in any field name,
+such as `hasNext`, failed `ProtoMessageSerializationSchema`'s constructor. Every write method
+failed with it, while the job graph was built.
+
+The converter now pairs by position, as `AvroRowConverter` and `RowDataToProtoConverter` already
+did. Position is exact for the same reason: the row descriptor is always derived from the table
+schema `ProtoToTableSchemaConverter` produced from the same message, one column per field in
+declaration order. A field count check and a name check guard the pairing. The name check uses
+`String.equalsIgnoreCase`, which folds each character without a locale, so the dotless `ı` of a
+`tr_TR` lower-casing still equals the `I` it came from.
+
+- **The lookup the issue proposed was declined.** It keyed the source fields by their names
+  lower-cased under `Locale.ROOT`, as `ProtoToAvroConverter` does. That finds `hasNext` under an
+  English default locale. Under `tr_TR`, the client library gives the row field for `userId` the
+  column name `userıd` instead, which no `Locale.ROOT` key matches; `ProtoRowConverterTest` asserts
+  that premise before it converts.
+- **The columns keep the field names as written.** The lower-cased row descriptor still writes the
+  column `hasNext`, because BigQuery matches a column name case-insensitively.
+- **`ProtoToAvroConverter` still pairs by `Locale.ROOT` name**, because FILE_LOADS reads any
+  serializer's own descriptor and cannot assume its order. Under `tr_TR` it finds no field for a
+  column with an upper-case `I` whenever the client library derived the serializer's descriptor,
+  as it does for every built-in serializer, and the writer throws on the first record for that
+  table rather than routing it to the failure handler. That predates this revision.
+
+Verified against real BigQuery by `BigQueryProtoMixedCaseFieldNamesRealGcpITCase`. A table created
+beforehand with the columns `id`, `hasNext`, `beforeUpdate STRUCT<innerValue, Count>`, `Items`,
+`countsByName` and `userId` took a load job and a Storage Write API append. Each value read back
+from the column of its field's name, and the table's schema was unchanged. A table whose columns
+are the same names all lower-cased (`hasnext`, `beforeupdate.innervalue`, `items`) took both write
+methods the same way, and kept its lower-case spelling. The two load jobs used the default
+`WRITE_APPEND`; under `WRITE_TRUNCATE` a load replaces the schema with the serializer's anyway.
+
 [#66]: https://github.com/flink-gcp/flink-connector-gcp/issues/66
 [#828]: https://github.com/flink-gcp/flink-connector-gcp/issues/828
 [#998]: https://github.com/flink-gcp/flink-connector-gcp/issues/998
+[#2179]: https://github.com/flink-gcp/flink-connector-gcp/issues/2179
