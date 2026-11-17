@@ -274,6 +274,19 @@ partitioning or clustering column.
 The Table API source maps `selectedFields` onto `SupportsProjectionPushDown` and a conservative
 predicate subset onto `SupportsFilterPushDown`.
 
+A table that requires a partition filter enforces it on the read session as on a query: BigQuery
+refuses a session whose `rowRestriction` does not constrain the partitioning column, and the job
+fails when the source starts, in its planning call, with BigQuery's message, which names the column,
+as the cause.
+Measured on 2026-11-17, a restriction on another column alone was refused, and so was one that joined
+the partitioning column to another with `OR`, while one that joined them with `AND` was read.
+A table partitioned on ingestion time takes the restriction on `_PARTITIONTIME`, or on
+`_PARTITIONDATE`, which BigQuery defines only for daily partitioning: on 2026-11-18 a query naming it
+on an hourly table was refused as an unrecognized name.
+The restriction should add `OR _PARTITIONTIME IS NULL`: rows the Storage Write API wrote recently can
+still have a NULL `_PARTITIONTIME`, and a read restricted to a recent `_PARTITIONDATE` right after a
+default-stream write returned none of its two rows, without an error.
+
 Literal comparisons are generated for integer, `DATE`, `DECIMAL`, `FLOAT`, `DOUBLE`, `BYTES` / `VARBINARY`, `BINARY(n)`, `TIME(0..3)`, `TIMESTAMP(0..6)`, and `TIMESTAMP_LTZ(0..6)` columns.
 For `BINARY(n)`, the Table source preserves the source array's actual length and translates direct field/literal comparisons and null checks.
 Predicates with a remaining cast stay in Flink; a folded literal cast uses its resulting bytes.
@@ -1535,6 +1548,19 @@ The requirement needs time partitioning: BigQuery creates an unpartitioned table
 reports nothing, so `build()` rejects the combination.
 The sink's own writes read no rows from the table and need no filter, under every write method,
 including the copies and the terminal query that finish a `FILE_LOADS` commit (measured).
+The [source](#push-down) is refused the same way unless its row restriction constrains the
+partitioning column.
+
+On a table partitioned on ingestion time, rows the two Storage Write API methods wrote had a NULL
+`_PARTITIONTIME` right after the write, measured on 2026-11-17, while the rows a load job wrote were
+already in the current day's partition.
+A query that has to count such rows filters with `_PARTITIONTIME IS NULL` as well, which satisfies
+the requirement:
+
+```text
+WHERE _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)
+   OR _PARTITIONTIME IS NULL
+```
 
 A CDC sink refuses the requirement for the tables it creates.
 A query on a CDC table merges the upserts BigQuery has not applied yet whenever `max_staleness` is

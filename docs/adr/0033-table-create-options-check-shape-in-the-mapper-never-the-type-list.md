@@ -17,10 +17,10 @@ limitations under the License.
 # ADR-0033: `sink.table-create.*` checks shape in the mapper, never a clonable type list
 
 - Status: Accepted
-- Date: 2026-08-06; refined 2026-11-16 ([#2169]) and 2026-11-17 ([#2175])
+- Date: 2026-08-06; refined 2026-11-16 ([#2169]) and 2026-11-17 ([#2175], [#2182], [#2183])
 - Issues: [#289] (under [#57]; the missing-table masking that issue also produced is ADR-0030),
-  [#2169], [#2175]
-- Modules: bigquery (`table.sink`)
+  [#2169], [#2175], [#2182], [#2183]
+- Modules: bigquery (`table.sink`; the reading revision, `table.source`)
 - Current behavior: `docs/content/docs/connectors/table/bigquery.md`
 
 ## Decision
@@ -31,12 +31,13 @@ The four `sink.table-create.*` keys map onto `TableCreateOptions` through
 `Type.valueOf(name())`, so the constant names stay the contract and only the DDL spelling is
 new.
 
-- **The mapper owns seven rejections, and one of them has no builder backstop at all**: a
+- **The mapper owns seven rejections, and two of them have no builder backstop at all**: a
   `time-partitioning.field` without a `.type` is unrepresentable through the builder's two
   `timePartitioning` overloads, so there is no exception to inherit and this check is the only
-  thing between a DDL and a silently unpartitioned table. Two more restate a rule the *builder*
-  also has, in option keys a SQL user can act on (creation settings beside an explicit
-  `create-never`; an expiration without a granularity). The remaining four restate a rule only
+  thing between a DDL and a silently unpartitioned table; and creation settings beside an explicit
+  `create-never` are accepted by `build()`, which takes `tableCreateOptions(...)` under either
+  disposition. One more restates a rule the *builder* also has, in option keys a SQL user can act
+  on (an expiration without a granularity). The remaining four restate a rule only
   the *service* has, and the builder could not make any of them because it never sees a schema:
   a column the DDL does not declare, a partitioning column of a type BigQuery cannot partition
   on, `hour` over a `DATE` column, and a repeated or nested clustering column.
@@ -86,7 +87,58 @@ option keys.
 It runs before the granularity checks, because adding a granularity would not make the combination
 valid.
 
+## Revision: the create-never rejection has no builder counterpart (2026-11-17)
+
+The Decision first counted creation settings beside an explicit `create-never` among the rules the
+builder also has.
+`build()` has no such rule; it accepts `tableCreateOptions(...)` under `CREATE_NEVER` and never
+applies them, so the mapper's rejection is the only one ([#2182]).
+The bullet above now says so.
+The count of seven, and the eight and nine the later revisions reach, are unchanged.
+
+## Revision: reading such a table, and ingestion-time partitioning (2026-11-17)
+
+Two consequences of the partition filter requirement were measured on 2026-11-17 against
+`us-central1` ([#2183]), and neither adds a check.
+
+The Storage Read API enforces the requirement on a read session as BigQuery does on a query.
+On a day-partitioned table that required it, a session was refused ("Cannot query over table …
+without a filter over column(s) … that can be used for partition elimination") with no row
+restriction, with one on another column, and with one that joined the partitioning column to
+another with `OR`; it read the rows with one on the partitioning column, alone or joined to another
+with `AND`.
+The connector's Table source therefore starts on such a table only when its combined restriction, a
+pushed-down `WHERE` condition or `scan.row-restriction`, constrains the partitioning column.
+Without one the job fails when the source starts, in the enumerator's planning call, with that
+message as the cause.
+A table partitioned on ingestion time takes the restriction on `_PARTITIONTIME`, or on
+`_PARTITIONDATE`, which BigQuery defines only for daily partitioning: on 2026-11-18 a query naming it
+on an hourly table was refused as an unrecognized name.
+The Table source exposes neither as a column, so `scan.row-restriction` supplies it.
+The connector does not check any of this before the session: the refusal names the columns it
+needs, and refusing such a read is the purpose of the requirement.
+
+A table the sink created with day partitioning and no column kept the requirement under every write
+method (default stream, exactly-once, and `FILE_LOADS` appending, `write-truncate` and
+`write-truncate-data`), the writes succeeded, and a query without a filter was refused, so the
+builder and the mapper accept ingestion-time partitioning with the requirement.
+Right after the write, the rows of both Storage Write API methods had a NULL `_PARTITIONTIME`, so a
+filter on a recent `_PARTITIONTIME` counted none of them; `_PARTITIONTIME IS NULL` counted both and
+satisfies the requirement.
+The rows of the load jobs were already in the current day's partition.
+A Table source read restricted to a recent `_PARTITIONDATE` right after a default-stream write
+returned none of its two rows and no error, while one that added `OR _PARTITIONTIME IS NULL` read
+both, which is why the pages tell a reader to add it.
+
+`BigQueryRequirePartitionFilterRealGcpITCase` pins the source's refusals (no restriction, another
+column through `scan.row-restriction`, an `OR` with another column) and its pushdown, the
+`scan.row-restriction` read of an ingestion-time table, and the requirement on an ingestion-time
+table the default stream creates, counted and read with filters that hold whether or not BigQuery
+has moved the rows into a partition yet.
+
 [#57]: https://github.com/flink-gcp/flink-connector-gcp/issues/57
 [#289]: https://github.com/flink-gcp/flink-connector-gcp/issues/289
 [#2169]: https://github.com/flink-gcp/flink-connector-gcp/issues/2169
 [#2175]: https://github.com/flink-gcp/flink-connector-gcp/issues/2175
+[#2182]: https://github.com/flink-gcp/flink-connector-gcp/issues/2182
+[#2183]: https://github.com/flink-gcp/flink-connector-gcp/issues/2183

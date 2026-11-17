@@ -54,10 +54,11 @@ import java.util.Optional;
  * which never creates a table they could apply to.
  *
  * <p>Five rules are owned here rather than left to the builder, each because its message has to
- * name option keys:
+ * name option keys or because the builder does not make it:
  *
  * <ul>
- *   <li>the {@code create-never} contradiction above;
+ *   <li>the {@code create-never} contradiction above, which has no builder counterpart: {@code
+ *       build()} accepts creation options under {@code CREATE_NEVER} and never applies them;
  *   <li>a partitioning field without a granularity, which has <b>no builder backstop at all</b>:
  *       the builder's two {@code timePartitioning} overloads make the pair unrepresentable, so
  *       there is no exception to inherit and this check is the only thing between a DDL and a
