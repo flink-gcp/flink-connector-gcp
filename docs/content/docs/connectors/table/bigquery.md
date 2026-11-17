@@ -511,6 +511,8 @@ BigQuery silently dropped `maxStaleness` through all three measured Tables API w
 `INFORMATION_SCHEMA.TABLE_OPTIONS` before opening the first writer.
 That optional path needs `bigquery.jobs.create` and table-update permission and submits metadata
 query jobs; leaving both maximum-staleness options unset submits none.
+The jobs run in the destination's project unless `sink.parent-project` names another, which then
+needs the job permission instead.
 The default `sink.cdc.table-reconciliation=verify-only` checks existing tables without modifying
 an unlabeled table.
 Select `reconcile` to adopt an existing table and converge maximum staleness plus the connector
@@ -884,6 +886,7 @@ or SDK already uses. The full list of defaults is in the
 | `sink.cdc.table-reconciliation` | Enum | `cdcTableReconciliationPolicy(...)` — `verify-only` (default) or `reconcile`. Selects whether an existing table is only checked or has managed mutable CDC properties converged |
 | `sink.create-disposition` | Enum | `createDisposition(...)` — `create-if-needed` or `create-never`. This controls only whether a missing table may be created; existing-table handling is independent |
 | `sink.location` | String | `location(...)` |
+| `sink.parent-project` | String | `parentProject(...)`; the project the sink's BigQuery jobs run in and are billed to: `file-loads` load, copy and query jobs, and the CDC maximum-staleness statements. *Unset ⇒ `file-loads` uses the project the client library resolves (the key file's with `service-account-key-file`), CDC the table's `project`*. Accepted under every write method; Storage Write API writes create no jobs, so it has no effect on them |
 | `sink.schema-update.allow-new-fields` | Boolean | `SchemaUpdateOptions.allowNewFields()`. Accepted under every write method; their reconciliation boundaries differ as described under [Schema evolution](#schema-evolution) |
 | `sink.schema-update.allow-field-relaxation` | Boolean | `SchemaUpdateOptions.allowFieldRelaxation()`. Accepted under every write method; BigQuery's native load/query option applies to `write-append` and `write-truncate-data`, while the connector also reconciles `file-loads` tables before `write-empty` jobs |
 | `sink.derive-required-columns` | Boolean | Derives a `REQUIRED` column from a `NOT NULL` one; off, every derived column is `NULLABLE` |

@@ -42,6 +42,7 @@ public final class LoadJobSpec {
     private final StagingFormat format;
     @Nullable private final TableLayout layout;
     @Nullable private final String kmsKeyName;
+    @Nullable private final String jobProject;
 
     @VisibleForTesting
     LoadJobSpec(
@@ -81,6 +82,7 @@ public final class LoadJobSpec {
                 schemaUpdateOptions,
                 format,
                 layout,
+                null,
                 null);
     }
 
@@ -93,7 +95,8 @@ public final class LoadJobSpec {
             List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
             StagingFormat format,
             @Nullable TableLayout layout,
-            @Nullable String kmsKeyName) {
+            @Nullable String kmsKeyName,
+            @Nullable String jobProject) {
         this.destination = destination;
         this.sourceUris = List.copyOf(sourceUris);
         this.schema = schema;
@@ -103,6 +106,7 @@ public final class LoadJobSpec {
         this.format = format;
         this.layout = layout;
         this.kmsKeyName = kmsKeyName;
+        this.jobProject = jobProject;
     }
 
     /**
@@ -121,7 +125,28 @@ public final class LoadJobSpec {
                 schemaUpdateOptions,
                 format,
                 layout,
-                kmsKeyName);
+                kmsKeyName,
+                jobProject);
+    }
+
+    /**
+     * Returns this spec running the job in {@code jobProject}.
+     *
+     * @param jobProject the project, or {@code null} for the client's own project
+     * @return the spec
+     */
+    LoadJobSpec withJobProject(@Nullable String jobProject) {
+        return new LoadJobSpec(
+                destination,
+                sourceUris,
+                schema,
+                createDisposition,
+                writeDisposition,
+                schemaUpdateOptions,
+                format,
+                layout,
+                kmsKeyName,
+                jobProject);
     }
 
     /** Returns the destination table. */
@@ -180,6 +205,15 @@ public final class LoadJobSpec {
         return kmsKeyName;
     }
 
+    /**
+     * Returns the project the job runs in and is looked up under, or {@code null} for the client's
+     * own project.
+     */
+    @Nullable
+    public String getJobProject() {
+        return jobProject;
+    }
+
     @Override
     public String toString() {
         return "LoadJobSpec{destination="
@@ -196,6 +230,7 @@ public final class LoadJobSpec {
                 + format
                 + (layout != null ? ", layout=" + layout : "")
                 + (kmsKeyName != null ? ", kmsKeyName=" + kmsKeyName : "")
+                + (jobProject != null ? ", jobProject=" + jobProject : "")
                 + "}";
     }
 }

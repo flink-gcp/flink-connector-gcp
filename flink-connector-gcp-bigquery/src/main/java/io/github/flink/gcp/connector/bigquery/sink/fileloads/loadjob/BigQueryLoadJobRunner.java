@@ -74,6 +74,11 @@ import java.util.stream.Collectors;
  * job in the location of the dataset it writes — one {@code datasets.get} per dataset for the
  * runner's lifetime.
  *
+ * <p><b>Every job id names the spec's job project when it has one</b> (#2178): BigQuery scopes a
+ * job id to its project, so the creation and every look-up of a job must name the same project, or
+ * a re-attach probe looks where the previous attempt never created anything. A spec without one
+ * leaves the id to the client's own project, as every job did before the option existed.
+ *
  * <p>Completion is polled with capped exponential backoff and effectively no attempt bound: batch
  * load jobs may legitimately run long, and overall timeouts are the Flink job's to enforce. Workers
  * keep separate REST clients and location caches, but share a thread-safe submitted-job registry so
@@ -183,7 +188,13 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             load.setDestinationEncryptionConfiguration(
                     BigQueryTableAdmin.encryptionConfiguration(spec.getKmsKeyName()));
         }
-        submitOrAttach(jobId, load.build(), spec.getDestination(), spec.toString(), null);
+        submitOrAttach(
+                jobId,
+                load.build(),
+                spec.getDestination(),
+                spec.getJobProject(),
+                spec.toString(),
+                null);
     }
 
     /**
@@ -256,6 +267,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                 jobId,
                 copy.build(),
                 spec.getDestination(),
+                spec.getJobProject(),
                 spec.toString(),
                 spec.getEquivalentJobId());
     }
@@ -272,7 +284,13 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         if (!spec.getSchemaUpdateOptions().isEmpty()) {
             query.setSchemaUpdateOptions(spec.getSchemaUpdateOptions());
         }
-        submitOrAttach(jobId, query.build(), spec.getDestination(), spec.toString(), null);
+        submitOrAttach(
+                jobId,
+                query.build(),
+                spec.getDestination(),
+                spec.getJobProject(),
+                spec.toString(),
+                null);
     }
 
     @Override
@@ -326,14 +344,16 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     @Override
     public boolean copySucceeded(String jobId, CopyJobSpec spec) throws IOException {
         String jobLocation = jobLocation(spec.getDestination());
-        return succeeded(findNotFailed(jobId, jobLocation))
+        String jobProject = spec.getJobProject();
+        return succeeded(findNotFailed(jobId, jobProject, jobLocation))
                 || (spec.getEquivalentJobId() != null
-                        && succeeded(findNotFailed(spec.getEquivalentJobId(), jobLocation)));
+                        && succeeded(
+                                findNotFailed(spec.getEquivalentJobId(), jobProject, jobLocation)));
     }
 
     /**
-     * Whether {@code job}, which {@link #findNotFailed(String, String)} returned and so has not
-     * failed, is done; {@code false} for {@code null}, which means no job.
+     * Whether {@code job}, which {@link #findNotFailed(String, String, String)} returned and so has
+     * not failed, is done; {@code false} for {@code null}, which means no job.
      */
     private static boolean succeeded(@Nullable Job job) {
         return job != null && isDone(job);
@@ -345,14 +365,12 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
      * search.
      */
     @Nullable
-    private Job findNotFailed(String baseJobId, String jobLocation) throws IOException {
+    private Job findNotFailed(String baseJobId, @Nullable String jobProject, String jobLocation)
+            throws IOException {
         for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
             Job existing =
                     getJob(
-                            JobId.newBuilder()
-                                    .setJob(retryJobName(baseJobId, probe))
-                                    .setLocation(jobLocation)
-                                    .build(),
+                            jobId(retryJobName(baseJobId, probe), jobProject, jobLocation),
                             "looking for a previous attempt's job");
             if (existing == null) {
                 return null;
@@ -372,8 +390,12 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
      * @return whether such a job was found and stands for this one
      */
     private boolean attachToEquivalent(
-            String baseJobId, String equivalentBaseJobId, String jobLocation) throws IOException {
-        Job existing = findNotFailed(equivalentBaseJobId, jobLocation);
+            String baseJobId,
+            String equivalentBaseJobId,
+            @Nullable String jobProject,
+            String jobLocation)
+            throws IOException {
+        Job existing = findNotFailed(equivalentBaseJobId, jobProject, jobLocation);
         if (existing == null) {
             return false;
         }
@@ -393,6 +415,18 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
         return probe == 0 ? baseJobId : baseJobId + "-r" + probe;
     }
 
+    /**
+     * The id one attempt at a job is created and looked up under: in {@code jobProject} when given,
+     * otherwise in the client's own project, and always in {@code jobLocation}.
+     */
+    private static JobId jobId(String jobName, @Nullable String jobProject, String jobLocation) {
+        JobId.Builder id = JobId.newBuilder().setJob(jobName).setLocation(jobLocation);
+        if (jobProject != null) {
+            id.setProject(jobProject);
+        }
+        return id.build();
+    }
+
     @Override
     public void deleteTable(TableDestination table) {
         try {
@@ -406,18 +440,19 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             String baseJobId,
             JobConfiguration configuration,
             TableDestination destination,
+            @Nullable String jobProject,
             String what,
             @Nullable String equivalentBaseJobId)
             throws IOException {
         String jobLocation = jobLocation(destination);
         if (equivalentBaseJobId != null
-                && attachToEquivalent(baseJobId, equivalentBaseJobId, jobLocation)) {
+                && attachToEquivalent(baseJobId, equivalentBaseJobId, jobProject, jobLocation)) {
             return;
         }
         String lastError = null;
         for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
             String jobName = retryJobName(baseJobId, probe);
-            JobId jobId = JobId.newBuilder().setJob(jobName).setLocation(jobLocation).build();
+            JobId jobId = jobId(jobName, jobProject, jobLocation);
             Job existing = getJob(jobId, "looking for a previous attempt's job");
             if (existing == null) {
                 Job submitted = create(jobId, configuration);

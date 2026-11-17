@@ -71,7 +71,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -642,6 +644,72 @@ class FileLoadsWriterTest {
         assertThat(serializer.invocations).isZero();
         assertThat(storage.getObjects()).isEmpty();
         assertThat(metrics.counterValue("numRecordsSendErrors")).isZero();
+    }
+
+    @Test
+    void everyCommittableCarriesTheConfiguredJobProject() throws Exception {
+        // One option set per way a file finishes, since each records its committable from a
+        // different place: a checkpoint's serial close after the uploader is drained, an eviction
+        // collected from the background uploader, a close on the task thread, and the concurrent
+        // checkpoint finalizer. The commit looks for previous attempts' jobs in this project, so a
+        // committable missing it would be looked for wherever the restored job is configured.
+        BigQuerySinkConfig<TestRow> config =
+                ((BigQueryFileLoadsSink<TestRow>)
+                                BigQuerySink.<TestRow>builder()
+                                        .writeMethod(WriteMethod.FILE_LOADS)
+                                        .destinationResolver(
+                                                (element, context) ->
+                                                        TableDestination.of(
+                                                                "p", "d", element.table))
+                                        .serializer(new TestRowSerializer(SCHEMA))
+                                        .parentProject("jobs-project")
+                                        .fileLoadsOptions(
+                                                FileLoadsOptions.builder()
+                                                        .stagingPath("gs://bucket/prefix")
+                                                        .build())
+                                        .build())
+                        .getConfig();
+        Map<String, FileLoadsOptions> finishPaths = new LinkedHashMap<>();
+        finishPaths.put(
+                "checkpoint close after the uploader drains",
+                FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build());
+        finishPaths.put(
+                "eviction collected from the uploader",
+                FileLoadsOptions.builder()
+                        .stagingPath("gs://bucket/prefix")
+                        .maxOpenDestinations(1)
+                        .build());
+        finishPaths.put("close on the task thread", taskThreadOptions().build());
+        finishPaths.put(
+                "concurrent checkpoint finalizer",
+                taskThreadOptions().maxConcurrentCheckpointFinalizations(2).build());
+        for (Map.Entry<String, FileLoadsOptions> path : finishPaths.entrySet()) {
+            FileLoadsWriter<TestRow> writer =
+                    writer(config, new InMemoryStagingStorage(), path.getValue());
+            writer.write(new TestRow("t1", "a", 1L), CONTEXT);
+            writer.write(new TestRow("t2", "b", 2L), CONTEXT);
+            Collection<FileLoadsCommittable> committables = writer.prepareCommit();
+            writer.close();
+
+            assertThat(committables)
+                    .as(path.getKey())
+                    .hasSize(2)
+                    .allSatisfy(
+                            committable ->
+                                    assertThat(committable.getJobProject())
+                                            .as(path.getKey())
+                                            .isEqualTo("jobs-project"));
+        }
+
+        FileLoadsWriter<TestRow> unconfigured =
+                writer(
+                        config(FailureHandler.failJob()),
+                        new InMemoryStagingStorage(),
+                        taskThreadOptions().build());
+        unconfigured.write(new TestRow("t1", "a", 1L), CONTEXT);
+        Collection<FileLoadsCommittable> committables = unconfigured.prepareCommit();
+        unconfigured.close();
+        assertThat(committables).singleElement().returns(null, FileLoadsCommittable::getJobProject);
     }
 
     @Test

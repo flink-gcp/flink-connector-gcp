@@ -64,6 +64,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
     private final SchemaUpdateOptions schemaUpdateOptions;
     private final FailureHandler<? super BigQueryFailure> failureHandler;
     private final String location;
+    @Nullable private final String parentProject;
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final EmulatorEndpoint emulatorRestEndpoint;
@@ -80,6 +81,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
             SchemaUpdateOptions schemaUpdateOptions,
             FailureHandler<? super BigQueryFailure> failureHandler,
             String location,
+            @Nullable String parentProject,
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable EmulatorEndpoint emulatorRestEndpoint) {
@@ -113,6 +115,7 @@ public final class BigQuerySinkConfig<T> implements Serializable {
         this.schemaUpdateOptions = schemaUpdateOptions;
         this.failureHandler = failureHandler;
         this.location = location;
+        this.parentProject = parentProject;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.emulatorRestEndpoint = emulatorRestEndpoint;
@@ -256,6 +259,17 @@ public final class BigQuerySinkConfig<T> implements Serializable {
      */
     public String getLocation() {
         return location;
+    }
+
+    /**
+     * Returns the project every BigQuery job the sink creates runs in and is billed to, or {@code
+     * null} when unset: CDC then uses each destination's, and {@code FILE_LOADS} uses the project
+     * its client library resolves (a key file's own project, or else the environment's default) for
+     * every commit whose committables record no project.
+     */
+    @Nullable
+    public String getParentProject() {
+        return parentProject;
     }
 
     /**

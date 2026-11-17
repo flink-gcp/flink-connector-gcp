@@ -123,10 +123,14 @@ Their deployment notes cover the process, Kubernetes and rotation requirements f
 
 Two environment facts a first run trips over:
 
-- **`GOOGLE_CLOUD_PROJECT` (or a gcloud config the client library can see) must resolve a default
-  project** for BigQuery's `FILE_LOADS` write method, whose clients are built with
-  `getDefaultInstance()`. Without it the load-job committer fails with *"A project ID is required
-  for this service"* — the project named in the destination is not consulted for this.
+- **BigQuery's `FILE_LOADS` write method runs its jobs in the project `parentProject(...)` names**
+  (`sink.parent-project` in SQL), not in the project named in the destination.
+  Without the option it uses the project the client library resolves: a service-account key
+  file's own project, or else the environment's default, so `GOOGLE_CLOUD_PROJECT` (or a gcloud
+  config the client library can see) must resolve one, or the load-job committer fails to build its
+  BigQuery client.
+  A running job that adopts the option should set it to the project its jobs ran in so far, so a
+  commit restored from its state finds its jobs.
 - **The BigQuery sink and the Pub/Sub sink need permission to *create* their destination**, since
   that is what they do by default. `createDisposition(CREATE_NEVER)` drops the requirement on
   both, at the price of a missing destination failing the job instead of being created. The
@@ -139,7 +143,7 @@ What each connector asks for:
 
 | Connector | Permissions |
 |---|---|
-| BigQuery sink | `bigquery.tables.create` on the dataset under the default create disposition; `bigquery.tables.get` and `bigquery.tables.update` when schema updates or `FILE_LOADS` are enabled, plus BigQuery data-editor and job-user access, and Cloud Storage read/write on the staging bucket for `FILE_LOADS` |
+| BigQuery sink | `bigquery.tables.create` on the dataset under the default create disposition; `bigquery.tables.get` and `bigquery.tables.update` when schema updates or `FILE_LOADS` are enabled, plus BigQuery data-editor access, job-user access on the project the jobs run in (`parentProject(...)` when set), and Cloud Storage read/write on the staging bucket for `FILE_LOADS` |
 | BigQuery source | [Storage Read API session permissions](https://cloud.google.com/bigquery/docs/reference/storage#permissions) on the read-session project and access to the table's data. Queries also need `bigquery.jobs.create`; a [named result dataset]({{< relref "docs/connectors/datastream/bigquery" >}}#where-the-result-lands) additionally needs [result-table creation/write permissions](https://cloud.google.com/bigquery/docs/writing-results#required_permissions) and `bigquery.tables.get` / `bigquery.tables.update` to set expiration. The default anonymous result uses the query identity's access. Opt-in [view materialization]({{< relref "docs/connectors/datastream/bigquery" >}}#reading-a-view-without-writing-the-query) also needs [`bigquery.tables.get`](https://cloud.google.com/bigquery/docs/reference/rest/v2/tables/get) on the configured table or view |
 | Pub/Sub sink | `pubsub.topics.publish`, plus `pubsub.topics.create` (roles/pubsub.editor) when topic auto-creation may trigger |
 | Pub/Sub source | The JobManager needs `pubsub.subscriptions.get` for the startup check and `pubsub.subscriptions.consume` for every non-default start position's timestamp seek. Auto-creation on the JobManager additionally needs `pubsub.subscriptions.create` on the containing project and `pubsub.topics.attachSubscription` on the requested topic. TaskManager readers need `pubsub.subscriptions.consume` for pulling and acknowledgement handling. `roles/pubsub.viewer` plus `roles/pubsub.subscriber` cover an existing subscription; `roles/pubsub.editor` covers the full create and consume path |

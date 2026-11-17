@@ -271,6 +271,7 @@ class BigQueryDynamicSinkTest {
                 "cdcTableReconciliationPolicy",
                 a -> a.cdcTableReconciliationPolicy(CdcTableReconciliationPolicy.RECONCILE));
         varied.put("location", a -> a.location("US"));
+        varied.put("parentProject", a -> a.parentProject("billing-project"));
         varied.put(
                 "schemaUpdateOptions",
                 a -> a.schemaUpdateOptions(SchemaUpdateOptions.builder().allowNewFields().build()));

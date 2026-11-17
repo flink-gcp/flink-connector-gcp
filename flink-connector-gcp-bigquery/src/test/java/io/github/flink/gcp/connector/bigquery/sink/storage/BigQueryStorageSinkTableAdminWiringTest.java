@@ -20,6 +20,7 @@ import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
+import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.RetryingTableAdmin;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import org.junit.jupiter.api.Test;
@@ -92,6 +93,30 @@ class BigQueryStorageSinkTableAdminWiringTest {
         BigQueryBufferedStreamSink<String> sink = exactlyOnceSink(null);
 
         assertWrappedOnRecovery(sink.createTableAdmin());
+    }
+
+    @Test
+    void theAtLeastOnceSinkPassesItsParentProjectToItsAdmin() {
+        // The admin runs its CDC statements in this project, which the admin's own test pins.
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .writeMethod(WriteMethod.STORAGE_API_AT_LEAST_ONCE)
+                                .table(DESTINATION)
+                                .serializer(new NameValueRowSerializer())
+                                .parentProject("jobs-project")
+                                .build();
+
+        assertThat(sink.createTableAdmin())
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                RetryingTableAdmin.class))
+                .extracting(RetryingTableAdmin::getDelegate)
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                BigQueryTableAdmin.class))
+                .extracting(BigQueryTableAdmin::getJobProject)
+                .isEqualTo("jobs-project");
     }
 
     private static void assertWrappedOnRecovery(TableAdmin admin) {

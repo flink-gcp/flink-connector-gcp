@@ -27,6 +27,7 @@ import com.google.cloud.bigquery.BigQueryException;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.Clustering;
 import com.google.cloud.bigquery.Field;
+import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.StandardSQLTypeName;
@@ -1059,7 +1060,7 @@ class BigQueryTableAdminTest {
      * several of them embed JSON in string literals — so the move is left to its own change.
      */
     private static BigQueryCdcTableService cdcService(BigQuery client) {
-        return new BigQueryCdcTableService(destination -> client, null);
+        return new BigQueryCdcTableService(destination -> client, null, null);
     }
 
     private static void assertCompletionFailureIsRetriable(MockLowLevelHttpResponse response) {
@@ -1140,6 +1141,37 @@ class BigQueryTableAdminTest {
                                         .maxStalenessMatches(DESTINATION, Duration.ofMinutes(10)))
                 .isExactlyInstanceOf(RetriableTableAdminException.class)
                 .hasCause(client.queryFailure);
+    }
+
+    @Test
+    void cdcStatementsRunInTheDestinationsProjectByDefault() {
+        StubBigQuery client = new StubBigQuery();
+        client.queryFailure = new BigQueryException(400, "stop after the job id is recorded");
+
+        assertThatThrownBy(
+                        () ->
+                                new BigQueryTableAdmin(client)
+                                        .cdcService()
+                                        .maxStalenessMatches(DESTINATION, Duration.ofMinutes(10)))
+                .isInstanceOf(IOException.class);
+
+        assertThat(client.queryJobIds)
+                .singleElement()
+                .returns(DESTINATION.getProject(), JobId::getProject);
+    }
+
+    @Test
+    void cdcStatementsRunInTheConfiguredJobProject() {
+        StubBigQuery client = new StubBigQuery();
+        client.queryFailure = new BigQueryException(400, "stop after the job id is recorded");
+        // Through the admin, so the job project is shown to reach the service it builds.
+        BigQueryCdcTableService service =
+                new BigQueryTableAdmin(client, "jobs-project").cdcService();
+
+        assertThatThrownBy(() -> service.maxStalenessMatches(DESTINATION, Duration.ofMinutes(10)))
+                .isInstanceOf(IOException.class);
+
+        assertThat(client.queryJobIds).singleElement().returns("jobs-project", JobId::getProject);
     }
 
     @Test

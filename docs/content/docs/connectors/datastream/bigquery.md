@@ -801,6 +801,8 @@ CDC has the following table and write-path requirements:
   `INFORMATION_SCHEMA.TABLE_OPTIONS`, and only then writes CDC rows.
   This path additionally needs `bigquery.jobs.create` and table-update permission and submits
   metadata query jobs; leaving both maximum-staleness options unset submits none.
+  The jobs run in the destination's project unless `parentProject(...)` names another, which
+  then needs the job permission instead.
 - `CdcTableReconciliationPolicy.VERIFY_ONLY` is the conservative default for existing tables.
   It detects drift without modifying an unlabeled table.
   `RECONCILE` adopts an unlabeled table and converges only maximum staleness and the connector's
@@ -2425,9 +2427,9 @@ destination succeeds without `bigquery.tables.update` whether schema updates are
 The same holds for a `WRITE_EMPTY` direct load and, with schema updates disabled, for a
 `WRITE_APPEND` or `WRITE_TRUNCATE_DATA` direct load and the terminal query (measured, into existing
 tables); the reconciliation before them still needs it when it changes the schema.
-Every FILE_LOADS execution also needs `bigquery.jobs.create` on the job project to submit its load,
-copy and terminal query jobs; as their creator it reads and polls those jobs without
-`bigquery.jobs.get`.
+Every FILE_LOADS execution also needs `bigquery.jobs.create` on the job project (see **Job
+project** below) to submit its load, copy and terminal query jobs; as their creator it reads and
+polls those jobs without `bigquery.jobs.get`.
 Unless the sink sets `location(...)`, the committer also reads each destination dataset's metadata
 to find the location its jobs run in, which needs `bigquery.datasets.get` on that dataset.
 The read asks for the metadata view alone, so fine-grained dataset access controls add no
@@ -2580,6 +2582,41 @@ risk (shared with the Beam and Dataproc designs): if a failure destroys the pers
 committables *and* re-runs the writer stage after load jobs were already submitted, the retried
 run produces new file names — and thus new job ids — while the first run's jobs keep running
 server-side, which can duplicate rows under `WRITE_APPEND`.
+
+**Job project.** Every load, copy and terminal query job of a sink runs in one project, the one
+`parentProject(...)` names.
+The jobs count against that project's quotas, run on a reservation assigned to it when one covers
+their job type, and need `bigquery.jobs.create` on it.
+BigQuery lists batch loads and copies among its
+[free operations](https://cloud.google.com/bigquery/pricing), so outside a reservation the
+project is billed only for the terminal query of `WRITE_TRUNCATE_DATA`.
+The destination tables, the temporary tables and their storage stay in their own projects.
+Without `parentProject(...)`, the jobs run in the project the client library resolves, and the
+committer fails when it resolves none.
+With `serviceAccountKeyFile(...)` that is the key file's own project, whatever the environment
+says; otherwise it is the environment's default, taken from `GOOGLE_CLOUD_PROJECT` first, then
+from the metadata server where one answers, and only then from the application-default credentials
+file or the gcloud configuration.
+On GKE with Workload Identity the metadata server answers with the cluster's project, where the
+job's identity often holds no BigQuery permission, so a sink writing into another project can fail
+its first commit with a 403 on looking up a job and restart in a loop.
+Set `parentProject(...)` there, and wherever two sinks in one JVM must run their jobs in
+different projects, which a process-wide `GOOGLE_CLOUD_PROJECT` cannot express.
+
+Each committable records the `parentProject(...)` of the run that staged it, so a commit restored
+from a checkpoint looks for its previous attempt's jobs where that attempt created them, and
+changing the option is safe for state written while it was set.
+State that records none, written while the option was unset or by a version without it, commits
+where the restored job is configured.
+A job adopting the option should therefore set it to the project its jobs have run in so far: the
+key file's project when it sets `serviceAccountKeyFile(...)`, otherwise the one its environment
+resolved, usually through `GOOGLE_CLOUD_PROJECT`.
+The variable can then be removed.
+Change the project only when restoring from a checkpoint or savepoint taken after the option was
+set, whose committables record it.
+Older state restored under another project sends its commit to look for the previous attempt's
+jobs where none were created: it submits them again, which repeats loads whose files remain and
+fails on loads whose files were already deleted.
 
 **Compression.** Staging files are Avro containers compressed with **zstandard**, and the reason
 is CPU rather than size. Compression runs on the task thread — the same one streaming into the GCS
@@ -2893,10 +2930,10 @@ run them either — the build never selects them, and running them is opt-in per
 runs, put the variables (plus `GOOGLE_APPLICATION_CREDENTIALS` if not using the default ADC
 location) in an uncommitted `.env` at the repository root — mise loads it automatically. In a git
 worktree, run `just worktree-env` once to make the repository root's `.env` reachable there. The
-FILE_LOADS clients are built with `getDefaultInstance()`, so the environment must also resolve
-a default project (`GOOGLE_CLOUD_PROJECT`, or a gcloud config the client library can see) —
-with only the `BQ_IT_*` variables set, the load-job committer fails with "A project ID is
-required for this service". `just e2e` runs every gated ITCase and fails loudly if the
+tests leave `parentProject(...)` unset, so FILE_LOADS runs its jobs in the environment's default
+project, which the environment must therefore resolve (`GOOGLE_CLOUD_PROJECT`, or a gcloud config
+the client library can see) — with only the `BQ_IT_*` variables set, the load-job committer fails
+to build its BigQuery client. `just e2e` runs every gated ITCase and fails loudly if the
 variables are missing or a gated class did not actually execute. In CI the same recipe runs
 weekly in the E2E workflow, authenticating via Workload Identity Federation
 ([#28]({{< param BookRepo >}}/issues/28)).

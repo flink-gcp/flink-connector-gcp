@@ -135,6 +135,7 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
+                        BigQueryConnectorOptions.SINK_PARENT_PROJECT,
                         BigQueryConnectorOptions.SINK_CDC_ENABLED,
                         BigQueryConnectorOptions.SINK_CDC_DEBEZIUM_MYSQL_SOURCE_UUIDS,
                         BigQueryConnectorOptions.SINK_CDC_TICDC_CLUSTER_ID,
@@ -290,6 +291,9 @@ public class BigQueryDynamicTableFactory
                 .cdcTableReconciliationPolicy(
                         cdcEnabled ? CdcTableOptionsMapper.policy(config) : null)
                 .location(config.getOptional(BigQueryConnectorOptions.SINK_LOCATION).orElse(null))
+                .parentProject(
+                        config.getOptional(BigQueryConnectorOptions.SINK_PARENT_PROJECT)
+                                .orElse(null))
                 .schemaUpdateOptions(schemaUpdateOptions)
                 .defaultStreamOptions(DefaultStreamOptionsMapper.map(config))
                 .bufferedStreamOptions(bufferedStreamOptions)

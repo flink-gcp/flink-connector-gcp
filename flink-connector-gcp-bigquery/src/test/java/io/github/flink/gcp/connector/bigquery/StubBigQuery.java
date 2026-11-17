@@ -171,6 +171,9 @@ public final class StubBigQuery implements BigQuery {
     /** Thrown by the query overload used by CDC provisioning when set. */
     @Nullable public BigQueryException queryFailure;
 
+    /** The job ids the query overload used by CDC provisioning was called with, in order. */
+    public final List<JobId> queryJobIds = new ArrayList<>();
+
     /**
      * The configuration a minted job reports, instead of the one it was submitted with.
      *
@@ -832,6 +835,7 @@ public final class StubBigQuery implements BigQuery {
     @Override
     public TableResult query(
             QueryJobConfiguration configuration, JobId jobId, JobOption... options) {
+        queryJobIds.add(jobId);
         if (queryFailure != null) {
             throw queryFailure;
         }

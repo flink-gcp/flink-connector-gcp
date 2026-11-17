@@ -17,9 +17,11 @@ limitations under the License.
 # ADR-0112: BigQuery CDC auto-creation combines the Tables API with verified DDL
 
 - Status: Accepted
-- Date: 2026-08-14; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200)
+- Date: 2026-08-14; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200);
+  revised by [#2178](https://github.com/flink-gcp/flink-connector-gcp/issues/2178) (2026-11-18: job project, ADR-0206)
 - Issues: [#65](https://github.com/flink-gcp/flink-connector-gcp/issues/65),
-  [#627](https://github.com/flink-gcp/flink-connector-gcp/issues/627), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071)
+  [#627](https://github.com/flink-gcp/flink-connector-gcp/issues/627), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071),
+  [#2178](https://github.com/flink-gcp/flink-connector-gcp/issues/2178)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#change-data-capture`,
   `docs/content/docs/connectors/table/bigquery.md#change-data-capture`
@@ -114,7 +116,8 @@ The sink follows this protocol for a missing CDC table:
 
 The DDL interval is rendered from a validated positive, exact microsecond count rather than from user text.
 The table name is backtick-quoted from the structured destination, and the `INFORMATION_SCHEMA` query binds the table name as a parameter.
-The job uses the destination project and the configured sink location when present.
+The job uses the configured sink location when present, and runs in the sink's `parentProject` when
+one is set ([#2178]({L}), ADR-0206), otherwise in the destination project.
 
 The provisioning label provides recovery and ownership boundaries.
 A label value is `pending_` or `complete_` followed by the first 128 bits of a SHA-256 digest rendered as hexadecimal.

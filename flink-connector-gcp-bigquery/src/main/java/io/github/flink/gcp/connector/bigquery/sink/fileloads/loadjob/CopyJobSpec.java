@@ -35,6 +35,7 @@ public final class CopyJobSpec {
     private final JobInfo.WriteDisposition writeDisposition;
     @Nullable private final String equivalentJobId;
     @Nullable private final String kmsKeyName;
+    @Nullable private final String jobProject;
 
     CopyJobSpec(
             List<TableDestination> sourceTables,
@@ -50,7 +51,14 @@ public final class CopyJobSpec {
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition,
             @Nullable String equivalentJobId) {
-        this(sourceTables, destination, createDisposition, writeDisposition, equivalentJobId, null);
+        this(
+                sourceTables,
+                destination,
+                createDisposition,
+                writeDisposition,
+                equivalentJobId,
+                null,
+                null);
     }
 
     private CopyJobSpec(
@@ -59,13 +67,15 @@ public final class CopyJobSpec {
             JobInfo.CreateDisposition createDisposition,
             JobInfo.WriteDisposition writeDisposition,
             @Nullable String equivalentJobId,
-            @Nullable String kmsKeyName) {
+            @Nullable String kmsKeyName,
+            @Nullable String jobProject) {
         this.sourceTables = List.copyOf(sourceTables);
         this.destination = destination;
         this.createDisposition = createDisposition;
         this.writeDisposition = writeDisposition;
         this.equivalentJobId = equivalentJobId;
         this.kmsKeyName = kmsKeyName;
+        this.jobProject = jobProject;
     }
 
     /**
@@ -81,7 +91,25 @@ public final class CopyJobSpec {
                 createDisposition,
                 writeDisposition,
                 equivalentJobId,
-                kmsKeyName);
+                kmsKeyName,
+                jobProject);
+    }
+
+    /**
+     * Returns this spec running the job in {@code jobProject}.
+     *
+     * @param jobProject the project, or {@code null} for the client's own project
+     * @return the spec
+     */
+    CopyJobSpec withJobProject(@Nullable String jobProject) {
+        return new CopyJobSpec(
+                sourceTables,
+                destination,
+                createDisposition,
+                writeDisposition,
+                equivalentJobId,
+                kmsKeyName,
+                jobProject);
     }
 
     /** Returns the temporary tables to copy from. */
@@ -129,6 +157,15 @@ public final class CopyJobSpec {
         return kmsKeyName;
     }
 
+    /**
+     * Returns the project the job runs in and is looked up under, or {@code null} for the client's
+     * own project.
+     */
+    @Nullable
+    public String getJobProject() {
+        return jobProject;
+    }
+
     @Override
     public String toString() {
         return "CopyJobSpec{sourceTables="
@@ -141,6 +178,7 @@ public final class CopyJobSpec {
                 + writeDisposition
                 + (equivalentJobId != null ? ", equivalentJobId=" + equivalentJobId : "")
                 + (kmsKeyName != null ? ", kmsKeyName=" + kmsKeyName : "")
+                + (jobProject != null ? ", jobProject=" + jobProject : "")
                 + "}";
     }
 }

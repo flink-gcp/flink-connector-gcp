@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.CopyJobConfiguration;
 import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FormatOptions;
+import com.google.cloud.bigquery.JobId;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.JobStatus;
 import com.google.cloud.bigquery.LoadJobConfiguration;
@@ -54,6 +55,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.groups.Tuple.tuple;
 
 /**
  * Tests for {@link BigQueryLoadJobRunner} against a scripted {@link StubBigQuery}.
@@ -71,6 +73,7 @@ class BigQueryLoadJobRunnerTest {
 
     private static final String JOB_ID = "bq-1";
     private static final String LOCATION = "asia-northeast1";
+    private static final String JOB_PROJECT = "jobs-project";
 
     private static final TableDestination DESTINATION = TableDestination.of("p", "d", "t");
     private static final TableDestination TEMP = TableDestination.of("p", "d", "t_tmp");
@@ -812,6 +815,89 @@ class BigQueryLoadJobRunnerTest {
         assertThat(client.created)
                 .singleElement()
                 .returns("europe-west1", info -> info.getJobId().getLocation());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // job project (#2178)
+    // ---------------------------------------------------------------------------------------
+
+    @Test
+    void everyLookupAndCreationOfALoadNamesTheJobProject() throws Exception {
+        // A failed previous attempt makes the runner probe past it, so a look-up of the base id, a
+        // look-up of the retry id and the creation under it are all covered: a creation and a
+        // look-up that named different projects would never find each other.
+        client.answering(JobAnswer.withStatus(failed("refused")), JobAnswer.absent());
+
+        runner().submitLoad(JOB_ID, loadSpec(List.of()).withJobProject(JOB_PROJECT));
+
+        assertThat(client.getJobCalls)
+                .extracting(JobId::getProject)
+                .containsExactly(JOB_PROJECT, JOB_PROJECT);
+        assertThat(client.created)
+                .singleElement()
+                .returns(JOB_PROJECT, info -> info.getJobId().getProject())
+                .returns(JOB_ID + "-r1", info -> info.getJobId().getJob());
+    }
+
+    @Test
+    void aCopyLooksForItsEquivalentAndItselfInTheJobProject() throws Exception {
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+
+        runner().submitCopy(
+                        JOB_ID, equivalentCopySpec("bq-equivalent").withJobProject(JOB_PROJECT));
+
+        assertThat(client.getJobCalls)
+                .extracting(JobId::getJob, JobId::getProject)
+                .containsExactly(tuple("bq-equivalent", JOB_PROJECT), tuple(JOB_ID, JOB_PROJECT));
+        assertThat(client.created)
+                .singleElement()
+                .returns(JOB_PROJECT, info -> info.getJobId().getProject());
+    }
+
+    @Test
+    void aTerminalQueryRunsInTheJobProject() throws Exception {
+        client.answering(JobAnswer.absent());
+
+        runner().submitQuery(
+                        JOB_ID,
+                        new QueryJobSpec(TEMP, DESTINATION, List.of()).withJobProject(JOB_PROJECT));
+
+        assertThat(client.getJobCalls).extracting(JobId::getProject).containsExactly(JOB_PROJECT);
+        assertThat(client.created)
+                .singleElement()
+                .returns(JOB_PROJECT, info -> info.getJobId().getProject());
+    }
+
+    @Test
+    void whetherACopySucceededIsAskedInTheJobProject() throws Exception {
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+
+        assertThat(
+                        runner().copySucceeded(
+                                        JOB_ID,
+                                        equivalentCopySpec("bq-equivalent")
+                                                .withJobProject(JOB_PROJECT)))
+                .isFalse();
+
+        assertThat(client.getJobCalls)
+                .extracting(JobId::getJob, JobId::getProject)
+                .containsExactly(tuple(JOB_ID, JOB_PROJECT), tuple("bq-equivalent", JOB_PROJECT));
+    }
+
+    @Test
+    void aSpecWithoutAJobProjectLeavesEveryIdToTheClientsProject() throws Exception {
+        // The SDK fills a project-less id from the client's options, which is how every job ran
+        // before the option existed; naming one here would move jobs that no setting moved.
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+        BigQueryLoadJobRunner runner = runner();
+
+        runner.submitLoad(JOB_ID, loadSpec(List.of()));
+        runner.submitQuery("bq-2", new QueryJobSpec(TEMP, DESTINATION, List.of()));
+
+        assertThat(client.getJobCalls).extracting(JobId::getProject).containsOnlyNulls();
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getProject())
+                .containsOnlyNulls();
     }
 
     @Test

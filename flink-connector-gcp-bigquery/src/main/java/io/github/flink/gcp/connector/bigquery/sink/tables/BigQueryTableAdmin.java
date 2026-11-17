@@ -115,11 +115,13 @@ public class BigQueryTableAdmin implements TableAdmin {
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final String location;
+    @Nullable private final String jobProject;
+    private final BigQueryCdcTableService cdcService;
     private final CdcTableProvisioner cdcTableProvisioner;
 
     /** Creates an admin using application-default credentials. */
     public BigQueryTableAdmin() {
-        this(null, null, null);
+        this(null, null, null, null);
     }
 
     /**
@@ -130,25 +132,62 @@ public class BigQueryTableAdmin implements TableAdmin {
      * @param emulatorEndpoint the emulator's REST endpoint as {@code host:port}, or {@code null}
      */
     public BigQueryTableAdmin(@Nullable EmulatorEndpoint emulatorEndpoint) {
-        this(null, emulatorEndpoint, null);
+        this(null, emulatorEndpoint, null, null);
     }
 
     /** Creates an admin with optional runtime-loaded production credentials. */
     public BigQueryTableAdmin(
             @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint) {
-        this(serviceAccountKeyFile, emulatorEndpoint, null);
+        this(serviceAccountKeyFile, emulatorEndpoint, null, null);
     }
 
-    /** Creates an admin with optional credentials, emulator endpoint, and query-job location. */
+    /**
+     * Creates an admin with optional credentials, emulator endpoint, query-job location, and
+     * query-job project.
+     *
+     * @param serviceAccountKeyFile the configured key-file path, or {@code null} for ADC
+     * @param emulatorEndpoint the emulator's REST endpoint, or {@code null} for the service
+     * @param location the location the CDC statements run in, or {@code null} to let the service
+     *     infer it
+     * @param jobProject the project the CDC statements run in and are billed to, or {@code null}
+     *     for each destination's own project
+     */
     public BigQueryTableAdmin(
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
-            @Nullable String location) {
+            @Nullable String location,
+            @Nullable String jobProject) {
+        this(null, serviceAccountKeyFile, emulatorEndpoint, location, jobProject);
+    }
+
+    /**
+     * Creates an admin using the given client.
+     *
+     * @param client the BigQuery REST client
+     */
+    public BigQueryTableAdmin(BigQuery client) {
+        this(client, null, null, null, null);
+    }
+
+    /** Creates an admin using the given client whose CDC statements run in {@code jobProject}. */
+    @VisibleForTesting
+    BigQueryTableAdmin(BigQuery client, @Nullable String jobProject) {
+        this(client, null, null, null, jobProject);
+    }
+
+    private BigQueryTableAdmin(
+            @Nullable BigQuery client,
+            @Nullable String serviceAccountKeyFile,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable String location,
+            @Nullable String jobProject) {
+        this.client = client;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.emulatorEndpoint = emulatorEndpoint;
         this.location = location;
-        this.cdcTableProvisioner =
-                new CdcTableProvisioner(new BigQueryCdcTableService(this::client, this.location));
+        this.jobProject = jobProject;
+        this.cdcService = new BigQueryCdcTableService(this::client, location, jobProject);
+        this.cdcTableProvisioner = new CdcTableProvisioner(cdcService);
     }
 
     /** Returns the configured key-file path, or {@code null} for ADC. */
@@ -165,18 +204,17 @@ public class BigQueryTableAdmin implements TableAdmin {
         return client;
     }
 
-    /**
-     * Creates an admin using the given client.
-     *
-     * @param client the BigQuery REST client
-     */
-    public BigQueryTableAdmin(BigQuery client) {
-        this.client = client;
-        this.serviceAccountKeyFile = null;
-        this.emulatorEndpoint = null;
-        this.location = null;
-        this.cdcTableProvisioner =
-                new CdcTableProvisioner(new BigQueryCdcTableService(this::client, this.location));
+    /** Returns the project the CDC statements run in, or {@code null} for each destination's. */
+    @VisibleForTesting
+    @Nullable
+    public String getJobProject() {
+        return jobProject;
+    }
+
+    /** Returns the CDC half this admin provisions CDC tables through. */
+    @VisibleForTesting
+    BigQueryCdcTableService cdcService() {
+        return cdcService;
     }
 
     @Override

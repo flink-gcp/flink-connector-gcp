@@ -333,6 +333,20 @@ public final class BigQueryConnectorOptions {
                                     + " location load jobs run in.");
 
     /**
+     * The project the sink's BigQuery jobs run in and are billed to: FILE_LOADS load, copy and
+     * query jobs, and CDC maximum-staleness statements. Storage Write API writes create no jobs.
+     */
+    public static final ConfigOption<String> SINK_PARENT_PROJECT =
+            ConfigOptions.key("sink.parent-project")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The project the sink's BigQuery jobs run in and are billed to:"
+                                    + " FILE_LOADS load, copy and query jobs, and CDC"
+                                    + " maximum-staleness statements. Storage Write API writes"
+                                    + " create no jobs.");
+
+    /**
      * Whether the default-stream sink writes the table changelog as BigQuery CDC UPSERT and DELETE
      * mutations. Requires a declared primary key, a sequence metadata column and
      * storage-api-at-least-once. With create-if-needed, the sink creates and verifies the CDC table

@@ -557,7 +557,10 @@ public final class FileLoadsWriter<T>
      * Records a finalization result on the task thread, preserving metric and committable order.
      */
     private void recordFinishedFile(FileLoadsCommittable committable) {
-        finishedFiles.add(committable);
+        // Stamped here, the one point every finished file passes, rather than by each format's
+        // writer: the project is the run's, not the file's (see
+        // FileLoadsCommittable#getJobProject).
+        finishedFiles.add(committable.withJobProject(config.getParentProject()));
         metrics.fileFinished(committable.getByteCount());
     }
 

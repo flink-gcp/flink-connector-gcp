@@ -40,6 +40,8 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.TableAdmin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -160,8 +162,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
             return;
         }
         // The framework commits one checkpoint at a time, so every committable of a call shares
-        // one (possibly null) checkpoint id and one originating Flink job id; a mix would break
-        // the per-checkpoint job-id attribution, so it fails loudly instead of being split up.
+        // one (possibly null) checkpoint id and one originating Flink job id, and so one run's job
+        // project; a mix would break the per-checkpoint job-id attribution, or look for previous
+        // attempts' jobs in two projects, so it fails loudly instead of being split up.
         List<FileLoadsCommittable> committables = new ArrayList<>(requests.size());
         for (CommitRequest<FileLoadsCommittable> request : requests) {
             committables.add(request.getCommittable());
@@ -170,8 +173,9 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         for (FileLoadsCommittable committable : committables) {
             Preconditions.checkState(
                     Objects.equals(committable.getCheckpointId(), first.getCheckpointId())
-                            && committable.getFlinkJobId().equals(first.getFlinkJobId()),
-                    "A commit batch mixes checkpoints or Flink job ids: %s vs %s",
+                            && committable.getFlinkJobId().equals(first.getFlinkJobId())
+                            && Objects.equals(committable.getJobProject(), first.getJobProject()),
+                    "A commit batch mixes checkpoints, Flink job ids or job projects: %s vs %s",
                     first,
                     committable);
         }
@@ -187,10 +191,29 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                         storage,
                         first.getFlinkJobId(),
                         checkpointId,
+                        jobProject(first.getJobProject()),
                         metrics.loadJobsSubmitted(),
                         destinationExecutor)
                 .run(committables);
         // Requests left unsignaled are treated as committed.
+    }
+
+    /**
+     * The project this commit's jobs run in and are looked up under, or {@code null} for the job
+     * client's own project.
+     *
+     * <p>The committables' own project when they carry one: a job that a previous attempt at this
+     * commit created is there, whatever this run configures. Committables that carry none, written
+     * while {@code parentProject} was unset or by a version without it, commit where this run's
+     * configuration says. A job that sets the option to the project its jobs already ran in
+     * therefore finds them (#2178).
+     *
+     * @param stagedJobProject the project the committables carry, or {@code null}
+     * @return the project, or {@code null} for the client's own
+     */
+    @Nullable
+    private String jobProject(@Nullable String stagedJobProject) {
+        return stagedJobProject != null ? stagedJobProject : config.getParentProject();
     }
 
     /**
@@ -221,11 +244,7 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
             BigQuerySinkConfig<?> config, FileLoadsOptions options) {
         BigQueryLoadJobRunner.SharedJobs sharedJobs = new BigQueryLoadJobRunner.SharedJobs();
         return () -> {
-            BigQuery client =
-                    config.getServiceAccountKeyFile() == null
-                            ? BigQueryOptions.getDefaultInstance().getService()
-                            : BigQueryCredentials.bigQueryOptions(config.getServiceAccountKeyFile())
-                                    .getService();
+            BigQuery client = jobClient(config);
             LoadJobRunner runner =
                     new BigQueryLoadJobRunner(
                             client,
@@ -241,6 +260,39 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
                             new BigQueryTableAdmin(client), options.toSchemaReconcileSchedule());
             return new DestinationCommitExecutor.Worker(runner, tableAdmin);
         };
+    }
+
+    /**
+     * Builds the client every FILE_LOADS job is created and looked up through.
+     *
+     * <p>With {@code parentProject} the client takes that project, so it never needs the
+     * environment to name one; every job id of such a sink names its project anyway (see {@link
+     * #jobProject}). Without it the client takes the project the client library resolves, where
+     * every commit whose committables record no project runs its jobs, as before the option
+     * existed.
+     */
+    private static BigQuery jobClient(BigQuerySinkConfig<?> config) throws IOException {
+        String parentProject = config.getParentProject();
+        if (parentProject != null) {
+            return BigQueryTableAdmin.restClient(
+                    config.getServiceAccountKeyFile(), null, parentProject);
+        }
+        try {
+            return config.getServiceAccountKeyFile() == null
+                    ? BigQueryOptions.getDefaultInstance().getService()
+                    : BigQueryCredentials.bigQueryOptions(config.getServiceAccountKeyFile())
+                            .getService();
+        } catch (IllegalArgumentException failure) {
+            // The client library's own message says to set a project on its builder, which a sink
+            // user has no access to; this one names what they can set.
+            throw new IllegalArgumentException(
+                    "Could not build the BigQuery client that FILE_LOADS creates its jobs through."
+                            + " Without parentProject(...) ('sink.parent-project' in SQL) it takes"
+                            + " the project the client library resolves, and none was found: set"
+                            + " parentProject(...), or give the environment a default project,"
+                            + " such as GOOGLE_CLOUD_PROJECT.",
+                    failure);
+        }
     }
 
     /**

@@ -164,7 +164,8 @@ public class BigQueryDefaultStreamSink<T> implements CrossVersionSink<T>, BigQue
                 new BigQueryTableAdmin(
                         config.getServiceAccountKeyFile(),
                         config.getEmulatorRestEndpoint(),
-                        config.getLocation()),
+                        config.getLocation(),
+                        config.getParentProject()),
                 options.toRecoverySchedule());
     }
 
