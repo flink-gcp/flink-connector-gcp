@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob;
 
+import com.google.cloud.bigquery.BigQuery;
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.PrimaryKey;
@@ -26,6 +27,7 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.retry.RetrySchedule;
 import io.github.flink.gcp.connector.bigquery.RealTables;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
+import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
@@ -71,6 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BigQueryLoadJobRunnerRealGcpITCase {
 
     private static final String TABLE = "load_reattach_" + TestNames.runId();
+    private static final String JOB_PROJECT_TABLE = "load_job_project_" + TestNames.runId();
     private static final String QUERY_SOURCE = "truncate_data_source_" + TestNames.runId();
     private static final String QUERY_DESTINATION =
             "truncate_data_destination_" + TestNames.runId();
@@ -87,12 +90,14 @@ class BigQueryLoadJobRunnerRealGcpITCase {
                 () ->
                         RealBigQuery.deleteTables(
                                 TABLE,
+                                JOB_PROJECT_TABLE,
                                 QUERY_SOURCE,
                                 QUERY_DESTINATION,
                                 COPY_SOURCE_A,
                                 COPY_SOURCE_B,
                                 COPY_DESTINATION),
-                () -> RealGcs.deletePrefix(TABLE + "/"));
+                () -> RealGcs.deletePrefix(TABLE + "/"),
+                () -> RealGcs.deletePrefix(JOB_PROJECT_TABLE + "/"));
     }
 
     @Test
@@ -129,6 +134,51 @@ class BigQueryLoadJobRunnerRealGcpITCase {
         // doubled the rows.
         assertThat(RealBigQuery.queryLongs("SELECT COUNT(*) FROM " + RealBigQuery.tablePath(TABLE)))
                 .containsExactly(1L);
+    }
+
+    @Test
+    void reAttachesInTheJobProjectWhateverTheClientsOwnProjectIs() throws Exception {
+        // The clients' own project does not exist, so a creation or look-up that left its project
+        // to the client would fail there; the load runs and re-attaches only because every job id
+        // names the job project (#2178).
+        String path = JOB_PROJECT_TABLE + "/rows.avro";
+        RealGcs.upload(path, oneRowAvroFile());
+        TableDestination destination = RealTables.destination(JOB_PROJECT_TABLE);
+        LoadJobSpec spec =
+                new LoadJobSpec(
+                                destination,
+                                List.of(RealGcs.uri(path)),
+                                Schema.of(Field.of("f1", StandardSQLTypeName.STRING)),
+                                JobInfo.CreateDisposition.CREATE_IF_NEEDED,
+                                JobInfo.WriteDisposition.WRITE_APPEND,
+                                List.of(),
+                                StagingFormat.AVRO)
+                        .withJobProject(destination.getProject());
+        String jobId = "flink-bq-load-job-project-it-" + JOB_PROJECT_TABLE;
+
+        BigQueryLoadJobRunner first =
+                new BigQueryLoadJobRunner(clientOfAnAbsentProject(), null, POLL);
+        first.submitLoad(jobId, spec);
+        first.awaitJob(jobId);
+        BigQueryLoadJobRunner second =
+                new BigQueryLoadJobRunner(clientOfAnAbsentProject(), null, POLL);
+        second.submitLoad(jobId, spec);
+        second.awaitJob(jobId);
+
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT COUNT(*) FROM "
+                                        + RealBigQuery.tablePath(JOB_PROJECT_TABLE)))
+                .containsExactly(1L);
+    }
+
+    /** A client on application-default credentials whose own project does not exist. */
+    private static BigQuery clientOfAnAbsentProject() throws IOException {
+        BigQuery client = BigQueryTableAdmin.restClient(null, null, "flink-gcp-absent-2178");
+        // What makes the case discriminate: were the client on the environment's project, which is
+        // the destination's here, it would pass without any job id naming one.
+        assertThat(client.getOptions().getProjectId()).isEqualTo("flink-gcp-absent-2178");
+        return client;
     }
 
     @Test

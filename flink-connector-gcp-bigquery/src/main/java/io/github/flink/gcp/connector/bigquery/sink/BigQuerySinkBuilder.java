@@ -68,6 +68,7 @@ public class BigQuerySinkBuilder<T> {
     private SchemaUpdateOptions schemaUpdateOptions = SchemaUpdateOptions.defaults();
     private FailureHandler<? super BigQueryFailure> failureHandler = FailureHandler.failJob();
     private String location;
+    private String parentProject;
     private FileLoadsOptions fileLoadsOptions;
     private BufferedStreamOptions bufferedStreamOptions;
     private DefaultStreamOptions defaultStreamOptions;
@@ -335,6 +336,37 @@ public class BigQuerySinkBuilder<T> {
     }
 
     /**
+     * Sets the project every BigQuery job the sink creates runs in and is billed to: the load, copy
+     * and terminal query jobs of {@link WriteMethod#FILE_LOADS}, and the GoogleSQL statements that
+     * manage a CDC table's maximum staleness. Those jobs count against this project's quotas, run
+     * on a reservation assigned to it when one covers their job type, and need {@code
+     * bigquery.jobs.create} on it. The destination tables, their storage and the temporary tables
+     * stay in their own projects.
+     *
+     * <p>Optional. When unset, {@code FILE_LOADS} runs its jobs in the project the client library
+     * resolves: the key file's own project with {@link #serviceAccountKeyFile(String)}, otherwise
+     * the environment's default ({@code GOOGLE_CLOUD_PROJECT} first, then the metadata server where
+     * one answers, then the application-default credentials file or the gcloud configuration). CDC
+     * runs its statements in each destination's project. Storage Write API writes create no jobs,
+     * so the project has no effect on them.
+     *
+     * <p>A {@code FILE_LOADS} committable records this project, and a commit restored from a
+     * checkpoint looks for its previous attempt's jobs in the recorded one. State that records
+     * none, written while the option was unset or by a version without it, commits in the project
+     * configured now: when setting the option on a running job, name the project its jobs have run
+     * in so far. Change it only when restoring from a checkpoint or savepoint taken after it was
+     * set, whose committables record it; older state restored under another project looks for its
+     * jobs in the wrong one.
+     *
+     * @param parentProject the Google Cloud project id
+     * @return this builder
+     */
+    public BigQuerySinkBuilder<T> parentProject(String parentProject) {
+        this.parentProject = ResourceNames.checkComponent(parentProject, "parentProject");
+        return this;
+    }
+
+    /**
      * Sets the options specific to {@link WriteMethod#FILE_LOADS}. Required for that write method
      * and rejected for every other one.
      *
@@ -477,6 +509,7 @@ public class BigQuerySinkBuilder<T> {
                         schemaUpdateOptions,
                         failureHandler,
                         location,
+                        parentProject,
                         serviceAccountKeyFile,
                         emulatorEndpoint,
                         emulatorRestEndpoint);

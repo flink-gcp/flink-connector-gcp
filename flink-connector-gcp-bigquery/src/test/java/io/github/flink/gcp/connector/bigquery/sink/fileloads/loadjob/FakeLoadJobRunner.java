@@ -90,9 +90,13 @@ public final class FakeLoadJobRunner implements LoadJobRunner {
      */
     public final Set<String> copiesThatSucceeded = new HashSet<>();
 
+    /** The specs {@link #copySucceeded} was asked about, in order. */
+    public final List<CopyJobSpec> copySucceededQueries = new ArrayList<>();
+
     @Override
     public boolean copySucceeded(String jobId, CopyJobSpec spec) {
         events.add("copy-succeeded?:" + jobId);
+        copySucceededQueries.add(spec);
         return copiesThatSucceeded.contains(jobId)
                 || (spec.getEquivalentJobId() != null
                         && copiesThatSucceeded.contains(spec.getEquivalentJobId()));

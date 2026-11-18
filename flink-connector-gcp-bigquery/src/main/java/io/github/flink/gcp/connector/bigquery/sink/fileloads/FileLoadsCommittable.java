@@ -26,8 +26,9 @@ import java.util.Objects;
 
 /**
  * One finalized staging file: the Flink job id of the run that staged it, its destination table,
- * its Cloud Storage URI, size counters used for load-job partitioning, and — in streaming execution
- * — the checkpoint that triggered it.
+ * its Cloud Storage URI, size counters used for load-job partitioning, the checkpoint that
+ * triggered it in streaming execution, and the project that run's BigQuery jobs run in when it
+ * configured one.
  *
  * <p>Load jobs reference exactly the URIs collected from committables — never a bucket prefix — so
  * objects orphaned by failed attempts can never leak into a load.
@@ -36,7 +37,8 @@ import java.util.Objects;
  * runtime at commit time) so that BigQuery job ids and temporary table names stay deterministic
  * when committer state is restored under a <em>new</em> Flink job id (a savepoint or retained
  * checkpoint resubmitted with {@code flink run -s}): the re-commit reproduces the original ids and
- * re-attaches instead of double-loading.
+ * re-attaches instead of double-loading. The job project travels for the same reason: a re-commit
+ * looks for the previous attempt's jobs in the project that created them (#2178).
  *
  * <p>The staging format travels here rather than being read from configuration at commit time,
  * because a committable recovered from state must be loaded as the format its file was actually
@@ -61,6 +63,7 @@ public final class FileLoadsCommittable {
     private final long rowCount;
     private final StagingFormat format;
     @Nullable private final Long checkpointId;
+    @Nullable private final String jobProject;
 
     /**
      * Creates a committable without a checkpoint id (as emitted by the writer).
@@ -78,7 +81,7 @@ public final class FileLoadsCommittable {
             long byteCount,
             long rowCount,
             StagingFormat format) {
-        this(flinkJobId, destination, uri, byteCount, rowCount, format, null);
+        this(flinkJobId, destination, uri, byteCount, rowCount, format, null, null);
     }
 
     /**
@@ -92,6 +95,8 @@ public final class FileLoadsCommittable {
      * @param format the format the file was written in
      * @param checkpointId the checkpoint that triggered this file, or {@code null} in batch
      *     execution
+     * @param jobProject the project the run that staged the file runs its BigQuery jobs in, or
+     *     {@code null} when that run configured none
      */
     public FileLoadsCommittable(
             String flinkJobId,
@@ -100,7 +105,8 @@ public final class FileLoadsCommittable {
             long byteCount,
             long rowCount,
             StagingFormat format,
-            @Nullable Long checkpointId) {
+            @Nullable Long checkpointId,
+            @Nullable String jobProject) {
         this.flinkJobId = flinkJobId;
         this.destination = destination;
         this.uri = uri;
@@ -108,12 +114,38 @@ public final class FileLoadsCommittable {
         this.rowCount = rowCount;
         this.format = format;
         this.checkpointId = checkpointId;
+        this.jobProject = jobProject;
     }
 
     /** Returns a copy of this committable stamped with the given checkpoint id. */
     public FileLoadsCommittable withCheckpointId(long checkpointId) {
         return new FileLoadsCommittable(
-                flinkJobId, destination, uri, byteCount, rowCount, format, checkpointId);
+                flinkJobId,
+                destination,
+                uri,
+                byteCount,
+                rowCount,
+                format,
+                checkpointId,
+                jobProject);
+    }
+
+    /**
+     * Returns a copy of this committable stamped with the project its run's BigQuery jobs run in.
+     *
+     * @param jobProject the project, or {@code null} when the run configures none
+     * @return the stamped committable
+     */
+    public FileLoadsCommittable withJobProject(@Nullable String jobProject) {
+        return new FileLoadsCommittable(
+                flinkJobId,
+                destination,
+                uri,
+                byteCount,
+                rowCount,
+                format,
+                checkpointId,
+                jobProject);
     }
 
     /** Returns the Flink job id (hex) of the run that staged the file. */
@@ -155,6 +187,21 @@ public final class FileLoadsCommittable {
         return checkpointId;
     }
 
+    /**
+     * Returns the project the run that staged the file runs its BigQuery jobs in, or {@code null}
+     * when that run configured none.
+     *
+     * <p>A commit looks for a previous attempt's jobs in this project, so it travels with the file
+     * rather than being read from configuration at commit time: a restored commit must look where
+     * the attempt that may already have run it created its jobs, whatever the restored job
+     * configures. A committable carrying none commits where the committing job's configuration
+     * says.
+     */
+    @Nullable
+    public String getJobProject() {
+        return jobProject;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -170,13 +217,21 @@ public final class FileLoadsCommittable {
                 && destination.equals(that.destination)
                 && uri.equals(that.uri)
                 && format == that.format
-                && Objects.equals(checkpointId, that.checkpointId);
+                && Objects.equals(checkpointId, that.checkpointId)
+                && Objects.equals(jobProject, that.jobProject);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(
-                flinkJobId, destination, uri, byteCount, rowCount, format, checkpointId);
+                flinkJobId,
+                destination,
+                uri,
+                byteCount,
+                rowCount,
+                format,
+                checkpointId,
+                jobProject);
     }
 
     @Override
@@ -195,6 +250,7 @@ public final class FileLoadsCommittable {
                 + format
                 + ", checkpointId="
                 + checkpointId
+                + (jobProject != null ? ", jobProject=" + jobProject : "")
                 + "}";
     }
 }

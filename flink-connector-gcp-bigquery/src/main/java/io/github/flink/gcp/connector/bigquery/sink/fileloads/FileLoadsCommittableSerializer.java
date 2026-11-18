@@ -38,12 +38,19 @@ import java.io.IOException;
  * construction — that was the only format then. Rejecting them would fail a restart for no reason.
  * (Version 1 predates #69 and never survived a job, which is why it is still rejected rather than
  * migrated.)
+ *
+ * <p>Version 4 added the project the committable's BigQuery jobs run in (#2178). Versions 2 and 3
+ * are migrated with none, as no run before it configured one; such a committable commits where the
+ * restored job's configuration says.
  */
 @Internal
 public final class FileLoadsCommittableSerializer
         implements SimpleVersionedSerializer<FileLoadsCommittable> {
 
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
+
+    /** The layout before the job project, whose committables all used the default project. */
+    private static final int VERSION_WITHOUT_JOB_PROJECT = 3;
 
     /** The layout before the staging format, whose committables are all Avro. */
     private static final int VERSION_WITHOUT_FORMAT = 2;
@@ -70,13 +77,20 @@ public final class FileLoadsCommittableSerializer
             if (checkpointId != null) {
                 out.writeLong(checkpointId);
             }
+            String jobProject = committable.getJobProject();
+            out.writeBoolean(jobProject != null);
+            if (jobProject != null) {
+                out.writeUTF(jobProject);
+            }
         }
         return bytes.toByteArray();
     }
 
     @Override
     public FileLoadsCommittable deserialize(int version, byte[] serialized) throws IOException {
-        if (version != VERSION && version != VERSION_WITHOUT_FORMAT) {
+        if (version != VERSION
+                && version != VERSION_WITHOUT_JOB_PROJECT
+                && version != VERSION_WITHOUT_FORMAT) {
             throw new IOException("Unknown committable version: " + version);
         }
         try (DataInputStream in = new DataInputStream(new ByteArrayInputStream(serialized))) {
@@ -88,10 +102,21 @@ public final class FileLoadsCommittableSerializer
             long rowCount = in.readLong();
             // Version 2 predates the format entirely, and everything it wrote was Avro.
             StagingFormat format =
-                    version == VERSION ? StagingFormat.valueOf(in.readUTF()) : StagingFormat.AVRO;
+                    version == VERSION_WITHOUT_FORMAT
+                            ? StagingFormat.AVRO
+                            : StagingFormat.valueOf(in.readUTF());
             Long checkpointId = in.readBoolean() ? in.readLong() : null;
+            // Versions 2 and 3 predate the job project, so no run then configured one.
+            String jobProject = version == VERSION && in.readBoolean() ? in.readUTF() : null;
             return new FileLoadsCommittable(
-                    flinkJobId, destination, uri, byteCount, rowCount, format, checkpointId);
+                    flinkJobId,
+                    destination,
+                    uri,
+                    byteCount,
+                    rowCount,
+                    format,
+                    checkpointId,
+                    jobProject);
         }
     }
 }

@@ -94,6 +94,14 @@ public final class LoadJobOrchestrator {
     @Nullable private final Long checkpointId;
     private final Counter loadJobsSubmitted;
     private final Limits limits;
+
+    /**
+     * The project every job of this commit runs in and is looked up under, or {@code null} for the
+     * runner client's own project. One value for the whole commit: its committables come from one
+     * run, which is what the committer checks before planning.
+     */
+    @Nullable private final String jobProject;
+
     private final Object userCallbackLock = new Object();
 
     /**
@@ -159,13 +167,27 @@ public final class LoadJobOrchestrator {
                         FileLoadsCommitterMetrics.unregistered(loadJobsSubmitted)));
     }
 
-    /** Creates an orchestrator over the committer-lifetime destination executor. */
+    /**
+     * Creates an orchestrator over the committer-lifetime destination executor.
+     *
+     * @param config the sink configuration
+     * @param options the FILE_LOADS options
+     * @param storage the staging storage (post-load cleanup)
+     * @param flinkJobId the Flink job id (hex), scoping temporary table names and job ids
+     * @param checkpointId the checkpoint whose files this run loads, or {@code null} for a batch
+     *     run
+     * @param jobProject the project every job runs in and is looked up under, or {@code null} for
+     *     the runner client's own project
+     * @param loadJobsSubmitted the committer's load-job counter
+     * @param executor the committer-lifetime destination executor
+     */
     public LoadJobOrchestrator(
             BigQuerySinkConfig<?> config,
             FileLoadsOptions options,
             StagingStorage storage,
             String flinkJobId,
             @Nullable Long checkpointId,
+            @Nullable String jobProject,
             Counter loadJobsSubmitted,
             DestinationCommitExecutor executor) {
         this(
@@ -174,6 +196,7 @@ public final class LoadJobOrchestrator {
                 storage,
                 flinkJobId,
                 checkpointId,
+                jobProject,
                 loadJobsSubmitted,
                 Limits.BIGQUERY,
                 executor);
@@ -189,6 +212,29 @@ public final class LoadJobOrchestrator {
             Counter loadJobsSubmitted,
             Limits limits,
             DestinationCommitExecutor executor) {
+        this(
+                config,
+                options,
+                storage,
+                flinkJobId,
+                checkpointId,
+                null,
+                loadJobsSubmitted,
+                limits,
+                executor);
+    }
+
+    private LoadJobOrchestrator(
+            BigQuerySinkConfig<?> config,
+            FileLoadsOptions options,
+            StagingStorage storage,
+            String flinkJobId,
+            @Nullable Long checkpointId,
+            @Nullable String jobProject,
+            Counter loadJobsSubmitted,
+            Limits limits,
+            DestinationCommitExecutor executor) {
+        this.jobProject = jobProject;
         this.planner = new CommitPlanner(config, options, flinkJobId, checkpointId, limits);
         this.config = config;
         this.options = options;
@@ -482,7 +528,8 @@ public final class LoadJobOrchestrator {
                 new DestinationCommitPlan.TempTables() {
                     @Override
                     public boolean copySucceeded(PlannedCopy copy) throws IOException {
-                        return runner.copySucceeded(copy.jobId, copy.spec);
+                        return runner.copySucceeded(
+                                copy.jobId, copy.spec.withJobProject(jobProject));
                     }
 
                     @Override
@@ -518,17 +565,20 @@ public final class LoadJobOrchestrator {
                                 load.schemaUpdateOptions,
                                 load.format,
                                 load.tempTableLayout)
-                        .withKmsKeyName(
-                                jobKmsKeyName(load.writeDisposition, destinationKmsKeyName)));
+                        .withKmsKeyName(jobKmsKeyName(load.writeDisposition, destinationKmsKeyName))
+                        .withJobProject(jobProject));
     }
 
-    private static void submitCopy(
+    private void submitCopy(
             LoadJobRunner runner, PlannedCopy copy, @Nullable String destinationKmsKeyName)
             throws IOException {
         runner.submitCopy(
                 copy.jobId,
-                copy.spec.withKmsKeyName(
-                        jobKmsKeyName(copy.spec.getWriteDisposition(), destinationKmsKeyName)));
+                copy.spec
+                        .withKmsKeyName(
+                                jobKmsKeyName(
+                                        copy.spec.getWriteDisposition(), destinationKmsKeyName))
+                        .withJobProject(jobProject));
     }
 
     /**
@@ -557,8 +607,8 @@ public final class LoadJobOrchestrator {
                 : null;
     }
 
-    private static void submitQuery(LoadJobRunner runner, PlannedQuery query) throws IOException {
-        runner.submitQuery(query.jobId, query.spec);
+    private void submitQuery(LoadJobRunner runner, PlannedQuery query) throws IOException {
+        runner.submitQuery(query.jobId, query.spec.withJobProject(jobProject));
     }
 
     private static void throwFailure(Throwable failure) throws IOException {

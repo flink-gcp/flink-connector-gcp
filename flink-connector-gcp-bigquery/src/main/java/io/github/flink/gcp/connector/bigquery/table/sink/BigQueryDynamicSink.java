@@ -101,6 +101,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
     @Nullable private final CdcTableOptions cdcTableOptions;
     @Nullable private final CdcTableReconciliationPolicy cdcTableReconciliationPolicy;
     @Nullable private final String location;
+    @Nullable private final String parentProject;
     @Nullable private final SchemaUpdateOptions schemaUpdateOptions;
     @Nullable private final DefaultStreamOptions defaultStreamOptions;
     @Nullable private final BufferedStreamOptions bufferedStreamOptions;
@@ -142,6 +143,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         this.cdcTableOptions = builder.cdcTableOptions;
         this.cdcTableReconciliationPolicy = builder.cdcTableReconciliationPolicy;
         this.location = builder.location;
+        this.parentProject = builder.parentProject;
         this.schemaUpdateOptions = builder.schemaUpdateOptions;
         this.defaultStreamOptions = builder.defaultStreamOptions;
         this.bufferedStreamOptions = builder.bufferedStreamOptions;
@@ -325,6 +327,10 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         }
         OptionSetters.accept(
                 BigQueryConnectorOptions.SINK_LOCATION.key(), location, builder::location);
+        OptionSetters.accept(
+                BigQueryConnectorOptions.SINK_PARENT_PROJECT.key(),
+                parentProject,
+                builder::parentProject);
         if (schemaUpdateOptions != null) {
             builder.schemaUpdateOptions(schemaUpdateOptions);
         }
@@ -370,6 +376,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 .cdcTableOptions(cdcTableOptions)
                 .cdcTableReconciliationPolicy(cdcTableReconciliationPolicy)
                 .location(location)
+                .parentProject(parentProject)
                 .schemaUpdateOptions(schemaUpdateOptions)
                 .defaultStreamOptions(defaultStreamOptions)
                 .bufferedStreamOptions(bufferedStreamOptions)
@@ -411,6 +418,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                 && Objects.equals(cdcTableOptions, that.cdcTableOptions)
                 && cdcTableReconciliationPolicy == that.cdcTableReconciliationPolicy
                 && Objects.equals(location, that.location)
+                && Objects.equals(parentProject, that.parentProject)
                 && Objects.equals(schemaUpdateOptions, that.schemaUpdateOptions)
                 && Objects.equals(defaultStreamOptions, that.defaultStreamOptions)
                 && Objects.equals(bufferedStreamOptions, that.bufferedStreamOptions)
@@ -440,6 +448,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
                         cdcTableOptions,
                         cdcTableReconciliationPolicy,
                         location,
+                        parentProject,
                         schemaUpdateOptions,
                         defaultStreamOptions,
                         bufferedStreamOptions,
@@ -479,6 +488,7 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
         @Nullable private CdcTableOptions cdcTableOptions;
         @Nullable private CdcTableReconciliationPolicy cdcTableReconciliationPolicy;
         @Nullable private String location;
+        @Nullable private String parentProject;
         @Nullable private SchemaUpdateOptions schemaUpdateOptions;
         @Nullable private DefaultStreamOptions defaultStreamOptions;
         @Nullable private BufferedStreamOptions bufferedStreamOptions;
@@ -610,6 +620,18 @@ public final class BigQueryDynamicSink implements DynamicTableSink, SupportsWrit
          */
         public Builder location(@Nullable String location) {
             this.location = location;
+            return this;
+        }
+
+        /**
+         * Sets the project the sink's BigQuery jobs run in, or {@code null} to leave it to the
+         * write method's default.
+         *
+         * @param parentProject the project, or {@code null}
+         * @return this builder
+         */
+        public Builder parentProject(@Nullable String parentProject) {
+            this.parentProject = parentProject;
             return this;
         }
 

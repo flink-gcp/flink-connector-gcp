@@ -18,6 +18,8 @@ package io.github.flink.gcp.connector.bigquery.sink.fileloads.committer;
 
 import org.apache.flink.api.connector.sink2.Committer.CommitRequest;
 
+import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.JobInfo;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
@@ -26,6 +28,7 @@ import com.google.protobuf.Descriptors;
 import com.google.protobuf.Empty;
 import io.github.flink.gcp.connector.bigquery.BigQueryMetricNames;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySink;
+import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkBuilder;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
@@ -174,15 +177,31 @@ class FileLoadsCommitterTest {
         }
 
         Harness(FileLoadsOptions options, DestinationCommitExecutor.WorkerFactory workerFactory) {
+            this(options, workerFactory, null);
+        }
+
+        static Harness withParentProject(String parentProject) {
+            return new Harness(
+                    FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build(),
+                    null,
+                    parentProject);
+        }
+
+        Harness(
+                FileLoadsOptions options,
+                DestinationCommitExecutor.WorkerFactory workerFactory,
+                String parentProject) {
+            BigQuerySinkBuilder<Object> builder =
+                    BigQuerySink.builder()
+                            .writeMethod(WriteMethod.FILE_LOADS)
+                            .table(T1)
+                            .serializer(new SchemaOnlySerializer())
+                            .fileLoadsOptions(options);
+            if (parentProject != null) {
+                builder.parentProject(parentProject);
+            }
             BigQuerySinkConfig<Object> config =
-                    ((BigQueryFileLoadsSink<Object>)
-                                    BigQuerySink.builder()
-                                            .writeMethod(WriteMethod.FILE_LOADS)
-                                            .table(T1)
-                                            .serializer(new SchemaOnlySerializer())
-                                            .fileLoadsOptions(options)
-                                            .build())
-                            .getConfig();
+                    ((BigQueryFileLoadsSink<Object>) builder.build()).getConfig();
             this.committer =
                     workerFactory == null
                             ? new FileLoadsCommitter(
@@ -399,6 +418,98 @@ class FileLoadsCommitterTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("mixes");
         assertThat(harness.runner.loads).isEmpty();
+    }
+
+    @Test
+    void aCommitRunsItsJobsInTheProjectItsCommittablesCarry() throws IOException {
+        // Restored state names the project its run used, and a previous attempt's jobs are only
+        // found there, whatever the restored job configures now.
+        Harness harness = Harness.withParentProject("configured-project");
+
+        harness.commit(file("a").withJobProject("staged-project"));
+
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .returns("staged-project", LoadJobSpec::getJobProject);
+    }
+
+    @Test
+    void committablesCarryingNoProjectRunWhereTheSinkIsConfigured() throws IOException {
+        // State written before parentProject existed carries none; a job adopting the option with
+        // the project its jobs already ran in finds them there.
+        Harness configured = Harness.withParentProject("configured-project");
+        configured.commit(file("a"));
+        assertThat(configured.runner.loads.values())
+                .singleElement()
+                .returns("configured-project", LoadJobSpec::getJobProject);
+
+        // And without the option, the client's own project, as before it existed.
+        Harness unconfigured = new Harness();
+        unconfigured.commit(file("a"));
+        assertThat(unconfigured.runner.loads.values())
+                .singleElement()
+                .returns(null, LoadJobSpec::getJobProject);
+    }
+
+    @Test
+    void aCommitBatchMixingJobProjectsIsRejected() {
+        Harness harness = new Harness();
+
+        assertThatThrownBy(() -> harness.commit(file("a").withJobProject("one"), file("b")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("job projects");
+        assertThat(harness.runner.loads).isEmpty();
+    }
+
+    @Test
+    void eachWorkersClientTakesTheConfiguredProjectAndTheKeyFile() throws IOException {
+        // The key file names test-project; the configured project wins over it, so the jobs never
+        // depend on what the environment or the credentials name, while the credentials stay the
+        // key file's own.
+        String keyFile = ServiceAccountKeyFiles.create(tempDir).toString();
+
+        BigQueryOptions configured = workerClientOptions(keyFile, "configured-project");
+        assertThat(configured.getProjectId()).isEqualTo("configured-project");
+        assertThat(configured.getCredentials())
+                .asInstanceOf(
+                        org.assertj.core.api.InstanceOfAssertFactories.type(
+                                ServiceAccountCredentials.class))
+                .extracting(ServiceAccountCredentials::getClientEmail)
+                .isEqualTo(ServiceAccountKeyFiles.CLIENT_EMAIL);
+
+        // Without the option, the key file's own project, as before the option existed.
+        assertThat(workerClientOptions(keyFile, null).getProjectId()).isEqualTo("test-project");
+    }
+
+    private static BigQueryOptions workerClientOptions(String keyFile, String parentProject)
+            throws IOException {
+        BigQuerySinkConfig<Object> config = fileLoadsConfig(keyFile, parentProject);
+        DestinationCommitExecutor.Worker worker =
+                FileLoadsCommitter.productionWorkerFactory(
+                                config,
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket/prefix")
+                                        .build())
+                        .create();
+        return ((BigQueryLoadJobRunner) worker.runner()).getClient().getOptions();
+    }
+
+    private static BigQuerySinkConfig<Object> fileLoadsConfig(
+            String serviceAccountKeyFile, String parentProject) {
+        BigQuerySinkBuilder<Object> builder =
+                BigQuerySink.builder()
+                        .writeMethod(WriteMethod.FILE_LOADS)
+                        .table(T1)
+                        .serializer(new SchemaOnlySerializer())
+                        .serviceAccountKeyFile(serviceAccountKeyFile)
+                        .fileLoadsOptions(
+                                FileLoadsOptions.builder()
+                                        .stagingPath("gs://bucket/prefix")
+                                        .build());
+        if (parentProject != null) {
+            builder.parentProject(parentProject);
+        }
+        return ((BigQueryFileLoadsSink<Object>) builder.build()).getConfig();
     }
 
     @Test

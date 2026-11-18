@@ -1241,6 +1241,20 @@ class BigQueryDynamicTableFactoryTest {
     }
 
     @Test
+    void theParentProjectReachesTheBuiltSinkUnderEveryWriteMethod() {
+        // Accepted where no job is created, too: there it has nothing to apply to, which the
+        // option's description says, rather than being a mistake to reject.
+        for (WriteMethod writeMethod : WriteMethod.values()) {
+            Map<String, String> options = optionsFor(writeMethod);
+            options.put("sink.parent-project", "jobs-project");
+
+            assertThat(configOf(built(options)).getParentProject())
+                    .as("parent project under %s", writeMethod)
+                    .isEqualTo("jobs-project");
+        }
+    }
+
+    @Test
     void serviceAccountKeyFileReachesTheBuiltSink() {
         for (WriteMethod writeMethod : WriteMethod.values()) {
             Map<String, String> options = optionsFor(writeMethod);
@@ -1551,6 +1565,17 @@ class BigQueryDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'sink.location' is invalid")
                 .hasMessageContaining("location must not be blank");
+    }
+
+    @Test
+    void namesTheOptionKeyWhenTheSinkParentProjectIsRejected() {
+        Map<String, String> options = minimalOptions();
+        options.put("sink.parent-project", "jobs/project");
+
+        assertThatThrownBy(() -> built(options))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'sink.parent-project' is invalid")
+                .hasMessageContaining("parentProject must not contain '/'");
     }
 
     /**

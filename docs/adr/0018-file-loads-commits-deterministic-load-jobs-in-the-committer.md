@@ -25,8 +25,8 @@ limitations under the License.
   writer lifecycle revised by [#1128] (2026-08-28); destination commit concurrency revised by
   [#1129] (2026-08-29); writer checkpoint finalization concurrency revised by [#1164]
   (2026-08-30); laid-out temporary tables revised by [#1671] (2026-10-09); staging upload revised
-  by [#2021] (2026-11-04)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021]
+  by [#2021] (2026-11-04); job project revised by [#2178] (2026-11-18, ADR-0206)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021], [#2178]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -48,9 +48,10 @@ limitations under the License.
   Draining the old format first was rejected — the writer cannot see what is in committer state —
   as was refusing the mix, which would wedge the restart that produced it.
   The job ids need no format segment: they already hash the source URI list, and the two formats'
-  files are distinct objects. The committable serializer is version 3 and **migrates** version 2 — the layout `main` has
+  files are distinct objects. The committable serializer **migrates** version 2 — the layout `main` has
   produced since [#69], all Avro by construction — where it still rejects version 1, which predates
-  [#69] and never survived a job.
+  [#69] and never survived a job. Version 3 added the format; version 4, current since [#2178], adds
+  the configured job project, and versions 2 and 3 migrate with none (ADR-0206).
 - **Load jobs run in the committer** behind a pre-commit topology (`SupportsPreCommitTopology`)
   whose trailing `.global()` routes every subtask's committables to committer subtask 0. The
   [#14] post-commit-topology design was replaced in [#69]: records emitted to a post-commit
@@ -347,4 +348,5 @@ are the ones this record's decisions rest on:
 [#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129
 [#1164]: https://github.com/flink-gcp/flink-connector-gcp/issues/1164
 [#2021]: https://github.com/flink-gcp/flink-connector-gcp/issues/2021
+[#2178]: https://github.com/flink-gcp/flink-connector-gcp/issues/2178
 [#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671

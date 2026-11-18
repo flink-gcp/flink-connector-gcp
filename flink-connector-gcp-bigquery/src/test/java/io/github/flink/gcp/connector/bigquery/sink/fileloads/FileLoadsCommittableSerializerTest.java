@@ -85,6 +85,84 @@ class FileLoadsCommittableSerializerTest {
     }
 
     @Test
+    void roundTripsTheJobProject() throws IOException {
+        FileLoadsCommittable committable =
+                new FileLoadsCommittable(
+                                "0123456789abcdef0123456789abcdef",
+                                TableDestination.of("p", "d", "t"),
+                                "gs://bucket/o.avro",
+                                1L,
+                                1L,
+                                StagingFormat.AVRO)
+                        .withCheckpointId(42L)
+                        .withJobProject("jobs-project");
+
+        FileLoadsCommittable copy =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(committable));
+
+        assertThat(copy).isEqualTo(committable);
+        assertThat(copy.getJobProject()).isEqualTo("jobs-project");
+        assertThat(copy.getCheckpointId()).isEqualTo(42L);
+        // The project is part of the committable's identity, not decoration.
+        assertThat(copy).isNotEqualTo(committable.withJobProject(null));
+
+        FileLoadsCommittable batch = committable.withCheckpointId(1L).withJobProject("other");
+        FileLoadsCommittable batchWithoutCheckpoint =
+                new FileLoadsCommittable(
+                                batch.getFlinkJobId(),
+                                batch.getDestination(),
+                                batch.getUri(),
+                                batch.getByteCount(),
+                                batch.getRowCount(),
+                                batch.getFormat())
+                        .withJobProject("other");
+        assertThat(
+                        serializer.deserialize(
+                                serializer.getVersion(),
+                                serializer.serialize(batchWithoutCheckpoint)))
+                .isEqualTo(batchWithoutCheckpoint)
+                .returns(null, FileLoadsCommittable::getCheckpointId)
+                .returns("other", FileLoadsCommittable::getJobProject);
+    }
+
+    @Test
+    void readsAVersionThreeCommittableWithoutAJobProject() throws IOException {
+        // Version 3 is what every release before #2178 wrote, so its committables are in committer
+        // state across the upgrade that adds the job project. No run then configured one, so the
+        // restored committable carries none and commits where the restored job is configured.
+        byte[] versionThree =
+                versionThreeBytes("gs://bucket/o.parquet", StagingFormat.PARQUET, 42L);
+
+        FileLoadsCommittable restored = serializer.deserialize(3, versionThree);
+
+        assertThat(serializer.getVersion()).isEqualTo(4);
+        assertThat(restored.getJobProject()).isNull();
+        assertThat(restored.getFormat()).isEqualTo(StagingFormat.PARQUET);
+        assertThat(restored.getCheckpointId()).isEqualTo(42L);
+    }
+
+    /** Writes the version-3 layout by hand, for the reason {@link #versionTwoBytes} gives. */
+    private static byte[] versionThreeBytes(String uri, StagingFormat format, Long checkpointId)
+            throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (java.io.DataOutputStream data = new java.io.DataOutputStream(out)) {
+            data.writeUTF("0123456789abcdef0123456789abcdef");
+            data.writeUTF("p");
+            data.writeUTF("d");
+            data.writeUTF("t");
+            data.writeUTF(uri);
+            data.writeLong(1L);
+            data.writeLong(1L);
+            data.writeUTF(format.name());
+            data.writeBoolean(checkpointId != null);
+            if (checkpointId != null) {
+                data.writeLong(checkpointId);
+            }
+        }
+        return out.toByteArray();
+    }
+
+    @Test
     void readsAVersionTwoCommittableAsAvro() throws IOException {
         // Version 2 is what main has produced since #69, so committables in that layout are in
         // committer state across the

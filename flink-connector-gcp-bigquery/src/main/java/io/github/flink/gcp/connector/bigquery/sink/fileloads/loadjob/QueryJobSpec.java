@@ -21,6 +21,8 @@ import org.apache.flink.annotation.Internal;
 import com.google.cloud.bigquery.JobInfo;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 
 /** Everything one terminal BigQuery query job needs, decoupled from the client for testability. */
@@ -30,14 +32,34 @@ public final class QueryJobSpec {
     private final TableDestination sourceTable;
     private final TableDestination destination;
     private final List<JobInfo.SchemaUpdateOption> schemaUpdateOptions;
+    @Nullable private final String jobProject;
 
     QueryJobSpec(
             TableDestination sourceTable,
             TableDestination destination,
             List<JobInfo.SchemaUpdateOption> schemaUpdateOptions) {
+        this(sourceTable, destination, schemaUpdateOptions, null);
+    }
+
+    private QueryJobSpec(
+            TableDestination sourceTable,
+            TableDestination destination,
+            List<JobInfo.SchemaUpdateOption> schemaUpdateOptions,
+            @Nullable String jobProject) {
         this.sourceTable = sourceTable;
         this.destination = destination;
         this.schemaUpdateOptions = List.copyOf(schemaUpdateOptions);
+        this.jobProject = jobProject;
+    }
+
+    /**
+     * Returns this spec running the job in {@code jobProject}.
+     *
+     * @param jobProject the project, or {@code null} for the client's own project
+     * @return the spec
+     */
+    QueryJobSpec withJobProject(@Nullable String jobProject) {
+        return new QueryJobSpec(sourceTable, destination, schemaUpdateOptions, jobProject);
     }
 
     /** Returns the aggregate temporary table the query reads. */
@@ -53,6 +75,15 @@ public final class QueryJobSpec {
     /** Returns the explicitly enabled schema update options, possibly empty. */
     public List<JobInfo.SchemaUpdateOption> getSchemaUpdateOptions() {
         return schemaUpdateOptions;
+    }
+
+    /**
+     * Returns the project the job runs in and is looked up under, or {@code null} for the client's
+     * own project.
+     */
+    @Nullable
+    public String getJobProject() {
+        return jobProject;
     }
 
     /** Returns the Standard SQL query that reads every column from the aggregate table. */
@@ -73,6 +104,7 @@ public final class QueryJobSpec {
                 + destination
                 + ", writeDisposition=WRITE_TRUNCATE_DATA, schemaUpdateOptions="
                 + schemaUpdateOptions
+                + (jobProject != null ? ", jobProject=" + jobProject : "")
                 + "}";
     }
 }

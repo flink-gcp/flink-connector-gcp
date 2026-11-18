@@ -118,10 +118,18 @@ class BigQueryCdcTableService implements CdcTableProvisioner.Service {
     /** The query-job location, which only the GoogleSQL half of the contract needs. */
     @Nullable private final String location;
 
-    BigQueryCdcTableService(ClientSupplier clientSupplier, @Nullable String location) {
+    /**
+     * The project the GoogleSQL statements run in and are billed to, or {@code null} for each
+     * destination's own project.
+     */
+    @Nullable private final String jobProject;
+
+    BigQueryCdcTableService(
+            ClientSupplier clientSupplier, @Nullable String location, @Nullable String jobProject) {
         this.clientSupplier =
                 Preconditions.checkNotNull(clientSupplier, "clientSupplier must not be null");
         this.location = location;
+        this.jobProject = jobProject;
     }
 
     private BigQuery client(TableDestination destination) throws IOException {
@@ -369,7 +377,9 @@ class BigQueryCdcTableService implements CdcTableProvisioner.Service {
     private TableResult runQuery(
             TableDestination destination, QueryJobConfiguration query, String operation)
             throws IOException {
-        JobId.Builder job = JobId.newBuilder().setProject(destination.getProject());
+        JobId.Builder job =
+                JobId.newBuilder()
+                        .setProject(jobProject != null ? jobProject : destination.getProject());
         if (location != null) {
             job.setLocation(location);
         }

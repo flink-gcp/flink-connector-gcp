@@ -1018,6 +1018,38 @@ class BigQuerySinkBuilderTest {
     }
 
     @Test
+    void carriesTheParentProjectAndChecksItAsAResourceNameComponent() throws Exception {
+        BigQueryDefaultStreamSink<String> unset =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .table(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .build();
+        assertThat(unset.getConfig().getParentProject()).isNull();
+
+        BigQueryDefaultStreamSink<String> set =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .table(DESTINATION)
+                                .serializer(new TestSerializer())
+                                .parentProject("jobs-project")
+                                .build();
+        assertThat(set.getConfig().getParentProject()).isEqualTo("jobs-project");
+        // Read on TaskManagers (the FILE_LOADS writer and committer, the CDC admin), so it has to
+        // survive the job graph's Java serialization.
+        assertThat(InstantiationUtil.clone(set).getConfig().getParentProject())
+                .isEqualTo("jobs-project");
+
+        // It becomes the project segment of every job id, so a '/' would address another path.
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().parentProject("jobs/project"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("parentProject must not contain '/'");
+        assertThatThrownBy(() -> BigQuerySink.<String>builder().parentProject(" "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("parentProject must not be blank");
+    }
+
+    @Test
     void carriesBothEmulatorEndpointsIntoTheSinkAndThroughSerialization() throws Exception {
         BigQueryDefaultStreamSink<String> sink =
                 (BigQueryDefaultStreamSink<String>)
