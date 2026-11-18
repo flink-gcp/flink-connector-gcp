@@ -424,6 +424,26 @@ Traversal state occupies heap space, and the UTF-8 budget still controls which c
 This does not guarantee arbitrary-depth SQL or Table API planning: Flink can fail while parsing or resolving an expression before it reaches the connector.
 The measured planning boundaries and normalization behavior are recorded in [ADR-0100]({{< param BookRepo >}}/blob/main/docs/adr/0100-the-bigquery-table-source-maps-ddl-rows-onto-the-bounded-source.md#predicate-depth).
 
+A table that requires a partition filter is read only when the source's restriction, the translated
+predicates and `scan.row-restriction` combined, constrains its partitioning column, alone or joined
+to other conditions with `AND`; joined to another column with `OR`, it is refused.
+A translated `WHERE` condition that bounds the column, such as `event_ts >= <timestamp>`, or the
+same condition in `scan.row-restriction`, satisfies it.
+Without one, the job fails when the source starts, with BigQuery's message, which names the column,
+as the cause.
+The source exposes neither `_PARTITIONTIME` nor `_PARTITIONDATE` (BigQuery defines the latter only
+for daily partitioning), so a table partitioned on ingestion time is read through
+`scan.row-restriction`.
+Rows the Storage Write API wrote recently can still have a NULL `_PARTITIONTIME`, and a restriction
+on the pseudocolumn alone leaves them out without an error: measured on 2026-11-17, a read
+restricted to a recent `_PARTITIONDATE` right after a default-stream write returned none of its two
+rows.
+The same read restricted to `_PARTITIONTIME` from two days earlier `OR _PARTITIONTIME IS NULL`
+returned both, so a restriction such as
+`_PARTITIONTIME >= TIMESTAMP '2026-11-01' OR _PARTITIONTIME IS NULL` keeps them; inside a `WITH`
+clause or an `OPTIONS` hint its quotes are doubled:
+`'_PARTITIONTIME >= TIMESTAMP ''2026-11-01'' OR _PARTITIONTIME IS NULL'`.
+
 For `scan.query`, the configured query text is never rewritten; both explicit and generated
 restrictions apply only when Storage Read reads the materialized result table.
 
@@ -907,7 +927,11 @@ Setting any of them beside an explicit `create-never` is rejected.
 `sink.table-create.require-partition-filter` makes BigQuery refuse a query on a created table that
 does not filter on its partitioning column, or on the `_PARTITIONTIME` pseudocolumn for a table
 partitioned on ingestion time.
-The sink's own writes need no such filter, under every write method.
+The sink's own writes need no such filter, under every write method, while this connector's
+source does, as [above](#source) describes.
+On ingestion-time partitioning, rows the Storage Write API methods wrote recently can still have a
+NULL `_PARTITIONTIME`, and a query or a read that should include them filters with
+`_PARTITIONTIME IS NULL` as well.
 An existing table keeps its own requirement.
 With `sink.cdc.enabled`, `'true'` is rejected when the table is planned: a query that has to merge
 a CDC table's unapplied upserts prunes no partitions, so BigQuery would refuse it even with a

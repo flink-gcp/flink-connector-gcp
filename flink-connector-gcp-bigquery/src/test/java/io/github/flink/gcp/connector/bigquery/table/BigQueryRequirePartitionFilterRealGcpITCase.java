@@ -30,6 +30,7 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
+import org.apache.flink.util.CollectionUtil;
 
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -45,9 +46,14 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import javax.annotation.Nullable;
+
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -57,7 +63,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * {@code sink.table-create.require-partition-filter} against real BigQuery (#2169): a table each
  * write method creates refuses a query without a partition filter, while the sink's own writes into
  * it succeed. A CDC table refuses even a filtered query, which is why CDC provisioning refuses the
- * requirement (#2175).
+ * requirement (#2175). The Storage Read API enforces the requirement as well, so the Table source
+ * reads such a table only through a restriction on its partitioning column or pseudocolumn, and an
+ * ingestion-time-partitioned table keeps the requirement too (#2183).
  *
  * <p>Real GCP because the emulator is not evidence for it: whether the service keeps the
  * requirement on the created table, and whether each write method's appends, loads and commits go
@@ -79,6 +87,9 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
     private static final String EXACTLY_ONCE = "partition_filter_it_eo_" + RUN_ID;
     private static final String APPEND = "partition_filter_it_append_" + RUN_ID;
     private static final String CDC = "partition_filter_it_cdc_" + RUN_ID;
+    private static final String READ = "partition_filter_it_read_" + RUN_ID;
+    private static final String INGESTION_READ = "partition_filter_it_ingestion_read_" + RUN_ID;
+    private static final String INGESTION = "partition_filter_it_ingestion_" + RUN_ID;
     private static final String STAGING_ROOT = "flink-partition-filter-it/" + RUN_ID;
 
     private static final String COLUMNS =
@@ -109,7 +120,10 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
                                 APPEND,
                                 truncating(WriteDisposition.WRITE_TRUNCATE),
                                 truncating(WriteDisposition.WRITE_TRUNCATE_DATA),
-                                CDC),
+                                CDC,
+                                READ,
+                                INGESTION_READ,
+                                INGESTION),
                 () -> RealGcs.deletePrefix(STAGING_ROOT));
     }
 
@@ -170,6 +184,15 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
      * of rows when one is given.
      */
     private static void assertRequiresAPartitionFilter(String table, long rows) throws Exception {
+        assertRequiresAPartitionFilter(table, RECENT_ROWS, rows);
+    }
+
+    /**
+     * Asserts that the table refuses a query without a partition filter and holds the given number
+     * of rows under the given filter.
+     */
+    private static void assertRequiresAPartitionFilter(String table, String filter, long rows)
+            throws Exception {
         // The description overload: .as() after assertThatThrownBy is never reached when nothing
         // is thrown, which is the failure this assertion exists to report.
         assertThatThrownBy(
@@ -181,11 +204,36 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
                 .hasMessageContaining("without a filter");
         assertThat(
                         RealBigQuery.queryLongs(
-                                "SELECT COUNT(*) FROM "
-                                        + RealBigQuery.tablePath(table)
-                                        + RECENT_ROWS))
-                .as(table)
+                                "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(table) + filter))
+                .as("%s%s", table, filter)
                 .containsExactly(rows);
+    }
+
+    /**
+     * Reads the table through the Table source, under the given {@code WHERE} condition, if any,
+     * and source options.
+     */
+    private static List<Row> read(
+            String table, String columns, @Nullable String where, String... options)
+            throws Exception {
+        TableEnvironment tEnv = batch();
+        tEnv.executeSql(
+                "CREATE TABLE src ("
+                        + columns
+                        + ") "
+                        + TableDdl.withOptions(
+                                RealBigQuery.project(), RealBigQuery.dataset(), table, options));
+        return CollectionUtil.iteratorToList(
+                tEnv.executeSql("SELECT * FROM src" + (where == null ? "" : " WHERE " + where))
+                        .collect());
+    }
+
+    /**
+     * A {@code scan.row-restriction} value, its quotes doubled because it sits in a quoted DDL
+     * option.
+     */
+    private static String[] rowRestriction(String restriction) {
+        return new String[] {"scan.row-restriction", restriction.replace("'", "''")};
     }
 
     @Test
@@ -246,6 +294,123 @@ class BigQueryRequirePartitionFilterRealGcpITCase {
                 disposition.toString());
 
         assertRequiresAPartitionFilter(table, 2);
+    }
+
+    /**
+     * The requirement on a table the sink creates with ingestion-time partitioning. Rows the
+     * Storage Write API wrote recently may still carry a NULL {@code _PARTITIONTIME}, measured on
+     * 2026-11-17 right after the write, so the filter that counts every row, in a query and in the
+     * Table source's row restriction alike, names that too; it satisfies the requirement. A read
+     * restricted on {@code _PARTITIONDATE} alone returned none of the two rows right after the
+     * write, which is why this case does not pin it: the count depends on when BigQuery moves them.
+     */
+    @Test
+    void aTableTheDefaultStreamCreatesWithIngestionTimePartitioningRequiresAPartitionFilter()
+            throws Exception {
+        TableEnvironment tEnv = streaming();
+        tEnv.executeSql(
+                "CREATE TABLE t (id BIGINT NOT NULL, name STRING) "
+                        + TableDdl.withOptions(
+                                RealBigQuery.project(),
+                                RealBigQuery.dataset(),
+                                INGESTION,
+                                "sink.table-create.time-partitioning.type",
+                                "day",
+                                "sink.table-create.require-partition-filter",
+                                "true"));
+        tEnv.executeSql("INSERT INTO t VALUES (1, 'a'), (2, 'b')").await();
+
+        String recent = "'" + LocalDate.now(ZoneOffset.UTC).minusDays(2) + "'";
+        assertRequiresAPartitionFilter(
+                INGESTION,
+                " WHERE _PARTITIONTIME >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 2 DAY)"
+                        + " OR _PARTITIONTIME IS NULL",
+                2);
+        assertThat(
+                        read(
+                                INGESTION,
+                                "id BIGINT NOT NULL, name STRING",
+                                null,
+                                rowRestriction(
+                                        "_PARTITIONTIME >= TIMESTAMP "
+                                                + recent
+                                                + " OR _PARTITIONTIME IS NULL")))
+                .as("%s read through the Table source", INGESTION)
+                .hasSize(2);
+    }
+
+    /**
+     * The Storage Read API refuses a read session on a table that requires a partition filter
+     * unless its row restriction constrains the partitioning column, so the Table source cannot
+     * start without a restriction on that column, nor with one on another column alone or joined to
+     * it with {@code OR}, and reads the table with one the source pushes down.
+     */
+    @Test
+    void theTableSourceReadsSuchATableOnlyThroughAFilterOnThePartitioningColumn() throws Exception {
+        String path = RealBigQuery.tablePath(READ);
+        RealBigQuery.queryRows(
+                "CREATE TABLE "
+                        + path
+                        + " (id INT64 NOT NULL, name STRING, event_ts TIMESTAMP)"
+                        + " PARTITION BY DATE(event_ts)"
+                        + " OPTIONS (require_partition_filter = TRUE)");
+        RealBigQuery.queryRows(
+                "INSERT INTO "
+                        + path
+                        + " VALUES (1, 'a', CURRENT_TIMESTAMP()), (2, 'b', CURRENT_TIMESTAMP())");
+        String recent =
+                "event_ts >= TO_TIMESTAMP_LTZ("
+                        + Instant.now().minus(Duration.ofDays(2)).toEpochMilli()
+                        + ", 3)";
+
+        assertThat(read(READ, COLUMNS, recent)).as("%s WHERE %s", READ, recent).hasSize(2);
+        // The other column's condition goes through scan.row-restriction, which reaches the
+        // service whether or not the source would translate it.
+        assertRefusedRead(READ, null, rowRestriction("id = 1"));
+        assertRefusedRead(READ, null);
+        assertRefusedRead(READ, recent + " OR id = 1");
+    }
+
+    private static void assertRefusedRead(String table, @Nullable String where, String... options) {
+        assertThatThrownBy(
+                        () -> read(table, COLUMNS, where, options),
+                        "the Table source refuses to read %s WHERE %s with %s",
+                        table,
+                        where,
+                        Arrays.toString(options))
+                .hasStackTraceContaining(
+                        "without a filter over column(s) 'event_ts' that can be used for"
+                                + " partition elimination");
+    }
+
+    /**
+     * An ingestion-time-partitioned table takes its filter on {@code _PARTITIONTIME} or {@code
+     * _PARTITIONDATE}, which the Table source does not expose as columns, so it is read through
+     * {@code scan.row-restriction}.
+     */
+    @Test
+    void anIngestionTimeTableIsReadThroughTheRowRestrictionOption() throws Exception {
+        String path = RealBigQuery.tablePath(INGESTION_READ);
+        RealBigQuery.queryRows(
+                "CREATE TABLE "
+                        + path
+                        + " (id INT64 NOT NULL, name STRING)"
+                        + " PARTITION BY _PARTITIONDATE"
+                        + " OPTIONS (require_partition_filter = TRUE)");
+        RealBigQuery.queryRows("INSERT INTO " + path + " (id, name) VALUES (1, 'a'), (2, 'b')");
+        String columns = "id BIGINT NOT NULL, name STRING";
+
+        assertThatThrownBy(
+                        () -> read(INGESTION_READ, columns, null),
+                        "the Table source refuses to read %s without a restriction",
+                        INGESTION_READ)
+                .hasStackTraceContaining("without a filter over column(s)")
+                .hasStackTraceContaining("'_PARTITIONTIME'");
+        String restriction =
+                "_PARTITIONDATE >= DATE '" + LocalDate.now(ZoneOffset.UTC).minusDays(2) + "'";
+        assertThat(read(INGESTION_READ, columns, null, rowRestriction(restriction)))
+                .as("%s read with %s", INGESTION_READ, restriction)
+                .hasSize(2);
     }
 
     /**

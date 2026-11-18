@@ -559,8 +559,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Preserve restart completion, parallel idempotence, dynamic-destination re-entry, and the rule
   that an unlabeled existing table is verified but never modified.
 - `sink.table-create.*` checks shape, never the clusterable scalar type list; the
-  field-without-granularity rejection has no builder backstop and is load-bearing
-  (`docs/adr/0033`).
+  field-without-granularity rejection has no builder backstop and is load-bearing, and the
+  `create-never` rejection has none either, since `build()` accepts creation options under
+  `CREATE_NEVER` (`docs/adr/0033`).
 - `requirePartitionFilter(true)` without time partitioning is rejected by `build()` because
   BigQuery drops it silently on an unpartitioned table (measured; ADR-0033's 2026-11-16
   revision). `buildTableInfo` sets it on the table, never on `TimePartitioning`, whose field the
@@ -571,6 +572,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and `CdcTableProvisioner` (provider options, before `tables.insert`) each refuse it; do not relax
   it for `max_staleness` without re-measuring, and `BigQueryRequirePartitionFilterRealGcpITCase`
   pins the refusal.
+- The Storage Read API enforces `requirePartitionFilter` on a read session, so the source reads such
+  a table only through a row restriction on the partitioning column: a pushed-down `WHERE` or
+  `scan.row-restriction` in SQL, `rowRestriction(...)` in the DataStream API, and only the options
+  for `_PARTITIONTIME`/`_PARTITIONDATE` (the latter exists only under daily partitioning). The
+  refusal is the service's, in the enumerator's planning call when the job starts, and names the
+  columns; do not add a client-side check for it (ADR-0033,
+  "Revision: reading such a table, and ingestion-time partitioning"). Ingestion-time partitioning
+  with the requirement is accepted: measured to keep it under every write method. Recent Storage
+  Write API rows there have a NULL `_PARTITIONTIME`, so a pseudocolumn restriction without
+  `OR _PARTITIONTIME IS NULL` drops them silently (measured).
 - The uber-jar inherits `docs/adr/0015`; its own record — the slf4j exclusion, the two named
   commons relocations, the relocated Avro trade-off, the Arrow/netty weight it accepts — is
   `docs/adr/0035`. **Read both before changing this module's pom.** The shared half of that pom
