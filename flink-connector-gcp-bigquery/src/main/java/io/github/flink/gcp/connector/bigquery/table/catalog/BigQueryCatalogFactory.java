@@ -31,6 +31,8 @@ import io.github.flink.gcp.connector.bigquery.sink.tables.BigQueryTableAdmin;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryCatalogOptions;
 import io.github.flink.gcp.connector.bigquery.table.BigQueryDynamicTableFactory;
 
+import javax.annotation.Nullable;
+
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -65,7 +67,8 @@ public class BigQueryCatalogFactory implements CatalogFactory {
                         BigQueryCatalogOptions.SERVICE_ACCOUNT_KEY_FILE,
                         BigQueryCatalogOptions.EMULATOR_ENDPOINT,
                         BigQueryCatalogOptions.EMULATOR_REST_ENDPOINT,
-                        BigQueryCatalogOptions.SCAN_PARENT_PROJECT));
+                        BigQueryCatalogOptions.SCAN_PARENT_PROJECT,
+                        BigQueryCatalogOptions.SINK_PARENT_PROJECT));
     }
 
     @Override
@@ -83,8 +86,10 @@ public class BigQueryCatalogFactory implements CatalogFactory {
                 config.getOptional(BigQueryCatalogOptions.EMULATOR_ENDPOINT).orElse(null);
         String emulatorRestEndpoint =
                 config.getOptional(BigQueryCatalogOptions.EMULATOR_REST_ENDPOINT).orElse(null);
-        String parentProject =
+        String scanParentProject =
                 config.getOptional(BigQueryCatalogOptions.SCAN_PARENT_PROJECT).orElse(null);
+        String sinkParentProject =
+                config.getOptional(BigQueryCatalogOptions.SINK_PARENT_PROJECT).orElse(null);
 
         BigQueryDynamicTableFactory.checkCredentials(config);
         if ((emulatorEndpoint == null) != (emulatorRestEndpoint == null)) {
@@ -101,14 +106,14 @@ public class BigQueryCatalogFactory implements CatalogFactory {
                             + " endpoint and its tables' rows the gRPC one.");
         }
         // Path components the catalog and its tables compose into resource names (ADR-0127).
-        // scan.parent-project takes the noun the table factory checks it under, so its rejection
-        // reads the same here as when a table is planned.
+        // Both parent projects take the noun the table layer checks them under, so a rejection
+        // reads the same here as when a table is planned. An absent one is not checked.
         checkComponent(BigQueryCatalogOptions.PROJECT, project, "project");
         checkComponent(BigQueryCatalogOptions.DEFAULT_DATABASE, defaultDatabase, "dataset");
-        if (parentProject != null) {
-            checkComponent(
-                    BigQueryCatalogOptions.SCAN_PARENT_PROJECT, parentProject, "parentProject");
-        }
+        checkComponent(
+                BigQueryCatalogOptions.SCAN_PARENT_PROJECT, scanParentProject, "parentProject");
+        checkComponent(
+                BigQueryCatalogOptions.SINK_PARENT_PROJECT, sinkParentProject, "parentProject");
         // Parsed last, after every check that refuses an option outright, as the table factory
         // does: a statement told to remove an option is not helped by an answer about its shape.
         BigQueryDynamicTableFactory.validateEmulatorEndpoints(config);
@@ -124,11 +129,16 @@ public class BigQueryCatalogFactory implements CatalogFactory {
                 project,
                 defaultDatabase,
                 BigQueryCatalog.carriedOptions(
-                        keyFile, emulatorEndpoint, emulatorRestEndpoint, parentProject),
+                        keyFile,
+                        emulatorEndpoint,
+                        emulatorRestEndpoint,
+                        scanParentProject,
+                        sinkParentProject),
                 () -> BigQueryTableAdmin.restClient(keyFile, restEndpoint, project));
     }
 
-    private static void checkComponent(ConfigOption<String> option, String value, String noun) {
+    private static void checkComponent(
+            ConfigOption<String> option, @Nullable String value, String noun) {
         OptionSetters.accept(
                 option.key(), value, component -> ResourceNames.checkComponent(component, noun));
     }

@@ -20,6 +20,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.catalog.Column;
+import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.types.Row;
@@ -101,6 +102,39 @@ class BigQueryCatalogITCase extends AbstractBigQuerySourceEmulatorITCase {
                         + "'emulator-rest-endpoint' = '"
                         + restEndpoint()
                         + "')");
+    }
+
+    @Test
+    void aResolvedTableCarriesBothParentProjectsUnderTheirOwnKeys() throws Exception {
+        // From CREATE CATALOG to getTable, so the factory cannot hand one project to the other.
+        TableEnvironment table = TableEnvironment.create(EnvironmentSettings.inStreamingMode());
+        table.executeSql(
+                "CREATE CATALOG billed WITH ("
+                        + "'type' = 'bigquery', "
+                        + "'project' = '"
+                        + PROJECT
+                        + "', "
+                        + "'default-database' = '"
+                        + DATASET
+                        + "', "
+                        + "'scan.parent-project' = 'reads', "
+                        + "'sink.parent-project' = 'jobs', "
+                        + "'emulator-endpoint' = '"
+                        + grpcEndpoint()
+                        + "', "
+                        + "'emulator-rest-endpoint' = '"
+                        + restEndpoint()
+                        + "')");
+
+        Map<String, String> options =
+                table.getCatalog("billed")
+                        .orElseThrow()
+                        .getTable(new ObjectPath(DATASET, PEOPLE))
+                        .getOptions();
+
+        assertThat(options)
+                .containsEntry("scan.parent-project", "reads")
+                .containsEntry("sink.parent-project", "jobs");
     }
 
     @Test

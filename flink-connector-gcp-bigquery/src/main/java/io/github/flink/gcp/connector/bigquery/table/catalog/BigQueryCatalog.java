@@ -119,14 +119,16 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
      * @param serviceAccountKeyFile the key-file path, or {@code null}
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null}
      * @param emulatorRestEndpoint the emulator's REST endpoint, or {@code null}
-     * @param parentProject the Storage Read billing project, or {@code null}
+     * @param scanParentProject the Storage Read billing project, or {@code null}
+     * @param sinkParentProject the project the sink's jobs run in, or {@code null}
      * @return the options, without absent ones
      */
     static Map<String, String> carriedOptions(
             @Nullable String serviceAccountKeyFile,
             @Nullable String emulatorEndpoint,
             @Nullable String emulatorRestEndpoint,
-            @Nullable String parentProject) {
+            @Nullable String scanParentProject,
+            @Nullable String sinkParentProject) {
         Map<String, String> options = new LinkedHashMap<>();
         putIfPresent(
                 options,
@@ -137,7 +139,10 @@ final class BigQueryCatalog extends AbstractReadOnlyCatalog<BigQuery> {
                 options,
                 BigQueryConnectorOptions.EMULATOR_REST_ENDPOINT.key(),
                 emulatorRestEndpoint);
-        putIfPresent(options, BigQueryConnectorOptions.SCAN_PARENT_PROJECT.key(), parentProject);
+        putIfPresent(
+                options, BigQueryConnectorOptions.SCAN_PARENT_PROJECT.key(), scanParentProject);
+        putIfPresent(
+                options, BigQueryConnectorOptions.SINK_PARENT_PROJECT.key(), sinkParentProject);
         return options;
     }
 

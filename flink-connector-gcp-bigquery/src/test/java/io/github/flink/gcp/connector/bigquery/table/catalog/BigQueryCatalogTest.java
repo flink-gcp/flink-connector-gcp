@@ -375,10 +375,12 @@ class BigQueryCatalogTest {
 
     @Test
     void carriesOnlyTheOptionsThatWereSet() {
-        assertThat(BigQueryCatalog.carriedOptions(null, null, null, null)).isEmpty();
-        assertThat(BigQueryCatalog.carriedOptions("/key.json", null, null, "billing"))
+        assertThat(BigQueryCatalog.carriedOptions(null, null, null, null, null)).isEmpty();
+        assertThat(BigQueryCatalog.carriedOptions("/key.json", null, null, "billing", null))
                 .containsExactly(
                         Map.entry("service-account-key-file", "/key.json"),
                         Map.entry("scan.parent-project", "billing"));
+        assertThat(BigQueryCatalog.carriedOptions(null, null, null, null, "jobs"))
+                .containsExactly(Map.entry("sink.parent-project", "jobs"));
     }
 }

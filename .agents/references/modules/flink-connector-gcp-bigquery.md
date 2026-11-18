@@ -603,7 +603,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   this.
 - `getTable` emits the connector identity options plus the catalog's carried options under the
   connector's keys; tuning stays per statement. Never add a catalog-level default for a scan or sink
-  option: an `OPTIONS` hint is how a statement tunes a catalog table.
+  tuning option: an `OPTIONS` hint is how a statement tunes a catalog table. The carried set is the
+  key file, the emulator endpoints, `scan.parent-project` and `sink.parent-project`; a new carried
+  option needs ADR-0169 § Carried options' argument recorded there, and the factory checks it with
+  the table layer's noun so a rejection reads the same at `CREATE CATALOG` and at planning.
 - The type mapping is `BigQuerySchemaToFlinkConverter`, the inverse of the connector page's table;
   the page's "Read back through the catalog as" column and `BigQueryCatalogITCase`'s round trip
   move with it. A type the connector cannot carry fails `getTable` naming the column path; never

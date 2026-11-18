@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted; refined by [ADR-0193](0193-bigquery-cdc-writes-require-a-change-sequence-number.md) (2026-10-31), under which a CDC
   write needs a sequence column a catalog table cannot carry
-- Date: 2026-09-27
-- Issues: [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212)
+- Date: 2026-09-27; revised by [#2196](https://github.com/flink-gcp/flink-connector-gcp/issues/2196) (2026-11-19)
+- Issues: [#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213), [#1212](https://github.com/flink-gcp/flink-connector-gcp/issues/1212), [#2196](https://github.com/flink-gcp/flink-connector-gcp/issues/2196)
 - Modules: bigquery
 - Refines: ADR-0087's view opt-in, for catalog tables; ADR-0100's "planning does not fetch the live schema", which now holds for hand-written tables only
 - Current behavior: [BigQuery catalog](../content/docs/connectors/table/bigquery.md#catalog)
@@ -50,6 +50,21 @@ Calcite asks the current catalog whether a qualified name's first part is one of
 The REST client comes from `BigQueryTableAdmin.restClient`, which the sink's table admin and the source's query runner now share; the catalog was the third copy of the emulator, key-file and application-default branches.
 It now gives the client the configured project in every branch.
 Every request through it names its project in full, so no request changes, but the builder no longer fails where the environment names no project: no `GOOGLE_CLOUD_PROJECT`, no gcloud configuration, and credentials that carry none, as an authorized user's or an external account's do.
+
+### Carried options
+
+Besides the key file and the emulator endpoints that ADR-0168 gives every catalog, a resolved table carries the catalog's two parent projects.
+`scan.parent-project` owns and pays for the table's Storage Read sessions and query jobs, and `sink.parent-project` is the project the sink's jobs run in and are billed to (ADR-0206).
+Neither is tuning: each follows from who pays and in which project the job's identity may create read sessions or jobs, which a deployment, rather than a statement, usually decides.
+A catalog-level value therefore configures statements that never mention it on purpose, which is the outcome ADR-0168 refuses for a tuning key.
+The factory checks both as resource-path components under their keys, with the noun the table layer uses.
+
+`sink.parent-project` reaches a CDC write differently from a FILE_LOADS one.
+A FILE_LOADS insert into a catalog table reads the carried value each time the statement is planned.
+A CDC write goes through a table created `LIKE` the catalog table, and Flink's default `LIKE` options copy the value into that table once, when it is created, so a later change to the catalog does not reach it.
+Where each acts, and how a catalog adopts the option, is on the [catalog section](../content/docs/connectors/table/bigquery.md#catalog-options) of the Table page.
+
+`scan.parent-project` was carried from the first version of the catalog ([#1213](https://github.com/flink-gcp/flink-connector-gcp/issues/1213)) without a recorded reason; this section records it with `sink.parent-project` ([#2196](https://github.com/flink-gcp/flink-connector-gcp/issues/2196)).
 
 ### Type mapping
 
@@ -129,14 +144,23 @@ Measured against goccy/bigquery-emulator 0.8.1 on 2026-09-27 by `BigQueryCatalog
   A read through the catalog with `scan.query-result-dataset` named left the query job's `flink_bigquery_source_*` result table in that dataset, which is the evidence; with the catalog's option flipped to `false`, that test failed.
 - A read through the catalog returned the same rows as a hand-written `CREATE TABLE` over the same table, and an `INSERT INTO` through the catalog landed its row.
 
+Planned on 2026-11-19 by `BigQueryCatalogPlanTest`, on the planner and a stub REST client:
+
+- An `INSERT INTO` a catalog table carrying `sink.parent-project`, with a hint selecting `file-loads`, built a FILE_LOADS sink whose job project was the carried value, and a hint naming another project replaced it.
+- A table created `LIKE` such a catalog table, with `sink.cdc.enabled` in its own `WITH` clause, held the carried `sink.parent-project` among its options.
+
 ## Alternatives declined
 
 - **A catalog over several projects**: a Flink catalog has two levels below its name, and one project per catalog keeps `project` meaning one thing; a second project is a second `CREATE CATALOG`.
 - **Failing `getTable` on a view, naming `scan.materialize-views`**: a hint cannot apply to a table that failed to resolve, so views would be unusable through the catalog.
 - **`VARCHAR(n)` for a `STRING(n)` column**: the connector treats every string as `STRING`, and a length the sink ignores would only reject values the table accepts.
 - **A non-null `ARRAY` for `REPEATED`**: truthful for reads, but it would turn a null array a statement inserts into a runtime failure a hand-written table does not have.
+- **`sink.parent-project` per statement only** ([#2196](https://github.com/flink-gcp/flink-connector-gcp/issues/2196)): a FILE_LOADS insert already carries a hint for its write method, so the project would cost one more key in it.
+  Declined by the owner on 2026-11-19: a statement that leaves it out runs its jobs in the project the client library resolves, which on GKE with Workload Identity can be the cluster's, where [#2178](https://github.com/flink-gcp/flink-connector-gcp/issues/2178) reported the first commit failing with a 403.
 
 ## Consequences
 
 - `BigQuerySchemaToFlinkConverter`, the page's "Read back through the catalog as" column and `BigQueryCatalogITCase`'s round trip move together; a change to one is a change to all three.
 - A new BigQuery type fails catalog lookups of tables that use it until the converter maps it.
+- Changing a catalog's `sink.parent-project` moves the jobs of every FILE_LOADS statement planned afterwards that does not name its own in a hint, and ADR-0206's restore rule applies to each of them, including one that hints its own key file and so ran its jobs in that file's project.
+  A CDC table created `LIKE` a catalog table keeps the value it copied until it is re-created; its statements keep no state that records a project.

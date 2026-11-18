@@ -116,5 +116,20 @@ public final class BigQueryCatalogOptions {
                                     + " tables the catalog resolves; set it when that is not the"
                                     + " catalog's project.");
 
+    /**
+     * The project the sink's BigQuery jobs run in and are billed to: FILE_LOADS load, copy and
+     * query jobs, and CDC maximum-staleness statements. Storage Write API writes create no jobs.
+     * Tables the catalog resolves carry it.
+     */
+    public static final ConfigOption<String> SINK_PARENT_PROJECT =
+            ConfigOptions.key("sink.parent-project")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "The project the sink's BigQuery jobs run in and are billed to:"
+                                    + " FILE_LOADS load, copy and query jobs, and CDC"
+                                    + " maximum-staleness statements. Storage Write API writes"
+                                    + " create no jobs. Tables the catalog resolves carry it.");
+
     private BigQueryCatalogOptions() {}
 }
