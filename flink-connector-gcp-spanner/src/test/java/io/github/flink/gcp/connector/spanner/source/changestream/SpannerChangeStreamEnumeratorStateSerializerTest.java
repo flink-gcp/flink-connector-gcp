@@ -469,6 +469,8 @@ class SpannerChangeStreamEnumeratorStateSerializerTest {
                         null,
                         start.plusSeconds(10),
                         2_000,
+                        true,
+                        Duration.ofMinutes(10),
                         restored,
                         null);
         enumerator.start();

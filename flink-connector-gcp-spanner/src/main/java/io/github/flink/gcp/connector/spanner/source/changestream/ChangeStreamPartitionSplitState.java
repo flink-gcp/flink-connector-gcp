@@ -29,6 +29,9 @@ public final class ChangeStreamPartitionSplitState {
     private Instant currentPosition;
     private Instant watermark;
 
+    /** Whether this attempt has emitted a record from the split; deliberately not checkpointed. */
+    private boolean emittedRecords;
+
     public ChangeStreamPartitionSplitState(ChangeStreamPartitionSplit split) {
         this.original = Preconditions.checkNotNull(split, "split must not be null");
         this.currentPosition = split.getCurrentPosition();
@@ -50,6 +53,20 @@ public final class ChangeStreamPartitionSplitState {
     public void advance(Instant position, Instant newWatermark) {
         currentPosition = later(currentPosition, position, "position");
         watermark = later(watermark, newWatermark, "watermark");
+    }
+
+    /** Records that the reader emitted at least one output record from this split. */
+    public void markEmittedRecords() {
+        emittedRecords = true;
+    }
+
+    /**
+     * Returns whether this attempt emitted any output record from the split. Records an earlier
+     * attempt emitted before the restored checkpoint have reached downstream already, so only this
+     * attempt's count.
+     */
+    public boolean hasEmittedRecords() {
+        return emittedRecords;
     }
 
     public Instant getCurrentPosition() {

@@ -91,6 +91,27 @@ import java.util.function.LongSupplier;
  * it meets them and sends a separate completion event only when its query ends successfully, so a
  * parent that failed part-way through cannot leave its children schedulable.
  *
+ * <h2>A child waits for a checkpoint, not only for its parents</h2>
+ *
+ * <p>A parent's finish is its reader's report that the query ended, and the parent's last records
+ * can still be on their way downstream at that moment. If another subtask reads the child, the
+ * child's records take a different path and can reach a keyed operator first, so one key's changes
+ * arrive out of commit order (#2193). With {@code holdChildrenUntilCheckpoint}, a finished parent
+ * stays in {@code heldParents} until a checkpoint whose {@link #snapshotState} ran after the finish
+ * has completed. The reader emitted those records before it reported the finish, so they precede
+ * its barrier for that checkpoint, and a completed checkpoint means downstream processed them.
+ * Flink CDC's MySQL source waits the same way between its snapshot and binlog phases.
+ *
+ * <p>The hold is runtime state only: a restored checkpoint has completed, so every finish it
+ * records is already released. Nothing is held at parallelism 1, where every record takes one path,
+ * or after a parent whose reader emitted no record, such as the initial query, since nothing of it
+ * is downstream to overtake. The coordinator cannot read the job's checkpoint configuration, so it
+ * measures a job without checkpointing: a child held for {@code firstCheckpointTimeoutNanos} before
+ * any checkpoint completed releases every hold with a warning, and later finishes are not held
+ * until one does. The evidence is a completed checkpoint rather than a {@link #snapshotState} call:
+ * Flink snapshots the coordinator for every savepoint but reports completion only of a checkpoint
+ * or a synchronous savepoint, so a savepoint taken while the job runs must not end the measurement.
+ *
  * <h2>The watermark frontier</h2>
  *
  * <p>The source-wide watermark is the minimum watermark across every <em>unfinished</em> entry, and
@@ -139,6 +160,14 @@ public final class SpannerChangeStreamSplitEnumerator
     private static final Logger LOG =
             LoggerFactory.getLogger(SpannerChangeStreamSplitEnumerator.class);
 
+    private static final long UNCOVERED = -1L;
+
+    /** The longest pause between two checks of the first-checkpoint wait. */
+    private static final long MAX_FIRST_CHECKPOINT_CHECK_MILLIS = Duration.ofSeconds(30).toMillis();
+
+    /** The shortest pause between two checks, so a short wait does not flood the coordinator. */
+    private static final long MIN_FIRST_CHECKPOINT_CHECK_MILLIS = Duration.ofSeconds(1).toMillis();
+
     private final SplitEnumeratorContext<ChangeStreamPartitionSplit> context;
     private final SpannerChangeStreamCoordinatorClientFactory clientFactory;
 
@@ -153,12 +182,22 @@ public final class SpannerChangeStreamSplitEnumerator
     @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant endTimestamp;
     private final long heartbeatMillis;
+    private final boolean holdChildrenUntilCheckpoint;
+    private final long firstCheckpointTimeoutNanos;
     @Nullable private final SpannerChangeStreamEnumeratorState restoredState;
     private final LongSupplier currentTimeMillis;
+    private final LongSupplier nanoTime;
 
     private final Map<String, ChangeStreamPartitionSplit> ledger = new LinkedHashMap<>();
     private final Map<String, Set<String>> childrenByParent = new HashMap<>();
     private final Map<String, Integer> finishedParentProofReferences = new LinkedHashMap<>();
+
+    /**
+     * Finished parents whose children wait for a checkpoint, each with the id of the first
+     * checkpoint snapshotted after its finish, or {@code UNCOVERED} before one is.
+     */
+    private final Map<String, Long> heldParents = new LinkedHashMap<>();
+
     private final Deque<String> scheduledPartitions = new ArrayDeque<>();
     private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
     private final TreeMap<Long, Integer> unfinishedWatermarkCounts = new TreeMap<>();
@@ -183,6 +222,12 @@ public final class SpannerChangeStreamSplitEnumerator
     private boolean boundedLedger;
     private int unfinishedPartitions;
     private long sourceWatermark = Long.MIN_VALUE;
+    private boolean checkpointCompleted;
+    private boolean releasingWithoutCheckpoint;
+
+    /** When the oldest current hold began, on {@code nanoTime}; null while nothing is held. */
+    @Nullable private Long heldSinceNanos;
+
     private volatile boolean closed;
 
     public SpannerChangeStreamSplitEnumerator(
@@ -192,6 +237,8 @@ public final class SpannerChangeStreamSplitEnumerator
             @Nullable StartPosition resumeFallback,
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
+            boolean holdChildrenUntilCheckpoint,
+            Duration firstCheckpointTimeout,
             @Nullable SpannerChangeStreamEnumeratorState restoredState,
             @Nullable ClientMetrics clientMetrics) {
         this(
@@ -201,9 +248,12 @@ public final class SpannerChangeStreamSplitEnumerator
                 resumeFallback,
                 endTimestamp,
                 heartbeatMillis,
+                holdChildrenUntilCheckpoint,
+                firstCheckpointTimeout,
                 restoredState,
                 clientMetrics,
-                System::currentTimeMillis);
+                System::currentTimeMillis,
+                System::nanoTime);
     }
 
     @VisibleForTesting
@@ -214,9 +264,12 @@ public final class SpannerChangeStreamSplitEnumerator
             @Nullable StartPosition resumeFallback,
             @Nullable Instant endTimestamp,
             long heartbeatMillis,
+            boolean holdChildrenUntilCheckpoint,
+            Duration firstCheckpointTimeout,
             @Nullable SpannerChangeStreamEnumeratorState restoredState,
             @Nullable ClientMetrics clientMetrics,
-            LongSupplier currentTimeMillis) {
+            LongSupplier currentTimeMillis,
+            LongSupplier nanoTime) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.clientFactory =
                 Preconditions.checkNotNull(clientFactory, "clientFactory must not be null");
@@ -229,16 +282,35 @@ public final class SpannerChangeStreamSplitEnumerator
                 "heartbeatMillis must be positive, but was %s",
                 heartbeatMillis);
         this.heartbeatMillis = heartbeatMillis;
+        this.holdChildrenUntilCheckpoint = holdChildrenUntilCheckpoint;
+        Preconditions.checkNotNull(
+                firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
+        Preconditions.checkArgument(
+                !firstCheckpointTimeout.isNegative(),
+                "firstCheckpointTimeout must not be negative, but was %s",
+                firstCheckpointTimeout);
+        this.firstCheckpointTimeoutNanos = firstCheckpointTimeout.toNanos();
         this.restoredState = restoredState;
         this.clientMetrics = clientMetrics;
         this.currentTimeMillis =
                 Preconditions.checkNotNull(currentTimeMillis, "currentTimeMillis must not be null");
+        this.nanoTime = Preconditions.checkNotNull(nanoTime, "nanoTime must not be null");
     }
 
     @Override
     public void start() {
         registerMetrics();
         context.callAsync(this::initialize, this::onInitialized);
+        if (holdsChildren() && firstCheckpointTimeoutNanos > 0) {
+            long period =
+                    Math.max(
+                            MIN_FIRST_CHECKPOINT_CHECK_MILLIS,
+                            Math.min(
+                                    Duration.ofNanos(firstCheckpointTimeoutNanos).toMillis() / 4,
+                                    MAX_FIRST_CHECKPOINT_CHECK_MILLIS));
+            context.callAsync(
+                    () -> null, (ignored, error) -> checkFirstCheckpointWait(), period, period);
+        }
     }
 
     private Initialization initialize() throws Exception {
@@ -680,6 +752,12 @@ public final class SpannerChangeStreamSplitEnumerator
         Set<String> children = childrenByParent.remove(current.splitId());
         if (children != null && !children.isEmpty()) {
             finishedParentProofReferences.put(current.splitId(), children.size());
+            if (holdsChildrenOf(event)) {
+                heldParents.put(current.splitId(), UNCOVERED);
+                if (heldSinceNanos == null) {
+                    heldSinceNanos = nanoTime.getAsLong();
+                }
+            }
         }
         for (String childId : children == null ? Collections.<String>emptySet() : children) {
             ChangeStreamPartitionSplit child = ledger.get(childId);
@@ -783,7 +861,8 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private boolean allParentsFinished(ChangeStreamPartitionSplit partition) {
         for (String parentId : partition.getParentPartitionIds()) {
-            if (!finishedParentProofReferences.containsKey(parentId)) {
+            if (!finishedParentProofReferences.containsKey(parentId)
+                    || heldParents.containsKey(parentId)) {
                 return false;
             }
         }
@@ -896,11 +975,90 @@ public final class SpannerChangeStreamSplitEnumerator
                 initialized,
                 "Spanner Change Streams initialization is still outstanding; retry the"
                         + " checkpoint after its deferred reader actions have been replayed.");
+        heldParents.replaceAll(
+                (ignored, covering) -> covering == UNCOVERED ? checkpointId : covering);
         return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
                 ledger.values(),
                 finishedParentProofReferences.keySet(),
                 endTimestamp,
                 sourceWatermark);
+    }
+
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) {
+        if (closed) {
+            return;
+        }
+        if (releasingWithoutCheckpoint) {
+            LOG.info(
+                    "Checkpoint {} is the first to complete since this coordinator started, so"
+                            + " child partitions wait for a checkpoint again.",
+                    checkpointId);
+            releasingWithoutCheckpoint = false;
+        }
+        checkpointCompleted = true;
+        if (heldParents.isEmpty()) {
+            return;
+        }
+        if (heldParents
+                .values()
+                .removeIf(covering -> covering != UNCOVERED && covering <= checkpointId)) {
+            releaseHeldChildren();
+        }
+    }
+
+    private boolean holdsChildren() {
+        return holdChildrenUntilCheckpoint && context.currentParallelism() > 1;
+    }
+
+    private boolean holdsChildrenOf(PartitionFinishedEvent finish) {
+        // A parent whose reader emitted nothing has nothing downstream for its children to
+        // overtake. That covers the initial query, which in practice returns only child
+        // partitions, without assuming it never returns data.
+        return holdsChildren() && finish.hasEmittedRecords() && !releasingWithoutCheckpoint;
+    }
+
+    /**
+     * Releases every hold when no checkpoint has completed and a child has waited out {@code
+     * firstCheckpointTimeoutNanos}, which is how a job without checkpointing looks from here.
+     */
+    private void checkFirstCheckpointWait() {
+        if (closed
+                || checkpointCompleted
+                || heldSinceNanos == null
+                || nanoTime.getAsLong() - heldSinceNanos < firstCheckpointTimeoutNanos) {
+            return;
+        }
+        LOG.warn(
+                "No checkpoint has completed while child partitions waited {} for one, so they"
+                        + " start as soon as their parents finish until one completes. Without one,"
+                        + " a key's changes can reach a keyed operator"
+                        + " out of commit order across a partition split or merge. Enable"
+                        + " checkpointing; raise firstCheckpointTimeout"
+                        + " ('scan.first-checkpoint-timeout') for a job that checkpoints less"
+                        + " often; or set partitionHandoff(IMMEDIATE)"
+                        + " ('scan.change-stream.partition-handoff' = 'immediate') to start"
+                        + " children at once.",
+                Duration.ofNanos(firstCheckpointTimeoutNanos));
+        releasingWithoutCheckpoint = true;
+        heldParents.clear();
+        releaseHeldChildren();
+    }
+
+    private void releaseHeldChildren() {
+        if (heldParents.isEmpty()) {
+            heldSinceNanos = null;
+        }
+        for (ChangeStreamPartitionSplit partition : new ArrayList<>(ledger.values())) {
+            promoteIfReady(partition);
+        }
+        refreshLineageMetricCounts();
+        serveWaitingReaders();
+    }
+
+    @VisibleForTesting
+    int heldParentCount() {
+        return heldParents.size();
     }
 
     private void registerMetrics() {

@@ -24,6 +24,7 @@ import org.apache.flink.configuration.MemorySize;
 import com.google.cloud.spanner.Dialect;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
+import io.github.flink.gcp.connector.spanner.source.PartitionHandoff;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 
 import java.time.Duration;
@@ -326,6 +327,37 @@ public final class SpannerConnectorOptions {
                                     .DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK)
                     .withDescription(
                             "The maximum concurrent change-stream partition queries opened by one source subtask.");
+
+    /**
+     * When a change-stream child partition starts after its parents finish: after-checkpoint waits
+     * for a checkpoint taken after they finished, which keeps one key's changes in commit order
+     * across a partition split or merge, while immediate starts it at once.
+     */
+    public static final ConfigOption<PartitionHandoff> SCAN_CHANGE_STREAM_PARTITION_HANDOFF =
+            ConfigOptions.key("scan.change-stream.partition-handoff")
+                    .enumType(PartitionHandoff.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "When a change-stream child partition starts after its parents finish:"
+                                    + " after-checkpoint waits for a checkpoint taken after they"
+                                    + " finished, which keeps one key's changes in commit order"
+                                    + " across a partition split or merge, while immediate starts"
+                                    + " it at once.");
+
+    /**
+     * How long a change-stream child partition waits for the job's first completed checkpoint
+     * before the source logs a warning and starts it anyway; zero waits indefinitely. Has no effect
+     * with scan.change-stream.partition-handoff=immediate.
+     */
+    public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
+            ConfigOptions.key("scan.first-checkpoint-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a change-stream child partition waits for the job's first"
+                                    + " completed checkpoint before the source logs a warning and"
+                                    + " starts it anyway; zero waits indefinitely. Has no effect"
+                                    + " with scan.change-stream.partition-handoff=immediate.");
 
     /** The desired maximum number of read partitions. */
     public static final ConfigOption<Long> SCAN_PARTITION_MAX_PARTITIONS =

@@ -17,13 +17,14 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, and by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20
+- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, and by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
   [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635),
   [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141),
-  [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842)
+  [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842),
+  [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -48,6 +49,20 @@ Child discovery and parent completion are separate source events.
 A parent query can return several child-partitions records with the same start timestamp, so receiving one record does not prove that the query finished.
 The reader reports every child record first and reports completion only after the query ends successfully.
 The coordinator deduplicates identical child reports and moves a child from `CREATED` to `SCHEDULED` only when every named parent is `FINISHED`.
+
+A finished parent's children wait, by default, for a checkpoint as well ([#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193)).
+A parent's finish is its reader's report that the query ended, and the parent's last records can still be in that reader's network buffer or a sink writer's batch at that moment.
+A child read by another subtask sends its records down a different path, so they can overtake them and reach a keyed operator out of commit order.
+With `PartitionHandoff.AFTER_CHECKPOINT`, the coordinator records each finished parent as held, gives a held parent the id of the first checkpoint whose `snapshotState` runs after the finish, and schedules its children only once a checkpoint with that id or a later one completes.
+The reader emitted the parent's records before it sent the finish, and the coordinator snapshots before the readers receive the barrier, so those records precede the barrier.
+A completed aligned checkpoint therefore means every operator that handles its input before the barrier processed them and every sink that flushes on the barrier wrote them.
+An unaligned checkpoint, and an operator that keeps pending elements in its state (asynchronous I/O, an asynchronous sink's buffered requests), are outside that argument, and so is a failover, which replays from the last completed checkpoint at least once.
+Holds are runtime state and never enter the checkpoint: only completed checkpoints are restored, so every finish a restored ledger records is already released.
+Nothing is held at source parallelism 1, where every record takes one path, or after a parent whose reader emitted no output record, which the reader reports with the finish: nothing of that parent is downstream to overtake.
+That covers the initial null-token query without assuming it never returns data; Spanner's query workflow shows it returning child partitions, but its record rules allow any record type in any query.
+The coordinator receives no checkpoint configuration, so it measures a job without checkpointing: when no checkpoint has completed and a child has waited `firstCheckpointTimeout` (10 minutes by default, on a monotonic clock), it releases every hold with a warning and holds nothing until one completes.
+The evidence is a completed checkpoint, not a `snapshotState` call: Flink 2.2.1 snapshots coordinators for a savepoint too but notifies them only when a checkpoint or a synchronous savepoint completes (`CheckpointCoordinator`, the `!props.isSavepoint() || props.isSynchronous()` guard on `sendAcknowledgeMessages`; the same in the 1.20.5 bytecode), so a savepoint taken while a job without periodic checkpointing runs would otherwise end the measurement and hold the children for good.
+`PartitionHandoff.IMMEDIATE` schedules children as soon as their parents finish, for consumers that order each key's changes by their commit coordinates.
 
 The coordinator checkpoints only unfinished entries.
 A finished parent leaves the live ledger immediately and remains as a compact split-id proof only while an already-discovered `CREATED` child still names it.
@@ -101,6 +116,16 @@ Its 2026-08-29 local measurement reduced the checkpoint from 10,477,838 bytes to
 The bounded contract is exercised on the emulator in both dialects.
 A DataStream job bounded at the last seeded commit timestamp recovers from a failure after a checkpoint and still delivers that last record, and a Table API source bounded in milliseconds finishes with every change up to the bound and none committed after it.
 
+The partition hand-off ([#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193)) was measured on 2026-11-18 against emulator 1.5.59 with partition tokens alive for 2 to 4 seconds, one writer changing 4 keys with an increasing value for 60 seconds, source parallelism 4 and a checkpoint every second.
+The emulator also moves a key between partitions outside the lineage, which the service does not, so each per-key inversion at a `keyBy` recorder was classified by whether the earlier record's partition is an ancestor of the later one's.
+Without the hold, 3 of 6 runs showed ancestor-partition inversions (17, 102 and 74); with a prototype of it, 10 runs showed none, and a parallelism-1 control showed none either.
+With a 1-second network buffer timeout, 2 runs under `IMMEDIATE` showed 66 and 67 ancestor-partition inversions, while 3 runs of the hold as implemented showed none.
+Those 3 runs still showed inversions between partitions the emulator moved a key across outside the lineage (81, 188 and 102), because a parent that emitted nothing now hands off at once; an earlier version that held after every parent showed none of those either, which was a side effect of its delay rather than a guarantee, since the service keeps a key in its lineage.
+A chained `KafkaSink` showed no ancestor-partition inversion in these runs; its window, the producer's linger time and in-flight batches, is narrower than a network buffer's.
+Flink CDC's MySQL source makes the same trade between its snapshot and binlog phases: its assigner waits for a checkpoint taken after every snapshot split finished, and skips the wait at parallelism 1.
+Unit tests cover a checkpoint snapshotted before the finish, an uncompleted checkpoint covered by a later one, restore, parallelism 1, the immediate mode, a parent that emitted nothing, the first-checkpoint timeout and its single warning, a savepoint that does not end the wait, a wait measured from the oldest hold, and a zero timeout.
+An integration test runs a scripted two-level lineage through Flink's own source coordinator at parallelism 2, with checkpointing and without it.
+
 ## Alternatives declined
 
 - **Let a restored ledger keep its bound whatever the configuration says.**
@@ -113,12 +138,20 @@ A DataStream job bounded at the last seeded commit timestamp recovers from a fai
   One query can return several child records, so this could schedule a child while its parent still has records to report.
 - **Restart only each expired token.**
   The skipped interval can contain that token's terminal child record, which would strand all descendants even though the restarted query itself succeeded.
+- **Delay the finish in the reader until its own checkpoint completes.**
+  It holds the same order, but the reader would have to checkpoint finished-but-unreported splits and replay their finish after a restore, while the coordinator's hold is runtime state that a restore discards correctly.
+- **Fail a job without checkpointing, as the Pub/Sub source's first-checkpoint detector does.**
+  A Spanner job without checkpointing loses nothing by starting children at once; it loses only the cross-partition order, so a warning and a fallback are proportionate where a Pub/Sub job would stall.
+- **Make `IMMEDIATE` the default.**
+  The reordering is silent, and an upsert sink then keeps a stale row; a delay of one checkpoint interval per partition split or merge is the cheaper default.
 - **Accept unknown partition modes as immutable.**
   A newly added mode can introduce record types that change the lifecycle protocol, so consuming it without an explicit implementation would be partial support.
 
 ## Consequences
 
 - Checkpoint and coordinator lineage state scale with unfinished topology and unresolved parent proofs rather than job lifetime.
+- By default each partition split or merge delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's duration, and the source watermark holds at the children's start meanwhile; once a checkpoint has completed, the children do not start while later checkpoints keep failing.
+- The order holds between failures and for operators that handle their input before the barrier; an unaligned checkpoint, an operator that stores pending elements, and a failover's replay are outside it.
 - `changeStreamPartitionLedgerEntries` and `changeStreamFinishedParentProofs` expose those two bounded structures without partition-token labels.
 - Version-1 and version-2 restore pays one validation and compaction pass before subsequent checkpoints use version 4.
 - The public source and reader can be added independently in #536 because the coordinator-facing split and event contracts are now fixed.
