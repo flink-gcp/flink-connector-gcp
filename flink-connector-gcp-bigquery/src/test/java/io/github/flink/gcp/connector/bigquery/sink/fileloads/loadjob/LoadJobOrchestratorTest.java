@@ -262,8 +262,10 @@ class LoadJobOrchestratorTest {
         assertThat(t1Spec.getSourceUris())
                 .containsExactly("gs://bucket/prefix/a.avro", "gs://bucket/prefix/b.avro");
         assertThat(t1Spec.getSchema().getFields()).hasSize(2);
-        assertThat(t1Spec.getCreateDisposition())
-                .isEqualTo(JobInfo.CreateDisposition.CREATE_IF_NEEDED);
+        // CREATE_NEVER although the sink's disposition is CREATE_IF_NEEDED: the reconciliation
+        // creates the table with its creation options, and a load would create a dropped one
+        // without them (#2181).
+        assertThat(t1Spec.getCreateDisposition()).isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
         assertThat(t1Spec.getWriteDisposition()).isEqualTo(JobInfo.WriteDisposition.WRITE_APPEND);
         assertThat(t1Spec.getSchemaUpdateOptions()).isEmpty(); // Updates disabled by default.
 

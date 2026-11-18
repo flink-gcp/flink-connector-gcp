@@ -88,6 +88,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * by one-file load jobs, and through one intermediate copy level by a fan-out of two, into one
  * destination of each layout BigQuery offers plus one the commit creates from {@link
  * TableCreateOptions}. Each destination must keep its layout, description and labels.
+ *
+ * <p>A destination the commit creates must keep them on the direct-load path as well, when it is
+ * dropped between the commit's reconciliation and its load (#2181).
  */
 @Tag("gated")
 @EnabledIfEnvironmentVariable(named = "BQ_IT_PROJECT", matches = ".+")
@@ -233,8 +236,8 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
     /**
      * A commit retried after an upgrade, from the checkpoint a job restarting in a loop was stuck
      * on: an earlier version ran the same planned leaf loads and intermediate copy without the
-     * destination's layout, under the same ids, and was refused the final copy on every restart
-     * until no retry id was left for it.
+     * destination's layout, under the same ids, and was refused the final copy on every restart,
+     * which spent one retry id each time.
      */
     @Test
     void aRetryAfterAnUpgradeRunsOnItsOwnTablesAndIds() throws Exception {
@@ -255,16 +258,17 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                 earlier.awaitJob(copy.jobId);
             }
         }
-        // Refused on every restart until no retry id is left. A refusal can arrive with the
-        // submission, in which case one submission walks through every retry id at once.
+        // Refused on every restart, one id per restart whether the refusal arrives with the
+        // submission or from the job (#2181); six restarts are what the walk once allowed.
         PlannedCopy finalCopy = planned.copy.finalCopy;
-        IOException exhausted = null;
-        for (int attempt = 0; attempt <= 6 && exhausted == null; attempt++) {
+        for (int attempt = 0; attempt < 6; attempt++) {
             try {
                 earlier.submitCopy(finalCopy.jobId, finalCopy.spec);
             } catch (IOException e) {
-                exhausted = e;
-                break;
+                assertThat(e)
+                        .hasMessageContaining("was refused as it was submitted")
+                        .hasMessageMatching("(?s).*(partition|clustering).*");
+                continue;
             }
             // Refused for the layout, whichever of the two refusals the service reports.
             assertThatThrownBy(() -> earlier.awaitJob(finalCopy.jobId))
@@ -272,10 +276,6 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                     .hasMessageContaining(finalCopy.jobId)
                     .hasMessageMatching("(?s).*(partition|clustering).*");
         }
-        assertThat(exhausted)
-                .hasMessageContaining(finalCopy.jobId)
-                .hasMessageContaining("all its retry ids failed")
-                .hasMessageMatching("(?s).*(partition|clustering).*");
 
         orchestrator(WriteDisposition.WRITE_APPEND).run(committables);
 
@@ -452,17 +452,85 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
         assertThat(RealBigQuery.tableLabels(table)).as(table).containsAllEntriesOf(LABELS);
     }
 
+    /**
+     * A destination dropped after the commit's reconciliation created it, just before its direct
+     * load runs, fails that commit instead of being created by the load without its creation
+     * options. The retried commit, as the job's restart would run it, creates it again from {@link
+     * #CREATE_OPTIONS} and loads it under the next retry id, which the failed attempt must have
+     * left unspent.
+     */
+    @Test
+    void aDestinationDroppedBeforeItsDirectLoadComesBackWithItsCreationOptions() throws Exception {
+        String dropped = table("dropped");
+        List<FileLoadsCommittable> committables = stage(dropped);
+        LoadJobRunner runner = new BigQueryLoadJobRunner(null, POLL);
+        LoadJobRunner dropping =
+                new LoadJobRunner() {
+                    @Override
+                    public void submitLoad(String jobId, LoadJobSpec spec) throws IOException {
+                        RealBigQuery.deleteTables(dropped);
+                        runner.submitLoad(jobId, spec);
+                    }
+
+                    @Override
+                    public void submitCopy(String jobId, CopyJobSpec spec) {
+                        throw new AssertionError("A direct load submits no copy: " + spec);
+                    }
+
+                    @Override
+                    public void submitQuery(String jobId, QueryJobSpec spec) {
+                        throw new AssertionError("A direct load submits no query: " + spec);
+                    }
+
+                    @Override
+                    public void awaitJob(String jobId) throws IOException {
+                        runner.awaitJob(jobId);
+                    }
+
+                    @Override
+                    public void deleteTable(TableDestination table) {
+                        runner.deleteTable(table);
+                    }
+                };
+
+        assertThatThrownBy(
+                        () -> directOrchestrator(dropping).run(committables),
+                        "the load into the dropped %s fails rather than creating it",
+                        dropped)
+                .isInstanceOf(IOException.class)
+                .hasStackTraceContaining("Not found: Table");
+
+        directOrchestrator(runner).run(committables);
+
+        assertDestination(dropped, CREATED_LAYOUT, 3);
+        assertThatThrownBy(
+                        () ->
+                                RealBigQuery.queryLongs(
+                                        "SELECT COUNT(*) FROM " + RealBigQuery.tablePath(dropped)))
+                .hasMessageContaining("without a filter");
+    }
+
     private static LoadJobOrchestrator orchestrator(WriteDisposition disposition) {
+        return orchestrator(disposition, new BigQueryLoadJobRunner(null, POLL), LIMITS);
+    }
+
+    /** An appending commit whose three files fit one direct load per destination. */
+    private static LoadJobOrchestrator directOrchestrator(LoadJobRunner runner) {
+        return orchestrator(WriteDisposition.WRITE_APPEND, runner, Limits.BIGQUERY);
+    }
+
+    private static LoadJobOrchestrator orchestrator(
+            WriteDisposition disposition, LoadJobRunner runner, Limits limits) {
         return new LoadJobOrchestrator(
                 config(),
                 options(disposition),
-                new BigQueryLoadJobRunner(null, POLL),
+                runner,
                 new BigQueryTableAdmin(),
                 new InMemoryStagingStorage(),
                 FLINK_JOB_ID,
                 null,
                 new SimpleCounter(),
-                LIMITS);
+                limits);
     }
 
     private static FileLoadsOptions options(WriteDisposition disposition) {

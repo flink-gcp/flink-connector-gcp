@@ -145,24 +145,38 @@ class BigQueryQueryRunnerReuseTest {
     }
 
     @Test
-    void givesUpWhenEveryRetryIdHoldsAFailedJob() {
+    void probesPastMoreFailedIdsThanTheWalkOnceAllowed() throws Exception {
+        // Seven failed ids, more than the walk once allowed (five retry ids): every one holds a
+        // job some attempt created, so the first unused id ends the walk.
         StubBigQuery client = new StubBigQuery();
-        JobAnswer[] allFailed = new JobAnswer[QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1];
-        for (int i = 0; i < allFailed.length; i++) {
-            allFailed[i] = JobAnswer.withStatus(FAILED);
+        JobAnswer[] answers = new JobAnswer[8];
+        for (int i = 0; i < 7; i++) {
+            answers[i] = JobAnswer.withStatus(FAILED);
         }
-        client.answering(allFailed);
+        answers[7] = JobAnswer.absent();
+        client.answering(answers);
+        QuerySpec spec = reusableSpec("scratch");
+
+        QueryResult result = new BigQueryQueryRunner(client).run(spec);
+
+        assertThat(result.isReattached()).isFalse();
+        assertThat(client.created).hasSize(1);
+        assertThat(client.created.get(0).getJobId().getJob()).isEqualTo(currentId(spec) + "_r7");
+    }
+
+    @Test
+    void aQueryRefusedAsItIsSubmittedFailsTheAttemptInsteadOfProbingOn() {
+        // Its own job, answered already failed by jobs.insert: the next id would be refused the
+        // same way, so the attempt fails here and the retry probes past this id.
+        StubBigQuery client = new StubBigQuery();
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+        client.createdStatus = FAILED;
         QuerySpec spec = reusableSpec("scratch");
 
         assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining(currentId(spec))
-                .hasMessageContaining("all its retry ids are unusable")
-                .hasMessageContaining("previous attempt failed");
-        assertThat(client.created).isEmpty();
-        // The whole budget was spent before giving up — the message's "all" is counted, not
-        // assumed.
-        assertThat(client.getJobCalls).hasSize(QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1);
+                .hasMessageContaining(currentId(spec) + " was refused as it was submitted");
+        assertThat(client.created).hasSize(1);
     }
 
     @Test
@@ -338,34 +352,6 @@ class BigQueryQueryRunnerReuseTest {
         assertThat(client.getTableCalls).containsExactly(ANONYMOUS);
         assertThat(client.created).hasSize(2);
         assertThat(client.created.get(1).getJobId().getJob()).isEqualTo(currentId(spec) + "_r1");
-    }
-
-    @Test
-    void givesUpNamingTheVanishedTableWhenEveryRetryIdsResultTableIsGone() {
-        StubBigQuery client = new StubBigQuery();
-        int probes = QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1;
-        JobAnswer[] allDone = new JobAnswer[probes];
-        TableAnswer[] allGone = new TableAnswer[probes];
-        for (int i = 0; i < probes; i++) {
-            allDone[i] = JobAnswer.withStatus(DONE);
-            allGone[i] = TableAnswer.absent();
-        }
-        client.answering(allDone);
-        client.tablesAnswering(allGone);
-        client.completedConfiguration =
-                QueryJobConfiguration.newBuilder(SQL).setDestinationTable(ANONYMOUS).build();
-        QuerySpec spec = reusableSpec(null);
-
-        // The give-up line names the vanished table, not the read session the crash loop this
-        // fallback replaces used to fail at.
-        assertThatThrownBy(() -> new BigQueryQueryRunner(client).run(spec))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining(currentId(spec))
-                .hasMessageContaining("result table _anon1.anon1 is gone");
-        assertThat(client.created).isEmpty();
-        // The whole budget was spent before giving up — the message's "all" is counted, not
-        // assumed.
-        assertThat(client.getJobCalls).hasSize(QueryJobReuseOrchestrator.MAX_RETRY_PROBES + 1);
     }
 
     @Test

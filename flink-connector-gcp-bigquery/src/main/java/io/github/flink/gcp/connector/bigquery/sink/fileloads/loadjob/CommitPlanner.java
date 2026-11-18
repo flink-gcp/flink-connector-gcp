@@ -23,7 +23,6 @@ import org.apache.flink.util.StringUtils;
 
 import com.google.cloud.bigquery.JobInfo;
 import io.github.flink.gcp.connector.bigquery.sink.BigQuerySinkConfig;
-import io.github.flink.gcp.connector.bigquery.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
@@ -62,8 +61,9 @@ import java.util.TreeMap;
  * constructor signature rather than something every review has to re-check.
  *
  * <p><b>Common case — one partition in one format.</b> A table whose files share a format and fit
- * one load job is loaded directly: the job carries the reconciled schema, the configured
- * disposition, and — belt-and-braces against external mid-run schema changes — the native {@code
+ * one load job is loaded directly: the job carries the reconciled schema, the configured write
+ * disposition under {@code CREATE_NEVER}, since only the reconciliation creates a destination, and
+ * — belt-and-braces against external mid-run schema changes — the native {@code
  * ALLOW_FIELD_ADDITION}/{@code ALLOW_FIELD_RELAXATION} schema update options on {@code
  * WRITE_APPEND} and {@code WRITE_TRUNCATE_DATA} jobs. Multiple fitting formats also stay direct for
  * append/empty dispositions, while replacement dispositions combine them as described below.
@@ -180,7 +180,12 @@ final class CommitPlanner {
                                             load.format,
                                             uris,
                                             jobId("flink-bq-load", load.destination, uris, null),
-                                            toCreateDisposition(config.getCreateDisposition()),
+                                            // The commit's reconciliation has created or read
+                                            // the destination before any load, so a table this
+                                            // load finds missing was dropped since, and creating
+                                            // it here would make it without its creation options
+                                            // (#2181).
+                                            JobInfo.CreateDisposition.CREATE_NEVER,
                                             toWriteDisposition(options.getWriteDisposition()),
                                             schemaUpdateOptions()));
                 }
@@ -561,12 +566,6 @@ final class CommitPlanner {
             throw new IllegalStateException("SHA-256 is unavailable", e);
         }
         return StringUtils.byteToHexString(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
-    }
-
-    private static JobInfo.CreateDisposition toCreateDisposition(CreateDisposition disposition) {
-        return disposition == CreateDisposition.CREATE_NEVER
-                ? JobInfo.CreateDisposition.CREATE_NEVER
-                : JobInfo.CreateDisposition.CREATE_IF_NEEDED;
     }
 
     private static JobInfo.WriteDisposition toWriteDisposition(WriteDisposition disposition) {

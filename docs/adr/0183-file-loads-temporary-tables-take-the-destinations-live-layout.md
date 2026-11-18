@@ -177,8 +177,8 @@ Without the layout on the leaf loads, every disposition but `WRITE_TRUNCATE_DATA
 refusal above.
 Four further cases replay a retry.
 In one, an earlier version's leaf loads and intermediate copy run first under the planned ids
-without the layout, and its final copy is refused until no retry id is left; the commit then
-succeeds.
+without the layout, and its final copy is refused on six restarts, one retry id each; the commit
+then succeeds.
 In the second, this version's own leaf loads run first, into the tables its preparation created
 with their expiration, and the commit re-attaches to them with the staged files already deleted.
 In the third, one of those tables is deleted, as its expiration would, and the commit fills it
@@ -274,7 +274,8 @@ one pending commit, and it fails loudly rather than losing rows.
   would never find its source. It also costs a read of every planned temporary table and needs
   `bigquery.tables.delete`.
 - **Keeping the final copy's id.** A job that restarted in a loop before the upgrade can have used
-  every retry id of that copy, and the upgraded commit could then never submit it.
+  every retry id of that copy, and the upgraded commit could then never submit it under the cap
+  the runner had on retry ids until ADR-0018's 2026-11-19 revision.
 - **Leaving laid-out tables to the dataset's default table expiration.** In a dataset that also
   sets a default partition expiration they would never expire, where every temporary table used to.
 - **Setting the expiration after the job, by `tables.patch`.** One call fewer than creating the

@@ -310,6 +310,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Every load reconciles against the live table via `ensureFinalTable`; the native
   `ALLOW_FIELD_*` options are kept deliberately, and the once-per-destination union warn is
   load-bearing (`docs/adr/0021`).
+  Only that reconciliation creates the destination: a direct load is `CREATE_NEVER` whatever the
+  sink's disposition, because a load creates a dropped table from its own configuration, without the
+  creation options (#2181). Do not map the sink's disposition back onto it. Its recovery rests on
+  `BigQueryLoadJobRunner.create` failing the attempt when its own `jobs.insert` returns the job
+  already failed: probing past it, as past a previous attempt's failed job, spent every retry id in
+  one attempt (measured) and stranded the retried commit (`docs/adr/0018`). The retry-id walk has
+  no cap (the load runner and the query source's reuse walk alike), so that failure is also what
+  keeps a refused submission from repeating within an attempt; do not reintroduce a cap.
 - **Temporary tables take the destination's live layout** (`docs/adr/0183`): when a copy writes a
   column- or range-partitioned or clustered destination, leaf loads carry its partitioning and
   clustering from the reconciliation read, never from `TableCreateOptions`, and never its partition

@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-11-08
-- Issues: [#1995](https://github.com/flink-gcp/flink-connector-gcp/issues/1995)
+- Issues: [#1995](https://github.com/flink-gcp/flink-connector-gcp/issues/1995),
+  [#2181](https://github.com/flink-gcp/flink-connector-gcp/issues/2181)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Customer-managed
   encryption keys
@@ -92,9 +93,12 @@ The connector does not change the encryption of a table that exists, apart from 
   An operator who re-keys the destination during a `WRITE_TRUNCATE` commit has the change undone
   by that commit's replacing job, and the next commit reads the restored key, so the operator's
   key is lost until it is set again; a re-key between commits is kept.
-- A direct load that may create its destination states no key unless it truncates.
-  The commit has just created or read that table, so the load creates it only if the table was
-  dropped in between, and then with the default encryption, as it would without its partitioning.
+- A direct load states no key unless it truncates.
+  It never creates its destination: the commit has just created or read that table, and since
+  [#2181](https://github.com/flink-gcp/flink-connector-gcp/issues/2181) a table dropped in between
+  fails a load submitted into it, and under `CREATE_IF_NEEDED` the retried commit creates it again with the
+  configured key, which is not necessarily the one the dropped table had (ADR-0021's 2026-11-17
+  revision).
 - A configured key that differs from an existing table's is silent.
   Reporting it would need a second comparison and a policy for the case, and the sink already treats
   every other creation option the same way.
