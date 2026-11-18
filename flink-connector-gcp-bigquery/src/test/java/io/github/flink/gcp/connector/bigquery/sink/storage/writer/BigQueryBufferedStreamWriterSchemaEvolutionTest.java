@@ -224,6 +224,35 @@ class BigQueryBufferedStreamWriterSchemaEvolutionTest {
         assertThat(service.openedAppenders).hasSize(2).containsOnly(service.createdStreams.get(0));
     }
 
+    /**
+     * A table dropped while the job runs and found missing by the reconciliation is created through
+     * the writer's own creation path (#2180).
+     */
+    @Test
+    void aTableMissingWhenTheSchemaIsReconciledIsCreated() throws Exception {
+        EvolvingSerializer serializer = new EvolvingSerializer(V1);
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        FakeTableAdmin admin = new FakeTableAdmin();
+        admin.tables.put(DESTINATION, V1);
+        BigQueryBufferedStreamWriter<String> writer =
+                writer(
+                        config(serializer, SchemaUpdateOptions.builder().allowNewFields().build()),
+                        service,
+                        admin,
+                        TestSinkWriterMetricGroup.create());
+
+        writer.write("alice", CONTEXT);
+        writer.flush(false);
+        admin.tables.remove(DESTINATION);
+        serializer.evolveTo(V2);
+        writer.write("bob:hello", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.created).containsExactly(DESTINATION);
+        assertThat(admin.tables.get(DESTINATION)).isEqualTo(V2);
+        assertThat(admin.schemaUpdates).isEmpty();
+    }
+
     @Test
     void reactiveMismatchReconcilesAndReappendsAtTheSameOffset() throws Exception {
         EvolvingSerializer serializer = new EvolvingSerializer(V2);

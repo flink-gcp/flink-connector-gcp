@@ -40,6 +40,10 @@ import java.util.concurrent.ThreadLocalRandom;
  * <p>The schema union policy itself lives in {@link SchemaUnifier} and is shared with {@code
  * FILE_LOADS}. Load jobs retain their own orchestration because they must carry the reconciled
  * schema and apply behavior specific to each write disposition.
+ *
+ * <p>A table found missing is created by the {@link TableCreator} the writer passes in, which is
+ * that writer's own creation path rather than a {@code TableAdmin.create} call made here, so a CDC
+ * table is created through the CDC provisioning (ADR-0112) like any other the writer creates.
  */
 @Internal
 final class StorageWriteSchemaReconciler<T> {
@@ -65,12 +69,22 @@ final class StorageWriteSchemaReconciler<T> {
         CREATED
     }
 
+    /** Creates a missing destination table the way the writer creates one anywhere else. */
+    @FunctionalInterface
+    interface TableCreator {
+        void create(TableDestination destination) throws IOException;
+    }
+
     private final BigQuerySinkConfig<T> config;
     private final TableAdmin tableAdmin;
+    private final TableCreator tableCreator;
 
-    StorageWriteSchemaReconciler(BigQuerySinkConfig<T> config, TableAdmin tableAdmin) {
+    StorageWriteSchemaReconciler(
+            BigQuerySinkConfig<T> config, TableAdmin tableAdmin, TableCreator tableCreator) {
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         this.tableAdmin = Preconditions.checkNotNull(tableAdmin, "tableAdmin must not be null");
+        this.tableCreator =
+                Preconditions.checkNotNull(tableCreator, "tableCreator must not be null");
     }
 
     /**
@@ -93,10 +107,7 @@ final class StorageWriteSchemaReconciler<T> {
                         "The table behind {} does not exist, creating it instead of updating its"
                                 + " schema (CREATE_IF_NEEDED)",
                         destination);
-                tableAdmin.create(
-                        destination,
-                        desired,
-                        config.getTableCreateOptionsProvider().optionsFor(destination));
+                tableCreator.create(destination);
                 return Outcome.CREATED;
             }
             SchemaUnifier.UnionResult union =

@@ -42,6 +42,8 @@ import io.github.flink.gcp.connector.bigquery.sink.SchemaUpdateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptions;
 import io.github.flink.gcp.connector.bigquery.sink.TableCreateOptionsProvider;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcChangeTypeProvider;
+import io.github.flink.gcp.connector.bigquery.sink.cdc.CdcOptions;
 import io.github.flink.gcp.connector.bigquery.sink.failure.BigQueryFailure;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BigQueryDefaultStreamSink;
@@ -156,6 +158,7 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
 
         private final List<TableSchema> updates = new ArrayList<>();
         private final List<TableDestination> creates = new ArrayList<>();
+        private final List<TableDestination> cdcProvisions = new ArrayList<>();
         private int reads;
 
         RecordingTableAdmin(TableSchema liveSchema) {
@@ -176,9 +179,22 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
                 TableCreateOptionsProvider optionsProvider,
                 CdcTableOptions cdcOptions,
                 CreateDisposition createDisposition,
-                CdcTableReconciliationPolicy reconciliationPolicy) {
-            create(destination, schema, optionsProvider.optionsFor(destination));
-            return true;
+                CdcTableReconciliationPolicy reconciliationPolicy)
+                throws IOException {
+            // Recorded apart from create(...): a CDC table has to come from the provisioning,
+            // which is what gives it the primary key and the provisioning label.
+            cdcProvisions.add(destination);
+            if (liveSchema == null && createDisposition == CreateDisposition.CREATE_NEVER) {
+                // What CdcTableProvisioner answers, so a CREATE_NEVER case cannot pass by
+                // creating the table here.
+                throw new IOException(
+                        "CDC table " + destination + " is missing under CREATE_NEVER");
+            }
+            if (liveSchema == null) {
+                liveSchema = schema;
+                return true;
+            }
+            return false;
         }
 
         @Override
@@ -808,6 +824,58 @@ class BigQueryDefaultStreamWriterSchemaEvolutionTest {
 
         assertThat(factory.created).hasSize(1);
         assertThat(admin.reads).isZero();
+    }
+
+    /**
+     * A CDC table that is dropped while the job runs, then found missing by a schema
+     * reconciliation, is re-created by the CDC provisioning: a plain creation would leave it
+     * without the primary key and the provisioning label, which every later start refuses.
+     */
+    @Test
+    void aMissingCdcTableFoundByReconciliationIsProvisionedRatherThanCreated() throws Exception {
+        ScriptedAppenderFactory factory = new ScriptedAppenderFactory();
+        RecordingTableAdmin admin = new RecordingTableAdmin(null);
+        EvolvingSerializer serializer = new EvolvingSerializer(V1);
+        BigQueryDefaultStreamWriter<String> writer =
+                writer(
+                        ((BigQueryDefaultStreamSink<String>)
+                                        BigQuerySink.<String>builder()
+                                                .table(DESTINATION)
+                                                .serializer(serializer)
+                                                .schemaUpdateOptions(
+                                                        SchemaUpdateOptions.builder()
+                                                                .allowNewFields()
+                                                                .build())
+                                                .cdcOptions(
+                                                        CdcOptions.<String>builder(
+                                                                        CdcChangeTypeProvider
+                                                                                .upsertOnly())
+                                                                .sequenceNumberProvider(
+                                                                        record -> "1")
+                                                                .build())
+                                                .cdcTableOptions(
+                                                        CdcTableOptions.builder()
+                                                                .primaryKeyColumns(List.of("name"))
+                                                                .build())
+                                                .build())
+                                .getConfig(),
+                        factory,
+                        admin);
+
+        // Records in the wire form of field 1, since the CDC pseudocolumns are appended to the
+        // serialized message.
+        writer.write("\n\u0002aa", CONTEXT);
+        assertThat(admin.cdcProvisions).containsExactly(DESTINATION);
+        // The table is dropped while the job runs; the serializer's schema then evolves.
+        admin.liveSchema = null;
+        serializer.evolveTo(V2);
+        writer.write("\n\u0002bb", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.creates).isEmpty();
+        assertThat(admin.cdcProvisions).containsExactly(DESTINATION, DESTINATION);
+        assertThat(admin.liveSchema).isEqualTo(V2);
+        assertThat(factory.allAppendedRows()).hasSize(2);
     }
 
     @Test

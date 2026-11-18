@@ -239,7 +239,8 @@ public class BigQueryBufferedStreamWriter<T>
         this.metrics =
                 new BufferedStreamWriterMetrics(
                         Preconditions.checkNotNull(metricGroup, "metricGroup must not be null"));
-        this.schemaReconciler = new StorageWriteSchemaReconciler<>(config, tableAdmin);
+        this.schemaReconciler =
+                new StorageWriteSchemaReconciler<>(config, tableAdmin, this::createTable);
         this.metrics.bindWriterState((Gauge<Integer>) () -> inFlightCount);
 
         Map<TableDestination, BufferedStreamWriterState> adoptedByDestination =
@@ -937,13 +938,11 @@ public class BigQueryBufferedStreamWriter<T>
         }
     }
 
-    private StorageWriteSchemaReconciler.Outcome reconcileSchema(TableDestination destination)
-            throws IOException {
-        StorageWriteSchemaReconciler.Outcome outcome = schemaReconciler.reconcile(destination);
-        if (outcome == StorageWriteSchemaReconciler.Outcome.UPDATED) {
+    private void reconcileSchema(TableDestination destination) throws IOException {
+        if (schemaReconciler.reconcile(destination)
+                == StorageWriteSchemaReconciler.Outcome.UPDATED) {
             metrics.schemaReconciled();
         }
-        return outcome;
     }
 
     /**
@@ -1168,10 +1167,7 @@ public class BigQueryBufferedStreamWriter<T>
                 LOG.info(
                         "Destination table {} may not exist, creating it (CREATE_IF_NEEDED)",
                         state.destination);
-                tableAdmin.create(
-                        state.destination,
-                        config.getTableSchema(state.destination),
-                        config.getTableCreateOptionsProvider().optionsFor(state.destination));
+                createTable(state.destination);
                 tableCreated = true;
             } else if (!(mayBeMissingTable && tableCreated)
                     && AppendErrorClassifier.classify(failure)
@@ -1193,6 +1189,17 @@ public class BigQueryBufferedStreamWriter<T>
             sleep(recoverySchedule.backoffMs(attempt));
         }
         throw new IllegalStateException("unreachable");
+    }
+
+    /**
+     * Creates the destination table, for a buffered stream that cannot be created on it and for a
+     * schema reconciliation that finds it gone alike.
+     */
+    private void createTable(TableDestination destination) throws IOException {
+        tableAdmin.create(
+                destination,
+                config.getTableSchema(destination),
+                config.getTableCreateOptionsProvider().optionsFor(destination));
     }
 
     /**
