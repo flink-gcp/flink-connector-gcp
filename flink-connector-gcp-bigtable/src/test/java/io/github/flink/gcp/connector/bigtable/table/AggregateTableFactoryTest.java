@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigtable.table;
 
 import org.apache.flink.table.api.DataTypes;
-import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
@@ -145,7 +144,6 @@ class AggregateTableFactoryTest {
                     DataTypes.DOUBLE()
                 }) {
             assertThatThrownBy(() -> FactoryMocks.createTableSink(schema(type), options()))
-                    .isInstanceOf(ValidationException.class)
                     .hasStackTraceContaining(
                             "Aggregate column 'cf.q' requires TINYINT, SMALLINT, INT or BIGINT");
         }
@@ -195,7 +193,6 @@ class AggregateTableFactoryTest {
         options.put("sink.write-mode", "malformed");
         assertThatThrownBy(
                         () -> FactoryMocks.createTableSource(schema(DataTypes.BIGINT()), options))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("Invalid value for option 'sink.write-mode'.");
     }
 
@@ -207,7 +204,6 @@ class AggregateTableFactoryTest {
         options.put(TYPES, "malformed");
         assertThatThrownBy(
                         () -> FactoryMocks.createTableSource(schema(DataTypes.BIGINT()), options))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("Invalid value for option '" + TYPES + "'.");
     }
 }

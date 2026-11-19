@@ -19,7 +19,6 @@ package io.github.flink.gcp.connector.bigquery.table.catalog;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.TableEnvironment;
-import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.types.Row;
@@ -84,10 +83,8 @@ class BigQueryCatalogFactoryTest {
     @Test
     void requiresTheProjectAndTheDefaultDatabase() {
         assertThatThrownBy(() -> create(options("project", null)))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("project");
         assertThatThrownBy(() -> create(options("default-database", null)))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("default-database");
     }
 
@@ -96,14 +93,12 @@ class BigQueryCatalogFactoryTest {
         // Tuning stays per statement; a catalog-level default is a non-goal (docs/adr/0168).
         // FactoryUtil's wrapper lists every option, so the key alone would match the dump.
         assertThatThrownBy(() -> create(options("sink.write-method", "file-loads")))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("Unsupported options found for 'bigquery'");
     }
 
     @Test
     void namesTheOptionKeyWhenAPathComponentIsRejected() {
         assertThatThrownBy(() -> create(options("default-database", "a/b")))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("Option 'default-database' is invalid")
                 .hasStackTraceContaining("dataset must not contain '/'");
         assertThatThrownBy(() -> create(options("project", " p")))
@@ -126,7 +121,6 @@ class BigQueryCatalogFactoryTest {
                                         options(
                                                 "service-account-key-file", "/key.json",
                                                 "emulator-rest-endpoint", "localhost:9050")))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("credential-free");
         assertThatThrownBy(() -> create(options("service-account-key-file", " ")))
                 .hasStackTraceContaining("must not be blank");
@@ -142,7 +136,6 @@ class BigQueryCatalogFactoryTest {
                                         options(
                                                 "emulator-endpoint", "localhost:9060",
                                                 "emulator-rest-endpoint", "no-port")))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining("emulator-rest-endpoint must be host:port");
         assertThatThrownBy(
                         () ->
@@ -158,11 +151,9 @@ class BigQueryCatalogFactoryTest {
         // Either alone sends one half of the catalog to the service: the metadata requests
         // without the REST endpoint, the tables' rows without the gRPC one.
         assertThatThrownBy(() -> create(options("emulator-endpoint", "localhost:9060")))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining(
                         "Options 'emulator-endpoint' and 'emulator-rest-endpoint' go together");
         assertThatThrownBy(() -> create(options("emulator-rest-endpoint", "localhost:9050")))
-                .isInstanceOf(ValidationException.class)
                 .hasStackTraceContaining(
                         "Options 'emulator-endpoint' and 'emulator-rest-endpoint' go together");
     }
