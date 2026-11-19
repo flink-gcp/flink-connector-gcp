@@ -143,7 +143,7 @@ void namesTheOptionKeyWhenAValueIsRejected() {
 }
 ```
 
-Four things this shape is deliberate about:
+Five things this shape is deliberate about:
 
 - **Assert both halves.** The key alone passes if the rename is there but the builder's bound is
   gone; the builder's sentence alone passes if the bound is there but the rename is not.
@@ -152,6 +152,16 @@ Four things this shape is deliberate about:
   whose own cause is the builder's `IllegalArgumentException` — so `.rootCause()` sees only the
   setter's sentence. `hasStackTraceContaining` for both halves is what the factory tests use;
   `hasMessageContaining` works where the mapper is called directly.
+- **Assert the type only where it can fail.** When the only call in the lambda that can throw is
+  `FactoryUtil`'s create method (`FactoryMocks.createTableSink`, `FactoryUtil.createCatalog`, or a
+  helper that just returns one), the test sees the wrapper, a `ValidationException` whatever the
+  factory threw, so `isInstanceOf(ValidationException.class)` passes for an
+  `IllegalArgumentException` or a `NullPointerException` too; leave it out there. Where the lambda
+  goes on past the factory, into `getSinkRuntimeProvider` or through `executeSql`, a check that
+  fires after the factory reaches the test unwrapped, as does anything a mapper called directly, as
+  above, throws. There the type is the code under test's choice, and the assertion stays:
+  `OptionSetters` renames only `IllegalArgumentException`, so it fails when a check throws anything
+  else or skips the rename.
 - **Reach the arm.** A check inside an options mapper runs only when that part is assembled — a
   Pub/Sub create-options test needs a create disposition that allows creation, or the mapper never
   runs at all.
