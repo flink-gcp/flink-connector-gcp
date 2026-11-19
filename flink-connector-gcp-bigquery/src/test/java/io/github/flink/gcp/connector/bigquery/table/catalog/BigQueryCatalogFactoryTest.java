@@ -113,6 +113,9 @@ class BigQueryCatalogFactoryTest {
         assertThatThrownBy(() -> create(options("scan.parent-project", "a/b")))
                 .hasStackTraceContaining("Option 'scan.parent-project' is invalid")
                 .hasStackTraceContaining("parentProject must not contain '/'");
+        assertThatThrownBy(() -> create(options("sink.parent-project", "jobs/project")))
+                .hasStackTraceContaining("Option 'sink.parent-project' is invalid")
+                .hasStackTraceContaining("parentProject must not contain '/'");
     }
 
     @Test

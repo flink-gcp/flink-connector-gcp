@@ -287,7 +287,7 @@ After `USE CATALOG bq`, `events` names `my-project.analytics.events`, and `stagi
 
 A table the catalog resolves behaves as the equivalent hand-written `CREATE TABLE` would, for `SELECT` and `INSERT INTO` alike.
 
-- **Options**: `connector`, `project`, `dataset` and `table`, plus the catalog's `service-account-key-file`, emulator endpoints and `scan.parent-project` when those are set.
+- **Options**: `connector`, `project`, `dataset` and `table`, plus the catalog's `service-account-key-file`, emulator endpoints, `scan.parent-project` and `sink.parent-project` when those are set.
   Every other option is per statement, through an `OPTIONS` hint, which also overrides a carried value: `SELECT * FROM events /*+ OPTIONS('scan.row-restriction' = 'amount > 0') */`.
 - **Schema**: each column resolves as the last column of the [type mapping](#type-mapping) gives, `REQUIRED` as `NOT NULL`, and BigQuery descriptions become the table and column comments.
   A sink-created table therefore reads back with the lossy cases that column names: an `INT` declaration as `BIGINT`, a `VARCHAR(n)` as `STRING`, and a `NOT NULL` as nullable unless `sink.derive-required-columns` made the column `REQUIRED`.
@@ -332,9 +332,17 @@ The dataset is read through its metadata view, which needs `bigquery.datasets.ge
 | `emulator-endpoint` | no | String | The emulator's gRPC endpoint as `host:port`, unused by the catalog itself and carried to every table for its rows |
 | `emulator-rest-endpoint` | no | String | The emulator's REST endpoint as `host:port`, used for the catalog's metadata requests and carried to every table. The two endpoints are set together or not at all: either alone would send one half of the catalog to BigQuery itself |
 | `scan.parent-project` | no | String | Carried to every table as the Storage Read billing project; see [Source options](#source-options) |
+| `sink.parent-project` | no | String | Carried to every table as the project the sink's BigQuery jobs run in and are billed to; see [Sink options](#sink-options) |
 
 A tuning option in `CREATE CATALOG` is rejected as unknown: a catalog-level default would apply to statements that never mention it.
-The keys are those of the table options they are carried as, and `project`, `default-database` and `scan.parent-project` are checked as resource-path components.
+The two parent projects are carried all the same, because a deployment, rather than a statement, usually decides them: they name the project that pays for the reads and jobs and in which the job's identity must be allowed to create them.
+The keys are those of the table options they are carried as, and `project`, `default-database` and both parent projects are checked as resource-path components.
+
+`sink.parent-project` takes effect only where the sink creates jobs.
+That is an `INSERT INTO` whose hint selects `'sink.write-method' = 'file-loads'`, which reads the carried value each time the statement is planned, and a [CDC](#change-data-capture) table created `LIKE` a catalog table, which copies the value once, when it is created, and runs any maximum-staleness statements in that project until it is re-created.
+Any other insert writes through the Storage Write API alone, creates no jobs, and is unaffected by the value.
+Setting it on a catalog whose FILE_LOADS statements already run follows the rule for adopting the option on any table: the first value names the project their jobs have run in so far, and a later change is safe for a statement that restores from a checkpoint or savepoint only when that state was taken after the option was set, as [File loads]({{< relref "docs/connectors/datastream/bigquery" >}}#file-loads) describes.
+A statement whose jobs ran in another project, such as one whose hint sets its own `service-account-key-file`, names that project in its hint when the catalog first sets the option, since a hint can replace the carried value but not remove it.
 
 ## Source
 
@@ -534,7 +542,8 @@ BigQuery silently dropped `maxStaleness` through all three measured Tables API w
 That optional path needs `bigquery.jobs.create` and table-update permission and submits metadata
 query jobs; leaving both maximum-staleness options unset submits none.
 The jobs run in the destination's project unless `sink.parent-project` names another, which then
-needs the job permission instead.
+needs the job permission instead; a table created `LIKE` a [catalog](#catalog-options) table copies
+the catalog's value.
 The default `sink.cdc.table-reconciliation=verify-only` checks existing tables without modifying
 an unlabeled table.
 Select `reconcile` to adopt an existing table and converge maximum staleness plus the connector

@@ -137,3 +137,6 @@ sessions and query jobs in `parentProject(...)`, which defaults to the table's p
 - State written in version 4 cannot be read by a release that predates it.
 - The gated FILE_LOADS tests leave the option unset and still need the environment to name a
   project.
+- A `bigquery` catalog that sets `sink.parent-project` carries it to the tables it resolves
+  (ADR-0169, [#2196](https://github.com/flink-gcp/flink-connector-gcp/issues/2196)), so a
+  FILE_LOADS statement on a catalog table need not repeat it in a hint.
