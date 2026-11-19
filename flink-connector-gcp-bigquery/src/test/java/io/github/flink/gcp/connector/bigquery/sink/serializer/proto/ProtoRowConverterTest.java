@@ -46,6 +46,7 @@ import io.github.flink.gcp.connector.bigquery.testproto.Presence;
 import io.github.flink.gcp.connector.bigquery.testproto.PresenceChild;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Child;
 import io.github.flink.gcp.connector.bigquery.testproto.Proto2Presence;
+import io.github.flink.gcp.connector.bigquery.testproto.UnsignedTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
 import org.junit.jupiter.api.Test;
@@ -70,6 +71,24 @@ class ProtoRowConverterTest {
 
     private static final ProtoSchemaOptions OPTIONS =
             ProtoSchemaOptions.builder().jsonFieldPath("f_json").build();
+
+    /**
+     * The values from issue #2201's table, plus the uint64 from #2200 and a fixed32 at
+     * 2<sup>31</sup>. Every field holds at least one value whose signed and unsigned readings
+     * differ, so no assertion can pass under the wrong reading.
+     */
+    private static final UnsignedTypes UNSIGNED_VALUES =
+            UnsignedTypes.newBuilder()
+                    .setUUint32((int) 3232235777L)
+                    .setUFixed32(-1)
+                    .setUUint64(0xFF00000000000000L)
+                    .setUFixed64(-1L)
+                    .addURepFixed32(Integer.MIN_VALUE)
+                    .addURepFixed32(1)
+                    .addURepFixed64(Long.MIN_VALUE)
+                    .addURepFixed64(Long.MAX_VALUE)
+                    .putUMap(-1, Integer.MIN_VALUE)
+                    .build();
 
     @Test
     void convertsTheFullTypeMatrix() throws Exception {
@@ -239,20 +258,60 @@ class ProtoRowConverterTest {
                 .hasMessage("The row descriptor has 2 fields where test.MixedCase at <root> has 6");
     }
 
+    /**
+     * A uint64 or fixed64 at or above 2<sup>63</sup> is written with its 64 bits, the negative long
+     * protobuf-java returns, as Avro's {@code ProtobufData} writes it too: BigQuery has no unsigned
+     * 64-bit type, and any other INT64 value would lose the original.
+     */
     @Test
-    void rejectsUnrepresentableUint64Values() throws Exception {
-        Descriptors.Descriptor source = TestProtos.allTypes();
-        ProtoRowConverter converter = converter(source, OPTIONS);
+    void writesUint64AndFixed64ValuesAtOrAbove2To63WithTheirBits() throws Exception {
+        ProtoRowConverter converter =
+                converter(UnsignedTypes.getDescriptor(), ProtoSchemaOptions.builder().build());
 
-        DynamicMessage message =
-                DynamicMessage.newBuilder(source)
-                        .setField(source.findFieldByName("f_uint64"), 0xF000000000000000L)
-                        .build();
+        DynamicMessage row = converter.convert(UNSIGNED_VALUES);
 
-        assertThatThrownBy(() -> converter.convert(message))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("f_uint64")
-                .hasMessageContaining("17293822569102704640");
+        assertThat(get(row, "u_uint64")).isEqualTo(-72057594037927936L);
+        assertThat(get(row, "u_fixed64")).isEqualTo(-1L);
+        assertThat(get(row, "u_rep_fixed64"))
+                .isEqualTo(Arrays.asList(Long.MIN_VALUE, Long.MAX_VALUE));
+    }
+
+    /** By default a uint32 or fixed32 is written as the unsigned number it is. */
+    @Test
+    void writesUint32AndFixed32ValuesUnsignedByDefault() throws Exception {
+        ProtoRowConverter converter =
+                converter(UnsignedTypes.getDescriptor(), ProtoSchemaOptions.builder().build());
+
+        DynamicMessage row = converter.convert(UNSIGNED_VALUES);
+
+        assertThat(get(row, "u_uint32")).isEqualTo(3232235777L);
+        assertThat(get(row, "u_fixed32")).isEqualTo(4294967295L);
+        assertThat(get(row, "u_rep_fixed32")).isEqualTo(Arrays.asList(2147483648L, 1L));
+        assertThat(get(onlyEntry(row, "u_map"), "key")).isEqualTo(4294967295L);
+        assertThat(get(onlyEntry(row, "u_map"), "value")).isEqualTo(2147483648L);
+    }
+
+    /**
+     * Under {@code unsignedIntegersAsSigned} a uint32 or fixed32 is the sign-extended int with the
+     * same bits, which is what a table loaded from Avro's {@code ProtobufData} files holds. A
+     * uint64 or fixed64 is unaffected, being written by its bits either way.
+     */
+    @Test
+    void writesUint32AndFixed32ValuesByTheirBitsWhenAsked() throws Exception {
+        ProtoRowConverter converter =
+                converter(
+                        UnsignedTypes.getDescriptor(),
+                        ProtoSchemaOptions.builder().unsignedIntegersAsSigned().build());
+
+        DynamicMessage row = converter.convert(UNSIGNED_VALUES);
+
+        assertThat(get(row, "u_uint32")).isEqualTo(-1062731519L);
+        assertThat(get(row, "u_fixed32")).isEqualTo(-1L);
+        assertThat(get(row, "u_rep_fixed32")).isEqualTo(Arrays.asList(-2147483648L, 1L));
+        assertThat(get(onlyEntry(row, "u_map"), "key")).isEqualTo(-1L);
+        assertThat(get(onlyEntry(row, "u_map"), "value")).isEqualTo(-2147483648L);
+        assertThat(get(row, "u_uint64")).isEqualTo(-72057594037927936L);
+        assertThat(get(row, "u_fixed64")).isEqualTo(-1L);
     }
 
     @Test
@@ -651,17 +710,18 @@ class ProtoRowConverterTest {
         assertThat(get(zero, "w_string")).isEqualTo("");
     }
 
-    /** A wrapper inherits the range check of the scalar it wraps, from the very same code. */
+    /** A UInt64Value at or above 2<sup>63</sup> keeps its bits, as a bare uint64 does. */
     @Test
-    void rejectsUnrepresentableUint64WrapperValues() throws Exception {
+    void writesUint64WrapperValuesWithTheirBits() throws Exception {
         ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
-        WellKnownTypes source =
-                WellKnownTypes.newBuilder().setWUint64(UInt64Value.of(Long.MIN_VALUE)).build();
 
-        assertThatThrownBy(() -> converter.convert(source))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("w_uint64")
-                .hasMessageContaining("9223372036854775808");
+        DynamicMessage row =
+                converter.convert(
+                        WellKnownTypes.newBuilder()
+                                .setWUint64(UInt64Value.of(Long.MIN_VALUE))
+                                .build());
+
+        assertThat(get(row, "w_uint64")).isEqualTo(Long.MIN_VALUE);
     }
 
     /**
@@ -747,6 +807,23 @@ class ProtoRowConverterTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("w_duration")
                 .hasMessageContaining("out of range");
+    }
+
+    /** A nested field's failure names its full path, so the FailedRow can be acted on. */
+    @Test
+    void namesTheFullPathOfANestedOutOfRangeDuration() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+        WellKnownTypes source =
+                WellKnownTypes.newBuilder()
+                        .setWChild(
+                                WellKnownTypesChild.newBuilder()
+                                        .setCDuration(
+                                                Duration.newBuilder().setSeconds(Long.MAX_VALUE)))
+                        .build();
+
+        assertThatThrownBy(() -> converter.convert(source))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("w_child.c_duration");
     }
 
     /** Paths verbatim, not lowerCamelCased as protobuf's canonical JSON form would render them. */
@@ -1081,21 +1158,42 @@ class ProtoRowConverterTest {
         assertThat(get(duration, "nanos")).isEqualTo(-1L);
     }
 
-    /** The uint64 range check survives expansion, since the wrapped value is a bare uint64. */
+    /**
+     * A UInt32Value takes its conversion from the scalar it wraps, so {@code
+     * unsignedIntegersAsSigned} reaches it flattened and expanded alike.
+     */
     @Test
-    void stillRejectsAnUnrepresentableExpandedUint64Wrapper() throws Exception {
-        ProtoRowConverter converter = wellKnownTypesConverter(ALL_AS_MESSAGES);
+    void writesUint32WrapperValuesByTheirBitsWhenAsked() throws Exception {
+        WellKnownTypes source = WellKnownTypes.newBuilder().setWUint32(UInt32Value.of(-1)).build();
 
-        assertThatThrownBy(
-                        () ->
-                                converter.convert(
-                                        WellKnownTypes.newBuilder()
-                                                .setWUint64(UInt64Value.of(Long.MIN_VALUE))
-                                                .build()))
-                .isInstanceOf(IllegalArgumentException.class)
-                // The sub-field's path, which the flat mapping's check would not name.
-                .hasMessageContaining("w_uint64.value")
-                .hasMessageContaining("9223372036854775808");
+        DynamicMessage flat =
+                wellKnownTypesConverter(
+                                ProtoSchemaOptions.builder().unsignedIntegersAsSigned().build())
+                        .convert(source);
+        DynamicMessage expanded =
+                wellKnownTypesConverter(
+                                ProtoSchemaOptions.builder()
+                                        .wellKnownTypesAsMessages(
+                                                ProtoSchemaOptions.WellKnownType.values())
+                                        .unsignedIntegersAsSigned()
+                                        .build())
+                        .convert(source);
+
+        assertThat(get(flat, "w_uint32")).isEqualTo(-1L);
+        assertThat(get((DynamicMessage) get(expanded, "w_uint32"), "value")).isEqualTo(-1L);
+    }
+
+    /** An expanded UInt64Value's {@code value} is a bare uint64, so it keeps its bits too. */
+    @Test
+    void writesAnExpandedUint64WrapperWithItsBits() throws Exception {
+        DynamicMessage row =
+                wellKnownTypesConverter(ALL_AS_MESSAGES)
+                        .convert(
+                                WellKnownTypes.newBuilder()
+                                        .setWUint64(UInt64Value.of(Long.MIN_VALUE))
+                                        .build());
+
+        assertThat(get((DynamicMessage) get(row, "w_uint64"), "value")).isEqualTo(Long.MIN_VALUE);
     }
 
     private static ProtoRowConverter wellKnownTypesConverter(ProtoSchemaOptions options)
@@ -1192,6 +1290,13 @@ class ProtoRowConverterTest {
                 (DynamicMessage)
                         row.getRepeatedField(row.getDescriptorForType().findFieldByName(field), 0);
         return get(entry, "value");
+    }
+
+    /** The single entry of a map column. */
+    private static DynamicMessage onlyEntry(DynamicMessage row, String field) {
+        List<?> entries = (List<?>) get(row, field);
+        assertThat(entries).hasSize(1);
+        return (DynamicMessage) entries.get(0);
     }
 
     private static boolean has(DynamicMessage message, String field) {

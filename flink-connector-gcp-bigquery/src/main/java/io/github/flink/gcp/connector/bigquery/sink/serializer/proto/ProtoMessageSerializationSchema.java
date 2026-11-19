@@ -46,7 +46,10 @@ import java.io.IOException;
  * field presence instead of every non-repeated column being {@code NULLABLE} (see {@link
  * ProtoSchemaOptions.Builder#deriveRequiredColumns()}), and which well-known types are expanded as
  * ordinary messages instead of one flat column (see {@link
- * ProtoSchemaOptions.Builder#wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType...)}).
+ * ProtoSchemaOptions.Builder#wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType...)}). It
+ * also decides one thing about the written values alone: whether a uint32 or fixed32 is written by
+ * its bits rather than as its unsigned value (see {@link
+ * ProtoSchemaOptions.Builder#unsignedIntegersAsSigned()}).
  *
  * <p>All destinations share the schema of {@code T}; the message class (not its non-serializable
  * descriptor) is stored, so instances survive Flink's job-graph serialization and rebuild their

@@ -35,8 +35,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Options controlling how protobuf descriptors are mapped to BigQuery schemas. Four mappings can be
- * adjusted:
+ * Options controlling how protobuf descriptors are mapped to BigQuery schemas and how their values
+ * are written. Five things can be adjusted:
  *
  * <ul>
  *   <li><b>JSON columns.</b> The Storage Write API carries a {@code JSON} column as a string, so
@@ -64,6 +64,11 @@ import java.util.Set;
  *       Builder#wellKnownTypesAsMessages(WellKnownType...)} expands the listed ones as the ordinary
  *       messages they are, so the sink can write to a table that another writer created with {@code
  *       STRUCT} columns for them.
+ *   <li><b>Unsigned integers.</b> A uint32 or fixed32 value is written as the unsigned number it
+ *       is, and a uint64 or fixed64 value as the signed {@code long} with the same 64 bits, since
+ *       {@code INT64} has no room for the unsigned one. {@link Builder#unsignedIntegersAsSigned()}
+ *       writes a uint32 or fixed32 by its bits too, so the sink can write to a table that another
+ *       writer filled that way.
  * </ul>
  *
  * <p>Two reasons {@code NULLABLE} is the default. A proto3 field without presence is the spelling
@@ -112,6 +117,8 @@ public final class ProtoSchemaOptions implements Serializable {
 
     private final Set<WellKnownType> wellKnownTypesAsMessages;
 
+    private final boolean unsignedIntegersAsSigned;
+
     private ProtoSchemaOptions(Builder builder) {
         this.jsonFieldPaths = Collections.unmodifiableSet(new HashSet<>(builder.jsonFieldPaths));
         this.jsonFieldOptions =
@@ -123,6 +130,7 @@ public final class ProtoSchemaOptions implements Serializable {
         this.deriveRequiredColumns = builder.deriveRequiredColumns;
         this.wellKnownTypesAsMessages =
                 Collections.unmodifiableSet(EnumSet.copyOf(builder.wellKnownTypesAsMessages));
+        this.unsignedIntegersAsSigned = builder.unsignedIntegersAsSigned;
     }
 
     /**
@@ -158,6 +166,14 @@ public final class ProtoSchemaOptions implements Serializable {
      */
     public Set<WellKnownType> getWellKnownTypesAsMessages() {
         return wellKnownTypesAsMessages;
+    }
+
+    /**
+     * Returns whether a uint32 or fixed32 value is written as the signed {@code int} with the same
+     * 32 bits rather than as its unsigned value; off by default.
+     */
+    public boolean isUnsignedIntegersAsSigned() {
+        return unsignedIntegersAsSigned;
     }
 
     /**
@@ -306,6 +322,7 @@ public final class ProtoSchemaOptions implements Serializable {
         private boolean deriveRequiredColumns;
         private final EnumSet<WellKnownType> wellKnownTypesAsMessages =
                 EnumSet.noneOf(WellKnownType.class);
+        private boolean unsignedIntegersAsSigned;
 
         Builder() {}
 
@@ -346,6 +363,31 @@ public final class ProtoSchemaOptions implements Serializable {
                 this.wellKnownTypesAsMessages.add(
                         Preconditions.checkNotNull(type, "types must not contain null"));
             }
+            return this;
+        }
+
+        /**
+         * Writes a uint32 or fixed32 value as the signed {@code int} with the same 32 bits,
+         * sign-extended to {@code INT64}, instead of as its unsigned value. Use it to write to an
+         * existing table loaded from Avro files that Avro's {@code ProtobufData} wrote: it maps
+         * these types to Avro {@code int}, so such a table holds {@code -1} where this sink would
+         * write {@code 4294967295}, and a column written both ways would mix two encodings. A table
+         * this sink filled, through {@code FILE_LOADS} as well, already holds the unsigned values
+         * and needs no option.
+         *
+         * <p>It covers a bare field, a repeated one, a map key or value, and a {@code UInt32Value},
+         * flattened or expanded by {@link #wellKnownTypesAsMessages(WellKnownType...)}. A uint64 or
+         * fixed64 value is written by its bits whether or not this is set, because {@code INT64}
+         * cannot hold the unsigned value of one at or above 2<sup>63</sup>.
+         *
+         * <p>This changes only the written values, not the derived schema: the column is {@code
+         * INT64} either way. A reader recovers the unsigned value by adding 2<sup>32</sup> to a
+         * negative one.
+         *
+         * @return this builder
+         */
+        public Builder unsignedIntegersAsSigned() {
+            this.unsignedIntegersAsSigned = true;
             return this;
         }
 

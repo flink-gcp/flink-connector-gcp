@@ -959,8 +959,8 @@ message into the protobuf row the Storage Write API accepts.
 | Protobuf | BigQuery |
 |---|---|
 | `int32`, `sint32`, `sfixed32`, `int64`, `sint64`, `sfixed64` | `INT64` |
-| `uint32`, `fixed32` | `INT64`, widened unsigned |
-| `uint64`, `fixed64` | `INT64`; a value above `Long.MAX_VALUE` is a row-level failure |
+| `uint32`, `fixed32` | `INT64`, widened unsigned; see [Unsigned integers](#unsigned-integers) |
+| `uint64`, `fixed64` | `INT64`, the same 64 bits; see [Unsigned integers](#unsigned-integers) |
 | `float`, `double` | `DOUBLE` |
 | `bool` | `BOOL` |
 | `string` | `STRING` |
@@ -988,6 +988,30 @@ A recursive message is rejected — BigQuery schemas cannot represent one — as
 whose names differ only by case, which the Storage API cannot tell apart because it lowercases
 descriptor field names, and a message with no fields at all, `google.protobuf.Empty` among them,
 since a BigQuery `STRUCT` must have at least one column.
+
+#### Unsigned integers
+
+BigQuery has no unsigned integer type, so every unsigned protobuf type maps to `INT64`, and the
+question is which `INT64` value a field writes.
+
+A `uint32` or `fixed32` value fits in `INT64` as the unsigned number it is, and that is what the
+column holds by default: `4294967295` is written as `4294967295`. A `uint64` or `fixed64` value at or
+above `2^63` does not fit, so the column holds the signed `long` with the same 64 bits, as
+protobuf-java returns it: `18446744073709551615` is written as `-1`. That is the only `INT64` value
+that loses nothing, and adding `2^64` to a negative one recovers the unsigned value. A
+`UInt32Value` or `UInt64Value`, flattened or [expanded](#well-known-types), follows the type it
+wraps.
+
+A table loaded from Avro files that Avro's protobuf support (`ProtobufData`) wrote holds the 32-bit
+types differently. `ProtobufData` maps `uint32` and `fixed32` to an Avro `int`, so a load job writes
+the 32 bits sign-extended: such a table holds `-1` where this sink would write `4294967295`. Avro
+staging alone does not imply this: this sink's own `FILE_LOADS` stages the converted value as an
+Avro `long` and keeps `4294967295`, so a table it filled needs no option.
+`ProtoSchemaOptions.builder().unsignedIntegersAsSigned()` writes the 32-bit types by their bits
+too, so such a column keeps one encoding. The option changes the written values only; the column is
+`INT64` either way, and a reader recovers the unsigned value by adding `2^32` to a negative
+one. `ProtobufData` maps `uint64` and `fixed64` to an Avro `long` with the same bits, so the 64-bit
+types match it without the option.
 
 #### Well-known types
 
@@ -1023,9 +1047,9 @@ one [as geography](#geography-columns), by path or by field option, wins in the 
 rejected, none of them being a string: the configured marking is never quietly ignored.
 
 A `Duration` outside protobuf's valid range is a row-level failure routed to the configured
-[`FailureHandler`](#error-handling), like a `uint64` too large for `INT64`. `FieldMask` paths are
-joined exactly as declared, *not* lowerCamelCased the way protobuf's canonical JSON form renders
-them, so they come back as they were written.
+[`FailureHandler`](#error-handling). `FieldMask` paths are joined exactly as declared, *not*
+lowerCamelCased the way protobuf's canonical JSON form renders them, so they come back as they were
+written.
 
 **An existing table can keep these types as `STRUCT`s.** Other writers expand them as ordinary
 messages. Avro's `ProtobufData` makes each one a record of its fields, so an Avro load gives a

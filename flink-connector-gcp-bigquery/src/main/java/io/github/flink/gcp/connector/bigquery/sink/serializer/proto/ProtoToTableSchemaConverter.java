@@ -38,8 +38,9 @@ import java.util.Set;
  *
  * <ul>
  *   <li>proto integer types → {@code INT64}: int32/sint32/sfixed32/int64/sint64/sfixed64 map
- *       losslessly, uint32/fixed32 are converted unsigned; uint64/fixed64 values above {@code
- *       Long.MAX_VALUE} are not representable and are rejected at conversion time
+ *       losslessly, uint32/fixed32 are converted unsigned unless {@link
+ *       ProtoSchemaOptions#isUnsignedIntegersAsSigned()} is set; uint64/fixed64 keep their 64 bits,
+ *       so a value at or above 2<sup>63</sup> reads back as a negative {@code INT64}
  *   <li>float/double → {@code DOUBLE}, bool → {@code BOOL}, string → {@code STRING}, bytes → {@code
  *       BYTES}
  *   <li>enum → {@code STRING} (the enum value name; unknown enum numbers surface as protobuf's
