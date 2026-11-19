@@ -148,8 +148,7 @@ public final class AvroRowConverter {
         // Paired by position, not by name. BQTableSchemaToProtoDescriptor emits one proto field per
         // table-schema field, in order, and the table schema here is always the one
         // AvroToTableSchemaConverter just derived — so position is exact where a name is not: the
-        // library lowercases with the *default* locale, which under tr_TR turns a column named ID
-        // into the proto field "ıd" that no Locale.ROOT key can match.
+        // descriptor's names are lower-cased, and a lookup would have to repeat how (ADR-0024).
         Preconditions.checkState(
                 descriptor.getFields().size() == fields.size(),
                 "The row descriptor has %s fields where the schema at %s has %s",

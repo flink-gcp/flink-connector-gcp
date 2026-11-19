@@ -25,6 +25,8 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentOptions;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.json.JsonDocumentSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.testproto.MixedCase;
 import io.github.flink.gcp.connector.bigquery.testproto.MixedCaseChild;
@@ -658,46 +660,93 @@ class ProtoToAvroConverterTest {
     /**
      * The protobuf serializer's columns keep the field names as written while its row descriptor's
      * field names are lower-cased, so each column is paired with its field ignoring case and the
-     * staged record carries the column's own name (#2179). That pairing lower-cases under {@code
-     * Locale.ROOT} while the library lower-cases under the default locale, so this test pins an
-     * English default locale: under {@code tr_TR} the column {@code Items} finds no field, for any
-     * serializer whose descriptor the client library derives (ADR-0024, revision for #2179).
+     * staged record carries the column's own name (#2179).
      */
     @Test
     void convertsAProtoSerializersRowWithUpperCaseFieldNames() throws Exception {
+        assertMixedCaseRecord(convertMixedCase());
+    }
+
+    /**
+     * The pairing lower-cases names under {@code Locale.ROOT}, and so does the derivation of the
+     * serializer's descriptor, so a Turkish default locale, which lower-cases {@code Items} to
+     * {@code ıtems}, changes nothing (#2188).
+     */
+    @Test
+    void convertsAProtoSerializersRowUnderATurkishDefaultLocale() throws Exception {
         Locale previous = Locale.getDefault();
         GenericRecord record;
         try {
-            Locale.setDefault(Locale.US);
-            ProtoMessageSerializationSchema<MixedCase> serializer =
-                    ProtoMessageSerializationSchema.of(MixedCase.class);
-            TableSchema schema = serializer.getTableSchema(null);
-            ProtoToAvroConverter converter =
-                    new ProtoToAvroConverter(
-                            schema,
-                            serializer.getDescriptor(null),
-                            TableSchemaToAvroConverter.convert(schema));
-            record =
-                    converter.convert(
-                            serializer.serializeToMessage(
-                                    MixedCase.newBuilder()
-                                            .setId("a")
-                                            .setHasNext(true)
-                                            .setBeforeUpdate(
-                                                    MixedCaseChild.newBuilder()
-                                                            .setInnerValue("b")
-                                                            .setCount(2L))
-                                            .addItems(
-                                                    MixedCaseChild.newBuilder()
-                                                            .setInnerValue("c")
-                                                            .setCount(3L))
-                                            .putCountsByName("k", 4L)
-                                            .setUserId(5L)
-                                            .build()));
+            Locale.setDefault(new Locale("tr", "TR"));
+            record = convertMixedCase();
         } finally {
             Locale.setDefault(previous);
         }
+        assertMixedCaseRecord(record);
+    }
 
+    /**
+     * The JSON serializer's descriptor is derived the same way, and, asked to, it renames its keys
+     * first.
+     */
+    @Test
+    void convertsAJsonSerializersRowUnderATurkishDefaultLocale() throws Exception {
+        Locale previous = Locale.getDefault();
+        GenericRecord record;
+        try {
+            Locale.setDefault(new Locale("tr", "TR"));
+            JsonDocumentSerializationSchema serializer =
+                    JsonDocumentSerializationSchema.of(
+                            ProtoMessageSerializationSchema.of(MixedCase.class)
+                                    .getTableSchema(null),
+                            JsonDocumentOptions.builder().normalizeKeysForDefaultLocale().build());
+            TableSchema schema = serializer.getTableSchema(null);
+            record =
+                    new ProtoToAvroConverter(
+                                    schema,
+                                    serializer.getDescriptor(null),
+                                    TableSchemaToAvroConverter.convert(schema))
+                            .convert(
+                                    serializer.serializeToMessage(
+                                            "{\"id\":\"a\",\"hasNext\":true,"
+                                                    + "\"beforeUpdate\":{\"innerValue\":\"b\","
+                                                    + "\"Count\":2},\"Items\":[{\"innerValue\":"
+                                                    + "\"c\",\"Count\":3}],\"countsByName\":"
+                                                    + "[{\"key\":\"k\",\"value\":4}],"
+                                                    + "\"userId\":5}"));
+        } finally {
+            Locale.setDefault(previous);
+        }
+        assertMixedCaseRecord(record);
+    }
+
+    private static GenericRecord convertMixedCase() throws IOException {
+        ProtoMessageSerializationSchema<MixedCase> serializer =
+                ProtoMessageSerializationSchema.of(MixedCase.class);
+        TableSchema schema = serializer.getTableSchema(null);
+        return new ProtoToAvroConverter(
+                        schema,
+                        serializer.getDescriptor(null),
+                        TableSchemaToAvroConverter.convert(schema))
+                .convert(
+                        serializer.serializeToMessage(
+                                MixedCase.newBuilder()
+                                        .setId("a")
+                                        .setHasNext(true)
+                                        .setBeforeUpdate(
+                                                MixedCaseChild.newBuilder()
+                                                        .setInnerValue("b")
+                                                        .setCount(2L))
+                                        .addItems(
+                                                MixedCaseChild.newBuilder()
+                                                        .setInnerValue("c")
+                                                        .setCount(3L))
+                                        .putCountsByName("k", 4L)
+                                        .setUserId(5L)
+                                        .build()));
+    }
+
+    private static void assertMixedCaseRecord(GenericRecord record) {
         assertThat(record.get("id").toString()).isEqualTo("a");
         assertThat(record.get("hasNext")).isEqualTo(true);
         GenericRecord beforeUpdate = (GenericRecord) record.get("beforeUpdate");

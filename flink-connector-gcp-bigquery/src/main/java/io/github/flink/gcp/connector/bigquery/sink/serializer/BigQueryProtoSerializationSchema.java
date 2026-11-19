@@ -82,7 +82,14 @@ public abstract class BigQueryProtoSerializationSchema<T> implements Serializabl
      * destination.
      *
      * <p>The default implementation derives it from {@link #getTableSchema(TableDestination)} on
-     * every call; implementations should override this to return a cached descriptor.
+     * every call; implementations should override this to return a cached descriptor. Cache what
+     * this implementation returns rather than calling the client library's {@code
+     * BQTableSchemaToProtoDescriptor} directly, for two reasons. The library lower-cases column
+     * names with the JVM's default locale, and under a Turkish one it names the column {@code
+     * userId} {@code userıd}, which BigQuery rejects; this implementation's names do not depend on
+     * the locale. And this implementation refuses two nested columns whose protobuf message types
+     * would share a name with different fields, which the library alone accepts and then resolves
+     * to either type.
      *
      * @param destination the destination table
      * @return the descriptor of the rows written to that destination

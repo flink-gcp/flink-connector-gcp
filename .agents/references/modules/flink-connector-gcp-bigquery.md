@@ -84,7 +84,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   four record serializers — proto, Avro, JSON and `RowDataSerializationSchema` — go through them, so a new
   one adds a derivation rather than another double-checked holder (`docs/adr/0024`).
   `ProtoRowAugmentingSerializer` is not one of them: its cache is per destination and invalidated
-  by fingerprint, which is a different shape.
+  by fingerprint, which is a different shape. Never call `BQTableSchemaToProtoDescriptor` directly:
+  derive through `RowDescriptors.derive`, which keeps the descriptor the same under every JVM
+  default locale and refuses nested message types that would share a name with different fields
+  (`docs/adr/0024`, revision for #2188).
 - **Appended fields keep their field numbers across a fingerprint change** (`docs/adr/0113`,
   revision for #1950): both writers append retained bytes through the rebuilt stream writer, so
   `ProtoDescriptorAugmenter` counts down from `AUGMENTATION_CEILING` instead of following the base
@@ -115,9 +118,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **A converter writing into the row descriptor derived from its own front end's table schema
   pairs fields by position, never by name** (`docs/adr/0024`, revision for #2179):
   `ProtoRowConverter`, `AvroRowConverter`, `RowDataToProtoConverter`, and a new built-in
-  serializer's converter. `BQTableSchemaToProtoDescriptor` lower-cases every field name with the
-  default locale, so no name lookup is exact. `ProtoToAvroConverter` is not one of them: it reads
-  any serializer's own descriptor, whose order it cannot assume, and pairs by `Locale.ROOT` name.
+  serializer's converter. The descriptor's names are lower-cased, so an exact lookup misses
+  `hasNext`, and position does not depend on how they were lower-cased. `ProtoToAvroConverter` is
+  not one of them: it reads any serializer's own descriptor, whose order it cannot assume, and
+  pairs by `Locale.ROOT` name.
 - **The protobuf mapping is normative for every serializer**; `NULLABLE` is the default mode and
   `deriveRequiredColumns()` the opt-in on both proto and Avro sides — neither default is to be
   flipped per format again, and the method name went through two rejected candidates
@@ -133,7 +137,12 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   and converted values), rejects unstorable logical types at job start, and its round-trip
   identity with `TableSchemaToAvroConverter` is pinned (`docs/adr/0024`). The JSON serializer
   delegates to `JsonToProtoMessage`; its `BYTES`-column gap is pursued upstream, not patched
-  locally (`docs/adr/0025`).
+  locally (`docs/adr/0025`). Hand the library `RowDescriptors.lowerCased`, and, only when
+  `JsonDocumentOptions` asks for it (off by default), first rename every key that reaches a field
+  under either lower-casing, by its name or its placeholder as `RowDescriptors.fieldName` gives it,
+  and whose default-locale and `Locale.ROOT` lower-casings differ; keep the renaming
+  value-preserving, so a colliding key takes another spelling, never a merge or a drop, and cache
+  each key's decision per locale (`docs/adr/0025`, revision for #2188).
 
 ## Error handling and recovery (`docs/adr/0017`, `0030`, `0071`, `0114`, `0181`)
 

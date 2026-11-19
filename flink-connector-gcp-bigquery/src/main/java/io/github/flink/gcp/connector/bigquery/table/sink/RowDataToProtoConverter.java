@@ -78,12 +78,10 @@ import java.util.List;
  * <p>Two properties of the plan are load-bearing:
  *
  * <ul>
- *   <li><b>Descriptor fields are paired by position, never by name.</b> {@code
- *       BQTableSchemaToProtoDescriptor} lowercases column names with the <em>default</em> locale,
- *       so under {@code tr_TR} a column named {@code ID} becomes the proto field {@code ıd} that no
- *       {@code Locale.ROOT} key matches. Position is exact because the descriptor is always derived
- *       from the table schema this connector just produced — and here the row type is that schema's
- *       source, so all three orders agree.
+ *   <li><b>Descriptor fields are paired by position, never by name.</b> The descriptor's names are
+ *       lower-cased, and a lookup would have to repeat how (ADR-0024). Position is exact because
+ *       the descriptor is always derived from the table schema this connector just produced — and
+ *       here the row type is that schema's source, so all three orders agree.
  *   <li><b>The kind switch is exhaustive over the column types the schema converter can emit.</b> A
  *       missing case would not fail a schema test: the column derives correctly and then throws on
  *       the first record, inside the writers' failure handler. Its {@code default} is that guard.

@@ -912,6 +912,26 @@ The [Kafka-to-BigQuery CDC examples]({{< relref "docs/examples/bigquery" >}}#cdc
 show a DataStream adapter per source connector and an SQL bridge that retains the source ordering
 metadata.
 
+### Column names
+
+A column keeps the name its serializer's schema gives it, upper-case letters included, and BigQuery
+matches column names case-insensitively. A row reaches the Storage Write API through a protobuf
+descriptor whose field names are lower-cased. The built-in serializers, and the default
+`BigQueryProtoSerializationSchema.getDescriptor`, lower-case them the same way under every JVM
+default locale. The client library alone lower-cases with that locale, and under Turkish it turns
+the column `userId` into `userıd`, which BigQuery rejects as a field the table does not have; a
+custom serializer that caches its descriptor should therefore cache what `getDescriptor` returns
+rather than call the library itself.
+
+The built-in serializers and the default `getDescriptor` refuse two `STRUCT` or `RANGE` columns
+whose paths join to the same name with `__` and whose fields differ, naming both columns, for every
+write method. An example is a column `a__b` beside a column `a` holding a `STRUCT` `b`; the paths are
+compared lower-case, so `a__B` beside `a.b` is refused too. The client library gives both columns
+one protobuf type name. It can then resolve either column to either type, so the descriptor every
+write method converts with can give a column the other's fields, and the Storage Write API's writer
+schema keeps only one of them. Columns with identical fields share the name harmlessly and are
+accepted.
+
 ### Column modes
 
 **A derived column is `NULLABLE`. A constraint is something you ask for.** `REPEATED` is the one mode
@@ -1501,8 +1521,26 @@ Three of those rows are traps worth stating plainly, because each is accepted ra
   [#131]({{< param BookRepo >}}/issues/131) tracks it, and is where to check whether it has landed.
 
 Keys are matched to columns **case-insensitively**, so a key whose spelling differs from the column's
-is not an unknown field — and two keys differing only by case are not two fields either: one value
-wins, and which one is undefined.
+is not an unknown field — and two keys differing only by case are not two fields either: a null is
+skipped, a repeated column takes the elements of both, and of two values for a singular column one
+wins, which one undefined. The client library lower-cases each key with the JVM's default locale.
+Most locales lower-case keys as `Locale.ROOT` does, so by default the serializer hands it the keys as
+parsed. Turkish, Azerbaijani and Lithuanian do not, and neither does Thai for a key holding a Greek
+capital sigma. Under Turkish, `userId` lower-cases to `userıd` and names no column, so the record
+fails, with a message naming such a key and the option below, or, with `ignoreUnknownFields()`,
+loses the value; and a key `İD` reaches a column `id`, which it does not name under an English
+locale.
+
+Where a task manager may run under such a locale, ask for
+`JsonDocumentOptions.builder().normalizeKeysForDefaultLocale()`. The match then does not depend
+on the default locale, for the reason [Column names](#column-names) gives: the serializer
+normalizes keys by renaming a key such as `userId` before the client library lower-cases it, at
+every `STRUCT` level, and leaves the text of a `JSON` column alone. The one exception is a document
+holding so many spellings of one column's key that none is left for the renamed key, such as `ID`,
+`id` and `iD` together under Turkish: the record fails, where an English locale would accept it.
+The renaming costs a lookup per key. Measured on the serializer alone, that was a few percent of
+its time per record where no key needed renaming, and under Turkish, where keys were renamed, a
+record took 9 to 16% longer than under English without the option.
 
 **Unknown fields.** A document carrying a field the table has no column for fails the record, on the
 grounds that discarding data should be asked for. Ask for it when the source is a document stream
