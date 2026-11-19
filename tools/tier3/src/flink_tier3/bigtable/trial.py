@@ -17,7 +17,7 @@
 from dataclasses import dataclass
 
 from ..common import Failure, timestamp, utc
-from ..exercise import DEFAULT_FAULT, FAULTS
+from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND
 from ..policy import PROJECT, RUN_ID
 
 # The application's bounds (kubernetes/apps/bigtable RecoveryOptions) and the
@@ -41,7 +41,8 @@ SUM_FAMILY = "agg"
 SUM_QUALIFIER = "count"
 MARKER_FAMILY = "flink_commit"
 RELAY_FAMILY = "r"
-KINDS = tuple(FAULTS)
+# The single-fault kinds and the fault sequence of ADR-0204.
+KINDS = (*FAULTS, SEQUENCE_KIND)
 
 
 @dataclass(frozen=True)
@@ -94,16 +95,25 @@ class Trial:
     @property
     def failover(self):
         """The Pod the second recovery deletes, as the shared exercise names it."""
-        return FAULTS[self.kind].failover
+        return FAULTS[self.fault].failover
 
     @property
     def rescale(self):
         """The direction the upgrade rescales the job in, or None."""
-        return FAULTS[self.kind].rescale
+        return FAULTS[self.fault].rescale
+
+    @property
+    def fault(self):
+        """The kind whose sizes the run starts and upgrades at.
+
+        The fault sequence starts and upgrades at two, as a JobManager
+        replacement does, and patches its rescales itself.
+        """
+        return DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind
 
     def parallelism(self, phase):
         """Every vertex but the input's subtasks, and the TaskManagers running them."""
-        return FAULTS[self.kind].parallelism(phase)
+        return FAULTS[self.fault].parallelism(phase)
 
     @property
     def instance(self):

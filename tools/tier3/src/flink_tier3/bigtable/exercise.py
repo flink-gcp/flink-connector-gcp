@@ -17,12 +17,17 @@
 from __future__ import annotations
 
 from ..common import Failure, timestamp, utc
-from ..exercise import FiniteInputExercise
+from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import BIGTABLE, BIGTABLE_OBSERVATIONS, BIGTABLE_STATE, POLL
 from .observe import observation, vertices
 from .oracle import AtLeastOnce, ExactlyOnce, Relay
-from .trial import AT_LEAST_ONCE_TABLE, EXACTLY_ONCE_TABLE, RELAY_TABLE
-from .verdict import MEASUREMENT_EVENT, summarize, verdict
+from .trial import (
+    AT_LEAST_ONCE_TABLE,
+    EXACTLY_ONCE_TABLE,
+    RELAY_TABLE,
+    SEQUENCE_KIND,
+)
+from .verdict import MEASUREMENT_EVENT, sequence_verdict, summarize, verdict
 
 # The stage between the finished application and the read tables.
 ORACLE_STAGE = "tables"
@@ -71,6 +76,8 @@ class BigtableExercise(FiniteInputExercise):
         return observation(rest, state)
 
     summarize = staticmethod(summarize)
+    # The verdict the oracles' record is judged by.
+    verdict = staticmethod(verdict)
 
     def verify_tables(self):
         """Read every table once and judge each component on its own table.
@@ -104,11 +111,7 @@ class BigtableExercise(FiniteInputExercise):
                 if after is None:
                     break
         eo = checks[EXACTLY_ONCE_TABLE]
-        finished = min(
-            sample["at"]
-            for sample in self.fresh_progress("upgrade")
-            if sample["processed"] == self.records
-        )
+        finished = self.input_finished_at()
         judged = finished + COMMIT_SECONDS <= timestamp(self.trial.change_stream_end)
         self.outcomes["oracles"] = {
             "input_finished_at": utc(finished),
@@ -117,4 +120,41 @@ class BigtableExercise(FiniteInputExercise):
             "alo": checks[AT_LEAST_ONCE_TABLE].report(),
             "relay": checks[RELAY_TABLE].report(eo.applied, judged),
         }
-        self.complete(verdict)
+        self.complete(self.verdict)
+
+    def input_finished_at(self):
+        """When the upgraded job first showed its whole input processed."""
+        return min(
+            sample["at"]
+            for sample in self.fresh_progress("upgrade")
+            if sample["processed"] == self.records
+        )
+
+
+class BigtableSequenceExercise(FaultSequence, BigtableExercise):
+    """The Bigtable trial as one fault sequence, judged by its data (ADR-0204).
+
+    The oracles are the same three, `eo` judged exactly once; no window
+    samples the job. The relay is judged when the input's latest progress
+    line, the one that showed it whole, came the commit margin before the
+    change stream's end.
+    """
+
+    verdict = staticmethod(sequence_verdict)
+
+    def input_finished_at(self):
+        """When the latest progress line showed the whole input.
+
+        A restore after an earlier completion may replay the input and finish
+        it again, and a row whose staged commit the restore discarded is
+        committed only then, so the latest line is the one the relay must
+        have time for.
+        """
+        return max(sample["at"] for sample in self.samples.values())
+
+
+def bigtable_exercise(env, upgrade, instance):
+    """The exercise the approved Bigtable trial names."""
+    if env.approval.bigtable_plan.kind == SEQUENCE_KIND:
+        return BigtableSequenceExercise(env, upgrade, instance)
+    return BigtableExercise(env, upgrade, instance)

@@ -25,10 +25,11 @@ import (
 bigtableRecords:          int    @tag(bigtable_records,type=int)
 bigtableRecordsPerSecond: int    @tag(bigtable_records_per_second,type=int)
 bigtableChangeStreamEnd:  string @tag(bigtable_change_stream_end)
-// Every trial runs a savepoint upgrade and then deletes a Pod. The kind names the fault that makes
-// it a trial of its own: the JobManager deleted, a TaskManager deleted in its place, or an upgrade
-// that rescales every vertex but the input from one subtask to two or from two to one.
-bigtableTrial: *defaultFault | or([for kind, _ in faultKinds {kind}]) @tag(bigtable_trial)
+// A single-fault trial runs a savepoint upgrade and then deletes a Pod. Its kind names the fault
+// that makes it a trial of its own: the JobManager deleted, a TaskManager deleted in its place, or
+// an upgrade that rescales every vertex but the input from one subtask to two or from two to one.
+// The `sequence` trial (ADR-0204) runs every fault in one run.
+bigtableTrial: *defaultFault | or([for kind, _ in sequenceKinds {kind}]) @tag(bigtable_trial)
 
 // Both Bigtable phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it
@@ -41,7 +42,7 @@ if scenario == "bigtable-recovery" {
 				run: {id: runID, image: applicationImage, phase: trialPhase
 					records:         bigtableRecords, recordsPerSecond: bigtableRecordsPerSecond
 					changeStreamEnd: bigtableChangeStreamEnd
-					parallelism:     faultKinds[bigtableTrial][trialPhase]
+					parallelism:     sequenceKinds[bigtableTrial][trialPhase]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

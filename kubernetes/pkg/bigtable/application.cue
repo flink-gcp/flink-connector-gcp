@@ -72,8 +72,9 @@ import (
 				"high-availability.type":                                      "kubernetes"
 				"high-availability.storageDir":                                "\(storage)/ha"
 				"restart-strategy.type":                                       "fixed-delay"
-				"restart-strategy.fixed-delay.attempts":                       "3"
-				"restart-strategy.fixed-delay.delay":                          "10 s"
+				// Unbounded: a run waits out any number of restarts (ADR-0204).
+				"restart-strategy.fixed-delay.attempts": "2147483647"
+				"restart-strategy.fixed-delay.delay":    "10 s"
 			}
 			jobManager: replicas:  1
 			taskManager: replicas: run.parallelism
