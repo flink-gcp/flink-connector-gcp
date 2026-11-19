@@ -25,8 +25,9 @@ limitations under the License.
   writer lifecycle revised by [#1128] (2026-08-28); destination commit concurrency revised by
   [#1129] (2026-08-29); writer checkpoint finalization concurrency revised by [#1164]
   (2026-08-30); laid-out temporary tables revised by [#1671] (2026-10-09); staging upload revised
-  by [#2021] (2026-11-04); job project revised by [#2178] (2026-11-18, ADR-0206)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021], [#2178]
+  by [#2021] (2026-11-04); a job refused as it is submitted revised by [#2181] (2026-11-17); job project
+  revised by [#2178] (2026-11-18, ADR-0206); retry ids uncapped by [#2181] (2026-11-19)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021], [#2178], [#2181]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -310,6 +311,53 @@ limitations under the License.
   `BigQueryLoadJobRunnerRealGcpITCase` holds the re-attach against the suite's regional dataset
   with no location configured — the only coverage of the path a fresh-id happy run cannot reach.
 
+## Revision: a job refused as it is submitted fails the attempt (2026-11-17)
+
+The `-rN` probes exist to step past a failed job a previous attempt left under an id, and the
+[#380] handler extended them to a failed zombie behind a conflict.
+`submitOrAttach` also probed past a job that its own `jobs.insert` returned already failed, which
+a refused request does.
+Measured on 2026-11-17 ([#2181]): a load under `CREATE_NEVER` into a table dropped since the
+commit reconciled it came back from `jobs.insert` done, with `notFound`, under the base id and every
+retry id in turn, so one attempt spent all six ids, and the retried commit, whose reconciliation had
+created the table again, found every id failed and could never load.
+
+A job the runner's own submission created and that is already failed now fails the attempt with its
+error, naming the job.
+The id is spent, as any failed id is, and the next attempt's probe steps past it to the next one,
+so a request refused for a reason the retry removes costs one restart and one id.
+A refusal no retry removes fails the commit on every restart, one id each.
+A failed job found by the probe or behind a conflict is still probed past within the attempt; the
+SDK's own already-exists absorber returns a job with no status (above), which is attached to as
+before.
+The change applies to every job the runner submits.
+Only the load's refusal at submission was measured; the final copy that
+`BigQueryFileLoadsTempTableLayoutRealGcpITCase` drives into a destination with an incompatible
+layout was refused while it ran, not at submission, in the same run, so that path is unchanged.
+
+## Revision: the retry ids have no cap (2026-11-19)
+
+The walk past failed ids stopped after five retry ids and then failed the commit for good, with
+every restart from that checkpoint failing the same way.
+The number was chosen when the runner was written, and no measurement or service limit stood
+behind it ([#2181]).
+Every id the walk passes holds a job some attempt created, so the first unused id ends it, and
+`submitOrAttach`, `copySucceeded` and the equivalent copy's look-up now walk without a cap.
+How often a failing commit is retried is the Flink restart strategy's decision, and each restart
+reports the service's own error rather than a give-up message.
+
+The cap also turned a lost response into a lasting failure.
+When the response to a `jobs.insert` is lost and the SDK's retry is answered 409, `create`'s
+conflict look-up hands back this submission's own job, which the runner cannot tell from a
+previous attempt's zombie; refused, it is probed past within the attempt like one.
+Under the cap each such loss, like each failed job behind a genuine conflict, spent an id toward
+the give-up; without it, the walk moves on to the next id.
+A run of such conflicts would keep an attempt submitting while it lasted; none has been observed,
+and no handling is added for it.
+The refusal at submission still fails the attempt: with no cap, probing past it would submit one
+refused job after another for as long as the attempt lasted.
+The query source's reuse walk had the same cap for the same reason and loses it too (ADR-0089).
+
 ## Design references
 
 Moved here from the module README's provenance section ([#1096]), because the designs credited
@@ -350,3 +398,4 @@ are the ones this record's decisions rest on:
 [#2021]: https://github.com/flink-gcp/flink-connector-gcp/issues/2021
 [#2178]: https://github.com/flink-gcp/flink-connector-gcp/issues/2178
 [#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671
+[#2181]: https://github.com/flink-gcp/flink-connector-gcp/issues/2181

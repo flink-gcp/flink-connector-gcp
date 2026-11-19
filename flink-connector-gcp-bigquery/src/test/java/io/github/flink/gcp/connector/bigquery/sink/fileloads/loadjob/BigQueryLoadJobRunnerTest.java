@@ -185,13 +185,17 @@ class BigQueryLoadJobRunnerTest {
     }
 
     @Test
-    void probesPastEveryFailedIdUpToTheCap() throws Exception {
+    void probesPastEveryFailedIdWithoutACap() throws Exception {
+        // More failed ids than the walk once allowed (five retry ids): every one is a job some
+        // attempt created, so the first unused id ends the walk, however far along it is.
         client.answering(
+                JobAnswer.withStatus(failed("base")),
                 JobAnswer.withStatus(failed("r1")),
                 JobAnswer.withStatus(failed("r2")),
                 JobAnswer.withStatus(failed("r3")),
                 JobAnswer.withStatus(failed("r4")),
                 JobAnswer.withStatus(failed("r5")),
+                JobAnswer.withStatus(failed("r6")),
                 JobAnswer.absent());
 
         runner().submitLoad(JOB_ID, loadSpec(List.of()));
@@ -204,10 +208,12 @@ class BigQueryLoadJobRunnerTest {
                         JOB_ID + "-r2",
                         JOB_ID + "-r3",
                         JOB_ID + "-r4",
-                        JOB_ID + "-r5");
+                        JOB_ID + "-r5",
+                        JOB_ID + "-r6",
+                        JOB_ID + "-r7");
         assertThat(client.created)
                 .extracting(info -> info.getJobId().getJob())
-                .containsExactly(JOB_ID + "-r5");
+                .containsExactly(JOB_ID + "-r7");
     }
 
     @Test
@@ -251,36 +257,6 @@ class BigQueryLoadJobRunnerTest {
         assertThat(client.getJobCalls)
                 .extracting(id -> id.getJob())
                 .containsExactly(JOB_ID, JOB_ID);
-    }
-
-    @Test
-    void givesUpWhenEveryRetryIdAlsoFailed() {
-        client.answering(
-                JobAnswer.withStatus(failed("first")),
-                JobAnswer.withStatus(failed("second")),
-                JobAnswer.withStatus(failed("third")),
-                JobAnswer.withStatus(failed("fourth")),
-                JobAnswer.withStatus(failed("fifth")),
-                JobAnswer.withStatus(failed("sixth")));
-
-        BigQueryLoadJobRunner runner = runner();
-
-        assertThatThrownBy(() -> runner.submitLoad(JOB_ID, loadSpec(List.of())))
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining(JOB_ID)
-                .hasMessageContaining("all its retry ids failed")
-                // The error reported is the last one probed, not the first.
-                .hasMessageContaining("sixth");
-        assertThat(client.created).isEmpty();
-        assertThat(client.getJobCalls)
-                .extracting(id -> id.getJob())
-                .containsExactly(
-                        JOB_ID,
-                        JOB_ID + "-r1",
-                        JOB_ID + "-r2",
-                        JOB_ID + "-r3",
-                        JOB_ID + "-r4",
-                        JOB_ID + "-r5");
     }
 
     // ---------------------------------------------------------------------------------------
@@ -356,28 +332,57 @@ class BigQueryLoadJobRunnerTest {
     }
 
     @Test
-    void aConflictOnTheLastRetryIdFeedsTheGiveUpMessage() {
-        // The failed job the conflict lookup finds reports its error the same way one the probe
-        // finds does: as the "last error" of the give-up message, since it was met last.
-        client.answering(
-                JobAnswer.withStatus(failed("first")),
-                JobAnswer.withStatus(failed("second")),
-                JobAnswer.withStatus(failed("third")),
-                JobAnswer.withStatus(failed("fourth")),
-                JobAnswer.withStatus(failed("fifth")),
-                JobAnswer.absent(),
-                JobAnswer.withStatus(failed("behind the conflict")));
-        client.createFailure = conflict();
+    void aJobRefusedAsItIsSubmittedFailsTheAttemptAndTheRetryProbesPastIt() throws Exception {
+        // What a CREATE_NEVER load into a table dropped since the reconciliation gets back from
+        // jobs.insert (#2181): its own job, already done with an error. The same request under
+        // the next retry id would be refused the same way, so probing on would submit refused
+        // jobs for as long as the attempt lasted, while the retried commit's reconciliation
+        // recreates the table and loads under the next id.
+        client.answering(JobAnswer.absent());
+        client.createdStatus = failed("Not found: Table p:d.t");
 
-        BigQueryLoadJobRunner runner = runner();
-
-        assertThatThrownBy(() -> runner.submitLoad(JOB_ID, loadSpec(List.of())))
+        assertThatThrownBy(() -> runner().submitLoad(JOB_ID, loadSpec(List.of())))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("all its retry ids failed")
-                .hasMessageContaining("behind the conflict");
+                .hasMessageContaining(JOB_ID + " was refused as it was submitted")
+                .hasMessageContaining("Not found: Table p:d.t");
         assertThat(client.created)
                 .extracting(info -> info.getJobId().getJob())
-                .containsExactly(JOB_ID + "-r5");
+                .containsExactly(JOB_ID);
+
+        // The retried attempt finds the refused job and loads under the next id.
+        client.created.clear();
+        client.createdStatus = TestJobs.status(JobStatus.State.DONE);
+        client.answering(
+                JobAnswer.withStatus(failed("Not found: Table p:d.t")), JobAnswer.absent());
+        BigQueryLoadJobRunner retry = runner();
+        retry.submitLoad(JOB_ID, loadSpec(List.of()));
+        retry.awaitJob(JOB_ID);
+
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID + "-r1");
+    }
+
+    @Test
+    void aCopyOrAQueryRefusedAsItIsSubmittedFailsTheAttemptToo() {
+        // The refusal is the submission's, not the job kind's: a copy or a terminal query that
+        // jobs.insert answers already failed spends one id per attempt as a load does.
+        client.createdStatus = failed("Not found: Table p:d.t");
+        client.answering(JobAnswer.absent(), JobAnswer.absent());
+        BigQueryLoadJobRunner runner = runner();
+
+        assertThatThrownBy(() -> runner.submitCopy(JOB_ID, copySpec()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining(JOB_ID + " was refused as it was submitted");
+        assertThatThrownBy(
+                        () ->
+                                runner.submitQuery(
+                                        "bq-query", new QueryJobSpec(TEMP, DESTINATION, List.of())))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("bq-query was refused as it was submitted");
+        assertThat(client.created)
+                .extracting(info -> info.getJobId().getJob())
+                .containsExactly(JOB_ID, "bq-query");
     }
 
     @Test
@@ -1208,7 +1213,8 @@ class BigQueryLoadJobRunnerTest {
     }
 
     @Test
-    void aCopySubmitsItsOwnIdOnceEveryEquivalentRetryIdFailed() throws Exception {
+    void aCopyWalksItsEquivalentChainPastEveryFailedId() throws Exception {
+        // Seven failed ids, more than the walk once allowed: the chain ends only at an unused id.
         client.answering(
                 JobAnswer.withStatus(failed("refused")),
                 JobAnswer.withStatus(failed("refused")),
@@ -1216,14 +1222,16 @@ class BigQueryLoadJobRunnerTest {
                 JobAnswer.withStatus(failed("refused")),
                 JobAnswer.withStatus(failed("refused")),
                 JobAnswer.withStatus(failed("refused")),
+                JobAnswer.withStatus(failed("refused")),
+                JobAnswer.absent(),
                 JobAnswer.absent());
 
         BigQueryLoadJobRunner runner = runner();
         runner.submitCopy(JOB_ID, equivalentCopySpec("bq-equivalent"));
         runner.awaitJob(JOB_ID);
 
-        // An earlier version's restart loop used every retry id of the equivalent copy, each
-        // refused; none of them stands for this copy.
+        // An earlier version's restart loop left refused copies under the equivalent id and its
+        // retry ids; none of them stands for this copy.
         assertThat(client.getJobCalls)
                 .extracting(id -> id.getJob())
                 .containsExactly(
@@ -1233,6 +1241,8 @@ class BigQueryLoadJobRunnerTest {
                         "bq-equivalent-r3",
                         "bq-equivalent-r4",
                         "bq-equivalent-r5",
+                        "bq-equivalent-r6",
+                        "bq-equivalent-r7",
                         JOB_ID);
         assertThat(client.created)
                 .extracting(info -> info.getJobId().getJob())

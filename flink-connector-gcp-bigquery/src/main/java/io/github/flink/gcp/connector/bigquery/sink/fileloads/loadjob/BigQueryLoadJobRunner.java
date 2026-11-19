@@ -62,8 +62,12 @@ import java.util.stream.Collectors;
  * a deterministic id doubles as an idempotency key: before submitting, the runner looks the id up
  * and re-attaches to a job an earlier attempt of the same Flink run already created — a completed
  * job is not re-run, a still-running job is awaited — instead of loading the same files twice. Only
- * when the existing job <em>failed</em> does the runner probe {@code -r1}, {@code -r2}, ... (a
- * bounded number of times, since ids of failed jobs cannot be reused) for a fresh deterministic id.
+ * when the existing job <em>failed</em> does the runner probe {@code -r1}, {@code -r2}, ... for a
+ * fresh deterministic id, since ids of failed jobs cannot be reused. The walk has no cap: every id
+ * it passes is a failed job some attempt created, so the first unused id ends it, and how often a
+ * failing commit is retried is the Flink restart strategy's to decide (#2181). A job that the
+ * runner's own submission gets back already failed is not probed past: it fails the attempt, and
+ * the next attempt's probe steps past its id (ADR-0018, #2181).
  *
  * <p><b>Every job id the runner builds names a location.</b> BigQuery scopes a job to (project,
  * location, id), and a look-up naming no location resolves against the US multi-region only — so a
@@ -88,9 +92,6 @@ import java.util.stream.Collectors;
 public final class BigQueryLoadJobRunner implements LoadJobRunner {
 
     private static final Logger LOG = LoggerFactory.getLogger(BigQueryLoadJobRunner.class);
-
-    /** How many {@code -rN} ids to probe past a failed deterministic id before giving up. */
-    private static final int MAX_RETRY_PROBES = 5;
 
     private final RetrySchedule pollSchedule;
     @Nullable private final String location;
@@ -367,7 +368,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     @Nullable
     private Job findNotFailed(String baseJobId, @Nullable String jobProject, String jobLocation)
             throws IOException {
-        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
+        for (int probe = 0; ; probe++) {
             Job existing =
                     getJob(
                             jobId(retryJobName(baseJobId, probe), jobProject, jobLocation),
@@ -379,7 +380,6 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                 return existing;
             }
         }
-        return null;
     }
 
     /**
@@ -449,8 +449,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                 && attachToEquivalent(baseJobId, equivalentBaseJobId, jobProject, jobLocation)) {
             return;
         }
-        String lastError = null;
-        for (int probe = 0; probe <= MAX_RETRY_PROBES; probe++) {
+        for (int probe = 0; ; probe++) {
             String jobName = retryJobName(baseJobId, probe);
             JobId jobId = jobId(jobName, jobProject, jobLocation);
             Job existing = getJob(jobId, "looking for a previous attempt's job");
@@ -459,8 +458,12 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                 JobStatus submittedStatus = submitted.getStatus();
                 if (isFailed(submittedStatus)) {
                     // create lost its race to a zombie that had itself already failed, whose id
-                    // is as unusable as one the probe above found failed.
-                    lastError = probePastFailedJob(jobName, baseJobId, submittedStatus, probe);
+                    // is as unusable as one the probe above found failed. A job this submission
+                    // got back from its own insert does not get here, since create throws for it,
+                    // unless the insert's response was lost and the SDK's retry was answered 409:
+                    // create's conflict lookup then hands the job back here, and its id is probed
+                    // past within the attempt like any other failed id.
+                    probePastFailedJob(jobName, baseJobId, submittedStatus, probe);
                     continue;
                 }
                 sharedJobs.jobs.put(baseJobId, submitted);
@@ -469,7 +472,7 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             }
             JobStatus status = existing.getStatus();
             if (isFailed(status)) {
-                lastError = probePastFailedJob(jobName, baseJobId, status, probe);
+                probePastFailedJob(jobName, baseJobId, status, probe);
                 continue;
             }
             sharedJobs.jobs.put(baseJobId, existing);
@@ -479,44 +482,29 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
                     status == null ? "unknown" : status.getState());
             return;
         }
-        throw new IOException(
-                "BigQuery job "
-                        + baseJobId
-                        + " and all its retry ids failed in previous attempts; last error: "
-                        + lastError);
     }
 
     /**
      * A failed job's id cannot be reused, and attaching to one would fail the commit with a failure
      * that predates this attempt; only a fresh id can still load the data. Logs the same warning
      * however the failed job was met — found by the probe, or handed back by {@code create} after a
-     * conflict — and answers the error for {@code lastError}, so the give-up message reports
-     * whichever failed job was met last. Callers have established {@code isFailed(status)}, which
-     * is what makes the error dereference safe.
+     * conflict. Callers have established {@code isFailed(status)}, which is what makes the error
+     * dereference safe.
      */
-    private static String probePastFailedJob(
+    private static void probePastFailedJob(
             String jobName, String baseJobId, JobStatus status, int probe) {
-        String error = status.getError().toString();
-        if (probe < MAX_RETRY_PROBES) {
-            LOG.warn(
-                    "BigQuery job {} from a previous attempt failed ({}); probing {}-r{}",
-                    jobName,
-                    error,
-                    baseJobId,
-                    probe + 1);
-        } else {
-            LOG.warn(
-                    "BigQuery job {} from a previous attempt failed ({}), and no retry ids are"
-                            + " left to probe",
-                    jobName,
-                    error);
-        }
-        return error;
+        LOG.warn(
+                "BigQuery job {} from a previous attempt failed ({}); probing {}-r{}",
+                jobName,
+                status.getError(),
+                baseJobId,
+                probe + 1);
     }
 
     /**
      * Whether the job has finished and reports an error — the one state the runner must move past
-     * to a fresh {@code -rN} id, since a failed id can never be reused (see the class javadoc).
+     * to a fresh {@code -rN} id, since a failed id can never be reused (see the class javadoc), and
+     * the state in which {@code create} fails the attempt when its own submission returns it.
      *
      * <p>{@code null} is not failed, and that is load-bearing: the job the SDK's own already-exists
      * absorber returns carries no status at all (it re-fetches with {@code
@@ -531,8 +519,9 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
     }
 
     private Job create(JobId jobId, JobConfiguration configuration) throws IOException {
+        Job created;
         try {
-            return client().create(JobInfo.of(jobId, configuration));
+            created = client().create(JobInfo.of(jobId, configuration));
         } catch (BigQueryException e) {
             if (e.getCode() == HttpURLConnection.HTTP_CONFLICT) {
                 // Lost a race against a zombie of a previous attempt; hand its job back for the
@@ -554,6 +543,21 @@ public final class BigQueryLoadJobRunner implements LoadJobRunner {
             }
             throw new IOException("Failed to submit BigQuery job " + jobId.getJob(), e);
         }
+        JobStatus status = created.getStatus();
+        if (isFailed(status)) {
+            // This submission's own job, refused as it was submitted: a load under CREATE_NEVER
+            // into a table dropped since the commit reconciled it answers this way, measured on
+            // 2026-11-17 (#2181). The same request under the next retry id would be refused the
+            // same way, so probing on would submit one refused job after another for as long as
+            // the attempt lasted. Failing the attempt submits one; the retried commit can remove
+            // the cause, as its reconciliation does by creating the table, and probes past it.
+            throw new IOException(
+                    "BigQuery job "
+                            + jobId.getJob()
+                            + " was refused as it was submitted: "
+                            + status.getError());
+        }
+        return created;
     }
 
     /**

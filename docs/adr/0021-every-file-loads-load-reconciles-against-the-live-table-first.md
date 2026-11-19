@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-27; overflow wording revised by [#72] (2026-08-13); destination-task ownership
-  revised by [#1129] (2026-08-29); temporary-table layout revised by [#1671] (2026-10-09)
-- Issues: [#72], [#142], [#1129], [#1671]
+  revised by [#1129] (2026-08-29); temporary-table layout revised by [#1671] (2026-10-09); a direct
+  load never creates its destination, revised by [#2181] (2026-11-17)
+- Issues: [#72], [#142], [#1129], [#1671], [#2181]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Schema evolution
 
@@ -74,7 +75,34 @@ Consequences that are decisions, not accidents:
 Both measured rows are pinned against real BigQuery by
 `BigQueryFileLoadsSchemaEvolutionITCase`.
 
+## Revision: a direct load never creates its destination (2026-11-17)
+
+The decision above moved creation to `TableAdmin`, but a direct load still carried the sink's create
+disposition, so under `CREATE_IF_NEEDED` it could create the destination itself.
+It did so only when the table was dropped after the reconciliation, and then from the load's schema
+alone: without partitioning, clustering, partition expiration, partition filter requirement,
+description, labels or, unless it truncated, the Cloud KMS key (ADR-0203).
+The commit still succeeded, and later commits found the table present and left it that way
+([#2181]).
+
+Every direct load is now `CREATE_NEVER`, as the final copy into the destination already was.
+A destination dropped mid-commit fails that commit's load when the load is submitted, rather than
+re-attached to from an earlier attempt that already succeeded; the job restarts, and the retried
+commit's reconciliation treats the table as any missing one: under `CREATE_IF_NEEDED` it creates it
+with its `TableCreateOptions` before the load runs again under the next retry id, and under
+`CREATE_NEVER` it fails the commit client-side.
+That retry needed a runner change too: `jobs.insert` refuses such a load at once, and the runner
+used to probe past its own refused job through every retry id within the attempt, leaving the retry
+none (ADR-0018's 2026-11-17 revision).
+Permissions are not expected to change: the reconciliation needs `bigquery.tables.create` under
+`CREATE_IF_NEEDED` either way, and a `CREATE_NEVER` load asks for nothing a `CREATE_IF_NEEDED` load
+into an existing table did not; that is reasoned from the dispositions, not measured with a
+restricted account as ADR-0183's permission tables were.
+`BigQueryFileLoadsTempTableLayoutRealGcpITCase` drops a destination just before its direct load,
+and asserts that the commit fails and that the retried commit's table carries the creation options.
+
 [#142]: https://github.com/flink-gcp/flink-connector-gcp/issues/142
 [#72]: https://github.com/flink-gcp/flink-connector-gcp/issues/72
 [#1129]: https://github.com/flink-gcp/flink-connector-gcp/issues/1129
 [#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671
+[#2181]: https://github.com/flink-gcp/flink-connector-gcp/issues/2181

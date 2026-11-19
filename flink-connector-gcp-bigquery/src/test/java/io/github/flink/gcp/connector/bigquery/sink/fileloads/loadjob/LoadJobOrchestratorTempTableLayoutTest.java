@@ -42,6 +42,8 @@ import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStag
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
 import io.github.flink.gcp.connector.bigquery.sink.tables.TableLayout;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.time.Duration;
@@ -54,7 +56,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for {@link LoadJobOrchestrator} giving temporary tables the layout of a partitioned or
- * clustered destination (ADR-0183), against recording fakes.
+ * clustered destination (ADR-0183), and for what the jobs that fill a destination state, against
+ * recording fakes.
  */
 class LoadJobOrchestratorTempTableLayoutTest {
 
@@ -460,6 +463,42 @@ class LoadJobOrchestratorTempTableLayoutTest {
         assertThat(load.getValue().getDestination()).isEqualTo(T1);
         assertThat(load.getValue().getLayout()).isNull();
         assertThat(load.getKey()).doesNotContain("-layout-");
+    }
+
+    /**
+     * A direct load never creates its destination, whatever the write disposition (#2181): only the
+     * reconciliation creates one, with its creation options.
+     */
+    @ParameterizedTest
+    @EnumSource(WriteDisposition.class)
+    void aDirectLoadNeverCreatesItsDestination(WriteDisposition disposition) throws IOException {
+        Harness harness =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(disposition)
+                                .build(),
+                        builder -> {});
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10)));
+
+        assertThat(harness.runner.copies).isEmpty();
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .extracting(LoadJobSpec::getCreateDisposition)
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
+    }
+
+    @Test
+    void aStreamingDirectLoadNeverCreatesItsDestination() throws IOException {
+        Harness harness = new Harness(OPTIONS, builder -> {}, 7L, Limits.BIGQUERY);
+
+        harness.orchestrator.run(List.of(file(T1, "a", 10), file(T1, "b", 10)));
+
+        assertThat(harness.runner.loads.values())
+                .singleElement()
+                .extracting(LoadJobSpec::getCreateDisposition)
+                .isEqualTo(JobInfo.CreateDisposition.CREATE_NEVER);
     }
 
     @Test

@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0089: A query job is reused under a name-keyed id, inside an opt-in window
 
 - Status: Accepted
-- Date: 2026-08-10 (the Flink measurements ran the same day)
-- Issues: [#477], [#392]
+- Date: 2026-08-10 (the Flink measurements ran the same day); retry ids uncapped by [#2181]
+  (2026-11-19)
+- Issues: [#477], [#392], [#2181]
 - Modules: bigquery (`source`, `source.query`), test-utils
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
 
@@ -153,6 +154,19 @@ keeps meaning "the query was billed".
   reconfiguration); any attempt to detect redeploys; and a `<job_id>`-keyed mode, which the
   legibility finding above argues against resurrecting without new evidence.
 
+## Revision: the retry ids have no cap (2026-11-19)
+
+The `_rN` walk took the load runner's cap of five retry ids, for the load runner's reason, and gave
+up after it with a message quoting the last unusable id's error.
+The load runner's cap had no measurement behind it and is gone (ADR-0018's 2026-11-19 revision),
+and this walk loses it too: every id it passes holds a job some attempt created, so the first
+unused id ends it, and the Flink restart strategy decides how often a failing read is retried.
+A query that this attempt's own `jobs.insert` returns already failed now fails the attempt with
+BigQuery's error instead of being probed past, since the next id would be refused the same way
+and, without a cap, the walk would submit refused jobs for as long as the attempt lasted.
+A failed job behind a conflict is still probed past within the attempt.
+
 [#392]: https://github.com/flink-gcp/flink-connector-gcp/issues/392
 [#477]: https://github.com/flink-gcp/flink-connector-gcp/issues/477
 [#485]: https://github.com/flink-gcp/flink-connector-gcp/issues/485
+[#2181]: https://github.com/flink-gcp/flink-connector-gcp/issues/2181

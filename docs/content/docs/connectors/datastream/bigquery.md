@@ -452,7 +452,8 @@ and adopts it. It requires `queryLocation(...)`: BigQuery scopes a job to (proje
 and a look-up naming no location sees only jobs in the US multi-region — anywhere else the
 previous attempt's job would never be found (measured against a regional dataset) — a running job
 is waited for, a finished one has its result table checked and read, a failed one is probed past
-to a fresh retry id. `queryJobsReattached` reports each reuse.
+to a fresh retry id. `queryJobsReattached` reports each reuse. A query BigQuery refuses as this
+attempt submits it fails the attempt with BigQuery's error, and the retry probes past it.
 
 Its contract is worth stating precisely: **attempts of the same Flink job name and the same query
 configuration inside one window share one query job.** That covers the failover above, and it
@@ -2454,7 +2455,11 @@ constraints). One reconciliation per destination per run,
 whatever the partition count; the credentials therefore need `bigquery.tables.get` (plus
 `bigquery.tables.create` / `bigquery.tables.update` for what the final-table configuration
 enables).
-Under `WRITE_TRUNCATE` they also need `bigquery.tables.update` on the destination: BigQuery
+The jobs that write the destination never create it; only the reconciliation does, with the
+creation options under `CREATE_IF_NEEDED`. A destination dropped while a commit runs is therefore
+created again by a later reconciliation, not by a load from the load's own configuration without
+those options.
+Under `WRITE_TRUNCATE` the credentials also need `bigquery.tables.update` on the destination: BigQuery
 refuses a `WRITE_TRUNCATE` load or copy without it, into a new table as well as an existing one
 (measured).
 With schema updates enabled, `WRITE_APPEND` and `WRITE_TRUNCATE_DATA` need it there too, whenever
@@ -3530,7 +3535,8 @@ credential-less CI:
   [above](#file-loads)). `BigQueryFileLoadsTempTableLayoutRealGcpITCase` forces the
   temporary-table path into partitioned and clustered destinations under every write
   disposition, and replays four retries: after an upgrade, within one incarnation of the
-  temporary tables, after one of them expired, and after the final copy succeeded. `BigQueryFileLoadsITCase` also carries the staging-format fidelity
+  temporary tables, after one of them expired, and after the final copy succeeded; it also drops a
+  destination just before its direct load and retries that commit. `BigQueryFileLoadsITCase` also carries the staging-format fidelity
   suite — every column type this write method supports, loaded and read back with typed
   accessors, which is the only way a staged encoding the service refuses can be caught
   ([#282]({{< param BookRepo >}}/issues/282))
