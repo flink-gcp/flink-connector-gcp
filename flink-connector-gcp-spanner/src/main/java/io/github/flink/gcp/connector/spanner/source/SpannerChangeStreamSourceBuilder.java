@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StringUtils;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.base.source.StartPositionResolver;
@@ -71,6 +72,10 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      */
     public static final int DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK = 8;
 
+    private static final PartitionHandoff DEFAULT_PARTITION_HANDOFF =
+            PartitionHandoff.AFTER_CHECKPOINT;
+    private static final Duration DEFAULT_FIRST_CHECKPOINT_TIMEOUT = Duration.ofMinutes(10);
+
     private static final Duration MIN_HEARTBEAT_INTERVAL = Duration.ofSeconds(1);
     private static final Instant MIN_SPANNER_TIMESTAMP = Instant.parse("0001-01-01T00:00:00Z");
     private static final Instant MAX_SPANNER_TIMESTAMP =
@@ -86,6 +91,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     private Duration heartbeatInterval = DEFAULT_HEARTBEAT_INTERVAL;
     private SpannerRpcPriority rpcPriority = SpannerRpcPriority.HIGH;
     private int maxConcurrentQueriesPerSubtask = DEFAULT_MAX_CONCURRENT_QUERIES_PER_SUBTASK;
+    private PartitionHandoff partitionHandoff = DEFAULT_PARTITION_HANDOFF;
+    private Duration firstCheckpointTimeout = DEFAULT_FIRST_CHECKPOINT_TIMEOUT;
     private List<Pattern> tableIncludeList = Collections.emptyList();
     private List<Pattern> tableExcludeList = Collections.emptyList();
     private List<Pattern> columnIncludeList = Collections.emptyList();
@@ -290,6 +297,60 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                 "maxConcurrentQueriesPerSubtask must be positive, but was %s",
                 maximum);
         this.maxConcurrentQueriesPerSubtask = maximum;
+        return this;
+    }
+
+    /**
+     * Sets when a child partition starts after its parents finish. Optional; defaults to {@link
+     * PartitionHandoff#AFTER_CHECKPOINT}.
+     *
+     * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} keeps one key's changes in commit order at a
+     * keyed operator or a sink when source parallelism is above 1, at the cost of delaying the
+     * children of each partition split or merge until the next checkpoint completes. {@link
+     * PartitionHandoff#IMMEDIATE} starts them at once, for consumers that order each key's changes
+     * by their commit coordinates.
+     *
+     * @param partitionHandoff when a child partition starts
+     * @return this builder
+     */
+    public SpannerChangeStreamSourceBuilder<T> partitionHandoff(PartitionHandoff partitionHandoff) {
+        this.partitionHandoff =
+                Preconditions.checkNotNull(partitionHandoff, "partitionHandoff must not be null");
+        return this;
+    }
+
+    /**
+     * Sets how long a child partition waits for the job's first completed checkpoint before the
+     * source logs a warning and starts it anyway. Optional; defaults to 10 min. {@link
+     * Duration#ZERO} makes a child wait for a checkpoint however long that takes. Has no effect
+     * with {@link PartitionHandoff#IMMEDIATE}.
+     *
+     * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} starts a child only after a checkpoint
+     * completes, so a job running without checkpointing would never start one. The source cannot
+     * read the job's checkpoint configuration, so it measures instead: when no checkpoint has
+     * completed and a child has waited this long, it starts the children as soon as their parents
+     * finish, until a checkpoint completes. A savepoint taken while the job runs does not count,
+     * because Flink reports completion to the source only for a checkpoint or a savepoint that
+     * stops the job. Raise this above the time a job's first checkpoint takes to complete.
+     *
+     * @param firstCheckpointTimeout the wait, zero or from 1 ms to {@code
+     *     Duration.ofNanos(Long.MAX_VALUE)}; zero waits indefinitely
+     * @return this builder
+     */
+    public SpannerChangeStreamSourceBuilder<T> firstCheckpointTimeout(
+            Duration firstCheckpointTimeout) {
+        Preconditions.checkNotNull(
+                firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
+        Preconditions.checkArgument(
+                !firstCheckpointTimeout.isNegative(),
+                "firstCheckpointTimeout must not be negative, but was %s",
+                firstCheckpointTimeout);
+        // The coordinator checks the wait at most once a second, and a positive value under a
+        // millisecond reads as "wait indefinitely" to anything that converts it to millis.
+        OptionChecks.checkAtLeastOneMilliOrZero(firstCheckpointTimeout, "firstCheckpointTimeout");
+        this.firstCheckpointTimeout =
+                OptionChecks.checkExpressibleInNanos(
+                        firstCheckpointTimeout, "firstCheckpointTimeout");
         return this;
     }
 
@@ -523,6 +584,8 @@ public final class SpannerChangeStreamSourceBuilder<T> {
                         heartbeatInterval.toMillis(),
                         rpcPriority,
                         maxConcurrentQueriesPerSubtask,
+                        partitionHandoff,
+                        firstCheckpointTimeout,
                         serviceAccountKeyFile,
                         new SpannerChangeStreamRecordFilter(
                                 tableIncludeList,

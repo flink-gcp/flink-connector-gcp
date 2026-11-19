@@ -194,6 +194,10 @@ class SpannerChangeStreamSourceEmulatorITCase extends AbstractSpannerEmulatorITC
                         .startPosition(StartPosition.at(start))
                         .heartbeatInterval(Duration.ofSeconds(1))
                         .maxConcurrentQueriesPerSubtask(2)
+                        // No checkpointing here, and nothing reads order across partitions: an
+                        // emulator split inside the range would otherwise wait for
+                        // firstCheckpointTimeout (#2193).
+                        .partitionHandoff(PartitionHandoff.IMMEDIATE)
                         .emulatorEndpoint(emulatorEndpoint())
                         .boundedTimestamp(end);
         configure.accept(builder);

@@ -87,7 +87,7 @@ final class SpannerChangeStreamRecordEmitter<T>
         Preconditions.checkNotNull(state, "state must not be null");
 
         if (record instanceof SpannerChangeStreamRecord.Data) {
-            emitData(((SpannerChangeStreamRecord.Data) record).record, output);
+            emitData(((SpannerChangeStreamRecord.Data) record).record, output, state);
         } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
             // The heartbeat advances the watermark below together with the current position.
         } else if (record instanceof SpannerChangeStreamRecord.Children) {
@@ -110,9 +110,11 @@ final class SpannerChangeStreamRecordEmitter<T>
                         state.splitId(), state.getCurrentPosition(), state.getWatermark()));
     }
 
-    private void emitData(DataChangeRecord record, SourceOutput<T> output) throws Exception {
+    private void emitData(
+            DataChangeRecord record, SourceOutput<T> output, ChangeStreamPartitionSplitState state)
+            throws Exception {
         if (!filtersActive) {
-            deserialize(record, output);
+            deserialize(record, output, state);
             return;
         }
 
@@ -126,7 +128,7 @@ final class SpannerChangeStreamRecordEmitter<T>
                 break;
             case DELIVER:
                 metrics.columnOccurrencesFiltered(filtered.getRemovedColumnOccurrences());
-                deserialize(filtered.getRecord(), output);
+                deserialize(filtered.getRecord(), output, state);
                 break;
             default:
                 throw new IllegalArgumentException(
@@ -134,11 +136,19 @@ final class SpannerChangeStreamRecordEmitter<T>
         }
     }
 
-    private void deserialize(DataChangeRecord record, SourceOutput<T> output) throws Exception {
+    private void deserialize(
+            DataChangeRecord record, SourceOutput<T> output, ChangeStreamPartitionSplitState state)
+            throws Exception {
         long timestamp = record.getCommitTimestamp().toEpochMilli();
         long emittedCount =
                 SynchronousDeserializationCollector.<T, Exception>deserialize(
-                        emitted -> output.collect(emitted, timestamp),
+                        emitted -> {
+                            // Before the collect: an output that reached downstream counts even if
+                            // a later one fails, and the coordinator holds this split's children
+                            // only when something of it is downstream (ADR-0099).
+                            state.markEmittedRecords();
+                            output.collect(emitted, timestamp);
+                        },
                         out -> deserializer.deserialize(record, out));
         if (emittedCount == 0) {
             metrics.skipped();

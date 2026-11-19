@@ -40,6 +40,7 @@ import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSink;
+import io.github.flink.gcp.connector.spanner.source.PartitionHandoff;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
@@ -223,6 +224,10 @@ class SpannerClientMetricsITCase extends AbstractSpannerEmulatorITCase {
                             .startPosition(StartPosition.at(instant(first)))
                             .boundedTimestamp(instant(last))
                             .heartbeatInterval(Duration.ofSeconds(1))
+                            // No checkpointing here, and nothing reads order across partitions:
+                            // an emulator split inside the range would otherwise wait for
+                            // firstCheckpointTimeout (#2193).
+                            .partitionHandoff(PartitionHandoff.IMMEDIATE)
                             .emulatorEndpoint(emulatorEndpoint())
                             .exportClientMetricsToFlink(true)
                             .build();

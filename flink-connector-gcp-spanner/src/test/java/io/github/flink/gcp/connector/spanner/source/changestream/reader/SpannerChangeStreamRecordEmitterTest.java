@@ -81,6 +81,7 @@ class SpannerChangeStreamRecordEmitterTest {
         assertThat(state.getWatermark()).isEqualTo(START);
         assertThat(context.sourceEvents()).singleElement().satisfies(this::assertProgressAtCommit);
         assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
+        assertThat(state.hasEmittedRecords()).isTrue();
     }
 
     @Test
@@ -95,6 +96,7 @@ class SpannerChangeStreamRecordEmitterTest {
                 state);
 
         assertThat(state.getCurrentPosition()).isEqualTo(commit);
+        assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isEqualTo(1);
         assertThat(context.sourceEvents())
                 .singleElement()

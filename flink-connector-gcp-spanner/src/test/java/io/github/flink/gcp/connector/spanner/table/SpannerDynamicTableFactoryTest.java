@@ -48,6 +48,7 @@ import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.sink.OrderingMode;
 import io.github.flink.gcp.connector.spanner.sink.SpannerMutationsSink;
 import io.github.flink.gcp.connector.spanner.sink.SpannerSinkConfig;
+import io.github.flink.gcp.connector.spanner.source.PartitionHandoff;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
@@ -102,7 +103,9 @@ class SpannerDynamicTableFactoryTest {
                     Map.entry("scan.bounded.timestamp-millis", "2000"),
                     Map.entry("scan.change-stream.absent-retention-fallback", "3 d"),
                     Map.entry("scan.change-stream.heartbeat-interval", "2 s"),
-                    Map.entry("scan.max-concurrent-queries-per-subtask", "4"));
+                    Map.entry("scan.max-concurrent-queries-per-subtask", "4"),
+                    Map.entry("scan.change-stream.partition-handoff", "immediate"),
+                    Map.entry("scan.first-checkpoint-timeout", "5 min"));
 
     private static Map<String, String> options() {
         Map<String, String> options = new HashMap<>();
@@ -741,6 +744,8 @@ class SpannerDynamicTableFactoryTest {
         options.put("scan.change-stream.absent-retention-fallback", "3 d");
         options.put("scan.change-stream.heartbeat-interval", "1500 ms");
         options.put("scan.max-concurrent-queries-per-subtask", "4");
+        options.put("scan.change-stream.partition-handoff", "immediate");
+        options.put("scan.first-checkpoint-timeout", "3 min");
         options.put("scan.rpc-priority", "low");
         options.put("scan.parallelism", "3");
         ScanTableSource dynamic = (ScanTableSource) source(SCHEMA, options);
@@ -762,6 +767,8 @@ class SpannerDynamicTableFactoryTest {
         assertThat(config.getHeartbeatMillis()).isEqualTo(1500L);
         assertThat(config.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
         assertThat(config.getMaxConcurrentQueriesPerSubtask()).isEqualTo(4);
+        assertThat(config.getPartitionHandoff()).isEqualTo(PartitionHandoff.IMMEDIATE);
+        assertThat(config.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(3));
         assertThat(dynamic.copy()).isEqualTo(dynamic).hasSameHashCodeAs(dynamic);
         assertThat(dynamic.getChangelogMode().getContainedKinds())
                 .containsExactlyInAnyOrder(
@@ -1353,5 +1360,58 @@ class SpannerDynamicTableFactoryTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessageContaining("Option 'scan.max-concurrent-queries-per-subtask' is invalid")
                 .hasMessageContaining("maxConcurrentQueriesPerSubtask must be positive");
+
+        Map<String, String> timeout = changeStreamOptions("full");
+        timeout.put("scan.first-checkpoint-timeout", "300000 d");
+        assertThatThrownBy(
+                        () ->
+                                ((ScanTableSource) source(SCHEMA, timeout))
+                                        .getScanRuntimeProvider(
+                                                ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.first-checkpoint-timeout' is invalid")
+                .hasMessageContaining("firstCheckpointTimeout must be at most");
+    }
+
+    @Test
+    void anUnsetPartitionHandOffWaitsForACheckpointWithTheBuildersTimeout() {
+        ScanTableSource dynamic = (ScanTableSource) source(SCHEMA, changeStreamOptions("full"));
+        SpannerChangeStreamSourceConfig<?> config =
+                TestSources.changeStreamConfig(
+                        runtimeSource(
+                                ((SourceProvider)
+                                                dynamic.getScanRuntimeProvider(
+                                                        ScanRuntimeProviderContext.INSTANCE))
+                                        .createSource()));
+
+        assertThat(config.getPartitionHandoff()).isEqualTo(PartitionHandoff.AFTER_CHECKPOINT);
+        assertThat(config.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(10));
+    }
+
+    @Test
+    void parsesTheDocumentedHandOffSpellingsAndTellsSourcesApartByThem() {
+        Map<String, String> afterCheckpoint = changeStreamOptions("full");
+        afterCheckpoint.put("scan.change-stream.partition-handoff", "after-checkpoint");
+        ScanTableSource waiting = (ScanTableSource) source(SCHEMA, afterCheckpoint);
+        assertThat(
+                        TestSources.changeStreamConfig(
+                                        runtimeSource(
+                                                ((SourceProvider)
+                                                                waiting.getScanRuntimeProvider(
+                                                                        ScanRuntimeProviderContext
+                                                                                .INSTANCE))
+                                                        .createSource()))
+                                .getPartitionHandoff())
+                .isEqualTo(PartitionHandoff.AFTER_CHECKPOINT);
+
+        Map<String, String> immediate = changeStreamOptions("full");
+        immediate.put("scan.change-stream.partition-handoff", "immediate");
+        Map<String, String> timeout = changeStreamOptions("full");
+        timeout.put("scan.first-checkpoint-timeout", "3 min");
+        DynamicTableSource unset = source(SCHEMA, changeStreamOptions("full"));
+        assertThat(source(SCHEMA, immediate)).isNotEqualTo(unset);
+        assertThat(source(SCHEMA, immediate).hashCode()).isNotEqualTo(unset.hashCode());
+        assertThat(source(SCHEMA, timeout)).isNotEqualTo(unset);
+        assertThat(source(SCHEMA, timeout).hashCode()).isNotEqualTo(unset.hashCode());
     }
 }

@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.SpannerTableName;
+import io.github.flink.gcp.connector.spanner.source.PartitionHandoff;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceBuilder;
 import io.github.flink.gcp.connector.spanner.table.ChangeStreamChangelogMode;
@@ -77,6 +78,8 @@ public final class SpannerChangeStreamDynamicSource
     private final Duration heartbeatInterval;
     @Nullable private final SpannerRpcPriority rpcPriority;
     private final int maxConcurrentQueriesPerSubtask;
+    @Nullable private final PartitionHandoff partitionHandoff;
+    @Nullable private final Duration firstCheckpointTimeout;
     @Nullable private final String emulatorEndpoint;
     @Nullable private final String serviceAccountKeyFile;
     private final SpannerClientMetricsConfig clientMetrics;
@@ -126,6 +129,10 @@ public final class SpannerChangeStreamDynamicSource
                 config.get(SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL),
                 config.getOptional(SpannerConnectorOptions.SCAN_RPC_PRIORITY).orElse(null),
                 config.get(SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK),
+                config.getOptional(SpannerConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF)
+                        .orElse(null),
+                config.getOptional(SpannerConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT)
+                        .orElse(null),
                 config.getOptional(SpannerConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
                 config.getOptional(SpannerConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
                 config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null),
@@ -149,6 +156,8 @@ public final class SpannerChangeStreamDynamicSource
             Duration heartbeatInterval,
             @Nullable SpannerRpcPriority rpcPriority,
             int maxConcurrentQueriesPerSubtask,
+            @Nullable PartitionHandoff partitionHandoff,
+            @Nullable Duration firstCheckpointTimeout,
             @Nullable String emulatorEndpoint,
             @Nullable String serviceAccountKeyFile,
             @Nullable Integer parallelism,
@@ -173,6 +182,8 @@ public final class SpannerChangeStreamDynamicSource
         this.heartbeatInterval = heartbeatInterval;
         this.rpcPriority = rpcPriority;
         this.maxConcurrentQueriesPerSubtask = maxConcurrentQueriesPerSubtask;
+        this.partitionHandoff = partitionHandoff;
+        this.firstCheckpointTimeout = firstCheckpointTimeout;
         this.emulatorEndpoint = emulatorEndpoint;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.parallelism = parallelism;
@@ -247,6 +258,14 @@ public final class SpannerChangeStreamDynamicSource
                 SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK.key(),
                 maxConcurrentQueriesPerSubtask,
                 builder::maxConcurrentQueriesPerSubtask);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF.key(),
+                partitionHandoff,
+                builder::partitionHandoff);
+        OptionSetters.accept(
+                SpannerConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT.key(),
+                firstCheckpointTimeout,
+                builder::firstCheckpointTimeout);
         if (resumeFallback != null) {
             builder.resumeFallback(resumeFallback);
         }
@@ -288,6 +307,8 @@ public final class SpannerChangeStreamDynamicSource
                 heartbeatInterval,
                 rpcPriority,
                 maxConcurrentQueriesPerSubtask,
+                partitionHandoff,
+                firstCheckpointTimeout,
                 emulatorEndpoint,
                 serviceAccountKeyFile,
                 parallelism,
@@ -325,6 +346,8 @@ public final class SpannerChangeStreamDynamicSource
                 && absentRetentionFallback.equals(that.absentRetentionFallback)
                 && heartbeatInterval.equals(that.heartbeatInterval)
                 && rpcPriority == that.rpcPriority
+                && partitionHandoff == that.partitionHandoff
+                && Objects.equals(firstCheckpointTimeout, that.firstCheckpointTimeout)
                 && Objects.equals(emulatorEndpoint, that.emulatorEndpoint)
                 && Objects.equals(serviceAccountKeyFile, that.serviceAccountKeyFile)
                 && Objects.equals(parallelism, that.parallelism)
@@ -349,6 +372,8 @@ public final class SpannerChangeStreamDynamicSource
                 heartbeatInterval,
                 rpcPriority,
                 maxConcurrentQueriesPerSubtask,
+                partitionHandoff,
+                firstCheckpointTimeout,
                 emulatorEndpoint,
                 serviceAccountKeyFile,
                 parallelism,

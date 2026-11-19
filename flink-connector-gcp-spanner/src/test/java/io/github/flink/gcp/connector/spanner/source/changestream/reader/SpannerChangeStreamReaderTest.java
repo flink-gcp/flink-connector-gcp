@@ -351,6 +351,37 @@ class SpannerChangeStreamReaderTest {
     }
 
     @Test
+    void theFinishedEventSaysWhetherTheSplitEmittedARecord() throws Exception {
+        // The coordinator holds a finished partition's children only when something of the
+        // partition is downstream to be overtaken.
+        reader = reader(2, new FirstOnlyDeserializer());
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.addSplits(Collections.singletonList(split("b")));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(3))));
+        reader.pollNext(output);
+        client.finish("change-stream-token:a");
+        reader.pollNext(output);
+        client.record(
+                "change-stream-token:b",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(4))));
+        reader.pollNext(output);
+        client.finish("change-stream-token:b");
+        reader.pollNext(output);
+
+        assertThat(output.records).containsExactly("1");
+        assertThat(context.sourceEvents())
+                .filteredOn(PartitionFinishedEvent.class::isInstance)
+                .map(PartitionFinishedEvent.class::cast)
+                .extracting(finished -> finished.getSplitId() + "=" + finished.hasEmittedRecords())
+                .containsExactly("change-stream-token:a=true", "change-stream-token:b=false");
+    }
+
+    @Test
     void zeroEmissionsAfterOutputSkipButStillCheckpointProgress() throws Exception {
         reader = reader(1, new FirstOnlyDeserializer());
         reader.addSplits(Collections.singletonList(split("a")));

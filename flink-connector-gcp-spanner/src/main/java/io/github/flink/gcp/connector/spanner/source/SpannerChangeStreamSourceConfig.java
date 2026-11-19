@@ -47,6 +47,8 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
     private final long heartbeatMillis;
     private final SpannerRpcPriority rpcPriority;
     private final int maxConcurrentQueriesPerSubtask;
+    private final PartitionHandoff partitionHandoff;
+    private final Duration firstCheckpointTimeout;
     @Nullable private final String serviceAccountKeyFile;
     private final SpannerChangeStreamRecordFilter recordFilter;
     @Nullable private final Instant endTimestamp;
@@ -64,6 +66,8 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
             long heartbeatMillis,
             SpannerRpcPriority rpcPriority,
             int maxConcurrentQueriesPerSubtask,
+            PartitionHandoff partitionHandoff,
+            Duration firstCheckpointTimeout,
             @Nullable String serviceAccountKeyFile,
             SpannerChangeStreamRecordFilter recordFilter,
             @Nullable Instant endTimestamp,
@@ -79,6 +83,8 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
         this.heartbeatMillis = heartbeatMillis;
         this.rpcPriority = rpcPriority;
         this.maxConcurrentQueriesPerSubtask = maxConcurrentQueriesPerSubtask;
+        this.partitionHandoff = partitionHandoff;
+        this.firstCheckpointTimeout = firstCheckpointTimeout;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
         this.recordFilter = recordFilter;
         this.endTimestamp = endTimestamp;
@@ -122,6 +128,14 @@ public final class SpannerChangeStreamSourceConfig<T> implements Serializable {
 
     public int getMaxConcurrentQueriesPerSubtask() {
         return maxConcurrentQueriesPerSubtask;
+    }
+
+    public PartitionHandoff getPartitionHandoff() {
+        return partitionHandoff;
+    }
+
+    public Duration getFirstCheckpointTimeout() {
+        return firstCheckpointTimeout;
     }
 
     @Nullable

@@ -271,6 +271,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Child discovery does not finish a parent. A reader forwards every child-partitions record and
   sends a separate completion event only after its query ends successfully. A child becomes
   schedulable only after every named parent is finished.
+- A finished parent's children wait for a checkpoint too (#2193, ADR-0099's revision): under the
+  default `PartitionHandoff.AFTER_CHECKPOINT` the coordinator holds the parent until a checkpoint
+  whose `snapshotState` ran after the finish completes, because the parent's last records can still
+  be in flight when a child read by another subtask overtakes them. Keep the hold runtime-only (a
+  restored checkpoint is complete, so every recorded finish is released), skip it at parallelism 1
+  and after a parent whose reader reported no emitted record (do not special-case the initial
+  query: Spanner's docs do not promise it returns no data), and keep the no-checkpoint fallback a
+  warning, never a failure: the coordinator cannot read the job's checkpoint configuration, so it
+  measures `firstCheckpointTimeout` before the first *completed* checkpoint. A `snapshotState` call
+  is not that evidence: Flink snapshots coordinators for every savepoint but reports completion only
+  for a checkpoint or a synchronous savepoint.
+  Do not measure per-key order on the emulator without classifying each move by lineage: it moves
+  a key outside the lineage.
 - A valid restored ledger wins and never seeds another null-token query. If an unfinished position
   expired, the default is failure; an explicit fallback discards the entire Spanner ledger and
   seeds one null-token query because advancing one old token can skip its terminal child record.

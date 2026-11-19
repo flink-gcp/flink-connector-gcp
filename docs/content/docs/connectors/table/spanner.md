@@ -401,8 +401,14 @@ Spanner change streams do not watch a generated column outside the primary key, 
 Explicit JSON null becomes SQL null, but an absent JSON member is never substituted with null when a complete row is required.
 A conversion failure identifies the table, commit timestamp, transaction, record sequence, and mod index without including row JSON or credential paths.
 
-Startup, expired-restore fallback, the bounded timestamp, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
+Startup, expired-restore fallback, the bounded timestamp, retention fallback, heartbeat interval, RPC priority, per-subtask query concurrency, partition hand-off, first-checkpoint timeout, emulator endpoint, credential path, and source parallelism map to the DataStream Change Streams builder.
 The checkpoint, retention, delivery, and capacity contracts therefore remain those of the [DataStream Change Streams source]({{< relref "docs/connectors/datastream/spanner" >}}#change-streams-source).
+
+At source parallelism above 1, a child partition starts by default only after a checkpoint taken after its parents finished has completed, so one key's changes reach a `ChangelogNormalize`, an aggregation or an upsert sink in commit order across a partition split or merge.
+Each split or merge then delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration.
+`'scan.change-stream.partition-handoff' = 'immediate'` starts them at once, for a sink that orders each key's changes by their commit coordinates, such as a BigQuery CDC table with a `spanner-change-sequence`.
+A job without checkpointing, such as a bounded backfill, pauses once for `scan.first-checkpoint-timeout` at its first split or merge and then starts children at once with a warning.
+[One key's changes across a partition split or merge]({{< relref "docs/connectors/datastream/spanner" >}}#one-keys-changes-across-a-partition-split-or-merge) describes the wait, its limits under unaligned checkpoints, asynchronous operators and failover, and what a job without checkpointing does.
 
 ### A delete's own coordinates
 
@@ -468,6 +474,8 @@ The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#
 | `scan.change-stream.absent-retention-fallback` | `7 d` | Retention assumed when the Change Stream has no explicit retention row |
 | `scan.change-stream.heartbeat-interval` | `2 s` | Change Streams service heartbeat interval, from one second through five minutes |
 | `scan.max-concurrent-queries-per-subtask` | `8` | Maximum Change Streams partition queries opened concurrently by one source subtask |
+| `scan.change-stream.partition-handoff` | `after-checkpoint` | When a child partition starts after its parents finish: `after-checkpoint` waits for a checkpoint taken after they finished, keeping one key's changes in commit order across a split or merge; `immediate` starts it at once |
+| `scan.first-checkpoint-timeout` | `10 min` | How long a child partition waits for the job's first completed checkpoint before the source logs a warning and starts children without waiting, until a checkpoint completes. Zero waits indefinitely; a positive value must be at least 1 ms. No effect with `immediate` |
 | `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; one canonical quoted or unquoted component in the configured schema, validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
 | `scan.partition.size-bytes` | *unset* | Desired partition size passed to Spanner as a hint |

@@ -307,7 +307,7 @@ Use the Change Stream DDL watch definition when the service must exclude tables 
 
 ### Partition queries and capacity
 
-The coordinator begins with the null partition token and schedules children only after every parent they name has finished.
+The coordinator begins with the null partition token and schedules children only after every parent they name has finished and, by default, a checkpoint taken after that has completed ([One key's changes across a partition split or merge](#one-keys-changes-across-a-partition-split-or-merge)).
 Each reader subtask opens several scheduled partition queries concurrently, up to `maxConcurrentQueriesPerSubtask`, and keeps excess restored splits in a checkpointed FIFO until capacity returns.
 
 Before releasing readers, the coordinator reads the database dialect and the stream's `CHANGE_STREAMS`, `CHANGE_STREAM_TABLES`, and `CHANGE_STREAM_OPTIONS` metadata.
@@ -322,6 +322,36 @@ A query failure fails the task and retains its split, while only successful end-
 
 Change Streams queries do not use Data Boost.
 The builder's `rpcPriority` applies to every query in both dialects.
+
+### One key's changes across a partition split or merge
+
+Spanner keeps one key's changes in a parent-to-child partition lineage, and the coordinator schedules a child only after every parent it names has finished.
+A parent's last records can still be on their way downstream when its query ends, in a network buffer or a sink writer's batch.
+If another subtask reads the child, the child's records take a different path and can reach a keyed operator or a sink first.
+One key's changes then arrive out of commit order, and an upsert keeps the older value until the key changes again.
+
+`partitionHandoff(PartitionHandoff.AFTER_CHECKPOINT)`, the default, starts a child only after a checkpoint taken after its parents finished has completed.
+The parents' readers emitted their last records before that checkpoint's barrier.
+Once an aligned checkpoint completes, every operator that handles its input before the barrier has therefore processed those records, and every sink that flushes on the barrier has written them.
+Each split or merge delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration, and the source watermark holds at the children's start meanwhile.
+Once a checkpoint has completed, the children do not start while later checkpoints keep failing; before the first completes, the timeout described below applies.
+Nothing waits at source parallelism 1, where every record takes one path, or after a parent whose reader emitted no record, such as the initial query, since nothing of it is downstream to overtake.
+
+The order this buys has three limits.
+
+- **Unaligned checkpoints**: an unaligned checkpoint, including one that an aligned-checkpoint timeout switches to, stores records in flight without processing them. It covers a sink chained to the source, but not an operator behind a shuffle.
+- **Operators that store pending elements**: an operator that keeps elements in its state instead of finishing them before the barrier, such as asynchronous I/O or an asynchronous sink's buffered requests, can still emit a parent's last records after the child's.
+- **Failover**: order holds between failures. A failover restores the last completed checkpoint and replays from it, at least once, so a parent replayed by a restarted subtask can deliver its last changes after its children's.
+
+`PartitionHandoff.IMMEDIATE` starts a child as soon as its parents finish.
+It suits a consumer that orders each key's changes by their commit coordinates, such as a BigQuery CDC table with a change sequence number, when the delay is unwanted.
+
+A job without checkpointing never completes the checkpoint a child waits for, and the coordinator cannot read the job's checkpoint configuration.
+The source therefore measures the wait: when no checkpoint has completed and a child has waited `firstCheckpointTimeout`, 10 minutes by default, it logs a warning and starts children as soon as their parents finish until a checkpoint completes.
+A savepoint taken while the job runs does not count, because Flink reports completion to the source only for a checkpoint or a savepoint that stops the job.
+Raise the timeout for a job whose first checkpoint completes later than that, or set it to zero to wait indefinitely.
+A bounded run without checkpointing therefore pauses once for the timeout, at its first partition split or merge; enable checkpointing, or set `IMMEDIATE` when the run's consumer does not need the order.
+[ADR-0099]({{< param BookRepo >}}/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) records the measurement behind this behavior.
 
 ### Checkpoints and delivery
 
@@ -816,7 +846,7 @@ Read the query and lag metrics together:
 - Queued partitions beside a free query slot indicate an unhealthy reader scheduling or backpressure path.
 - Unassigned partitions beside free reader query slots indicate an unhealthy split-request or coordinator assignment path.
 - The partition-ledger gauge should follow current unfinished topology rather than job age; growth without corresponding active, queued, or unassigned work points to partitions that are not completing.
-- Finished-parent proofs are transient fan-in dependencies; a sustained count means created children are still waiting for other parents to finish.
+- Finished-parent proofs are transient fan-in dependencies; a sustained count means created children are still waiting for other parents to finish or, with `PartitionHandoff.AFTER_CHECKPOINT`, for a checkpoint taken after them to complete.
 - Alert before either partition-lag gauge approaches the configured Change Streams retention period.
 
 Changing `maxConcurrentQueriesPerSubtask` changes the capacity of each running reader.
@@ -908,6 +938,8 @@ disagree, the service decides. Known deviations, and what covers them instead:
 | `FLOAT64` / PostgreSQL `FLOAT8` keys accept `NaN` in the emulator | The real service rejects these values in primary and secondary key columns. The float-key emulator test records acceptance in both dialects; the gated float-key read suite checks rejection separately from its numeric-range matrix. PostgreSQL's [type contract](https://cloud.google.com/spanner/docs/reference/postgresql/data-types) states the restriction explicitly |
 | The client records no client metrics in its emulator mode | An emulator job reports every `rpcMethod` series at zero. `SpannerClientMetricsITCase` reaches the emulator outside that mode through a test-only switch, so a reporter observes the real client's series for every component; the emulator sends no front-end timing, so both connectivity-error series equal the attempts there. The gated suite observes the front-end timing the service sends |
 | The emulator records no transaction tag in a change stream | A tag the sink sets, or a commit's, reads back empty from the emulator (measured 2026-11-07). The emulator does honour the change-stream exclusion, so the emulator test asserts the exclusion and the gated suite asserts the tag |
+| The emulator moves a key between partitions outside their lineage | A sequential read of an emulator change stream found 16 of 20 moves of one key going to a partition that does not descend from the previous one (emulator 1.5.59, 2026-11-18); the service keeps a key in its lineage. Per-key order across partitions is therefore measured on the emulator only by classifying each move by lineage, as [#2193]({{< param BookRepo >}}/issues/2193) did |
+| A live partition query on the emulator can miss a record | A query reading at the head of the stream occasionally misses a record that a later read returns: a plain client without Flink missed one in 1 of 4 one-minute runs (2026-11-18). An emulator test that asserts completeness while writes race the read can fail for the emulator's reason |
 | Change Stream timing and topology are local approximations | Emulator tests prove both dialect adapters and deterministic failover, but do not establish the service's retention boundary, stream-creation boundary, partition topology, or heartbeat timing. The gated suite verifies those boundaries and restore behavior in both dialects; it observed two service-created child partitions at its 5,000-row scale, which is evidence for that run rather than a guaranteed partition count |
 
 ### The gated real-GCP suite

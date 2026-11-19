@@ -305,7 +305,10 @@ public final class SpannerChangeStreamReader<T>
         ChangeStreamPartitionSplit split = query.state.toSplit();
         context.sendSourceEventToCoordinator(
                 new PartitionFinishedEvent(
-                        split.splitId(), split.getCurrentPosition(), split.getWatermark()));
+                        split.splitId(),
+                        split.getCurrentPosition(),
+                        split.getWatermark(),
+                        query.state.hasEmittedRecords()));
         query.handle.close();
         active.remove(split.splitId());
         output.releaseOutputForSplit(split.splitId());

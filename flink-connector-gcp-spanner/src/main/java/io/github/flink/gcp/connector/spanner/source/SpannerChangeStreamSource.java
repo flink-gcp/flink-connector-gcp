@@ -146,11 +146,26 @@ public final class SpannerChangeStreamSource<T>
                 config.getResumeFallback(),
                 config.getEndTimestamp(),
                 config.getHeartbeatMillis(),
+                holdsChildrenUntilCheckpoint(config.getPartitionHandoff()),
+                config.getFirstCheckpointTimeout(),
                 restored,
                 config.isExportClientMetricsToFlink()
                         ? SpannerClientMetrics.registerForEnumerators(
                                 context.metricGroup(), ENUMERATOR_METHODS)
                         : null);
+    }
+
+    // Every constant is named, so a new one fails here rather than meaning "no hold" by default.
+    private static boolean holdsChildrenUntilCheckpoint(PartitionHandoff handoff) {
+        switch (handoff) {
+            case AFTER_CHECKPOINT:
+                return true;
+            case IMMEDIATE:
+                return false;
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported partition hand-off " + handoff + ".");
+        }
     }
 
     @Override

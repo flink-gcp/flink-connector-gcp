@@ -112,6 +112,8 @@ public final class SpannerDynamicTableFactory
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
                         SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
                         SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK,
+                        SpannerConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF,
+                        SpannerConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
                         SpannerConnectorOptions.SCAN_INDEX,
                         SpannerConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS,
                         SpannerConnectorOptions.SCAN_PARTITION_SIZE_BYTES,
@@ -430,7 +432,9 @@ public final class SpannerDynamicTableFactory
                 SpannerConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                 SpannerConnectorOptions.SCAN_CHANGE_STREAM_ABSENT_RETENTION_FALLBACK,
                 SpannerConnectorOptions.SCAN_CHANGE_STREAM_HEARTBEAT_INTERVAL,
-                SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK);
+                SpannerConnectorOptions.SCAN_MAX_CONCURRENT_QUERIES_PER_SUBTASK,
+                SpannerConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF,
+                SpannerConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT);
     }
 
     @SafeVarargs

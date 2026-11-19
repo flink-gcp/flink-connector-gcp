@@ -31,8 +31,15 @@ public final class PartitionFinishedEvent implements SourceEvent {
     private final String splitId;
     private final Instant currentPosition;
     private final Instant watermark;
+    private final boolean emittedRecords;
 
-    public PartitionFinishedEvent(String splitId, Instant currentPosition, Instant watermark) {
+    /**
+     * @param emittedRecords whether the reporting reader emitted any output record from the split;
+     *     without one, nothing of the partition is downstream for its children to overtake
+     */
+    public PartitionFinishedEvent(
+            String splitId, Instant currentPosition, Instant watermark, boolean emittedRecords) {
+        this.emittedRecords = emittedRecords;
         this.splitId = Preconditions.checkNotNull(splitId, "splitId must not be null");
         this.currentPosition =
                 Preconditions.checkNotNull(currentPosition, "currentPosition must not be null");
@@ -49,5 +56,10 @@ public final class PartitionFinishedEvent implements SourceEvent {
 
     public Instant getWatermark() {
         return watermark;
+    }
+
+    /** Returns whether the reporting reader emitted any output record from the split. */
+    public boolean hasEmittedRecords() {
+        return emittedRecords;
     }
 }

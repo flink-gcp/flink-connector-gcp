@@ -66,6 +66,8 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(defaults.getHeartbeatMillis()).isEqualTo(2_000);
         assertThat(defaults.getRpcPriority()).isEqualTo(SpannerRpcPriority.HIGH);
         assertThat(defaults.getMaxConcurrentQueriesPerSubtask()).isEqualTo(8);
+        assertThat(defaults.getPartitionHandoff()).isEqualTo(PartitionHandoff.AFTER_CHECKPOINT);
+        assertThat(defaults.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(10));
         assertThat(defaults.getServiceAccountKeyFile()).isNull();
         assertThat(defaults.getRecordFilter().hasFilters()).isFalse();
         DataChangeRecord unfiltered = record("orders");
@@ -82,6 +84,8 @@ class SpannerChangeStreamSourceBuilderTest {
                                 .heartbeatInterval(Duration.ofMillis(1_500))
                                 .rpcPriority(SpannerRpcPriority.LOW)
                                 .maxConcurrentQueriesPerSubtask(19)
+                                .partitionHandoff(PartitionHandoff.IMMEDIATE)
+                                .firstCheckpointTimeout(Duration.ZERO)
                                 .tableIncludeList(Collections.singletonList("orders"))
                                 .columnExcludeList(Collections.singletonList("orders\\.secret"))
                                 .skipMessagesWithoutChange(true));
@@ -92,6 +96,8 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThat(configured.getHeartbeatMillis()).isEqualTo(1_500);
         assertThat(configured.getRpcPriority()).isEqualTo(SpannerRpcPriority.LOW);
         assertThat(configured.getMaxConcurrentQueriesPerSubtask()).isEqualTo(19);
+        assertThat(configured.getPartitionHandoff()).isEqualTo(PartitionHandoff.IMMEDIATE);
+        assertThat(configured.getFirstCheckpointTimeout()).isZero();
         assertThat(configured.getRecordFilter().hasFilters()).isTrue();
         assertThat(configured.getRecordFilter().filter(record("orders")).getDisposition())
                 .isEqualTo(
@@ -215,6 +221,34 @@ class SpannerChangeStreamSourceBuilderTest {
         assertThatThrownBy(() -> builder().absentRetentionFallback(Duration.ofMinutes(1)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("retention safety margin");
+        assertThatThrownBy(() -> builder().firstCheckpointTimeout(Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout must not be negative");
+        assertThatThrownBy(
+                        () ->
+                                builder()
+                                        .firstCheckpointTimeout(
+                                                Duration.ofNanos(Long.MAX_VALUE).plusNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout must be at most");
+        assertThatThrownBy(() -> builder().partitionHandoff(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("partitionHandoff must not be null");
+        assertThatThrownBy(() -> builder().firstCheckpointTimeout(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("firstCheckpointTimeout must not be null");
+        // A positive value under a millisecond would read as "wait indefinitely".
+        assertThatThrownBy(() -> builder().firstCheckpointTimeout(Duration.ofNanos(500_000)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout must be at least 1 millisecond");
+        assertThat(
+                        config(builder().firstCheckpointTimeout(Duration.ofNanos(Long.MAX_VALUE)))
+                                .getFirstCheckpointTimeout())
+                .isEqualTo(Duration.ofNanos(Long.MAX_VALUE));
+        assertThat(
+                        config(builder().firstCheckpointTimeout(Duration.ofMillis(1)))
+                                .getFirstCheckpointTimeout())
+                .isEqualTo(Duration.ofMillis(1));
     }
 
     @Test
