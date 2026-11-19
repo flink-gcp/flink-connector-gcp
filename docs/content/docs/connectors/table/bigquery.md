@@ -501,6 +501,8 @@ A key changed in quick succession therefore costs one request per change; 200 ch
 The Table API writes every key type BigQuery accepts in an encoding the writer compares exactly, so only a repeated key ends a request early, with two exceptions.
 A `STRING` key column the table declares with a collation makes every row its own request and logs a warning when the sink opens the table.
 A `DECIMAL` key with a larger scale than an existing table's parameterized `NUMERIC` or `BIGNUMERIC` key column, such as `DECIMAL(6, 3)` into `NUMERIC(6, 2)`, is rounded by BigQuery, so a row whose value has more fractional digits than the column keeps goes in a request of its own; a table the sink creates takes the Flink type's scale and never meets this.
+The writer keeps the key it read for as long as the table stays open, and a table the sink creates again after it was dropped gets the DDL's `PRIMARY KEY`, which is the one the writer holds.
+A key changed on the BigQuery table while the job runs can go unseen until the job restarts, and requests are split by the old key until then; [Change data capture](#change-data-capture) says how to change one.
 An attempt that timed out on the client can still be committed by the service after a later request, and a restart re-sends the rows written since the last completed checkpoint after the ones that had already landed, in the order the replay delivers them; in a CDC table, BigQuery applies a key's change with the larger sequence, and keeps a delete for two days to resolve one that arrives out of order.
 
 The option belongs to `storage-api-at-least-once` and is rejected with the other two write methods.
@@ -553,6 +555,17 @@ The two options combine as follows:
 `verify-only` does not start adoption or drift repair.
 If a table carries the matching connector-owned pending label, either policy resumes that partial
 attempt, which may apply the required maximum-staleness DDL before completing the label.
+
+The sink never changes a table's primary key, so an operator changes one with the job stopped,
+because the writer can keep the old key until it restarts
+([Commit order of a table's rows](#commit-order-of-a-tables-rows)).
+The DDL's `PRIMARY KEY` changes with it: a declared key that differs from the table's fails the sink
+when it opens the table.
+A provisioning label on the table names the old key too.
+A completed label, which `verify-only` refuses, makes the first start after the change run with
+`reconcile`, which moves the label to the new key.
+A pending label, left by an interrupted provisioning or repair, is refused under either policy, so
+the sink completes it, by running the job with the old key, before the key changes.
 
 See
 [ADR-0112]({{< param BookRepo >}}/blob/main/docs/adr/0112-bigquery-cdc-auto-creation-combines-the-tables-api-with-verified-ddl.md)

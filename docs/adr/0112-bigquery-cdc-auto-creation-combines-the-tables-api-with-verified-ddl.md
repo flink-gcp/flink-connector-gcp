@@ -18,10 +18,11 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-14; revised by [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071) (2026-11-07: older-serialized-form fallback removed, ADR-0200);
+  revised by [#2180](https://github.com/flink-gcp/flink-connector-gcp/issues/2180) (2026-11-17: the schema reconciliation's creation brought under the protocol);
   revised by [#2178](https://github.com/flink-gcp/flink-connector-gcp/issues/2178) (2026-11-18: job project, ADR-0206)
 - Issues: [#65](https://github.com/flink-gcp/flink-connector-gcp/issues/65),
   [#627](https://github.com/flink-gcp/flink-connector-gcp/issues/627), [#2071](https://github.com/flink-gcp/flink-connector-gcp/issues/2071),
-  [#2178](https://github.com/flink-gcp/flink-connector-gcp/issues/2178)
+  [#2178](https://github.com/flink-gcp/flink-connector-gcp/issues/2178), [#2180](https://github.com/flink-gcp/flink-connector-gcp/issues/2180)
 - Modules: bigquery
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md#change-data-capture`,
   `docs/content/docs/connectors/table/bigquery.md#change-data-capture`
@@ -173,6 +174,20 @@ The sink owns a small, recoverable provisioning state machine instead of requiri
 Operators who do not want connector-owned DDL can leave maximum staleness unmanaged and retain the default `VERIFY_ONLY` policy.
 `CREATE_NEVER` can still use `RECONCILE`; it denies creation but permits explicitly selected convergence of an existing table.
 Every CDC sink manages its table contract; a job graph serialized by an earlier version is not read across the upgrade (ADR-0200), so no CDC sink keeps the earlier pre-created-table behavior.
+
+## Revision: a table the schema reconciliation finds missing is provisioned too (2026-11-17)
+
+The protocol above ran wherever the default-stream writer created a missing table, with one
+exception that [#2180](https://github.com/flink-gcp/flink-connector-gcp/issues/2180) found.
+A schema reconciliation, run on a serializer fingerprint change or a schema mismatch, created a
+table it found missing through `TableAdmin.create`, so a CDC table dropped while the job ran could
+come back without its primary key, provisioning label or managed `max_staleness`, and without the
+provisioning's refusals.
+A later start then failed verification on the primary key, which the sink never repairs.
+
+The reconciliation now takes the writer's creation path as a callback, and that path sends a CDC
+destination through this protocol, as a failed append already did.
+The decision is unchanged: every table a CDC sink creates is created by this protocol.
 
 [cdc-guide]: https://cloud.google.com/bigquery/docs/change-data-capture
 [labels]: https://cloud.google.com/bigquery/docs/labels-intro

@@ -484,6 +484,51 @@ class BigQueryDefaultStreamWriterMetricsTest {
     }
 
     @Test
+    void countsACdcTableTheReconciliationProvisionsAgainOnce() throws Exception {
+        // The CDC half of the case below: a table dropped while the job runs and found missing by
+        // the reconciliation is provisioned through ensureCdcTable (#2180), which counts the
+        // request, and the reconciliation must not count it a second time.
+        admin.liveSchema = null;
+        BigQueryDefaultStreamSink<String> sink =
+                (BigQueryDefaultStreamSink<String>)
+                        BigQuerySink.<String>builder()
+                                .table(DESTINATION)
+                                .serializer(new ValidEmptyProtoSerializer())
+                                .schemaUpdateOptions(
+                                        SchemaUpdateOptions.builder().allowNewFields().build())
+                                .cdcOptions(
+                                        CdcOptions.<String>builder(
+                                                        CdcChangeTypeProvider.upsertOnly())
+                                                .sequenceNumberProvider(ignored -> "1")
+                                                .build())
+                                .cdcTableOptions(
+                                        CdcTableOptions.builder()
+                                                .primaryKeyColumns(List.of("name"))
+                                                .build())
+                                .build();
+        BigQueryDefaultStreamWriter<String> writer =
+                new BigQueryDefaultStreamWriter<>(
+                        sink.getConfig(),
+                        factory,
+                        admin,
+                        metrics,
+                        DefaultStreamOptions.DEFAULT_MAX_APPEND_REQUEST_BYTES,
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3),
+                        BigQueryDefaultStreamWriterTest.fastSchedule(3));
+
+        writer.write("aa", CONTEXT);
+        writer.flush(false);
+        admin.liveSchema = null;
+        factory.scriptedResults.add(schemaMismatch());
+        writer.write("bb", CONTEXT);
+        writer.flush(false);
+
+        assertThat(admin.creates).containsExactly(DESTINATION, DESTINATION);
+        assertThat(counter("tablesCreated")).isEqualTo(2);
+        assertThat(counter("schemaReconciliations")).isZero();
+    }
+
+    @Test
     void countsATableRecreatedDuringReconciliationAsACreation() throws Exception {
         // Degenerate reconciliation: the table has meanwhile disappeared, so the sink creates it
         // instead of updating a schema. That is a creation and must not also count as a

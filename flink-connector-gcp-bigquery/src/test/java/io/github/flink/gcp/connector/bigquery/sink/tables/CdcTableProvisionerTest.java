@@ -295,6 +295,43 @@ class CdcTableProvisionerTest {
     }
 
     @Test
+    void aPrimaryKeyChangedOnATableTheSinkCreatedStartsOnlyUnderReconcile() throws Exception {
+        // The operator changed the table's key and the declared key with the job stopped; the
+        // label still names the specification the sink created the table with.
+        CdcTableOptions newOptions =
+                CdcTableOptions.builder()
+                        .primaryKeyColumns(Arrays.asList("id"))
+                        .maxStaleness(TEN_MINUTES)
+                        .build();
+        FakeService service =
+                existing(serviceState(Arrays.asList("id"), complete(options(TEN_MINUTES)), "e1"));
+        service.liveMaxStaleness = TEN_MINUTES;
+
+        assertThatThrownBy(
+                        () ->
+                                ensure(
+                                        service,
+                                        newOptions,
+                                        CreateDisposition.CREATE_IF_NEEDED,
+                                        CdcTableReconciliationPolicy.VERIFY_ONLY))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("does not match the configured CDC table specification");
+        assertThat(service.labelUpdates).isEmpty();
+
+        ensure(
+                service,
+                newOptions,
+                CreateDisposition.CREATE_IF_NEEDED,
+                CdcTableReconciliationPolicy.RECONCILE);
+
+        assertThat(service.state.provisioningLabel())
+                .isEqualTo(
+                        "complete_"
+                                + CdcTableProvisioner.specificationHash(
+                                        Arrays.asList("id"), newOptions));
+    }
+
+    @Test
     void matchingPendingStateResumesEvenUnderVerifyOnly() throws Exception {
         CdcTableOptions options = options(TEN_MINUTES);
         FakeService service =

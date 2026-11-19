@@ -825,6 +825,8 @@ CDC has the following table and write-path requirements:
 - `CreateDisposition` remains independent of reconciliation.
   `CREATE_NEVER` fails for a missing table, but either policy may verify or reconcile a table that
   already exists.
+  Under `CREATE_IF_NEEDED`, a CDC table dropped while the job runs is provisioned again as at its
+  first creation, whichever write path finds it missing.
   [ADR-0112]({{< param BookRepo >}}/blob/main/docs/adr/0112-bigquery-cdc-auto-creation-combines-the-tables-api-with-verified-ddl.md)
   records the behavior matrix, recovery protocol, ownership boundary, and reconsideration trigger.
 - CDC is valid only with `STORAGE_API_AT_LEAST_ONCE`, which writes through the Storage Write API
@@ -841,6 +843,16 @@ CDC has the following table and write-path requirements:
 `VERIFY_ONLY` does not start adoption or drift repair.
 If a table carries the matching connector-owned pending label, either policy resumes that partial
 attempt, which may apply the required maximum-staleness DDL before completing the label.
+
+The sink never changes a table's primary key, so an operator changes one with the job stopped,
+because the writer can keep the old key until it restarts ([Commit order](#commit-order)).
+The key `CdcTableOptions` declares, if it declares one, changes with it: a declared key that differs
+from the table's fails the sink when it opens the table.
+A provisioning label on the table names the old key too.
+A completed label, which `VERIFY_ONLY` refuses, makes the first start after the change run under
+`RECONCILE`, which moves the label to the new key.
+A pending label, left by an interrupted provisioning or repair, is refused under either policy, so
+the sink completes it, by running the job with the old key, before the key changes.
 
 The configured serializer remains the source of the physical `TableSchema`.
 The sink augments only the protobuf descriptor sent to the default stream, so the two CDC
@@ -2062,6 +2074,11 @@ in a request of its own.
 A key column written in a form with several spellings of one value, such as a `TIMESTAMP` or
 `NUMERIC` written as text, a floating-point field, or a collated `STRING`, makes every row of the
 table its own request, and the writer logs a warning naming the column when it opens the table.
+The writer keeps the key it read for as long as the table stays open, and a table the sink creates
+again after it was dropped gets the declared key, which is the one the writer holds.
+A key changed outside the sink while the job runs can go unseen until the job restarts, and requests
+are split by the old key until then; [Change data capture](#change-data-capture) says how to change
+one.
 
 The guarantee has three limits.
 It is per subtask, so rows whose order matters must reach one subtask, for example by `keyBy` on

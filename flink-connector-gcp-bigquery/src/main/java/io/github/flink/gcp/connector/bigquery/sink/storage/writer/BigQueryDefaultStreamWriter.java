@@ -402,7 +402,8 @@ public class BigQueryDefaultStreamWriter<T>
         this.timerService = timerService;
         this.nanoClock = Preconditions.checkNotNull(nanoClock, "nanoClock must not be null");
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
-        this.schemaReconciler = new StorageWriteSchemaReconciler<>(config, tableAdmin);
+        this.schemaReconciler =
+                new StorageWriteSchemaReconciler<>(config, tableAdmin, this::createTable);
         this.orderingMode =
                 Preconditions.checkNotNull(orderingMode, "orderingMode must not be null");
         this.keepsKeysApart =
@@ -1124,11 +1125,12 @@ public class BigQueryDefaultStreamWriter<T>
 
     /**
      * Creates the destination table, which every repair path that discovers a missing table
-     * reaches. A creation the service rate-limits is repeated by the {@link TableAdmin} the sink
-     * wired ({@code RetryingTableAdmin}, on the recovery schedule), so this call blocks rather than
-     * failing — and nothing here chooses a budget, which is what keeps a creation off the
-     * fifteen-minute schema one however the repair around it got here. {@link #scheduleFor} keeps
-     * the missing-table verdict itself off that budget for the same reason.
+     * reaches, and so does a schema reconciliation that finds the table gone. A creation the
+     * service rate-limits is repeated by the {@link TableAdmin} the sink wired ({@code
+     * RetryingTableAdmin}, on the recovery schedule), so this call blocks rather than failing — and
+     * nothing here chooses a budget, which is what keeps a creation off the fifteen-minute schema
+     * one however the repair around it got here. {@link #scheduleFor} keeps the missing-table
+     * verdict itself off that budget for the same reason.
      */
     private void createTable(TableDestination destination) throws IOException {
         if (managesCdcTableContract()) {
@@ -1195,10 +1197,10 @@ public class BigQueryDefaultStreamWriter<T>
      * @return whether the table was changed (schema updated, or created after disappearing)
      */
     private boolean reconcileSchema(TableDestination destination) throws IOException {
+        // A table the reconciliation found missing was created through createTable, which counted
+        // it, so only an update is counted here.
         StorageWriteSchemaReconciler.Outcome outcome = schemaReconciler.reconcile(destination);
-        if (outcome == StorageWriteSchemaReconciler.Outcome.CREATED) {
-            metrics.tableCreated();
-        } else if (outcome == StorageWriteSchemaReconciler.Outcome.UPDATED) {
+        if (outcome == StorageWriteSchemaReconciler.Outcome.UPDATED) {
             metrics.schemaReconciled();
         }
         return outcome != StorageWriteSchemaReconciler.Outcome.UNCHANGED;

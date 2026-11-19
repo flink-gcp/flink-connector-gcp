@@ -558,6 +558,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   2026-08-14 measurement.
   Preserve restart completion, parallel idempotence, dynamic-destination re-entry, and the rule
   that an unlabeled existing table is verified but never modified.
+  A default-stream table found missing is created through `BigQueryDefaultStreamWriter.createTable`
+  (or `ensureCdcTable` directly, when a CDC destination's stream opens), the schema
+  reconciliation's included: `StorageWriteSchemaReconciler` takes the writer's creation path as a
+  callback rather than calling `TableAdmin.create`, which once re-created a dropped CDC table
+  without its primary key or label (#2180). Do not give it a creation call of its own again.
 - `sink.table-create.*` checks shape, never the clusterable scalar type list; the
   field-without-granularity rejection has no builder backstop and is load-bearing, and the
   `create-never` rejection has none either, since `build()` accepts creation options under
