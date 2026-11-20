@@ -243,7 +243,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 
 ## Native-mode Table API lookup (`docs/adr/0179`, lookup section)
 
-- **Only the document id addresses a lookup**; a keyless table (every collection-group table) is
+- **Only the document id addresses a point lookup** (`NONE`, `PARTIAL`); a keyless table (every collection-group table) is
   refused in `FirestoreDynamicSource.lookupKeys`. Additional top-level physical scalar keys are
   post-read equalities through `base.table.LookupKeyFilter`, before caching by the complete tuple.
   Rows come from the scan's
@@ -258,6 +258,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   (`retry_policy_1_codes`); `FirestoreLookupErrorClassifierTest` compares the two, so a
   libraries-bom bump that moves the library's set fails there.
 - The lookup functions are `public`: the planner refuses a function class that is not.
+- **`FULL` is loaded by the scan's own configuration** (ADR-0179 revision, #1846):
+  `FirestoreFullCacheInputFormat` takes the `FirestoreSourceConfig` that `scanBuilder` builds for
+  the scan, so a new scan knob reaches the load unless it is a snapshot choice. `scan.read-time`
+  never reaches a load (a lookup reads documents as they are); do not refuse it with `FULL` as
+  Spanner does. Each load plans again in `createInputSplits` and returns ONE split that reads every
+  planned query serially through `FirestoreSplitReader` (a collection group at one partition).
+  Never return several splits: Flink loads them on parallel threads through one shared
+  `RowDataSerializer`, whose `MapDataSerializer.copy` is not thread-safe for `GenericMapData`.
+  Streaming mode pushes a condition on the looked-up table into the lookup source and so into the
+  load; batch mode does not (#2219). Document both; never call a load "every document" or
+  "filtered" without the mode.
+- `FULL` keys are any top-level produced field, metadata included, whose `GenericRowData.equals`
+  is SQL `=`: not DOUBLE, ARRAY, MAP or ROW. `document-path` is what joins a collection-group
+  table, which `NONE`/`PARTIAL` still refuse. `lookup.async` with `FULL` is refused in
+  `FirestoreLookupConfig`.
 
 - Asynchronous lookup retries use `base.table.AsyncLookupRetries` (ADR-0039); keep the read,
   row conversion and failure classifier here, and the stack-safety and late-callback tests in base.

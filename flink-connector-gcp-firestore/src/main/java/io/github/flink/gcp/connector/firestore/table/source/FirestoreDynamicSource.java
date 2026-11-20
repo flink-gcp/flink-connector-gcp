@@ -20,8 +20,10 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
@@ -30,7 +32,9 @@ import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
@@ -49,6 +53,7 @@ import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.common.table.PushedFilters;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSource;
 import io.github.flink.gcp.connector.firestore.source.FirestoreSourceBuilder;
+import io.github.flink.gcp.connector.firestore.source.batch.FirestoreBatchSource;
 import io.github.flink.gcp.connector.firestore.table.FirestoreLookupConfig;
 import io.github.flink.gcp.connector.firestore.table.FirestoreScanConfig;
 import io.github.flink.gcp.connector.firestore.table.FirestoreTableLineage;
@@ -72,13 +77,14 @@ import java.util.Set;
  *
  * <p>The table's collection is read as one query, one split; under {@code scan.collection-group}
  * every collection with its id is read as a partitioned collection-group scan. A lookup reads one
- * document of the collection by its id. Each reads only the fields of the columns it produces: the
- * declared columns, or the projected ones when the planner pushed a projection down, a projected
- * field of a ROW column read as its nested path where {@code fieldMask} says so. A
- * single-collection scan also adds the filters {@link FirestoreFilterPushDown} translates, each a
- * necessary condition that Flink evaluates again, all but an equality on the document id only under
- * {@code scan.filter-push-down.enabled}; a collection-group scan pushes none ({@code
- * docs/adr/0197}).
+ * document of the collection by its id, except under a {@code FULL} cache, which Flink loads with
+ * the scan's own read ({@link FirestoreFullCacheInputFormat}) and serves from memory by any
+ * top-level key. Each reads only the fields of the columns it produces: the declared columns, or
+ * the projected ones when the planner pushed a projection down, a projected field of a ROW column
+ * read as its nested path where {@code fieldMask} says so. A single-collection scan also adds the
+ * filters {@link FirestoreFilterPushDown} translates, each a necessary condition that Flink
+ * evaluates again, all but an equality on the document id only under {@code
+ * scan.filter-push-down.enabled}; a collection-group scan pushes none ({@code docs/adr/0197}).
  *
  * <p>A limit the planner pushes bounds the query, and a collection-group scan given one reads the
  * group as one limited query instead of as partitions, so a scan reads at most that many documents
@@ -168,6 +174,25 @@ public final class FirestoreDynamicSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         TypeInformation<RowData> producedType = context.createTypeInformation(producedDataType);
+        Source<RowData, ?, ?> source = scanBuilder(producedType, false).build();
+        return SourceProvider.of(
+                lineage == null ? source : lineage.source(source, producedType), parallelism);
+    }
+
+    /**
+     * The builder of the bounded read of the produced fields, which the scan and a {@code FULL}
+     * cache's load both build.
+     *
+     * <p>A load reads at its own time, without {@code scan.read-time}, and without a limit, which
+     * the planner never pushes into a lookup. It reads a collection group as one partition, because
+     * a load is one split read serially ({@link FirestoreFullCacheInputFormat}).
+     *
+     * @param producedType the produced row's type information
+     * @param fullCacheLoad whether the read is a {@code FULL} cache's load rather than the scan
+     * @return the configured builder
+     */
+    private FirestoreSourceBuilder<RowData> scanBuilder(
+            TypeInformation<RowData> producedType, boolean fullCacheLoad) {
         FirestoreSourceBuilder<RowData> builder =
                 FirestoreSource.<RowData>builder()
                         .database(database)
@@ -177,7 +202,7 @@ public final class FirestoreDynamicSource
         String[] fields = fieldMask(schema, columns);
         // A limit beside a pushed filter would stop before a document Flink's residual keeps. The
         // planner never pushes both; the guard keeps the query right if it ever did.
-        Integer queryLimit = filterState.filters().isEmpty() ? limit : null;
+        Integer queryLimit = fullCacheLoad || !filterState.filters().isEmpty() ? null : limit;
         if (scanConfig.isCollectionGroup() && queryLimit != null) {
             builder.query(
                     FirestoreCollectionQueryFactory.collectionGroup(
@@ -196,20 +221,24 @@ public final class FirestoreDynamicSource
                             collection, fields, filterState.filters(), queryLimit));
         }
         // Only an unlimited collection-group scan is partitioned.
-        scanConfig.applyTo(builder, scanConfig.isCollectionGroup() && queryLimit == null);
+        scanConfig.applyTo(
+                builder,
+                scanConfig.isCollectionGroup() && queryLimit == null && !fullCacheLoad,
+                !fullCacheLoad);
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
-        Source<RowData, ?, ?> source = builder.build();
-        return SourceProvider.of(
-                lineage == null ? source : lineage.source(source, producedType), parallelism);
+        return builder;
     }
 
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
+        if (lookupConfig.getCacheType() == LookupCacheType.FULL) {
+            return fullCachingProvider(context);
+        }
         LookupKeyFilter equalityKeys = lookupKeys(context.getKeys());
         RowDataDeserializationSchema deserializer =
                 new RowDataDeserializationSchema(
@@ -245,6 +274,75 @@ public final class FirestoreDynamicSource
                 ? PartialCachingLookupProvider.of(
                         function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                 : LookupFunctionProvider.of(function);
+    }
+
+    /**
+     * Flink's full cache, loaded by the scan's own read of the produced fields and indexed by the
+     * planner's lookup keys, which may be any top-level field of the produced row, metadata
+     * included, of a type whose Java equality is SQL's.
+     */
+    private LookupRuntimeProvider fullCachingProvider(LookupContext context) {
+        RowType producedType = (RowType) producedDataType.getLogicalType();
+        int[][] keys = context.getKeys();
+        if (keys.length == 0) {
+            // The planner passes no key when every equality compares a cast column, such as a
+            // metadata column declared at another precision than it is read in.
+            throw new ValidationException(
+                    FULL_CACHE_KEY_REQUIREMENT
+                            + " No equality reached the source as a key; a metadata column"
+                            + " declared in another type than the connector reads it in is cast,"
+                            + " and a cast column is not a key.");
+        }
+        for (int[] key : keys) {
+            if (key.length != 1) {
+                throw new ValidationException(
+                        FULL_CACHE_KEY_REQUIREMENT + " A nested key path is not supported.");
+            }
+            LogicalType type = producedType.getTypeAt(key[0]);
+            if (!fullCacheKeyType(type)) {
+                throw new ValidationException(
+                        FULL_CACHE_KEY_REQUIREMENT
+                                + " Lookup column '"
+                                + producedType.getFieldNames().get(key[0])
+                                + "' has unsupported equality type "
+                                + type.asSummaryString()
+                                + ".");
+            }
+        }
+        FirestoreBatchSource<RowData> scan =
+                (FirestoreBatchSource<RowData>)
+                        scanBuilder(context.createTypeInformation(producedDataType), true).build();
+        return FullCachingLookupProvider.of(
+                InputFormatProvider.of(new FirestoreFullCacheInputFormat(scan.getConfig())),
+                lookupConfig.createFullReloadTrigger());
+    }
+
+    private static final String FULL_CACHE_KEY_REQUIREMENT =
+            "A Firestore lookup with '"
+                    + LookupOptions.CACHE_TYPE.key()
+                    + "' = 'FULL' requires equality predicates on top-level columns of a scalar"
+                    + " type other than DOUBLE, whose Java equality differs from SQL's.";
+
+    /**
+     * Whether a key type's Flink values match in the full cache's index exactly when SQL equality
+     * holds, among the types {@code FirestoreTableSchema} maps and the metadata columns. {@code
+     * DOUBLE} does not: its boxed {@code equals} tells {@code -0.0} from {@code 0.0} and matches
+     * {@code NaN} to itself. {@code ARRAY}, {@code MAP} and {@code ROW} do not either, because
+     * their binary and generic forms are not equal to each other.
+     */
+    private static boolean fullCacheKeyType(LogicalType type) {
+        switch (type.getTypeRoot()) {
+            case BOOLEAN:
+            case BIGINT:
+            case CHAR:
+            case VARCHAR:
+            case BINARY:
+            case VARBINARY:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+                return true;
+            default:
+                return false;
+        }
     }
 
     private LookupKeyFilter lookupKeys(int[][] keys) {

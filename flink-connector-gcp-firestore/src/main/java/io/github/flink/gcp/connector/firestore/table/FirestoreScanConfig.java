@@ -96,7 +96,7 @@ public final class FirestoreScanConfig implements Serializable {
                         config.getOptional(FirestoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH)
                                 .orElse(null),
                         config.get(FirestoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED));
-        options.applyTo(FirestoreSource.builder(), true);
+        options.applyTo(FirestoreSource.builder(), true, true);
         return options;
     }
 
@@ -120,16 +120,20 @@ public final class FirestoreScanConfig implements Serializable {
      * @param builder the source builder
      * @param split whether the read is cut into partitions; {@code scan.partition.max-partitions}
      *     applies only then, since a read of one split has no count to bound
+     * @param withReadTime whether {@code scan.read-time} applies: it names the scan's snapshot, and
+     *     a full lookup cache's load reads at the time it is planned instead
      */
-    public void applyTo(FirestoreSourceBuilder<?> builder, boolean split) {
+    public void applyTo(FirestoreSourceBuilder<?> builder, boolean split, boolean withReadTime) {
         if (split) {
             OptionSetters.accept(
                     FirestoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS.key(),
                     maxPartitions,
                     builder::partitionCount);
         }
-        OptionSetters.accept(
-                FirestoreConnectorOptions.SCAN_READ_TIME.key(), readTime, builder::readTime);
+        if (withReadTime) {
+            OptionSetters.accept(
+                    FirestoreConnectorOptions.SCAN_READ_TIME.key(), readTime, builder::readTime);
+        }
         OptionSetters.accept(
                 FirestoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH.key(),
                 maxRowsPerFetch,
