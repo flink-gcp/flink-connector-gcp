@@ -566,20 +566,19 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> blankQuery = minimalOptions();
         blankQuery.put("scan.query", "  ");
         assertThatThrownBy(() -> source(blankQuery))
-                .hasStackTraceContaining("scan.query")
-                .hasStackTraceContaining("must not be blank");
+                .hasStackTraceContaining("Option 'scan.query' must not be blank");
 
         Map<String, String> queryAndView = minimalOptions();
         queryAndView.put("scan.query", "SELECT 1");
         queryAndView.put("scan.materialize-views", "true");
         assertThatThrownBy(() -> source(queryAndView))
-                .hasStackTraceContaining("cannot be combined");
+                .hasStackTraceContaining(
+                        "Options 'scan.query' and 'scan.materialize-views' cannot be combined");
 
         Map<String, String> malformedSnapshot = minimalOptions();
         malformedSnapshot.put("scan.snapshot-time", "yesterday");
         assertThatThrownBy(() -> source(malformedSnapshot))
-                .hasStackTraceContaining("scan.snapshot-time")
-                .hasStackTraceContaining("ISO-8601 instant");
+                .hasStackTraceContaining("Option 'scan.snapshot-time' must be an ISO-8601 instant");
     }
 
     @Test
@@ -804,8 +803,8 @@ class BigQueryDynamicTableFactoryTest {
                                 // attaches a dump of the whole WITH clause to anything the factory
                                 // throws, so asserting the key alone would pass with the check
                                 // deleted — measured.
-                                .hasStackTraceContaining("but this table's write method is")
-                                .hasStackTraceContaining(key);
+                                .hasStackTraceContaining("Options [" + key + "] tune the ")
+                                .hasStackTraceContaining("but this table's write method is");
                     }
                 });
     }
@@ -820,8 +819,9 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put("sink.buffered-stream.retry.max-attempts", "7");
         assertThatThrownBy(() -> sink(options))
-                .hasStackTraceContaining("but this table's write method is")
-                .hasStackTraceContaining("sink.buffered-stream.retry.max-attempts");
+                .hasStackTraceContaining(
+                        "Options [sink.buffered-stream.retry.max-attempts] tune the ")
+                .hasStackTraceContaining("but this table's write method is");
     }
 
     @Test
@@ -829,8 +829,9 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put("sink.write-method", "file-loads");
         assertThatThrownBy(() -> sink(options))
-                .hasStackTraceContaining("no default location to stage them in")
-                .hasStackTraceContaining("sink.file-loads.staging-path");
+                .hasStackTraceContaining(
+                        "Option 'sink.file-loads.staging-path' is required when 'sink.write-method' is 'file-loads'")
+                .hasStackTraceContaining("no default location to stage them in");
     }
 
     @Test
@@ -877,8 +878,7 @@ class BigQueryDynamicTableFactoryTest {
                     .as("with '%s'", key)
                     // Again the opening clause: the builder says "which the BigQuery emulator
                     // does not provide", one word away from the tail of this one.
-                    .hasStackTraceContaining("point at a BigQuery emulator")
-                    .hasStackTraceContaining(key);
+                    .hasStackTraceContaining("Options [" + key + "] point at a BigQuery emulator");
         }
     }
 
@@ -905,9 +905,9 @@ class BigQueryDynamicTableFactoryTest {
             assertThatThrownBy(() -> FactoryMocks.createTableSink(withPrimaryKey(SCHEMA), options))
                     .as("CDC under %s", unsupported)
                     .hasStackTraceContaining(
-                            "accepted only on the Storage Write API default stream")
-                    .hasStackTraceContaining("sink.cdc.enabled")
-                    .hasStackTraceContaining("sink.write-method");
+                            "Option 'sink.cdc.enabled' = 'true' requires 'sink.write-method' = 'storage-api-at-least-once'")
+                    .hasStackTraceContaining(
+                            "accepted only on the Storage Write API default stream");
         }
 
         Map<String, String> autoCreate = minimalOptions();
@@ -1265,7 +1265,8 @@ class BigQueryDynamicTableFactoryTest {
 
             assertThatThrownBy(() -> sink(options))
                     .as("with '%s'", key)
-                    .hasStackTraceContaining("service-account-key-file")
+                    .hasStackTraceContaining(
+                            "Option 'service-account-key-file' cannot be combined with")
                     .hasStackTraceContaining("emulator connections are credential-free");
         }
     }
@@ -1348,7 +1349,7 @@ class BigQueryDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(fileLoads))
                 .as("an emulator endpoint under file-loads")
                 .rootCause()
-                .hasMessageContaining("point at a BigQuery emulator")
+                .hasMessageContaining("Options [emulator-endpoint] point at a BigQuery emulator")
                 .hasMessageNotContaining("must be host:port");
 
         Map<String, String> credentials = minimalOptions();
@@ -1482,9 +1483,8 @@ class BigQueryDynamicTableFactoryTest {
                 // A phrase only the connector's own message carries. Asserting the option key or
                 // the column name would pass with the check deleted, because FactoryUtil dumps
                 // every WITH option into the ValidationException it wraps this in — measured.
-                .hasStackTraceContaining("which the table does not declare")
-                .hasStackTraceContaining("sink.table-create.clustered-fields")
-                .hasStackTraceContaining("no_such_column");
+                .hasStackTraceContaining(
+                        "Option 'sink.table-create.clustered-fields' names column 'no_such_column', which the table does not declare");
     }
 
     @Test

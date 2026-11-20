@@ -157,7 +157,12 @@ Five things this shape is deliberate about:
   table or catalog and lists every option as `'key'='value'`, so a needle that is only an option
   key, an option value or the word "table" passes for any exception the factory throws. A key the
   `WITH` clause leaves out is no better: Flink's message for an unknown key lists every key the
-  factory supports, so that key alone passes for a typo elsewhere in the DDL. The phrases
+  factory supports, so that key alone passes for a typo elsewhere in the DDL. A sentence the
+  factory writes for several options, such as `Option 'k' must not be blank` or
+  `Option 'k' cannot be used with 'sink.write-mode' = 'm'`, is a needle only with the refused key
+  inside it: the fragment alone, or beside the key as a separate needle, passes when another
+  option is refused, and naming a different key of the `WITH` clause, such as the mode, does not
+  help. The phrases
   `Option 'k' is invalid`, Flink's `Could not parse value 'v' for key 'k'`, its
   `Unsupported options:\n\nk` and its `Missing required options are:\n\nk` appear only in the
   cause. The last two need a test that sets one unknown key or leaves out one required key, since

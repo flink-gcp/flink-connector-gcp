@@ -78,9 +78,8 @@ class BigtableReadModifyWriteTablePlanTest {
                                                 + ", "
                                                 + value
                                                 + "))"))
-                .hasStackTraceContaining("sink.write-mode")
-                .hasStackTraceContaining("cf.bad")
-                .hasStackTraceContaining("requires");
+                .hasStackTraceContaining("'sink.write-mode' = '" + mode + "' requires ")
+                .hasStackTraceContaining("column 'cf.bad' has type " + type + ".");
     }
 
     @ParameterizedTest
@@ -99,27 +98,30 @@ class BigtableReadModifyWriteTablePlanTest {
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "'sink.batching.element-count-threshold'='1'",
-                "'sink.in-flight.max-entries'='1'",
-                "'sink.in-flight.max-bytes'='1mb'",
-                "'sink.insert-only-input-mode'='upsert'",
-                "'sink.create-disposition'='create-never'",
-                "'sink.recovery.max-attempts'='1'",
-                "'sink.conditional.empty-branch-policy'='ignore'",
-                "'sink.cell-timestamp.truncate-to-millis'='false'"
-            })
-    void rejectsExplicitOptionsTheSelectedModeCannotApply(String option) {
+    @CsvSource({
+        "sink.batching.element-count-threshold, 1",
+        "sink.in-flight.max-entries, 1",
+        "sink.in-flight.max-bytes, 1mb",
+        "sink.insert-only-input-mode, upsert",
+        "sink.create-disposition, create-never",
+        "sink.recovery.max-attempts, 1",
+        "sink.conditional.empty-branch-policy, ignore",
+        "sink.cell-timestamp.truncate-to-millis, false"
+    })
+    void rejectsExplicitOptionsTheSelectedModeCannotApply(String key, String setting) {
+        String option = "'" + key + "'='" + setting + "'";
         for (String mode : new String[] {"append", "increment"}) {
             String type = mode.equals("append") ? "STRING" : "BIGINT";
             String value = mode.equals("append") ? "'v'" : "1";
             TableEnvironment env = table(mode, "cf ROW<v " + type + ">", false, ", " + option);
             assertThatThrownBy(
                             () -> env.explainSql("INSERT INTO bt VALUES ('r', ROW(" + value + "))"))
-                    .hasStackTraceContaining(option.substring(0, option.indexOf('=')))
                     .hasStackTraceContaining(
-                            "cannot be used with 'sink.write-mode' = '" + mode + "'");
+                            "Option '"
+                                    + key
+                                    + "' cannot be used with 'sink.write-mode' = '"
+                                    + mode
+                                    + "'");
         }
     }
 
@@ -132,8 +134,8 @@ class BigtableReadModifyWriteTablePlanTest {
                         false,
                         ", 'sink.in-flight.max-requests'='0'");
         assertThatThrownBy(() -> env.explainSql("INSERT INTO bt VALUES ('r', ROW(1))"))
-                .hasStackTraceContaining("sink.in-flight.max-requests")
-                .hasStackTraceContaining("maxInFlightRequests must be positive");
+                .hasStackTraceContaining(
+                        "Option 'sink.in-flight.max-requests' is invalid: maxInFlightRequests must be positive");
     }
 
     @ParameterizedTest

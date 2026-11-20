@@ -149,7 +149,8 @@ class BigtableCatalogFactoryTest {
                                         options(
                                                 "service-account-key-file", "/key.json",
                                                 "emulator-endpoint", "localhost:8086")))
-                .hasStackTraceContaining("cannot be combined");
+                .hasStackTraceContaining(
+                        "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined");
         assertThatThrownBy(() -> create(options("service-account-key-file", " ")))
                 .hasRootCauseMessage("Option 'service-account-key-file' must not be blank.");
     }

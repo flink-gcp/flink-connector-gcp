@@ -550,7 +550,7 @@ class SpannerDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(SCHEMA, written))
                 .as("a change-stream option on a sink")
                 .rootCause()
-                .hasMessageContaining("is incompatible with a sink")
+                .hasMessageContaining("scan.change-stream.name is incompatible with a sink")
                 .hasMessageNotContaining("must be host:port");
     }
 
@@ -891,7 +891,8 @@ class SpannerDynamicTableFactoryTest {
         Map<String, String> bounded = options();
         bounded.put("scan.change-stream.name", "people_changes");
         assertThatThrownBy(() -> source(SCHEMA, bounded))
-                .hasStackTraceContaining("incompatible with scan.mode=bounded");
+                .hasStackTraceContaining(
+                        "scan.change-stream.name is incompatible with scan.mode=bounded");
 
         Map<String, String> incompatible = changeStreamOptions("full");
         incompatible.put("scan.index", "by_name");
@@ -978,7 +979,9 @@ class SpannerDynamicTableFactoryTest {
 
         Map<String, String> stray = changeStreamOptions("full");
         stray.put("scan.startup.timestamp-millis", "1000");
-        assertThatThrownBy(() -> source(SCHEMA, stray)).hasStackTraceContaining("may be set only");
+        assertThatThrownBy(() -> source(SCHEMA, stray))
+                .hasStackTraceContaining(
+                        "scan.startup.timestamp-millis may be set only when the corresponding mode is timestamp");
 
         Map<String, String> fallback = changeStreamOptions("full");
         fallback.put("scan.resume-fallback.timestamp-millis", "1000");

@@ -229,8 +229,8 @@ class CloudTasksDynamicTableFactoryTest {
                 "http.headers.content-type", "application/x-www-form-urlencoded; charset=UTF-8");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(FORM_SCHEMA, options))
-                .hasStackTraceContaining("conflicts with the body format's Content-Type")
-                .hasStackTraceContaining("application/x-www-form-urlencoded; charset=UTF-8");
+                .hasStackTraceContaining(
+                        "Option 'http.headers' contains Content-Type 'application/x-www-form-urlencoded; charset=UTF-8', which conflicts with the body format's Content-Type");
     }
 
     @Test
@@ -347,7 +347,8 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("emulator-endpoint", "localhost:8123");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("cannot be combined");
+                .hasStackTraceContaining(
+                        "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined");
     }
 
     /**
@@ -398,7 +399,8 @@ class CloudTasksDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, credentials))
                 .as("an emulator endpoint beside a key file")
                 .rootCause()
-                .hasMessageContaining("cannot be combined")
+                .hasMessageContaining(
+                        "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined")
                 .hasMessageNotContaining("must be host:port");
 
         Map<String, String> foreignFamily = minimalOptions();
@@ -408,7 +410,8 @@ class CloudTasksDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, foreignFamily))
                 .as("an http option under the App Engine target")
                 .rootCause()
-                .hasMessageContaining("does not belong to target.type")
+                .hasMessageContaining(
+                        "Option 'http.url' does not belong to target.type 'app-engine'")
                 .hasMessageNotContaining("must be host:port");
     }
 
@@ -419,7 +422,8 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("emulator-endpoint", "localhost:8123");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("cannot be combined");
+                .hasStackTraceContaining(
+                        "Options 'sink.channel-pool-size' and 'emulator-endpoint' cannot be combined");
     }
 
     @Test
@@ -455,8 +459,8 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("http.url", url);
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("http.url")
-                .hasStackTraceContaining("absolute http:// or https:// URL");
+                .hasStackTraceContaining(
+                        "Option 'http.url' must be an absolute http:// or https:// URL");
     }
 
     // Both spellings of "no method" parse: Flink matches an enum constant by name, and UNRECOGNIZED
@@ -504,7 +508,8 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("http.headers.X-Two", "2");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("either packed map syntax or prefixed entries");
+                .hasStackTraceContaining(
+                        "Option 'http.headers' must use either packed map syntax or prefixed entries");
     }
 
     @Test
@@ -514,7 +519,8 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("app-engine.headers.X-Two", "2");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("either packed map syntax or prefixed entries");
+                .hasStackTraceContaining(
+                        "Option 'app-engine.headers' must use either packed map syntax or prefixed entries");
     }
 
     @ParameterizedTest(name = "target.type={0} rejects {1}")
@@ -532,7 +538,12 @@ class CloudTasksDynamicTableFactoryTest {
         options.put(option, value);
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("does not belong to target.type");
+                .hasStackTraceContaining(
+                        "Option '"
+                                + option
+                                + "' does not belong to target.type '"
+                                + targetType
+                                + "'");
     }
 
     @ParameterizedTest(name = "app-engine.relative-uri={0}")
@@ -570,7 +581,7 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("http.headers.x-request-id", "second");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("duplicate header names")
+                .hasStackTraceContaining("Option 'http.headers' contains duplicate header names")
                 .hasStackTraceContaining("case-insensitive");
     }
 
@@ -609,7 +620,8 @@ class CloudTasksDynamicTableFactoryTest {
         options.put("app-engine.headers.x-request-id", "second");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("duplicate header names")
+                .hasStackTraceContaining(
+                        "Option 'app-engine.headers' contains duplicate header names")
                 .hasStackTraceContaining("case-insensitive");
     }
 
@@ -621,8 +633,8 @@ class CloudTasksDynamicTableFactoryTest {
                 "application/x-www-form-urlencoded; charset=UTF-8");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(FORM_SCHEMA, options))
-                .hasStackTraceContaining("conflicts with the body format's Content-Type")
-                .hasStackTraceContaining("application/x-www-form-urlencoded; charset=UTF-8");
+                .hasStackTraceContaining(
+                        "Option 'app-engine.headers' contains Content-Type 'application/x-www-form-urlencoded; charset=UTF-8', which conflicts with the body format's Content-Type");
     }
 
     // The accepting side of the same branch, asserted on the request rather than on "did not

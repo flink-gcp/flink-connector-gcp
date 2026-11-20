@@ -171,7 +171,8 @@ class AggregateTableFactoryTest {
         var options = options();
         options.put("sink.write-mode", "upsert");
         assertThatThrownBy(() -> FactoryMocks.createTableSink(schema(DataTypes.BIGINT()), options))
-                .hasStackTraceContaining("requires 'sink.write-mode' = 'aggregate'");
+                .hasStackTraceContaining(
+                        "Option 'sink.aggregate.column-family-types' requires 'sink.write-mode' = 'aggregate'");
         options.put("sink.write-mode", "aggregate");
         options.put("sink.insert-only-input-mode", "insert-only");
         assertThatThrownBy(() -> FactoryMocks.createTableSink(schema(DataTypes.BIGINT()), options))

@@ -118,12 +118,18 @@ class BigtableConditionalCommandFactoryTest {
 
     static Stream<Arguments> invalidDefinitions() {
         return Stream.of(
-                invalid("row-key-column", "absent", "references absent physical column 'absent'"),
-                invalid("row-key-column", "unused", "has an unsupported column type"),
+                invalid(
+                        "row-key-column",
+                        "absent",
+                        "Option 'sink.conditional.row-key-column' references absent physical column 'absent'"),
+                invalid(
+                        "row-key-column",
+                        "unused",
+                        "Option 'sink.conditional.row-key-column' has an unsupported column type"),
                 invalid(
                         "predicate",
                         "chain",
-                        "must be row-exists, cell-exists or latest-cell-value-equals"),
+                        "Option 'sink.conditional.predicate' must be row-exists, cell-exists or latest-cell-value-equals"),
                 invalid(
                         "predicate.family",
                         "cf",
@@ -131,14 +137,23 @@ class BigtableConditionalCommandFactoryTest {
                 invalid(
                         "then.00.operation",
                         "delete-row",
-                        "requires a canonical nonnegative index"),
+                        "Option 'sink.conditional.then.00.operation' requires a canonical nonnegative index"),
                 invalid(
                         "then.-1.operation",
                         "delete-row",
-                        "requires a canonical nonnegative index"),
-                invalid("then.2.operation", "delete-row", "indexes must be consecutive from zero"),
-                invalid("then.2147483648.operation", "delete-row", "index is too large"),
-                invalid("then.0", "delete-row", "must have the form <index>.<attribute>"),
+                        "Option 'sink.conditional.then.-1.operation' requires a canonical nonnegative index"),
+                invalid(
+                        "then.2.operation",
+                        "delete-row",
+                        "Option 'sink.conditional.then.2' indexes must be consecutive from zero"),
+                invalid(
+                        "then.2147483648.operation",
+                        "delete-row",
+                        "Option 'sink.conditional.then.2147483648.operation' index is too large"),
+                invalid(
+                        "then.0",
+                        "delete-row",
+                        "Option 'sink.conditional.then.0' must have the form <index>.<attribute>"),
                 invalid(
                         "then.0.unknown",
                         "x",
@@ -147,7 +162,10 @@ class BigtableConditionalCommandFactoryTest {
                         "then.0.family",
                         "cf",
                         "'sink.conditional.then.0.family' is unknown or inapplicable"),
-                invalid("then.0.operation", "increment", "has an unsupported conditional mutation"),
+                invalid(
+                        "then.0.operation",
+                        "increment",
+                        "Option 'sink.conditional.then.0.operation' has an unsupported conditional mutation"),
                 Arguments.of(
                         Map.of("sink.conditional.then", "0.operation:delete-row"),
                         "'sink.conditional.then' must use either the packed map syntax or prefixed map entries, not both."),
@@ -160,7 +178,7 @@ class BigtableConditionalCommandFactoryTest {
                                 "cell-exists",
                                 "sink.conditional.predicate.family",
                                 "cf"),
-                        "requires exactly one qualifier representation"),
+                        "Option 'sink.conditional.predicate.qualifier' requires exactly one qualifier representation"),
                 Arguments.of(
                         Map.of(
                                 "sink.conditional.predicate",
@@ -191,39 +209,42 @@ class BigtableConditionalCommandFactoryTest {
 
     static Stream<Arguments> invalidCellBindings() {
         return Stream.of(
-                Arguments.of("set-cell", Map.of(), "requires exactly one value binding"),
+                Arguments.of(
+                        "set-cell",
+                        Map.of(),
+                        "Option 'sink.conditional.then.0.value-column' requires exactly one value binding"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-column", "missing"),
-                        "references absent physical column 'missing'"),
+                        "Option 'sink.conditional.then.0.value-column' references absent physical column 'missing'"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-column", "unused"),
-                        "has an unsupported column type"),
+                        "Option 'sink.conditional.then.0.value-column' has an unsupported column type"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-utf8", "", "value-base64", ""),
-                        "conflicts with another value binding"),
+                        "Option 'sink.conditional.then.0.value-base64' conflicts with another value binding"),
                 Arguments.of(
                         "set-cell",
                         Map.of("qualifier-base64", ""),
-                        "requires exactly one qualifier representation"),
+                        "Option 'sink.conditional.then.0.qualifier-base64' requires exactly one qualifier representation"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-base64", "YQ"),
-                        "must be canonical padded Base64"),
+                        "Option 'sink.conditional.then.0.value-base64' must be canonical padded Base64"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-int64", "9223372036854775808"),
-                        "must be a signed BIGINT literal"),
+                        "Option 'sink.conditional.then.0.value-int64' must be a signed BIGINT literal"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-int64", "1.0"),
-                        "must be a signed BIGINT literal"),
+                        "Option 'sink.conditional.then.0.value-int64' must be a signed BIGINT literal"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-int64", "1", "timestamp-micros", "-2"),
-                        "must be at least -1"),
+                        "Option 'sink.conditional.then.0.timestamp-micros' must be at least -1"),
                 Arguments.of(
                         "set-cell",
                         Map.of("value-int64", "1", "timestamp-column", "value"),
@@ -237,31 +258,35 @@ class BigtableConditionalCommandFactoryTest {
                                 "ts",
                                 "timestamp-micros",
                                 "0"),
-                        "conflicts with timestamp-micros"),
+                        "Option 'sink.conditional.then.0.timestamp-column' conflicts with timestamp-micros"),
                 Arguments.of(
                         "add-to-cell",
                         Map.of("value-int64", "1"),
-                        "requires an explicit literal or column binding"),
+                        "Option 'sink.conditional.then.0.timestamp-micros' requires an explicit literal or column binding"),
                 Arguments.of(
                         "merge-to-cell",
                         Map.of("value-base64", "", "timestamp-micros", "-1"),
-                        "must be at least 0"),
+                        "Option 'sink.conditional.then.0.timestamp-micros' must be at least 0"),
                 Arguments.of(
                         "add-to-cell",
                         Map.of("value-column", "k", "timestamp-micros", "0"),
-                        "requires BIGINT or BYTES aggregate input"),
+                        "Option 'sink.conditional.then.0.value-column' requires BIGINT or BYTES aggregate input"),
                 Arguments.of(
                         "delete-cells",
                         Map.of("start-timestamp-micros", "2", "end-timestamp-micros", "2"),
-                        "must exceed"),
+                        "Option 'sink.conditional.then.0.end-timestamp-micros' must exceed 'sink.conditional.then.0.start-timestamp-micros'"),
                 Arguments.of(
-                        "delete-cells", Map.of("end-timestamp-micros", "0"), "must be at least 1"),
+                        "delete-cells",
+                        Map.of("end-timestamp-micros", "0"),
+                        "Option 'sink.conditional.then.0.end-timestamp-micros' must be at least 1"),
                 Arguments.of(
                         "delete-cells",
                         Map.of("start-timestamp-micros", "-1"),
-                        "must be at least 0"),
+                        "Option 'sink.conditional.then.0.start-timestamp-micros' must be at least 0"),
                 Arguments.of(
-                        "delete-cells", Map.of("value-utf8", ""), "is unknown or inapplicable"));
+                        "delete-cells",
+                        Map.of("value-utf8", ""),
+                        "Option 'sink.conditional.then.0.value-utf8' is unknown or inapplicable"));
     }
 
     @ParameterizedTest
@@ -310,7 +335,8 @@ class BigtableConditionalCommandFactoryTest {
                 .isInstanceOf(BigtableConditionalDynamicSink.class);
         options.put("sink.conditional.row-key-column", "KEY.PART");
         assertThatThrownBy(() -> FactoryMocks.createTableSink(schema, options))
-                .hasStackTraceContaining("references absent physical column 'KEY.PART'");
+                .hasStackTraceContaining(
+                        "Option 'sink.conditional.row-key-column' references absent physical column 'KEY.PART'");
     }
 
     @ParameterizedTest
@@ -380,8 +406,11 @@ class BigtableConditionalCommandFactoryTest {
     void rejectsCommandOptionsInEveryOtherMode(String mode) {
         Map<String, String> options = options();
         options.put("sink.write-mode", mode);
+        // The check visits the keys in sorted order, so of the command keys set here it names
+        // 'sink.conditional.predicate' first; the bare clause would pass for any of them.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("requires 'sink.write-mode' = 'conditional'");
+                .hasStackTraceContaining(
+                        "Option 'sink.conditional.predicate' requires 'sink.write-mode' = 'conditional'");
     }
 
     @Test

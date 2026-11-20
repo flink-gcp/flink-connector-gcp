@@ -126,7 +126,7 @@ class BigQueryCatalogFactoryTest {
                                                 "emulator-rest-endpoint", "localhost:9050")))
                 .hasStackTraceContaining("credential-free");
         assertThatThrownBy(() -> create(options("service-account-key-file", " ")))
-                .hasStackTraceContaining("must not be blank");
+                .hasStackTraceContaining("Option 'service-account-key-file' must not be blank");
     }
 
     @Test

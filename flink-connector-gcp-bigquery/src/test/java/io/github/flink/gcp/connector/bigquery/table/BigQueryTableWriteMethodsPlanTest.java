@@ -112,8 +112,8 @@ class BigQueryTableWriteMethodsPlanTest {
                 // A phrase only this connector's message carries: FactoryUtil attaches a dump of
                 // the whole WITH clause to anything the factory throws, so the option key alone
                 // would match with the check deleted.
-                .hasStackTraceContaining("but this table's write method is")
-                .hasStackTraceContaining("sink.default-stream.flush-interval");
+                .hasStackTraceContaining("Options [sink.default-stream.flush-interval] tune the ")
+                .hasStackTraceContaining("but this table's write method is");
     }
 
     @Test
@@ -151,8 +151,8 @@ class BigQueryTableWriteMethodsPlanTest {
                 .isInstanceOf(ValidationException.class)
                 // Again the opening clause: the builder says "which the BigQuery emulator does not
                 // provide", one word away from the tail of this connector's message.
-                .hasStackTraceContaining("point at a BigQuery emulator")
-                .hasStackTraceContaining("emulator-endpoint");
+                .hasStackTraceContaining(
+                        "Options [emulator-endpoint] point at a BigQuery emulator");
     }
 
     // The two below are the sinks' own graph-construction rules rather than the factory's, and

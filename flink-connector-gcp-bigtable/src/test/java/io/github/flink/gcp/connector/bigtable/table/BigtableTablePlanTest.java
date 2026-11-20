@@ -151,8 +151,8 @@ class BigtableTablePlanTest {
 
         assertThatThrownBy(() -> tEnv.explainSql("SELECT * FROM bt"))
                 .isInstanceOf(ValidationException.class)
-                .hasStackTraceContaining("'scan.row-prefix'")
-                .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+                .hasStackTraceContaining(
+                        "'scan.row-prefix' must contain canonical padded RFC 4648 standard Base64");
     }
 
     @Test
