@@ -133,7 +133,7 @@ class PubSubDynamicTableFactoryTest {
         // The connector's own validation is the one that speaks: a TopicDestination component is a
         // bare name, never a resource path.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("must not contain '/'");
+                .hasStackTraceContaining("topic must not contain '/'");
     }
 
     /**
@@ -150,13 +150,15 @@ class PubSubDynamicTableFactoryTest {
         options.put("sink.message-ordering.enabled", "true");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("cannot be combined with")
-                // This is the discriminating one, and the key names are deliberately not: it says
-                // 'sink.retry.*' where the builder's message says "retry knobs", so it holds only
-                // if the mapper's DDL-worded check is what fired. Asserting the key names instead
-                // proves nothing — FactoryUtil's own message dumps every WITH option, so
-                // "'sink.retry.total-timeout' appears somewhere" is satisfied by the dump even
-                // with the mapper's guard deleted. Measured, by deleting it.
+                // The refused key inside the mapper's own sentence. The same check refuses
+                // 'sink.retry.max-attempts' with the same words, and neither FactoryUtil's option
+                // dump ('k'='v') nor the builder's message (which names setters) carries this
+                // text. A bare key name would prove nothing: the dump carries it even with the
+                // mapper's guard deleted, as measured by deleting it.
+                .hasStackTraceContaining(
+                        "'sink.retry.total-timeout' cannot be combined with 'sink.message-ordering.enabled' = 'true'")
+                // The sentence's tail, which also only the mapper's DDL-worded check writes: it
+                // says 'sink.retry.*' where the builder's message says "retry knobs".
                 .hasStackTraceContaining("The other six 'sink.retry.*' options are unaffected");
     }
 
@@ -184,7 +186,7 @@ class PubSubDynamicTableFactoryTest {
         // An empty value is *present*, so the factory's own "required to write" check does not
         // fire; the destination's precondition is what catches it.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("must not be blank");
+                .hasStackTraceContaining("topic must not be blank");
     }
 
     @Test
@@ -336,7 +338,7 @@ class PubSubDynamicTableFactoryTest {
         options.put("subscription", "projects/p/subscriptions/s");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
-                .hasStackTraceContaining("must not contain '/'");
+                .hasStackTraceContaining("subscription must not contain '/'");
     }
 
     @Test
@@ -428,17 +430,15 @@ class PubSubDynamicTableFactoryTest {
         sinkOptions.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
         sinkOptions.put("emulator-endpoint", "localhost:8085");
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, sinkOptions))
-                .hasStackTraceContaining("cannot be combined: an emulator uses a plaintext")
-                .hasStackTraceContaining("service-account-key-file")
-                .hasStackTraceContaining("emulator-endpoint");
+                .hasStackTraceContaining(
+                        "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined: an emulator uses a plaintext");
 
         Map<String, String> sourceOptions = minimalSourceOptions();
         sourceOptions.put("service-account-key-file", SERVICE_ACCOUNT_KEY_FILE);
         sourceOptions.put("emulator-endpoint", "localhost:8085");
         assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, sourceOptions))
-                .hasStackTraceContaining("cannot be combined: an emulator uses a plaintext")
-                .hasStackTraceContaining("service-account-key-file")
-                .hasStackTraceContaining("emulator-endpoint");
+                .hasStackTraceContaining(
+                        "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined: an emulator uses a plaintext");
     }
 
     /**
@@ -496,7 +496,8 @@ class PubSubDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, credentials))
                 .as("an emulator endpoint beside a key file")
                 .rootCause()
-                .hasMessageContaining("cannot be combined: an emulator uses a plaintext")
+                .hasMessageContaining(
+                        "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined: an emulator uses a plaintext")
                 .hasMessageNotContaining("must be host:port");
 
         Map<String, String> bothSyntaxes = minimalSourceOptions();

@@ -291,7 +291,8 @@ class BigtableDynamicTableFactoryTest {
         Map<String, String> eager = stagedOptions();
         eager.remove("sink.delivery-guarantee");
         assertThatThrownBy(() -> sink(eager))
-                .hasStackTraceContaining("requires 'sink.delivery-guarantee' = 'exactly-once'");
+                .hasStackTraceContaining(
+                        "Option 'sink.staged.marker-family' requires 'sink.delivery-guarantee' = 'exactly-once'");
     }
 
     private static Map<String, String> stagedOptions() {
@@ -672,13 +673,14 @@ class BigtableDynamicTableFactoryTest {
             Map<String, String> blank = minimalOptions();
             blank.put("service-account-key-file", "  ");
             assertThatThrownBy(() -> direction.apply(blank))
-                    .hasStackTraceContaining("must not be blank");
+                    .hasStackTraceContaining("Option 'service-account-key-file' must not be blank");
 
             Map<String, String> emulator = minimalOptions();
             emulator.put("service-account-key-file", "key.json");
             emulator.put("emulator-endpoint", "localhost:8086");
             assertThatThrownBy(() -> direction.apply(emulator))
-                    .hasStackTraceContaining("cannot be combined");
+                    .hasStackTraceContaining(
+                            "Options 'service-account-key-file' and 'emulator-endpoint' cannot be combined");
         }
     }
 
@@ -745,7 +747,8 @@ class BigtableDynamicTableFactoryTest {
         assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, changeStreamSource))
                 .as("a bounded-only option on a change-stream source")
                 .rootCause()
-                .hasMessageContaining("are not valid when 'scan.mode' = 'change-stream'")
+                .hasMessageContaining(
+                        "Options 'emulator-endpoint' are not valid when 'scan.mode' = 'change-stream'")
                 .hasMessageNotContaining("must be host:port");
 
         // scan.mode is left at its bounded default, so checkNotAChangeStreamTable does not fire and
@@ -756,7 +759,8 @@ class BigtableDynamicTableFactoryTest {
         assertThatThrownBy(() -> sink(sinkWithChangeStreamOption))
                 .as("a change-stream option on a sink")
                 .rootCause()
-                .hasMessageContaining("are not valid on a 'bigtable' table that is written to")
+                .hasMessageContaining(
+                        "Options 'scan.change-stream.changelog-mode' are not valid on a 'bigtable' table that is written to")
                 .hasMessageNotContaining("must be host:port");
     }
 
@@ -816,12 +820,14 @@ class BigtableDynamicTableFactoryTest {
         options.put("sink.table-create.gc-rule.max-versions", "2");
 
         assertThatThrownBy(() -> sink(options))
-                .hasStackTraceContaining("this table does not create any");
+                .hasStackTraceContaining(
+                        "Options 'sink.table-create.gc-rule.max-versions' describe the column families the sink would create, but this table does not create any");
 
         options.put("sink.create-disposition", "create-never");
         assertThatThrownBy(() -> sink(options))
                 .as("an explicit create-never is rejected the same way as an absent disposition")
-                .hasStackTraceContaining("this table does not create any");
+                .hasStackTraceContaining(
+                        "Options 'sink.table-create.gc-rule.max-versions' describe the column families the sink would create, but this table does not create any");
     }
 
     @Test
@@ -1133,7 +1139,8 @@ class BigtableDynamicTableFactoryTest {
         Map<String, String> malformed = minimalSelectedCellOptions();
         malformed.put("scan.change-stream.selected-cell.qualifier-base64", "YQ");
         assertThatThrownBy(() -> source(selectedCellSchema("row_id"), malformed))
-                .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+                .hasStackTraceContaining(
+                        "'scan.change-stream.selected-cell.qualifier-base64' must contain canonical padded RFC 4648 standard Base64");
 
         for (Map.Entry<String, String> incompatible :
                 Arrays.asList(
@@ -1148,8 +1155,10 @@ class BigtableDynamicTableFactoryTest {
             envelope.put(incompatible.getKey(), incompatible.getValue());
             assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, envelope))
                     .as("with selected-cell option '%s'", incompatible.getKey())
-                    .hasStackTraceContaining("valid only when")
-                    .hasStackTraceContaining("selected-cell");
+                    .hasStackTraceContaining(
+                            "Options '"
+                                    + incompatible.getKey()
+                                    + "' are valid only when 'scan.change-stream.changelog-mode' = 'selected-cell'");
         }
     }
 
@@ -1555,9 +1564,20 @@ class BigtableDynamicTableFactoryTest {
         for (Map.Entry<String, String> incompatible : CHANGE_STREAM_OWNED_OPTIONS) {
             Map<String, String> bounded = minimalOptions();
             bounded.put(incompatible.getKey(), incompatible.getValue());
+            // 'scan.bounded.timestamp-millis' gets a longer sentence of its own, which says what a
+            // bounded scan reads instead; every other option shares the short one.
+            String clause =
+                    incompatible.getKey().equals("scan.bounded.timestamp-millis")
+                            ? "configure Change Streams and are not valid"
+                            : "are not valid";
             assertThatThrownBy(() -> source(bounded))
                     .as("with incompatible option '%s'", incompatible.getKey())
-                    .hasStackTraceContaining("not valid when 'scan.mode' = 'bounded'");
+                    .hasStackTraceContaining(
+                            "Options '"
+                                    + incompatible.getKey()
+                                    + "' "
+                                    + clause
+                                    + " when 'scan.mode' = 'bounded'");
         }
 
         for (Map.Entry<String, String> incompatible :
@@ -1587,7 +1607,10 @@ class BigtableDynamicTableFactoryTest {
             changeStream.put(incompatible.getKey(), incompatible.getValue());
             assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, changeStream))
                     .as("with incompatible option '%s'", incompatible.getKey())
-                    .hasStackTraceContaining("not valid when 'scan.mode' = 'change-stream'");
+                    .hasStackTraceContaining(
+                            "Options '"
+                                    + incompatible.getKey()
+                                    + "' are not valid when 'scan.mode' = 'change-stream'");
         }
     }
 
@@ -1776,7 +1799,8 @@ class BigtableDynamicTableFactoryTest {
         options.put("scan.row-range.start-closed", "YQ");
 
         assertThatThrownBy(() -> source(options))
-                .hasStackTraceContaining("canonical padded RFC 4648 standard Base64");
+                .hasStackTraceContaining(
+                        "'scan.row-range.start-closed' must contain canonical padded RFC 4648 standard Base64");
     }
 
     @Test
@@ -1910,7 +1934,8 @@ class BigtableDynamicTableFactoryTest {
 
             assertThatThrownBy(() -> source(options))
                     .as("with '%s' empty", key)
-                    .hasStackTraceContaining("decodes to an empty row key");
+                    .hasStackTraceContaining(
+                            "'" + key + "' contains a value that decodes to an empty row key");
         }
     }
 
@@ -1922,7 +1947,8 @@ class BigtableDynamicTableFactoryTest {
 
             assertThatThrownBy(() -> source(options))
                     .as("with scan.row-prefix='%s'", value)
-                    .hasStackTraceContaining("decodes to an empty row key")
+                    .hasStackTraceContaining(
+                            "'scan.row-prefix' contains a value that decodes to an empty row key")
                     .hasStackTraceContaining("Remove the empty value");
         }
     }

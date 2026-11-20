@@ -21,6 +21,7 @@ import org.apache.flink.table.api.TableEnvironment;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -55,33 +56,35 @@ class BigtableConditionalTablePlanTest {
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "'sink.batching.element-count-threshold' = '1'",
-                "'sink.in-flight.max-entries' = '1'",
-                "'sink.in-flight.max-bytes' = '1mb'",
-                "'sink.insert-only-input-mode' = 'upsert'",
-                "'sink.create-disposition' = 'create-never'",
-                "'sink.recovery.max-attempts' = '1'"
-            })
-    void refusesExplicitInertOptionsEvenWhenTheySelectADefault(String extra) {
-        TableEnvironment env = table(false, "'sink.write-mode'='insert-if-absent', " + extra);
+    @CsvSource({
+        "sink.batching.element-count-threshold, 1",
+        "sink.in-flight.max-entries, 1",
+        "sink.in-flight.max-bytes, 1mb",
+        "sink.insert-only-input-mode, upsert",
+        "sink.create-disposition, create-never",
+        "sink.recovery.max-attempts, 1"
+    })
+    void refusesExplicitInertOptionsEvenWhenTheySelectADefault(String key, String value) {
+        TableEnvironment env =
+                table(false, "'sink.write-mode'='insert-if-absent', '" + key + "'='" + value + "'");
         assertThatThrownBy(() -> env.explainSql("INSERT INTO bt VALUES ('r', ROW('v'))"))
                 .hasStackTraceContaining(
-                        "cannot be used with 'sink.write-mode' = 'insert-if-absent'");
+                        "Option '"
+                                + key
+                                + "' cannot be used with 'sink.write-mode' = 'insert-if-absent'");
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "'sink.conditional.empty-branch-policy' = 'ignore'",
-                "'sink.request-timeout' = '3s'",
-                "'sink.in-flight.max-requests' = '4'"
-            })
-    void refusesConditionalOptionsInOrdinaryUpsert(String extra) {
-        TableEnvironment env = table(false, extra);
+    @CsvSource({
+        "sink.conditional.empty-branch-policy, ignore",
+        "sink.request-timeout, 3s",
+        "sink.in-flight.max-requests, 4"
+    })
+    void refusesConditionalOptionsInOrdinaryUpsert(String key, String value) {
+        TableEnvironment env = table(false, "'" + key + "' = '" + value + "'");
         assertThatThrownBy(() -> env.explainSql("INSERT INTO bt VALUES ('r', ROW('v'))"))
-                .hasStackTraceContaining("cannot be used with 'sink.write-mode' = 'upsert'");
+                .hasStackTraceContaining(
+                        "Option '" + key + "' cannot be used with 'sink.write-mode' = 'upsert'");
     }
 
     @ParameterizedTest
@@ -108,16 +111,19 @@ class BigtableConditionalTablePlanTest {
     }
 
     @ParameterizedTest
-    @ValueSource(
-            strings = {
-                "'sink.conditional.empty-branch-policy'='ignore'",
-                "'sink.request-timeout'='3s'",
-                "'sink.in-flight.max-requests'='4'"
-            })
-    void keepLatestRejectsConditionalOptions(String extra) {
-        TableEnvironment env = table(false, "'sink.write-mode'='keep-latest', " + extra);
+    @CsvSource({
+        "sink.conditional.empty-branch-policy, ignore",
+        "sink.request-timeout, 3s",
+        "sink.in-flight.max-requests, 4"
+    })
+    void keepLatestRejectsConditionalOptions(String key, String value) {
+        TableEnvironment env =
+                table(false, "'sink.write-mode'='keep-latest', '" + key + "'='" + value + "'");
         assertThatThrownBy(() -> env.explainSql("INSERT INTO bt VALUES ('r', ROW('v'))"))
-                .hasStackTraceContaining("cannot be used with 'sink.write-mode' = 'keep-latest'");
+                .hasStackTraceContaining(
+                        "Option '"
+                                + key
+                                + "' cannot be used with 'sink.write-mode' = 'keep-latest'");
     }
 
     @Test
