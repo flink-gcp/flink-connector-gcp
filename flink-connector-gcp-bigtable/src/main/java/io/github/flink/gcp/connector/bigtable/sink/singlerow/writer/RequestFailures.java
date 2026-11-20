@@ -45,9 +45,10 @@ import java.util.concurrent.CancellationException;
  *       the batching sink, where the client's own retries make such a failure merely fatal, a
  *       request-response RPC has one attempt and no retry — a retry could apply an increment twice
  *       — so the report says what is unknown and what a replay will do about it.
- *   <li>{@link Kind#FATAL} — everything else: {@code NOT_FOUND} (the table or one of its families
- *       does not exist), the configuration-shaped statuses, {@code RESOURCE_EXHAUSTED}, failures
- *       carrying no status. The job fails.
+ *   <li>{@link Kind#FATAL} — everything else: {@code NOT_FOUND} (the table, one of its families or
+ *       the application profile does not exist; a missing profile is named as such), the
+ *       configuration-shaped statuses, {@code RESOURCE_EXHAUSTED}, failures carrying no status. The
+ *       job fails.
  * </ul>
  *
  * <p>The two halves of the batching sink's rule hold here too (ADR-0042): only a status that is
@@ -91,7 +92,8 @@ public final class RequestFailures {
      */
     public static Kind classify(Throwable throwable) {
         BigtableErrorClassifier.Kind kind = BigtableErrorClassifier.classify(throwable);
-        if (kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND) {
+        if (kind == BigtableErrorClassifier.Kind.APP_PROFILE_NOT_FOUND
+                || kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND) {
             // Ahead of the ambiguity check, as the classifier orders it: a NOT_FOUND names a
             // request the service did not apply, whatever else the chain carries.
             return Kind.FATAL;
@@ -156,11 +158,15 @@ public final class RequestFailures {
                             + " an applied increment or append applies it again.",
                     throwable);
         }
-        String reason =
-                BigtableErrorClassifier.classify(throwable)
-                                == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND
-                        ? " because the table or one of its column families does not exist"
-                        : "";
+        BigtableErrorClassifier.Kind serviceKind = BigtableErrorClassifier.classify(throwable);
+        String reason;
+        if (serviceKind == BigtableErrorClassifier.Kind.APP_PROFILE_NOT_FOUND) {
+            reason = " because " + BigtableErrorClassifier.missingAppProfileReason(throwable);
+        } else if (serviceKind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND) {
+            reason = " because the table or one of its column families does not exist";
+        } else {
+            reason = "";
+        }
         return new IOException(head + " failed" + reason + "." + routingHint(operation), throwable);
     }
 

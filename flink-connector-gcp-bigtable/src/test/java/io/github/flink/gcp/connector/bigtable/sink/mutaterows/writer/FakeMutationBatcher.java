@@ -27,6 +27,8 @@ import com.google.cloud.bigtable.data.v2.models.RowMutationEntry;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.grpc.Status;
 
+import javax.annotation.Nullable;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -83,6 +85,13 @@ final class FakeMutationBatcher implements MutationBatcher {
      * hook, so repair convergence emerges from the ensure rather than being scripted turn by turn.
      */
     boolean tableMissing;
+
+    /**
+     * While set, every sent request fails all its entries with the {@code NOT_FOUND} the service
+     * answers for a request naming an application profile the instance lacks. The description is
+     * the one measured against the service on 2026-11-20 (#2215), "Profile &lt;id&gt; not found."
+     */
+    @Nullable String missingAppProfile;
 
     /**
      * Sends up to this count fail every entry with the real service's missing-family description,
@@ -171,7 +180,13 @@ final class FakeMutationBatcher implements MutationBatcher {
         boolean missing = tableMissing || sentBatches.size() > tableMissingAfterSends;
         boolean familyMissing = sentBatches.size() <= columnFamilyMissingThroughSends;
         for (int index : batch) {
-            if (familyMissing) {
+            if (missingAppProfile != null) {
+                futures.get(index)
+                        .setException(
+                                apiException(
+                                        StatusCode.Code.NOT_FOUND,
+                                        "Profile " + missingAppProfile + " not found."));
+            } else if (familyMissing) {
                 futures.get(index)
                         .setException(
                                 apiException(

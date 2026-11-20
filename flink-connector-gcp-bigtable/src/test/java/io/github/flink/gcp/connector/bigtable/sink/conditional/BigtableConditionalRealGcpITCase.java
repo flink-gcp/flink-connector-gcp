@@ -219,6 +219,41 @@ class BigtableConditionalRealGcpITCase extends AbstractBigtableRealGcpITCase {
     }
 
     @Test
+    void aMissingApplicationProfileIsNamedInTheFailure() {
+        // #2215: the batching sink's gated test measured the service's wording for a profile the
+        // instance lacks on MutateRows; this measures it on CheckAndMutateRow, whose failure the
+        // single-row writer words from the same classifier.
+        TableDestination table = createTable("routing-missing-profile");
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        env.fromData("row")
+                .sinkTo(
+                        BigtableConditionalSink.<String>builder()
+                                .table(table)
+                                .appProfileId("no-such-profile")
+                                .serializer(
+                                        (key, context) ->
+                                                ConditionalRequest.of(
+                                                        bytes(key),
+                                                        ConditionalFilter.rowExists(),
+                                                        List.of(),
+                                                        List.of(
+                                                                ConditionalMutation.setCell(
+                                                                        "cf",
+                                                                        bytes("q"),
+                                                                        1000,
+                                                                        bytes("value")))))
+                                .build());
+        Throwable failure = catchThrowable(env::execute);
+        assertThat(failure)
+                .isNotNull()
+                .hasStackTraceContaining(
+                        "its instance has no application profile 'no-such-profile'")
+                .hasStackTraceContaining("Profile no-such-profile not found");
+        assertThat(readRows(table)).isEmpty();
+    }
+
+    @Test
     void sqlCommandsExecuteBothBranchesAndOrderedTypedAggregateMutations() throws Exception {
         TableDestination table =
                 createTable(

@@ -47,6 +47,72 @@ class BigtableErrorClassifierTest {
     }
 
     @Test
+    void classifiesAMissingApplicationProfileByTheDescriptionTheServiceSends() {
+        // Verbatim from the service (2026-11-20, google-cloud-bigtable 2.88.0), caught by
+        // BigtableTableSinkRealGcpITCase and reported in #2215: the same NOT_FOUND a missing table
+        // answers, so only the description tells the two apart.
+        Throwable failure =
+                new IOException(
+                        "outer",
+                        FakeMutationBatcher.apiException(
+                                StatusCode.Code.NOT_FOUND, "Profile no-such-profile not found."));
+
+        assertThat(BigtableErrorClassifier.classify(failure))
+                .isEqualTo(BigtableErrorClassifier.Kind.APP_PROFILE_NOT_FOUND);
+        assertThat(BigtableErrorClassifier.missingAppProfile(failure)).isEqualTo("no-such-profile");
+    }
+
+    @Test
+    void readsTheProfileThroughTheClientsSyntheticPerEntryError() {
+        // A request-level failure reaches each entry as an ApiException over the request's own
+        // ApiException over the raw gRPC status, so the description sits two causes down.
+        Throwable failure =
+                FakeMutationBatcher.apiException(
+                        StatusCode.Code.NOT_FOUND,
+                        FakeMutationBatcher.apiException(
+                                StatusCode.Code.NOT_FOUND, "Profile no-such-profile not found."));
+
+        assertThat(BigtableErrorClassifier.classify(failure))
+                .isEqualTo(BigtableErrorClassifier.Kind.APP_PROFILE_NOT_FOUND);
+        assertThat(BigtableErrorClassifier.missingAppProfile(failure)).isEqualTo("no-such-profile");
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                // The service's missing-table wording, measured 2026-08-09 (ADR-0073).
+                "No tables found for instance projects/p/instances/i",
+                "table projects/p/instances/i/tables/orders not found",
+                // Neither a word ending in "Profile" nor the phrase without an id is the profile.
+                "AppProfile no-such-profile not found.",
+                "Profile not found.",
+                // The missing-family description quotes the row key, which is user data; a key
+                // carrying the wording must not turn a repairable family into a phantom profile.
+                "Error while mutating the row 'r: Profile x not found.'"
+                        + " (projects/p/instances/i/tables/t) : Requested column family not found."
+            })
+    void keepsEveryOtherNotFoundAsAMissingTable(String description) {
+        Throwable failure =
+                FakeMutationBatcher.apiException(StatusCode.Code.NOT_FOUND, description);
+
+        assertThat(BigtableErrorClassifier.classify(failure))
+                .isEqualTo(BigtableErrorClassifier.Kind.TABLE_NOT_FOUND);
+        assertThat(BigtableErrorClassifier.missingAppProfile(failure)).isNull();
+    }
+
+    @Test
+    void readsTheProfileWordingOnlyFromANotFound() {
+        // The wording under another status is not the service saying the profile is missing.
+        Throwable failure =
+                FakeMutationBatcher.apiException(
+                        StatusCode.Code.INTERNAL, "Profile no-such-profile not found.");
+
+        assertThat(BigtableErrorClassifier.missingAppProfile(failure)).isNull();
+        assertThat(BigtableErrorClassifier.classify(failure))
+                .isEqualTo(BigtableErrorClassifier.Kind.FATAL);
+    }
+
+    @Test
     void recognizesTheDescriptionTheServiceActuallySends() {
         // Verbatim from the service (2026-08-17, google-cloud-bigtable 2.81.0), caught by
         // BigtableAutoCreationRealGcpITCase and reported in #948; the resource path is redacted.

@@ -226,3 +226,19 @@ Raw-only options retain their lazy admin path and reconcile existing families by
 SQL aggregate mode knows its fixed destination and validates it at writer startup; CREATE_IF_NEEDED ensures it there, while CREATE_NEVER only reads it.
 Both validation paths require tables.get permission.
 This refines the previous assumption that no admin call occurs until NOT_FOUND; the mutation repair and its bounded schedule remain unchanged.
+
+## Refinement: a missing application profile is not a missing table (2026-11-20, #2215)
+
+The service answers a request naming an application profile the instance lacks with the same `NOT_FOUND` a missing table answers.
+Gated runs measured the description as "Profile no-such-profile not found." on `MutateRows` (`BigtableTableSinkRealGcpITCase`) and on `CheckAndMutateRow` (`BigtableConditionalRealGcpITCase`), with google-cloud-bigtable 2.88.0.
+Classified by status alone, that failure was reported under `CREATE_NEVER` as a missing table, and under `CREATE_IF_NEEDED` it was parked: the repair ensured a table that already existed and re-applied into the same `NOT_FOUND` until the recovery budget ran out.
+
+The classifier now gives a `NOT_FOUND` carrying that wording a class of its own, checked ahead of the missing-table class.
+It is never parked and never routed, and the job fails under either disposition with a message naming the profile; the single-row request family words its failure from the same class.
+Any other `NOT_FOUND` keeps the missing-table handling.
+
+The declined alternative matched the missing-table wording and treated every other `NOT_FOUND` as fatal.
+The service's missing-table wording is measured only on an instance holding no tables ("No tables found for instance …", recorded above) and the emulator words it differently, so that matcher would rest on cases nobody measured, and a wording it missed would stop the repair.
+A profile wording the chosen matcher misses costs less: the job still fails, later and with the old message, which is what it did before this refinement.
+Like the missing-family phrase ([#948]), the wording was measured against the service before it was matched.
+Unlike that phrase, it must end the description and start it or follow a colon and a space (as after the `NOT_FOUND:` status prefix), because the missing-family description quotes the row key and a key carrying the wording would otherwise turn a repairable family into a phantom profile.
