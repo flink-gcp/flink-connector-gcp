@@ -293,6 +293,7 @@ you supply the schema, so a `REQUIRED` column in it is your own statement. See
 | Option | Default | What it does |
 |---|---|---|
 | `ignoreUnknownFields` | off, an unknown field fails the record | Drops document fields the schema has no column for |
+| `normalizeKeysForDefaultLocale` | off, under a default locale such as Turkish a key like `userId` names no column | Normalizes keys for the JVM's default locale: renames those it lower-cases differently from `Locale.ROOT`, so they match their columns under Turkish, Azerbaijani, Lithuanian, or Thai for a key holding a Greek capital sigma |
 
 ## `BigQuerySource.builder()`
 

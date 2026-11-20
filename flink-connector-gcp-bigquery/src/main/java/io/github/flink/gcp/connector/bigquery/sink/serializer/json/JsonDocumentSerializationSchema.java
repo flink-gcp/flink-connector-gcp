@@ -31,10 +31,14 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.LazyDerivedState;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageProvider;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import io.github.flink.gcp.connector.bigquery.sink.tables.BigQuerySchemaConverter;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.util.Locale;
 
 /**
  * A {@link BigQueryProtoSerializationSchema} for records that are JSON documents, as text.
@@ -47,7 +51,14 @@ import java.io.IOException;
  *
  * <p>Conversion is the Storage Write API client's own {@code JsonToProtoMessage}, the same one
  * {@code JsonStreamWriter} uses, so field naming, timestamp parsing and the {@code DATETIME}/{@code
- * TIME}/{@code NUMERIC}/{@code BIGNUMERIC} encodings behave exactly as they do there.
+ * TIME}/{@code NUMERIC}/{@code BIGNUMERIC} encodings behave exactly as they do there. Keys are
+ * lower-cased as there too, with the JVM's default locale, but matched against a descriptor whose
+ * names are lower-cased under {@link Locale#ROOT}. Under a Turkish default locale the key {@code
+ * userId} therefore becomes {@code userıd} and names no column, so the record fails or, with {@link
+ * JsonDocumentOptions.Builder#ignoreUnknownFields()}, loses the value, where the client alone would
+ * send a field BigQuery rejects. {@link
+ * JsonDocumentOptions.Builder#normalizeKeysForDefaultLocale()} renames such keys first, so that
+ * keys are matched to columns case-insensitively whatever the default locale.
  *
  * <p>Anything wrong with a single document — malformed JSON, a value that will not convert, a
  * missing {@code REQUIRED} column, or a field the schema does not have unless {@link
@@ -71,7 +82,7 @@ public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializ
 
     private final JsonDocumentOptions options;
 
-    private final LazyDerivedState<Descriptors.Descriptor> rowDescriptor = new LazyDerivedState<>();
+    private final LazyDerivedState<ConversionState> conversionState = new LazyDerivedState<>();
 
     private JsonDocumentSerializationSchema(TableSchema tableSchema, JsonDocumentOptions options) {
         this.tableSchema = Preconditions.checkNotNull(tableSchema, "tableSchema must not be null");
@@ -80,7 +91,7 @@ public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializ
                 tableSchema.getFieldsCount() > 0, "tableSchema must have at least one field");
         // Derived here so an unusable schema fails while the job graph is built rather than on the
         // first record, where the sink would route it to the FailureHandler once per record.
-        descriptor();
+        state();
     }
 
     /**
@@ -139,7 +150,7 @@ public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializ
 
     @Override
     public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-        return descriptor();
+        return state().descriptor;
     }
 
     @Override
@@ -169,22 +180,78 @@ public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializ
         // destination while it is being constructed, and BigQuerySinkConfig#prepareWriteSchema
         // resolves one ahead of every record whenever additional fields or CDC put an augmenting
         // serializer in front of this one.
-        Descriptors.Descriptor descriptor = descriptor();
+        ConversionState state = state();
         JSONObject json = parse(element);
         if (json.isEmpty()) {
             // JsonToProtoMessage rejects this with a bare "JSONObject is empty." carrying no hint
             // of which record it was; say what happened instead.
             throw new IOException("Record is an empty JSON object, which has no columns to write");
         }
+        // JsonToProtoMessage lower-cases each key with the default locale, read here per record as
+        // the library reads it; see JsonKeyNormalizer.
+        if (options.isNormalizeKeysForDefaultLocale()) {
+            state.keyNormalizer.normalize(json, Locale.getDefault());
+        }
         try {
             return JsonToProtoMessage.INSTANCE.convertToProtoMessage(
-                    descriptor, tableSchema, json, options.isIgnoreUnknownFields());
+                    state.descriptor,
+                    state.conversionSchema,
+                    json,
+                    options.isIgnoreUnknownFields());
         } catch (RuntimeException e) {
             // The client library reports every per-row problem — an unconvertible value, a missing
             // REQUIRED column, an unknown field — as an unchecked exception. The serializer
             // contract is a checked one, so that the sink can route the row rather than fail.
-            throw new IOException("Failed to convert a JSON record: " + e.getMessage(), e);
+            throw new IOException(
+                    "Failed to convert a JSON record: " + e.getMessage() + localeHint(json), e);
         }
+    }
+
+    /**
+     * Points at {@link JsonDocumentOptions.Builder#normalizeKeysForDefaultLocale()} when it is off
+     * and the document holds a key the default locale lower-cases differently from {@link
+     * Locale#ROOT}, which the library may have reported as unknown although it spells a column.
+     * Only a record that already failed is searched, so no other record pays for it.
+     */
+    private String localeHint(JSONObject json) {
+        if (options.isNormalizeKeysForDefaultLocale()) {
+            return "";
+        }
+        Locale locale = Locale.getDefault();
+        String key = keyLowerCasedDifferently(json, locale);
+        return key == null
+                ? ""
+                : " (the JVM's default locale "
+                        + locale.toLanguageTag()
+                        + " lower-cases the key '"
+                        + key
+                        + "' differently from Locale.ROOT; JsonDocumentOptions.builder()"
+                        + ".normalizeKeysForDefaultLocale() renames such keys)";
+    }
+
+    /** Returns a key, at any depth, that {@code locale} lower-cases differently from ROOT. */
+    @Nullable
+    private static String keyLowerCasedDifferently(@Nullable Object value, Locale locale) {
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            for (String key : object.keySet()) {
+                if (!key.toLowerCase(locale).equals(key.toLowerCase(Locale.ROOT))) {
+                    return key;
+                }
+                String nested = keyLowerCasedDifferently(object.opt(key), locale);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        } else if (value instanceof JSONArray) {
+            for (Object element : (JSONArray) value) {
+                String nested = keyLowerCasedDifferently(element, locale);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -210,11 +277,30 @@ public final class JsonDocumentSerializationSchema extends BigQueryProtoSerializ
         }
     }
 
-    private Descriptors.Descriptor descriptor() {
-        return rowDescriptor.get(this, JsonDocumentSerializationSchema::deriveDescriptor);
+    private ConversionState state() {
+        return conversionState.get(this, JsonDocumentSerializationSchema::deriveConversionState);
     }
 
-    private Descriptors.Descriptor deriveDescriptor() {
-        return RowDescriptors.derive(tableSchema, "the supplied schema");
+    private ConversionState deriveConversionState() {
+        return new ConversionState(
+                RowDescriptors.derive(tableSchema, "the supplied schema"),
+                RowDescriptors.lowerCased(tableSchema),
+                JsonKeyNormalizer.of(tableSchema));
+    }
+
+    /** What {@link LazyDerivedState} holds for this serializer. */
+    private static final class ConversionState {
+        private final Descriptors.Descriptor descriptor;
+        private final TableSchema conversionSchema;
+        private final JsonKeyNormalizer keyNormalizer;
+
+        ConversionState(
+                Descriptors.Descriptor descriptor,
+                TableSchema conversionSchema,
+                JsonKeyNormalizer keyNormalizer) {
+            this.descriptor = descriptor;
+            this.conversionSchema = conversionSchema;
+            this.keyNormalizer = keyNormalizer;
+        }
     }
 }

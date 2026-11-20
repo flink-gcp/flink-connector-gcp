@@ -46,10 +46,12 @@ import java.util.List;
  * building or name comparisons.
  *
  * <p>Fields are paired by position, never by name. The target descriptor holds one field per source
- * field, in the same order, but the client library lower-cases its field names with the default
- * locale: a field {@code hasNext} is the target field {@code hasnext}, and under {@code tr_TR} the
- * target field for {@code userId} carries the column name {@code userıd}. The column keeps the name
- * as written, and BigQuery matches column names case-insensitively.
+ * field, in the same order, but its field names are lower-cased: a field {@code hasNext} is the
+ * target field {@code hasnext}. A name lookup would also have to repeat how they were lower-cased,
+ * which {@code RowDescriptors.derive} does under {@code Locale.ROOT} while the client library alone
+ * uses the default locale, giving the column name {@code userıd} for {@code userId} under {@code
+ * tr_TR}; position holds either way. The column keeps the name as written, and BigQuery matches
+ * column names case-insensitively.
  *
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
  * flattened to validated epoch microseconds ({@link Timestamps#toMicros}) and {@code Duration}

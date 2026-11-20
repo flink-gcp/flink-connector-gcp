@@ -42,6 +42,19 @@ class JsonDocumentOptionsTest {
     }
 
     @Test
+    void keyNormalizationForTheDefaultLocaleIsOptIn() {
+        assertThat(JsonDocumentOptions.defaults().isNormalizeKeysForDefaultLocale()).isFalse();
+        assertThat(JsonDocumentOptions.builder().build().isNormalizeKeysForDefaultLocale())
+                .isFalse();
+        assertThat(
+                        JsonDocumentOptions.builder()
+                                .normalizeKeysForDefaultLocale()
+                                .build()
+                                .isNormalizeKeysForDefaultLocale())
+                .isTrue();
+    }
+
+    @Test
     void buildingTwiceFromOneBuilderDoesNotShareState() {
         JsonDocumentOptions.Builder builder = JsonDocumentOptions.builder();
         JsonDocumentOptions first = builder.build();
@@ -55,8 +68,12 @@ class JsonDocumentOptionsTest {
     void survivesJavaSerialization() throws Exception {
         JsonDocumentOptions copy =
                 InstantiationUtil.clone(
-                        JsonDocumentOptions.builder().ignoreUnknownFields().build());
+                        JsonDocumentOptions.builder()
+                                .ignoreUnknownFields()
+                                .normalizeKeysForDefaultLocale()
+                                .build());
 
         assertThat(copy.isIgnoreUnknownFields()).isTrue();
+        assertThat(copy.isNormalizeKeysForDefaultLocale()).isTrue();
     }
 }

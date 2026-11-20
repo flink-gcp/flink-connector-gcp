@@ -39,11 +39,17 @@ public final class JsonDocumentOptions implements Serializable {
 
     private final boolean ignoreUnknownFields;
 
+    private final boolean normalizeKeysForDefaultLocale;
+
     private JsonDocumentOptions(Builder builder) {
         this.ignoreUnknownFields = builder.ignoreUnknownFields;
+        this.normalizeKeysForDefaultLocale = builder.normalizeKeysForDefaultLocale;
     }
 
-    /** Returns the default options: a field the table does not have fails the record. */
+    /**
+     * Returns the default options: a field the table does not have fails the record, and keys reach
+     * the client library as parsed.
+     */
     public static JsonDocumentOptions defaults() {
         return DEFAULTS;
     }
@@ -58,11 +64,22 @@ public final class JsonDocumentOptions implements Serializable {
         return ignoreUnknownFields;
     }
 
+    /**
+     * Returns whether keys are normalized for the JVM's default locale: those it lower-cases
+     * differently from {@link java.util.Locale#ROOT} are renamed first, rather than reaching the
+     * client library as parsed.
+     */
+    public boolean isNormalizeKeysForDefaultLocale() {
+        return normalizeKeysForDefaultLocale;
+    }
+
     /** Builder for {@link JsonDocumentOptions}. */
     @Public
     public static final class Builder {
 
         private boolean ignoreUnknownFields;
+
+        private boolean normalizeKeysForDefaultLocale;
 
         Builder() {}
 
@@ -78,6 +95,33 @@ public final class JsonDocumentOptions implements Serializable {
          */
         public Builder ignoreUnknownFields() {
             this.ignoreUnknownFields = true;
+            return this;
+        }
+
+        /**
+         * Normalizes keys for the JVM's default locale: renames the keys it lower-cases differently
+         * from {@link java.util.Locale#ROOT}, so that they match their columns as under {@link
+         * java.util.Locale#ROOT}.
+         *
+         * <p>The client library lower-cases each key with the JVM's default locale, and most
+         * locales lower-case keys as {@link java.util.Locale#ROOT} does, so by default keys reach
+         * it as parsed. Turkish, Azerbaijani and Lithuanian do not, and neither does Thai for a key
+         * holding a Greek capital sigma. Under Turkish the key {@code userId} becomes {@code
+         * userıd} and names no column, so the record fails as carrying an unknown field, with a
+         * message naming such a key and this option, or, with {@link #ignoreUnknownFields()}, loses
+         * the value, and {@code İD} reaches a column {@code id}, which it does not name under
+         * {@link java.util.Locale#ROOT}. Set this when a task manager may run under such a locale:
+         * each such key is then renamed first, at the cost of a lookup per key, so that the client
+         * library matches it as under {@link java.util.Locale#ROOT}. A document holding more keys
+         * for one column than spellings can be found for, such as {@code ID}, {@code id} and {@code
+         * iD} together under Turkish, then fails the record. Once a release of the client library
+         * lower-cases keys under {@link java.util.Locale#ROOT} itself, the renaming has nothing
+         * left to do, and this option is removed with it.
+         *
+         * @return this builder
+         */
+        public Builder normalizeKeysForDefaultLocale() {
+            this.normalizeKeysForDefaultLocale = true;
             return this;
         }
 

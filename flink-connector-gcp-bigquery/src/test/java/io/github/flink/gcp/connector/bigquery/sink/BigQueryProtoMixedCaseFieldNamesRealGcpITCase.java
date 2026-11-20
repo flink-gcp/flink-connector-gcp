@@ -16,26 +16,11 @@
 
 package io.github.flink.gcp.connector.bigquery.sink;
 
-import org.apache.flink.api.common.RuntimeExecutionMode;
-import org.apache.flink.api.connector.sink2.Sink;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-
 import com.google.cloud.bigquery.Field;
 import com.google.cloud.bigquery.FieldList;
-import com.google.cloud.bigquery.FieldValueList;
-import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
-import com.google.cloud.bigquery.storage.v1.TableSchema;
-import com.google.protobuf.ByteString;
-import com.google.protobuf.Descriptors;
-import com.google.protobuf.Message;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
-import io.github.flink.gcp.connector.bigquery.RealTables;
-import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.ProtoRowMessageProvider;
-import io.github.flink.gcp.connector.bigquery.sink.serializer.proto.ProtoMessageSerializationSchema;
-import io.github.flink.gcp.connector.bigquery.testproto.MixedCase;
-import io.github.flink.gcp.connector.bigquery.testproto.MixedCaseChild;
+import io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.MixedCaseSerializer;
+import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 import io.github.flink.gcp.connector.testutils.TestNames;
 import io.github.flink.gcp.connector.testutils.bigquery.RealBigQuery;
 import io.github.flink.gcp.connector.testutils.bigquery.RealGcs;
@@ -46,10 +31,12 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
-import java.io.IOException;
-import java.util.List;
-import java.util.Locale;
-
+import static io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.appendSink;
+import static io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.assertMixedCaseSpelling;
+import static io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.assertRow;
+import static io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.createTable;
+import static io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.loadSink;
+import static io.github.flink.gcp.connector.bigquery.sink.MixedCaseTables.run;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -80,55 +67,6 @@ class BigQueryProtoMixedCaseFieldNamesRealGcpITCase {
     private static final String LOWER_APPEND_TABLE = "mixed_case_lower_append_" + RUN_ID;
     private static final String STAGING_PREFIX = "flink-mixed-case-it/" + RUN_ID;
 
-    /**
-     * Rows travel as their {@code id}, so the job's records need no protobuf type information; the
-     * delegate is the serializer under test, and its message is handed over as the delegate hands
-     * it over, so a load job converts the message rather than parsing its bytes.
-     */
-    private static final class MixedCaseSerializer extends BigQueryProtoSerializationSchema<String>
-            implements ProtoRowMessageProvider<String> {
-        private static final long serialVersionUID = 1L;
-
-        private final ProtoMessageSerializationSchema<MixedCase> delegate =
-                ProtoMessageSerializationSchema.of(MixedCase.class);
-
-        @Override
-        public TableSchema getTableSchema(TableDestination destination) {
-            return delegate.getTableSchema(destination);
-        }
-
-        @Override
-        public Descriptors.Descriptor getDescriptor(TableDestination destination) {
-            return delegate.getDescriptor(destination);
-        }
-
-        @Override
-        public Object getSchemaFingerprint(TableDestination destination) {
-            return delegate.getSchemaFingerprint(destination);
-        }
-
-        @Override
-        public ByteString serialize(String element) throws IOException {
-            return delegate.serialize(record(element));
-        }
-
-        @Override
-        public Message serializeToMessage(String element) throws IOException {
-            return delegate.serializeToMessage(record(element));
-        }
-
-        private static MixedCase record(String id) {
-            return MixedCase.newBuilder()
-                    .setId(id)
-                    .setHasNext(true)
-                    .setBeforeUpdate(MixedCaseChild.newBuilder().setInnerValue("b").setCount(2L))
-                    .addItems(MixedCaseChild.newBuilder().setInnerValue("c").setCount(3L))
-                    .putCountsByName("k", 4L)
-                    .setUserId(5L)
-                    .build();
-        }
-    }
-
     @AfterAll
     static void cleanUp() throws Exception {
         Closers.closeAll(
@@ -140,100 +78,52 @@ class BigQueryProtoMixedCaseFieldNamesRealGcpITCase {
 
     @Test
     void aLoadJobWritesToTheMixedCaseColumns() throws Exception {
-        FieldList created = createTable(LOAD_TABLE, new MixedCaseSerializer().getTableSchema(null));
+        MixedCaseSerializer serializer = new MixedCaseSerializer();
+        FieldList created = createTable(LOAD_TABLE, serializer.getTableSchema(null));
         assertMixedCaseSpelling(created);
 
-        run(loadSink(LOAD_TABLE));
+        run(loadSink(LOAD_TABLE, serializer, STAGING_PREFIX), "a");
 
         assertRow(LOAD_TABLE, created);
     }
 
     @Test
     void theStorageWriteApiAppendsToTheMixedCaseColumns() throws Exception {
-        FieldList created =
-                createTable(APPEND_TABLE, new MixedCaseSerializer().getTableSchema(null));
+        MixedCaseSerializer serializer = new MixedCaseSerializer();
+        FieldList created = createTable(APPEND_TABLE, serializer.getTableSchema(null));
         assertMixedCaseSpelling(created);
 
-        run(appendSink(APPEND_TABLE));
+        run(appendSink(APPEND_TABLE, serializer), "a");
 
         assertRow(APPEND_TABLE, created);
     }
 
     @Test
     void aLoadJobWritesToColumnsSpelledInAnotherCase() throws Exception {
+        MixedCaseSerializer serializer = new MixedCaseSerializer();
         FieldList created =
                 createTable(
                         LOWER_LOAD_TABLE,
-                        lowerCased(new MixedCaseSerializer().getTableSchema(null)));
+                        RowDescriptors.lowerCased(serializer.getTableSchema(null)));
         assertLowerCaseSpelling(created);
 
-        run(loadSink(LOWER_LOAD_TABLE));
+        run(loadSink(LOWER_LOAD_TABLE, serializer, STAGING_PREFIX), "a");
 
         assertRow(LOWER_LOAD_TABLE, created);
     }
 
     @Test
     void theStorageWriteApiAppendsToColumnsSpelledInAnotherCase() throws Exception {
+        MixedCaseSerializer serializer = new MixedCaseSerializer();
         FieldList created =
                 createTable(
                         LOWER_APPEND_TABLE,
-                        lowerCased(new MixedCaseSerializer().getTableSchema(null)));
+                        RowDescriptors.lowerCased(serializer.getTableSchema(null)));
         assertLowerCaseSpelling(created);
 
-        run(appendSink(LOWER_APPEND_TABLE));
+        run(appendSink(LOWER_APPEND_TABLE, serializer), "a");
 
         assertRow(LOWER_APPEND_TABLE, created);
-    }
-
-    /** Creates the table and returns its fields as BigQuery reports them. */
-    private static FieldList createTable(String table, TableSchema schema) {
-        RealTables.createTable(table, schema);
-        return RealBigQuery.tableFields(table);
-    }
-
-    private static Sink<String> loadSink(String table) {
-        return BigQuerySink.<String>builder()
-                .writeMethod(WriteMethod.FILE_LOADS)
-                .table(RealTables.destination(table))
-                .serializer(new MixedCaseSerializer())
-                .fileLoadsOptions(
-                        FileLoadsOptions.builder().stagingPath(RealGcs.uri(STAGING_PREFIX)).build())
-                .build();
-    }
-
-    private static Sink<String> appendSink(String table) {
-        return BigQuerySink.<String>builder()
-                .table(RealTables.destination(table))
-                .serializer(new MixedCaseSerializer())
-                .build();
-    }
-
-    /** The serializer's schema with every column name lower-cased, at every depth. */
-    private static TableSchema lowerCased(TableSchema schema) {
-        TableSchema.Builder builder = TableSchema.newBuilder();
-        for (TableFieldSchema field : schema.getFieldsList()) {
-            builder.addFields(lowerCased(field));
-        }
-        return builder.build();
-    }
-
-    private static TableFieldSchema lowerCased(TableFieldSchema field) {
-        TableFieldSchema.Builder builder =
-                field.toBuilder().setName(field.getName().toLowerCase(Locale.ROOT)).clearFields();
-        for (TableFieldSchema subField : field.getFieldsList()) {
-            builder.addFields(lowerCased(subField));
-        }
-        return builder.build();
-    }
-
-    private static void assertMixedCaseSpelling(FieldList fields) {
-        assertThat(fields)
-                .extracting(Field::getName)
-                .containsExactly(
-                        "id", "hasNext", "beforeUpdate", "Items", "countsByName", "userId");
-        assertThat(fields.get("beforeUpdate").getSubFields())
-                .extracting(Field::getName)
-                .containsExactly("innerValue", "Count");
     }
 
     /** The premise of the two other-case tests: the table's spelling differs from the fields'. */
@@ -245,41 +135,5 @@ class BigQueryProtoMixedCaseFieldNamesRealGcpITCase {
         assertThat(fields.get("beforeupdate").getSubFields())
                 .extracting(Field::getName)
                 .containsExactly("innervalue", "count");
-    }
-
-    private static void run(Sink<String> sink) throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
-        env.setParallelism(1);
-        env.fromData("a").sinkTo(sink);
-        env.execute("mixed-case-field-names-it");
-    }
-
-    private static void assertRow(String table, FieldList created) throws Exception {
-        List<FieldValueList> rows =
-                RealBigQuery.queryRows(
-                        "SELECT id, hasNext, beforeUpdate.innerValue, beforeUpdate.Count,"
-                                + " ARRAY_LENGTH(Items), Items[OFFSET(0)].innerValue,"
-                                + " Items[OFFSET(0)].Count, ARRAY_LENGTH(countsByName),"
-                                + " countsByName[OFFSET(0)].key, countsByName[OFFSET(0)].value,"
-                                + " userId FROM "
-                                + RealBigQuery.tablePath(table));
-        assertThat(rows).hasSize(1);
-        FieldValueList row = rows.get(0);
-        assertThat(row.get(0).getStringValue()).as("id").isEqualTo("a");
-        assertThat(row.get(1).getBooleanValue()).as("hasNext").isTrue();
-        assertThat(row.get(2).getStringValue()).as("beforeUpdate.innerValue").isEqualTo("b");
-        assertThat(row.get(3).getLongValue()).as("beforeUpdate.Count").isEqualTo(2L);
-        assertThat(row.get(4).getLongValue()).as("ARRAY_LENGTH(Items)").isEqualTo(1L);
-        assertThat(row.get(5).getStringValue()).as("Items[0].innerValue").isEqualTo("c");
-        assertThat(row.get(6).getLongValue()).as("Items[0].Count").isEqualTo(3L);
-        assertThat(row.get(7).getLongValue()).as("ARRAY_LENGTH(countsByName)").isEqualTo(1L);
-        assertThat(row.get(8).getStringValue()).as("countsByName[0].key").isEqualTo("k");
-        assertThat(row.get(9).getLongValue()).as("countsByName[0].value").isEqualTo(4L);
-        assertThat(row.get(10).getLongValue()).as("userId").isEqualTo(5L);
-
-        // The sink changed nothing about the table it was pointed at, nested columns, types,
-        // modes and spelling included.
-        assertThat(RealBigQuery.tableFields(table)).isEqualTo(created);
     }
 }

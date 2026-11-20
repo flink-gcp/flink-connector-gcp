@@ -35,7 +35,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.util.Locale;
 
 /** One validated field consumed by the generic protobuf row-augmentation engine. */
 @Internal
@@ -218,11 +217,9 @@ public final class ProtoRowAugmentationField<T> implements Serializable {
                 RowDescriptors.derive(
                         TableSchema.newBuilder().addFields(tableField).build(),
                         "additional BigQuery field " + tableField.getName());
+        // RowDescriptors.derive lower-cases the name under Locale.ROOT, so the field keeps the
+        // connector's locale-independent spelling when it is appended to the delegate descriptor.
         return descriptor.getFields().get(0).toProto().toBuilder()
-                // The Google converter uses the default locale. Additional-field names are
-                // protobuf-compatible ASCII, so retain the connector's locale-independent
-                // spelling before appending the field to the delegate descriptor.
-                .setName(tableField.getName().toLowerCase(Locale.ROOT))
                 // ProtoDescriptorAugmenter owns allocation against the delegate's used,
                 // reserved, extension, and protobuf-global field-number ranges.
                 .clearNumber()
