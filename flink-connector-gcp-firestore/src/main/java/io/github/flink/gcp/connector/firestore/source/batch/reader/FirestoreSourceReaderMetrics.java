@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.firestore.source.batch.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.util.Preconditions;
@@ -47,6 +48,21 @@ public class FirestoreSourceReaderMetrics {
                 metricGroup.counter(
                         FirestoreMetricNames.DOCUMENTS_READ, new ThreadSafeSimpleCounter());
         this.recordsSkipped = metricGroup.counter(FirestoreMetricNames.RECORDS_SKIPPED);
+    }
+
+    private FirestoreSourceReaderMetrics(Counter documentsRead, Counter recordsSkipped) {
+        this.documentsRead = documentsRead;
+        this.recordsSkipped = recordsSkipped;
+    }
+
+    /**
+     * Returns counters registered nowhere, for a read that runs without a metric group: Flink opens
+     * a full lookup cache's loader with no runtime context.
+     *
+     * @return counters that only count
+     */
+    public static FirestoreSourceReaderMetrics unregistered() {
+        return new FirestoreSourceReaderMetrics(new ThreadSafeSimpleCounter(), new SimpleCounter());
     }
 
     /** Counts one document a page returned. Called from a fetcher thread. */

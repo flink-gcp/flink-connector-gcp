@@ -23,6 +23,9 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
+import org.apache.flink.table.connector.source.lookup.cache.trigger.CacheReloadTrigger;
+
+import io.github.flink.gcp.connector.base.table.FullCacheReloadConfig;
 
 import javax.annotation.Nullable;
 
@@ -34,9 +37,10 @@ import java.util.Objects;
  * The {@code lookup.*} options of a {@code firestore} table, read and checked when the statement is
  * planned.
  *
- * <p>Flink's {@code NONE} and {@code PARTIAL} caches are accepted and Flink owns them; {@code FULL}
- * is refused, because a full cache is loaded by a scan, with a snapshot and a reload contract of
- * its own.
+ * <p>Flink owns every cache. A {@code FULL} cache is loaded by a scan of the table, so it has no
+ * asynchronous provider and {@code lookup.async} is refused with it; its {@code
+ * lookup.full-cache.*} options are read only for {@code FULL}, through {@link
+ * FullCacheReloadConfig}.
  */
 @Internal
 public final class FirestoreLookupConfig implements Serializable {
@@ -49,6 +53,7 @@ public final class FirestoreLookupConfig implements Serializable {
     @Nullable private final Duration expireAfterWrite;
     private final boolean cacheMissingKey;
     @Nullable private final Long maxRows;
+    @Nullable private final FullCacheReloadConfig fullReload;
 
     private FirestoreLookupConfig(ReadableConfig config) {
         async = config.get(FirestoreConnectorOptions.LOOKUP_ASYNC);
@@ -60,12 +65,13 @@ public final class FirestoreLookupConfig implements Serializable {
                 config.getOptional(LookupOptions.PARTIAL_CACHE_EXPIRE_AFTER_WRITE).orElse(null);
         cacheMissingKey = config.get(LookupOptions.PARTIAL_CACHE_CACHE_MISSING_KEY);
         maxRows = config.getOptional(LookupOptions.PARTIAL_CACHE_MAX_ROWS).orElse(null);
-        if (cacheType == LookupCacheType.FULL) {
+        if (async && cacheType == LookupCacheType.FULL) {
             throw new ValidationException(
-                    "Option '"
-                            + LookupOptions.CACHE_TYPE.key()
-                            + "' does not support FULL for the Firestore table source; use"
-                            + " PARTIAL or NONE.");
+                    String.format(
+                            "'%s' cannot be true when '%s' is FULL: Flink's full cache is"
+                                    + " scan-backed and has no asynchronous lookup provider.",
+                            FirestoreConnectorOptions.LOOKUP_ASYNC.key(),
+                            LookupOptions.CACHE_TYPE.key()));
         }
         if (maxRows != null && maxRows < 0) {
             // Flink checks the value only when a subtask opens the cache.
@@ -82,6 +88,8 @@ public final class FirestoreLookupConfig implements Serializable {
             // Fails planning, not the first lookup, on a cache setting Flink refuses.
             createPartialCache();
         }
+        // Read only for FULL, the one cache type that consults the reload options.
+        fullReload = cacheType == LookupCacheType.FULL ? FullCacheReloadConfig.from(config) : null;
     }
 
     /**
@@ -100,7 +108,7 @@ public final class FirestoreLookupConfig implements Serializable {
         return async;
     }
 
-    /** Returns the cache type, {@code NONE} or {@code PARTIAL}. */
+    /** Returns the cache type. */
     public LookupCacheType getCacheType() {
         return cacheType;
     }
@@ -127,6 +135,24 @@ public final class FirestoreLookupConfig implements Serializable {
         return DefaultLookupCache.fromConfig(config);
     }
 
+    /**
+     * Creates the full cache's reload trigger the options describe.
+     *
+     * @return a new reload trigger
+     * @throws IllegalStateException if the cache type is not {@code FULL}
+     */
+    public CacheReloadTrigger createFullReloadTrigger() {
+        if (fullReload == null) {
+            throw new IllegalStateException(
+                    "The full-cache reload trigger exists only when '"
+                            + LookupOptions.CACHE_TYPE.key()
+                            + "' is FULL, but it is "
+                            + cacheType
+                            + ".");
+        }
+        return fullReload.createTrigger();
+    }
+
     @Override
     public boolean equals(Object other) {
         if (this == other) {
@@ -142,7 +168,8 @@ public final class FirestoreLookupConfig implements Serializable {
                 && cacheType == that.cacheType
                 && Objects.equals(expireAfterAccess, that.expireAfterAccess)
                 && Objects.equals(expireAfterWrite, that.expireAfterWrite)
-                && Objects.equals(maxRows, that.maxRows);
+                && Objects.equals(maxRows, that.maxRows)
+                && Objects.equals(fullReload, that.fullReload);
     }
 
     @Override
@@ -154,6 +181,7 @@ public final class FirestoreLookupConfig implements Serializable {
                 expireAfterAccess,
                 expireAfterWrite,
                 cacheMissingKey,
-                maxRows);
+                maxRows,
+                fullReload);
     }
 }

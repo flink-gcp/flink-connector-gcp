@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.firestore.source.batch;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
@@ -96,8 +95,12 @@ public final class FirestoreBatchSource<T>
                                         collectionGroup)));
     }
 
-    /** Returns the configuration, for the source's own tests. */
-    @VisibleForTesting
+    /**
+     * Returns the configuration. The Table API's full lookup cache loads through it, so a load
+     * reads what this source would.
+     *
+     * @return the configuration
+     */
     public FirestoreSourceConfig<T> getConfig() {
         return config;
     }

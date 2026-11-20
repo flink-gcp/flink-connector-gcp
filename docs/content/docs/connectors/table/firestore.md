@@ -28,7 +28,7 @@ A table with a PRIMARY KEY writes its rows under their key as the document id; a
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="overview" >}}
 
-A scan reads the collection as a bounded snapshot, and a lookup join reads one document of it by id.
+A scan reads the collection as a bounded snapshot, and a lookup join reads one document of it by id, or, under the [full lookup cache](#full-lookup-cache), joins against a copy of the collection held in memory.
 A database in Datastore mode uses the [`datastore` connector]({{< relref "docs/connectors/table/datastore" >}}) instead.
 
 Use `flink-sql-connector-gcp-firestore`, the relocated SQL uber-jar, for SQL deployments, and place it in Flink's `lib/` before starting the cluster.
@@ -220,13 +220,13 @@ Any `WHERE` predicate stays with Flink, even one [Filter pushdown](#filter-pushd
 
 ## Lookup
 
-A lookup join reads one document of the table's collection by the PRIMARY KEY column, its document id.
-It also accepts equality keys on other top-level physical scalar columns, whether a constant such as `c.tier = 'gold'` appears in `ON` or `WHERE`, or an input column supplies the comparison value.
+Under the `NONE` and `PARTIAL` caches, a lookup join reads one document of the table's collection by the PRIMARY KEY column, its document id; the [full lookup cache](#full-lookup-cache) has keys of its own.
+A point lookup also accepts equality keys on other top-level physical scalar columns, whether a constant such as `c.tier = 'gold'` appears in `ON` or `WHERE`, or an input column supplies the comparison value.
 Only the document id addresses the read; the additional keys compare against the converted Flink row before it is returned, with binary values compared by content.
 Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
 A NULL lookup key or a failed additional equality joins no row.
 A condition that is not an equality, such as `c.tier <> 'gold'`, stays a filter applied after the lookup.
-A table without a PRIMARY KEY, which a collection-group table always is, cannot be looked up.
+A table without a PRIMARY KEY, which a collection-group table always is, cannot be looked up by a point read; the [full lookup cache](#full-lookup-cache) can join it.
 A lookup that reaches the service reads the document as it is at that moment, and under a `PARTIAL` cache a hit returns the row as it was cached until it expires; `scan.read-time` and the other `scan.*` options do not apply to it.
 
 {{< sql-snippet file="flink/FirestoreTableReference.sql" tag="lookup" >}}
@@ -239,10 +239,44 @@ A lookup reads only the fields of the columns the join uses, like a scan, and fi
 `type-mismatch-policy` applies to a looked-up value as it does to a scanned one.
 
 `lookup.async` runs the join as Flink's asynchronous lookup, with several reads in flight per subtask, instead of waiting for each read; both modes read through the same `BatchGetDocuments` call.
-Flink's `lookup.cache` modes `NONE` and `PARTIAL` are supported, and Flink owns the partial cache; `FULL` is refused, because a full cache is loaded by a scan with a snapshot and a reload contract of its own.
-The cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same document id have separate entries.
+Flink's `lookup.cache` modes `NONE`, `PARTIAL` and `FULL` are supported, and Flink owns each cache.
+The partial cache stores the filtered result under the complete lookup-key tuple, so different additional values for the same document id have separate entries.
 An additional equality that fails follows the configured missing-key cache policy; expiry and size options keep their standard Flink meaning.
 `lookup.max-retries` reads again after `UNAVAILABLE`, `INTERNAL` or `DEADLINE_EXCEEDED`, the statuses the client library already retries this call on, so it adds attempts on top of the library's rather than retrying anything the library does not; it counts retries after the first read, and every other failure fails the join at once.
+
+### Full lookup cache
+
+`lookup.cache = FULL` loads the table into memory through the bounded scan and answers every lookup from that copy, so a cache hit reads nothing from Firestore.
+The load reads the fields of the columns the join uses, fills the metadata columns, and applies `type-mismatch-policy` and `scan.max-rows-per-fetch` as a scan of the same table would.
+In streaming mode, a `WHERE` or `ON` condition on the looked-up table that is not a lookup key reaches the source as it does for a scan, so a condition [Filter pushdown](#filter-pushdown) hands the service narrows every load, and Flink still applies it to the cached rows.
+In batch mode the planner keeps such a condition on the join, so a load reads every document, and a mismatched value in a document the condition would exclude still fails the load under `type-mismatch-policy = 'fail'` (both measured on Flink 2.2.1 and 1.20.5).
+A collection-group table loads every collection of the group as one query, whatever `scan.partition.max-partitions` asks of its scan.
+A load reads its documents one page after another on one thread, so a large table takes correspondingly long to load.
+
+Each load reads at the service's current time, taken when the load starts, so every document of one load comes from one snapshot and the next load reads a newer one.
+`scan.read-time` names the scan's snapshot and does not apply to a load, as it does not apply to a point lookup.
+A page request issued more than an hour after its load's read time fails, because the service keeps a version older than an hour only at whole minutes, and only with point-in-time recovery, while the load's read time is to the microsecond; a load is expected to finish well within the hour.
+
+Flink indexes the loaded rows by the join's lookup keys, so the keys need not include the document id, and a key that matches several documents joins all of them.
+A key may be any top-level column of the produced row, a metadata column included: `document-path` joins a collection-group table, which has no PRIMARY KEY, by each document's path.
+A metadata column keys the cache only when it is declared in the type the metadata table under [Source](#source) lists, such as `TIMESTAMP_LTZ(6)` for `update-time`: a different precision makes the planner cast the column, and a cast column is not a lookup key.
+Its type must be one whose Flink value equality agrees with SQL `=`: `STRING`, `CHAR`, `BOOLEAN`, `BIGINT`, `BYTES`, `BINARY` or `TIMESTAMP_LTZ`.
+`DOUBLE` is rejected at planning, because Java equality tells `-0.0` from `0.0` and matches `NaN` to itself, and so are `ARRAY`, `MAP` and `ROW`, whose binary and generic Flink forms do not compare equal.
+A row with a null key value is never matched, as SQL equality requires.
+Unlike a point lookup, a load does not skip any key: a probe holding `/` matches no document id, which never holds one, but it matches the `document-path` of a document of that path.
+
+`lookup.full-cache.reload-strategy` selects `PERIODIC`, which needs `lookup.full-cache.periodic-reload.interval`, or `TIMED`, which needs `lookup.full-cache.timed-reload.iso-time`.
+`lookup.async = true` is rejected with `FULL` because Flink has no asynchronous full-cache provider.
+`lookup.max-retries` does not apply to a load; the client library's own retries cover each page, as they do for a scan.
+
+The cost moves from lookups to loads.
+Firestore bills each document a query returns, so every load bills the documents it reads, the whole table unless a pushed filter narrows it, once per TaskManager and per lookup join that uses the table.
+A periodic reload every ten minutes of a collection of 100,000 documents, joined on four TaskManagers, reads about 57.6 million documents a day.
+Each TaskManager holds one copy of the table per lookup join, shared by that join's subtasks; while a reload builds its new copy, the old copy keeps serving lookups, so a reload briefly needs memory for both.
+The first load blocks lookups until it completes.
+If a load fails, Flink keeps no partial result and fails the lookups that follow, so the job restarts and loads again.
+`FULL` pays off when the table is small enough to hold twice per TaskManager and the join's probes would otherwise read far more documents than the loads do, or when the join needs a field other than the document id, which a point lookup cannot address; otherwise `PARTIAL` reads only the documents the job asks for.
+The loader runs with no Flink metric group, so the scan's `documentsRead` counter reports nothing for it; each load logs the number of documents it handed on, which leaves out what the bill also counts, such as the planner's probe reads and a page a client-library retry overfilled; Flink's own cache metrics report the load count and the latest load time.
 
 ## Sink
 
@@ -321,12 +355,17 @@ No table write carries a precondition.
 | `scan.filter-push-down.enabled` | `true` | Push predicates into a single-collection scan's query; when `false`, only an equality or `IN` on the document id is pushed; see [Filter pushdown](#filter-pushdown) |
 | `scan.parallelism` | *unset ⇒ the planner's parallelism* | Flink's standard source parallelism override |
 | `lookup.async` | `false` | Run the join as Flink's asynchronous lookup, with several reads in flight per subtask |
-| `lookup.cache` | `NONE` | Flink's standard lookup cache mode; `NONE` and `PARTIAL` are supported |
+| `lookup.cache` | `NONE` | Flink's standard lookup cache mode: `NONE`, `PARTIAL` or `FULL` |
 | `lookup.max-retries` | `3` | Reads after the first one, for `UNAVAILABLE`, `INTERNAL` and `DEADLINE_EXCEEDED` only |
 | `lookup.partial-cache.expire-after-access` | *unset* | Flink's standard partial-cache access expiry |
 | `lookup.partial-cache.expire-after-write` | *unset* | Flink's standard partial-cache write expiry |
 | `lookup.partial-cache.cache-missing-key` | `true` | Whether the partial cache records a key that found no document |
 | `lookup.partial-cache.max-rows` | *unset* | Maximum rows the partial cache keeps |
+| `lookup.full-cache.reload-strategy` | `PERIODIC` | Flink's standard full-cache reload strategy: `PERIODIC` or `TIMED` |
+| `lookup.full-cache.periodic-reload.interval` | *unset* | Interval between periodic full-cache loads; required by `PERIODIC`, and at least 1 ms, because Flink schedules it in whole milliseconds |
+| `lookup.full-cache.periodic-reload.schedule-mode` | `FIXED_DELAY` | Periodic schedule mode: `FIXED_DELAY` or `FIXED_RATE` |
+| `lookup.full-cache.timed-reload.iso-time` | *unset* | Local ISO time of a timed full-cache load; required by `TIMED` |
+| `lookup.full-cache.timed-reload.interval-in-days` | `1` | Days between timed full-cache loads |
 | `sink.write-mode` | `merge` | `merge`, `replace` or `update`, for a table with a PRIMARY KEY |
 | `sink.throttling.enabled` | `true` | Maps to `throttlingEnabled`: whether the client library ramps the write rate up |
 | `sink.throttling.initial-ops-per-second` | *unset ⇒ the client library's `500`* | Maps to `initialOpsPerSecond`, at least `20`; only with throttling enabled |
@@ -359,6 +398,6 @@ See the [DataStream delivery guarantee]({{< relref "docs/connectors/datastream/f
 ## Design decisions and testing
 
 The table mapping, the markers and the declined alternatives are recorded in [ADR-0179]({{< param BookRepo >}}/blob/main/docs/adr/0179-the-firestore-table-sink-writes-one-collection-keyed-by-document-id.md), filter pushdown, with the service's matching measured on both editions, in [ADR-0197]({{< param BookRepo >}}/blob/main/docs/adr/0197-the-firestore-scan-pushes-equalities-as-necessary-conditions.md), and limit pushdown in [ADR-0201]({{< param BookRepo >}}/blob/main/docs/adr/0201-the-firestore-and-datastore-scans-push-a-limit-as-one-split.md).
-The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups; the uber-jar's tests write through its relocated classes.
+The emulator integration tests write every type through SQL and read the documents back with the client library, read every type back through a SQL scan, and join against documents through blocking and asynchronous lookups and through the full lookup cache; the uber-jar's tests write through its relocated classes.
 A filtered scan is compared with the same predicate over a collection-group table of the same documents, which pushes nothing, nested fields, fixed-length columns, ranges, `IN`, `IS NOT NULL` and millisecond timestamps included, read in pages of two so that every query resumes at a cursor, and a document-id equality and range with a filter on the document path.
 The gated suite runs the pushed equalities against a Standard- and an Enterprise-edition database, an id and a map field's equality on a Standard-edition one, compares the ranges, `IN` and `IS NOT NULL` on both editions with the same scan with `scan.filter-push-down.enabled` off, a 32-bit integer on Enterprise included, and holds the Standard edition's refusal of a range beside an equality on another field.
