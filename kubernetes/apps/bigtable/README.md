@@ -117,6 +117,7 @@ The change stream ends 1,800 seconds after the window's start, and the job canno
 The input is short because it must finish well before that end.
 The exported evidence of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855)'s four usable trials shows their input beginning 505 to 722 seconds into the window, and the five faults made the Spanner and Firestore inputs finish 245 to 263 seconds later than their length, which would leave about eight to eleven minutes for interruptions beyond the relay's 120-second commit margin.
 A run should reach its verdict about 31 minutes into its window.
+The first `sequence` run, `bt2153-seq-a1`, began its input 516 seconds into the window, finished it 292 seconds later than its length with 632 seconds to spare beyond the commit margin, and reached `usable` 31.3 minutes into its window, as its [findings](../../../docs/adr/evidence/0204-bigtable-fault-sequence-findings-2153.md) record.
 A partition still being reconciled holds the job past the end, and nothing bounds how long, as [the graph](#graph-and-what-each-table-records) describes; a hold that outlasts the run's hour stops it at its time limit.
 
 When the job has finished after the last fault, with its whole input processed, the three oracles below read the tables, and `usable` means all three pass; `eo` is judged exactly once, as for the other kinds.
