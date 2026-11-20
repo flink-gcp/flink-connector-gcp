@@ -31,7 +31,6 @@ import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecor
 import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
 import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
-import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.ValueCaptureType;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
@@ -79,7 +78,8 @@ class SpannerChangeStreamRecordEmitterTest {
                 .containsExactly(commit.toEpochMilli(), commit.toEpochMilli());
         assertThat(state.getCurrentPosition()).isEqualTo(commit);
         assertThat(state.getWatermark()).isEqualTo(START);
-        assertThat(context.sourceEvents()).singleElement().satisfies(this::assertProgressAtCommit);
+        // Progress reaches the coordinator in the reader's reports, never per record.
+        assertThat(context.sourceEvents()).isEmpty();
         assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
         assertThat(state.hasEmittedRecords()).isTrue();
     }
@@ -98,9 +98,7 @@ class SpannerChangeStreamRecordEmitterTest {
         assertThat(state.getCurrentPosition()).isEqualTo(commit);
         assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isEqualTo(1);
-        assertThat(context.sourceEvents())
-                .singleElement()
-                .isInstanceOf(PartitionProgressEvent.class);
+        assertThat(context.sourceEvents()).isEmpty();
     }
 
     @Test
@@ -181,17 +179,11 @@ class SpannerChangeStreamRecordEmitterTest {
         assertThat(state.getCurrentPosition()).isEqualTo(START.plusSeconds(5));
         assertThat(state.getWatermark()).isEqualTo(START.plusSeconds(5));
         assertThat(state.toFinishedSplit().getFinishReport())
-                .containsExactly((ChildPartitionsEvent) context.sourceEvents().get(1));
+                .containsExactly((ChildPartitionsEvent) context.sourceEvents().get(0));
         assertThat(context.sourceEvents())
                 .extracting(SourceEvent::getClass)
-                .containsExactly(
-                        PartitionProgressEvent.class,
-                        ChildPartitionsEvent.class,
-                        PartitionProgressEvent.class,
-                        PartitionProgressEvent.class);
-        assertThat(((PartitionProgressEvent) context.sourceEvents().get(3)).getCurrentPosition())
-                .isEqualTo(START.plusSeconds(5));
-        ChildPartitionsEvent children = (ChildPartitionsEvent) context.sourceEvents().get(1);
+                .containsExactly(ChildPartitionsEvent.class);
+        ChildPartitionsEvent children = (ChildPartitionsEvent) context.sourceEvents().get(0);
         assertThat(children.getChildren().get(0).getParentPartitionIds())
                 .containsExactly(
                         ChangeStreamPartitionSplit.INITIAL_PARTITION_ID,
@@ -289,14 +281,6 @@ class SpannerChangeStreamRecordEmitterTest {
 
         assertThat(state.toSplit()).isEqualTo(original);
         assertThat(context.sourceEvents()).isEmpty();
-    }
-
-    private void assertProgressAtCommit(SourceEvent event) {
-        assertThat(event).isInstanceOf(PartitionProgressEvent.class);
-        PartitionProgressEvent progress = (PartitionProgressEvent) event;
-        assertThat(progress.getSplitId()).isEqualTo("change-stream-token:parent");
-        assertThat(progress.getCurrentPosition()).isEqualTo(START.plusSeconds(1));
-        assertThat(progress.getWatermark()).isEqualTo(START);
     }
 
     private long counter(String name) {

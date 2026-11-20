@@ -42,6 +42,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
@@ -85,8 +86,20 @@ import java.util.function.LongSupplier;
  * {@code CREATED} is the state that carries the dependency: a discovered child sits there until
  * {@link #allParentsFinished} holds, which is why {@code childrenByParent} exists and why finishing
  * a partition is the event that promotes children rather than discovering them. A finished split
- * leaves the ledger immediately. Its id remains in {@code finishedParentProofs} only while a
- * created child still needs that durable fact after restore.
+ * leaves the ledger once its finish is final (below). Its id remains in {@code
+ * finishedParentProofs} only while a created child still needs that durable fact after restore.
+ *
+ * <h2>A finish is final only once a completed checkpoint covers it</h2>
+ *
+ * <p>Region failover restarts the failed tasks from the last completed checkpoint but keeps this
+ * coordinator, and Flink returns the splits it assigned since that checkpoint through {@link
+ * #addSplitsBack}. Every finished partition therefore stays in the ledger as a pending {@code
+ * FINISHED} entry in {@code pendingFinishes} until a checkpoint covering the finish completes, as a
+ * Debezium partition is {@code FINISHED} only once its offsets are committed. A returned split
+ * restarts where Flink assigned it, because its downstream rolled back with it, and a returned or
+ * restored pending finish becomes unfinished again; {@link #reconcileAfterRollback} then sends its
+ * scheduled children back to waiting. A snapshot leaves pending finishes out: the checkpoint it
+ * belongs to already covers them.
  *
  * <p><b>Child discovery does not finish a parent.</b> A reader forwards child-partitions records as
  * it meets them and sends a separate completion event only when its query ends successfully, so a
@@ -98,11 +111,9 @@ import java.util.function.LongSupplier;
  * checkpoint whose coordinator snapshot missed a finish therefore still receives it. A finish for a
  * partition this ledger no longer holds is acknowledged and otherwise ignored, and so is a child
  * report for one, including a child report for a compacted parent whose child has since finished
- * too, unless that child finished after the last completed checkpoint: a region failover rolled its
- * records back while keeping this coordinator, so the report fails the coordinator, which Flink
- * turns into a global failover that restores this ledger from the checkpoint too. Only finishes are
- * acknowledged; a reader sends its child reports before the finish and, after a restore, again
- * before the repeated finish.
+ * too; a pending finish stays in the ledger, so a child whose finish is not final is found there.
+ * Only finishes are acknowledged; a reader sends its child reports before the finish and, after a
+ * restore, again before the repeated finish.
  *
  * <h2>A child waits for a checkpoint, not only for its parents</h2>
  *
@@ -127,20 +138,26 @@ import java.util.function.LongSupplier;
  *
  * <h2>The watermark frontier</h2>
  *
- * <p>The source-wide watermark is the minimum watermark across every <em>unfinished</em> entry, and
- * it is the enumerator's rather than each reader's because a partition that is scheduled but not
- * yet assigned belongs to nobody — a per-reader minimum would silently omit it and let the source
- * advance past work it has not started.
+ * <p>The source-wide watermark is the minimum watermark across every ledger entry, a pending finish
+ * included, and it is the enumerator's rather than each reader's because a partition that is
+ * scheduled but not yet assigned belongs to nobody — a per-reader minimum would silently omit it
+ * and let the source advance past work it has not started. Running entries carry the positions that
+ * completed checkpoints recorded, which readers report from {@code notifyCheckpointComplete}, so
+ * the frontier never passes a record a region failover reads again. Readers' live positions apply
+ * only once no checkpoint completed within {@code firstCheckpointTimeoutNanos} of {@link #start},
+ * and every finish is final at once while they do.
  *
- * <p>{@code unfinishedWatermarkCounts} is a counted ordered index maintained incrementally, rather
- * than a scan of the ledger on every progress event because progress events arrive per record.
+ * <p>{@code ledgerWatermarkCounts} is a counted ordered index maintained incrementally, rather than
+ * a scan of the ledger on every progress report, because a report names every split a reader holds.
  * {@link #replacePartition} keeps it in step and skips both halves of the update when an entry's
  * indexed watermark has not moved. It is rebuilt from the compact ledger on restore rather than
  * checkpointed beside it, so the two can never disagree.
  *
  * <p>A transition that would move the frontier backwards is rejected rather than absorbed: readers
  * have already emitted the old value, and Flink treats records at or below a watermark as late, so
- * a frontier that retreated would silently reclassify records that were on time.
+ * a frontier that retreated would silently reclassify records that were on time. Once live
+ * positions have moved the ledger, a rollback can legitimately fall behind them, so the frontier
+ * then holds instead.
  *
  * <h2>Initialization happens off the coordinator thread</h2>
  *
@@ -212,18 +229,17 @@ public final class SpannerChangeStreamSplitEnumerator
     private final Map<String, Long> heldParents = new LinkedHashMap<>();
 
     /**
-     * Children of a still-proven parent that finished in this coordinator's lifetime and that no
-     * completed checkpoint covers yet. A failed-over reader may restore a checkpoint taken before
-     * such a finish, including the checkpoint this coordinator was restored from, so a repeated
-     * report of the child cannot be ignored (see {@link #acceptChildren}). An entry leaves when a
-     * completed checkpoint covers the finish, or when none of the child's parents is still a proof,
-     * because only a proven parent's report reaches that check; this bounds the map by the proofs.
+     * Partitions whose reader reported the finish, kept in the ledger as {@code FINISHED} until a
+     * completed checkpoint covers the finish: each maps to the id of the first checkpoint
+     * snapshotted after it, or {@code UNCOVERED} before one is. Until then a region failover can
+     * hand the split back or a restored reader can read it again, so the finish is not final, as a
+     * Debezium partition is not {@code FINISHED} before its offsets are committed.
      */
-    private final Map<String, FinishedChild> uncommittedFinishedChildren = new LinkedHashMap<>();
+    private final Map<String, Long> pendingFinishes = new LinkedHashMap<>();
 
     private final Deque<String> scheduledPartitions = new ArrayDeque<>();
     private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
-    private final TreeMap<Long, Integer> unfinishedWatermarkCounts = new TreeMap<>();
+    private final TreeMap<Long, Integer> ledgerWatermarkCounts = new TreeMap<>();
     private final Set<Integer> waitingReaders = new LinkedHashSet<>();
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicLong scheduledCount = new AtomicLong();
@@ -247,6 +263,18 @@ public final class SpannerChangeStreamSplitEnumerator
     private long sourceWatermark = Long.MIN_VALUE;
     private boolean checkpointCompleted;
     private boolean releasingWithoutCheckpoint;
+
+    /**
+     * Whether the frontier follows the readers' live positions because no checkpoint completed
+     * within {@code firstCheckpointTimeoutNanos} of {@link #start}; finishes are final at once
+     * then.
+     */
+    private boolean frontierFromLiveProgress;
+
+    /** Whether live positions ever moved the ledger, which can leave it ahead of a restore. */
+    private boolean liveProgressApplied;
+
+    private long startedNanos;
 
     /** When the oldest current hold began, on {@code nanoTime}; null while nothing is held. */
     @Nullable private Long heldSinceNanos;
@@ -323,8 +351,9 @@ public final class SpannerChangeStreamSplitEnumerator
     @Override
     public void start() {
         registerMetrics();
+        startedNanos = nanoTime.getAsLong();
         context.callAsync(this::initialize, this::onInitialized);
-        if (holdsChildren() && firstCheckpointTimeoutNanos > 0) {
+        if (firstCheckpointTimeoutNanos > 0) {
             long period =
                     Math.max(
                             MIN_FIRST_CHECKPOINT_CHECK_MILLIS,
@@ -332,7 +361,13 @@ public final class SpannerChangeStreamSplitEnumerator
                                     Duration.ofNanos(firstCheckpointTimeoutNanos).toMillis() / 4,
                                     MAX_FIRST_CHECKPOINT_CHECK_MILLIS));
             context.callAsync(
-                    () -> null, (ignored, error) -> checkFirstCheckpointWait(), period, period);
+                    () -> null,
+                    (ignored, error) -> {
+                        checkFirstCheckpointWait();
+                        checkFirstCheckpointForFrontier();
+                    },
+                    period,
+                    period);
         }
     }
 
@@ -581,11 +616,28 @@ public final class SpannerChangeStreamSplitEnumerator
         addSplitsBackInitialized(splits);
     }
 
+    /**
+     * Takes back what a region failover returns: the splits Flink assigned since the checkpoint the
+     * failed subtask restores. That subtask's downstream rolled back to the checkpoint too, so each
+     * split restarts from where it was assigned, not from progress its reader reported since, and a
+     * split whose finish no completed checkpoint covers yet is read again.
+     */
     private void addSplitsBackInitialized(List<ChangeStreamPartitionSplit> splits) {
+        boolean rolledBack = false;
         for (ChangeStreamPartitionSplit returned : splits) {
             ChangeStreamPartitionSplit current = ledger.get(returned.splitId());
-            if (current == null
-                    || current.getLifecycleState() == PartitionLifecycleState.FINISHED
+            if (current == null) {
+                // A finish leaves the ledger once a completed checkpoint covers it, and Flink
+                // returns only assignments no completed checkpoint covers; while the frontier
+                // follows live progress, though, every finish leaves at once.
+                LOG.warn(
+                        "Ignoring returned split {}, which is no longer in the ledger: either a"
+                                + " completed checkpoint covers its finish, or it finished while no"
+                                + " checkpoint completed.",
+                        returned.splitId());
+                continue;
+            }
+            if (current.getLifecycleState() == PartitionLifecycleState.CREATED
                     || current.getLifecycleState() == PartitionLifecycleState.SCHEDULED) {
                 continue;
             }
@@ -593,15 +645,92 @@ public final class SpannerChangeStreamSplitEnumerator
                     current.samePartitionDefinition(returned),
                     "returned split %s does not match the checkpointed partition definition",
                     returned.splitId());
-            ChangeStreamPartitionSplit merged =
-                    current.withProgress(
-                            later(current.getCurrentPosition(), returned.getCurrentPosition()),
-                            later(current.getWatermark(), returned.getWatermark()));
-            schedule(merged);
+            withdrawFinish(current.splitId());
+            ledger.put(
+                    current.splitId(),
+                    current.withProgress(returned.getCurrentPosition(), returned.getWatermark())
+                            .withLifecycleState(PartitionLifecycleState.SCHEDULED));
+            rolledBack = true;
+        }
+        if (rolledBack) {
+            reconcileAfterRollback();
         }
         refreshSourceWatermark();
         splitsReturned.inc(splits.size());
         serveWaitingReaders();
+    }
+
+    /**
+     * Takes back the finish of every restored split the ledger still holds as a pending finish: its
+     * reader reads it again from the restored checkpoint, so its children must wait again.
+     */
+    private void acceptRestoredPartitions(PartitionsRestoredEvent restored) {
+        if (discardRestoredReaderSplits) {
+            // The reader restored the discarded ledger's splits and is about to drop them.
+            return;
+        }
+        boolean rolledBack = false;
+        for (String splitId : restored.getSplitIds()) {
+            ChangeStreamPartitionSplit current = ledger.get(splitId);
+            if (current == null
+                    || current.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+                continue;
+            }
+            withdrawFinish(splitId);
+            ledger.put(splitId, current.withLifecycleState(PartitionLifecycleState.RUNNING));
+            rolledBack = true;
+        }
+        if (rolledBack) {
+            reconcileAfterRollback();
+            refreshSourceWatermark();
+            serveWaitingReaders();
+        }
+    }
+
+    /** Forgets a pending finish's bookkeeping; the caller puts the entry back as unfinished. */
+    private void withdrawFinish(String splitId) {
+        pendingFinishes.remove(splitId);
+        heldParents.remove(splitId);
+        if (heldParents.isEmpty()) {
+            heldSinceNanos = null;
+        }
+        finishedParentProofReferences.remove(splitId);
+    }
+
+    /**
+     * Restores the lineage invariants after partitions became unfinished again: a scheduled child
+     * of an unfinished parent goes back to {@code CREATED}, a finished parent it still names is
+     * proven again, and the runtime indexes are rebuilt from the ledger. A child a live reader is
+     * already reading keeps running; its order relative to the re-read parent is not restored.
+     */
+    private void reconcileAfterRollback() {
+        for (ChangeStreamPartitionSplit partition : new ArrayList<>(ledger.values())) {
+            if (partition.getLifecycleState() != PartitionLifecycleState.SCHEDULED
+                    || !hasUnfinishedParent(partition)) {
+                continue;
+            }
+            ledger.put(
+                    partition.splitId(),
+                    partition.withLifecycleState(PartitionLifecycleState.CREATED));
+            for (String parentId : partition.getParentPartitionIds()) {
+                ChangeStreamPartitionSplit parent = ledger.get(parentId);
+                if (parent == null
+                        || parent.getLifecycleState() == PartitionLifecycleState.FINISHED) {
+                    finishedParentProofReferences.putIfAbsent(parentId, 0);
+                }
+            }
+        }
+        rebuildRuntimeIndexes();
+    }
+
+    private boolean hasUnfinishedParent(ChangeStreamPartitionSplit partition) {
+        for (String parentId : partition.getParentPartitionIds()) {
+            ChangeStreamPartitionSplit parent = ledger.get(parentId);
+            if (parent != null && parent.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override
@@ -635,6 +764,10 @@ public final class SpannerChangeStreamSplitEnumerator
             updateProgress((PartitionProgressEvent) sourceEvent);
             return;
         }
+        if (sourceEvent instanceof PartitionsRestoredEvent) {
+            acceptRestoredPartitions((PartitionsRestoredEvent) sourceEvent);
+            return;
+        }
         if (sourceEvent instanceof ChildPartitionsEvent) {
             acceptChildren(subtaskId, (ChildPartitionsEvent) sourceEvent);
             return;
@@ -647,24 +780,40 @@ public final class SpannerChangeStreamSplitEnumerator
                 "Unsupported Spanner Change Streams source event " + sourceEvent + ".");
     }
 
+    /**
+     * Moves running and pending entries to the reported positions. Committed reports always apply;
+     * live ones only while the frontier follows live progress, because a frontier built from live
+     * positions can run ahead of what a restore re-reads.
+     */
     private void updateProgress(PartitionProgressEvent progress) {
-        ChangeStreamPartitionSplit current = ledger.get(progress.getSplitId());
-        if (current == null || current.getLifecycleState() != PartitionLifecycleState.RUNNING) {
+        if (!progress.isCommitted() && !frontierFromLiveProgress) {
             return;
         }
-        replacePartition(
-                current,
-                current.withProgress(
-                        later(current.getCurrentPosition(), progress.getCurrentPosition()),
-                        later(current.getWatermark(), progress.getWatermark())));
+        liveProgressApplied |= !progress.isCommitted();
+        for (PartitionProgressEvent.Progress reported : progress.getPartitions()) {
+            ChangeStreamPartitionSplit current = ledger.get(reported.getSplitId());
+            if (current == null
+                    || (current.getLifecycleState() != PartitionLifecycleState.RUNNING
+                            && current.getLifecycleState() != PartitionLifecycleState.FINISHED)) {
+                continue;
+            }
+            replacePartition(
+                    current,
+                    current.withProgress(
+                            later(current.getCurrentPosition(), reported.getCurrentPosition()),
+                            later(current.getWatermark(), reported.getWatermark())));
+        }
         refreshSourceWatermark();
     }
 
     private void acceptChildren(int subtaskId, ChildPartitionsEvent event) {
         ChangeStreamPartitionSplit parent = ledger.get(event.getParentSplitId());
         boolean reportingParentIsProof =
-                parent == null
-                        && finishedParentProofReferences.containsKey(event.getParentSplitId());
+                (parent == null
+                                && finishedParentProofReferences.containsKey(
+                                        event.getParentSplitId()))
+                        || (parent != null
+                                && parent.getLifecycleState() == PartitionLifecycleState.FINISHED);
         if (parent == null && !reportingParentIsProof) {
             // A restored reader repeats the child reports of a finish this ledger applied and
             // compacted already.
@@ -675,7 +824,9 @@ public final class SpannerChangeStreamSplitEnumerator
                     subtaskId);
             return;
         }
-        if (parent != null && parent.getLifecycleState() != PartitionLifecycleState.RUNNING) {
+        if (parent != null
+                && parent.getLifecycleState() != PartitionLifecycleState.RUNNING
+                && parent.getLifecycleState() != PartitionLifecycleState.FINISHED) {
             throw new IllegalStateException(
                     "Child partitions arrived for "
                             + parent.splitId()
@@ -694,18 +845,8 @@ public final class SpannerChangeStreamSplitEnumerator
             if (reportingParentIsProof) {
                 if (existing == null) {
                     // A restored reader repeats the reports of a finish this ledger applied
-                    // already; the child has been released and finished since. That is safe only
-                    // if a completed checkpoint covers the child's finish: otherwise the restore
-                    // rolled its records back too, and only a global failover, which restores this
-                    // ledger as well, reads them again.
-                    Preconditions.checkState(
-                            !uncommittedFinishedChildren.containsKey(childId),
-                            "Child partition %s of %s finished after the last completed checkpoint,"
-                                    + " and a restored reader reported it again; failing the"
-                                    + " coordinator so that a global failover restores it from that"
-                                    + " checkpoint.",
-                            childId,
-                            event.getParentSplitId());
+                    // already; the child has been released and finished since, and a completed
+                    // checkpoint covers that finish, or the child would still be pending here.
                     continue;
                 }
                 Preconditions.checkState(
@@ -715,11 +856,11 @@ public final class SpannerChangeStreamSplitEnumerator
                 promoteIfReady(existing);
                 continue;
             }
+            // A known child was checked when first reported; a parent read again after a region
+            // failover repeats it while another of its parents may have left the ledger since.
             for (String parentId : child.getParentPartitionIds()) {
                 Preconditions.checkArgument(
-                        ledger.containsKey(parentId)
-                                || (existing != null
-                                        && finishedParentProofReferences.containsKey(parentId)),
+                        existing != null || ledger.containsKey(parentId),
                         "child token %s names unknown parent %s",
                         child.getToken(),
                         parentId);
@@ -736,7 +877,7 @@ public final class SpannerChangeStreamSplitEnumerator
                             event.getStartTimestamp());
             if (existing == null) {
                 ledger.put(childId, discovered);
-                trackUnfinishedWatermark(discovered);
+                trackLedgerWatermark(discovered);
                 unfinishedPartitions++;
                 partitionsDiscovered.inc();
                 indexCreatedPartition(discovered);
@@ -780,7 +921,7 @@ public final class SpannerChangeStreamSplitEnumerator
 
     private void applyFinish(int subtaskId, PartitionFinishedEvent event) {
         ChangeStreamPartitionSplit current = ledger.get(event.getSplitId());
-        if (current == null) {
+        if (current == null || current.getLifecycleState() == PartitionLifecycleState.FINISHED) {
             // A restored reader repeats a finish this ledger applied already.
             LOG.debug(
                     "Ignoring completion for split {} from subtask {}, which is not in the ledger.",
@@ -796,15 +937,15 @@ public final class SpannerChangeStreamSplitEnumerator
                             + current.getLifecycleState()
                             + ".");
         }
-        untrackUnfinishedWatermark(current);
-        ledger.remove(current.splitId());
         unfinishedPartitions--;
-        for (String parentId : current.getParentPartitionIds()) {
-            if (finishedParentProofReferences.containsKey(parentId)) {
-                uncommittedFinishedChildren.put(
-                        current.splitId(), new FinishedChild(current.getParentPartitionIds()));
-                break;
-            }
+        if (!frontierFromLiveProgress) {
+            // Its records count downstream only once a checkpoint covering the finish completes,
+            // and a parent read again reports it as a child again, which must find it here.
+            replacePartition(current, current.withLifecycleState(PartitionLifecycleState.FINISHED));
+            pendingFinishes.put(current.splitId(), UNCOVERED);
+        } else {
+            untrackLedgerWatermark(current);
+            ledger.remove(current.splitId());
         }
         Set<String> children = childrenByParent.remove(current.splitId());
         if (children != null && !children.isEmpty()) {
@@ -832,12 +973,15 @@ public final class SpannerChangeStreamSplitEnumerator
         finishedParentProofReferences.replaceAll((ignored, references) -> 0);
         scheduledPartitions.clear();
         scheduledPositionCounts.clear();
-        unfinishedWatermarkCounts.clear();
+        ledgerWatermarkCounts.clear();
         scheduledCount.set(0);
         unfinishedPartitions = 0;
         for (ChangeStreamPartitionSplit partition : ledger.values()) {
+            trackLedgerWatermark(partition);
+            if (partition.getLifecycleState() == PartitionLifecycleState.FINISHED) {
+                continue;
+            }
             unfinishedPartitions++;
-            trackUnfinishedWatermark(partition);
             if (partition.getLifecycleState() == PartitionLifecycleState.SCHEDULED) {
                 scheduledPartitions.addLast(partition.splitId());
                 scheduledCount.incrementAndGet();
@@ -884,7 +1028,7 @@ public final class SpannerChangeStreamSplitEnumerator
         ChangeStreamPartitionSplit current = ledger.get(scheduled.splitId());
         if (current == null) {
             ledger.put(scheduled.splitId(), scheduled);
-            trackUnfinishedWatermark(scheduled);
+            trackLedgerWatermark(scheduled);
         } else {
             replacePartition(current, scheduled);
         }
@@ -910,14 +1054,6 @@ public final class SpannerChangeStreamSplitEnumerator
             }
             if (references == 1) {
                 finishedParentProofReferences.remove(parentId);
-                uncommittedFinishedChildren
-                        .values()
-                        .removeIf(
-                                child ->
-                                        child.parentIds.stream()
-                                                .noneMatch(
-                                                        finishedParentProofReferences
-                                                                ::containsKey));
             } else {
                 finishedParentProofReferences.put(parentId, references - 1);
             }
@@ -963,51 +1099,49 @@ public final class SpannerChangeStreamSplitEnumerator
     private void replacePartition(
             ChangeStreamPartitionSplit current, ChangeStreamPartitionSplit replacement) {
         boolean sameIndexedWatermark =
-                current.getLifecycleState() != PartitionLifecycleState.FINISHED
-                        && replacement.getLifecycleState() != PartitionLifecycleState.FINISHED
-                        && SpannerChangeStreamWatermarks.beforeInstant(current.getWatermark())
-                                == SpannerChangeStreamWatermarks.beforeInstant(
-                                        replacement.getWatermark());
+                SpannerChangeStreamWatermarks.beforeInstant(current.getWatermark())
+                        == SpannerChangeStreamWatermarks.beforeInstant(replacement.getWatermark());
         if (!sameIndexedWatermark) {
-            untrackUnfinishedWatermark(current);
+            untrackLedgerWatermark(current);
         }
         ledger.put(replacement.splitId(), replacement);
         if (!sameIndexedWatermark) {
-            trackUnfinishedWatermark(replacement);
+            trackLedgerWatermark(replacement);
         }
     }
 
-    private void trackUnfinishedWatermark(ChangeStreamPartitionSplit partition) {
-        if (partition.getLifecycleState() != PartitionLifecycleState.FINISHED) {
-            unfinishedWatermarkCounts.merge(
-                    SpannerChangeStreamWatermarks.beforeInstant(partition.getWatermark()),
-                    1,
-                    Integer::sum);
-        }
+    /** Every ledger entry counts, a pending finish included: its records are not committed yet. */
+    private void trackLedgerWatermark(ChangeStreamPartitionSplit partition) {
+        ledgerWatermarkCounts.merge(
+                SpannerChangeStreamWatermarks.beforeInstant(partition.getWatermark()),
+                1,
+                Integer::sum);
     }
 
-    private void untrackUnfinishedWatermark(ChangeStreamPartitionSplit partition) {
-        if (partition.getLifecycleState() == PartitionLifecycleState.FINISHED) {
-            return;
-        }
+    private void untrackLedgerWatermark(ChangeStreamPartitionSplit partition) {
         long watermark = SpannerChangeStreamWatermarks.beforeInstant(partition.getWatermark());
-        Integer count = unfinishedWatermarkCounts.get(watermark);
+        Integer count = ledgerWatermarkCounts.get(watermark);
         Preconditions.checkState(count != null, "Unfinished watermark index is inconsistent.");
         if (count == 1) {
-            unfinishedWatermarkCounts.remove(watermark);
+            ledgerWatermarkCounts.remove(watermark);
         } else {
-            unfinishedWatermarkCounts.put(watermark, count - 1);
+            ledgerWatermarkCounts.put(watermark, count - 1);
         }
     }
 
     private void refreshSourceWatermark() {
-        if (unfinishedWatermarkCounts.isEmpty()) {
+        if (ledgerWatermarkCounts.isEmpty()) {
             return;
         }
-        long next = unfinishedWatermarkCounts.firstKey();
+        long next = ledgerWatermarkCounts.firstKey();
+        if (next < sourceWatermark && liveProgressApplied) {
+            // Live positions moved the frontier past what a region failover re-reads; readers
+            // emitted it already, so it holds rather than move back.
+            return;
+        }
         Preconditions.checkState(
                 next >= sourceWatermark,
-                "Spanner Change Streams unfinished-ledger watermark moved backwards from %s to %s.",
+                "Spanner Change Streams ledger watermark moved backwards from %s to %s.",
                 sourceWatermark,
                 next);
         if (next == sourceWatermark) {
@@ -1021,10 +1155,10 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     private void initializeSourceWatermark() {
-        if (unfinishedWatermarkCounts.isEmpty()) {
+        if (ledgerWatermarkCounts.isEmpty()) {
             return;
         }
-        long candidate = unfinishedWatermarkCounts.firstKey();
+        long candidate = ledgerWatermarkCounts.firstKey();
         Preconditions.checkState(
                 candidate >= sourceWatermark,
                 "Restored Spanner Change Streams source watermark %s is ahead of unfinished-ledger"
@@ -1042,16 +1176,25 @@ public final class SpannerChangeStreamSplitEnumerator
                         + " checkpoint after its deferred reader actions have been replayed.");
         heldParents.replaceAll(
                 (ignored, covering) -> covering == UNCOVERED ? checkpointId : covering);
-        for (FinishedChild child : uncommittedFinishedChildren.values()) {
-            if (child.covering == UNCOVERED) {
-                child.covering = checkpointId;
+        pendingFinishes.replaceAll(
+                (ignored, covering) -> covering == UNCOVERED ? checkpointId : covering);
+        List<ChangeStreamPartitionSplit> unfinished = new ArrayList<>(ledger.size());
+        for (ChangeStreamPartitionSplit partition : ledger.values()) {
+            if (partition.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+                unfinished.add(partition);
             }
         }
+        // A frontier held above a rollback after live progress must not be checkpointed ahead of
+        // the ledger, which a restore validates; restored readers start from it afresh.
+        long checkpointedWatermark =
+                ledgerWatermarkCounts.isEmpty()
+                        ? sourceWatermark
+                        : Math.min(sourceWatermark, ledgerWatermarkCounts.firstKey());
         return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
-                ledger.values(),
+                unfinished,
                 finishedParentProofReferences.keySet(),
                 endTimestamp,
-                sourceWatermark);
+                checkpointedWatermark);
     }
 
     @Override
@@ -1070,9 +1213,14 @@ public final class SpannerChangeStreamSplitEnumerator
         // A reader restores the splits of the latest completed checkpoint, so once one completes
         // after a fallback, no reader can restore the discarded ledger's splits any more.
         discardRestoredReaderSplits = false;
-        uncommittedFinishedChildren
-                .values()
-                .removeIf(child -> child.covering != UNCOVERED && child.covering <= checkpointId);
+        if (frontierFromLiveProgress) {
+            LOG.info(
+                    "Checkpoint {} completed, so the source watermark follows committed reader"
+                            + " positions again.",
+                    checkpointId);
+            frontierFromLiveProgress = false;
+        }
+        settleCoveredFinishes(checkpointId);
         if (heldParents.isEmpty()) {
             return;
         }
@@ -1138,8 +1286,63 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     @VisibleForTesting
-    int uncommittedFinishedChildCount() {
-        return uncommittedFinishedChildren.size();
+    int pendingFinishCount() {
+        return pendingFinishes.size();
+    }
+
+    /** Removes the pending finishes a completed checkpoint covers; they are final now. */
+    private void settleCoveredFinishes(long checkpointId) {
+        boolean settled = false;
+        Iterator<Map.Entry<String, Long>> pending = pendingFinishes.entrySet().iterator();
+        while (pending.hasNext()) {
+            Map.Entry<String, Long> finish = pending.next();
+            if (finish.getValue() == UNCOVERED || finish.getValue() > checkpointId) {
+                continue;
+            }
+            pending.remove();
+            ChangeStreamPartitionSplit partition = ledger.remove(finish.getKey());
+            if (partition != null) {
+                untrackLedgerWatermark(partition);
+            }
+            settled = true;
+        }
+        if (settled) {
+            refreshLineageMetricCounts();
+            refreshSourceWatermark();
+        }
+    }
+
+    /**
+     * Makes every finish final and lets the frontier follow live positions when no checkpoint
+     * completed within {@code firstCheckpointTimeoutNanos} of {@link #start}: without one, a
+     * pending finish would hold the frontier for good.
+     */
+    private void checkFirstCheckpointForFrontier() {
+        if (closed
+                || !initialized
+                || checkpointCompleted
+                || frontierFromLiveProgress
+                || nanoTime.getAsLong() - startedNanos < firstCheckpointTimeoutNanos) {
+            return;
+        }
+        LOG.warn(
+                "The source watermark follows the readers' current positions, and a finished"
+                        + " partition is not read again after a region failover, until a"
+                        + " checkpoint completes: none has completed within {} of the source"
+                        + " starting. Enable checkpointing, or raise firstCheckpointTimeout"
+                        + " ('scan.first-checkpoint-timeout') for a job that checkpoints less"
+                        + " often.",
+                Duration.ofNanos(firstCheckpointTimeoutNanos));
+        frontierFromLiveProgress = true;
+        for (String splitId : pendingFinishes.keySet()) {
+            ChangeStreamPartitionSplit partition = ledger.remove(splitId);
+            if (partition != null) {
+                untrackLedgerWatermark(partition);
+            }
+        }
+        pendingFinishes.clear();
+        refreshLineageMetricCounts();
+        refreshSourceWatermark();
     }
 
     private void registerMetrics() {
@@ -1167,7 +1370,7 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     private void refreshLineageMetricCounts() {
-        ledgerEntryCount.set(ledger.size());
+        ledgerEntryCount.set(ledger.size() - pendingFinishes.size());
         finishedParentProofCount.set(finishedParentProofReferences.size());
     }
 
@@ -1261,19 +1464,6 @@ public final class SpannerChangeStreamSplitEnumerator
                     bounded,
                     false,
                     sourceWatermark);
-        }
-    }
-
-    /** A finished child that a repeated report may not skip yet, with what lets it leave. */
-    private static final class FinishedChild {
-
-        private final List<String> parentIds;
-
-        /** The first checkpoint snapshotted after the finish, or {@code UNCOVERED}. */
-        private long covering = UNCOVERED;
-
-        private FinishedChild(List<String> parentIds) {
-            this.parentIds = parentIds;
         }
     }
 

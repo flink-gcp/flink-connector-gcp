@@ -295,7 +295,10 @@ public final class SpannerChangeStreamEnumeratorState {
                     if (finishedProof) {
                         referencedProofs.add(parentId);
                     }
-                } else {
+                } else if (partition.getLifecycleState() != PartitionLifecycleState.RUNNING) {
+                    // A region failover reads a finished parent again while a reader elsewhere
+                    // keeps reading its child, so only a running child may outlive its parent's
+                    // finish.
                     Preconditions.checkArgument(
                             !liveParent,
                             "partition %s is %s before live parent %s is released",

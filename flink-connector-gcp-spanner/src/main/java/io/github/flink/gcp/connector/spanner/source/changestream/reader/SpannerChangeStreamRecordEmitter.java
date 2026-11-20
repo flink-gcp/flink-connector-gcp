@@ -28,7 +28,6 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPar
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
-import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
 
@@ -104,14 +103,12 @@ final class SpannerChangeStreamRecordEmitter<T>
             throw new IllegalArgumentException("Unsupported Spanner Change Streams record.");
         }
 
+        // The reader reports this progress per checkpoint, never per record.
         state.advance(
                 record.position(),
                 record instanceof SpannerChangeStreamRecord.Heartbeat
                         ? record.position()
                         : state.getWatermark());
-        context.sendSourceEventToCoordinator(
-                new PartitionProgressEvent(
-                        state.splitId(), state.getCurrentPosition(), state.getWatermark()));
     }
 
     private void emitData(

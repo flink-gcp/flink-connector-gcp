@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0101: The Spanner Change Streams reader bounds asynchronous partition queries
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-14, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, and by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20
+- Date: 2026-08-12; revised 2026-08-14, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, and by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#536](https://github.com/flink-gcp/flink-connector-gcp/issues/536),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
@@ -28,7 +28,8 @@ limitations under the License.
   [#647](https://github.com/flink-gcp/flink-connector-gcp/issues/647),
   [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053),
   [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141),
-  [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205)
+  [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205),
+  [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -87,7 +88,7 @@ When an active column filter retains every column in the record's metadata, the 
 A table-filtered record does not call the deserializer.
 A record whose reported non-key values are all removed is delivered with empty projected value objects by default.
 The explicit `skipMessagesWithoutChange` option skips that record instead.
-Both outcomes still advance the split position and report progress to the coordinator.
+Both outcomes still advance the split position, which the reader reports to the coordinator when a checkpoint completes (ADR-0099).
 Heartbeat and child-partitions records bypass output filtering entirely.
 
 The reader checkpoints the greatest consumed record timestamp and watermark for each active split, except that both stop before the split's first child-partitions record so that a restore meets that record again (ADR-0099).

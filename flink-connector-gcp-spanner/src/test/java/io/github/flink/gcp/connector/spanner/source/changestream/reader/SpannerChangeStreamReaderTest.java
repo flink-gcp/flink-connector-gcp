@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
@@ -234,14 +235,21 @@ class SpannerChangeStreamReaderTest {
                 parent.withFinishReport(Collections.singletonList(forwarded));
         reader.addSplits(java.util.Arrays.asList(finished, split("b")));
         reader.start();
-        assertThat(context.sourceEvents()).isEmpty();
+        // Only the unfinished restored split is named; the finished one reports its finish.
+        assertThat(context.sourceEvents())
+                .singleElement()
+                .isInstanceOfSatisfying(
+                        PartitionsRestoredEvent.class,
+                        event ->
+                                assertThat(event.getSplitIds())
+                                        .containsExactly("change-stream-token:b"));
 
         reader.handleSourceEvents(
                 new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
 
-        assertThat(context.sourceEvents()).hasSize(2);
-        assertThat(context.sourceEvents().get(0)).isEqualTo(forwarded);
-        assertThat(context.sourceEvents().get(1))
+        assertThat(context.sourceEvents()).hasSize(3);
+        assertThat(context.sourceEvents().get(1)).isEqualTo(forwarded);
+        assertThat(context.sourceEvents().get(2))
                 .isInstanceOfSatisfying(
                         PartitionFinishedEvent.class,
                         event -> {
@@ -278,6 +286,154 @@ class SpannerChangeStreamReaderTest {
 
         assertThat(context.sourceEvents()).isEmpty();
         assertThat(reader.snapshotState(1)).isEmpty();
+    }
+
+    @Test
+    void aCompletedCheckpointReportsThePositionsItsSnapshotRecorded() throws Exception {
+        reader = reader(2, new SequenceDeserializer());
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(3))));
+        reader.pollNext(output);
+        reader.snapshotState(1);
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(4))));
+        reader.pollNext(output);
+        reader.snapshotState(2);
+
+        // Neither 1's nor 2's notification comes; 3 completes, then 2's arrives late.
+        reader.notifyCheckpointComplete(3);
+        reader.notifyCheckpointComplete(2);
+        reader.notifyCheckpointComplete(3);
+
+        List<PartitionProgressEvent> reports = progressReports();
+        assertThat(reports).singleElement().satisfies(r -> assertThat(r.isCommitted()).isTrue());
+        assertThat(reports.get(0).getPartitions())
+                .singleElement()
+                .satisfies(
+                        p -> {
+                            assertThat(p.getSplitId()).isEqualTo("change-stream-token:a");
+                            assertThat(p.getCurrentPosition()).isEqualTo(START.plusSeconds(4));
+                        });
+    }
+
+    @Test
+    void anAbortedCheckpointsPositionsAreNeverReported() throws Exception {
+        reader = reader(2, new SequenceDeserializer());
+        reader.addSplits(Collections.singletonList(split("a")));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(3))));
+        reader.pollNext(output);
+        reader.snapshotState(1);
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(4))));
+        reader.pollNext(output);
+        reader.snapshotState(2);
+
+        reader.notifyCheckpointAborted(2);
+        reader.notifyCheckpointComplete(3);
+
+        assertThat(progressReports())
+                .singleElement()
+                .extracting(r -> r.getPartitions().get(0).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(3));
+    }
+
+    @Test
+    void liveProgressIsReportedAtMostOnceASecond() throws Exception {
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context,
+                        DATABASE,
+                        new SequenceDeserializer(),
+                        SpannerChangeStreamRecordFilter.none(),
+                        false,
+                        1,
+                        client,
+                        clock::get);
+        reader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
+        reader.start();
+        reader.addSplits(Collections.singletonList(split("a")));
+        TrackingOutput<String> output = new TrackingOutput<>();
+
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(1))));
+        reader.pollNext(output);
+        clock.addAndGet(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(999));
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("2", START.plusSeconds(2))));
+        reader.pollNext(output);
+        assertThat(progressReports()).isEmpty();
+
+        clock.addAndGet(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(1));
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("3", START.plusSeconds(3))));
+        reader.pollNext(output);
+
+        assertThat(progressReports())
+                .singleElement()
+                .satisfies(
+                        r -> {
+                            assertThat(r.isCommitted()).isFalse();
+                            assertThat(r.getPartitions())
+                                    .singleElement()
+                                    .extracting(PartitionProgressEvent.Progress::getCurrentPosition)
+                                    .isEqualTo(START.plusSeconds(3));
+                        });
+
+        // Once a checkpoint completes, the coordinator has committed positions and live ones stop.
+        reader.snapshotState(1);
+        reader.notifyCheckpointComplete(1);
+        clock.addAndGet(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
+        client.record(
+                "change-stream-token:a",
+                new SpannerChangeStreamRecord.Data(data("4", START.plusSeconds(4))));
+        reader.pollNext(output);
+        assertThat(progressReports()).filteredOn(r -> !r.isCommitted()).hasSize(1);
+    }
+
+    @Test
+    void aReaderNamesTheUnfinishedSplitsItRestoredWhenItStarts() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        reader.addSplits(java.util.Arrays.asList(split("a"), split("b")));
+        reader.start();
+        reader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
+        reader.addSplits(Collections.singletonList(split("c")));
+
+        assertThat(context.sourceEvents())
+                .filteredOn(PartitionsRestoredEvent.class::isInstance)
+                .singleElement()
+                .satisfies(
+                        event ->
+                                assertThat(((PartitionsRestoredEvent) event).getSplitIds())
+                                        .containsExactly(
+                                                "change-stream-token:a", "change-stream-token:b"));
+    }
+
+    private List<PartitionProgressEvent> progressReports() {
+        List<PartitionProgressEvent> reports = new ArrayList<>();
+        for (SourceEvent event : context.sourceEvents()) {
+            if (event instanceof PartitionProgressEvent) {
+                reports.add((PartitionProgressEvent) event);
+            }
+        }
+        return reports;
     }
 
     @Test
@@ -410,9 +566,8 @@ class SpannerChangeStreamReaderTest {
         assertThat(context.sourceEvents())
                 .extracting(SourceEvent::getClass)
                 .containsExactly(
-                        PartitionProgressEvent.class,
+                        PartitionsRestoredEvent.class,
                         ChildPartitionsEvent.class,
-                        PartitionProgressEvent.class,
                         PartitionFinishedEvent.class);
         ChildPartitionsEvent childEvent = (ChildPartitionsEvent) context.sourceEvents().get(1);
         assertThat(childEvent.getChildren().get(0).getParentPartitionIds())
@@ -439,7 +594,7 @@ class SpannerChangeStreamReaderTest {
                                         "child", Collections.emptyList(), false))));
         reader.pollNext(new TrackingOutput<>());
 
-        ChildPartitionsEvent childEvent = (ChildPartitionsEvent) context.sourceEvents().get(0);
+        ChildPartitionsEvent childEvent = (ChildPartitionsEvent) context.sourceEvents().get(1);
         assertThat(childEvent.getChildren().get(0).getParentPartitionIds())
                 .containsExactly(ChangeStreamPartitionSplit.INITIAL_PARTITION_ID);
     }
@@ -654,9 +809,9 @@ class SpannerChangeStreamReaderTest {
         assertThat(counter(SpannerMetricNames.RECORDS_SKIPPED)).isZero();
         assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
                 .isEqualTo(START.plusSeconds(4));
+        // Progress reaches the coordinator in reports, never per record.
         assertThat(context.sourceEvents())
-                .singleElement()
-                .isInstanceOf(PartitionProgressEvent.class);
+                .noneMatch(event -> event instanceof PartitionProgressEvent);
     }
 
     @Test
@@ -679,9 +834,9 @@ class SpannerChangeStreamReaderTest {
         assertThat(counter("changeStreamColumnOccurrencesFiltered")).isZero();
         assertThat(reader.snapshotState(1).get(0).getCurrentPosition())
                 .isEqualTo(START.plusSeconds(4));
+        // Progress reaches the coordinator in reports, never per record.
         assertThat(context.sourceEvents())
-                .singleElement()
-                .isInstanceOf(PartitionProgressEvent.class);
+                .noneMatch(event -> event instanceof PartitionProgressEvent);
     }
 
     @Test

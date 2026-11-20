@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinish
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
@@ -157,7 +158,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
     }
 
     @Test
-    void returnedSplitsKeepProgressAndBecomeScheduledAgain() throws Exception {
+    void returnedSplitsRestartFromTheReturnedProgressAndBecomeScheduledAgain() throws Exception {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         SpannerChangeStreamSplitEnumerator enumerator =
                 enumerator(context, new ScriptedClient(), null);
@@ -170,9 +171,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         Instant coordinatorWatermark = running.getWatermark().plusSeconds(20);
         Instant returnedWatermark = running.getWatermark().plusSeconds(25);
         enumerator.handleSourceEvent(
-                0,
-                new PartitionProgressEvent(
-                        running.splitId(), coordinatorProgress, coordinatorWatermark));
+                0, committedProgress(running.splitId(), coordinatorProgress, coordinatorWatermark));
 
         enumerator.addSplitsBack(
                 Collections.singletonList(
@@ -181,7 +180,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
 
         ChangeStreamPartitionSplit returned = enumerator.snapshotState(1).getPartitions().get(0);
         assertThat(returned.getLifecycleState()).isEqualTo(PartitionLifecycleState.SCHEDULED);
-        assertThat(returned.getCurrentPosition()).isEqualTo(coordinatorProgress);
+        // The subtask's downstream rolled back with it, so reported progress is not kept.
+        assertThat(returned.getCurrentPosition()).isEqualTo(returnedProgress);
         assertThat(returned.getWatermark()).isEqualTo(returnedWatermark);
         assertThat(enumerator.snapshotState(2).getSourceWatermark())
                 .isEqualTo(returnedWatermark.toEpochMilli() - 1);
@@ -209,7 +209,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         enumerator.handleSourceEvent(
                 0,
-                new PartitionProgressEvent(
+                committedProgress(
                         active.splitId(), recent.plusSeconds(20), recent.plusSeconds(20)));
 
         assertThat(watermarkEvents(context, 0)).isEmpty();
@@ -218,7 +218,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         ChangeStreamPartitionSplit assigned = context.assignedSplits(0).get(0);
         enumerator.handleSourceEvent(
                 0,
-                new PartitionProgressEvent(
+                committedProgress(
                         assigned.splitId(), recent.plusSeconds(30), recent.plusSeconds(30)));
 
         assertThat(watermarkEvents(context, 0))
@@ -247,14 +247,14 @@ class SpannerChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         enumerator.handleSourceEvent(
                 0,
-                new PartitionProgressEvent(
+                committedProgress(
                         active.splitId(), recent.plusSeconds(20), recent.plusSeconds(20)));
 
         assertThat(watermarkEvents(context, 0)).isEmpty();
 
         enumerator.handleSourceEvent(
                 0,
-                new PartitionProgressEvent(
+                committedProgress(
                         queued.splitId(), recent.plusSeconds(30), recent.plusSeconds(30)));
 
         assertThat(watermarkEvents(context, 0))
@@ -283,13 +283,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         Instant firstProgress = recent.plusSeconds(10);
         enumerator.handleSourceEvent(
-                0, new PartitionProgressEvent(first.splitId(), firstProgress, firstProgress));
+                0, committedProgress(first.splitId(), firstProgress, firstProgress));
 
         assertThat(watermarkEvents(context, 0)).isEmpty();
 
         Instant secondProgress = recent.plusSeconds(20);
         enumerator.handleSourceEvent(
-                0, new PartitionProgressEvent(second.splitId(), secondProgress, secondProgress));
+                0, committedProgress(second.splitId(), secondProgress, secondProgress));
 
         assertThat(watermarkEvents(context, 0))
                 .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
@@ -307,8 +307,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         enumerator.handleSplitRequest(0, "localhost");
         ChangeStreamPartitionSplit initial = context.assignedSplits(0).get(0);
         Instant advanced = initial.getStartTimestamp().plusSeconds(10);
-        enumerator.handleSourceEvent(
-                0, new PartitionProgressEvent(initial.splitId(), advanced, advanced));
+        enumerator.handleSourceEvent(0, committedProgress(initial.splitId(), advanced, advanced));
 
         assertThatThrownBy(
                         () ->
@@ -337,8 +336,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
         ChangeStreamPartitionSplit running = context.assignedSplits(0).get(0);
         Instant advanced = running.getStartTimestamp().plusSeconds(5);
 
-        enumerator.handleSourceEvent(
-                0, new PartitionProgressEvent(running.splitId(), advanced, advanced));
+        enumerator.handleSourceEvent(0, committedProgress(running.splitId(), advanced, advanced));
 
         assertThat(watermarkEvents(context, 0))
                 .extracting(SpannerChangeStreamWatermarkEvent::getSourceWatermark)
@@ -461,7 +459,11 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .hasSize(1);
         assertThat(compact.getPartitions()).hasSize(2);
         assertThat(compact.getFinishedParentProofs()).isEmpty();
+        // The initial query's finish holds the frontier until a checkpoint covering it completes.
         assertThat(compact.getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(initial.getWatermark()));
+        enumerator.notifyCheckpointComplete(2);
+        assertThat(enumerator.snapshotState(3).getSourceWatermark())
                 .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(childStart));
         assertThat(context.<Long>gauge(SpannerMetricNames.CHANGE_STREAM_PARTITION_LEDGER_ENTRIES))
                 .isEqualTo(2L);
@@ -719,12 +721,12 @@ class SpannerChangeStreamSplitEnumeratorTest {
         Instant laterPosition = running.getCurrentPosition().plusSeconds(5);
         Instant laterWatermark = running.getWatermark().plusSeconds(7);
         enumerator.handleSourceEvent(
-                0, new PartitionProgressEvent(running.splitId(), laterPosition, laterWatermark));
+                0, committedProgress(running.splitId(), laterPosition, laterWatermark));
         SpannerChangeStreamEnumeratorState snapshot = enumerator.snapshotState(1);
 
         enumerator.handleSourceEvent(
                 0,
-                new PartitionProgressEvent(
+                committedProgress(
                         running.splitId(), running.getCurrentPosition(), running.getWatermark()));
         SpannerChangeStreamEnumeratorState afterStaleProgress = enumerator.snapshotState(2);
         enumerator.handleSourceEvent(
@@ -1709,18 +1711,394 @@ class SpannerChangeStreamSplitEnumeratorTest {
     }
 
     @Test
-    void aRepeatedReportOfAChildThatFinishedSinceTheLastCompletedCheckpointFailsTheCoordinator()
+    void aRegionFailoverReadsAgainAChildThatFinishedAfterTheLastCompletedCheckpoint()
             throws Exception {
-        // A failed-over reader restores parent P from checkpoint 1 and reports its children
-        // again. Child C finished after checkpoint 1, so the restore rolled C's records back
-        // too; ignoring the report would lose them, while failing restarts from the checkpoint.
-        Instant start = Instant.now().minus(Duration.ofHours(1));
-        ChangeStreamPartitionSplit parent =
-                child("p", start, "released-p").withLifecycleState(PartitionLifecycleState.RUNNING);
-        ChangeStreamPartitionSplit other =
-                child("q", start, "released-q").withLifecycleState(PartitionLifecycleState.RUNNING);
-        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        // #2204, in the order Flink drives it: subtaskReset returns C, which was assigned after the
+        // restored checkpoint, and the restarted reader then names P, which it restored.
+        Lineage lineage = new Lineage();
+        lineage.finishParentAndRunC();
+
+        lineage.enumerator.addSplitsBack(Collections.singletonList(lineage.assignedC), 0);
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionsRestoredEvent(Collections.singletonList(lineage.parent.splitId())));
+
+        assertThat(lineage.enumerator.snapshotState(1).getPartitions())
+                .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
+                .containsExactlyInAnyOrder("p=RUNNING", "q=RUNNING", "c=CREATED", "d=CREATED");
+        // P's repeated report finds C in the ledger, and P's next finish releases it again.
+        lineage.enumerator.handleSourceEvent(0, lineage.reported);
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        lineage.parent.splitId(), lineage.childStart, lineage.childStart, true));
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        assertThat(lineage.context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
+                .containsExactly("c", "c");
+        assertThat(lineage.context.assignedSplits(0).get(1).getCurrentPosition())
+                .isEqualTo(lineage.childStart);
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void aFinishIsFinalOnlyOnceACompletedCheckpointSnapshottedAfterItCoversIt() throws Exception {
+        Lineage lineage = new Lineage();
+        lineage.enumerator.snapshotState(1);
+        lineage.reportAndFinishParent();
+
+        // Checkpoint 1's snapshot ran before the finish, and checkpoint 2 has not completed.
+        lineage.enumerator.notifyCheckpointComplete(1);
+        assertThat(lineage.enumerator.pendingFinishCount()).isEqualTo(1);
+        lineage.enumerator.snapshotState(2);
+        lineage.enumerator.snapshotState(3);
+        lineage.enumerator.notifyCheckpointComplete(1);
+        assertThat(lineage.enumerator.pendingFinishCount()).isEqualTo(1);
+        // A pending finish is not checkpointed and not counted as a ledger entry.
+        assertThat(lineage.enumerator.snapshotState(4).getPartitions())
+                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
+                .doesNotContain("p");
+        assertThat(
+                        lineage.context.<Long>gauge(
+                                SpannerMetricNames.CHANGE_STREAM_PARTITION_LEDGER_ENTRIES))
+                .isEqualTo(3L);
+
+        // Checkpoint 3 completes and covers it, as does any later one.
+        lineage.enumerator.notifyCheckpointComplete(3);
+        assertThat(lineage.enumerator.pendingFinishCount()).isZero();
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            lineage.enumerator.addSplitsBack(
+                    Collections.singletonList(
+                            lineage.parent.withProgress(lineage.start, lineage.start)),
+                    0);
+            assertThat(capture.getMessages())
+                    .singleElement()
+                    .satisfies(m -> assertThat(m).contains("no longer in the ledger"));
+        }
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void aReturnedRunningSplitRestartsWhereItWasAssignedNotWhereItsReaderReported()
+            throws Exception {
+        Lineage lineage = new Lineage();
+        lineage.reportAndFinishParent();
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit assigned = lineage.context.assignedSplits(0).get(0);
+        Instant later = assigned.getCurrentPosition().plusSeconds(30);
+        lineage.enumerator.handleSourceEvent(
+                0, committedProgress(assigned.splitId(), later, later));
+
+        lineage.enumerator.addSplitsBack(Collections.singletonList(assigned), 0);
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+
+        assertThat(lineage.context.assignedSplits(0)).hasSize(2);
+        assertThat(lineage.context.assignedSplits(0).get(1).getCurrentPosition())
+                .isEqualTo(assigned.getCurrentPosition());
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void aRestoredReaderReadingAPendingParentAgainMakesItsScheduledChildrenWaitAgain()
+            throws Exception {
+        // The #2193 residual, with a merge child: P and Q both finished, so C and D were
+        // scheduled; a region failover restores P into its reader. D must wait for P again, and
+        // Q, still a pending finish whose proof D's promotion released, is proven again.
+        Lineage lineage = new Lineage();
+        lineage.reportAndFinishParent();
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        lineage.other.splitId(), lineage.childStart, lineage.childStart, true));
+        assertThat(lineage.enumerator.snapshotState(1).getPartitions())
+                .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
+                .containsExactlyInAnyOrder("c=SCHEDULED", "d=SCHEDULED");
+
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionsRestoredEvent(Collections.singletonList(lineage.parent.splitId())));
+
+        SpannerChangeStreamEnumeratorState rolledBack = lineage.enumerator.snapshotState(2);
+        assertThat(rolledBack.getPartitions())
+                .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
+                .containsExactlyInAnyOrder("p=RUNNING", "c=CREATED", "d=CREATED");
+        assertThat(rolledBack.getFinishedParentProofs()).containsExactly(lineage.other.splitId());
+        assertThat(lineage.enumerator.pendingFinishCount()).isEqualTo(1);
+
+        lineage.enumerator.handleSourceEvent(0, lineage.reported);
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        lineage.parent.splitId(), lineage.childStart, lineage.childStart, true));
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        assertThat(lineage.context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
+                .containsExactlyInAnyOrder("c", "d");
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void aParentReadAgainWhileItsChildRunsElsewhereStillCheckpointsARestorableLedger()
+            throws Exception {
+        // Nothing is held at parallelism 1 (and with IMMEDIATE), so C runs on another region's
+        // reader when P's region restores P. The ledger then holds a running child of a running
+        // parent, and a checkpoint of it must still restore.
+        Lineage lineage = new Lineage();
+        lineage.reportAndFinishParent();
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionsRestoredEvent(Collections.singletonList(lineage.parent.splitId())));
+        SpannerChangeStreamEnumeratorState checkpoint = lineage.enumerator.snapshotState(1);
+
+        assertThat(checkpoint.getPartitions())
+                .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
+                .containsExactlyInAnyOrder("p=RUNNING", "q=RUNNING", "c=RUNNING", "d=CREATED");
+        SpannerChangeStreamEnumeratorStateSerializer serializer =
+                new SpannerChangeStreamEnumeratorStateSerializer();
+        assertThat(
+                        serializer
+                                .deserialize(
+                                        serializer.getVersion(), serializer.serialize(checkpoint))
+                                .getPartitions())
+                .hasSize(4);
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void aParentReadAgainRepeatsAMergeChildWhoseOtherParentLeftTheLedger() throws Exception {
+        // Q finished first and a checkpoint made that final; P finished after it, and the merge
+        // child D started, which released both proofs. P's repeated report names Q, which the
+        // ledger no longer knows, and must not fail the coordinator.
+        Lineage lineage = new Lineage();
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new ChildPartitionsEvent(
+                        lineage.other.splitId(),
+                        lineage.childStart,
+                        Collections.singletonList(
+                                new ChildPartitionsEvent.ChildPartition(
+                                        "d",
+                                        Arrays.asList(
+                                                lineage.parent.splitId(),
+                                                lineage.other.splitId())))));
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        lineage.other.splitId(), lineage.childStart, lineage.childStart, true));
+        lineage.enumerator.snapshotState(1);
+        lineage.enumerator.notifyCheckpointComplete(1);
+        lineage.reportAndFinishParent();
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        assertThat(lineage.context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
+                .containsExactlyInAnyOrder("c", "d");
+
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionsRestoredEvent(Collections.singletonList(lineage.parent.splitId())));
+        lineage.enumerator.handleSourceEvent(0, lineage.reported);
+
+        assertThat(lineage.enumerator.snapshotState(2).getPartitions())
+                .extracting(p -> p.getPartitionToken() + "=" + p.getLifecycleState())
+                .containsExactlyInAnyOrder("p=RUNNING", "c=RUNNING", "d=RUNNING");
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void aPendingFinishHoldsTheFrontierAndCommittedProgressMovesIt() throws Exception {
+        Lineage lineage = new Lineage();
+        Instant ahead = lineage.childStart.plusSeconds(60);
+        lineage.enumerator.handleSourceEvent(
+                0, committedProgress(lineage.other.splitId(), ahead, ahead));
+        lineage.reportAndFinishParent();
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        lineage.enumerator.handleSourceEvent(
+                0,
+                committedProgress(
+                        ChangeStreamPartitionSplit.idForToken("c"), lineage.childStart, ahead));
+
+        // P's pending finish still holds the frontier at its own watermark.
+        assertThat(lineage.enumerator.snapshotState(1).getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.start));
+        lineage.enumerator.handleSourceEvent(
+                0, committedProgress(lineage.parent.splitId(), lineage.childStart, ahead));
+        // D, still waiting for Q, now holds it at its start.
+        assertThat(lineage.enumerator.snapshotState(2).getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.childStart));
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void whileCheckpointsCompleteOnlyCommittedPositionsMoveTheFrontier() throws Exception {
+        Lineage lineage = new Lineage();
+        Instant ahead = lineage.start.plusSeconds(60);
+        List<PartitionProgressEvent.Progress> both = lineage.progressOf(ahead);
+
+        lineage.enumerator.handleSourceEvent(0, PartitionProgressEvent.live(both));
+        assertThat(lineage.enumerator.snapshotState(1).getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.start));
+
+        lineage.enumerator.handleSourceEvent(0, PartitionProgressEvent.committed(both));
+        assertThat(lineage.enumerator.snapshotState(2).getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(ahead));
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void withoutACompletedCheckpointTheFrontierFollowsLiveProgressUntilOneCompletes()
+            throws Exception {
+        Lineage lineage = new Lineage();
+        lineage.reportAndFinishParent();
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit assignedC = lineage.context.assignedSplits(0).get(0);
+        assertThat(lineage.enumerator.pendingFinishCount()).isEqualTo(1);
+
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            lineage.clock.addAndGet(Duration.ofMinutes(10).toMillis());
+            lineage.context.runPeriodicAsyncCalls();
+            assertThat(capture.getMessages())
+                    .filteredOn(m -> m.contains("follows the readers' current positions"))
+                    .singleElement()
+                    .satisfies(m -> assertThat(m).contains("scan.first-checkpoint-timeout"));
+        }
+        assertThat(lineage.enumerator.pendingFinishCount()).isZero();
+        Instant ahead = lineage.childStart.plusSeconds(60);
+        List<PartitionProgressEvent.Progress> live =
+                Arrays.asList(
+                        new PartitionProgressEvent.Progress(lineage.other.splitId(), ahead, ahead),
+                        new PartitionProgressEvent.Progress(assignedC.splitId(), ahead, ahead));
+        lineage.enumerator.handleSourceEvent(0, PartitionProgressEvent.live(live));
+        long live1 = lineage.enumerator.snapshotState(1).getSourceWatermark();
+        assertThat(live1)
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.childStart));
+
+        // Q finishes, final at once now, so D starts and live positions move everything ahead.
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        lineage.other.splitId(), lineage.childStart, lineage.childStart, true));
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        lineage.enumerator.handleSourceEvent(
+                0,
+                PartitionProgressEvent.live(
+                        Arrays.asList(
+                                new PartitionProgressEvent.Progress(
+                                        assignedC.splitId(), ahead, ahead),
+                                new PartitionProgressEvent.Progress(
+                                        ChangeStreamPartitionSplit.idForToken("d"),
+                                        ahead,
+                                        ahead))));
+        assertThat(lineage.enumerator.snapshotState(2).getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(ahead));
+
+        // A region failover returns C below that frontier. It holds rather than move back, and a
+        // checkpoint records no frontier ahead of the ledger, so a restore from it succeeds.
+        lineage.enumerator.addSplitsBack(Collections.singletonList(assignedC), 0);
+        SpannerChangeStreamEnumeratorState checkpoint = lineage.enumerator.snapshotState(3);
+        assertThat(checkpoint.getSourceWatermark())
+                .isEqualTo(SpannerChangeStreamWatermarks.beforeInstant(lineage.childStart));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> restoredContext = context(1);
+        SpannerChangeStreamSplitEnumerator restored =
+                handOff(
+                        restoredContext,
+                        true,
+                        Duration.ofMinutes(10),
+                        new SpannerChangeStreamEnumeratorStateSerializer()
+                                .deserialize(
+                                        new SpannerChangeStreamEnumeratorStateSerializer()
+                                                .getVersion(),
+                                        new SpannerChangeStreamEnumeratorStateSerializer()
+                                                .serialize(checkpoint)),
+                        new AtomicLong());
+        restored.start();
+        restoredContext.runAsyncCalls();
+        restored.close();
+
+        // The first completed checkpoint ends live mode: live positions no longer apply, and the
+        // timeout does not bring it back.
+        lineage.enumerator.notifyCheckpointComplete(3);
+        lineage.enumerator.handleSourceEvent(
+                0,
+                PartitionProgressEvent.live(
+                        Collections.singletonList(
+                                new PartitionProgressEvent.Progress(
+                                        lineage.other.splitId(),
+                                        ahead.plusSeconds(60),
+                                        ahead.plusSeconds(60)))));
+        lineage.clock.addAndGet(Duration.ofHours(1).toMillis());
+        try (LogCapture capture = LogCapture.of(SpannerChangeStreamSplitEnumerator.class)) {
+            lineage.context.runPeriodicAsyncCalls();
+            assertThat(capture.getMessages())
+                    .noneMatch(m -> m.contains("follows the readers' current positions"));
+        }
+        lineage.enumerator.handleSplitRequest(0, "localhost");
+        lineage.enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        assignedC.splitId(), lineage.childStart, lineage.childStart, true));
+        assertThat(lineage.enumerator.pendingFinishCount()).isEqualTo(1);
+        lineage.enumerator.close();
+    }
+
+    @Test
+    void afterAFallbackARestoredReaderCannotTakeBackAFinish() throws Exception {
+        // A reader that restores the discarded ledger names its old splits and then drops them,
+        // so a pending finish that shares an id, such as the initial query's, stays pending.
+        Instant expired = Instant.now().minus(Duration.ofDays(8));
+        ChangeStreamPartitionSplit unfinished =
+                child("expired", expired, ChangeStreamPartitionSplit.INITIAL_PARTITION_ID)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
         SpannerChangeStreamSplitEnumerator enumerator =
+                configured(
+                        context,
+                        StartPosition.latest(),
+                        StartPosition.at(Instant.now().minus(Duration.ofHours(1))),
+                        null,
+                        new SpannerChangeStreamEnumeratorState(
+                                Arrays.asList(
+                                        finishedInitial(expired.minusSeconds(1)), unfinished)));
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit initial = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        initial.splitId(),
+                        initial.getStartTimestamp(),
+                        initial.getWatermark(),
+                        true));
+        assertThat(enumerator.pendingFinishCount()).isEqualTo(1);
+
+        enumerator.handleSourceEvent(
+                1,
+                new PartitionsRestoredEvent(
+                        Arrays.asList(initial.splitId(), unfinished.splitId())));
+
+        assertThat(enumerator.pendingFinishCount()).isEqualTo(1);
+        enumerator.close();
+    }
+
+    /**
+     * A restored ledger at parallelism 1, where nothing is held: P and Q run, and P's child report
+     * names C and the merge child D, which also waits for Q.
+     */
+    private static final class Lineage {
+
+        private final Instant start = Instant.now().minus(Duration.ofHours(1));
+        private final Instant childStart = start.plusSeconds(10);
+        private final ChangeStreamPartitionSplit parent =
+                child("p", start, "released-p").withLifecycleState(PartitionLifecycleState.RUNNING);
+        private final ChangeStreamPartitionSplit other =
+                child("q", start, "released-q").withLifecycleState(PartitionLifecycleState.RUNNING);
+        private final AtomicLong clock = new AtomicLong();
+        private final FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        private final SpannerChangeStreamSplitEnumerator enumerator =
                 handOff(
                         context,
                         true,
@@ -1730,13 +2108,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
                                 Collections.<String>emptySet(),
                                 null,
                                 Long.MIN_VALUE),
-                        new AtomicLong());
-        enumerator.start();
-        context.runAsyncCalls();
-        // No checkpoint has completed since the restore: a failed-over reader restores the
-        // checkpoint this coordinator came from, which predates C's finish as well.
-        Instant childStart = start.plusSeconds(10);
-        ChildPartitionsEvent reported =
+                        clock);
+        private final ChildPartitionsEvent reported =
                 new ChildPartitionsEvent(
                         parent.splitId(),
                         childStart,
@@ -1745,84 +2118,34 @@ class SpannerChangeStreamSplitEnumeratorTest {
                                         "c", Collections.singletonList(parent.splitId())),
                                 new ChildPartitionsEvent.ChildPartition(
                                         "d", Arrays.asList(parent.splitId(), other.splitId()))));
-        enumerator.handleSourceEvent(0, reported);
-        enumerator.handleSourceEvent(
-                0, new PartitionFinishedEvent(parent.splitId(), childStart, childStart, true));
-        enumerator.handleSplitRequest(0, "localhost");
-        assertThat(context.assignedSplits(0))
-                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
-                .containsExactly("c");
-        enumerator.handleSourceEvent(
-                0,
-                new PartitionFinishedEvent(
-                        ChangeStreamPartitionSplit.idForToken("c"), childStart, childStart, true));
+        private ChangeStreamPartitionSplit assignedC;
 
-        assertThatThrownBy(() -> enumerator.handleSourceEvent(0, reported))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining(ChangeStreamPartitionSplit.idForToken("c"))
-                .hasMessageContaining("finished after the last completed checkpoint");
+        private Lineage() {
+            enumerator.start();
+            context.runAsyncCalls();
+        }
 
-        // A savepoint snapshot does not cover it; once a checkpoint covering C's finish
-        // completes, a restore keeps C's records, so the repeated report changes nothing.
-        enumerator.snapshotState(1);
-        enumerator.snapshotState(2);
-        enumerator.notifyCheckpointComplete(2);
-        assertThat(enumerator.uncommittedFinishedChildCount()).isZero();
-        enumerator.handleSourceEvent(0, reported);
-        assertThat(enumerator.snapshotState(3).getPartitions())
-                .extracting(ChangeStreamPartitionSplit::getPartitionToken)
-                .containsExactlyInAnyOrder("q", "d");
-        enumerator.close();
-    }
+        private void reportAndFinishParent() {
+            enumerator.handleSourceEvent(0, reported);
+            enumerator.handleSourceEvent(
+                    0, new PartitionFinishedEvent(parent.splitId(), childStart, childStart, true));
+        }
 
-    @Test
-    void aFinishedChildIsForgottenOnceItsParentIsNoLongerAProof() throws Exception {
-        // Only a proven parent's repeated report reaches the check, so the bookkeeping follows
-        // the proofs even when no checkpoint ever completes.
-        Instant start = Instant.now().minus(Duration.ofHours(1));
-        ChangeStreamPartitionSplit parent =
-                child("p", start, "released-p").withLifecycleState(PartitionLifecycleState.RUNNING);
-        ChangeStreamPartitionSplit other =
-                child("q", start, "released-q").withLifecycleState(PartitionLifecycleState.RUNNING);
-        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
-        SpannerChangeStreamSplitEnumerator enumerator =
-                handOff(
-                        context,
-                        true,
-                        Duration.ofMinutes(10),
-                        SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
-                                Arrays.asList(parent, other),
-                                Collections.<String>emptySet(),
-                                null,
-                                Long.MIN_VALUE),
-                        new AtomicLong());
-        enumerator.start();
-        context.runAsyncCalls();
-        Instant childStart = start.plusSeconds(10);
-        enumerator.handleSourceEvent(
-                0,
-                new ChildPartitionsEvent(
-                        parent.splitId(),
-                        childStart,
-                        Arrays.asList(
-                                new ChildPartitionsEvent.ChildPartition(
-                                        "c", Collections.singletonList(parent.splitId())),
-                                new ChildPartitionsEvent.ChildPartition(
-                                        "d", Arrays.asList(parent.splitId(), other.splitId())))));
-        enumerator.handleSourceEvent(
-                0, new PartitionFinishedEvent(parent.splitId(), childStart, childStart, true));
-        enumerator.handleSplitRequest(0, "localhost");
-        enumerator.handleSourceEvent(
-                0,
-                new PartitionFinishedEvent(
-                        ChangeStreamPartitionSplit.idForToken("c"), childStart, childStart, true));
-        assertThat(enumerator.uncommittedFinishedChildCount()).isEqualTo(1);
+        private List<PartitionProgressEvent.Progress> progressOf(Instant position) {
+            return Arrays.asList(
+                    new PartitionProgressEvent.Progress(parent.splitId(), position, position),
+                    new PartitionProgressEvent.Progress(other.splitId(), position, position));
+        }
 
-        enumerator.handleSourceEvent(
-                0, new PartitionFinishedEvent(other.splitId(), childStart, childStart, true));
-
-        assertThat(enumerator.uncommittedFinishedChildCount()).isZero();
-        enumerator.close();
+        private void finishParentAndRunC() {
+            reportAndFinishParent();
+            enumerator.handleSplitRequest(0, "localhost");
+            assignedC = context.assignedSplits(0).get(0);
+            assertThat(assignedC.getPartitionToken()).isEqualTo("c");
+            enumerator.handleSourceEvent(
+                    0,
+                    new PartitionFinishedEvent(assignedC.splitId(), childStart, childStart, true));
+        }
     }
 
     @Test
@@ -1915,6 +2238,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
         }
         return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
                 ledger, Collections.emptySet(), null, Long.MIN_VALUE);
+    }
+
+    private static PartitionProgressEvent committedProgress(
+            String splitId, Instant position, Instant watermark) {
+        return PartitionProgressEvent.committed(
+                Collections.singletonList(
+                        new PartitionProgressEvent.Progress(splitId, position, watermark)));
     }
 
     private static PartitionFinishedEvent finished(String token, Instant start) {

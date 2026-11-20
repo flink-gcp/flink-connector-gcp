@@ -345,19 +345,24 @@ public final class SpannerConnectorOptions {
                                     + " it at once.");
 
     /**
-     * How long a change-stream child partition waits for the job's first completed checkpoint
-     * before the source logs a warning and starts it anyway; zero waits indefinitely. Has no effect
-     * with scan.change-stream.partition-handoff=immediate.
+     * How long the change-stream source waits for a completed checkpoint before it logs a warning:
+     * a child partition held this long starts without one, and once this long has passed since the
+     * source started, the source watermark follows the readers' current positions and a finished
+     * partition is final at once, until a checkpoint completes. Zero waits indefinitely, so the
+     * watermark of a job without checkpointing then never advances.
      */
     public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
             ConfigOptions.key("scan.first-checkpoint-timeout")
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
-                            "How long a change-stream child partition waits for the job's first"
-                                    + " completed checkpoint before the source logs a warning and"
-                                    + " starts it anyway; zero waits indefinitely. Has no effect"
-                                    + " with scan.change-stream.partition-handoff=immediate.");
+                            "How long the change-stream source waits for a completed checkpoint"
+                                    + " before it logs a warning: a child partition held this long starts"
+                                    + " without one, and once this long has passed since the source"
+                                    + " started, the source watermark follows the readers' current"
+                                    + " positions and a finished partition is final at once, until a"
+                                    + " checkpoint completes. Zero waits indefinitely, so the watermark"
+                                    + " of a job without checkpointing then never advances.");
 
     /** The desired maximum number of read partitions. */
     public static final ConfigOption<Long> SCAN_PARTITION_MAX_PARTITIONS =
