@@ -27,12 +27,12 @@ from ..policy import (
     WINDOWS,
 )
 from ..proposal import check_inputs, render_verified
-from .trial import KINDS, Trial
+from .trial import KINDS, SEQUENCE_KIND, Trial
 
 NAMESPACE = BIGTABLE
 WINDOW_SECONDS = WINDOWS["bigtable-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Every dispatchable trial's input: 30 minutes at the rate of the other
+# Every single-fault trial's input: 30 minutes at the rate of the other
 # recovery trials in the same window.
 INPUT = {"records": 180000, "records_per_second": 100}
 # Where the change-stream source stops, from the window's start. The input
@@ -44,6 +44,12 @@ INPUT = {"records": 180000, "records_per_second": 100}
 # recoveries can finish past it, which leaves the relay unjudged and the
 # job, finishing with the input, less time for the oracles' reads.
 CHANGE_STREAM_END_SECONDS = 3900
+# The fault sequence's input and change-stream end (ADR-0204). The job cannot
+# finish before the change stream's end, which the input must precede by the
+# relay's commit margin, so the input is four minutes, enough to outlast the
+# faults; the runbook's "Fault sequence" section gives the timing behind it.
+SEQUENCE_INPUT = {"records": 2400, "records_per_second": 10}
+SEQUENCE_CHANGE_STREAM_END_SECONDS = 1800
 REVIEWED_AT = "2026-10-18T00:00:00Z"
 # A one-node SSD cluster in us-central1, billed by the hour: the 90-minute
 # window, rounded up (#1316's scope).
@@ -56,6 +62,9 @@ def trial(kind, started_at):
     """The approved trial of one kind: its fault, the fixed input and its end."""
     if kind not in KINDS:
         raise ValueError("Unknown Bigtable trial: " + str(kind))
+    if kind == SEQUENCE_KIND:
+        end = utc(timestamp(started_at) + SEQUENCE_CHANGE_STREAM_END_SECONDS)
+        return {"kind": kind, **SEQUENCE_INPUT, "change_stream_end": end}
     end = utc(timestamp(started_at) + CHANGE_STREAM_END_SECONDS)
     return {"kind": kind, **INPUT, "change_stream_end": end}
 
@@ -67,8 +76,8 @@ def validate_trial(value, started_at):
         raise ValueError(
             "Bigtable trial must be one of "
             + ", ".join(KINDS)
-            + " with 180,000 records at 100 records per second, ending its change"
-            " stream 3,900 seconds into the window"
+            + " with its fixed input, ending its change stream at its fixed offset"
+            " into the window"
         )
 
 

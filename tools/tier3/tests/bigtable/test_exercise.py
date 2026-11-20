@@ -17,10 +17,17 @@ import dataclasses
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.bigtable.exercise import ORACLE_STAGE, BigtableExercise
+from flink_tier3.bigtable.exercise import (
+    COMMIT_SECONDS,
+    ORACLE_STAGE,
+    BigtableExercise,
+    BigtableSequenceExercise,
+)
 from flink_tier3.bigtable.trial import Trial
 from flink_tier3.bigtable.verdict import OBSERVED, SAMPLED_STAGES
 from flink_tier3.common import TransportError, timestamp, utc
+from flink_tier3.exercise import TIME_LIMIT_SECONDS
+from flink_tier3.supervisor import RESOURCE_EXERCISES
 
 from ..cloudtasks.test_plan import inputs as inputs  # noqa: PLC0414
 from ..cloudtasks.test_plan import renderer as renderer  # noqa: PLC0414
@@ -140,3 +147,96 @@ def test_an_input_finished_too_close_to_the_change_streams_end_is_unjudged(exerc
 def test_a_taskmanager_replacement_restarts_both_pipelines():
     """The input with both sinks, and the relay; one would read bt1855-tm-a5's second restore as unplanned."""
     assert BigtableExercise.failover_regions == 2
+
+
+def built(prepared, monkeypatch, kind):
+    """The exercise the supervisor builds for a five-record trial of `kind`."""
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    # The sequence's end, well inside the run's time limit.
+    end = utc(environment.clock() + 1800)
+    small = Trial(environment.approval.run_id, 5, 1, end, kind=kind)
+    environment.approval = dataclasses.replace(
+        environment.approval, scenario="bigtable-recovery"
+    )
+    monkeypatch.setattr(
+        type(environment.approval), "bigtable_plan", property(lambda self: small)
+    )
+    rows = {
+        "eo": [eo_row(n) for n in range(5)],
+        "alo": [eo_row(n, markers=0) for n in range(5)],
+        "relay": [relay_row(n) for n in range(5)],
+    }
+    tables = Tables(environment, small, rows)
+    environment.records.set_phase(rt.Phase.READY)
+    environment.records.set_phase(rt.Phase.RUNNING)
+    value = RESOURCE_EXERCISES[environment.approval.scenario](
+        environment, upgrade, tables
+    )
+    value.persist("baseline")
+    return value, tables
+
+
+@pytest.fixture
+def sequence(prepared, monkeypatch):
+    """The fault-sequence exercise over the same five-record input."""
+    return built(prepared, monkeypatch, "sequence")
+
+
+@pytest.mark.parametrize("kind", ["jm-replacement", "tm-replacement", "rescale-in"])
+def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
+    value, _ = built(prepared, monkeypatch, kind)
+    assert type(value) is BigtableExercise
+
+
+def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
+    value, _ = sequence
+    assert isinstance(value, BigtableSequenceExercise)
+    assert value.measurement_event is None
+    assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
+
+
+def finish(value, at):
+    """The input finished at `at`, and the run at its oracle stage."""
+    value.samples[("tm", 0)] = {
+        "at": at,
+        "phase": "upgrade",
+        "processed": 5,
+        "lineage": "x",
+        "sequence": 4,
+        "pod_uid": "tm",
+    }
+    value.persist("complete")
+
+
+def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
+    """No coverage or proofs; the three oracles decide."""
+    value, _ = sequence
+    end = timestamp(value.trial.change_stream_end)
+    finished = end - COMMIT_SECONDS - 60
+    finish(value, finished)
+    # The job cannot finish, and the tables are not read, before the end.
+    value.env.clock = lambda: end
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert (record["verdict"], record["reasons"]) == ("usable", [])
+    oracles = record["outcomes"]["oracles"]
+    assert oracles["input_finished_at"] == utc(finished)
+    assert oracles["relay"]["judged"] is True
+
+
+def test_the_relay_is_judged_from_the_latest_progress_line(sequence):
+    """A restore after the input finished may commit rows only then."""
+    value, _ = sequence
+    end = timestamp(value.trial.change_stream_end)
+    finish(value, end - COMMIT_SECONDS - 60)
+    # The input finished again after a restore, too close to the end.
+    value.samples[("tm", 1)] = {
+        **value.samples[("tm", 0)],
+        "at": end - 60,
+        "sequence": 5,
+    }
+    value.env.clock = lambda: end
+    value.verify_tables()
+    record = value.env.refresh().recovery
+    assert record["reasons"] == ["relay-oracle-unjudged"]

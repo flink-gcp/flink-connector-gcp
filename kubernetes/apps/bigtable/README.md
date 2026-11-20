@@ -105,6 +105,26 @@ The `bigtable-recovery` scenario of the [lifecycle](../../lifecycle/README.md) r
 It is the trial set of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-trial) records its design ([#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854)).
 It follows the [Cloud Tasks recovery trial](../cloudtasks/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
 
+### Fault sequence
+
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
+Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
+
+The input is 2,400 records at 10 records per second, four minutes of input.
+The job consumes little of it before it runs again after the last fault, because the input pauses while the job is down and a deleted JobManager or TaskManager restores from the last checkpoint: the first [Spanner](../spanner/README.md#fault-sequence) and [Firestore](../firestore/README.md#fault-sequence) `sequence` runs ran again after their last fault with 254 and 494 seconds of input still to come, as their findings' timelines record, so each had consumed about 106 seconds of it, and four minutes outlasts the five faults.
+The change stream ends 1,800 seconds after the window's start, and the job cannot finish before it.
+The input is short because it must finish well before that end.
+The exported evidence of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855)'s four usable trials shows their input beginning 505 to 722 seconds into the window, and the five faults made the Spanner and Firestore inputs finish 245 to 263 seconds later than their length, which would leave about eight to eleven minutes for interruptions beyond the relay's 120-second commit margin.
+A run should reach its verdict about 31 minutes into its window.
+A partition still being reconciled holds the job past the end, and nothing bounds how long, as [the graph](#graph-and-what-each-table-records) describes; a hold that outlasts the run's hour stops it at its time limit.
+
+When the job has finished after the last fault, with its whole input processed, the three oracles below read the tables, and `usable` means all three pass; `eo` is judged exactly once, as for the other kinds.
+The Change Streams relay reads `eo`, so the exactly-once path runs in this scenario rather than in [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)'s.
+The relay is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end; a restore after the input finished can replay it and commit rows whose staged commit it discarded only then, so the latest line counts, not the first.
+A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
+`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+
 ### Trial and estimate
 
 Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and runs a savepoint upgrade and then deletes a Pod.
@@ -192,7 +212,7 @@ Each oracle reports counts and the first 20 row keys of each kind of deviation:
 - **`alo`:** every input row is present with a SUM of at least 1; contributions beyond one are counted and reported, not failed.
 - **`relay`:** every row `eo` applied was relayed at least once and no row lies outside the input; deliveries beyond one are counted and reported, not failed, and a relayed row that `eo` did not apply fails it.
 
-The relay is judged only when the input's last progress line came at least 120 seconds before the change stream's end, the time its staged commit can take, because a change committed after the end is not relayed.
+The relay is judged only when the input's first progress line showing it whole came at least 120 seconds before the change stream's end, the time its staged commit can take, because a change committed after the end is not relayed.
 
 ### Verdict and analysis
 

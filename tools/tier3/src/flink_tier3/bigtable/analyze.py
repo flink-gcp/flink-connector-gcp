@@ -35,12 +35,13 @@ from ..recovery_analysis import (
     verdict_problems,
 )
 from .observe import COMPONENTS
-from .trial import Trial
+from .trial import SEQUENCE_KIND, Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
 )
@@ -60,9 +61,26 @@ def _trial(run):
 
 
 def assess(run):
-    """One Bigtable run's verdict, beside its recoveries' timing."""
+    """One Bigtable run's verdict, beside its recoveries' timing.
+
+    A fault-sequence run (ADR-0204) lists the faults it injected instead,
+    and has no recovery proofs to time.
+    """
     record = recovery_record(run, COMPLETE_EVENT)
+    if _sequence(run):
+        outcomes = record.get("outcomes") if isinstance(record, dict) else None
+        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+        return {
+            **_verdict(run),
+            "faults": faults if isinstance(faults, list) else [],
+            "recoveries": [],
+        }
     return {**_verdict(run), "recoveries": recovery_timings(run, record)}
+
+
+def _sequence(run):
+    trial = _trial(run)
+    return trial is not None and trial.kind == SEQUENCE_KIND
 
 
 def _verdict(run):
@@ -80,12 +98,16 @@ def _verdict(run):
         return unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
     if not complete and record.get("stage") == COMPLETE_STAGE:
         return unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    # Decide over the coverage the readings support, never the coverage the
-    # record claims.
-    coverage = rebuild(readings, summarize)
-    if missing := missing_samples(record.get("coverage"), coverage):
-        return unreadable(run, record, [f"missing-samples:{missing}"], samples)
-    decided = verdict({**record, "coverage": coverage})
+    if _sequence(run):
+        # Decided by the data alone; nothing was sampled.
+        decided = sequence_verdict(record)
+    else:
+        # Decide over the coverage the readings support, never the coverage
+        # the record claims.
+        coverage = rebuild(readings, summarize)
+        if missing := missing_samples(record.get("coverage"), coverage):
+            return unreadable(run, record, [f"missing-samples:{missing}"], samples)
+        decided = verdict({**record, "coverage": coverage})
     outcomes = record.get("outcomes")
     oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
     return {
@@ -109,6 +131,16 @@ def _figure(oracles, component, key):
     return report.get(key, "-") if isinstance(report, dict) else "-"
 
 
+def _faults(item):
+    """A sequence run's injected faults in order, or `-` for a single-fault run."""
+    kinds = [
+        fault.get("kind")
+        for fault in item.get("faults") or []
+        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
+    ]
+    return ", ".join(kinds) or "-"
+
+
 def render(assessments):
     """The report's Bigtable section, or nothing when it holds no such run."""
     if not assessments:
@@ -125,9 +157,9 @@ def render(assessments):
         "",
         (
             "| run | verdict | stored | samples | eo | alo | alo extra | relay | "
-            "relay replays | reasons | problems |"
+            "relay replays | faults | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracles = item.get("oracles")
@@ -136,24 +168,29 @@ def render(assessments):
             f"| {item['run_id']} | {item['verdict'] or '-'} | {item['stored'] or '-'} "
             f"| {item['samples']} | {verdicts['eo']} | {verdicts['alo']} | "
             f"{_figure(oracles, 'alo', 'extra_contributions')} | {verdicts['relay']} | "
-            f"{_figure(oracles, 'relay', 'extra_deliveries')} | "
+            f"{_figure(oracles, 'relay', 'extra_deliveries')} | {_faults(item)} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
         )
     lines.extend(
         [
             "",
             (
-                "A usable verdict establishes that through both recoveries every "
-                "input record reached `eo` exactly once with one marker, reached "
-                "`alo` at least once, and was relayed from `eo`'s change stream at "
-                "least once; extra `alo` contributions and relay deliveries are "
-                "reported, not failed."
+                "A usable single-fault verdict establishes that through both "
+                "recoveries every input record reached `eo` exactly once with one "
+                "marker, reached `alo` at least once, and was relayed from `eo`'s "
+                "change stream at least once; extra `alo` contributions and relay "
+                "deliveries are reported, not failed."
             ),
             (
-                "Each family is required in the "
+                "For a single-fault run, each family is required in the "
                 + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
                 + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
                 + "only where a reading returned it."
+            ),
+            (
+                "A usable `sequence` verdict (ADR-0204) establishes the same of "
+                "the three tables through the faults listed: the run is judged by "
+                "its data alone, so it samples no window."
             ),
         ]
     )

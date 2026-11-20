@@ -96,7 +96,7 @@ def bigtable_configuration(run_id):
         "high-availability.type": "kubernetes",
         "high-availability.storageDir": f"{storage}/ha",
         "restart-strategy.type": "fixed-delay",
-        "restart-strategy.fixed-delay.attempts": "3",
+        "restart-strategy.fixed-delay.attempts": "2147483647",
         "restart-strategy.fixed-delay.delay": "10 s",
     }
 
@@ -420,3 +420,19 @@ def test_bigtable_window_is_ninety_minutes(module, active_seconds, admitted):
     assert (result.returncode == 0) is admitted, result.stderr
     if not admitted:
         assert f"invalid value {active_seconds} (out of bound" in result.stderr
+
+
+def test_the_sequence_trial_starts_and_upgrades_at_two(module):
+    """The fault sequence (ADR-0204) patches its own rescales from the upgrade."""
+    result = proposal(
+        module,
+        bigtable_trial="sequence",
+        bigtable_records="2400",
+        bigtable_records_per_second="10",
+    )
+    assert result.returncode == 0, result.stderr
+    initial, upgrade, _ = json.loads(result.stdout)
+    for app, phase in ((initial, "initial"), (upgrade, "upgrade")):
+        assert_bigtable_application(
+            app, "proposal-1316", "2026-09-20T00:00:00Z", phase, 2400, 10, 2
+        )
