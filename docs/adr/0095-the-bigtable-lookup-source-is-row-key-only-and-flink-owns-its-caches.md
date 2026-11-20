@@ -17,13 +17,14 @@ limitations under the License.
 # ADR-0095: The Bigtable lookup source is row-key-only, and Flink owns its caches
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-10-04, 2026-11-05 and 2026-11-07
+- Date: 2026-08-11, revised 2026-10-04, 2026-11-05, 2026-11-07 and 2026-11-20
 - Issues: [#460](https://github.com/flink-gcp/flink-connector-gcp/issues/460),
   [#518](https://github.com/flink-gcp/flink-connector-gcp/issues/518) (under
   [#217](https://github.com/flink-gcp/flink-connector-gcp/issues/217)),
   [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643),
   [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845),
-  [#248](https://github.com/flink-gcp/flink-connector-gcp/issues/248)
+  [#248](https://github.com/flink-gcp/flink-connector-gcp/issues/248),
+  [#2219](https://github.com/flink-gcp/flink-connector-gcp/issues/2219)
 - Modules: bigtable, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/bigtable.md`
 
@@ -92,8 +93,12 @@ ownership of their metrics.
 
 Issue #518 makes a pushed source plan available to the FULL-cache loader without rebuilding or
 dropping its range intersection, projection or best-effort cell-existence predicate.
-Flink 2.2 keeps a scalar qualifier temporal-join predicate in `LookupJoin.where`; it does not
-invoke `SupportsFilterPushDown` for that expression.
+In batch mode Flink keeps a scalar qualifier temporal-join predicate in `LookupJoin.where` and does
+not invoke `SupportsFilterPushDown` for it, nor for a row-key range. In streaming mode it invokes
+the ability for both, so a FULL-cache load skips the rows the range or the existence prefilter
+excludes, and an exact row-key range leaves no residual. Issue #2219 measured both modes on Flink
+2.2.1 and 1.20.5 with a row whose undecodable cell fails any load that reads it; this paragraph
+first described the batch plan as the planner's only behavior.
 NONE, PARTIAL and FULL evaluate that same lookup residual and therefore expose the same rows, while
 configured scan ranges continue to constrain both point reads and FULL-cache contents.
 Point-range membership is distinct from split planning: a key equal to a closed start belongs to
