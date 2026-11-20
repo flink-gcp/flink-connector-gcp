@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
-import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.InputFormatProvider;
@@ -48,6 +47,7 @@ import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.firestore.FieldPath;
+import io.github.flink.gcp.connector.base.table.FullCacheLookupKeys;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.firestore.DatabaseDestination;
 import io.github.flink.gcp.connector.firestore.common.table.PushedFilters;
@@ -282,33 +282,15 @@ public final class FirestoreDynamicSource
      * included, of a type whose Java equality is SQL's.
      */
     private LookupRuntimeProvider fullCachingProvider(LookupContext context) {
-        RowType producedType = (RowType) producedDataType.getLogicalType();
-        int[][] keys = context.getKeys();
-        if (keys.length == 0) {
-            // The planner passes no key when every equality compares a cast column, such as a
-            // metadata column declared at another precision than it is read in.
-            throw new ValidationException(
-                    FULL_CACHE_KEY_REQUIREMENT
-                            + " No equality reached the source as a key; a metadata column"
-                            + " declared in another type than the connector reads it in is cast,"
-                            + " and a cast column is not a key.");
-        }
-        for (int[] key : keys) {
-            if (key.length != 1) {
-                throw new ValidationException(
-                        FULL_CACHE_KEY_REQUIREMENT + " A nested key path is not supported.");
-            }
-            LogicalType type = producedType.getTypeAt(key[0]);
-            if (!fullCacheKeyType(type)) {
-                throw new ValidationException(
-                        FULL_CACHE_KEY_REQUIREMENT
-                                + " Lookup column '"
-                                + producedType.getFieldNames().get(key[0])
-                                + "' has unsupported equality type "
-                                + type.asSummaryString()
-                                + ".");
-            }
-        }
+        // The planner passes no key when every equality compares a cast column, such as a
+        // metadata column declared at another precision than it is read in.
+        FullCacheLookupKeys.check(
+                (RowType) producedDataType.getLogicalType(),
+                context.getKeys(),
+                FULL_CACHE_KEY_REQUIREMENT,
+                "No equality reached the source as a key; a metadata column declared in another"
+                        + " type than the connector reads it in is cast, and a cast column is not"
+                        + " a key.");
         FirestoreBatchSource<RowData> scan =
                 (FirestoreBatchSource<RowData>)
                         scanBuilder(context.createTypeInformation(producedDataType), true).build();
@@ -322,28 +304,6 @@ public final class FirestoreDynamicSource
                     + LookupOptions.CACHE_TYPE.key()
                     + "' = 'FULL' requires equality predicates on top-level columns of a scalar"
                     + " type other than DOUBLE, whose Java equality differs from SQL's.";
-
-    /**
-     * Whether a key type's Flink values match in the full cache's index exactly when SQL equality
-     * holds, among the types {@code FirestoreTableSchema} maps and the metadata columns. {@code
-     * DOUBLE} does not: its boxed {@code equals} tells {@code -0.0} from {@code 0.0} and matches
-     * {@code NaN} to itself. {@code ARRAY}, {@code MAP} and {@code ROW} do not either, because
-     * their binary and generic forms are not equal to each other.
-     */
-    private static boolean fullCacheKeyType(LogicalType type) {
-        switch (type.getTypeRoot()) {
-            case BOOLEAN:
-            case BIGINT:
-            case CHAR:
-            case VARCHAR:
-            case BINARY:
-            case VARBINARY:
-            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                return true;
-            default:
-                return false;
-        }
-    }
 
     private LookupKeyFilter lookupKeys(int[][] keys) {
         // The top-level column of each produced field: a nested path starts at a ROW column,

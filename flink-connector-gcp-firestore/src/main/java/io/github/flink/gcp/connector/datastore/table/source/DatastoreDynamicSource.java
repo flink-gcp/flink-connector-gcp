@@ -21,6 +21,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
@@ -29,7 +30,9 @@ import org.apache.flink.table.connector.source.abilities.SupportsLimitPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsProjectionPushDown;
 import org.apache.flink.table.connector.source.abilities.SupportsReadingMetadata;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.connector.source.lookup.LookupOptions.LookupCacheType;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
@@ -44,10 +47,12 @@ import org.apache.flink.util.Preconditions;
 import com.google.datastore.v1.Filter;
 import com.google.datastore.v1.Query;
 import com.google.protobuf.Int32Value;
+import io.github.flink.gcp.connector.base.table.FullCacheLookupKeys;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSource;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceBuilder;
+import io.github.flink.gcp.connector.datastore.source.batch.DatastoreBatchSource;
 import io.github.flink.gcp.connector.datastore.source.batch.SplittableQueries;
 import io.github.flink.gcp.connector.datastore.table.DatastoreLookupConfig;
 import io.github.flink.gcp.connector.datastore.table.DatastoreScanConfig;
@@ -67,7 +72,8 @@ import java.util.Objects;
 /**
  * The {@code datastore} table's bounded scan, backed by the DataStream {@code DatastoreSource}:
  * every entity of the table's kind in its namespace, read in key ranges at one read time; and its
- * lookup of one entity by key.
+ * lookup of one entity by key, except under a {@code FULL} cache, which Flink loads with the scan's
+ * own read ({@link DatastoreFullCacheInputFormat}) and serves from memory by any top-level key.
  *
  * <p>The scan reads whole entities and converts only the columns it produces. A projection the
  * planner pushes down is not sent to the service: a Datastore projection query returns only the
@@ -170,6 +176,25 @@ public final class DatastoreDynamicSource
     @Override
     public ScanRuntimeProvider getScanRuntimeProvider(ScanContext context) {
         TypeInformation<RowData> producedType = context.createTypeInformation(producedDataType);
+        Source<RowData, ?, ?> source = scanBuilder(producedType, false).build();
+        return SourceProvider.of(lineage.source(source, producedType), parallelism);
+    }
+
+    /**
+     * The builder of the bounded read of the produced columns, which the scan and a {@code FULL}
+     * cache's load both build.
+     *
+     * <p>A load reads at its own time, without {@code scan.read-time}, and without a limit, which
+     * the planner never pushes into a lookup. It reads the kind as one key range, because a load is
+     * one split read serially ({@link DatastoreFullCacheInputFormat}): cutting key ranges would
+     * only add the statistics read and the {@code __scatter__} sample that planning them takes.
+     *
+     * @param producedType the produced row's type information
+     * @param fullCacheLoad whether the read is a {@code FULL} cache's load rather than the scan
+     * @return the configured builder
+     */
+    private DatastoreSourceBuilder<RowData> scanBuilder(
+            TypeInformation<RowData> producedType, boolean fullCacheLoad) {
         DatastoreSourceBuilder<RowData> builder =
                 DatastoreSource.<RowData>builder()
                         .database(database)
@@ -182,15 +207,16 @@ public final class DatastoreDynamicSource
                                         metadataKeys,
                                         policy,
                                         producedType));
+        Integer queryLimit = fullCacheLoad ? null : limit;
         Query filtered = DatastoreFilterPushDown.query(kind, filterState.filters());
         if (filtered != null) {
             // A limit beside a pushed filter would stop before an entity Flink's residual keeps.
             // The planner never pushes both; the limit is dropped if it ever did.
             builder.query(filtered);
-        } else if (limit != null) {
+        } else if (queryLimit != null) {
             builder.query(
                     SplittableQueries.ofKind(kind).toBuilder()
-                            .setLimit(Int32Value.of(limit))
+                            .setLimit(Int32Value.of(queryLimit))
                             .build());
         } else {
             builder.kind(kind);
@@ -200,23 +226,28 @@ public final class DatastoreDynamicSource
         }
         // A limited query, or one a pushed filter other than an equality filters, is read as
         // one split, which scan.partition.max-partitions then has nothing to divide.
-        scanConfig.applyTo(
-                builder,
+        boolean splittable =
                 filtered != null
                         ? SplittableQueries.whyNotSplittable(filtered) == null
-                        : limit == null);
+                        : queryLimit == null;
+        scanConfig.applyTo(builder, splittable && !fullCacheLoad, !fullCacheLoad);
+        if (fullCacheLoad && splittable) {
+            builder.splitCount(1);
+        }
         if (emulatorEndpoint != null) {
             builder.emulatorEndpoint(emulatorEndpoint);
         }
         if (serviceAccountKeyFile != null) {
             builder.serviceAccountKeyFile(serviceAccountKeyFile);
         }
-        Source<RowData, ?, ?> source = builder.build();
-        return SourceProvider.of(lineage.source(source, producedType), parallelism);
+        return builder;
     }
 
     @Override
     public LookupRuntimeProvider getLookupRuntimeProvider(LookupContext context) {
+        if (lookupConfig.getCacheType() == LookupCacheType.FULL) {
+            return fullCachingProvider(context);
+        }
         LookupKeyFilter equalityKeys = lookupKeys(context.getKeys());
         RowDataDeserializationSchema deserializer =
                 new RowDataDeserializationSchema(
@@ -251,6 +282,35 @@ public final class DatastoreDynamicSource
                         function, equalityKeys.wrap(lookupConfig.createPartialCache()))
                 : LookupFunctionProvider.of(function);
     }
+
+    /**
+     * Flink's full cache, loaded by the scan's own read of the produced columns and indexed by the
+     * planner's lookup keys, which may be any top-level field of the produced row, metadata
+     * included, of a type whose Java equality is SQL's.
+     */
+    private LookupRuntimeProvider fullCachingProvider(LookupContext context) {
+        // The planner passes no key when every equality compares a cast column, such as a
+        // metadata column declared at another precision than it is read in.
+        FullCacheLookupKeys.check(
+                (RowType) producedDataType.getLogicalType(),
+                context.getKeys(),
+                FULL_CACHE_KEY_REQUIREMENT,
+                "No equality reached the source as a key; a metadata column declared in another"
+                        + " type than the connector reads it in is cast, and a cast column is not"
+                        + " a key.");
+        DatastoreBatchSource<RowData> scan =
+                (DatastoreBatchSource<RowData>)
+                        scanBuilder(context.createTypeInformation(producedDataType), true).build();
+        return FullCachingLookupProvider.of(
+                InputFormatProvider.of(new DatastoreFullCacheInputFormat(scan.getConfig())),
+                lookupConfig.createFullReloadTrigger());
+    }
+
+    private static final String FULL_CACHE_KEY_REQUIREMENT =
+            "A Datastore lookup with '"
+                    + LookupOptions.CACHE_TYPE.key()
+                    + "' = 'FULL' requires equality predicates on top-level columns of a scalar"
+                    + " type other than DOUBLE, whose Java equality differs from SQL's.";
 
     private LookupKeyFilter lookupKeys(int[][] keys) {
         String requirement =

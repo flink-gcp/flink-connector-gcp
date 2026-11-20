@@ -28,8 +28,9 @@ limitations under the License.
   reads a statistics kind), and 2026-11-07 by [#1831] (opt-in filter pushdown) and [#2066]
   (key equalities without the option, `ROW` fields, fractional `DOUBLE`, dotted names, `CHAR`
   and `BINARY`) and [#2076] (ranges, `<>`, `IN`, `IS NOT NULL`, integral `DOUBLE` and coarse
-  timestamps, measured the same day on the emulator and an ephemeral database)
-- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829], [#2066], [#2076]
+  timestamps, measured the same day on the emulator and an ephemeral database), and 2026-11-20
+  by [#1847] (the `FULL` lookup cache)
+- Issues: [#1651], [#1652], [#1653], [#1545], [#355], [#1690], [#1689], [#1717], [#1730], [#1729], [#1743], [#1719], [#1831], [#1829], [#2066], [#2076], [#1847]
 - Modules: firestore (`io.github.flink.gcp.connector.datastore`, `datastore.table`, `datastore.table.sink`, `datastore.table.source`, `datastore.source.batch`, `datastore.source.serializer`); flink-sql-connector-gcp-firestore
 - Current behavior: `docs/content/docs/connectors/table/datastore.md`
 
@@ -87,7 +88,7 @@ The Native-mode table connector's choices are ADR-0179, and the DataStream sink 
 - **`lookup.max-retries` adds budget on top of the client library's** (ADR-0095's shape): it reads again after exactly the statuses the generated client retries `Lookup` on, `UNAVAILABLE` and `DEADLINE_EXCEEDED` (`DatastoreStubSettings`, `retry_policy_0_codes`), and after a deferral. `INTERNAL`, which Native mode's `BatchGetDocuments` retries, is not in this set, and neither is `RESOURCE_EXHAUSTED`. `DatastoreLookupErrorClassifierTest` compares the two sets, so a libraries-bom bump that changes the library's fails it.
 - **A lookup asks for the produced columns' properties through `LookupRequest.property_mask`**, the Native-mode field mask's counterpart. Each name is one backquoted top-level path, a backquote or a backslash in it escaped by a backslash; the emulator refused an unquoted name holding a dot, naming its grammar for a quoted path, a backquoted run in which a backslash escapes the next character, and returned names holding a dot, a backquote or a backslash through the quoted form. A join that reads only the key and metadata asks for `__key__` alone, which the emulator answered with the key, the version and the times and no property. The emulator answers a mask with no path the same way (a mutant that sent one survived the emulator tests), but `datastore.proto` says only that an unset mask returns every property, so the lookup names `__key__` rather than rely on an empty mask's reading; a unit test holds the choice. Unlike the projection query the scan declines, the mask returned an unindexed value and an array whole (`DatastoreKindEntityLookupITCase`). The real service's reading of the mask, the key-only form included, is unmeasured until the gated suite ([#1546]) reads it.
 - **`read-time` is the answer's own**: `LookupResponse.read_time`, "the time at which these entities were read or found missing". `scan.read-time` names the scan's snapshot and does not apply, and a `PARTIAL` cache hit returns the row as it was cached. The `@Internal` `EntityMetadata` now takes a nullable read time, so an answer without one fails only a read of `read-time`.
-- **Flink owns the cache**: `NONE` and `PARTIAL`, `FULL` refused, with the same planning checks as ADR-0179. `DatastoreLookupConfig` is the fourth per-connector copy of that class, beside Firestore's, Spanner's and Bigtable's.
+- **Flink owns the cache**: `NONE` and `PARTIAL`, `FULL` refused at first, with the same planning checks as ADR-0179, until [#1847] added it (its section below). `DatastoreLookupConfig` is the fourth per-connector copy of that class, beside Firestore's, Spanner's and Bigtable's.
 
 ### Geographical points and key values ([#1730], 2026-10-11)
 
@@ -202,6 +203,30 @@ The service's answers were read through the client library on the pinned emulato
 
 `DatastoreTableFilterPushDownPlanTest` pins the new pushed and declined shapes and the key `IN` without the option; `DatastoreTableFilterPushDownITCase` compares each new shape with the table without the option, under a split count, with integers and both zeros under `DOUBLE`, U+FFFD and an emoji, `0x7f` and `0x80`, a literal between microseconds, millisecond-column timestamps either side of a boundary, and key name and id ranges; `DatastoreTableRealGcpITCase` compares them on the service and holds the refusal of a range beside an equality on another property.
 
+### The full lookup cache ([#1847], 2026-11-20)
+
+The owner decided on 2026-11-07 to support Flink's full lookup cache on this table, with no size guard and no refusal: each load reads every entity of the kind once per TaskManager, Datastore bills each entity a query returns, and the docs state that cost beside the option so that the user decides.
+The shape is ADR-0179's revision for the Native-mode table ([#1846]), itself ADR-0098's for Spanner.
+Flink loads a full cache through an `InputFormat` (`InputFormatCacheLoader`), never through the FLIP-27 source the scan returns, so `DatastoreFullCacheInputFormat` runs the bounded scan's own `DatastoreSourceConfig`, built by the same builder call as `getScanRuntimeProvider`: the converted columns, the metadata columns, `type-mismatch-policy` and the page size.
+A load reads whole entities, as the scan does (the projection query stays declined), so unlike a filtered query or a point lookup it sees an unindexed property, and a join on one becomes possible; `DatastoreTableFullCacheITCase` joins on such a property.
+It carries the filters the source accepted too, and whether any arrives depends on the runtime mode, as [#2219] measured for the other connectors: in streaming mode the planner offers a condition on the looked-up table to the lookup source as it does to a scan, so under `scan.filter-push-down.enabled` a load reads only the entities a pushed filter keeps, and an entity whose filtered value is unindexed is left out, as from a scan; without the option only a key equality reaches the service. In batch mode the condition stays on the `LookupJoin` and a load reads every entity. Measured on Flink 2.2.1 and 1.20.5 with an entity whose unindexed, mismatched value fails any load that reads it.
+The reload options map through `base.table.FullCacheReloadConfig` ([#2042]), and `lookup.async` is refused with `FULL` in `DatastoreLookupConfig`, because Flink has no asynchronous full-cache provider.
+
+The snapshot and split contract is:
+
+- **One read time per load.** `createInputSplits` plans each load again on the loading thread with no configured read time, so the planner's probe takes the service's time of that planning, the load reads at it, and the next load reads a newer snapshot. A page request issued more than an hour after the load's read time fails, because a microsecond read time older than an hour is not readable (ADR-0173); no timer of the connector's ends a load.
+- **One key range per load.** The load's configuration asks the planner for one split, so it neither reads the kind's statistics to estimate a count nor samples `__scatter__` keys to cut ranges; a query a pushed filter makes unsplittable is one query anyway. One split reads serially, so key ranges would add those billed reads and no parallelism; the format refuses a configuration that would plan several, and fails a load whose plan holds more than one query. "Every key range of a load shares its read time", the contract [#1847] asked to settle, therefore holds trivially. The query reads through the scan's `DatastoreSplitReader`, so paging, cursor continuation and a page that returns no entity but moves its cursor, which a filtered query can answer, are the scan's; the format's first draft took such a page for a stalled read and failed the load (round one of the pull request's review; `DatastoreFullCacheInputFormatTest` scripts the page, which the emulator never returns).
+- **One input split per load.** Flink's `InputFormatCacheLoader` runs the splits of one load on several threads and gives all of them one `RowDataSerializer`, whose `MapDataSerializer.copy` is not thread-safe for a `GenericMapData` ([#2217]). The table maps no `MAP` today, so several splits would corrupt nothing yet, but they would become exposed as soon as one is mapped.
+- **`scan.read-time` does not apply to a load**, as it does not apply to a point lookup ([#1653] above); a table that sets it for its scan keeps it there, as the Native-mode table does.
+- **A failed page fails the load.** Flink's loader does not swap in the partial copy and fails the lookups that follow until the job restarts and loads again, except the few made right after a failed first load, before Flink records the failure, which find the empty cache and join no row ([#2225]; the independent review of the pull request held the docs to this, after round two had deferred it). The connector adds no retry of its own; the client library's query retries apply, as for a scan, and `lookup.max-retries` stays a point-read option.
+
+Flink indexes the loaded rows by the planner's lookup keys and keeps every row of a key, so `FULL` accepts any top-level field of the produced row, metadata columns included, and no `LookupKeyFilter` is involved; `key-id` and `key-name` make a table without a PRIMARY KEY joinable, which a point lookup refuses.
+The key check is `base.table.FullCacheLookupKeys`, which the Spanner and Native-mode sources now call too instead of their own copies: at least one key, each a top-level field, of a type whose `GenericRowData.equals` agrees with SQL `=`. For this table that leaves `STRING`, `CHAR`, `BOOLEAN`, `BIGINT`, `BYTES`, `BINARY` and `TIMESTAMP_LTZ`; `DOUBLE`, `ARRAY` and `ROW` are refused.
+The keys a point lookup skips need no counterpart: no stored key has an empty name or the id `0`, so such a probe matches nothing in the index.
+
+The loader runs with no Flink metric group, so the reader's counters are unregistered; each load logs the entities it handed on, which leaves out the planner's one-entity probe the bill also counts.
+`DatastoreFullCacheInputFormatITCase` drives the format as Flink's loader does against the emulator (one query read in pages of one, a newer snapshot per load, a failed open and a failed page, the refused configurations), and `DatastoreTableFullCacheITCase` joins through SQL on the key, on an unindexed property, on `key-id` of a table without a PRIMARY KEY, on `BYTES` and a millisecond `TIMESTAMP_LTZ` over stored microseconds, on `CHAR` and `BINARY` exactly as a regular join over the scan's rows matches them (a stored value shorter than the declared length reads unpadded and matches neither), on `update-time` declared at its advertised precision (and not at another, which the planner casts and so passes no key), under a condition that narrows a streaming load only under the option and never a batch one, under a set `scan.read-time`, and across a periodic reload; both pass on Flink 2.2.1 and 1.20.5.
+
 ## Consequences
 
 - A Datastore-mode table can be written from SQL without a DataStream program, with the DataStream sink's batching, ramp-up and recovery.
@@ -212,6 +237,7 @@ The service's answers were read through the client library on the pinned emulato
 - [#1838] can push a `LIMIT` only above exactly pushed filters, so a Datastore scan with a pushed filter keeps its limit in Flink; [ADR-0201] pushes a limit only onto a scan with no predicate.
 - Since [#2076], a table with the option whose predicates hold a range, `<>`, `IN`, `OR` or `IS NOT NULL` reads the kind as one split, and one combining an equality on one property with a range on another needs a composite index, without which the job fails when it starts.
 - Key ranges are cut from the whole kind's scatter keys, so under a selective filter the ranges hold uneven numbers of matching entities and some hold none.
+- Since [#1847], a `FULL` lookup reads and bills the whole kind on every load and every TaskManager unless a streaming-mode filter narrows it, and a load of a large kind is as slow as one serial reader; the docs state both.
 
 ## Alternatives declined
 
@@ -238,6 +264,8 @@ The service's answers were read through the client library on the pinned emulato
 - **Reading whole entities in a lookup, as the scan does** ([#1653]). The scan's reason is the projection query's semantics, which the property mask does not share; reading whole entities would transfer every undeclared property on every lookup.
 - **Applying `scan.read-time` to the lookup** ([#1653]). Datastore keeps versions for an hour, or seven days with point-in-time recovery, so a streaming lookup at a fixed read time fails once the time leaves that window.
 - **Sending a key that addresses no entity to the service** ([#1653]). The emulator refused a lookup of the empty name, the id `0` and an over-long name with `INVALID_ARGUMENT`, which would fail the job for one stream value where no row is the answer.
+- **A size guard or a planning refusal for `FULL`** ([#1847]): the owner ruled on 2026-11-07 that the user weighs the per-load read cost, which the docs state.
+- **Cutting a load into key ranges, read in parallel as one split each or serially in one** ([#1847]). The first exposes the shared serializer ([#2217]) and the second only adds the statistics read and the `__scatter__` sample to every load; a measured need for faster loads would reopen it beside an upstream fix of the serializer.
 - **Checking a key name against the reserved pattern and the length limit in the serializer.** Only the data supplies a key name, so no check can run at planning, and the service refuses either with `INVALID_ARGUMENT`, which the sink confirms and fails the job on; a copy of the rule in the serializer would change only the message.
 
 [#355]: https://github.com/flink-gcp/flink-connector-gcp/issues/355
@@ -263,3 +291,9 @@ The service's answers were read through the client library on the pinned emulato
 [#1838]: https://github.com/flink-gcp/flink-connector-gcp/issues/1838
 [#2066]: https://github.com/flink-gcp/flink-connector-gcp/issues/2066
 [#2076]: https://github.com/flink-gcp/flink-connector-gcp/issues/2076
+[#1846]: https://github.com/flink-gcp/flink-connector-gcp/issues/1846
+[#1847]: https://github.com/flink-gcp/flink-connector-gcp/issues/1847
+[#2042]: https://github.com/flink-gcp/flink-connector-gcp/issues/2042
+[#2217]: https://github.com/flink-gcp/flink-connector-gcp/issues/2217
+[#2219]: https://github.com/flink-gcp/flink-connector-gcp/issues/2219
+[#2225]: https://github.com/flink-gcp/flink-connector-gcp/issues/2225

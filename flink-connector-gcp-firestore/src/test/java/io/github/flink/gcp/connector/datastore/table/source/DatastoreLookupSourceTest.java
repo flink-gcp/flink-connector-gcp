@@ -23,15 +23,26 @@ import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.InputFormatProvider;
 import org.apache.flink.table.connector.source.LookupTableSource;
 import org.apache.flink.table.connector.source.lookup.AsyncLookupFunctionProvider;
+import org.apache.flink.table.connector.source.lookup.FullCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.LookupFunctionProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingAsyncLookupProvider;
 import org.apache.flink.table.connector.source.lookup.PartialCachingLookupProvider;
 import org.apache.flink.table.connector.source.lookup.cache.DefaultLookupCache;
+import org.apache.flink.table.connector.source.lookup.cache.trigger.PeriodicCacheReloadTrigger;
+import org.apache.flink.table.connector.source.lookup.cache.trigger.TimedCacheReloadTrigger;
 import org.apache.flink.table.data.GenericRowData;
+import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
+import org.apache.flink.table.expressions.CallExpression;
+import org.apache.flink.table.expressions.FieldReferenceExpression;
+import org.apache.flink.table.expressions.ResolvedExpression;
+import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.factories.utils.FactoryMocks;
+import org.apache.flink.table.functions.BuiltInFunctionDefinition;
+import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
@@ -40,6 +51,7 @@ import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.datastore.v1.Key;
 import com.google.datastore.v1.LookupRequest;
 import io.github.flink.gcp.connector.datastore.DatabaseDestination;
+import io.github.flink.gcp.connector.datastore.source.DatastoreSourceConfig;
 import io.github.flink.gcp.connector.datastore.table.DatastoreDynamicTableFactory;
 import org.junit.jupiter.api.Test;
 
@@ -382,12 +394,228 @@ class DatastoreLookupSourceTest {
                 .hasMessageContaining("metadata and nested key paths are unsupported");
     }
 
+    private static DatastoreFullCacheInputFormat fullCacheLoader(
+            LookupTableSource.LookupRuntimeProvider provider) {
+        assertThat(provider).isInstanceOf(FullCachingLookupProvider.class);
+        return (DatastoreFullCacheInputFormat)
+                ((InputFormatProvider)
+                                ((FullCachingLookupProvider) provider).getScanRuntimeProvider())
+                        .createInputFormat();
+    }
+
+    private static DatastoreDynamicSource fullCacheSource(ResolvedSchema schema, String... pairs) {
+        String[] all = new String[pairs.length + 4];
+        all[0] = "lookup.cache";
+        all[1] = "FULL";
+        all[2] = "lookup.full-cache.periodic-reload.interval";
+        all[3] = "1 h";
+        System.arraycopy(pairs, 0, all, 4, pairs.length);
+        return source(schema, all);
+    }
+
     @Test
-    void aFullCacheIsRefusedUnderItsKey() {
-        assertThatThrownBy(() -> source(KEYED, "lookup.cache", "FULL"))
+    void aFullCacheLoadsTheScansReadOfTheKindAsOneKeyRangeWithTheReloadTrigger() {
+        LookupTableSource.LookupRuntimeProvider provider =
+                source(
+                                KEYED,
+                                "lookup.cache",
+                                "FULL",
+                                "lookup.full-cache.periodic-reload.interval",
+                                "10 min",
+                                "namespace",
+                                "tenant",
+                                "scan.max-rows-per-fetch",
+                                "7",
+                                "scan.partition.max-partitions",
+                                "4",
+                                "service-account-key-file",
+                                "/keys/sa.json")
+                        .getLookupRuntimeProvider(context(new int[] {0}));
+
+        DatastoreSourceConfig<RowData> config = fullCacheLoader(provider).getConfig();
+        assertThat(config.getQuery().getKind(0).getName()).isEqualTo("Order");
+        assertThat(config.getQuery().hasFilter()).isFalse();
+        assertThat(config.getNamespace()).isEqualTo("tenant");
+        assertThat(config.getPageSize()).isEqualTo(7);
+        assertThat(config.getServiceAccountKeyFile()).isEqualTo("/keys/sa.json");
+        // A load is one split read serially, so the kind is one key range whatever the scan asks.
+        assertThat(config.getSplitCount()).isEqualTo(1);
+        assertThat(((FullCachingLookupProvider) provider).getCacheReloadTrigger())
+                .isInstanceOf(PeriodicCacheReloadTrigger.class);
+    }
+
+    @Test
+    void aFullCacheLoadReadsAtItsOwnTimeAndWithoutALimit() {
+        DatastoreDynamicSource source =
+                fullCacheSource(KEYED, "scan.read-time", "2026-10-04T00:00:00Z");
+        source.applyLimit(5);
+
+        DatastoreSourceConfig<RowData> config =
+                fullCacheLoader(source.getLookupRuntimeProvider(context(new int[] {0})))
+                        .getConfig();
+        assertThat(config.getReadTime()).isNull();
+        assertThat(config.getQuery().hasLimit()).isFalse();
+    }
+
+    private static ResolvedExpression compare(
+            BuiltInFunctionDefinition function, String column, int index, String value) {
+        return CallExpression.permanent(
+                function,
+                List.of(
+                        new FieldReferenceExpression(column, DataTypes.STRING(), 0, index),
+                        new ValueLiteralExpression(value)),
+                DataTypes.BOOLEAN());
+    }
+
+    @Test
+    void aFullCacheLoadCarriesThePushedFiltersAsOneKeyRange() {
+        // A key equality is pushed without the option and leaves the query splittable, so the
+        // load still asks for one split.
+        DatastoreDynamicSource keyed = fullCacheSource(KEYED);
+        keyed.applyFilters(List.of(compare(BuiltInFunctionDefinitions.EQUALS, "id", 0, "k")));
+        DatastoreSourceConfig<RowData> equality =
+                fullCacheLoader(keyed.getLookupRuntimeProvider(context(new int[] {1}))).getConfig();
+        assertThat(equality.getQuery().hasFilter()).isTrue();
+        assertThat(equality.getSplitCount()).isEqualTo(1);
+
+        // A range under the option makes the query one split already, which takes no count.
+        DatastoreDynamicSource ranged =
+                fullCacheSource(KEYED, "scan.filter-push-down.enabled", "true");
+        ranged.applyFilters(
+                List.of(compare(BuiltInFunctionDefinitions.GREATER_THAN, "name", 1, "a")));
+        DatastoreSourceConfig<RowData> range =
+                fullCacheLoader(ranged.getLookupRuntimeProvider(context(new int[] {0})))
+                        .getConfig();
+        assertThat(range.getQuery().hasFilter()).isTrue();
+        assertThat(range.getSplitCount()).isNull();
+    }
+
+    @Test
+    void everyFullCacheReloadOptionReachesTheTrigger() {
+        LookupTableSource.LookupRuntimeProvider timed =
+                source(
+                                KEYED,
+                                "lookup.cache",
+                                "FULL",
+                                "lookup.full-cache.reload-strategy",
+                                "TIMED",
+                                "lookup.full-cache.timed-reload.iso-time",
+                                "10:15:30",
+                                "lookup.full-cache.timed-reload.interval-in-days",
+                                "2")
+                        .getLookupRuntimeProvider(context(new int[] {0}));
+        assertThat(((FullCachingLookupProvider) timed).getCacheReloadTrigger())
+                .isInstanceOf(TimedCacheReloadTrigger.class);
+
+        // The factory accepts each option, and each one tells two tables apart.
+        String[] daily = {
+            "lookup.cache",
+            "FULL",
+            "lookup.full-cache.reload-strategy",
+            "TIMED",
+            "lookup.full-cache.timed-reload.iso-time",
+            "10:15:30"
+        };
+        assertThat(source(KEYED, daily))
+                .isNotEqualTo(
+                        source(
+                                KEYED,
+                                "lookup.cache",
+                                "FULL",
+                                "lookup.full-cache.reload-strategy",
+                                "TIMED",
+                                "lookup.full-cache.timed-reload.iso-time",
+                                "10:15:30",
+                                "lookup.full-cache.timed-reload.interval-in-days",
+                                "2"));
+        assertThat(fullCacheSource(KEYED))
+                .isNotEqualTo(
+                        fullCacheSource(
+                                KEYED,
+                                "lookup.full-cache.periodic-reload.schedule-mode",
+                                "FIXED_RATE"));
+    }
+
+    @Test
+    void aFullCacheServesAnyTopLevelKeyIncludingOnATableWithoutAPrimaryKey() {
+        assertThat(fullCacheSource(KEYED).getLookupRuntimeProvider(context(new int[] {1})))
+                .isInstanceOf(FullCachingLookupProvider.class);
+        DatastoreDynamicSource keyless = fullCacheSource(UNKEYED);
+        keyless.applyReadableMetadata(
+                List.of("key-id"),
+                DataTypes.ROW(
+                        DataTypes.FIELD("name", DataTypes.STRING()),
+                        DataTypes.FIELD("a.b", DataTypes.STRING()),
+                        DataTypes.FIELD("key_id", DataTypes.BIGINT())));
+
+        // A point lookup refuses a table without a PRIMARY KEY; the full cache joins it by any
+        // column, the key's numeric id among them.
+        assertThat(keyless.getLookupRuntimeProvider(context(new int[] {2})))
+                .isInstanceOf(FullCachingLookupProvider.class);
+    }
+
+    @Test
+    void aFullCacheRefusesAKeyWhoseJavaEqualityIsNotSqls() {
+        ResolvedSchema typed =
+                new ResolvedSchema(
+                        List.of(
+                                Column.physical("id", DataTypes.STRING().notNull()),
+                                Column.physical("ratio", DataTypes.DOUBLE()),
+                                Column.physical("tags", DataTypes.ARRAY(DataTypes.STRING())),
+                                Column.physical(
+                                        "r",
+                                        DataTypes.ROW(DataTypes.FIELD("a", DataTypes.STRING()))),
+                                Column.physical("n", DataTypes.BIGINT()),
+                                Column.physical("flag", DataTypes.BOOLEAN()),
+                                Column.physical("code", DataTypes.CHAR(3)),
+                                Column.physical("raw", DataTypes.BINARY(2)),
+                                Column.physical("bytes", DataTypes.BYTES()),
+                                Column.physical("at", DataTypes.TIMESTAMP_LTZ(3))),
+                        List.of(),
+                        UniqueConstraint.primaryKey("pk", List.of("id")));
+
+        for (int key : new int[] {1, 2, 3}) {
+            assertThatThrownBy(
+                            () ->
+                                    fullCacheSource(typed)
+                                            .getLookupRuntimeProvider(context(new int[] {key})))
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessageContaining(
+                            "A Datastore lookup with 'lookup.cache' = 'FULL' requires equality"
+                                    + " predicates")
+                    .hasMessageContaining("has unsupported equality type");
+        }
+        assertThatThrownBy(() -> fullCacheSource(typed).getLookupRuntimeProvider(context()))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("a cast column is not a key");
+        assertThatThrownBy(
+                        () ->
+                                fullCacheSource(typed)
+                                        .getLookupRuntimeProvider(context(new int[] {3, 0})))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("A nested key path is not supported");
+        for (int key = 0; key <= 9; key++) {
+            if (key >= 1 && key <= 3) {
+                continue;
+            }
+            assertThat(fullCacheSource(typed).getLookupRuntimeProvider(context(new int[] {key})))
+                    .as("key %s", key)
+                    .isInstanceOf(FullCachingLookupProvider.class);
+        }
+    }
+
+    @Test
+    void aFullCacheRefusesAsynchronousLookups() {
+        assertThatThrownBy(() -> fullCacheSource(KEYED, "lookup.async", "true"))
                 .hasStackTraceContaining(
-                        "Option 'lookup.cache' does not support FULL for the Datastore table"
-                                + " source");
+                        "'lookup.async' cannot be true when 'lookup.cache' is FULL");
+    }
+
+    @Test
+    void aFullCacheReloadOptionFlinkRefusesFailsPlanning() {
+        // FactoryUtil echoes every option into its own message, so the phrase is Flink's trigger's.
+        assertThatThrownBy(() -> source(KEYED, "lookup.cache", "FULL"))
+                .hasStackTraceContaining("required to build Periodic cache reload trigger");
     }
 
     @Test
@@ -426,6 +654,15 @@ class DatastoreLookupSourceTest {
         assertThat(source(KEYED, "lookup.max-retries", "1")).isNotEqualTo(source(KEYED));
         assertThat(source(KEYED, "lookup.max-retries", "1").hashCode())
                 .isNotEqualTo(source(KEYED).hashCode());
+        String[] hourly = {
+            "lookup.cache", "FULL", "lookup.full-cache.periodic-reload.interval", "1 h"
+        };
+        String[] daily = {
+            "lookup.cache", "FULL", "lookup.full-cache.periodic-reload.interval", "1 d"
+        };
+        assertThat(source(KEYED, hourly)).isEqualTo(source(KEYED, hourly));
+        assertThat(source(KEYED, hourly)).isNotEqualTo(source(KEYED, daily));
+        assertThat(source(KEYED, hourly).hashCode()).isNotEqualTo(source(KEYED, daily).hashCode());
     }
 
     @Test

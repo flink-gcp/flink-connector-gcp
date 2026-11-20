@@ -42,13 +42,13 @@ import org.apache.flink.table.factories.FactoryUtil;
 import org.apache.flink.table.functions.AsyncLookupFunction;
 import org.apache.flink.table.functions.LookupFunction;
 import org.apache.flink.table.types.DataType;
-import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
 
 import com.google.cloud.Timestamp;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.table.FullCacheLookupKeys;
 import io.github.flink.gcp.connector.base.table.LookupKeyFilter;
 import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
@@ -456,27 +456,11 @@ public final class SpannerDynamicSource
                             LookupOptions.CACHE_TYPE.key(),
                             SpannerConnectorOptions.SCAN_TIMESTAMP_BOUND_EXACT_STALENESS.key()));
         }
-        RowType producedType = (RowType) producedDataType.getLogicalType();
-        int[][] keys = context.getKeys();
-        if (keys.length == 0) {
-            throw new ValidationException(FULL_CACHE_KEY_REQUIREMENT);
-        }
-        for (int[] key : keys) {
-            if (key.length != 1) {
-                throw new ValidationException(
-                        FULL_CACHE_KEY_REQUIREMENT + " A nested key path is not supported.");
-            }
-            LogicalType type = producedType.getTypeAt(key[0]);
-            if (!fullCacheKeyType(type)) {
-                throw new ValidationException(
-                        FULL_CACHE_KEY_REQUIREMENT
-                                + " Lookup column '"
-                                + producedType.getFieldNames().get(key[0])
-                                + "' has unsupported equality type "
-                                + type.asSummaryString()
-                                + ".");
-            }
-        }
+        FullCacheLookupKeys.check(
+                (RowType) producedDataType.getLogicalType(),
+                context.getKeys(),
+                FULL_CACHE_KEY_REQUIREMENT,
+                null);
         SpannerBatchReadSource<RowData> scan =
                 (SpannerBatchReadSource<RowData>)
                         scanBuilder(context.createTypeInformation(producedDataType)).build();
@@ -490,30 +474,6 @@ public final class SpannerDynamicSource
                     + LookupOptions.CACHE_TYPE.key()
                     + "' = 'FULL' requires equality predicates on top-level columns of a scalar"
                     + " type other than FLOAT and DOUBLE, whose Java equality differs from SQL's.";
-
-    /**
-     * Whether a key type's Flink values match in the full cache's index exactly when SQL equality
-     * holds, among the types {@code SpannerTableSchemaConverter} maps. {@code FLOAT} and {@code
-     * DOUBLE} do not: their boxed {@code equals} tells {@code -0.0} from {@code 0.0} and matches
-     * {@code NaN} to itself. {@code ARRAY} does not either, because its binary and generic forms
-     * are not equal to each other.
-     */
-    private static boolean fullCacheKeyType(LogicalType type) {
-        switch (type.getTypeRoot()) {
-            case BOOLEAN:
-            case BIGINT:
-            case DECIMAL:
-            case CHAR:
-            case VARCHAR:
-            case BINARY:
-            case VARBINARY:
-            case DATE:
-            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
-                return true;
-            default:
-                return false;
-        }
-    }
 
     private LookupKeyFilter lookupKeys(LookupContext context) {
         return LookupKeyFilter.of(
