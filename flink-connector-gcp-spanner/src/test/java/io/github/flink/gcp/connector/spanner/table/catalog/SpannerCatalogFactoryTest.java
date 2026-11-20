@@ -105,17 +105,17 @@ class SpannerCatalogFactoryTest {
         for (String required : new String[] {"project", "instance", "default-database"}) {
             assertThatThrownBy(() -> create(options(required, null)))
                     .as(required)
-                    .hasStackTraceContaining("Missing required options are:")
-                    .hasStackTraceContaining(required);
+                    .hasStackTraceContaining("Missing required options are:\n\n" + required);
         }
     }
 
     @Test
     void rejectsAnUnknownOptionSuchAsATuningKey() {
         // Tuning stays per statement; a catalog-level default is a non-goal (docs/adr/0168).
-        // FactoryUtil's wrapper lists every option, so the key alone would match the dump.
+        // FactoryUtil's wrapper lists every option, so the key alone would match the dump; the
+        // header alone would match any other unknown key.
         assertThatThrownBy(() -> create(options("scan.data-boost-enabled", "true")))
-                .hasStackTraceContaining("Unsupported options found for 'spanner'");
+                .hasStackTraceContaining("Unsupported options:\n\nscan.data-boost-enabled");
     }
 
     @Test

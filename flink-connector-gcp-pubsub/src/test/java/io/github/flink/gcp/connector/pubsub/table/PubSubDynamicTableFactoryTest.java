@@ -97,8 +97,10 @@ class PubSubDynamicTableFactoryTest {
         Map<String, String> options = minimalSinkOptions();
         options.put("sink.batching.element-count-thresholds", "10");
 
+        // The wrapper lists every option, so match the key inside Flink's unsupported list.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("sink.batching.element-count-thresholds");
+                .hasStackTraceContaining(
+                        "Unsupported options:\n\nsink.batching.element-count-thresholds");
     }
 
     @Test
@@ -191,7 +193,7 @@ class PubSubDynamicTableFactoryTest {
         options.remove("project");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("project");
+                .hasStackTraceContaining("Missing required options are:\n\nproject");
     }
 
     @Test
@@ -200,7 +202,7 @@ class PubSubDynamicTableFactoryTest {
         options.remove("format");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("format");
+                .hasStackTraceContaining("Could not find required sink format 'format'");
     }
 
     @Test
@@ -209,7 +211,8 @@ class PubSubDynamicTableFactoryTest {
         options.put("format", "no-such-format");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("no-such-format");
+                .hasStackTraceContaining(
+                        "Could not find any factory for identifier 'no-such-format'");
     }
 
     @Test
@@ -220,7 +223,9 @@ class PubSubDynamicTableFactoryTest {
         // The DDL spelling is hyphenated; the constant name is not accepted, and the message lists
         // what is.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("sink.create-disposition");
+                .hasStackTraceContaining(
+                        "Could not parse value 'create_if_needed' for key 'sink.create-disposition'")
+                .hasStackTraceContaining("Expected one of: [[create-if-needed, create-never]]");
     }
 
     // ------------------------------------------------------------------------
@@ -621,8 +626,7 @@ class PubSubDynamicTableFactoryTest {
         options.put("scan.auto-create.topic", "my-topic");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
-                .hasStackTraceContaining("Unsupported options")
-                .hasStackTraceContaining("scan.auto-create.topic");
+                .hasStackTraceContaining("Unsupported options:\n\nscan.auto-create.topic");
     }
 
     @Test
@@ -631,7 +635,9 @@ class PubSubDynamicTableFactoryTest {
         options.put("scan.startup.timestamp-millis", "1735689600000");
 
         assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
-                .hasStackTraceContaining("scan.startup.mode");
+                .hasStackTraceContaining(
+                        "Option 'scan.startup.timestamp-millis' was set without"
+                                + " 'scan.startup.mode'");
     }
 
     @Test

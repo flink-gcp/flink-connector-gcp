@@ -611,14 +611,13 @@ class BigtableDynamicTableFactoryTest {
             Map<String, String> options = minimalOptions();
             options.remove(missing);
 
-            // On FactoryUtil's own message, not on the key: the key alone is satisfied by the
+            // On FactoryUtil's own list, not on the key: the key alone is satisfied by the
             // WITH-clause dump FactoryUtil attaches to anything the factory throws — measured, by
             // emptying requiredOptions(), which left every assertion in this class green while
             // 'table' appeared 21 times in an unrelated rejection's stack trace.
             assertThatThrownBy(() -> sink(options))
                     .as("without '%s'", missing)
-                    .hasStackTraceContaining("Missing required options")
-                    .hasStackTraceContaining(missing);
+                    .hasStackTraceContaining("Missing required options are:\n\n" + missing);
         }
     }
 
@@ -627,7 +626,8 @@ class BigtableDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put("sink.buffer-flush.max-rows", "100");
 
-        assertThatThrownBy(() -> sink(options)).hasStackTraceContaining("Unsupported options");
+        assertThatThrownBy(() -> sink(options))
+                .hasStackTraceContaining("Unsupported options:\n\nsink.buffer-flush.max-rows");
     }
 
     /**
@@ -1428,7 +1428,8 @@ class BigtableDynamicTableFactoryTest {
 
             assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, options))
                     .as("with Kafka offset mode '%s'", mode)
-                    .hasStackTraceContaining("scan.startup.mode");
+                    .hasStackTraceContaining(
+                            "Could not parse value '" + mode + "' for key 'scan.startup.mode'");
         }
     }
 

@@ -549,9 +549,10 @@ class BigQueryDynamicTableFactoryTest {
         for (String missing : List.of("dataset", "table")) {
             Map<String, String> options = minimalOptions();
             options.remove(missing);
+            // "table" alone would match the wrapper's "for reading table".
             assertThatThrownBy(() -> source(options))
                     .as("table source without '%s'", missing)
-                    .hasStackTraceContaining(missing);
+                    .hasStackTraceContaining("requires options [" + missing + "]");
         }
 
         Map<String, String> missingProject = minimalOptions();
@@ -619,9 +620,10 @@ class BigQueryDynamicTableFactoryTest {
         for (String missing : new String[] {"project", "dataset", "table"}) {
             Map<String, String> options = minimalOptions();
             options.remove(missing);
+            // "table" alone would match the wrapper's "for writing table".
             assertThatThrownBy(() -> sink(options))
                     .as("without '%s'", missing)
-                    .hasStackTraceContaining(missing);
+                    .hasStackTraceContaining("requires options [" + missing + "]");
         }
     }
 
@@ -630,7 +632,9 @@ class BigQueryDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         // A near miss of a real key, which is how one is usually written.
         options.put("sink.write_method", "storage-api-at-least-once");
-        assertThatThrownBy(() -> sink(options)).hasStackTraceContaining("sink.write_method");
+        // The wrapper lists every option, so match the key inside Flink's unsupported list.
+        assertThatThrownBy(() -> sink(options))
+                .hasStackTraceContaining("Unsupported options:\n\nsink.write_method");
     }
 
     @Test
@@ -642,9 +646,10 @@ class BigQueryDynamicTableFactoryTest {
                 }) {
             Map<String, String> options = minimalOptions();
             options.put(key, "true");
+            // The wrapper lists every option, so match the key inside Flink's unsupported list.
             assertThatThrownBy(() -> sink(options))
                     .as("former key '%s'", key)
-                    .hasStackTraceContaining(key);
+                    .hasStackTraceContaining("Unsupported options:\n\n" + key);
         }
     }
 
@@ -671,8 +676,7 @@ class BigQueryDynamicTableFactoryTest {
 
             assertThatThrownBy(() -> source(options))
                     .as("removed option '%s'", removedOption[0])
-                    .hasStackTraceContaining("Unsupported options")
-                    .hasStackTraceContaining(removedOption[0]);
+                    .hasStackTraceContaining("Unsupported options:\n\n" + removedOption[0]);
         }
     }
 

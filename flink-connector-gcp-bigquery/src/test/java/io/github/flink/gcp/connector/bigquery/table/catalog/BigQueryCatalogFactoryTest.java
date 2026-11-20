@@ -82,18 +82,21 @@ class BigQueryCatalogFactoryTest {
 
     @Test
     void requiresTheProjectAndTheDefaultDatabase() {
+        // A key alone also matches Flink's unknown-option message, which lists every key the
+        // factory supports.
         assertThatThrownBy(() -> create(options("project", null)))
-                .hasStackTraceContaining("project");
+                .hasStackTraceContaining("Missing required options are:\n\nproject");
         assertThatThrownBy(() -> create(options("default-database", null)))
-                .hasStackTraceContaining("default-database");
+                .hasStackTraceContaining("Missing required options are:\n\ndefault-database");
     }
 
     @Test
     void rejectsAnUnknownOptionSuchAsATuningKey() {
         // Tuning stays per statement; a catalog-level default is a non-goal (docs/adr/0168).
-        // FactoryUtil's wrapper lists every option, so the key alone would match the dump.
+        // FactoryUtil's wrapper lists every option, so the key alone would match the dump; the
+        // header alone would match any other unknown key.
         assertThatThrownBy(() -> create(options("sink.write-method", "file-loads")))
-                .hasStackTraceContaining("Unsupported options found for 'bigquery'");
+                .hasStackTraceContaining("Unsupported options:\n\nsink.write-method");
     }
 
     @Test
