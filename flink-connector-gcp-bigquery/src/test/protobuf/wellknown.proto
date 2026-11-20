@@ -47,8 +47,8 @@ message WellKnownTypes {
   google.protobuf.Int32Value w_int32 = 1;
   google.protobuf.UInt32Value w_uint32 = 2;
   google.protobuf.Int64Value w_int64 = 3;
-  // uint64 is the one wrapper whose value can be unrepresentable as INT64, and
-  // the range check has to be the same one a bare uint64 gets.
+  // uint64 is the one wrapper whose value can exceed INT64's signed range, and
+  // it has to keep its bits exactly as a bare uint64 does.
   google.protobuf.UInt64Value w_uint64 = 4;
   google.protobuf.FloatValue w_float = 5;
   google.protobuf.DoubleValue w_double = 6;

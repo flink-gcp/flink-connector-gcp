@@ -311,6 +311,17 @@ class ProtoSchemaOptionsTest {
     }
 
     @Test
+    void writesUnsignedIntegersByValueByDefault() {
+        assertThat(ProtoSchemaOptions.builder().build().isUnsignedIntegersAsSigned()).isFalse();
+        assertThat(
+                        ProtoSchemaOptions.builder()
+                                .unsignedIntegersAsSigned()
+                                .build()
+                                .isUnsignedIntegersAsSigned())
+                .isTrue();
+    }
+
+    @Test
     void wellKnownTypesAsMessagesAccumulateAcrossCalls() {
         ProtoSchemaOptions options =
                 ProtoSchemaOptions.builder()
@@ -360,9 +371,12 @@ class ProtoSchemaOptionsTest {
                         .geographyFieldOption(TestProtos.geographyOptionExtension())
                         .deriveRequiredColumns()
                         .wellKnownTypesAsMessages(ProtoSchemaOptions.WellKnownType.DURATION)
+                        .unsignedIntegersAsSigned()
                         .build();
 
         ProtoSchemaOptions copy = InstantiationUtil.clone(options);
+
+        assertThat(copy.isUnsignedIntegersAsSigned()).isTrue();
 
         assertThat(copy.getWellKnownTypesAsMessages())
                 .containsExactly(ProtoSchemaOptions.WellKnownType.DURATION);

@@ -92,3 +92,17 @@ message MixedCase {
   map<string, int64> countsByName = 6;
   int64 userId = 3;
 }
+
+// The unsigned integer types, kept out of AllTypes so its column list stays the
+// matrix the schema tests pin. protobuf-java returns a uint32 or fixed32 as an
+// int and a uint64 or fixed64 as a long with the same bits, so a value at or
+// above 2^31 or 2^63 arrives negative.
+message UnsignedTypes {
+  uint32 u_uint32 = 1;
+  fixed32 u_fixed32 = 2;
+  uint64 u_uint64 = 3;
+  fixed64 u_fixed64 = 4;
+  repeated fixed32 u_rep_fixed32 = 5;
+  repeated fixed64 u_rep_fixed64 = 6;
+  map<uint32, uint32> u_map = 7;
+}

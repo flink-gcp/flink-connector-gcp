@@ -56,16 +56,18 @@ import java.util.List;
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
  * flattened to validated epoch microseconds ({@link Timestamps#toMicros}) and {@code Duration}
  * fields to microseconds ({@link Durations#toMicros}, an out-of-range duration being a row-level
- * failure like the uint64 case below), a {@code FieldMask} becomes its comma-joined paths ({@link
- * FieldMaskUtil#toString}), a {@code *Value} wrapper is unwrapped and then converted exactly as the
- * scalar it holds, {@code Struct}/{@code Value}/{@code ListValue} are printed as canonical protobuf
- * JSON like any other JSON-mapped message, uint32/fixed32 are widened unsigned, uint64/fixed64
- * values above {@code Long.MAX_VALUE} are rejected, enum values become their names, JSON-mapped
- * message fields are printed as canonical protobuf JSON while marked string fields — {@code JSON}
- * and {@code GEOGRAPHY} alike — are written through verbatim (both columns are carried as strings,
- * and the value is taken to be JSON text or a geometry literal already; the connector does not
- * validate either, and BigQuery rejects a malformed one as a row-level error, with the sole
- * exception of the empty string on a field without presence, which is left unset rather than
+ * failure), a {@code FieldMask} becomes its comma-joined paths ({@link FieldMaskUtil#toString}), a
+ * {@code *Value} wrapper is unwrapped and then converted exactly as the scalar it holds, {@code
+ * Struct}/{@code Value}/{@code ListValue} are printed as canonical protobuf JSON like any other
+ * JSON-mapped message, uint32/fixed32 are widened unsigned (or sign-extended under {@link
+ * ProtoSchemaOptions#isUnsignedIntegersAsSigned()}), uint64/fixed64 keep their 64 bits as the
+ * signed {@code long} protobuf-java returns (so a value at or above 2<sup>63</sup> is written as a
+ * negative {@code INT64}; BigQuery has no unsigned 64-bit type), enum values become their names,
+ * JSON-mapped message fields are printed as canonical protobuf JSON while marked string fields —
+ * {@code JSON} and {@code GEOGRAPHY} alike — are written through verbatim (both columns are carried
+ * as strings, and the value is taken to be JSON text or a geometry literal already; the connector
+ * does not validate either, and BigQuery rejects a malformed one as a row-level error, with the
+ * sole exception of the empty string on a field without presence, which is left unset rather than
  * written), and nested/repeated fields (including maps) are converted recursively.
  *
  * <p>A well-known type that {@link ProtoSchemaOptions#getWellKnownTypesAsMessages} lists takes the
@@ -117,7 +119,6 @@ public final class ProtoRowConverter {
         IDENTITY,
         INT_TO_LONG,
         UINT32_TO_LONG,
-        UINT64_CHECKED,
         FLOAT_TO_DOUBLE,
         ENUM_NAME,
         TIMESTAMP_MICROS,
@@ -190,7 +191,8 @@ public final class ProtoRowConverter {
                     sourceField, targetField, path, !sourceField.hasPresence());
         }
         if (sourceField.getJavaType() != Descriptors.FieldDescriptor.JavaType.MESSAGE) {
-            return FieldPlan.scalar(sourceField, targetField, scalarKind(sourceField, path), path);
+            return FieldPlan.scalar(
+                    sourceField, targetField, scalarKind(sourceField, options, path), path);
         }
         Descriptors.Descriptor messageType = sourceField.getMessageType();
         switch (ProtoWellKnownType.of(sourceField, options)) {
@@ -213,10 +215,14 @@ public final class ProtoRowConverter {
                         sourceField, targetField, path, messageType.findFieldByName("paths"));
             case WRAPPER:
                 // The inner kind comes from the same function a bare scalar goes through, so a
-                // UInt64Value is range-checked by exactly the code that checks a bare uint64.
+                // UInt32Value is converted by exactly the code that converts a bare uint32.
                 Descriptors.FieldDescriptor valueField = messageType.findFieldByName("value");
                 return FieldPlan.wrapper(
-                        sourceField, targetField, path, scalarKind(valueField, path), valueField);
+                        sourceField,
+                        targetField,
+                        path,
+                        scalarKind(valueField, options, path),
+                        valueField);
             case NONE:
             default:
                 // JSON cannot arrive here: the branch above returns for it, in this same method.
@@ -232,19 +238,26 @@ public final class ProtoRowConverter {
      * Returns the conversion kind of a non-message field.
      *
      * @param field a field that is not a message
+     * @param options the schema mapping options, which decide how a uint32 is read
      * @param path the dotted path used in the error message
      * @return the conversion kind
      */
-    private static Kind scalarKind(Descriptors.FieldDescriptor field, String path) {
+    private static Kind scalarKind(
+            Descriptors.FieldDescriptor field, ProtoSchemaOptions options, String path) {
         switch (field.getJavaType()) {
             case INT:
-                return isUnsigned(field) ? Kind.UINT32_TO_LONG : Kind.INT_TO_LONG;
-            case LONG:
-                return isUnsigned(field) ? Kind.UINT64_CHECKED : Kind.IDENTITY;
+                // Under unsignedIntegersAsSigned a uint32/fixed32 takes the int32 path: the int
+                // protobuf-java returns, sign-extended, as Avro's ProtobufData writes it (#2201).
+                return isUnsigned32(field) && !options.isUnsignedIntegersAsSigned()
+                        ? Kind.UINT32_TO_LONG
+                        : Kind.INT_TO_LONG;
             case FLOAT:
                 return Kind.FLOAT_TO_DOUBLE;
             case ENUM:
                 return Kind.ENUM_NAME;
+            // uint64/fixed64 among LONG: protobuf-java already holds them as a long with the
+            // same 64 bits, the one INT64 value that loses nothing (#2200).
+            case LONG:
             case DOUBLE:
             case BOOLEAN:
             case STRING:
@@ -256,12 +269,10 @@ public final class ProtoRowConverter {
         }
     }
 
-    private static boolean isUnsigned(Descriptors.FieldDescriptor field) {
+    private static boolean isUnsigned32(Descriptors.FieldDescriptor field) {
         switch (field.getType()) {
             case UINT32:
             case FIXED32:
-            case UINT64:
-            case FIXED64:
                 return true;
             default:
                 return false;
@@ -539,18 +550,6 @@ public final class ProtoRowConverter {
                     return ((Integer) value).longValue();
                 case UINT32_TO_LONG:
                     return Integer.toUnsignedLong((Integer) value);
-                case UINT64_CHECKED:
-                    long unsigned = (Long) value;
-                    if (unsigned < 0) {
-                        throw new IllegalArgumentException(
-                                "uint64 value "
-                                        + Long.toUnsignedString(unsigned)
-                                        + " of field "
-                                        + path
-                                        + " exceeds Long.MAX_VALUE and cannot be represented as"
-                                        + " INT64");
-                    }
-                    return unsigned;
                 case FLOAT_TO_DOUBLE:
                     return ((Float) value).doubleValue();
                 case ENUM_NAME:
@@ -587,9 +586,9 @@ public final class ProtoRowConverter {
             try {
                 return Durations.toMicros(duration);
             } catch (IllegalArgumentException e) {
-                // Row-level, like the uint64 range check above — one malformed record must not
-                // fail the job. Rewrapped because protobuf's own message names no field, and a
-                // message with several Duration columns would give a FailedRow nobody can act on.
+                // Row-level — one malformed record must not fail the job. Rewrapped because
+                // protobuf's own message names no field, and a message with several Duration
+                // columns would give a FailedRow nobody can act on.
                 throw new IllegalArgumentException(
                         "google.protobuf.Duration value of field "
                                 + path

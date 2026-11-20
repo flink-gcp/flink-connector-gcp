@@ -266,6 +266,7 @@ particular for why an unmatched *path* is an error while an unmatched *option nu
 | `geographyFieldPath` / `geographyFieldPaths` | no geography columns | Maps the string field at a dotted path to a `GEOGRAPHY` column |
 | `geographyFieldOption` | no geography columns | Maps every string field carrying the given `bool` extension |
 | `geographyFieldOptionNumber` | no geography columns | The same by extension number |
+| `unsignedIntegersAsSigned` | off, a `uint32` or `fixed32` is written as its unsigned value | Writes a `uint32` or `fixed32` as the signed `int` with the same bits, to match a table loaded from `ProtobufData`'s Avro files; see [Unsigned integers]({{< relref "docs/connectors/datastream/bigquery" >}}#unsigned-integers) |
 | `wellKnownTypesAsMessages` | none, each well-known type is one flat column | Expands the listed `Timestamp`, `Duration`, `FieldMask` or wrapper types as `STRUCT`s, to match an existing table; see [Well-known types]({{< relref "docs/connectors/datastream/bigquery" >}}#well-known-types) |
 
 Prefer the extension over the bare number: protobuf's private extension range has no registry, so

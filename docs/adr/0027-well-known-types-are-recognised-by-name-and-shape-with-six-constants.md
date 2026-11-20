@@ -17,8 +17,8 @@ limitations under the License.
 # ADR-0027: Protobuf well-known types are recognised by name *and* shape, with six constants
 
 - Status: Accepted
-- Date: 2026-07-27; revised by [#2107] (2026-11-08)
-- Issues: [#147] (which is [#124] Part 2), [#2107]
+- Date: 2026-07-27; revised by [#2107] (2026-11-08), [#2200] and [#2201] (2026-11-19)
+- Issues: [#147] (which is [#124] Part 2), [#2107], [#2200], [#2201]
 - Modules: bigquery (`sink.serializer.proto`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Protobuf messages
 
@@ -132,9 +132,49 @@ took a load job and a Storage Write API append, and its schema was unchanged. Bo
 were measured: `REQUIRED`, which the ITCase keeps, and `NULLABLE`. The union keeps the table's
 mode, and a set value writes every scalar sub-field.
 
+## Revision for #2200 and #2201: unsigned integers keep their bits
+
+The decision and its #2107 revision relied on a uint64 range check: a `uint64` or `fixed64` value at
+or above 2^63 failed its row, and a `UInt64Value`, flattened or expanded, inherited that check.
+That check is gone. Such a value is written to its `INT64` column with the same 64 bits, as the
+negative `long` protobuf-java returns for it, so `0xFF00000000000000` is `-72057594037927936`.
+
+- **The rejection lost rows that other writers keep.** Avro's `ProtobufData` maps `UINT64` and
+  `FIXED64` to Avro `long` and writes those bits, so a table loaded from its files already holds
+  negative values in the column. Such a table could not move to this sink without losing those rows.
+- **A `NUMERIC` column was declined.** BigQuery's Storage Write API accepts a `uint64` field for a
+  `NUMERIC` column but not for an `INT64` one, so a `NUMERIC` column would hold the unsigned value
+  itself. It would also change the derived column type from `INT64`, and `SchemaUnifier` rejects a
+  column type change, so every table this connector or `ProtobufData` created would stop taking
+  rows until its column was altered by hand. The one write that would go through is a `FILE_LOADS`
+  load under `WRITE_TRUNCATE`, which replaces the table's schema rather than unioning it.
+- **No option keeps the rejection.** Every value maps to exactly one `INT64` value with nothing
+  lost, so no row is malformed. A reader that wants the unsigned value adds 2^64 to a negative one.
+- The six-constant argument is unchanged: a wrapper still takes its conversion kind from the same
+  `scalarKind` function a bare scalar goes through, which now yields the identity conversion for
+  every 64-bit integer type.
+
+A `uint32` or `fixed32` value still defaults to its unsigned value, which `INT64` holds exactly.
+`ProtoSchemaOptions.Builder#unsignedIntegersAsSigned()` writes it as the signed `int` with the same
+32 bits, sign-extended, for a table filled through `ProtobufData`, which maps these types to Avro
+`int` and so loads `4294967295` as `-1`. Without the option such a column would hold two encodings.
+
+- **Opt-in, like `wellKnownTypesAsMessages`.** The unsigned value is the right one for a table this
+  connector creates; the option exists to match a table another writer filled, and it changes the
+  written values only, not the derived schema.
+- **One switch, named for what the column holds.** The option covers every unsigned type, although
+  the 64-bit ones already take their bits by default, so the name stays true whichever way the
+  64-bit default would go.
+- **No Avro or JSON counterpart.** Neither format has an unsigned integer type, so the shared-name
+  rule of ADR-0026 has nothing to pair it with.
+- It reaches a bare field, a repeated one, a map key or value and a `UInt32Value` flattened or expanded,
+  because all of them go through `scalarKind`.
+
 [#16]: https://github.com/flink-gcp/flink-connector-gcp/issues/16
 [#121]: https://github.com/flink-gcp/flink-connector-gcp/issues/121
 [#124]: https://github.com/flink-gcp/flink-connector-gcp/issues/124
 [#126]: https://github.com/flink-gcp/flink-connector-gcp/issues/126
 [#147]: https://github.com/flink-gcp/flink-connector-gcp/issues/147
 [#2107]: https://github.com/flink-gcp/flink-connector-gcp/issues/2107
+[#2200]: https://github.com/flink-gcp/flink-connector-gcp/issues/2200
+[#2201]: https://github.com/flink-gcp/flink-connector-gcp/issues/2201

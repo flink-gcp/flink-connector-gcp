@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.serializer.proto;
 import com.google.cloud.bigquery.storage.v1.TableFieldSchema;
 import com.google.cloud.bigquery.storage.v1.TableSchema;
 import com.google.protobuf.Descriptors;
+import io.github.flink.gcp.connector.bigquery.testproto.UnsignedTypes;
 import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -72,6 +73,35 @@ class ProtoToTableSchemaConverterTest {
                 .allSatisfy(f -> assertThat(f.getMode()).isEqualTo(TableFieldSchema.Mode.NULLABLE));
         assertThat(fields.get("f_rep_ts").getMode()).isEqualTo(TableFieldSchema.Mode.REPEATED);
         assertThat(fields.get("f_rep_ts").getType()).isEqualTo(TableFieldSchema.Type.TIMESTAMP);
+    }
+
+    /** INT64 whether an unsigned value is written by its value or by its bits. */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void mapsTheUnsignedTypesToInt64(boolean asSigned) {
+        ProtoSchemaOptions.Builder options = ProtoSchemaOptions.builder();
+        if (asSigned) {
+            options.unsignedIntegersAsSigned();
+        }
+        Map<String, TableFieldSchema> fields =
+                byName(
+                        ProtoToTableSchemaConverter.convert(
+                                UnsignedTypes.getDescriptor(), options.build()));
+
+        for (String name :
+                Arrays.asList(
+                        "u_uint32",
+                        "u_fixed32",
+                        "u_uint64",
+                        "u_fixed64",
+                        "u_rep_fixed32",
+                        "u_rep_fixed64")) {
+            assertThat(fields.get(name).getType()).as(name).isEqualTo(TableFieldSchema.Type.INT64);
+        }
+        assertThat(fields.get("u_rep_fixed64").getMode()).isEqualTo(REPEATED);
+        assertThat(fields.get("u_map").getFieldsList())
+                .extracting(TableFieldSchema::getType)
+                .containsExactly(TableFieldSchema.Type.INT64, TableFieldSchema.Type.INT64);
     }
 
     /**
