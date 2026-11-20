@@ -203,6 +203,32 @@ class SingleRowRequestWriterTest {
     }
 
     @Test
+    void aMissingApplicationProfileIsNamedRatherThanTheTable() throws Exception {
+        // #2215: the service answers a profile the instance lacks with the NOT_FOUND a missing
+        // table answers, so the message must come from the description, not the status.
+        SingleRowRequestWriter<String> writer = writer(options().build());
+        writer.write("row-1", TestContexts.NO_OP);
+
+        request("row-1")
+                .fail(
+                        ScriptedRowRequest.apiException(
+                                StatusCode.Code.NOT_FOUND, "Profile no-such-profile not found."));
+        mailbox.drain();
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "A CheckAndMutateRow request to Bigtable table "
+                                + TABLE
+                                + " failed because its instance has no application profile"
+                                + " 'no-such-profile'."
+                                + RequestFailures.routingHint(RowOperation.CHECK_AND_MUTATE_ROW))
+                .hasStackTraceContaining("Profile no-such-profile not found.");
+        assertThat(metricGroup.counterValue("errorClass", "NOT_FOUND", "errors")).isEqualTo(1);
+        assertThat(metricGroup.counterValue("numRecordsSendErrors")).isZero();
+    }
+
+    @Test
     void aDeadlineFailureIsAmbiguousAndCountsAsATimeout() throws Exception {
         SingleRowRequestWriter<String> writer = writer(options().build());
         writer.write("row-1", TestContexts.NO_OP);

@@ -36,6 +36,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -225,25 +226,42 @@ class BigtableTableSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
         assertThat(readRows(table)).hasSize(1);
     }
 
-    @Test
-    void failsWhenTheApplicationProfileDoesNotExist() {
+    @ParameterizedTest
+    @ValueSource(strings = {"create-never", "create-if-needed"})
+    void failsWhenTheApplicationProfileDoesNotExist(String createDisposition) {
         // The load-bearing half: a factory that dropped the option would pass the test above by
-        // writing through the instance's default profile, and fail only here.
-        createTable("table-sink-app-profile-missing");
+        // writing through the instance's default profile, and fail only here. Under either
+        // disposition, because the service answers the profile with the NOT_FOUND a missing
+        // table answers, and until #2215 that sent create-if-needed into a table repair.
+        String tableId = "table-sink-app-profile-missing-" + createDisposition;
+        createTable(tableId);
         TableEnvironment tEnv = tableEnvironment();
-        tEnv.executeSql(
-                ddl("table-sink-app-profile-missing", "sink.app-profile-id", "no-such-profile"));
+        List<String> options =
+                new ArrayList<>(
+                        List.of(
+                                "sink.app-profile-id",
+                                "no-such-profile",
+                                "sink.create-disposition",
+                                createDisposition));
+        if (createDisposition.equals("create-if-needed")) {
+            // The factory refuses create-if-needed without a rule for the families it creates.
+            options.addAll(List.of("sink.table-create.gc-rule.max-versions", "1"));
+        }
+        tEnv.executeSql(ddl(tableId, options.toArray(new String[0])));
 
-        // On the service's refusal of the profile, not merely on "something threw":
+        // On the connector's reading of the service's refusal, not merely on "something threw":
         // assertThatThrownBy already fails when nothing does, so isNotNull() would accept a DDL
         // parse error or an auth failure. The profile's name alone is not enough either, since
-        // FactoryUtil lists it among the table's options if the INSERT fails while planned.
+        // FactoryUtil lists it among the table's options if the INSERT fails while planned. The
+        // service's own wording is asserted too, since it is what the classifier matches.
         assertThatThrownBy(
                         () ->
                                 tEnv.executeSql(
                                                 "INSERT INTO bt VALUES ('r1', ROW('alice',"
                                                         + " CAST(7 AS BIGINT)))")
                                         .await())
+                .hasStackTraceContaining(
+                        "its instance has no application profile 'no-such-profile'")
                 .hasStackTraceContaining("Profile no-such-profile not found");
     }
 }

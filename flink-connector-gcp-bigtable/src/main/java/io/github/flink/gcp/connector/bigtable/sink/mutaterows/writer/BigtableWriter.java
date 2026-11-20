@@ -1646,15 +1646,24 @@ public class BigtableWriter<T> implements SinkWriter<T> {
     /**
      * Wraps a fatal mutation failure. A {@code NOT_FOUND} reaching this under {@code CREATE_NEVER}
      * names the disposition, so the reader meeting the failure learns the knob that changes it
-     * rather than only the missing table.
+     * rather than only the missing table. A missing application profile reaches this under either
+     * disposition and names the profile instead: the table exists, and no disposition repairs it.
      */
     private IOException wrapMutationFailure(
             TableDestination destination, BigtableErrorClassifier.Kind kind, Throwable throwable) {
-        String reason =
-                kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND
-                        ? " because the table or one of its column families does not exist and"
-                                + " createDisposition is CREATE_NEVER"
-                        : "";
+        String reason;
+        if (kind == BigtableErrorClassifier.Kind.APP_PROFILE_NOT_FOUND) {
+            reason =
+                    " because "
+                            + BigtableErrorClassifier.missingAppProfileReason(throwable)
+                            + ", and no createDisposition creates one";
+        } else if (kind == BigtableErrorClassifier.Kind.TABLE_NOT_FOUND) {
+            reason =
+                    " because the table or one of its column families does not exist and"
+                            + " createDisposition is CREATE_NEVER";
+        } else {
+            reason = "";
+        }
         return new IOException(
                 "A mutation of Bigtable table " + destination + " failed" + reason + ".",
                 throwable);

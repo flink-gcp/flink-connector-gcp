@@ -708,6 +708,8 @@ missing-family response with the entry and the families the ensure observed; an 
 family fails immediately with the table and family named instead of spending the remaining
 recovery attempts. A `NOT_FOUND` that does not specifically identify a missing family keeps the
 existing bounded retry behaviour ([#432]({{< param BookRepo >}}/issues/432)).
+A `NOT_FOUND` whose description names a missing application profile (`Profile <id> not found.`) is never parked.
+Creating a table cannot supply a profile, so the job fails under either disposition with the profile named, and the repair makes no admin call ([#2215]({{< param BookRepo >}}/issues/2215)).
 
 **The garbage-collection rule is the decision that matters.** The default sink is at-least-once: a replay
 whose serializer sets no explicit cell timestamps writes duplicate cell versions, and the family's
@@ -717,7 +719,7 @@ Bigtable's default of collecting nothing;
 latest cell. The [reference]({{< relref "docs/reference/bigtable" >}}#tablecreateoptions) lists the
 four rule shapes.
 
-Under the default `CREATE_NEVER` a `NOT_FOUND` stays **fatal** — a missing table fails every
+Under the default `CREATE_NEVER` a missing table's `NOT_FOUND` stays **fatal** — a missing table fails every
 record alike, so it must never reach a handler that may drop records — and the failure names the
 disposition, so the reader meeting it learns the knob that changes it. Auto-creation needs the
 `bigtable.tables.create` and `bigtable.tables.update` permissions (`roles/bigtable.admin` carries
@@ -1060,7 +1062,8 @@ mailbox, so the writer's state is touched from one thread only — and routed by
 | Class | Examples | Behavior |
 |---|---|---|
 | Row-level | `INVALID_ARGUMENT` — a cell timestamp that is not a multiple of 1000, an empty row key | Routed to the configured [failed-mutation handler](#failed-mutation-policy) once confirmed against the one mutation (below); applying the same mutation again could not succeed |
-| Missing table | `NOT_FOUND` — the table or one of its column families does not exist | [Repaired](#table-auto-creation) under `CREATE_IF_NEEDED`; fatal under the default `CREATE_NEVER`, with the disposition named in the failure |
+| Missing application profile | `NOT_FOUND` whose description names the profile (`Profile <id> not found.`): `appProfileId` names a profile the instance does not have | Fatal under either disposition, with the profile named in the failure; never repaired, since creating a table cannot supply a profile |
+| Missing table | `NOT_FOUND` — the table or one of its column families does not exist, or any other `NOT_FOUND` | [Repaired](#table-auto-creation) under `CREATE_IF_NEEDED`; fatal under the default `CREATE_NEVER`, with the disposition named in the failure |
 | Fatal | `PERMISSION_DENIED`, `UNAUTHENTICATED`, `FAILED_PRECONDITION`, `OUT_OF_RANGE`; an outage the client's own retries gave up on (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, the two it retries) or a contended or overloaded service it does not retry at all (`ABORTED`, `RESOURCE_EXHAUSTED`); failures carrying no status at all | Fail the ongoing write or checkpoint |
 
 The row-level examples are the ones measured against the service, and they are the whole list this
@@ -1153,7 +1156,7 @@ before the service answers leaves the service's state *unknown*:
 |---|---|---|
 | Row-level | `INVALID_ARGUMENT`, with no ambiguous status anywhere in the chain; or a request the client's own validation refuses before it is sent (`IllegalArgumentException` or `IllegalStateException` thrown from the call — a `CheckAndMutateRow` whose `then` and `otherwise` are both empty) | On the sink surface, routed to the configured `FailureHandler<FailedRequest>`; on the async surface, fails the job |
 | Ambiguous | `DEADLINE_EXCEEDED`, `UNAVAILABLE`, `ABORTED` or `CANCELLED` anywhere in the chain, or a cancelled request | Fails the job with a message naming the RPC and the table, saying that the service may or may not have applied it, and stating what a [replay](#delivery-guarantees-and-state) does to each RPC |
-| Fatal | Everything else: `NOT_FOUND` (the table or one of its families does not exist), `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, failures carrying no status | Fails the job. There is no isolation pass — a request has exactly one identity — and no [auto-creation repair](#table-auto-creation), which is the batching sink's feature |
+| Fatal | Everything else: `NOT_FOUND` (the table, one of its families or the application profile does not exist; a missing profile is named in the failure), `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, failures carrying no status | Fails the job. There is no isolation pass — a request has exactly one identity — and no [auto-creation repair](#table-auto-creation), which is the batching sink's feature |
 
 A deadline failure is additionally counted under [`requestsTimedOut`](#single-row-request-metrics).
 The async surface has **no failure handler**: the handler contract is task-thread, and an answer
@@ -1266,8 +1269,8 @@ and this counter is what shows it while the job stays green.
 
 **`parkedEntries` is what to watch beside it.** As
 [the error-handling section](#error-handling) describes, a row-level rejection reported against a
-whole batch is held for the isolation pass rather than routed, and a `NOT_FOUND` under
-`CREATE_IF_NEEDED` is held for the repair; this gauge is the only thing that reports those
+whole batch is held for the isolation pass rather than routed, and a missing table's `NOT_FOUND`
+under `CREATE_IF_NEEDED` is held for the repair; this gauge is the only thing that reports those
 entries: they have already left `inFlightEntries` and have not yet reached the handler. It is a
 *transient* reading rather than a backlog — both passes empty their park at the next record or the
 next checkpoint, whichever comes first — so what a dashboard shows is how often a sample catches
@@ -1688,9 +1691,11 @@ between you and a new instance. The gated suite shows:
 - **Which status Bigtable rejects a mutation with**, and therefore which side of the
   [row-level/fatal boundary](#error-handling) each rejection lands on. This is where the two
   `INVALID_ARGUMENT` examples in that table come from, where the `NOT_FOUND` of a missing table
-  and of a missing column family are pinned, and where the batch-wide rejection that the isolation
-  pass answers was both found and, since [#239]({{< param BookRepo >}}/issues/239), verified to be
-  answered: a good record written beside a bad one is applied, and only the bad one is routed.
+  and of a missing column family are pinned (the Table sink and conditional suites pin the
+  wording of a missing application profile's, which the classifier matches), and where the
+  batch-wide rejection that the isolation pass answers was both found and, since
+  [#239]({{< param BookRepo >}}/issues/239), verified to be answered: a good record written beside
+  a bad one is applied, and only the bad one is routed.
 - **Aggregate and delete-then-write semantics.** The gated sink suite exercises `AddToCell` and `MergeToCell` against a pre-created Int64 Sum family, including repeated inputs with a fixed timestamp.
   The merge uses an explicit protobuf `bytes_value` input after the service rejected the SDK's convenience overload for Int64 Sum on 2026-09-05 (ADR-0041).
   It also checks immediate column replacement, replay with no intervening write, and that a rejected compound entry preserves the original versions.
@@ -1742,7 +1747,7 @@ below, and two in the read table further down.
 | Cell timestamp not a multiple of 1000, **explicitly set** | `INVALID_ARGUMENT`, the whole request rejected: every entry of the batch routed to the handler, nothing written | `INTERNAL` ("Timestamp granularity mismatch: timestamp 1234 is not a multiple of 1000 microseconds"), the offending entry only — the rest of the batch is written |
 | Empty row key | `INVALID_ARGUMENT`, "Row keys must be non-empty", the whole request rejected | `INTERNAL` wrapping the same wording, the offending entry only — the rest of the batch is written. Up to `441.0.0-emulators` the emulator **accepted** the write instead; it now refuses it on this path, and on single-row `MutateRow` it answers the service's own `INVALID_ARGUMENT` unwrapped. `ReadModifyWriteRow` still accepts one — see the read table |
 | Mutation naming a column family the table does not have | `NOT_FOUND`, the offending entry. The rest of the batch was failed with it and not written through 2026-09-19, and was written on 2026-09-26, so the suite asserts neither | `INTERNAL` ("unknown family"), the offending entry only |
-| Mutation against a table that does not exist | `NOT_FOUND`, for every entry — worded "No tables found for instance …" against an instance holding no tables | `NOT_FOUND` ("table ... not found") — the one rejection the emulator answers with the service's status, which is what lets the emulator suite drive the [auto-creation](#table-auto-creation) repair end-to-end; only the wording differs, and the sink classifies by status alone |
+| Mutation against a table that does not exist | `NOT_FOUND`, for every entry — worded "No tables found for instance …" against an instance holding no tables | `NOT_FOUND` ("table ... not found") — the one rejection the emulator answers with the service's status, which is what lets the emulator suite drive the [auto-creation](#table-auto-creation) repair end-to-end; only the wording differs, and the sink classifies a missing table by status alone |
 
 The status is the deviation that matters. `INTERNAL` is [fatal](#error-handling) to this sink while
 `INVALID_ARGUMENT` is routed, so an emulator test would conclude "fails the job" for a condition the

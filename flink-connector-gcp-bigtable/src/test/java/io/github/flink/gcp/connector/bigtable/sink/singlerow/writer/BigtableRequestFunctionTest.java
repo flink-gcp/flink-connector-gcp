@@ -169,6 +169,22 @@ class BigtableRequestFunctionTest {
     }
 
     @Test
+    void aMissingApplicationProfileIsNamedRatherThanTheTable() throws Exception {
+        TestFunction function = open(options());
+        FakeResultFuture<String> result = new FakeResultFuture<>();
+        function.asyncInvoke("row-1", result.asResultFuture());
+
+        request("row-1")
+                .fail(
+                        ScriptedRowRequest.apiException(
+                                StatusCode.Code.NOT_FOUND, "Profile no-such-profile not found."));
+
+        assertThat(result.failure())
+                .hasMessageContaining("its instance has no application profile 'no-such-profile'")
+                .hasMessageNotContaining("does not exist");
+    }
+
+    @Test
     void theOperatorTimeoutCancelsTheRequestAndNamesBothDeadlines() throws Exception {
         TestFunction function = open(options().requestTimeout(Duration.ofSeconds(7)).build());
         FakeResultFuture<String> result = new FakeResultFuture<>();

@@ -229,6 +229,12 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   makes a repair call the admin; consumed per attempt, the ensure not repeated once it has
   succeeded — and a *failing* ensure spends an attempt from the recovery schedule rather than
   the job (the SDK gives the admin RPCs no retry layer of their own).
+- **A missing application profile is its own class, ahead of the missing table** (#2215): the
+  service answers it with the same `NOT_FOUND`, so the classifier reads the measured description,
+  anchored to the end of the message because the missing-family description quotes the row key.
+  Never parked, never routed; it fails the job under either disposition, naming the profile. Do
+  not match the missing table's wording instead — the service's is measured only on an instance
+  holding no tables, and a miss would stop the repair.
 - **Repair before isolation, and the two queues never drain each other**: a solo `NOT_FOUND`
   from the isolation pass migrates to `pendingRepair` (the tripwire invariant survives verbatim);
   a repair's re-application can park entries for isolation. `flush()` loops over both passes;

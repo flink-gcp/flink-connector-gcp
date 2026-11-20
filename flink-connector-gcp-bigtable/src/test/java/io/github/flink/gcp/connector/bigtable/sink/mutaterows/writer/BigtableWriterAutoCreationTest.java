@@ -37,6 +37,8 @@ import io.github.flink.gcp.connector.testutils.TestContexts;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -491,6 +493,41 @@ class BigtableWriterAutoCreationTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("createDisposition is CREATE_NEVER");
         assertThat(admin.ensured).isEmpty();
+        assertThat(handler.handled).isEmpty();
+        assertThat(writer.getParkedEntries()).isZero();
+    }
+
+    @ParameterizedTest
+    @EnumSource(CreateDisposition.class)
+    void aMissingApplicationProfileFailsUnderEitherDispositionWithoutARepair(
+            CreateDisposition disposition) throws Exception {
+        // #2215: the service answers NOT_FOUND for a profile the instance lacks, as it does for a
+        // missing table. Creating the table cannot supply the profile, so a repair would ensure a
+        // table that exists, re-apply into the same NOT_FOUND, and fail only once the recovery
+        // budget ran out, with a message blaming the table.
+        RecordingHandler handler = new RecordingHandler();
+        BigtableWriter<String> writer =
+                writer(
+                        BigtableWriterOptions.builder().build(),
+                        handler,
+                        disposition,
+                        disposition == CreateDisposition.CREATE_IF_NEEDED ? CREATE_OPTIONS : null);
+        batcher.missingAppProfile = "no-such-profile";
+
+        writer.write("row-1", TestContexts.NO_OP);
+        writer.write("row-2", TestContexts.NO_OP);
+
+        assertThatThrownBy(() -> writer.flush(false))
+                .isInstanceOf(IOException.class)
+                .hasMessage(
+                        "A mutation of Bigtable table "
+                                + TABLE
+                                + " failed because its instance has no application profile"
+                                + " 'no-such-profile', and no createDisposition creates one.")
+                .hasStackTraceContaining("Profile no-such-profile not found.");
+        assertThat(admin.ensured).isEmpty();
+        // One request and no re-application: nothing was parked for a repair to send again.
+        assertThat(batcher.sentRowKeys()).containsExactly(List.of("row-1", "row-2"));
         assertThat(handler.handled).isEmpty();
         assertThat(writer.getParkedEntries()).isZero();
     }

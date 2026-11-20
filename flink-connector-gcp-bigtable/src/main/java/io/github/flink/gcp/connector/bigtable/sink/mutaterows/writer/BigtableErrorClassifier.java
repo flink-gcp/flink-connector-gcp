@@ -27,19 +27,30 @@ import javax.annotation.Nullable;
 
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Classifies failed row mutations into the classes the writer routes on.
  *
  * <ul>
+ *   <li>{@link Kind#APP_PROFILE_NOT_FOUND} — the request names an application profile the instance
+ *       does not have: a {@code NOT_FOUND} whose description carries the service's {@code
+ *       MISSING_APP_PROFILE} wording. Checked first of all. Creating a table cannot supply a
+ *       profile, so it is never repaired, and every record fails alike, so it is never routed; the
+ *       job fails under either disposition with the profile named.
  *   <li>{@link Kind#TABLE_NOT_FOUND} — the table or one of its column families does not exist
- *       ({@code NOT_FOUND}). Checked <em>first</em>, ahead of the transient precedence: a {@code
- *       NOT_FOUND} chain that also carries a transient status is still the missing-table failure,
- *       and acting on it is safe where a drop would not be — the writer either repairs it by
- *       idempotent creation and re-applies the mutation (under {@code CREATE_IF_NEEDED}), or fails
- *       the job (under {@code CREATE_NEVER}, since a missing table fails every record alike);
+ *       ({@code NOT_FOUND}). Checked right after the profile, ahead of the transient precedence: a
+ *       {@code NOT_FOUND} chain that also carries a transient status is still the missing-table
+ *       failure, and acting on it is safe where a drop would not be — the writer either repairs it
+ *       by idempotent creation and re-applies the mutation (under {@code CREATE_IF_NEEDED}), or
+ *       fails the job (under {@code CREATE_NEVER}, since a missing table fails every record alike);
  *       nothing is discarded either way. {@code PubSubErrorClassifier} orders its {@code
- *       TOPIC_NOT_FOUND} the same way.
+ *       TOPIC_NOT_FOUND} the same way. Any {@code NOT_FOUND} the profile's wording does not
+ *       identify lands here, which is why the table's own wording is never matched: the service's
+ *       is measured only on an instance holding no tables ("No tables found for instance …"), the
+ *       emulator words it differently, and a wording the matcher missed would stop the repair
+ *       rather than merely word the failure less precisely.
  *   <li>{@link Kind#ROW_LEVEL} — the service rejected this mutation as invalid ({@code
  *       INVALID_ARGUMENT}: over the size limit for a cell or a row, more mutations than one row
  *       accepts, a malformed qualifier). Applying the same mutation again cannot succeed and the
@@ -79,8 +90,9 @@ import java.util.Set;
  * sink.singlerow.writer}) classifies its {@code CheckAndMutateRow} and {@code ReadModifyWriteRow}
  * failures by the same two halves, and then draws its own boundary between the transient statuses —
  * for a request-response RPC an interrupted call is ambiguous rather than merely fatal — so it
- * reads {@link #classify(Throwable)}, {@link #carriesAny(Throwable, Set)} and {@link
- * #statusCode(Throwable)} rather than walking the chain a second way.
+ * reads {@link #classify(Throwable)}, {@link #carriesAny(Throwable, Set)}, {@link
+ * #statusCode(Throwable)} and {@link #missingAppProfileReason(Throwable)} rather than walking the
+ * chain a second way.
  */
 @Internal
 public final class BigtableErrorClassifier {
@@ -104,8 +116,35 @@ public final class BigtableErrorClassifier {
      */
     static final String MISSING_COLUMN_FAMILY_PHRASE = "Requested column family not found";
 
+    /**
+     * The service's description when a request names an application profile the instance does not
+     * have, with the profile id captured. A {@code MutateRows} under the profile {@code
+     * no-such-profile} answers, for every entry of the request,
+     *
+     * <pre>
+     * NOT_FOUND: Profile no-such-profile not found.
+     * </pre>
+     *
+     * <p>Measured 2026-11-20 against the service on {@code MutateRows} by {@code
+     * BigtableTableSinkRealGcpITCase} and on {@code CheckAndMutateRow} by {@code
+     * BigtableConditionalRealGcpITCase} (#2215, google-cloud-bigtable 2.88.0). It is read only on a
+     * node that itself reports {@code NOT_FOUND}, and it must <em>end</em> the message, starting
+     * either the message or right after a {@code ": "}, as in {@code "NOT_FOUND: "} — the shapes
+     * the description takes in the raw gRPC status and in each gax exception over it, whose message
+     * is its cause's {@code toString()}. Matching anywhere in the message instead would read user
+     * data: the missing-family description quotes the row key ({@code
+     * MISSING_COLUMN_FAMILY_PHRASE}), so a row key containing the wording would turn a repairable
+     * family into a phantom profile. A wording this pattern misses keeps the {@link
+     * Kind#TABLE_NOT_FOUND} handling: the job still fails, only later under {@code
+     * CREATE_IF_NEEDED} and with a message naming the table, which is what the sink did before the
+     * profile had a class of its own.
+     */
+    static final Pattern MISSING_APP_PROFILE =
+            Pattern.compile("(?:^|: )Profile (\\S+) not found\\.?$");
+
     /** The classes a failed mutation falls into. */
     public enum Kind {
+        APP_PROFILE_NOT_FOUND,
         TABLE_NOT_FOUND,
         ROW_LEVEL,
         FATAL
@@ -140,6 +179,9 @@ public final class BigtableErrorClassifier {
      * @return the error class
      */
     public static Kind classify(Throwable throwable) {
+        if (missingAppProfile(throwable) != null) {
+            return Kind.APP_PROFILE_NOT_FOUND;
+        }
         if (firstMatching(throwable, EnumSet.of(StatusCode.Code.NOT_FOUND)) != null) {
             return Kind.TABLE_NOT_FOUND;
         }
@@ -149,6 +191,44 @@ public final class BigtableErrorClassifier {
         return firstMatching(throwable, null) == StatusCode.Code.INVALID_ARGUMENT
                 ? Kind.ROW_LEVEL
                 : Kind.FATAL;
+    }
+
+    /**
+     * Returns the application profile a {@code NOT_FOUND} in the chain says the instance does not
+     * have, or {@code null} when the chain carries no such failure. The id is the one the service
+     * names, which is the one the request carried, so a message built from it names what was sent
+     * rather than what the configuration was assumed to send.
+     *
+     * @param throwable the failure reported by a mutation's or a request's future
+     * @return the missing profile's id, or {@code null}
+     */
+    @Nullable
+    static String missingAppProfile(Throwable throwable) {
+        return ExceptionUtils.findThrowable(
+                        throwable,
+                        t ->
+                                StatusCodes.codeOf(t) == StatusCode.Code.NOT_FOUND
+                                        && t.getMessage() != null
+                                        && MISSING_APP_PROFILE.matcher(t.getMessage()).find())
+                .map(
+                        t -> {
+                            Matcher matcher = MISSING_APP_PROFILE.matcher(t.getMessage());
+                            matcher.find();
+                            return matcher.group(1);
+                        })
+                .orElse(null);
+    }
+
+    /**
+     * Returns why a {@link Kind#APP_PROFILE_NOT_FOUND} failure failed, naming the profile, for the
+     * message either write family fails the job with. One place, so the batching and the single-row
+     * writers word the same service failure the same way.
+     *
+     * @param throwable a failure {@link #classify} put in {@link Kind#APP_PROFILE_NOT_FOUND}
+     * @return the reason, as a clause that follows "because"
+     */
+    public static String missingAppProfileReason(Throwable throwable) {
+        return "its instance has no application profile '" + missingAppProfile(throwable) + "'";
     }
 
     /**
