@@ -50,6 +50,8 @@ import io.github.flink.gcp.connector.bigquery.testproto.UnsignedTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypes;
 import io.github.flink.gcp.connector.bigquery.testproto.WellKnownTypesChild;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.time.Instant;
 import java.util.Arrays;
@@ -788,25 +790,44 @@ class ProtoRowConverterTest {
         // Sub-microsecond digits are truncated toward zero, as they already are for TIMESTAMP.
         assertThat(durationMicros(converter, 0L, 1_500)).isEqualTo(1L);
         assertThat(durationMicros(converter, 0L, -1_500)).isEqualTo(-1L);
+        // Both ends of protobuf's range fit INT64 microseconds.
+        assertThat(durationMicros(converter, 315_576_000_000L, 999_999_999))
+                .isEqualTo(315_576_000_000_999_999L);
+        assertThat(durationMicros(converter, -315_576_000_000L, -999_999_999))
+                .isEqualTo(-315_576_000_000_999_999L);
     }
 
     /**
-     * A row-level failure like the uint64 case, and rewrapped so the message names the field —
-     * protobuf's own names none, which for a record with several Duration columns leaves nothing to
-     * act on.
+     * A row-level failure, rewrapped so the message names the field — protobuf's own names none,
+     * which for a record with several Duration columns leaves nothing to act on. Each way protobuf
+     * rejects a duration: seconds past either end, nanos past either end, and opposite signs.
      */
-    @Test
-    void rejectsOutOfRangeDurations() throws Exception {
+    @ParameterizedTest
+    @CsvSource({
+        "315576000001, 0",
+        "-315576000001, 0",
+        "0, 1000000000",
+        "0, -1000000000",
+        "1, -1",
+        "-1, 1"
+    })
+    void namesTheFieldOfAnInvalidDuration(long seconds, int nanos) throws Exception {
         ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
         WellKnownTypes source =
                 WellKnownTypes.newBuilder()
-                        .setWDuration(Duration.newBuilder().setSeconds(Long.MAX_VALUE))
+                        .setWDuration(Duration.newBuilder().setSeconds(seconds).setNanos(nanos))
                         .build();
 
         assertThatThrownBy(() -> converter.convert(source))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("w_duration")
-                .hasMessageContaining("out of range");
+                .hasMessageContaining("field w_duration")
+                .hasMessageContaining("(seconds=" + seconds + ", nanos=" + nanos + ")")
+                .hasMessageContaining("is not a valid Duration")
+                // The stated rules are the fix, so each one is held.
+                .hasMessageContaining("-315,576,000,000 and 315,576,000,000")
+                .hasMessageContaining("-999,999,999 and 999,999,999")
+                .hasMessageContaining("opposite signs")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
     }
 
     /** A nested field's failure names its full path, so the FailedRow can be acted on. */
@@ -824,6 +845,52 @@ class ProtoRowConverterTest {
         assertThatThrownBy(() -> converter.convert(source))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("w_child.c_duration");
+    }
+
+    /**
+     * Protobuf's own message names no field, so the rewrapped one carries the path and the values,
+     * like a Duration's: one second past either end of the range, and nanos just outside theirs.
+     */
+    @ParameterizedTest
+    @CsvSource({"253402300800, 0", "-62135596801, 0", "0, -1", "0, 1000000000"})
+    void namesTheFieldOfAnInvalidTimestamp(long seconds, int nanos) throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+        WellKnownTypes source =
+                WellKnownTypes.newBuilder()
+                        .setWTs(Timestamp.newBuilder().setSeconds(seconds).setNanos(nanos))
+                        .build();
+
+        assertThatThrownBy(() -> converter.convert(source))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("field w_ts")
+                .hasMessageContaining("(seconds=" + seconds + ", nanos=" + nanos + ")")
+                .hasMessageContaining("is not a valid Timestamp")
+                .hasMessageContaining("0001-01-01T00:00:00Z and 9999-12-31T23:59:59Z")
+                .hasMessageContaining("0 and 999,999,999")
+                .hasCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** The rewrap changes the message only: both ends of BigQuery's range are still written. */
+    @Test
+    void writesTimestampsAtBothEndsOfTheRange() throws Exception {
+        ProtoRowConverter converter = wellKnownTypesConverter(ProtoSchemaOptions.defaults());
+
+        DynamicMessage first =
+                converter.convert(
+                        WellKnownTypes.newBuilder()
+                                .setWTs(Timestamp.newBuilder().setSeconds(-62_135_596_800L))
+                                .build());
+        DynamicMessage last =
+                converter.convert(
+                        WellKnownTypes.newBuilder()
+                                .setWTs(
+                                        Timestamp.newBuilder()
+                                                .setSeconds(253_402_300_799L)
+                                                .setNanos(999_999_999))
+                                .build());
+
+        assertThat(get(first, "w_ts")).isEqualTo(-62_135_596_800_000_000L);
+        assertThat(get(last, "w_ts")).isEqualTo(253_402_300_799_999_999L);
     }
 
     /** Paths verbatim, not lowerCamelCased as protobuf's canonical JSON form would render them. */
@@ -903,6 +970,7 @@ class ProtoRowConverterTest {
                 source,
                 "w_duration",
                 dynamic(source, "w_duration", "seconds", 2L, "nanos", 250_000_000));
+        set(builder, source, "w_ts", dynamic(source, "w_ts", "seconds", 3L, "nanos", 4_000));
         set(
                 builder,
                 source,
@@ -926,6 +994,7 @@ class ProtoRowConverterTest {
         assertThat(get(row, "w_int64")).isEqualTo(5L);
         assertThat(get(row, "w_mask")).isEqualTo("a,b");
         assertThat(get(row, "w_duration")).isEqualTo(2_250_000L);
+        assertThat(get(row, "w_ts")).isEqualTo(3_000_004L);
         // The canonical Struct rendering, not the {"fields":{...}} an ordinary message would give.
         assertThat(get(row, "w_struct")).isEqualTo("{\"k\":\"v\"}");
     }
@@ -1138,8 +1207,8 @@ class ProtoRowConverterTest {
     }
 
     /**
-     * An expanded Duration is written as it is, without the range check of the microseconds
-     * mapping: the components are what the column holds, so there is nothing to overflow.
+     * An expanded Duration is written as it is, without the validation of the microseconds mapping:
+     * the components are what the column holds, so there is nothing to convert.
      */
     @Test
     void writesAnOutOfRangeExpandedDurationAsItsComponents() throws Exception {

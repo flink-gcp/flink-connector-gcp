@@ -1066,10 +1066,15 @@ so `Int64Value.of(5)` becomes the quoted string `"5"` — rather than the flatte
 one [as geography](#geography-columns), by path or by field option, wins in the same way and is then
 rejected, none of them being a string: the configured marking is never quietly ignored.
 
-A `Duration` outside protobuf's valid range is a row-level failure routed to the configured
-[`FailureHandler`](#error-handling). `FieldMask` paths are joined exactly as declared, *not*
-lowerCamelCased the way protobuf's canonical JSON form renders them, so they come back as they were
-written.
+A `Timestamp` or `Duration` that protobuf rejects as invalid is a row-level failure routed to the
+configured [`FailureHandler`](#error-handling). Where the field is flattened as above, the error
+message names it. A `Timestamp`'s seconds must lie between 0001-01-01 and 9999-12-31, which is also
+BigQuery's `TIMESTAMP` range, and its nanos between 0 and 999,999,999. A `Duration`'s seconds must
+lie within about 10,000 years either way and its nanos between -999,999,999 and 999,999,999, and
+the two must not have opposite signs.
+
+`FieldMask` paths are joined exactly as declared, *not* lowerCamelCased the way protobuf's canonical
+JSON form renders them, so they come back as they were written.
 
 **An existing table can keep these types as `STRUCT`s.** Other writers expand them as ordinary
 messages. Avro's `ProtobufData` makes each one a record of its fields, so an Avro load gives a
@@ -1083,7 +1088,7 @@ a Storage Write API append with `The proto field mismatched with BigQuery field 
 schema updates enabled, a `FILE_LOADS` commit refuses the table before it submits a load:
 
 ```text
-The serializer schema changes the type of the field note from STRUCT to STRING; BigQuery column types cannot be changed
+The serializer schema changes the type of the field note from STRUCT to STRING; a BigQuery schema update cannot change a column's type
 ```
 
 The Storage Write API writers reconcile only after a schema change or a rejected append (see

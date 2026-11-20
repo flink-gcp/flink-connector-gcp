@@ -17,8 +17,9 @@ limitations under the License.
 # ADR-0027: Protobuf well-known types are recognised by name *and* shape, with six constants
 
 - Status: Accepted
-- Date: 2026-07-27; revised by [#2107] (2026-11-08), [#2200] and [#2201] (2026-11-19)
-- Issues: [#147] (which is [#124] Part 2), [#2107], [#2200], [#2201]
+- Date: 2026-07-27; revised by [#2107] (2026-11-08), [#2200] and [#2201] (2026-11-19), [#2213]
+  (2026-11-20)
+- Issues: [#147] (which is [#124] Part 2), [#2107], [#2200], [#2201], [#2213]
 - Modules: bigquery (`sink.serializer.proto`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Protobuf messages
 
@@ -65,9 +66,10 @@ name** — a descriptor built from a serialized `FileDescriptorSet` carries its 
   one path are not a rejection. Modes need no new rule: these are message fields, so they have
   presence; the one deviation is deliberate — a proto2 `required` wrapper derives `REQUIRED`,
   and it is mandatory, so that is faithful.
-- An out-of-range `Duration` is a **row-level** failure like uint64 overflow, rewrapped so the
-  message names the field (protobuf's own names none); sub-microsecond truncation is silent, as
-  it already is for `Timestamp`. `FieldPlan` moved to named static factories; only
+- An invalid `Duration` (out of range, or with seconds and nanos of opposite signs) is a
+  **row-level** failure like uint64 overflow, rewrapped so the message names the field
+  (protobuf's own names none); sub-microsecond truncation is silent, as it already is for
+  `Timestamp`. `FieldPlan` moved to named static factories; only
   `Duration`/`FieldMask` need the `instanceof`-or-rebuild shape `toEpochMicros` established,
   because only they *construct* a well-known type to hand to `Durations`/`FieldMaskUtil` — a
   wrapper does not, so one `getField` serves a generated instance and a `DynamicMessage` alike.
@@ -122,8 +124,8 @@ unchanged. The flat mapping stays the right one for a table this connector creat
   code.
 - **`Struct`, `Value` and `ListValue` have no constant.** They are mutually recursive, so the
   recursion guard would reject them expanded; they stay `JSON` columns.
-- **An expanded `Duration` is not range-checked.** Its components are what the column holds, so
-  there is nothing to overflow. An expanded `UInt64Value` keeps the `uint64` range check, because
+- **An expanded `Duration` is not validated.** Its components are what the column holds, so
+  there is nothing to convert. An expanded `UInt64Value` keeps the `uint64` range check, because
   its `value` is a bare `uint64`.
 
 Verified against real BigQuery by `BigQueryProtoWellKnownTypesAsMessagesRealGcpITCase`. A table
@@ -178,3 +180,4 @@ A `uint32` or `fixed32` value still defaults to its unsigned value, which `INT64
 [#2107]: https://github.com/flink-gcp/flink-connector-gcp/issues/2107
 [#2200]: https://github.com/flink-gcp/flink-connector-gcp/issues/2200
 [#2201]: https://github.com/flink-gcp/flink-connector-gcp/issues/2201
+[#2213]: https://github.com/flink-gcp/flink-connector-gcp/issues/2213
