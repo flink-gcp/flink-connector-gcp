@@ -38,7 +38,8 @@ import java.util.Map;
  *
  * <ul>
  *   <li>existing fields are never dropped, reordered or re-typed (a type difference rejects the
- *       union — BigQuery cannot change column types, and a lost mapping would corrupt rows)
+ *       union — a BigQuery schema update cannot change a column's type, and a lost mapping would
+ *       corrupt rows)
  *   <li>desired-only fields are appended at the end (top level and inside {@code STRUCT}s), forced
  *       {@code NULLABLE} unless {@code REPEATED} (BigQuery cannot add {@code REQUIRED} columns);
  *       gated by {@link SchemaUpdateOptions#isAllowNewFields()}
@@ -176,7 +177,7 @@ public final class SchemaUnifier {
                             + existing.getType()
                             + " to "
                             + desired.getType()
-                            + "; BigQuery column types cannot be changed");
+                            + "; a BigQuery schema update cannot change a column's type");
         }
         boolean existingRepeated = existing.getMode() == TableFieldSchema.Mode.REPEATED;
         boolean desiredRepeated = desired.getMode() == TableFieldSchema.Mode.REPEATED;

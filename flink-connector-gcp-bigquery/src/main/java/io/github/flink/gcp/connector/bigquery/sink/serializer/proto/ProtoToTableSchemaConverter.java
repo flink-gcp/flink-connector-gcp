@@ -46,9 +46,9 @@ import java.util.Set;
  *   <li>enum → {@code STRING} (the enum value name; unknown enum numbers surface as protobuf's
  *       {@code UNKNOWN_ENUM_VALUE_*} placeholder names)
  *   <li>{@code google.protobuf.Timestamp} → {@code TIMESTAMP} (microsecond precision; anything
- *       finer is truncated)
- *   <li>{@code google.protobuf.Duration} → {@code INT64} microseconds (likewise truncated; a
- *       duration outside protobuf's valid range is a row-level failure)
+ *       finer is truncated; an invalid timestamp is a row-level failure)
+ *   <li>{@code google.protobuf.Duration} → {@code INT64} microseconds (likewise truncated; an
+ *       invalid duration is a row-level failure)
  *   <li>{@code google.protobuf.FieldMask} → {@code STRING}, its paths joined by commas exactly as
  *       declared — not lowerCamelCased, as protobuf's canonical JSON form would
  *   <li>the nine {@code google.protobuf.*Value} wrappers → the wrapped scalar's type. A wrapper

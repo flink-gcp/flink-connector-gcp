@@ -54,12 +54,13 @@ import java.util.List;
  * column names case-insensitively.
  *
  * <p>Value conversions mirror the schema mapping: {@code google.protobuf.Timestamp} fields are
- * flattened to validated epoch microseconds ({@link Timestamps#toMicros}) and {@code Duration}
- * fields to microseconds ({@link Durations#toMicros}, an out-of-range duration being a row-level
- * failure), a {@code FieldMask} becomes its comma-joined paths ({@link FieldMaskUtil#toString}), a
- * {@code *Value} wrapper is unwrapped and then converted exactly as the scalar it holds, {@code
- * Struct}/{@code Value}/{@code ListValue} are printed as canonical protobuf JSON like any other
- * JSON-mapped message, uint32/fixed32 are widened unsigned (or sign-extended under {@link
+ * flattened to validated epoch microseconds ({@link Timestamps#toMicros}, an invalid timestamp
+ * being a row-level failure) and {@code Duration} fields to microseconds ({@link
+ * Durations#toMicros}, an invalid duration being a row-level failure), a {@code FieldMask} becomes
+ * its comma-joined paths ({@link FieldMaskUtil#toString}), a {@code *Value} wrapper is unwrapped
+ * and then converted exactly as the scalar it holds, {@code Struct}/{@code Value}/{@code ListValue}
+ * are printed as canonical protobuf JSON like any other JSON-mapped message, uint32/fixed32 are
+ * widened unsigned (or sign-extended under {@link
  * ProtoSchemaOptions#isUnsignedIntegersAsSigned()}), uint64/fixed64 keep their 64 bits as the
  * signed {@code long} protobuf-java returns (so a value at or above 2<sup>63</sup> is written as a
  * negative {@code INT64}; BigQuery has no unsigned 64-bit type), enum values become their names,
@@ -560,15 +561,35 @@ public final class ProtoRowConverter {
         }
 
         private long toEpochMicros(Object value) {
+            Timestamp timestamp;
             if (value instanceof Timestamp) {
-                return Timestamps.toMicros((Timestamp) value);
+                timestamp = (Timestamp) value;
+            } else {
+                MessageOrBuilder message = (MessageOrBuilder) value;
+                timestamp =
+                        Timestamp.newBuilder()
+                                .setSeconds((Long) message.getField(secondsField))
+                                .setNanos((Integer) message.getField(nanosField))
+                                .build();
             }
-            MessageOrBuilder message = (MessageOrBuilder) value;
-            return Timestamps.toMicros(
-                    Timestamp.newBuilder()
-                            .setSeconds((Long) message.getField(secondsField))
-                            .setNanos((Integer) message.getField(nanosField))
-                            .build());
+            try {
+                return Timestamps.toMicros(timestamp);
+            } catch (IllegalArgumentException e) {
+                // Rewrapped for the same reason as a Duration's: protobuf's message names no field.
+                // Protobuf's seconds bounds coincide with BigQuery's TIMESTAMP range.
+                throw new IllegalArgumentException(
+                        "google.protobuf.Timestamp value of field "
+                                + path
+                                + " (seconds="
+                                + timestamp.getSeconds()
+                                + ", nanos="
+                                + timestamp.getNanos()
+                                + ") is not a valid Timestamp: its seconds must lie between"
+                                + " 0001-01-01T00:00:00Z and 9999-12-31T23:59:59Z, which is also"
+                                + " BigQuery's TIMESTAMP range, and its nanos between 0 and"
+                                + " 999,999,999",
+                        e);
+            }
         }
 
         private long toDurationMicros(Object value) {
@@ -596,8 +617,10 @@ public final class ProtoRowConverter {
                                 + duration.getSeconds()
                                 + ", nanos="
                                 + duration.getNanos()
-                                + ") is out of range and cannot be represented as INT64"
-                                + " microseconds",
+                                + ") is not a valid Duration: its seconds must lie between"
+                                + " -315,576,000,000 and 315,576,000,000 (about 10,000 years),"
+                                + " its nanos between -999,999,999 and 999,999,999, and the two"
+                                + " must not have opposite signs",
                         e);
             }
         }

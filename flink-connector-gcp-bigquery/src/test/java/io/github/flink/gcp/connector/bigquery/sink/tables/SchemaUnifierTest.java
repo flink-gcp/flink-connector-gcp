@@ -189,7 +189,9 @@ class SchemaUnifierTest {
                 .isInstanceOf(SchemaUnifier.SchemaUnionException.class)
                 .hasMessageContaining("name")
                 .hasMessageContaining("STRING")
-                .hasMessageContaining("INT64");
+                .hasMessageContaining("INT64")
+                // The docs page quotes this sentence.
+                .hasMessageContaining("a BigQuery schema update cannot change a column's type");
     }
 
     @Test
