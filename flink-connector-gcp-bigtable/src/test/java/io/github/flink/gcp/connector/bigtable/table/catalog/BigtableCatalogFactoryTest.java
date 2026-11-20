@@ -107,19 +107,19 @@ class BigtableCatalogFactoryTest {
         for (String required : new String[] {"project", "instance"}) {
             assertThatThrownBy(() -> create(options(required, null)))
                     .as(required)
-                    .hasStackTraceContaining("Missing required options are:")
-                    .hasStackTraceContaining(required);
+                    .hasStackTraceContaining("Missing required options are:\n\n" + required);
         }
     }
 
     @Test
     void rejectsAnUnknownOptionSuchAsATuningKeyOrADefaultDatabase() {
         // Tuning stays per statement (docs/adr/0168); the database is the instance (ADR-0178).
-        // FactoryUtil's wrapper lists every option, so the key alone would match the dump.
+        // FactoryUtil's wrapper lists every option, so the key alone would match the dump; the
+        // header alone would match any other unknown key.
         for (String key : new String[] {"scan.app-profile-id", "default-database", "table"}) {
             assertThatThrownBy(() -> create(options(key, "x")))
                     .as(key)
-                    .hasStackTraceContaining("Unsupported options found for 'bigtable'");
+                    .hasStackTraceContaining("Unsupported options:\n\n" + key);
         }
     }
 
@@ -128,7 +128,7 @@ class BigtableCatalogFactoryTest {
         assertThat(create(options("key-type", "string"))).isInstanceOf(BigtableCatalog.class);
         assertThat(create(options("key-type", "bytes"))).isInstanceOf(BigtableCatalog.class);
         assertThatThrownBy(() -> create(options("key-type", "varchar")))
-                .hasStackTraceContaining("key-type");
+                .hasStackTraceContaining("Could not parse value 'varchar' for key 'key-type'");
     }
 
     @Test

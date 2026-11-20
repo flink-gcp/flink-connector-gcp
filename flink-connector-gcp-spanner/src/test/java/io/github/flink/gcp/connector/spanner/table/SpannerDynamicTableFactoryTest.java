@@ -224,11 +224,9 @@ class SpannerDynamicTableFactoryTest {
         options.put("schema.generated-columns", "name");
 
         assertThatThrownBy(() -> sink(SCHEMA, options))
-                .hasStackTraceContaining("Unsupported options")
-                .hasStackTraceContaining("schema.generated-columns");
+                .hasStackTraceContaining("Unsupported options:\n\nschema.generated-columns");
         assertThatThrownBy(() -> source(SCHEMA, options))
-                .hasStackTraceContaining("Unsupported options")
-                .hasStackTraceContaining("schema.generated-columns");
+                .hasStackTraceContaining("Unsupported options:\n\nschema.generated-columns");
     }
 
     @Test
@@ -1278,8 +1276,8 @@ class SpannerDynamicTableFactoryTest {
         Map<String, String> ordering = options();
         ordering.put("sink.ordering-mode", "per-row");
         assertThatThrownBy(() -> sink(SCHEMA, ordering))
-                .hasStackTraceContaining("sink.ordering-mode")
-                .hasStackTraceContaining("per-row");
+                .hasStackTraceContaining(
+                        "Could not parse value 'per-row' for key 'sink.ordering-mode'");
 
         Map<String, String> recovery = options();
         recovery.put("sink.recovery.max-attempts", "0");

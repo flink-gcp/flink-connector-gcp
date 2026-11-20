@@ -187,8 +187,8 @@ class CloudTasksStagedTableTest {
         var options = options();
         options.put("sink.staged.clock-skew-allowance", "-1 ms");
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("sink.staged.clock-skew-allowance")
-                .hasStackTraceContaining("Could not parse");
+                .hasStackTraceContaining(
+                        "Could not parse value '-1 ms' for key 'sink.staged.clock-skew-allowance'");
         var typed = Configuration.fromMap(options());
         typed.set(
                 CloudTasksConnectorOptions.SINK_STAGED_CLOCK_SKEW_ALLOWANCE, Duration.ofMillis(-1));
@@ -208,13 +208,14 @@ class CloudTasksStagedTableTest {
         var options = options();
         options.remove("sink.delivery-guarantee");
         options.put(key, value);
+        // The whole sentence: the two keys alone also match Flink's unknown-option message, which
+        // lists every key the factory supports.
+        String refusal = "Option '" + key + "' requires 'sink.delivery-guarantee' = 'exactly-once'";
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining(key)
-                .hasStackTraceContaining("sink.delivery-guarantee");
+                .hasStackTraceContaining(refusal);
         options.put("sink.delivery-guarantee", "at-least-once");
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining(key)
-                .hasStackTraceContaining("exactly-once");
+                .hasStackTraceContaining(refusal);
     }
 
     @ParameterizedTest

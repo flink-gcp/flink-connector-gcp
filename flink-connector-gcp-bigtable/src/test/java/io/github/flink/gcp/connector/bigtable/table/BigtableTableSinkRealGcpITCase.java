@@ -234,15 +234,16 @@ class BigtableTableSinkRealGcpITCase extends AbstractBigtableRealGcpITCase {
         tEnv.executeSql(
                 ddl("table-sink-app-profile-missing", "sink.app-profile-id", "no-such-profile"));
 
-        // On the profile's name, not merely on "something threw": assertThatThrownBy already
-        // fails when nothing does, so isNotNull() would accept a DDL parse error or an auth
-        // failure and read as proof of something it never checked.
+        // On the service's refusal of the profile, not merely on "something threw":
+        // assertThatThrownBy already fails when nothing does, so isNotNull() would accept a DDL
+        // parse error or an auth failure. The profile's name alone is not enough either, since
+        // FactoryUtil lists it among the table's options if the INSERT fails while planned.
         assertThatThrownBy(
                         () ->
                                 tEnv.executeSql(
                                                 "INSERT INTO bt VALUES ('r1', ROW('alice',"
                                                         + " CAST(7 AS BIGINT)))")
                                         .await())
-                .hasStackTraceContaining("no-such-profile");
+                .hasStackTraceContaining("Profile no-such-profile not found");
     }
 }

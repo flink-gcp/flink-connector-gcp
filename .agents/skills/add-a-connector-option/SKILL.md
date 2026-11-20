@@ -145,13 +145,24 @@ void namesTheOptionKeyWhenAValueIsRejected() {
 
 Five things this shape is deliberate about:
 
-- **Assert both halves.** The key alone passes if the rename is there but the builder's bound is
-  gone; the builder's sentence alone passes if the bound is there but the rename is not.
+- **Assert both halves.** The `Option 'k' is invalid` half alone passes if the rename is there but
+  the builder's bound is gone; the builder's sentence alone passes if the bound is there but the
+  rename is not.
 - **Through a factory, match the stack rather than the root cause.** `FactoryUtil` wraps whatever
   the factory throws, and `OptionSetters` puts the key on an *intermediate* `ValidationException`
   whose own cause is the builder's `IllegalArgumentException` — so `.rootCause()` sees only the
   setter's sentence. `hasStackTraceContaining` for both halves is what the factory tests use;
-  `hasMessageContaining` works where the mapper is called directly.
+  `hasMessageContaining` works where the mapper is called directly. Take each needle from the
+  cause's sentence, not from what the `WITH` clause carries: the wrapper's own message names the
+  table or catalog and lists every option as `'key'='value'`, so a needle that is only an option
+  key, an option value or the word "table" passes for any exception the factory throws. A key the
+  `WITH` clause leaves out is no better: Flink's message for an unknown key lists every key the
+  factory supports, so that key alone passes for a typo elsewhere in the DDL. The phrases
+  `Option 'k' is invalid`, Flink's `Could not parse value 'v' for key 'k'`, its
+  `Unsupported options:\n\nk` and its `Missing required options are:\n\nk` appear only in the
+  cause. The last two need a test that sets one unknown key or leaves out one required key, since
+  Flink lists several in sorted order, and the parse form needs a key that is not sensitive,
+  since Flink leaves a sensitive key's value out.
 - **Assert the type only where it can fail.** When the only call in the lambda that can throw is
   `FactoryUtil`'s create method (`FactoryMocks.createTableSink`, `FactoryUtil.createCatalog`, or a
   helper that just returns one), the test sees the wrapper, a `ValidationException` whatever the

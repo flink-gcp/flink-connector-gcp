@@ -536,13 +536,22 @@ class CloudTasksDynamicTableFactoryTest {
     }
 
     @ParameterizedTest(name = "app-engine.relative-uri={0}")
-    @ValueSource(strings = {"tasks", "/bad path", "/tasks#fragment"})
-    void rejectsMalformedFixedAppEngineRelativeUris(String relativeUri) {
+    @CsvSource(
+            delimiter = '|',
+            quoteCharacter = '"',
+            value = {
+                "tasks           | must be empty or begin with '/'",
+                "/bad path       | must not contain whitespace",
+                "/tasks#fragment | must contain only a path and optional query"
+            })
+    void rejectsMalformedFixedAppEngineRelativeUris(String relativeUri, String rule) {
         Map<String, String> options = appEngineOptions();
         options.put("app-engine.relative-uri", relativeUri);
 
+        // Each value against its own rule, so removing one rule fails its row even when another
+        // rule would still refuse the value.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("app-engine.relative-uri");
+                .hasStackTraceContaining("Option 'app-engine.relative-uri' " + rule);
     }
 
     @Test
@@ -666,8 +675,9 @@ class CloudTasksDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put("http.multipart.boundary", "x");
 
+        // The wrapper lists every option, so match the key inside Flink's unsupported list.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining("http.multipart.boundary");
+                .hasStackTraceContaining("Unsupported options:\n\nhttp.multipart.boundary");
     }
 
     @ParameterizedTest
@@ -700,7 +710,8 @@ class CloudTasksDynamicTableFactoryTest {
         Map<String, String> options = minimalOptions();
         options.put(key, "1");
 
+        // The wrapper lists every option, so match the key inside Flink's unsupported list.
         assertThatThrownBy(() -> FactoryMocks.createTableSink(SCHEMA, options))
-                .hasStackTraceContaining(key);
+                .hasStackTraceContaining("Unsupported options:\n\n" + key);
     }
 }
