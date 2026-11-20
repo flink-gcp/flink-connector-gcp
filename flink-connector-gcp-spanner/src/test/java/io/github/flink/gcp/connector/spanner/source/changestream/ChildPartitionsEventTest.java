@@ -159,6 +159,41 @@ class ChildPartitionsEventTest {
                                         Collections.unmodifiableList(new ArrayList<>(values))));
     }
 
+    @Test
+    void equalityComparesEveryFieldAndIgnoresParentOrder() {
+        ChildPartitionsEvent event =
+                new ChildPartitionsEvent(
+                        "parent",
+                        Instant.EPOCH,
+                        List.of(new ChildPartitionsEvent.ChildPartition("c", List.of("b", "a"))));
+        ChildPartitionsEvent same =
+                new ChildPartitionsEvent(
+                        "parent",
+                        Instant.EPOCH,
+                        List.of(new ChildPartitionsEvent.ChildPartition("c", List.of("a", "b"))));
+
+        assertThat(event).isEqualTo(same).hasSameHashCodeAs(same);
+        assertThat(event)
+                .isNotEqualTo(new ChildPartitionsEvent("other", Instant.EPOCH, same.getChildren()))
+                .isNotEqualTo(
+                        new ChildPartitionsEvent(
+                                "parent", Instant.EPOCH.plusNanos(1), same.getChildren()))
+                .isNotEqualTo(
+                        new ChildPartitionsEvent(
+                                "parent",
+                                Instant.EPOCH,
+                                List.of(
+                                        new ChildPartitionsEvent.ChildPartition(
+                                                "d", List.of("a", "b")))))
+                .isNotEqualTo(
+                        new ChildPartitionsEvent(
+                                "parent",
+                                Instant.EPOCH,
+                                List.of(
+                                        new ChildPartitionsEvent.ChildPartition(
+                                                "c", List.of("a")))));
+    }
+
     private static ChildPartitionsEvent.ChildPartition child(String token) {
         return new ChildPartitionsEvent.ChildPartition(token, List.of("parent"));
     }

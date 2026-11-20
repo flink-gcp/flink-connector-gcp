@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 
 /** One child-partitions record discovered while a reader is consuming a parent partition. */
 @Internal
@@ -71,6 +72,36 @@ public final class ChildPartitionsEvent implements SourceEvent {
         return children;
     }
 
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof ChildPartitionsEvent)) {
+            return false;
+        }
+        ChildPartitionsEvent other = (ChildPartitionsEvent) o;
+        return parentSplitId.equals(other.parentSplitId)
+                && startTimestamp.equals(other.startTimestamp)
+                && children.equals(other.children);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(parentSplitId, startTimestamp, children);
+    }
+
+    @Override
+    public String toString() {
+        return "ChildPartitionsEvent{parentSplitId='"
+                + parentSplitId
+                + "', startTimestamp="
+                + startTimestamp
+                + ", children="
+                + children.size()
+                + '}';
+    }
+
     /** One child token and the normalized coordinator identities of every parent. */
     @Internal
     public static final class ChildPartition implements Serializable {
@@ -103,6 +134,23 @@ public final class ChildPartitionsEvent implements SourceEvent {
 
         public List<String> getParentPartitionIds() {
             return parentPartitionIds;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof ChildPartition)) {
+                return false;
+            }
+            ChildPartition other = (ChildPartition) o;
+            return token.equals(other.token) && parentPartitionIds.equals(other.parentPartitionIds);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(token, parentPartitionIds);
         }
     }
 }

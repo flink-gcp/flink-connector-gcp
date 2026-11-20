@@ -319,6 +319,7 @@ Each query uses `executeQueryAsync` on a strong single-use read-only transaction
 The callback hands the reader one undrained record and pauses; the Flink mailbox emits or processes it before resuming that query.
 This keeps callback threads out of Flink output and bounds buffered query results to one per active query.
 A query failure fails the task and retains its split, while only successful end-of-query reports the partition finished.
+A reader keeps a finished partition in its checkpointed state until the coordinator acknowledges the finish, and a restored reader reports it again, so a restore from a checkpoint taken while a partition finished still starts that partition's children.
 
 Change Streams queries do not use Data Boost.
 The builder's `rpcPriority` applies to every query in both dialects.
@@ -355,7 +356,7 @@ A bounded run without checkpointing therefore pauses once for the timeout, at it
 
 ### Checkpoints and delivery
 
-A reader checkpoint contains every active and queued split with its greatest consumed record timestamp and watermark.
+A reader checkpoint contains every active and queued split with its greatest consumed record timestamp and watermark, both of which stop before a partition's first child-partitions record, and every finished split whose finish the coordinator has not acknowledged.
 Recovery starts the partition query at that timestamp inclusively because several records can share one commit timestamp.
 The boundary can therefore be delivered again; advancing past it could skip another record from the same timestamp.
 
@@ -364,6 +365,7 @@ When an already-discovered child is still waiting for another parent, a complete
 The proof then leaves the checkpoint too, so partition-lineage state follows the unfinished topology rather than all historical transitions.
 Enumerator-state versions 1 to 3 remain restorable, and versions 1 and 2 are compacted when read; new checkpoints use version 4, which also records the bound of a bounded source.
 A connector release that writes version 3 cannot restore a version-4 checkpoint, so rolling a job back across this change needs a checkpoint taken before it.
+Reader splits use format version 2, which can hold a finished split; a release that reads only version 1 cannot restore it, so rolling a job back across that change likewise needs a checkpoint taken before it.
 
 The source is **at least once**.
 Downstream state that requires uniqueness should deduplicate with a domain key that includes enough of the Spanner record identity, such as the server transaction id and record sequence, rather than assuming the commit timestamp is unique.

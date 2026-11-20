@@ -109,6 +109,38 @@ class ChangeStreamPartitionSplitTest {
                                         new ArrayList<>(values)));
     }
 
+    @Test
+    void aFinishReportMakesTheSplitFinishedAndHoldsOnlyItsOwnChildReports() {
+        ChangeStreamPartitionSplit split = split("parent", List.of("a"));
+        ChildPartitionsEvent own =
+                new ChildPartitionsEvent(
+                        split.splitId(),
+                        Instant.EPOCH.plusSeconds(1),
+                        List.of(
+                                new ChildPartitionsEvent.ChildPartition(
+                                        "c", List.of(split.splitId()))));
+        ChildPartitionsEvent foreign =
+                new ChildPartitionsEvent(
+                        "other",
+                        Instant.EPOCH.plusSeconds(1),
+                        List.of(new ChildPartitionsEvent.ChildPartition("c", List.of("other"))));
+
+        ChangeStreamPartitionSplit finished = split.withFinishReport(List.of(own));
+
+        assertThat(finished.getLifecycleState()).isEqualTo(PartitionLifecycleState.FINISHED);
+        assertThat(finished.awaitsFinishAcknowledgement()).isTrue();
+        assertThat(finished.getFinishReport()).containsExactly(own);
+        assertThat(finished)
+                .isNotEqualTo(split.withLifecycleState(PartitionLifecycleState.FINISHED));
+        assertThat(split.awaitsFinishAcknowledgement()).isFalse();
+        assertThatThrownBy(() -> split.withFinishReport(List.of(foreign)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("only the split's own child reports");
+        assertThatThrownBy(() -> finished.withLifecycleState(PartitionLifecycleState.RUNNING))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("only a finished split carries a finish report");
+    }
+
     private static ChangeStreamPartitionSplit split(String token, List<String> parents) {
         return new ChangeStreamPartitionSplit(
                 token,

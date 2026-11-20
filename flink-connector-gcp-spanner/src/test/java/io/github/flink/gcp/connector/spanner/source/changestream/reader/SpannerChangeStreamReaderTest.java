@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitions
 import io.github.flink.gcp.connector.spanner.source.changestream.DataChangeRecord;
 import io.github.flink.gcp.connector.spanner.source.changestream.Mod;
 import io.github.flink.gcp.connector.spanner.source.changestream.ModType;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedAckEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
@@ -164,6 +165,119 @@ class SpannerChangeStreamReaderTest {
         assertThat(reader.snapshotState(1)).isEmpty();
         assertThat(context.splitRequests()).isEqualTo(1);
         assertThat(gauge("queuedChangeStreamPartitions")).isEqualTo(0);
+    }
+
+    @Test
+    void aFinishedSplitStaysCheckpointedWithItsChildReportsUntilTheCoordinatorAcknowledgesIt()
+            throws Exception {
+        reader = reader(1, new SequenceDeserializer());
+        ChangeStreamPartitionSplit parent = split("a");
+        reader.addSplits(Collections.singletonList(parent));
+        reader.start();
+        TrackingOutput<String> output = new TrackingOutput<>();
+
+        client.record(
+                parent.splitId(),
+                new SpannerChangeStreamRecord.Data(data("1", START.plusSeconds(1))));
+        reader.pollNext(output);
+        client.record(
+                parent.splitId(),
+                new SpannerChangeStreamRecord.Children(
+                        START.plusSeconds(2),
+                        Collections.singletonList(
+                                new SpannerChangeStreamRecord.Child(
+                                        "child", Collections.singletonList("a"), false))));
+        reader.pollNext(output);
+        client.finish(parent.splitId());
+        reader.pollNext(output);
+
+        ChildPartitionsEvent forwarded =
+                context.sourceEvents().stream()
+                        .filter(ChildPartitionsEvent.class::isInstance)
+                        .map(ChildPartitionsEvent.class::cast)
+                        .findFirst()
+                        .orElseThrow(AssertionError::new);
+        assertThat(reader.snapshotState(1))
+                .singleElement()
+                .satisfies(
+                        finished -> {
+                            assertThat(finished.splitId()).isEqualTo(parent.splitId());
+                            assertThat(finished.getLifecycleState())
+                                    .isEqualTo(PartitionLifecycleState.FINISHED);
+                            assertThat(finished.getFinishReport()).containsExactly(forwarded);
+                            // The position stopped before the child-partitions record.
+                            assertThat(finished.getCurrentPosition())
+                                    .isEqualTo(START.plusSeconds(1));
+                        });
+        assertThat(client.openIds()).containsExactly(parent.splitId());
+
+        reader.handleSourceEvents(new PartitionFinishedAckEvent(parent.splitId()));
+
+        assertThat(reader.snapshotState(2)).isEmpty();
+    }
+
+    @Test
+    void aRestoredFinishedSplitIsReportedAgainOnceTheCoordinatorIsInitializedAndNeverReopened()
+            throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        ChangeStreamPartitionSplit parent = split("a");
+        ChildPartitionsEvent forwarded =
+                new ChildPartitionsEvent(
+                        parent.splitId(),
+                        START.plusSeconds(2),
+                        Collections.singletonList(
+                                new ChildPartitionsEvent.ChildPartition(
+                                        "child", Collections.singletonList(parent.splitId()))));
+        ChangeStreamPartitionSplit finished =
+                parent.withFinishReport(Collections.singletonList(forwarded));
+        reader.addSplits(java.util.Arrays.asList(finished, split("b")));
+        reader.start();
+        assertThat(context.sourceEvents()).isEmpty();
+
+        reader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, Long.MIN_VALUE));
+
+        assertThat(context.sourceEvents()).hasSize(2);
+        assertThat(context.sourceEvents().get(0)).isEqualTo(forwarded);
+        assertThat(context.sourceEvents().get(1))
+                .isInstanceOfSatisfying(
+                        PartitionFinishedEvent.class,
+                        event -> {
+                            assertThat(event.getSplitId()).isEqualTo(parent.splitId());
+                            // What the earlier attempt emitted is downstream in the restored
+                            // checkpoint already, so nothing is in flight for the children to
+                            // overtake.
+                            assertThat(event.hasEmittedRecords()).isFalse();
+                        });
+        assertThat(client.openIds()).containsExactly("change-stream-token:b");
+        assertThat(reader.snapshotState(1))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-token:b", parent.splitId());
+
+        reader.handleSourceEvents(new PartitionFinishedAckEvent(parent.splitId()));
+
+        assertThat(reader.snapshotState(2))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-token:b");
+    }
+
+    @Test
+    void fallbackInitializationAlsoDiscardsRestoredFinishedSplits() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        reader.addSplits(
+                Collections.singletonList(
+                        split("a")
+                                .withFinishReport(Collections.<ChildPartitionsEvent>emptyList())));
+        reader.start();
+
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true, Long.MIN_VALUE));
+
+        assertThat(context.sourceEvents()).isEmpty();
+        assertThat(reader.snapshotState(1)).isEmpty();
     }
 
     @Test
@@ -715,6 +829,14 @@ class SpannerChangeStreamReaderTest {
         client.finish("change-stream-token:a");
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
         client.finish("change-stream-token:b");
+        reader.handleSourceEvents(new PartitionFinishedAckEvent("change-stream-token:a"));
+        // The coordinator acknowledges every finish before it signals that no splits remain.
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        java.util.concurrent.CompletableFuture<Void> waiting = reader.isAvailable();
+        assertThat(waiting).isNotCompleted();
+        reader.handleSourceEvents(new PartitionFinishedAckEvent("change-stream-token:b"));
+        // The last acknowledgement wakes the mailbox that waits on the earlier future.
+        assertThat(waiting).isCompleted();
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
     }
 

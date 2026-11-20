@@ -60,6 +60,113 @@ class ChangeStreamPartitionSplitSerializerTest {
     }
 
     @Test
+    void roundTripsAFinishedSplitWithItsChildReports() throws Exception {
+        ChangeStreamPartitionSplitSerializer serializer =
+                new ChangeStreamPartitionSplitSerializer();
+        ChangeStreamPartitionSplit running =
+                new ChangeStreamPartitionSplit(
+                        "token",
+                        Arrays.asList("parent-a"),
+                        START,
+                        null,
+                        2_000,
+                        START.plusNanos(7),
+                        PartitionLifecycleState.RUNNING,
+                        START.plusNanos(5));
+        ChangeStreamPartitionSplit finished =
+                running.withFinishReport(
+                        Arrays.asList(
+                                new ChildPartitionsEvent(
+                                        running.splitId(),
+                                        START.plusSeconds(1),
+                                        Arrays.asList(
+                                                new ChildPartitionsEvent.ChildPartition(
+                                                        "child-1",
+                                                        Arrays.asList(running.splitId())),
+                                                new ChildPartitionsEvent.ChildPartition(
+                                                        "merged",
+                                                        Arrays.asList(
+                                                                running.splitId(), "other")))),
+                                new ChildPartitionsEvent(
+                                        running.splitId(),
+                                        START.plusSeconds(1),
+                                        Arrays.asList(
+                                                new ChildPartitionsEvent.ChildPartition(
+                                                        "child-2",
+                                                        Arrays.asList(running.splitId()))))));
+        ChangeStreamPartitionSplit withoutChildren =
+                running.withFinishReport(java.util.Collections.emptyList());
+
+        assertThat(serializer.deserialize(serializer.getVersion(), serializer.serialize(finished)))
+                .isEqualTo(finished);
+        assertThat(
+                        serializer.deserialize(
+                                serializer.getVersion(), serializer.serialize(withoutChildren)))
+                .isEqualTo(withoutChildren)
+                .satisfies(split -> assertThat(split.awaitsFinishAcknowledgement()).isTrue());
+    }
+
+    @Test
+    void readsAVersionOneSplitAsOneWithoutAFinishReport() throws Exception {
+        ChangeStreamPartitionSplit running =
+                new ChangeStreamPartitionSplit(
+                        "token",
+                        Arrays.asList("parent-a"),
+                        START,
+                        null,
+                        2_000,
+                        START.plusNanos(7),
+                        PartitionLifecycleState.RUNNING,
+                        START.plusNanos(5));
+        // The version-1 layout written field by field, so a change to writeSplit cannot follow it.
+        DataOutputSerializer versionOne = new DataOutputSerializer(64);
+        versionOne.writeBoolean(true);
+        versionOne.writeUTF("token");
+        versionOne.writeInt(1);
+        versionOne.writeUTF("parent-a");
+        versionOne.writeLong(START.getEpochSecond());
+        versionOne.writeInt(START.getNano());
+        versionOne.writeBoolean(false);
+        versionOne.writeLong(2_000);
+        versionOne.writeLong(START.plusNanos(7).getEpochSecond());
+        versionOne.writeInt(START.plusNanos(7).getNano());
+        versionOne.writeByte(2);
+        versionOne.writeLong(START.plusNanos(5).getEpochSecond());
+        versionOne.writeInt(START.plusNanos(5).getNano());
+
+        ChangeStreamPartitionSplit restored =
+                new ChangeStreamPartitionSplitSerializer()
+                        .deserialize(1, versionOne.getCopyOfBuffer());
+
+        assertThat(restored).isEqualTo(running);
+        assertThat(restored.awaitsFinishAcknowledgement()).isFalse();
+    }
+
+    @Test
+    void rejectsAFinishReportOnASplitThatIsNotFinished() throws Exception {
+        ChangeStreamPartitionSplitSerializer serializer =
+                new ChangeStreamPartitionSplitSerializer();
+        ChangeStreamPartitionSplit finished =
+                new ChangeStreamPartitionSplit(
+                                "token",
+                                Arrays.asList("parent-a"),
+                                START,
+                                null,
+                                2_000,
+                                START,
+                                PartitionLifecycleState.RUNNING,
+                                START)
+                        .withFinishReport(java.util.Collections.emptyList());
+        byte[] bytes = serializer.serialize(finished);
+        // The lifecycle tag precedes the twelve-byte watermark, the report flag and its count.
+        bytes[bytes.length - 18] = 2;
+
+        assertThatThrownBy(() -> serializer.deserialize(serializer.getVersion(), bytes))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("a RUNNING split carries a finish report");
+    }
+
+    @Test
     void rejectsUnknownVersionsAndCorruptLifecycleTags() throws Exception {
         ChangeStreamPartitionSplitSerializer serializer =
                 new ChangeStreamPartitionSplitSerializer();
@@ -69,8 +176,8 @@ class ChangeStreamPartitionSplitSerializerTest {
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessageContaining("version 99");
 
-        // The lifecycle tag is immediately before the final twelve-byte Instant.
-        bytes[bytes.length - 13] = 99;
+        // The lifecycle tag precedes the twelve-byte watermark and the finish-report flag.
+        bytes[bytes.length - 14] = 99;
         assertThatThrownBy(() -> serializer.deserialize(serializer.getVersion(), bytes))
                 .isInstanceOf(java.io.IOException.class)
                 .hasMessageContaining("lifecycle tag 99");

@@ -271,6 +271,16 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Child discovery does not finish a parent. A reader forwards every child-partitions record and
   sends a separate completion event only after its query ends successfully. A child becomes
   schedulable only after every named parent is finished.
+- A reader keeps a finished split, with the child reports it forwarded, in its checkpointed state
+  until a `PartitionFinishedAckEvent` arrives, and a restored reader sends both again (#2205,
+  ADR-0099; Flink CDC's `finishedUnackedSplits`). The coordinator acknowledges every finish and
+  must keep applying a repeated finish or child report idempotent, including a child report for a
+  compacted parent whose child has finished since, except a child that finished after the last
+  completed checkpoint: a region failover rolled its records back, so that report fails the
+  coordinator, which Flink turns into a global failover that restores the ledger too. Do not add a periodic re-request: a lost
+  reader-to-coordinator event fails the task. The split position and watermark stop before the
+  first child-partitions record, as Debezium's offset does, so a restored query meets it again. The
+  fallback's discard flag lasts only until a checkpoint completes.
 - A finished parent's children wait for a checkpoint too (#2193, ADR-0099's revision): under the
   default `PartitionHandoff.AFTER_CHECKPOINT` the coordinator holds the parent until a checkpoint
   whose `snapshotState` ran after the finish completes, because the parent's last records can still

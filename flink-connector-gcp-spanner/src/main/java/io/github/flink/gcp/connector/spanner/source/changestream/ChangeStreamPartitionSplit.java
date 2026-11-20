@@ -51,6 +51,13 @@ import java.util.Objects;
  * <p>The two shapes are mutually enforcing — the initial split has a null token and no parents, and
  * a token partition must name at least one parent — so a split cannot be built that is neither.
  *
+ * <p>A reader keeps a split whose query has ended in its checkpointed state until the coordinator
+ * acknowledges the finish, and such a split carries the child-partitions reports it forwarded
+ * ({@link #getFinishReport()}). A report sent between the coordinator's snapshot and the reader's
+ * barrier is lost with a restore from that checkpoint, but the split is still in the reader's
+ * state, so the restored reader reports it again. Flink CDC's MySQL source keeps finished snapshot
+ * splits the same way, in {@code finishedUnackedSplits}.
+ *
  * <p>{@link #toString} prints whether a token is present, never the token itself: it is an opaque
  * blob nothing can look up, and printing it would push the assignment being logged off the line.
  */
@@ -67,6 +74,7 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
     private final Instant currentPosition;
     private final PartitionLifecycleState lifecycleState;
     private final Instant watermark;
+    @Nullable private final List<ChildPartitionsEvent> finishReport;
 
     public ChangeStreamPartitionSplit(
             @Nullable String partitionToken,
@@ -77,6 +85,28 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
             Instant currentPosition,
             PartitionLifecycleState lifecycleState,
             Instant watermark) {
+        this(
+                partitionToken,
+                parentPartitionIds,
+                startTimestamp,
+                endTimestamp,
+                heartbeatMillis,
+                currentPosition,
+                lifecycleState,
+                watermark,
+                null);
+    }
+
+    private ChangeStreamPartitionSplit(
+            @Nullable String partitionToken,
+            List<String> parentPartitionIds,
+            Instant startTimestamp,
+            @Nullable Instant endTimestamp,
+            long heartbeatMillis,
+            Instant currentPosition,
+            PartitionLifecycleState lifecycleState,
+            Instant watermark,
+            @Nullable List<ChildPartitionsEvent> finishReport) {
         this.partitionToken = partitionToken;
         Preconditions.checkNotNull(parentPartitionIds, "parentPartitionIds must not be null");
         List<String> normalizedParents = new ArrayList<>(new LinkedHashSet<>(parentPartitionIds));
@@ -112,6 +142,20 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
         this.lifecycleState =
                 Preconditions.checkNotNull(lifecycleState, "lifecycleState must not be null");
         this.watermark = Preconditions.checkNotNull(watermark, "watermark must not be null");
+        if (finishReport == null) {
+            this.finishReport = null;
+        } else {
+            Preconditions.checkArgument(
+                    lifecycleState == PartitionLifecycleState.FINISHED,
+                    "only a finished split carries a finish report");
+            List<ChildPartitionsEvent> reports = new ArrayList<>(finishReport);
+            for (ChildPartitionsEvent report : reports) {
+                Preconditions.checkArgument(
+                        report != null && report.getParentSplitId().equals(splitId()),
+                        "a finish report must hold only the split's own child reports");
+            }
+            this.finishReport = Collections.unmodifiableList(reports);
+        }
     }
 
     public static ChangeStreamPartitionSplit initial(
@@ -172,16 +216,43 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
         return watermark;
     }
 
+    /**
+     * Returns the child-partitions reports a reader forwarded before the split's query ended, or
+     * {@code null} unless the split is one the reader finished and the coordinator has not
+     * acknowledged.
+     */
+    @Nullable
+    public List<ChildPartitionsEvent> getFinishReport() {
+        return finishReport;
+    }
+
+    /** Returns whether a reader finished this split and still waits for the acknowledgement. */
+    public boolean awaitsFinishAcknowledgement() {
+        return finishReport != null;
+    }
+
     public ChangeStreamPartitionSplit withLifecycleState(PartitionLifecycleState state) {
-        return copy(currentPosition, state, watermark);
+        return copy(currentPosition, state, watermark, finishReport);
     }
 
     public ChangeStreamPartitionSplit withProgress(Instant newPosition, Instant newWatermark) {
-        return copy(newPosition, lifecycleState, newWatermark);
+        return copy(newPosition, lifecycleState, newWatermark, finishReport);
+    }
+
+    /**
+     * Returns this split finished by a reader that forwarded {@code childReports}, which the reader
+     * reports again after a restore until the coordinator acknowledges the finish.
+     */
+    public ChangeStreamPartitionSplit withFinishReport(List<ChildPartitionsEvent> childReports) {
+        Preconditions.checkNotNull(childReports, "childReports must not be null");
+        return copy(currentPosition, PartitionLifecycleState.FINISHED, watermark, childReports);
     }
 
     private ChangeStreamPartitionSplit copy(
-            Instant position, PartitionLifecycleState state, Instant newWatermark) {
+            Instant position,
+            PartitionLifecycleState state,
+            Instant newWatermark,
+            @Nullable List<ChildPartitionsEvent> report) {
         return new ChangeStreamPartitionSplit(
                 partitionToken,
                 parentPartitionIds,
@@ -190,7 +261,8 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
                 heartbeatMillis,
                 position,
                 state,
-                newWatermark);
+                newWatermark,
+                report);
     }
 
     public boolean samePartitionDefinition(ChangeStreamPartitionSplit other) {
@@ -217,7 +289,8 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
                 && Objects.equals(endTimestamp, other.endTimestamp)
                 && currentPosition.equals(other.currentPosition)
                 && lifecycleState == other.lifecycleState
-                && watermark.equals(other.watermark);
+                && watermark.equals(other.watermark)
+                && Objects.equals(finishReport, other.finishReport);
     }
 
     @Override
@@ -230,7 +303,8 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
                 heartbeatMillis,
                 currentPosition,
                 lifecycleState,
-                watermark);
+                watermark,
+                finishReport);
     }
 
     @Override
@@ -247,6 +321,7 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
                 + lifecycleState
                 + ", watermark="
                 + watermark
+                + (finishReport == null ? "" : ", finishReport=" + finishReport.size())
                 + '}';
     }
 }
