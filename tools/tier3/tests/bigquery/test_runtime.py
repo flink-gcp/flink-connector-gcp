@@ -16,7 +16,7 @@
 import copy
 
 import pytest
-from flink_tier3.bigquery.handoff import require_bigquery_clean
+from flink_tier3.bigquery.handoff import QueryReadTransient, require_bigquery_clean
 from flink_tier3.runner import Runner
 
 from ..test_lifecycle import app, lifecycle, prepared_supervisor, rt
@@ -190,6 +190,59 @@ def test_runner_stops_without_polling_when_execution_is_closed(env, trigger):
     else:
         runner.settle()
     assert handoff.calls == ["release"]
+
+
+def test_runner_records_a_retried_read_once_per_failure_and_keeps_polling(env):
+    environment, _ = running(env)
+    environment.records._change(lambda r: setattr(r, "success", True))
+    handoff = Handoff(environment)
+
+    def transient_read(operation, code):
+        # BigQuery's internal-error message carries a code of its own per request.
+        cause = rt.ApiError(500, "GET", "/jobs/x", message=f"Error: {code}")
+        return QueryReadTransient(operation, cause)
+
+    errors = [
+        transient_read("status:final", 1),
+        transient_read("status:final", 2),
+        transient_read("collect:final", 3),
+        None,
+        transient_read("collect:final", 4),
+        QueryReadTransient(
+            "collect:final", rt.ApiError(503, "GET", "/queries/x", message="Error: 5")
+        ),
+        # Already recorded since the last poll that returned, though not last.
+        transient_read("collect:final", 6),
+    ]
+    handoff.poll_error = errors[0]
+    runner = Runner(environment, bigquery=handoff)
+    sleeps = 0
+
+    def advance(seconds):
+        nonlocal sleeps
+        env[3].sleep(seconds)
+        sleeps += 1
+        if sleeps < len(errors):
+            handoff.poll_error = errors[sleeps]
+        elif sleeps == len(errors):
+            handoff.poll_error = None
+            environment.records.request_stop()
+        else:
+            cleaned(environment)
+            finish_job(environment)
+
+    environment.sleep = advance
+    runner.settle()
+    assert handoff.calls == ["poll"] * len(errors) + ["release"]
+    events = [v[0] for (bucket, key), v in env[1].data.items() if "/runner/" in key]
+    assert [
+        v["payload"] for v in events if v.get("event") == "bigquery-query-retried"
+    ] == [
+        {"operation": error.operation, "cause": str(error.__cause__)}
+        for error in (errors[0], errors[2], errors[4], errors[5])
+    ]
+    assert not any(v.get("event") == "bigquery-query-failed" for v in events)
+    assert environment.refresh().success
 
 
 def test_runner_query_error_closes_admission_and_cannot_preserve_success(env):

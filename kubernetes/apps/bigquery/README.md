@@ -466,6 +466,10 @@ After a completed call or a failed read/collection, the runner attempts to clear
 It retries only this conditional acknowledgement, with at most three attempts including the initial attempt, using a unique invocation ID so a lost response cannot clear a later call.
 An already clear marker is accepted as acknowledged; a different active invocation aborts immediately without another attempt.
 Persistent control-storage failures can still leave the marker unresolved and require external recovery; no resource operation is retried by this mechanism.
+A status read or a collection whose own BigQuery or storage call fails without saying anything (a transport failure, a storage request that got no answer, or an HTTP 408, 429, 500, 502, 503 or 504 answer) is left to the next poll once its marker is cleared, and the next poll runs it again until the request's deadline.
+Repeating either is safe: neither creates a job or a table, and the collection writes its evidence object only where none exists, accepting one an earlier attempt wrote only if it is the same.
+Setting or clearing the marker is not part of that call, so its failure still ends query processing.
+Submission is never repeated this way, because its outcome can be ambiguous; a failed submission keeps its marker as described above.
 A completed collection may finish after stop, and the supervisor may read retained evidence after release.
 Release does not prove Flink termination, settle unknown service operations, exclude other lifecycle processes or authorize deletion by itself.
 
@@ -478,10 +482,11 @@ An admitting caller passes its process-local handoff to `Runner(env, bigquery=ha
 `Runner.start()` initializes and provisions it after supervisor and Operator readiness, before admitting the application.
 Only after admission has returned may that runner enter `settle()`.
 While waiting for the supervisor, settlement services pending query requests until stop, evidence failure, the execution deadline or supervisor termination.
-A query failure stops further polling and prevents settlement from preserving a successful trial verdict.
+A query failure stops further polling and prevents settlement from preserving a successful trial verdict; a read left to the next poll is not one.
 The runner attempts permanent release before leaving the wait, including on timeout; an unresolved call prevents release and leaves cleanup incomplete.
 A recovery process must not reconstruct the original submitting process's token to manufacture this acknowledgement.
 Repeated release attempts can recover a transient control failure; settlement emits a blocked-release diagnostic only when its cause changes.
+A read left to the next poll is recorded as a `bigquery-query-retried` event naming the read and its cause, once for each read and HTTP status (or failure type, without an answer) until a poll returns; the service's message can carry a code of its own per request, so it does not tell one failure from another.
 
 The supervisor receives its own environment-bound handoff and a mandatory `quiesce` callback, which the supervisor factory supplies as the [quiescence barrier](#quiescence-barrier).
 Supplying the callback without a handoff is rejected at construction.
