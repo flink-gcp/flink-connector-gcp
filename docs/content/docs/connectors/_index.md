@@ -115,3 +115,46 @@ does not have.
 Shipping the connector with the job instead of placing it in `lib/` (inside the job jar, with the
 SQL Client's `--jar`, or with `ADD JAR`), or running in application mode, leaves one copy, so the
 question does not arise.
+
+## gRPC threads and job shutdown
+
+When the connector ships with the job, its classes, the gRPC transport it bundles among them, belong
+to the job's user-code class loader.
+Flink closes that loader as soon as the job leaves a TaskManager, whether it finished, was
+cancelled or lost its JobManager, and on a session cluster's JobManager when the job ends; a
+failover inside the job keeps it open.
+gRPC's own Netty event-loop group is destroyed one second after its last channel closes, which can
+fall after that point.
+The destroy then fails with `NoClassDefFoundError`, and under
+`cluster.uncaught-exception-handling: FAIL` the process exits: a TaskManager after a BigQuery
+writer or reader, and a session cluster's JobManager, taking its other jobs with it, after a
+BigQuery source is cancelled.
+
+The BigQuery connector therefore runs its gRPC clients on an event-loop group of its own, whose
+threads are named `flink-gcp-grpc-elg-*`.
+The last of its readers, writers and enumerators in a process to close shuts the group down and
+waits for its threads.
+On a TaskManager, Flink closes writers and readers before it closes the loader, so the group is
+gone first.
+On the JobManager, Flink does not wait for a source's enumerator to close before it releases the
+loader, so the enumerator does not wait for its close either: it closes its client, and releases
+its hold on the group, as soon as the read session exists.
+A loader released while that session is being created can still see the group torn down after
+it closed: the job ends in any way, a stop with a savepoint included, or the JobManager
+shuts down, when a table read starts or when a query read's query has finished.
+Closing the enumerator then asks for the creation to be cancelled rather than waiting for its
+answer.
+Any other client the connector closes itself gets 5 seconds for its calls to finish before they
+are cancelled.
+A Storage Write API default-stream writer is closed by the client library instead, whose own waits
+can take minutes when it closes a connection's last writer.
+The last close also waits about 10 seconds at most for the group.
+If a job's own code uses the Storage Write API's connection pool in the same class loader as the
+connector, with the same location and credentials, the two share the pool's connections, and the
+connector stops the group when its last BigQuery client closes even if the job's writers are still
+using them.
+
+The Pub/Sub, Bigtable, Spanner, Firestore and Cloud Tasks connectors still use gRPC's group
+([#2243]({{< param BookRepo >}}/issues/2243)).
+Under `FAIL`, placing them in Flink's `lib/` avoids the exit, because the parent class loader never
+closes.

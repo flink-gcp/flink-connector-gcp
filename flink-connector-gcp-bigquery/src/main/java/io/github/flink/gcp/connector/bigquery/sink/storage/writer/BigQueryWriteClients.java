@@ -26,6 +26,7 @@ import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 
 import javax.annotation.Nullable;
@@ -36,40 +37,60 @@ import java.io.IOException;
  * Storage Write API clients, shared by the two write paths that open one.
  *
  * <p>The production form optionally replaces ADC with runtime-loaded service-account credentials;
- * the emulator form always uses no credentials.
+ * the emulator form always uses no credentials. Both open the client with {@link
+ * GrpcEventLoops#open(GrpcEventLoops.ClientFactory)}, so its channels run on the connector's own
+ * event-loop group and closing the returned holder releases that group after the client.
  */
 @Internal
 final class BigQueryWriteClients {
 
     private BigQueryWriteClients() {}
 
-    static BigQueryWriteClient forProduction(@Nullable String serviceAccountKeyFile)
-            throws IOException {
-        if (serviceAccountKeyFile == null) {
-            return BigQueryWriteClient.create();
-        }
-        return BigQueryWriteClient.create(productionSettings(serviceAccountKeyFile));
-    }
-
-    /** Builds production settings carrying the configured service-account credentials. */
-    @VisibleForTesting
-    static BigQueryWriteSettings productionSettings(String serviceAccountKeyFile)
-            throws IOException {
-        GoogleCredentials credentials = BigQueryCredentials.load(serviceAccountKeyFile);
-        return BigQueryWriteSettings.newBuilder()
-                .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
-                .build();
+    /**
+     * Opens a client against the production service, with its channels on the connector's
+     * event-loop group.
+     *
+     * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
+     * @return the client with its lease; the caller owns it and must close it
+     * @throws IOException if the client cannot be created
+     */
+    static GrpcEventLoops.LeasedClient<BigQueryWriteClient> forProduction(
+            @Nullable String serviceAccountKeyFile) throws IOException {
+        return GrpcEventLoops.open(
+                lease ->
+                        BigQueryWriteClient.create(
+                                productionSettings(serviceAccountKeyFile, lease)));
     }
 
     /**
-     * Creates a client talking plaintext to a BigQuery emulator with no credentials.
+     * Builds the production settings: the configured service-account credentials when a key file is
+     * set, application-default credentials otherwise, and the lease's event-loop group.
+     */
+    @VisibleForTesting
+    static BigQueryWriteSettings productionSettings(
+            @Nullable String serviceAccountKeyFile, GrpcEventLoops.Lease lease) throws IOException {
+        BigQueryWriteSettings.Builder settings = BigQueryWriteSettings.newBuilder();
+        if (serviceAccountKeyFile != null) {
+            GoogleCredentials credentials = BigQueryCredentials.load(serviceAccountKeyFile);
+            settings.setCredentialsProvider(FixedCredentialsProvider.create(credentials));
+        }
+        return lease.applyTo(settings).build();
+    }
+
+    /**
+     * Opens a client talking plaintext to a BigQuery emulator with no credentials, with its
+     * channels on the connector's event-loop group.
      *
      * @param endpoint the emulator's gRPC endpoint
-     * @return the client; the caller owns it and must close it
+     * @return the client with its lease; the caller owns it and must close it
      * @throws IOException if the client cannot be created
      */
-    static BigQueryWriteClient forEmulator(EmulatorEndpoint endpoint) throws IOException {
-        return BigQueryWriteClient.create(emulatorSettings(endpoint));
+    static GrpcEventLoops.LeasedClient<BigQueryWriteClient> forEmulator(EmulatorEndpoint endpoint)
+            throws IOException {
+        return GrpcEventLoops.open(
+                lease ->
+                        BigQueryWriteClient.create(
+                                lease.applyTo(emulatorSettings(endpoint).toBuilder()).build()));
     }
 
     /**

@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
 import com.google.cloud.bigquery.storage.v1.GetWriteStreamRequest;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.grpc.Status;
@@ -82,9 +83,10 @@ class BigQueryEmulatorMissingTableDeviationITCase extends AbstractBigQueryEmulat
 
     @Test
     void getWriteStreamOnAMissingTablesDefaultStreamAnswersUnknown() throws Exception {
-        try (BigQueryWriteClient client =
+        try (GrpcEventLoops.LeasedClient<BigQueryWriteClient> leased =
                 BigQueryWriteClients.forEmulator(
                         EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
+            BigQueryWriteClient client = leased.client();
             Throwable failure =
                     catchThrowable(
                             () ->
@@ -133,9 +135,10 @@ class BigQueryEmulatorMissingTableDeviationITCase extends AbstractBigQueryEmulat
             assertThat(AppendErrorClassifier.hasCode(failure, Status.Code.NOT_FOUND)).isTrue();
             assertThat(AppendErrorClassifier.isMissingTable(failure)).isTrue();
         }
-        try (BigQueryWriteClient client =
+        try (GrpcEventLoops.LeasedClient<BigQueryWriteClient> leased =
                 BigQueryWriteClients.forEmulator(
                         EmulatorEndpoint.parse(grpcEndpoint(), "emulatorEndpoint"))) {
+            BigQueryWriteClient client = leased.client();
             Throwable failure =
                     catchThrowable(
                             () ->

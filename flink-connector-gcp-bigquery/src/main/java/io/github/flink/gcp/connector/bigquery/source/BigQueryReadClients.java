@@ -28,6 +28,7 @@ import com.google.cloud.bigquery.storage.v1.ReadRowsRequest;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 
 import javax.annotation.Nullable;
@@ -61,14 +62,27 @@ public final class BigQueryReadClients {
      *
      * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
-     * @return the client; the caller owns it and must close it
+     * @return the client with the event-loop lease covering it; the caller owns it and must close
+     *     it
      * @throws IOException if the client cannot be created
      */
-    public static BigQueryReadClient createForSessions(
+    public static GrpcEventLoops.LeasedClient<BigQueryReadClient> createForSessions(
             @Nullable String serviceAccountKeyFile, @Nullable EmulatorEndpoint emulatorEndpoint)
             throws IOException {
-        return BigQueryReadClient.create(
-                settingsBuilder(serviceAccountKeyFile, emulatorEndpoint).build());
+        return GrpcEventLoops.open(
+                lease ->
+                        BigQueryReadClient.create(
+                                sessionSettings(serviceAccountKeyFile, emulatorEndpoint, lease)));
+    }
+
+    /** Builds the session client's settings, with its channels on the lease's event-loop group. */
+    @VisibleForTesting
+    static BigQueryReadSettings sessionSettings(
+            @Nullable String serviceAccountKeyFile,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            GrpcEventLoops.Lease lease)
+            throws IOException {
+        return lease.applyTo(settingsBuilder(serviceAccountKeyFile, emulatorEndpoint)).build();
     }
 
     /**
@@ -78,17 +92,25 @@ public final class BigQueryReadClients {
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
      * @param onRetry run once per retried attempt, or {@code null} to observe none
-     * @return the client; the caller owns it and must close it
+     * @return the client with the event-loop lease covering it; the caller owns it and must close
+     *     it
      * @throws IOException if the client cannot be created
      */
-    public static BigQueryReadClient createForReads(
+    public static GrpcEventLoops.LeasedClient<BigQueryReadClient> createForReads(
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             int retryMaxAttempts,
             @Nullable Runnable onRetry)
             throws IOException {
-        return BigQueryReadClient.create(
-                readSettings(serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts, onRetry));
+        return GrpcEventLoops.open(
+                lease ->
+                        BigQueryReadClient.create(
+                                readSettings(
+                                        serviceAccountKeyFile,
+                                        emulatorEndpoint,
+                                        retryMaxAttempts,
+                                        onRetry,
+                                        lease)));
     }
 
     /**
@@ -124,6 +146,7 @@ public final class BigQueryReadClients {
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
      * @param onRetry run once per retried attempt, or {@code null} to observe none
+     * @param lease the event-loop lease the client's channels run under
      * @return the settings
      * @throws IOException if the settings cannot be built
      */
@@ -132,10 +155,14 @@ public final class BigQueryReadClients {
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint,
             int retryMaxAttempts,
-            @Nullable Runnable onRetry)
+            @Nullable Runnable onRetry,
+            GrpcEventLoops.Lease lease)
             throws IOException {
+        // The lease is applied to this builder, never to a toBuilder() of the built settings:
+        // BigQueryReadSettings.toBuilder() copies the stub settings only and drops the retry
+        // listener set below (google-cloud-bigquerystorage 3.38.0).
         BigQueryReadSettings.Builder settings =
-                settingsBuilder(serviceAccountKeyFile, emulatorEndpoint);
+                lease.applyTo(settingsBuilder(serviceAccountKeyFile, emulatorEndpoint));
         ServerStreamingCallSettings.Builder<ReadRowsRequest, ReadRowsResponse> readRows =
                 settings.readRowsSettings();
         readRows.setRetrySettings(

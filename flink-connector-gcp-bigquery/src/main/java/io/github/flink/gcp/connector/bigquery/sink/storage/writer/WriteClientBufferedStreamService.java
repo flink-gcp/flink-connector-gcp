@@ -31,6 +31,7 @@ import com.google.cloud.bigquery.storage.v1.WriteStream;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.Int64Value;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 
@@ -49,6 +50,13 @@ import java.io.IOException;
 public final class WriteClientBufferedStreamService implements BufferedStreamService {
 
     private final BigQueryWriteClient client;
+
+    /**
+     * The client this service created, with the event-loop lease covering it, or {@code null} for
+     * an injected client, whose channels are its creator's to release.
+     */
+    @Nullable private final GrpcEventLoops.LeasedClient<BigQueryWriteClient> owned;
+
     @Nullable private final String location;
     private final BufferedStreamOptions options;
 
@@ -87,12 +95,13 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
             @Nullable String serviceAccountKeyFile,
             @Nullable EmulatorEndpoint emulatorEndpoint)
             throws IOException {
-        this(
+        this.owned =
                 emulatorEndpoint == null
                         ? BigQueryWriteClients.forProduction(serviceAccountKeyFile)
-                        : BigQueryWriteClients.forEmulator(emulatorEndpoint),
-                location,
-                options);
+                        : BigQueryWriteClients.forEmulator(emulatorEndpoint);
+        this.client = owned.client();
+        this.location = location;
+        this.options = options;
     }
 
     /**
@@ -107,6 +116,7 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
     public WriteClientBufferedStreamService(
             BigQueryWriteClient client, @Nullable String location, BufferedStreamOptions options) {
         this.client = client;
+        this.owned = null;
         this.location = location;
         this.options = options;
     }
@@ -160,8 +170,16 @@ public final class WriteClientBufferedStreamService implements BufferedStreamSer
                 .getOffset();
     }
 
+    /**
+     * Closes the client. One this service created is shut down and awaited before its event-loop
+     * lease is released, so the lease never ends under a live channel.
+     */
     @Override
     public void close() {
-        client.close();
+        if (owned == null) {
+            client.close();
+        } else {
+            owned.close();
+        }
     }
 }

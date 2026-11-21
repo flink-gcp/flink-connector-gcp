@@ -70,6 +70,7 @@ Its Pod events otherwise show Autopilot scaling up for the first Pods, startup p
 
 When the JobManager's deletion cancelled the upgraded job, the TaskManager logged `Trying to access closed classloader` at 05:07:31Z: a gRPC Netty event-loop thread, still running about 0.3 seconds after the writers had closed their streams, failed to log a warning because the job's class loader had already closed, and Flink's uncaught-exception handler failed the same way when it tried to log the resulting exception; only log4j's own error reports of the four failed appends remain.
 It happened once in the run and changed nothing the run observed; the record does not establish why the thread outlived the writers.
+A later reproduction identified the unlogged exception as a `NoClassDefFoundError` thrown while gRPC's shared event-loop group tore itself down after the class loader closed, which exits a TaskManager under `cluster.uncaught-exception-handling: FAIL`; [ADR-0208](../0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md) records it and the fix.
 
 ## Timeline
 
