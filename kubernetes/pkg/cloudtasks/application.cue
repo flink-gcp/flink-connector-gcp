@@ -29,9 +29,10 @@ import (
 		// At most 30 minutes of input, as the BigQuery trial in the same 90-minute window has. The
 		// bounds apply to the default too, which a lower rate makes too long.
 		records: (*180000 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
-		// The sink's subtasks, one per single-slot TaskManager; a rescale trial's phases differ.
+		// The sink's subtasks, one per single-slot TaskManager, which the application takes as
+		// `--parallelism`; a rescale trial's phases differ, and the fault sequence patches it.
 		// No default: the Flink package's own parallelism default would contradict one.
-		sinkParallelism: 1 | 2
+		parallelism: 1 | 2
 	}
 	// The queue the lifecycle creates paused for this run, named from the run.
 	let queue = "ct1362-\(run.id)"
@@ -66,11 +67,12 @@ import (
 				"high-availability.type":                                      "kubernetes"
 				"high-availability.storageDir":                                "\(storage)/ha"
 				"restart-strategy.type":                                       "fixed-delay"
-				"restart-strategy.fixed-delay.attempts":                       "3"
-				"restart-strategy.fixed-delay.delay":                          "10 s"
+				// Unbounded: a run waits out any number of restarts (ADR-0204).
+				"restart-strategy.fixed-delay.attempts": "2147483647"
+				"restart-strategy.fixed-delay.delay":    "10 s"
 			}
 			jobManager: replicas:  1
-			taskManager: replicas: run.sinkParallelism
+			taskManager: replicas: run.parallelism
 			for manager in ["jobManager", "taskManager"] {
 				"\(manager)": {
 					resource: {cpu: 1, memory: "2Gi"}
@@ -83,12 +85,12 @@ import (
 			job: {
 				jarURI:      "local:///opt/flink/usrlib/cloudtasks-recovery.jar"
 				entryClass:  "io.github.flink.gcp.connector.tier3.cloudtasks.CloudTasksRecoveryJob"
-				parallelism: run.sinkParallelism
+				parallelism: run.parallelism
 				upgradeMode: "savepoint"
 				args: ["--run-id", run.id, "--queue", queue, "--phase", run.phase,
 					"--records", "\(run.records)", "--records-per-second", "\(run.recordsPerSecond)",
 					"--require-restored", "\(run.phase == "upgrade")",
-					"--sink-parallelism", "\(run.sinkParallelism)"]
+					"--parallelism", "\(run.parallelism)"]
 			}
 		}
 	}

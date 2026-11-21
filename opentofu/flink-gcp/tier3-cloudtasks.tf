@@ -74,8 +74,9 @@ locals {
   }
   # Both read the queue back: the runner to admit only a paused queue with the
   # retention the staged sink requires, the supervisor to check it is still
-  # paused and, after deletion, that it is gone. tasks.list returns task names
-  # in the basic view, which is all the oracle compares; no fullView.
+  # paused and, after deletion, that it is gone. The supervisor lists tasks in
+  # the full view, which tasks.fullView authorizes, because the oracle checks
+  # each task's body against its name (#2250).
   tier3_cloudtasks_roles = {
     # The staged sink creates tasks, and its committer reads the queue's
     # tombstoneTtl back before the first create. roles/cloudtasks.enqueuer
@@ -97,9 +98,9 @@ locals {
     }
     supervisor = {
       role_id     = "tier3CloudTasksRecoverySupervisor"
-      description = "Reads and deletes Tier-3 recovery queues and lists their tasks; no creation, resume or dispatch"
+      description = "Reads and deletes Tier-3 recovery queues and lists their tasks in full; no creation, resume or dispatch"
       member      = local.tier3_cloudtasks_lifecycle.supervisor
-      permissions = ["cloudtasks.queues.delete", "cloudtasks.queues.get", "cloudtasks.tasks.list"]
+      permissions = ["cloudtasks.queues.delete", "cloudtasks.queues.get", "cloudtasks.tasks.fullView", "cloudtasks.tasks.list"]
     }
   }
 }

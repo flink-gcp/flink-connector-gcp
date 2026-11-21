@@ -80,7 +80,8 @@ def test_pause_posts_to_the_queue_action():
     assert http.calls[0][:2] == ("POST", BASE + NAME + ":pause")
 
 
-def test_tasks_reads_basic_pages_and_their_token():
+def test_tasks_reads_full_pages_and_their_token():
+    """The full view carries each task's body, which the oracle checks."""
     api, http = queue(
         {"tasks": [{"name": NAME + "/tasks/a"}], "nextPageToken": "next"},
         {"tasks": [{"name": NAME + "/tasks/b"}]},
@@ -90,7 +91,7 @@ def test_tasks_reads_basic_pages_and_their_token():
     assert api.tasks("next") == ([{"name": NAME + "/tasks/b"}], None)
     assert api.tasks() == ([], None)
     assert http.calls[0][2]["params"] == {
-        "responseView": "BASIC",
+        "responseView": "FULL",
         "pageSize": PAGE_SIZE,
     }
     assert http.calls[1][2]["params"]["pageToken"] == "next"

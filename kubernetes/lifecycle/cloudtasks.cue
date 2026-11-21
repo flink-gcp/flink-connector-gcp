@@ -24,10 +24,11 @@ import (
 // defaults and bounds.
 cloudtasksRecords:          int @tag(cloudtasks_records,type=int)
 cloudtasksRecordsPerSecond: int @tag(cloudtasks_records_per_second,type=int)
-// Every trial runs a savepoint upgrade and then deletes a Pod. The kind names the fault that makes
-// it a trial of its own: the JobManager deleted, a TaskManager deleted in its place, or an upgrade
-// that rescales the sink from one subtask to two or from two to one.
-cloudtasksTrial: *defaultFault | or([for kind, _ in faultKinds {kind}]) @tag(cloudtasks_trial)
+// A single-fault trial runs a savepoint upgrade and then deletes a Pod. Its kind names the fault
+// that makes it a trial of its own: the JobManager deleted, a TaskManager deleted in its place, or
+// an upgrade that rescales the sink from one subtask to two or from two to one.
+// The `sequence` trial (ADR-0204) runs every fault in one run.
+cloudtasksTrial: *defaultFault | or([for kind, _ in sequenceKinds {kind}]) @tag(cloudtasks_trial)
 
 // Both Cloud Tasks phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it
@@ -38,8 +39,8 @@ if scenario == "cloudtasks-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-cloudtasks", image: applicationImage}
 			delivery: resources: app: (cloudtasks.#Application & {
 				run: {id: runID, image: applicationImage, phase: trialPhase
-					records:         cloudtasksRecords, recordsPerSecond: cloudtasksRecordsPerSecond
-					sinkParallelism: faultKinds[cloudtasksTrial][trialPhase]
+					records:     cloudtasksRecords, recordsPerSecond: cloudtasksRecordsPerSecond
+					parallelism: sequenceKinds[cloudtasksTrial][trialPhase]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

@@ -26,9 +26,8 @@ from flink_tier3.firestore.lifecycle import FirestoreLifecycle
 from flink_tier3.firestore.trial import MODES, Trial
 from flink_tier3.resource import require_resources_clean
 
-from ..cloudtasks.test_lifecycle import NOW
-from ..cloudtasks.test_lifecycle import Environment as QueueEnvironment
-from ..doubles import Response
+from ..controller_environment import Environment as QueueEnvironment
+from ..doubles import NOW, Response
 from .test_documents import Firestore
 
 # The seed every dispatched trial writes.

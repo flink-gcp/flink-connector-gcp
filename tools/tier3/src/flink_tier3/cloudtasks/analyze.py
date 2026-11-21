@@ -24,6 +24,8 @@ Every event name and stage comes from ``flink_tier3.cloudtasks.verdict``,
 which the exercise writes from, so a rename cannot reach only one side.
 """
 
+from collections import Counter
+
 from ..metrics import CHECKPOINTS_EVENT
 from ..recovery_analysis import (
     RECOVERIES,
@@ -38,19 +40,20 @@ from ..recovery_analysis import (
     verdict_problems,
 )
 from .oracle import assess as assess_pages
-from .trial import Trial
+from .trial import SEQUENCE_KIND, Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     PAGE_EVENT,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
 )
 
 SCENARIO = "cloudtasks-recovery"
-PAGE_KEYS = ("ids", "foreign", "dispatched")
+PAGE_KEYS = ("ids", "foreign", "dispatched", "mismatched")
 
 
 def _trial(run):
@@ -80,11 +83,21 @@ def _pages(run, attempt):
                 and all(isinstance(item, str) for item in payload[key])
                 for key in PAGE_KEYS
             )
+            or not _mismatched_are_listed(payload)
         ):
             malformed += 1
             continue
         pages[index] = {key: payload[key] for key in PAGE_KEYS}
     return pages, malformed
+
+
+def _mismatched_are_listed(payload):
+    """Whether each id the page reports a wrong body for is one it lists.
+
+    The supervisor names a wrong body only for a task on the same page, so
+    an id the page does not list, or lists fewer times, is a damaged export.
+    """
+    return Counter(payload["mismatched"]) <= Counter(payload["ids"])
 
 
 def _result(run, record, decided, problems, report, samples):
@@ -179,8 +192,19 @@ def assess(run):
 
     Both are read from whatever recovery record the run exported, so a run
     whose verdict cannot be recomputed still reports the recoveries it proved.
+    A fault-sequence run (ADR-0204) lists the faults it injected instead, and
+    has no recovery proofs to time.
     """
     record = recovery_record(run, COMPLETE_EVENT)
+    if _sequence(run):
+        outcomes = record.get("outcomes") if isinstance(record, dict) else None
+        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+        return {
+            **_verdict(run),
+            "faults": faults if isinstance(faults, list) else [],
+            "recoveries": [],
+            "replay": {},
+        }
     return {
         **_verdict(run),
         "recoveries": recovery_timings(run, record),
@@ -188,12 +212,20 @@ def assess(run):
     }
 
 
+def _sequence(run):
+    trial = _trial(run)
+    return trial is not None and trial.kind == SEQUENCE_KIND
+
+
 def _verdict(run):
     """One Cloud Tasks run's recomputed verdict, its stored one and its problems.
 
     A completed run is judged from the pages of the listing attempt its record
     names, recomputing the oracle report rather than reading the stored one; a
-    page missing from the export leaves the run without a verdict. A run that
+    page missing from the export, or a completed record without a listing,
+    leaves the run without a verdict. A page carries the ids whose body the
+    supervisor found wrong, not the bodies, so that check is re-counted, not
+    re-run. A run that
     never completed exported its account of itself, which says so, and is
     `inconclusive`.
     """
@@ -216,14 +248,19 @@ def _verdict(run):
         return _unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
     if not complete and record.get("stage") == COMPLETE_STAGE:
         return _unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    # Decide over the coverage the readings support, never the coverage the
-    # record claims.
-    coverage = rebuild(readings, summarize)
-    if missing := missing_samples(record.get("coverage"), coverage):
-        return _unreadable(run, record, [f"missing-samples:{missing}"], samples)
-    rebuilt = {**record, "coverage": coverage}
+    if trial.kind == SEQUENCE_KIND:
+        # Decided by the data alone; nothing was sampled, so the record is
+        # judged as it stands.
+        verdict_of, judged = sequence_verdict, record
+    else:
+        # Decide over the coverage the readings support, never the coverage
+        # the record claims.
+        coverage = rebuild(readings, summarize)
+        if missing := missing_samples(record.get("coverage"), coverage):
+            return _unreadable(run, record, [f"missing-samples:{missing}"], samples)
+        verdict_of, judged = verdict, {**record, "coverage": coverage}
     if not complete:
-        decided = verdict(rebuilt)
+        decided = verdict_of(judged)
         return _result(
             run,
             record,
@@ -236,12 +273,12 @@ def _verdict(run):
     outcomes = outcomes if isinstance(outcomes, dict) else {}
     listing = outcomes.get("listing")
     if not isinstance(listing, dict):
-        decided = verdict(rebuilt)
-        return _result(
-            run, record, decided, verdict_problems(record, decided, True), None, samples
-        )
+        # A completed run is decided by its listing, so a record without one
+        # leaves the verdict nothing to be decided from.
+        return _unreadable(run, record, ["missing-listing-record"], samples)
     attempt, count = listing.get("attempt"), listing.get("pages")
-    if type(attempt) is not int or type(count) is not int:
+    # The supervisor exports at least one page, an empty queue's included.
+    if type(attempt) is not int or type(count) is not int or count < 1:
         return _unreadable(run, record, ["malformed-listing-record"], samples)
     pages, malformed = _pages(run, attempt)
     if malformed:
@@ -257,9 +294,9 @@ def _verdict(run):
     problems = []
     if listing.get("report") != report:
         problems.append("report-differs-from-pages")
-    decided = verdict(
+    decided = verdict_of(
         {
-            **rebuilt,
+            **judged,
             "outcomes": {**outcomes, "listing": {**listing, "report": report}},
         }
     )
@@ -270,6 +307,16 @@ def _verdict(run):
 def assess_runs(runs):
     """Every Cloud Tasks run in a discovered evidence directory, in the order given."""
     return [assess(run) for run in runs if run.scenario == SCENARIO]
+
+
+def _faults(item):
+    """A sequence run's injected faults in order, or `-` for a single-fault run."""
+    kinds = [
+        fault.get("kind")
+        for fault in item.get("faults") or []
+        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
+    ]
+    return ", ".join(kinds) or "-"
 
 
 def render(assessments):
@@ -289,19 +336,21 @@ def render(assessments):
         "",
         (
             "| run | verdict | stored | samples | listed | missing | foreign | "
-            "duplicates | dispatched | reasons | problems |"
+            "duplicates | dispatched | mismatched | faults | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         report = item["report"] if isinstance(item["report"], dict) else {}
         lines.append(
             "| {run} | {verdict} | {stored} | {samples} | {listed} | {missing} | "
-            "{foreign} | {duplicates} | {dispatched} | {reasons} | {problems} |".format(
+            "{foreign} | {duplicates} | {dispatched} | {mismatched} | {faults} | "
+            "{reasons} | {problems} |".format(
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
                 samples=item["samples"],
+                faults=_faults(item),
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",
                 **{
@@ -312,6 +361,7 @@ def render(assessments):
                         "foreign",
                         "duplicates",
                         "dispatched",
+                        "mismatched",
                     )
                 },
             )
@@ -320,16 +370,21 @@ def render(assessments):
         [
             "",
             (
-                "A usable verdict establishes that every input sequence became "
-                "exactly one task in the paused queue through both recoveries; it "
-                "makes no claim about a handler, since a paused queue dispatches "
-                "nothing."
+                "A usable single-fault verdict establishes that every input "
+                "sequence became exactly one task in the paused queue through both "
+                "recoveries; it makes no claim about a handler, since a paused queue "
+                "dispatches nothing."
             ),
             (
-                "Each family is required in the "
+                "For a single-fault run, each family is required in the "
                 + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
                 + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
                 + "only where a reading returned it."
+            ),
+            (
+                "A usable `sequence` verdict (ADR-0204) establishes the same through "
+                "the faults listed: the run is judged by its data alone, so it "
+                "samples no window."
             ),
             (
                 f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which "

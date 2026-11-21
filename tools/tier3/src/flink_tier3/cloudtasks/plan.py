@@ -27,14 +27,18 @@ from ..policy import (
 )
 from ..proposal import check_inputs, render_verified
 from .queue import PAGE_SIZE
-from .trial import KINDS, Trial
+from .trial import KINDS, SEQUENCE_KIND, Trial
 
 NAMESPACE = CLOUDTASKS
 WINDOW_SECONDS = WINDOWS["cloudtasks-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Every dispatchable trial's input: 30 minutes at the rate the application's
+# Every single-fault trial's input: 30 minutes at the rate the application's
 # staged creation was measured keeping up with (#1246).
 INPUT = {"records": 180000, "records_per_second": 100}
+# The fault sequence's input (ADR-0204): six minutes, enough to outlast the
+# faults, as Spanner's is; the job finishes with it. The runbook's "Fault
+# sequence" section gives the timing behind it.
+SEQUENCE_INPUT = {"records": 3600, "records_per_second": 10}
 # The application's checkpoint interval, which bounds what one recovery replays.
 CHECKPOINT_SECONDS = 30
 REVIEWED_AT = "2026-10-12T00:00:00Z"
@@ -50,6 +54,8 @@ def trial(kind, started_at=None):
     """
     if kind not in KINDS:
         raise ValueError("Unknown Cloud Tasks trial: " + str(kind))
+    if kind == SEQUENCE_KIND:
+        return {"kind": kind, **SEQUENCE_INPUT}
     return {"kind": kind, **INPUT}
 
 
@@ -60,7 +66,7 @@ def validate_trial(value):
         raise ValueError(
             "Cloud Tasks trial must be one of "
             + ", ".join(KINDS)
-            + " with 180,000 records at 100 records per second"
+            + " with its fixed input"
         )
 
 
@@ -84,9 +90,10 @@ def estimate():
 
 
 def operations():
-    """The billable operations the trial plans: creates, listings and admin.
+    """The billable operations a single-fault trial plans: creates, listings and admin.
 
-    Replays after a recovery re-create tasks the service refuses as existing,
+    The `sequence` trial's proposal carries the same figure, which overstates
+    its 3,600 creates; ADR-0204 has nothing approve it. Replays after a recovery re-create tasks the service refuses as existing,
     which are counted too, at most one checkpoint's records per recovery.
     """
     records = INPUT["records"]

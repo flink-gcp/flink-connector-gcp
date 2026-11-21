@@ -29,8 +29,8 @@ QUEUE_CONFIGURATION = {
     "retryConfig": {"maxAttempts": 1},
     "tombstoneTtl": "3600s",
 }
-# A listing page: at most this many tasks, in the basic view, which carries
-# each task's name and dispatch count and no body.
+# A listing page: at most this many tasks, in the full view, which carries
+# each task's name, dispatch count and body; the oracle checks all three.
 PAGE_SIZE = 1000
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
@@ -74,8 +74,8 @@ class Queue(TrialService):
         self._call("DELETE", self.name, absent=True)
 
     def tasks(self, page_token=None):
-        """One page of the queue's tasks in the basic view, and the next token."""
-        params = {"responseView": "BASIC", "pageSize": PAGE_SIZE}
+        """One page of the queue's tasks in the full view, and the next token."""
+        params = {"responseView": "FULL", "pageSize": PAGE_SIZE}
         if page_token:
             params["pageToken"] = page_token
         page = self._call("GET", self.name + "/tasks", params=params)

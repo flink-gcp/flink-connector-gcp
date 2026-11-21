@@ -23,7 +23,7 @@ import uuid
 from .bigquery.exercise import BigQueryExercise, bigquery_exercise, require_handoff
 from .bigtable.exercise import BigtableExercise, bigtable_exercise
 from .cleanup import Cleanup
-from .cloudtasks.exercise import CloudTasksExercise
+from .cloudtasks.exercise import CloudTasksExercise, cloudtasks_exercise
 from .common import ApiError, Failure, transient, utc
 from .firestore.exercise import FirestoreExercise, firestore_exercise
 from .metrics import CHECKPOINTS_EVENT
@@ -37,7 +37,7 @@ from .spanner.exercise import SpannerExercise, spanner_exercise
 
 # The exercise of each scenario whose runner creates one resource.
 RESOURCE_EXERCISES = {
-    "cloudtasks-recovery": CloudTasksExercise,
+    "cloudtasks-recovery": cloudtasks_exercise,
     "bigtable-recovery": bigtable_exercise,
     "spanner-recovery": spanner_exercise,
     "firestore-recovery": firestore_exercise,

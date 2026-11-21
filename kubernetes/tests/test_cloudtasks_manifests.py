@@ -42,7 +42,7 @@ def cloudtasks_leaf(module, **changes):
         "namespace": "tier3-cloudtasks",
         "image": f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
         "phase": "initial",
-        "sinkParallelism": 2,
+        "parallelism": 2,
         **changes,
     }
     inputs = {key: value for key, value in inputs.items() if value is not None}
@@ -67,7 +67,7 @@ def cloudtasks_args(run_id, phase, records=180000, rate=100, parallelism=2):
         str(rate),
         "--require-restored",
         str(phase == "upgrade").lower(),
-        "--sink-parallelism",
+        "--parallelism",
         str(parallelism),
     ]
 
@@ -91,7 +91,7 @@ def cloudtasks_configuration(run_id):
         "high-availability.type": "kubernetes",
         "high-availability.storageDir": f"{storage}/ha",
         "restart-strategy.type": "fixed-delay",
-        "restart-strategy.fixed-delay.attempts": "3",
+        "restart-strategy.fixed-delay.attempts": "2147483647",
         "restart-strategy.fixed-delay.delay": "10 s",
     }
 
@@ -150,10 +150,10 @@ def test_cloudtasks_initial_and_upgrade_preserve_the_trial(module):
 
 
 @pytest.mark.parametrize("parallelism", [1, 2])
-def test_cloudtasks_sink_parallelism_sizes_the_job_and_its_taskmanagers(
+def test_cloudtasks_parallelism_sizes_the_sink_and_its_taskmanagers(
     module, parallelism
 ):
-    path = cloudtasks_leaf(module, sinkParallelism=parallelism)
+    path = cloudtasks_leaf(module, parallelism=parallelism)
     result = cue(module, "cmd", "render", path)
     assert result.returncode == 0, result.stderr
     [app] = list(yaml.safe_load_all(result.stdout))
@@ -199,10 +199,10 @@ def test_cloudtasks_input_boundaries_render(module, records, rate):
         # One sink subtask on each of at most two single-slot TaskManagers, and
         # no default: the Flink package's own parallelism default would
         # contradict one.
-        {"sinkParallelism": None},
-        {"sinkParallelism": 0},
-        {"sinkParallelism": 3},
-        {"sinkParallelism": "2"},
+        {"parallelism": None},
+        {"parallelism": 0},
+        {"parallelism": 3},
+        {"parallelism": "2"},
         # The smoke policy admits this image, account and topology; only the package's
         # namespace refuses it.
         {"namespace": "tier3-smoke"},
@@ -333,6 +333,17 @@ def test_cloudtasks_namespace_policy_without_application_package(module, overrid
         ({"cloudtasks_trial": "tm-replacement"}, 180000, 100, (2, 2)),
         ({"cloudtasks_trial": "rescale-out"}, 180000, 100, (1, 2)),
         ({"cloudtasks_trial": "rescale-in"}, 180000, 100, (2, 1)),
+        # The fault sequence (ADR-0204) patches its own rescales from the upgrade.
+        (
+            {
+                "cloudtasks_trial": "sequence",
+                "cloudtasks_records": "3600",
+                "cloudtasks_records_per_second": "10",
+            },
+            3600,
+            10,
+            (2, 2),
+        ),
     ],
 )
 def test_cloudtasks_proposal_delivery_binds_both_phases(

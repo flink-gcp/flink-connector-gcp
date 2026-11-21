@@ -16,13 +16,15 @@
 from __future__ import annotations
 
 from ..common import Failure, utc
-from ..exercise import FiniteInputExercise
+from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE, POLL
 from .observe import observation, vertices
 from .oracle import assess, page
+from .trial import SEQUENCE_KIND
 from .verdict import (
     MEASUREMENT_EVENT,
     PAGE_EVENT,
+    sequence_verdict,
     summarize,
     verdict,
 )
@@ -72,6 +74,8 @@ class CloudTasksExercise(FiniteInputExercise):
         return observation(rest, state)
 
     summarize = staticmethod(summarize)
+    # The verdict the listing's record is judged by.
+    verdict = staticmethod(verdict)
 
     def verify_tasks(self):
         """List the paused queue until the oracle passes or the window closes.
@@ -105,7 +109,7 @@ class CloudTasksExercise(FiniteInputExercise):
                 break
             self.env.sleep(POLL)
         self.outcomes["listing"] = listing
-        self.complete(verdict)
+        self.complete(self.verdict)
 
     def _list(self, attempt, until):
         """One whole listing, exported page by page, and its oracle report.
@@ -146,3 +150,20 @@ class CloudTasksExercise(FiniteInputExercise):
             "queue_state": state,
             "report": assess(self.trial, pages),
         }
+
+
+class CloudTasksSequenceExercise(FaultSequence, CloudTasksExercise):
+    """The Cloud Tasks trial as one fault sequence, judged by its data (ADR-0204).
+
+    The listing and its oracle are the same, so the exactly-once sink is
+    judged by the exactly-once rule; no window samples the job.
+    """
+
+    verdict = staticmethod(sequence_verdict)
+
+
+def cloudtasks_exercise(env, upgrade, queue):
+    """The exercise the approved Cloud Tasks trial names."""
+    if env.approval.cloudtasks_plan.kind == SEQUENCE_KIND:
+        return CloudTasksSequenceExercise(env, upgrade, queue)
+    return CloudTasksExercise(env, upgrade, queue)

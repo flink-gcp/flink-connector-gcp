@@ -74,17 +74,19 @@ def verdict(recovery):
     """The run's verdict and the reasons behind it, from its recovery record.
 
     `usable` says both recoveries proved, the queue stayed paused, the
-    oracle passed — every input sequence listed once as its own task, nothing
-    else listed and nothing dispatched — and every family was read in the
+    oracle passed — every input sequence listed once as its own task with
+    its own body, nothing else listed and nothing dispatched — and every
+    family was read in the
     baseline and in the windows after each recovery. The exercise decides it
     with the transition that completes the run; the offline analyzer
     recomputes it from the exported record, pages and measurements, which are
     untrusted JSON, so every field is checked for its type before it is read.
 
     The recomputation is against the rules in this file as they stand. The
-    first trial, `ct-1362-a1`, ran before the families were read, so its
-    archived evidence recomputes to `inconclusive` against them; archived
-    evidence is read with the revision that produced it.
+    first trial, `ct-1362-a1`, ran before the families were read, and every
+    completed run before the fault sequence exported pages that name no
+    wrong bodies, so their archived evidence has no verdict under them;
+    archived evidence is read with the revision that produced it.
     """
     record = recovery if isinstance(recovery, dict) else {}
     outcomes = record.get("outcomes")
@@ -103,4 +105,29 @@ def verdict(recovery):
     if not isinstance(report, dict) or report.get("verdict") != "pass":
         reasons.append("oracle-not-passed")
     reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_STAGES, OBSERVED))
+    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+
+
+def sequence_verdict(recovery):
+    """A fault-sequence run's verdict: its data alone (ADR-0204).
+
+    `usable` says the run completed, the queue read back paused and the
+    oracle passed: every input sequence listed once as its own task with its
+    own body, nothing else listed and nothing dispatched, which is the
+    exactly-once rule with each record's value checked.
+    Interruptions, restarts, timings and metrics decide nothing.
+    """
+    record = recovery if isinstance(recovery, dict) else {}
+    outcomes = record.get("outcomes")
+    outcomes = outcomes if isinstance(outcomes, dict) else {}
+    reasons = []
+    if record.get("stage") != COMPLETE_STAGE:
+        reasons.append("recovery-incomplete")
+    listing = outcomes.get("listing")
+    listing = listing if isinstance(listing, dict) else {}
+    if listing.get("queue_state") != "PAUSED":
+        reasons.append("queue-not-paused")
+    report = listing.get("report")
+    if not isinstance(report, dict) or report.get("verdict") != "pass":
+        reasons.append("oracle-not-passed")
     return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}

@@ -21,7 +21,7 @@ let application = cloudtasks.#Application & {
 	run: {id: inputs.id, image: inputs.image, phase: inputs.phase}
 	if inputs.records != _|_ {run: records: inputs.records}
 	if inputs.recordsPerSecond != _|_ {run: recordsPerSecond: inputs.recordsPerSecond}
-	if inputs.sinkParallelism != _|_ {run: sinkParallelism: inputs.sinkParallelism}
+	if inputs.parallelism != _|_ {run: parallelism: inputs.parallelism}
 }
 
 delivery: resources: app: application.resource

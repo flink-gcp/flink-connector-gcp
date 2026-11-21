@@ -69,7 +69,7 @@ on:
           - 'rescale-in'
           - 'sequence'
       cloudtasks_trial:
-        description: 'Cloud Tasks only: the trial kind, which names the Pod deleted after the savepoint upgrade or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
+        description: 'Cloud Tasks only: the trial kind, either sequence, which injects every fault in one run (ADR-0204), or a single fault, which names the Pod deleted after the savepoint upgrade or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
         type: choice
         default: 'none'
@@ -79,6 +79,7 @@ on:
           - 'tm-replacement'
           - 'rescale-out'
           - 'rescale-in'
+          - 'sequence'
       bigtable_trial:
         description: 'Bigtable only: the trial kind, either sequence, which injects every fault in one run (ADR-0204), or a single fault, which names the Pod deleted after the savepoint upgrade or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
