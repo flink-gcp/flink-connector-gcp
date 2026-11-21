@@ -325,9 +325,10 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * has passed since the source started without a completed checkpoint, the source watermark
      * follows the readers' current positions and a finished partition is final at once; both last
      * until a checkpoint completes. Optional; defaults to 10 min. {@link Duration#ZERO} waits
-     * however long that takes, so the watermark of a job without checkpointing then never advances.
+     * however long that takes, so a job without checkpointing then never starts a held child and
+     * does not advance its watermark before the source ends.
      *
-     * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} starts a child only after a checkpoint
+     * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} starts a held child only after a checkpoint
      * completes, so a job running without checkpointing would never start one. The source cannot
      * read the job's checkpoint configuration, so it measures instead: when no checkpoint has
      * completed and a child has waited this long, it starts the children as soon as their parents

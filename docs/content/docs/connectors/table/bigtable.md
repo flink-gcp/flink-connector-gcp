@@ -1154,12 +1154,13 @@ checkpoint interval plus that checkpoint's own duration.
 orders each row key's changes by their commit timestamp and tie breaker, such as one reading the
 selected-cell mode's `scan.change-stream.commit-timestamp-column` and
 `scan.change-stream.tie-breaker-column`.
-A job without checkpointing, such as a bounded backfill, holds the successors of one split or
-merge for up to `scan.first-checkpoint-timeout` while its other partitions keep reading, and then
-starts successors at once with a warning.
+A job without checkpointing, such as a bounded backfill, holds the successors of splits and merges
+whose parent emitted a record until about `scan.first-checkpoint-timeout` has passed since the
+oldest close or held successor still waiting, quiet closes included, while partitions already
+running keep reading, and then starts successors at once with a warning.
 The timeout counts from a close and applies until the first checkpoint completes, so a job whose
-checkpoint interval plus a checkpoint's duration exceeds it starts successors at once until then;
-raise it above that.
+checkpoint interval plus a checkpoint's duration exceeds it can start successors at once until
+then; raise it above that.
 An application-owned watermark should allow for the delay too: a successor's first records arrive
 about a checkpoint interval behind the other partitions' output.
 [One row key's changes across a partition split or merge]({{< relref "docs/connectors/datastream/bigtable" >}}#one-row-keys-changes-across-a-partition-split-or-merge)
