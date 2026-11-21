@@ -350,8 +350,11 @@ It suits a consumer that orders each key's changes by their commit coordinates, 
 A job without checkpointing never completes the checkpoint a child waits for, and the coordinator cannot read the job's checkpoint configuration.
 The source therefore measures the wait: when no checkpoint has completed and a child has waited `firstCheckpointTimeout`, 10 minutes by default, it logs a warning and starts children as soon as their parents finish until a checkpoint completes.
 A savepoint taken while the job runs does not count, because Flink reports completion to the source only for a checkpoint or a savepoint that stops the job.
-Raise the timeout for a job whose first checkpoint completes later than that, or set it to zero to wait indefinitely.
-A bounded run without checkpointing therefore pauses once for the timeout, at its first partition split or merge; enable checkpointing, or set `IMMEDIATE` when the run's consumer does not need the order.
+The wait counts from when children were first held rather than from the start, and it applies until the first checkpoint completes, so a job whose first checkpoint completes more than the timeout, plus the time to the next check, after a hold begins, as a long checkpoint interval can make it, also starts children at once until then; raise the timeout above the checkpoint interval plus a checkpoint's duration.
+Zero waits indefinitely, which suits only a job with checkpointing: without it, held children never start and the source watermark does not advance before the source ends.
+A bounded run without checkpointing therefore holds the children of every parent that emitted a record until about the timeout after the first such hold (the check runs up to 30 seconds after it), while partitions already running keep reading, and then starts children at once; a parent that emitted nothing, as the initial query normally does, holds nothing.
+Its source watermark stays at the start position until the timeout has passed since the source started.
+Enable checkpointing, or set `IMMEDIATE` when the run's consumer does not need the order.
 [ADR-0099]({{< param BookRepo >}}/blob/main/docs/adr/0099-the-spanner-change-stream-coordinator-checkpoints-partition-lineage.md) records the measurement behind this behavior.
 
 ### Checkpoints and delivery
@@ -406,8 +409,8 @@ Restored positions remain subject to the stream's retention, as for an unbounded
 Data records carry their Spanner commit timestamp as the Flink event timestamp.
 Heartbeat records advance their partition's safe progress, which each reader reports to the coordinator when a checkpoint completes.
 The source watermark is one coordinator-owned minimum across every partition a completed checkpoint has not yet seen finish, including discovered, scheduled, reader-queued, and running partitions.
-Because it follows the positions of completed checkpoints, it trails the newest changes by about one checkpoint interval, and before the first checkpoint completes it stays at the start; while checkpoints complete, a failover therefore never re-reads a record behind it.
-A job without checkpointing sees it follow the readers' current positions once `firstCheckpointTimeout` (10 minutes by default) has passed with no checkpoint completed.
+Because it follows the positions of completed checkpoints, it trails the newest changes by about one checkpoint interval; while checkpoints complete, a failover therefore never re-reads a record behind it, except after a period on the readers' current positions described next, from which a running coordinator's watermark does not move back.
+Before the first checkpoint completes it stays at the start until `firstCheckpointTimeout` (10 minutes by default) has passed since the source started, and from then on until one completes it follows the readers' current positions, which is what a job without checkpointing sees; with a zero timeout it stays at the start until a checkpoint completes or the source ends.
 The coordinator broadcasts that frontier to every source reader, including readers with no assigned split, so failover and rescaling do not omit temporarily unowned work.
 The conversion subtracts one millisecond from the heartbeat instant after truncation because a later nanosecond timestamp can occupy the same Flink millisecond; this prevents an on-time record from being classified as late.
 Quiet partitions are not marked idle because doing so would remove them from the safety minimum.
