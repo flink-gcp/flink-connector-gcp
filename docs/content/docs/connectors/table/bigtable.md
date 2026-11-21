@@ -444,6 +444,9 @@ The ranges configured by `scan.row-prefix`, `scan.row-range.*` and `scan.row-ran
 treated as one union, then intersected with the SQL ranges.
 The same final ranges and filters serve the bounded scan and a FULL-cache loader created from that
 filtered source plan.
+A condition on a looked-up table reaches that plan only in streaming mode; in batch mode the
+planner keeps it on the lookup join, so a FULL-cache load reads every row the configured ranges
+allow (measured on Flink 2.2.1 and 1.20.5).
 
 | Row-key type | `=`, `<>`, `IN` | `<`, `<=`, `>`, `>=` | `IS NULL`, `IS NOT NULL` |
 |---|---|---|---|

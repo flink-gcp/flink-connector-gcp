@@ -17,9 +17,9 @@ limitations under the License.
 # ADR-0098: The Spanner lookup source point-reads by primary key or loads the scan, and Flink owns its cache
 
 - Status: Accepted
-- Date: 2026-08-11, revised 2026-08-12, 2026-10-04, 2026-11-05 and 2026-11-07
+- Date: 2026-08-11, revised 2026-08-12, 2026-10-04, 2026-11-05, 2026-11-07 and 2026-11-20
 - Issues: [#504](https://github.com/flink-gcp/flink-connector-gcp/issues/504), [#529](https://github.com/flink-gcp/flink-connector-gcp/issues/529) (under
-  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643), [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845), [#2061](https://github.com/flink-gcp/flink-connector-gcp/issues/2061)
+  [#223](https://github.com/flink-gcp/flink-connector-gcp/issues/223)), [#573](https://github.com/flink-gcp/flink-connector-gcp/issues/573), [#1643](https://github.com/flink-gcp/flink-connector-gcp/issues/1643), [#1845](https://github.com/flink-gcp/flink-connector-gcp/issues/1845), [#2061](https://github.com/flink-gcp/flink-connector-gcp/issues/2061), [#2219](https://github.com/flink-gcp/flink-connector-gcp/issues/2219)
 - Modules: spanner, base (`table`)
 - Current behavior: `docs/content/docs/connectors/table/spanner.md`
 
@@ -58,6 +58,7 @@ Issue #1845 adds `FULL`.
 Flink's full cache never loads through the FLIP-27 `SourceProvider` the bounded scan returns: it takes an `InputFormatProvider` on both supported lines, or on Flink 1.20 also a deprecated `SourceFunctionProvider` (ADR-0095), and loads through `InputFormatCacheLoader` (checked in Flink 1.20.5 and 2.2.1).
 An `InputFormatProvider` is the one shape both lines accept.
 `SpannerFullCacheInputFormat` instead runs the bounded scan's own configuration, built by the same builder call as `getScanRuntimeProvider`, so a load reads what a scan of the table would: projection, pushed filters, `scan.index`, partition hints, Data Boost and RPC priority.
+The filters depend on the runtime mode (issue #2219, Flink 2.2.1 and 1.20.5): in streaming mode the planner pushes a condition on the looked-up table into the lookup source, and an exact primary-key range then leaves no `where=[...]` on `LookupJoin`; in batch mode the same range stays on `LookupJoin` as `where=[...]`, so a batch load reads the whole table.
 The snapshot and reload contract is:
 
 - **One snapshot per load**: a load opens a new batch read-only transaction at the scan's timestamp bound and reads every partition of that plan at its timestamp; the next load plans again and reads a newer snapshot.
@@ -79,7 +80,7 @@ These checks and the trigger mapping live in the base module's `FullCacheReloadC
 The loader exports no client metrics to Flink, because Flink opens it without a runtime context.
 The connector retries only `ABORTED`, `DEADLINE_EXCEEDED`, and `UNAVAILABLE` point reads within the configured retry budget.
 Those three are the connector's own choice rather than a mirror of the client's, because `readRow` reaches `StreamingRead` rather than the unary `Read` and `SpannerStubSettings` gives that RPC an empty retryable set (google-cloud-spanner 6.120.0); of the three, only `UNAVAILABLE` is retried underneath, so `ABORTED` and `DEADLINE_EXCEEDED` would be retried by nobody without this loop.
-When the planner also pushes an exact primary-key predicate, both lookup modes reject a non-matching lookup key before opening a point-read RPC.
+When the planner also pushes an exact primary-key predicate, which it does in streaming mode and not in batch mode (issue #2219), both lookup modes reject a non-matching lookup key before opening a point-read RPC.
 Predicates pushed through the scan filter ability that are not exact primary-key constraints remain Flink residuals.
 Additional lookup equality keys are a separate planner channel and are evaluated by the lookup helper.
 The bounded-scan `scan.index` option does not change lookup access paths.

@@ -923,6 +923,79 @@ class SpannerTableSourceITCase extends AbstractSpannerEmulatorITCase {
                         "'lookup.async' cannot be true when 'lookup.cache' is FULL");
     }
 
+    @Test
+    void aConditionOnTheLookedUpTableReachesTheSourceOnlyInStreamingMode() throws Exception {
+        Dialect dialect = Dialect.GOOGLE_STANDARD_SQL;
+        DatabaseDestination database = lookupDatabase(dialect);
+        client(database)
+                .write(
+                        List.of(
+                                lookupRecord(1L, 7L, "Ada"),
+                                lookupRecord(2L, 8L, "Bob"),
+                                lookupRecord(3L, 9L, "Ada")));
+        String point =
+                "SELECT f.id, s.name FROM facts AS f JOIN lookup_source FOR SYSTEM_TIME AS OF f.t AS s ON f.tenant = s.tenant AND f.id = s.id WHERE s.id > 1";
+        String full =
+                "SELECT n.name, s.id FROM names AS n JOIN full_source FOR SYSTEM_TIME AS OF n.t AS s ON n.name = s.name";
+        for (boolean streaming : new boolean[] {true, false}) {
+            TableEnvironment table =
+                    TableEnvironment.create(
+                            streaming
+                                    ? EnvironmentSettings.newInstance().inStreamingMode().build()
+                                    : EnvironmentSettings.newInstance().inBatchMode().build());
+            table.getConfig().set("parallelism.default", "1");
+            table.executeSql(lookupTableDdl(database, dialect, false));
+            table.executeSql(
+                    fullCacheLookupTableDdl(database, dialect, false, "1 h")
+                            .replace("CREATE TABLE lookup_source", "CREATE TABLE full_source"));
+            table.executeSql(
+                    "CREATE TEMPORARY VIEW facts AS SELECT id, tenant, PROCTIME() AS t FROM (VALUES (CAST(1 AS BIGINT), CAST(7 AS BIGINT)), (CAST(2 AS BIGINT), CAST(8 AS BIGINT)), (CAST(3 AS BIGINT), CAST(9 AS BIGINT))) AS v(id,tenant)");
+            table.executeSql(
+                    "CREATE TEMPORARY VIEW names AS SELECT name, PROCTIME() AS t FROM (VALUES ('Ada'), ('Zed')) AS v(name)");
+
+            // A scan takes the primary-key range exactly: the source holds it and Flink keeps no
+            // residual. A FULL join by name, where id is no join key, therefore drops the
+            // residual only when the range was pushed into the lookup source, and keeps it when
+            // the source was never offered it. Flink's LookupJoin prints only the table's name,
+            // so the residual is the evidence. The point lookup is checked for its rows only:
+            // its range is on a join key, so the planner also filters the probe side and a
+            // dropped residual would prove nothing. The docs' mode-dependent statements rest on
+            // this; a Flink upgrade that changes either mode fails here.
+            assertThat(optimizedPlan(table, "SELECT id FROM lookup_source WHERE id > 1"))
+                    .as("streaming=%s", streaming)
+                    .contains("filter=[>(id, 1)]")
+                    .doesNotContain("where=");
+            for (String query : List.of(full + " WHERE s.id > 1", full + " AND s.id > 1")) {
+                String plan = optimizedPlan(table, query);
+                if (streaming) {
+                    // Nowhere in the plan, not as a residual, a join condition or a Calc above
+                    // the join: only the source can have applied it.
+                    assertThat(plan).as(query).contains("LookupJoin(").doesNotContain(">(id, 1)");
+                } else {
+                    assertThat(lookupJoin(plan)).as(query).contains("where=[>(id, 1)]");
+                }
+            }
+            assertThat(rows(table, point))
+                    .containsExactlyInAnyOrder(Row.of(2L, "Bob"), Row.of(3L, "Ada"));
+            assertThat(rows(table, full + " WHERE s.id > 1")).containsExactly(Row.of("Ada", 3L));
+            assertThat(rows(table, full + " AND s.id > 1")).containsExactly(Row.of("Ada", 3L));
+        }
+    }
+
+    private static String optimizedPlan(TableEnvironment table, String query) {
+        String plan = table.explainSql(query);
+        return plan.substring(
+                plan.indexOf("== Optimized Physical Plan =="),
+                plan.indexOf("== Optimized Execution Plan =="));
+    }
+
+    private static String lookupJoin(String plan) {
+        return plan.lines()
+                .filter(line -> line.contains("LookupJoin("))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no LookupJoin in " + plan));
+    }
+
     private static Mutation lookupRecord(long id, long tenant, String name) {
         return Mutation.newInsertOrUpdateBuilder("lookup_records")
                 .set("id")

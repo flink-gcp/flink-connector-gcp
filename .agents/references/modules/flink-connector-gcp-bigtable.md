@@ -824,8 +824,9 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   necessary existence filters but also remain residual: never push raw values across codec nulls,
   byte-order differences or cell versions. Compose the existence predicate as a conditional whose
   true branch is the projection filter, and preserve that plan in a FULL loader created from the
-  filtered source. Flink 2.2 keeps scalar qualifier temporal-join predicates in `LookupJoin.where` rather than
-  passing them to this ability; all cache modes evaluate that residual. Point lookup membership
+  filtered source. Only streaming mode passes a looked-up table's predicates to this ability
+  (row-key ranges and qualifier conditions alike); batch mode keeps them in `LookupJoin.where`
+  (#2219, held by `BigtableTableSourceITCase`). All cache modes evaluate the residual. Point lookup membership
   uses `RowRanges.contains`, not the stricter split-planning `cuts`; a closed-start key belongs to
   the range.
 - Require the row-key equality for a lookup. Additional whole-family ROW keys with scalar children

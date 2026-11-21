@@ -422,7 +422,9 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   loader logs without discarding the load. `lookup.async` is refused with FULL in the lookup
   config, and a fixed `scan.timestamp-bound.read-timestamp` only on the FULL lookup path, so scans
   keep it. FULL keys are any mapped top-level type except FLOAT/DOUBLE/ARRAY, because Flink's index
-  compares with `equals` (ADR-0098).
+  compares with `equals` (ADR-0098). A condition on the looked-up table reaches the lookup source,
+  and so the load and the point-read gate, only in streaming mode; batch mode keeps it on
+  `LookupJoin where=[...]` (#2219, held by `SpannerTableSourceITCase`).
 
 ## Table Change Streams CDC (`docs/adr/0105`)
 

@@ -160,6 +160,78 @@ class BigtableTableSourceITCase extends BigtableTableTestBase {
                 .containsExactlyInAnyOrder(Row.of("a", "gold"), Row.of("a", "gold"));
     }
 
+    @Test
+    void aConditionOnTheLookedUpTableNarrowsAFullCacheLoadOnlyInStreamingMode() throws Exception {
+        String tableId = "sql-lookup-full-conditions";
+        TableDestination destination = createTable(tableId, "cf1");
+        // Three bytes are no BIGINT, so a load that reads row 'a' fails, and a load that a
+        // pushed range or the qualifier's existence prefilter narrowed skips it. Flink's
+        // LookupJoin prints only the table's name, so the load's outcome is the evidence.
+        writeCell(destination, "a", "cf1", "n", "bad");
+        writeCell(destination, "b", "cf1", "n", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0007");
+        writeCell(destination, "b", "cf1", "name", "silver");
+        String join =
+                "SELECT f.k, b.cf1.n FROM facts AS f JOIN bt FOR SYSTEM_TIME AS OF f.t AS b ON f.k = b.rowkey";
+        for (boolean streaming : new boolean[] {true, false}) {
+            TableEnvironment table =
+                    TableEnvironment.create(
+                            streaming
+                                    ? org.apache.flink.table.api.EnvironmentSettings.newInstance()
+                                            .inStreamingMode()
+                                            .build()
+                                    : org.apache.flink.table.api.EnvironmentSettings.newInstance()
+                                            .inBatchMode()
+                                            .build());
+            table.getConfig().set("parallelism.default", "1");
+            table.executeSql(
+                    "CREATE TABLE bt (cf1 ROW<n BIGINT, name STRING>, rowkey STRING, PRIMARY KEY (rowkey) NOT ENFORCED) "
+                            + withOptions(
+                                    tableId,
+                                    new String[] {
+                                        "lookup.cache",
+                                        "FULL",
+                                        "lookup.full-cache.periodic-reload.interval",
+                                        "1 h"
+                                    }));
+            table.executeSql(
+                    "CREATE TEMPORARY VIEW facts AS SELECT k, PROCTIME() AS t FROM (VALUES ('b'), ('missing')) AS v(k)");
+
+            assertLoadFails(table, join);
+            for (String condition :
+                    List.of(
+                            " WHERE b.rowkey > 'a'",
+                            " AND b.rowkey > 'a'",
+                            " WHERE b.cf1.name = 'silver'")) {
+                if (streaming) {
+                    assertThat(collect(table, join + condition))
+                            .as(condition)
+                            .containsExactly(Row.of("b", 7L));
+                } else {
+                    assertLoadFails(table, join + condition);
+                }
+            }
+        }
+    }
+
+    /**
+     * Asserts that the query's FULL load failed. Flink releases the first-load latch before it
+     * publishes the load's failure (Flink 2.2.1 and 1.20.5, {@code CacheLoader#reload} and {@code
+     * ReloadTriggerContext}), so a probe can see the empty cache instead of the exception; a load
+     * that succeeded would have joined row 'b', so either outcome shows the load read row 'a'.
+     */
+    private static void assertLoadFails(TableEnvironment table, String query) {
+        List<Row> rows;
+        try {
+            rows = collect(table, query);
+        } catch (Exception e) {
+            assertThat(e)
+                    .as(query)
+                    .hasStackTraceContaining("Failed to load data into the lookup 'FULL' cache");
+            return;
+        }
+        assertThat(rows).as("rows of a failed load: %s", query).isEmpty();
+    }
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("pointLookupModes")
     void aTemporalJoinReadsHitsAndMissesInEveryLookupMode(String mode, String[] lookupOptions)
