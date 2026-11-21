@@ -273,6 +273,21 @@ public final class GrpcEventLoops {
         }
 
         /**
+         * Puts a channel built outside any transport provider on the group, for {@link
+         * EmulatorChannels#openLeasedPlaintextChannel(EmulatorEndpoint)}'s caller-owned channel.
+         *
+         * @param builder the channel builder
+         * @return the same builder
+         * @throws IllegalStateException if this lease is closed, since the channel would then run
+         *     on a group no lease holds open
+         */
+        NettyChannelBuilder applyTo(NettyChannelBuilder builder) {
+            Preconditions.checkNotNull(builder, "builder must not be null");
+            Preconditions.checkState(!closed.get(), "The gRPC event-loop lease is closed");
+            return (NettyChannelBuilder) configure(builder);
+        }
+
+        /**
          * Shuts a client down, waits for its channels to terminate, and then closes this lease.
          *
          * <p>In-flight calls get a bounded time to finish before they are cancelled. The lease is

@@ -76,8 +76,9 @@ Two standing rules are refined, not broken, by this knob:
   *policy* — retry and batching behavior. Transport *sizing* carries no policy: it changes how
   many connections exist, not what is sent or retried. gax retry and batching configuration
   remain untouched.
-- The emulator arm is unaffected ([ADR-0081]): it keeps its single caller-owned plaintext channel
-  and `shutdownNow()` ownership model. Configuring `channelPoolSize` beside an emulator endpoint
+- The emulator arm is unaffected ([ADR-0081]): it keeps its single caller-owned plaintext channel.
+  Since [ADR-0208] that channel runs on the connector's event-loop group and is closed after the
+  client within that ADR's bounds, where the creator used to `shutdownNow()` it. Configuring `channelPoolSize` beside an emulator endpoint
   is **rejected** — at the sink builder's `build()` and at the table factory's validation — rather
   than silently ignored, matching the module's credential-conflict precedent: a pool tuned against
   the emulator would measure nothing and carry a false baseline into production sizing.
@@ -112,4 +113,5 @@ Two standing rules are refined, not broken, by this knob:
 [#1015]: https://github.com/flink-gcp/flink-connector-gcp/issues/1015
 [ADR-0070]: 0070-the-staging-roll-threshold-is-a-measured-throughput-band-not-limit-arithmetic.md
 [ADR-0081]: 0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md
+[ADR-0208]: 0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md
 [ADR-0129]: 0129-the-cloud-tasks-sink-keeps-one-create-rpc-per-record-and-declines-v2beta3-batchcreatetasks.md

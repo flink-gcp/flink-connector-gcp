@@ -21,6 +21,7 @@ limitations under the License.
 - Issues: [#438]
 - Modules: base, bigquery, pubsub, cloudtasks
 - Current behavior: (internal plumbing; nothing user-rendered)
+- Refined by: [ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md), a caller-owned channel is opened with `openLeasedPlaintextChannel`, on the connector's event-loop group under a lease of its own, and closed gracefully within that ADR's bounds (#2243)
 
 ## Decision
 
