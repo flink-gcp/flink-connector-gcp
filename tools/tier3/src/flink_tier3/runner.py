@@ -16,6 +16,7 @@
 import flink_tier3 as rt
 
 from .bigquery.exercise import require_handoff
+from .bigquery.handoff import QueryReadTransient
 from .policy import BIGQUERY_OBSERVATIONS
 from .pubsub.admission import admit, require_admission
 from .pubsub.guard import admission_deadline
@@ -331,6 +332,7 @@ class Runner:
         query_failed = False
         released = False
         last_release_error = None
+        reported_retries = set()
 
         def release_queries():
             nonlocal released, query_failed, last_release_error
@@ -388,6 +390,20 @@ class Runner:
                 else:
                     try:
                         self.bigquery.poll()
+                        reported_retries.clear()
+                    except QueryReadTransient as error:
+                        # Left to the next poll, and recorded once for each read
+                        # and status until a poll returns.
+                        retry = (error.operation, error.kind)
+                        if retry not in reported_retries:
+                            reported_retries.add(retry)
+                            self.env.emit(
+                                "bigquery-query-retried",
+                                {
+                                    "operation": error.operation,
+                                    "cause": str(error.__cause__),
+                                },
+                            )
                     except (rt.Failure, OSError, ValueError) as error:
                         query_failed = True
                         self.env.emit("bigquery-query-failed", {"cause": str(error)})

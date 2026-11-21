@@ -20,7 +20,14 @@ import math
 import re
 import uuid
 
-from ..common import Failure, digest, json_bytes
+from ..common import (
+    ApiError,
+    Failure,
+    StorageRequestFailed,
+    digest,
+    json_bytes,
+    transient,
+)
 from ..policy import BIGQUERY_OBSERVATIONS
 from .resources import job_state
 
@@ -46,6 +53,19 @@ def require_bigquery_clean(record):
 
 class _CallIdentityChanged(Failure):
     """A completion acknowledgement encountered another invocation."""
+
+
+class QueryReadTransient(Failure):
+    """A read that said nothing, its marker cleared; the next poll may repeat it."""
+
+    def __init__(self, operation, cause):
+        super().__init__(f"{operation}: {cause}")
+        self.operation = operation
+        # The service's message can carry a code of its own per request, so the
+        # status says whether a later failure is the same one.
+        self.kind = (
+            cause.status if isinstance(cause, ApiError) else type(cause).__name__
+        )
 
 
 _TOKEN = re.compile(r"[0-9a-f]{32}")
@@ -169,8 +189,14 @@ class BigQueryHandoff:
 
         self.controller._change(initialize, open_only=True)
 
-    def _call(self, operation, callback, *, deadline, creates=False):
-        """Serialize calls through CAS; retain ambiguous creation outcomes."""
+    def _call(self, operation, callback, *, deadline, creates=False, repeatable=False):
+        """Serialize calls through CAS; retain ambiguous creation outcomes.
+
+        With ``repeatable``, which only a call that creates nothing may pass, a
+        transient failure of the call, or a storage request of it that got no
+        answer, raises `QueryReadTransient` once the marker is cleared; a
+        failure to set or clear the marker is raised as is.
+        """
         self._role("runner")
 
         marker = {"operation": operation, "id": uuid.uuid4().hex}
@@ -188,6 +214,13 @@ class BigQueryHandoff:
             result = callback(self.controller.with_deadline(deadline))
             completed = True
             return result
+        except Failure as error:
+            if repeatable and (
+                transient(error) or isinstance(error, StorageRequestFailed)
+            ):
+                # Replaced by the acknowledgement's own failure if that fails.
+                raise QueryReadTransient(operation, error) from error
+            raise
         finally:
             # A failed creating call may still execute at the service. Its
             # marker survives this process and cannot be cleared by release.
@@ -260,7 +293,12 @@ class BigQueryHandoff:
         self.controller._change(request, open_only=True)
 
     def poll(self):
-        """Service one requested job; return its name when evidence is durable."""
+        """Service one requested job; return its name when evidence is durable.
+
+        A status read or collection that fails transiently raises
+        `QueryReadTransient`, for the next poll to run again until the
+        request's deadline.
+        """
         self._role("runner")
         self.env.require_running("BigQuery query processing has stopped")
         state, value = self._read()
@@ -287,6 +325,7 @@ class BigQueryHandoff:
                 "status:" + name,
                 lambda controller, slot=saved["slot"]: controller.api.job(slot),
                 deadline=request["deadline"],
+                repeatable=True,
             )
             if job is None:
                 raise Failure("Submitted BigQuery query is not readable")
@@ -300,6 +339,7 @@ class BigQueryHandoff:
                     name, max_bytes=self.per_query
                 ),
                 deadline=request["deadline"],
+                repeatable=True,
             )
             return name
         return None

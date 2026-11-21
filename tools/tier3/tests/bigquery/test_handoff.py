@@ -18,9 +18,16 @@ import copy
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.bigquery.handoff import BigQueryHandoff
+from flink_tier3.bigquery.handoff import BigQueryHandoff, QueryReadTransient
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
-from flink_tier3.common import ApiError, Failure, TransportError, digest, json_bytes
+from flink_tier3.common import (
+    ApiError,
+    Failure,
+    StorageRequestFailed,
+    TransportError,
+    digest,
+    json_bytes,
+)
 from flink_tier3.model import Phase
 from flink_tier3.records import Records
 
@@ -605,23 +612,218 @@ def test_pending_job_blocks_delete_after_release(actors):
     assert a.supervisor.cleanup(lambda: True, deadline=NOW + 3600)
 
 
-def test_read_failure_clears_marker_without_repeating_submit(actors):
-    a = actors
-    start(a)
-    a.supervisor.request("baseline", deadline=NOW + 100)
-    original = a.api.job
+def failing(a, method, error):
+    """Make the API's `method` raise `error` once, then answer again."""
+    original = getattr(a.api, method)
 
-    def lost(slot):
-        raise TransportError("Lost read")
+    def call(*args, **kwargs):
+        setattr(a.api, method, original)
+        raise error
 
-    a.api.job = lost
-    with pytest.raises(TransportError):
-        a.runner.poll()
-    assert a.runner.controller._read()["handoff"]["inflight"] is None
-    a.api.job = original
+    setattr(a.api, method, call)
+
+
+def submitted(a, name="final"):
+    a.supervisor.request(name, deadline=NOW + 100)
     assert a.runner.poll() is None
     assert a.api.calls.count(("submit", 0)) == 1
+
+
+def test_transient_status_read_is_left_to_next_poll_without_repeating_submit(
+    actors,
+):
+    a = actors
+    start(a)
+    submitted(a, "baseline")
+    failing(a, "job", TransportError("Lost read"))
+    with pytest.raises(QueryReadTransient) as raised:
+        a.runner.poll()
+    assert raised.value.operation == "status:baseline"
+    assert raised.value.kind == "TransportError"
+    assert a.runner.controller._read()["handoff"]["inflight"] is None
+    assert a.runner.poll() is None
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    assert a.runner.poll() == "baseline"
+    assert a.api.calls.count(("submit", 0)) == 1
+    assert a.supervisor.result("baseline")["report"]["passed"] is True
     a.runner.release()
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+def test_transient_status_of_finished_job_is_collected_next_poll(actors, status):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    failing(a, "job", ApiError(status, "GET", "/jobs/x"))
+    with pytest.raises(QueryReadTransient) as raised:
+        a.runner.poll()
+    assert raised.value.operation == "status:final"
+    assert raised.value.kind == status
+    assert a.runner.poll() == "final"
+    assert a.supervisor.result("final")["report"]["passed"] is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ApiError(503, "GET", "/queries/x"), TransportError("Lost page")],
+    ids=["http-503", "transport"],
+)
+def test_transient_collection_failure_is_collected_next_poll(actors, error):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    failing(a, "results", error)
+    with pytest.raises(QueryReadTransient) as raised:
+        a.runner.poll()
+    assert raised.value.operation == "collect:final"
+    assert raised.value.__cause__ is error
+    state = a.runner.controller._read()
+    assert state["queries"]["final"]["evidence"] is None
+    assert state["handoff"]["inflight"] is None
+    assert a.runner.poll() == "final"
+    assert a.supervisor.result("final")["report"]["passed"] is True
+
+
+def test_status_read_through_rest_names_the_status_not_the_message(actors):
+    a = actors
+    start(a)
+    submitted(a)
+    plan = a.runner.controller.plan
+    unavailable = Response(
+        {"error": {"code": 503, "message": "Backend error. Error: 4183925"}}, 503
+    )
+    _, http = transport(a, unavailable, job(plan), job(plan), page(plan))
+    with pytest.raises(QueryReadTransient) as raised:
+        a.runner.poll()
+    assert raised.value.kind == 503
+    assert "4183925" in str(raised.value)
+    assert a.runner.poll() == "final"
+    assert [call[0] for call in http.calls] == ["GET"] * 4
+
+
+def test_transient_read_before_submission_keeps_its_marker(actors):
+    a = actors
+    start(a)
+    a.supervisor.request("final", deadline=NOW + 100)
+    # The real submission reads the job first; that read belongs to a
+    # creating call, whose marker a failure must leave.
+    transport(a, Response({}, 503))
+    with pytest.raises(ApiError) as raised:
+        a.runner.poll()
+    assert not isinstance(raised.value, QueryReadTransient)
+    inflight = a.runner.controller._read()["handoff"]["inflight"]
+    assert inflight["operation"] == "submit:final"
+    with pytest.raises(Failure, match="in flight"):
+        a.runner.release()
+
+
+def test_evidence_written_before_a_transient_answer_is_accepted_next_poll(actors):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    write = a.env.store.write
+    lost = []
+
+    def landed(name, data, *args, **kwargs):
+        generation = write(name, data, *args, **kwargs)
+        if name.endswith("/queries/0.json") and not lost:
+            lost.append(name)
+            raise ApiError(503, "POST", name)
+        return generation
+
+    a.env.store.write = landed
+    with pytest.raises(QueryReadTransient):
+        a.runner.poll()
+    assert lost
+    assert a.runner.poll() == "final"
+    assert a.api.calls.count(("results", 0)) == 2
+    assert a.supervisor.result("final")["report"]["passed"] is True
+
+
+@pytest.mark.parametrize("landed", [False, True], ids=["lost", "landed"])
+def test_unanswered_evidence_write_is_collected_next_poll(actors, landed):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    write = a.env.store.write
+    unanswered = []
+
+    def lost(name, data, *args, **kwargs):
+        if name.endswith("/queries/0.json") and not unanswered:
+            unanswered.append(name)
+            if landed:
+                write(name, data, *args, **kwargs)
+            raise StorageRequestFailed("POST storage request failed: ReadTimeout")
+        return write(name, data, *args, **kwargs)
+
+    a.env.store.write = lost
+    with pytest.raises(QueryReadTransient) as raised:
+        a.runner.poll()
+    assert raised.value.kind == "StorageRequestFailed"
+    assert a.runner.controller._read()["handoff"]["inflight"] is None
+    assert a.runner.poll() == "final"
+    assert a.supervisor.result("final")["report"]["passed"] is True
+
+
+@pytest.mark.parametrize("method", ["job", "results"])
+def test_failure_that_says_something_still_ends_query_processing(actors, method):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    refused = ApiError(403, "GET", "/jobs/x")
+    failing(a, method, refused)
+    with pytest.raises(ApiError) as raised:
+        a.runner.poll()
+    assert raised.value is refused
+    assert a.runner.controller._read()["handoff"]["inflight"] is None
+    a.runner.release()
+
+
+def test_transient_read_is_retried_only_until_the_request_deadline(actors):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    failing(a, "job", TransportError("Lost read"))
+    with pytest.raises(QueryReadTransient):
+        a.runner.poll()
+    a.now[0] = NOW + 100
+    calls = list(a.api.calls)
+    with pytest.raises(Failure, match="deadline expired"):
+        a.runner.poll()
+    assert a.api.calls == calls
+    a.runner.release()
+
+
+def test_failed_acknowledgement_is_raised_rather_than_left_to_next_poll(actors):
+    a = actors
+    start(a)
+    submitted(a)
+    a.api.jobs[0]["status"]["state"] = "DONE"
+    failing(a, "job", TransportError("Lost read"))
+    write = a.env.store.write
+
+    def refused(name, data, *args, **kwargs):
+        if (
+            name == a.env.records.path
+            and data["bigquery"]["handoff"]["inflight"] is None
+        ):
+            raise ApiError(503, "POST", name)
+        return write(name, data, *args, **kwargs)
+
+    a.env.store.write = refused
+    with pytest.raises(ApiError) as raised:
+        a.runner.poll()
+    assert not isinstance(raised.value, QueryReadTransient)
+    assert isinstance(raised.value.__context__, QueryReadTransient)
+    a.env.store.write = write
+    with pytest.raises(Failure, match="unresolved call"):
+        a.runner.poll()
 
 
 @pytest.mark.parametrize(
