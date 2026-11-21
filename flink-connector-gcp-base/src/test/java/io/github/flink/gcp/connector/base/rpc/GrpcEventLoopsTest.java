@@ -20,6 +20,7 @@ import com.google.api.core.ApiFunction;
 import com.google.api.gax.core.BackgroundResource;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.TransportChannelProvider;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
@@ -30,11 +31,9 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -67,7 +66,7 @@ class GrpcEventLoopsTest {
             try {
                 // Connecting registers the channel on an event loop, which starts its thread.
                 channel.getState(true);
-                assertThat(awaitGroupThread())
+                assertThat(GrpcEventLoopThreads.awaitAlive())
                         .as("a thread named %s* while the channel connects", prefix())
                         .isTrue();
             } finally {
@@ -77,9 +76,26 @@ class GrpcEventLoopsTest {
             lease.close();
         }
 
-        assertThat(awaitNoGroupThread())
+        assertThat(GrpcEventLoopThreads.awaitNone())
                 .as("no thread named %s* after the last release", prefix())
                 .isTrue();
+    }
+
+    @Test
+    void theTestUtilitiesLookForTheGroupsThreadNames() {
+        // GrpcEventLoopThreads restates the prefix, since test-utils cannot depend on base.
+        assertThat(GrpcEventLoopThreads.PREFIX).isEqualTo(GrpcEventLoops.THREAD_NAME_PREFIX);
+    }
+
+    @Test
+    void aClosedLeaseRefusesToPlaceAChannel() {
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+        lease.close();
+
+        assertThatThrownBy(() -> lease.applyTo(NettyChannelBuilder.forTarget("localhost:1")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("lease is closed");
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
     }
 
     @Test
@@ -131,7 +147,9 @@ class GrpcEventLoopsTest {
             channel.getState(true);
 
             assertThat(GrpcEventLoops.isRunning()).isFalse();
-            assertThat(groupThreads()).as("no group was started for the channel").isEmpty();
+            assertThat(GrpcEventLoopThreads.alive())
+                    .as("no group was started for the channel")
+                    .isFalse();
         } finally {
             channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
         }
@@ -320,36 +338,6 @@ class GrpcEventLoopsTest {
 
     private static String prefix() {
         return GrpcEventLoops.THREAD_NAME_PREFIX;
-    }
-
-    private static Set<Thread> groupThreads() {
-        return Thread.getAllStackTraces().keySet().stream()
-                .filter(t -> t.isAlive() && t.getName().startsWith(prefix()))
-                .collect(Collectors.toSet());
-    }
-
-    /** Waits up to ten seconds for a live group thread to exist. */
-    private static boolean awaitGroupThread() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (groupThreads().isEmpty()) {
-            if (System.nanoTime() >= deadline) {
-                return false;
-            }
-            Thread.sleep(20);
-        }
-        return true;
-    }
-
-    /** Waits up to ten seconds for the group's threads to finish exiting. */
-    private static boolean awaitNoGroupThread() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (!groupThreads().isEmpty()) {
-            if (System.nanoTime() >= deadline) {
-                return false;
-            }
-            Thread.sleep(20);
-        }
-        return true;
     }
 
     private enum Termination {

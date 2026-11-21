@@ -43,9 +43,17 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - **Transport sizing controls channel capacity** (`docs/adr/0134`): an explicit
   `channelPoolSize` resizes the production channel pool; unset leaves the client's default single
   channel, it is never derived from `maxInFlightTasks`, and beside `emulatorEndpoint` it is
-  rejected — the emulator arm keeps its caller-owned single channel (`docs/adr/0081`). gax retry
+  rejected — the emulator arm keeps its caller-owned single channel (`docs/adr/0081`, `0208`). gax retry
   and batching policy stay untouched; staged creates additionally carry an absolute per-attempt deadline. `ChannelPoolSettings` is class-level `@BetaApi` in the
   pinned gax — an internal call, tier-irrelevant under `docs/adr/0141`; reread it on a BOM bump.
+- **Every Cloud Tasks gRPC channel holds a `GrpcEventLoops` lease** (`docs/adr/0208`, #2243): the
+  production creator's client and the retention readback's client open through
+  `GrpcEventLoops.open` with the lease applied to their settings, and the readback's client closes
+  when its call returns. The emulator arm's caller-owned channel comes from
+  `EmulatorChannels.openLeasedPlaintextChannel` and closes after the client, on the failure path
+  too. Do not move that arm to `plaintextProvider`: ADR-0208 records the two emulator setups it
+  breaks. `CloudTasksEventLoopITCase` and `DefaultTaskCreatorFactoryTest` check that the channels
+  run on the group and that closing releases it.
 - Recheck the v2beta3 retention client on a BOM bump: `CloudTasksClient` and `CloudTasksSettings`
   are `@BetaApi` in the pinned SDK. ADR-0158 records this dependency; losing that surface
   requires a replacement retention readback or an explicit operator-verified deployment decision,

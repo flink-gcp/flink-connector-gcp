@@ -24,6 +24,9 @@ import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+
+import java.io.IOException;
 
 /**
  * Transport channel providers pointing a gRPC client at an emulator.
@@ -39,9 +42,11 @@ import io.grpc.ManagedChannelBuilder;
  * <p>Which method a caller wants is decided by who owns the channel, and that is a real difference
  * rather than a spelling. {@link #plaintextProvider} yields an instantiating provider, which the
  * client creates a channel from and closes with itself; {@link #openPlaintextChannel} plus {@link
- * #fixedProvider} hand the client a channel the caller made, which the client does <em>not</em>
- * close — so a caller taking that route owns the shutdown, and shares one channel across several
- * clients if it wants to.
+ * #fixedProvider(ManagedChannel)} hand the client a channel the caller made, which the client does
+ * <em>not</em> close — so a caller taking that route owns the shutdown, and shares one channel
+ * across several clients if it wants to. {@link #openLeasedPlaintextChannel} plus {@link
+ * #fixedProvider(GrpcEventLoops.LeasedClient)} is the same route with the channel on {@link
+ * GrpcEventLoops}' group, which is the one a connector takes (ADR-0208).
  *
  * <p>Nothing here reaches a client library, so one signature covers Pub/Sub, BigQuery, Cloud Tasks
  * and whatever arrives next. Products whose SDK offers its own emulator entry point use that
@@ -80,8 +85,8 @@ public final class EmulatorChannels {
     /**
      * Opens a plaintext channel to an emulator, for a caller that owns the channel itself.
      *
-     * <p>The caller shuts it down: pair it with {@link #fixedProvider}, whose provider the client
-     * will not close.
+     * <p>The caller shuts it down: pair it with {@link #fixedProvider(ManagedChannel)}, whose
+     * provider the client will not close.
      *
      * @param endpoint the emulator to dial
      * @return the channel, open
@@ -89,6 +94,43 @@ public final class EmulatorChannels {
     public static ManagedChannel openPlaintextChannel(EmulatorEndpoint endpoint) {
         Preconditions.checkNotNull(endpoint, "endpoint must not be null");
         return ManagedChannelBuilder.forTarget(endpoint.getTarget()).usePlaintext().build();
+    }
+
+    /**
+     * Opens a plaintext channel to an emulator on the connector's gRPC event-loop group, for a
+     * caller that owns the channel itself.
+     *
+     * <p>The returned holder covers the channel with a lease: closing it shuts the channel down,
+     * waits for it to terminate and then releases the lease. Close the clients using the channel
+     * first, and pass it to them through {@link #fixedProvider(GrpcEventLoops.LeasedClient)}.
+     *
+     * @param endpoint the emulator to dial
+     * @return the channel, open, with its lease
+     * @throws IOException never in practice; {@link GrpcEventLoops#open} declares it
+     */
+    public static GrpcEventLoops.LeasedClient<GrpcTransportChannel> openLeasedPlaintextChannel(
+            EmulatorEndpoint endpoint) throws IOException {
+        Preconditions.checkNotNull(endpoint, "endpoint must not be null");
+        return GrpcEventLoops.open(
+                lease ->
+                        GrpcTransportChannel.create(
+                                lease.applyTo(
+                                                NettyChannelBuilder.forTarget(endpoint.getTarget())
+                                                        .usePlaintext())
+                                        .build()));
+    }
+
+    /**
+     * Wraps a leased caller-owned channel as a fixed transport channel provider, which the client
+     * it is given to does not close; the holder does.
+     *
+     * @param channel the channel from {@link #openLeasedPlaintextChannel}
+     * @return the provider
+     */
+    public static FixedTransportChannelProvider fixedProvider(
+            GrpcEventLoops.LeasedClient<GrpcTransportChannel> channel) {
+        Preconditions.checkNotNull(channel, "channel must not be null");
+        return FixedTransportChannelProvider.create(channel.client());
     }
 
     /**

@@ -20,6 +20,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoRows;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
@@ -41,13 +42,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
 
-    private static final String THREAD_PREFIX = "flink-gcp-grpc-elg";
-
     @Test
     void theDefaultStreamAppenderRunsOnTheGroupAndStopsItOnClose() throws Exception {
         NameColumnSerializer serializer = new NameColumnSerializer();
         TableDestination destination = TableDestination.of(PROJECT, DATASET, "event_loop_default");
         createTable("event_loop_default", serializer.getTableSchema(destination));
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread before the client opens", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
 
         try (RowAppender appender =
                 emulatorAppenderFactory()
@@ -58,13 +60,13 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
                                     .build())
                     .get(30, TimeUnit.SECONDS);
 
-            assertThat(groupThreadAlive())
-                    .as("a %s* thread while appending", THREAD_PREFIX)
+            assertThat(GrpcEventLoopThreads.alive())
+                    .as("a %s* thread while appending", GrpcEventLoopThreads.PREFIX)
                     .isTrue();
         }
 
-        assertThat(awaitNoGroupThread())
-                .as("no %s* thread once the appender closed", THREAD_PREFIX)
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread once the appender closed", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
     }
 
@@ -73,6 +75,9 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
         NameColumnSerializer serializer = new NameColumnSerializer();
         TableDestination destination = TableDestination.of(PROJECT, DATASET, "event_loop_buffered");
         createTable("event_loop_buffered", serializer.getTableSchema(destination));
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread before the client opens", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
 
         try (BufferedStreamService service =
                 new WriteClientBufferedStreamService(
@@ -90,30 +95,13 @@ class BigQueryWriteEventLoopITCase extends AbstractBigQueryEmulatorITCase {
                         .get(30, TimeUnit.SECONDS);
             }
 
-            assertThat(groupThreadAlive())
-                    .as("a %s* thread while the service is open", THREAD_PREFIX)
+            assertThat(GrpcEventLoopThreads.alive())
+                    .as("a %s* thread while the service is open", GrpcEventLoopThreads.PREFIX)
                     .isTrue();
         }
 
-        assertThat(awaitNoGroupThread())
-                .as("no %s* thread once the service closed", THREAD_PREFIX)
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread once the service closed", GrpcEventLoopThreads.PREFIX)
                 .isTrue();
-    }
-
-    /** Waits up to ten seconds for the group's threads to finish exiting. */
-    private static boolean awaitNoGroupThread() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (groupThreadAlive()) {
-            if (System.nanoTime() >= deadline) {
-                return false;
-            }
-            Thread.sleep(20);
-        }
-        return true;
-    }
-
-    private static boolean groupThreadAlive() {
-        return Thread.getAllStackTraces().keySet().stream()
-                .anyMatch(t -> t.isAlive() && t.getName().startsWith(THREAD_PREFIX));
     }
 }
