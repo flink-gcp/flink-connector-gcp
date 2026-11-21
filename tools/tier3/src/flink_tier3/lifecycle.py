@@ -54,7 +54,7 @@ PUBSUB_TRIALS = Path("kubernetes/lifecycle/pubsub-trials")
 
 def trial_inputs(args):
     """Resolve the named trial and the live application digest."""
-    trial = bigquery_plan.trial(args.trial)
+    trial = bigquery_plan.trial(args.bigquery_trial)
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure("BigQuery trials need a sha256 --application-digest")
     return trial, rt.GAR + "bigquery-recovery@" + args.application_digest
@@ -907,7 +907,8 @@ def main(argv=None):
     run.add_argument("--scenario", choices=SCENARIOS, default="smoke")
     run.add_argument("--application-digest")
     run.add_argument(
-        "--trial", help="BigQuery trial: " + ", ".join(bigquery_plan.TRIALS)
+        "--bigquery-trial",
+        help="BigQuery trial: " + ", ".join(bigquery_plan.TRIALS),
     )
     run.add_argument(
         "--pubsub-trial",

@@ -3341,8 +3341,8 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     workflow = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
     assert inputs["scenario"]["options"] == list(cli.SCENARIOS)
-    assert inputs["trial"]["options"] == ["none", *bigquery_plan.TRIALS]
-    assert inputs["trial"]["default"] == "none"
+    assert inputs["bigquery_trial"]["options"] == ["none", *bigquery_plan.TRIALS]
+    assert inputs["bigquery_trial"]["default"] == "none"
     # "none" is not a kind, so a Cloud Tasks dispatch that names none is refused.
     assert inputs["cloudtasks_trial"]["options"] == ["none", *cloudtasks_trial.KINDS]
     assert inputs["cloudtasks_trial"]["default"] == "none"
@@ -3370,7 +3370,7 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "run_id",
         "application_digest",
         "rig_sha",
-        "trial",
+        "bigquery_trial",
         "pubsub_trial",
         "cloudtasks_trial",
         "bigtable_trial",
@@ -4181,7 +4181,7 @@ def test_evidence_failure_wins_the_creation_intent_cas_race(env):
 WORKFLOW_INPUTS = {
     "smoke": [],
     "bigquery-recovery": [
-        "--trial",
+        "--bigquery-trial",
         "alo-10",
         "--application-digest",
         "sha256:" + "d" * 64,
@@ -4257,7 +4257,7 @@ def test_the_start_inputs_here_are_the_ones_the_workflow_passes():
     # Each flag with the workflow input it carries, not only its name.
     expected = {
         "bigquery-recovery": [
-            ("--trial", "TRIAL"),
+            ("--bigquery-trial", "BIGQUERY_TRIAL"),
             ("--application-digest", "APPLICATION_DIGEST"),
         ],
         "pubsub-recovery": [
@@ -4694,3 +4694,42 @@ def test_storage_sdk_list_reports_creation_time():
             "created": "2026-09-19T01:02:03.456Z",
         }
     ]
+
+
+def test_a_bigquery_rig_without_the_renamed_trial_input_is_refused_first(tmp_path):
+    """An older rig parses only --trial; the run refuses it by name before it starts."""
+    steps = yaml.safe_load((ROOT / ".github/workflows/tier3-run.yaml").read_text())[
+        "jobs"
+    ]["lifecycle"]["steps"]
+    refuse = next(
+        i
+        for i, step in enumerate(steps)
+        if step.get("name")
+        == "Refuse a BigQuery rig that predates the renamed trial input"
+    )
+    assert steps[refuse]["if"] == "inputs.scenario == 'bigquery-recovery'"
+    assert (
+        "'\"--bigquery-trial\"' tools/tier3/src/flink_tier3/lifecycle.py"
+        in (steps[refuse]["run"])
+    )
+    assert refuse < next(
+        i for i, step in enumerate(steps) if step.get("id") == "lifecycle"
+    )
+    # The step itself refuses the base's argument parser and passes this rig's.
+    lifecycle = ROOT / "tools/tier3/src/flink_tier3/lifecycle.py"
+    for source, code in (
+        (lifecycle.read_text().replace('"--bigquery-trial"', '"--trial"'), 1),
+        (lifecycle.read_text(), 0),
+    ):
+        rig = tmp_path / str(code)
+        (rig / lifecycle.relative_to(ROOT)).parent.mkdir(parents=True)
+        (rig / lifecycle.relative_to(ROOT)).write_text(source)
+        run = subprocess.run(
+            ["bash", "-e", "-c", steps[refuse]["run"]],
+            cwd=rig,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert run.returncode == code, run.stdout
+        assert ("::error::rig_sha predates #2226" in run.stdout) == bool(code)

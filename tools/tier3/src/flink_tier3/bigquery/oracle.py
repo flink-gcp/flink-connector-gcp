@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..exercise import DEFAULT_FAULT
+from ..exercise import DEFAULT_FAULT, SEQUENCE_KIND
 from ..exercise import FAULTS as SHARED_FAULTS
 
 PROJECT = "flink-gcp"
@@ -98,10 +98,13 @@ class Trial:
             2 * self.destinations <= self.records <= 2 * 1024**3 // ROW_BYTES[self.mode]
         ):
             raise ValueError("records must cover two writers and fit 2 GiB")
+        # A single fault, or the fault sequence of ADR-0204, which runs every
+        # fault in one run.
+        faults = (*FAULTS, SEQUENCE_KIND)
         if self.fault is not None and (
-            not isinstance(self.fault, str) or self.fault not in FAULTS
+            not isinstance(self.fault, str) or self.fault not in faults
         ):
-            raise ValueError("fault must be one of " + ", ".join(FAULTS))
+            raise ValueError("fault must be one of " + ", ".join(faults))
         if type(self.uploader) is not bool or (
             self.uploader and self.mode != "FILE_LOADS"
         ):
@@ -109,18 +112,27 @@ class Trial:
 
     @property
     def kind(self):
-        """The shared fault kind the trial runs, its fault or the default."""
+        """The trial's kind: its fault, the default fault, or the sequence."""
         return self.fault or DEFAULT_FAULT
+
+    @property
+    def _sizes(self):
+        """The shared fault whose sizes the run starts and upgrades at.
+
+        The fault sequence starts and upgrades at two, as a JobManager
+        replacement does, and patches its rescales itself.
+        """
+        return SHARED_FAULTS[DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind]
 
     @property
     def failover(self):
         """The Pod the second recovery deletes, as the shared exercise names it."""
-        return SHARED_FAULTS[self.kind].failover
+        return self._sizes.failover
 
     @property
     def rescale(self):
         """The direction the upgrade rescales in, or None."""
-        return SHARED_FAULTS[self.kind].rescale
+        return self._sizes.rescale
 
     def parallelism(self, phase):
         """The writers' parallelism, and TaskManager count, of `initial` or `upgrade`.
@@ -129,13 +141,35 @@ class Trial:
         quota; `lifecycle/bigquery.cue` renders the same, and the proposal checks
         the render against this.
         """
-        return SHARED_FAULTS[self.kind].parallelism(phase)
+        return self._sizes.parallelism(phase)
 
     def table(self, destination):
         return f"{PROJECT}.{DATASET}.bq_{self.run_id.replace('-', '_')}_d{destination}"
 
     def expected(self, destination):
         return (self.records + self.destinations - 1 - destination) // self.destinations
+
+    def payload_length(self, sequence):
+        """The payload bytes `RecoveryRows` pads record `sequence`'s row with.
+
+        The row is exactly the mode's size, so the payload is what the
+        protobuf fields before it leave, which depends on the varint widths
+        of the run ID's length, the sequence and the destination.
+        """
+        header = (
+            1
+            + _varint(len(self.run_id.encode()))
+            + len(self.run_id.encode())
+            + 1
+            + _varint(sequence)
+            + 1
+            + _varint(sequence % self.destinations)
+        )
+        size = ROW_BYTES[self.mode]
+        padding = size - header - 1
+        while header + 1 + _varint(padding) + padding > size:
+            padding -= 1
+        return padding
 
     def arguments(self, phase):
         """The application arguments the delivery renders for `initial` or `upgrade`."""
@@ -164,22 +198,56 @@ class Trial:
         ]
 
 
+def _varint(value):
+    """The bytes protobuf encodes a nonnegative integer in."""
+    size = 1
+    while value >= 0x80:
+        value >>= 7
+        size += 1
+    return size
+
+
+def _expected_payload(trial):
+    """The GoogleSQL expression for a row's expected payload.
+
+    `RecoveryRows` repeats the SHA-256 digest of `<run-id>:<sequence>` to the
+    payload's length, which changes only where the sequence's varint widens,
+    so the length is a CASE over those bands of the input.
+    """
+    bands, start = [], 0
+    while start < trial.records:
+        end = min(1 << (7 * _varint(start)), trial.records)
+        bands.append((end, trial.payload_length(start)))
+        start = end
+    lengths = " ".join(f"WHEN sequence < {end} THEN {length}" for end, length in bands)
+    longest = max(length for _, length in bands)
+    return (
+        f"SUBSTR(REPEAT(SHA256(CONCAT('{trial.run_id}', ':', CAST(sequence AS STRING))), "
+        f"{-(-longest // 32)}), 1, CASE {lengths} END)"
+    )
+
+
 def query(trial):
     """One aggregate per physical table, including empty tables; no row filtering."""
     parts = []
+    payload = _expected_payload(trial)
     for destination in range(trial.destinations):
+        # The inner query states each row's validity once, so the payload's
+        # digest expression is not repeated in each aggregate.
         valid = (
             f"run_id = '{trial.run_id}' AND sequence >= 0 "
             f"AND sequence < {trial.records} AND destination = {destination} "
-            f"AND MOD(sequence, {trial.destinations}) = {destination}"
+            f"AND MOD(sequence, {trial.destinations}) = {destination} "
+            f"AND payload = {payload}"
         )
         parts.append(
             f"SELECT '{trial.run_id}' AS run_id, '{trial.mode}' AS mode,\n"
             f"  {trial.records} AS expected_records, {trial.destinations} AS destinations,\n"
             f"  {destination} AS destination, COUNT(*) AS total_rows,\n"
-            f"  COALESCE(SUM(CASE WHEN {valid} THEN 1 ELSE 0 END), 0) AS valid_rows,\n"
-            f"  COUNT(DISTINCT CASE WHEN {valid} THEN sequence ELSE NULL END) "
-            f"AS distinct_sequences\nFROM `{trial.table(destination)}`"
+            f"  COALESCE(SUM(CASE WHEN valid THEN 1 ELSE 0 END), 0) AS valid_rows,\n"
+            f"  COUNT(DISTINCT CASE WHEN valid THEN sequence ELSE NULL END) "
+            f"AS distinct_sequences\nFROM (SELECT sequence, {valid} AS valid "
+            f"FROM `{trial.table(destination)}`)"
         )
     return "\nUNION ALL\n".join(parts) + "\nORDER BY destination\n"
 

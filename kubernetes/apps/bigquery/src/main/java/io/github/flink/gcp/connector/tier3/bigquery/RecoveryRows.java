@@ -29,8 +29,10 @@ import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSeria
 import io.github.flink.gcp.connector.bigquery.sink.serializer.RowDescriptors;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
-import java.util.Random;
 
 /** Deterministic, fixed-size protobuf rows shared by every destination. */
 @Internal
@@ -83,8 +85,7 @@ final class RecoveryRows extends BigQueryProtoSerializationSchema<Long> {
                 > options.mode.rowBytes) {
             padding--;
         }
-        byte[] payload = new byte[padding];
-        new Random(sequence ^ ((long) options.runId.hashCode() << 32)).nextBytes(payload);
+        byte[] payload = payload(options.runId, sequence, padding);
         byte[] row = new byte[options.mode.rowBytes];
         CodedOutputStream output = CodedOutputStream.newInstance(row);
         output.writeString(1, options.runId);
@@ -94,5 +95,27 @@ final class RecoveryRows extends BigQueryProtoSerializationSchema<Long> {
         output.checkNoSpaceLeft();
         // This fresh array is never retained or mutated after transfer.
         return UnsafeByteOperations.unsafeWrap(row);
+    }
+
+    /**
+     * The SHA-256 digest of {@code <run-id>:<sequence>}, repeated to {@code length} bytes.
+     *
+     * <p>The Tier-3 query oracle recomputes it with BigQuery's {@code SHA256} and {@code REPEAT},
+     * so a row whose payload arrived altered, truncated or null is not counted as valid.
+     */
+    static byte[] payload(String runId, long sequence, int length) {
+        byte[] digest;
+        try {
+            digest =
+                    MessageDigest.getInstance("SHA-256")
+                            .digest((runId + ":" + sequence).getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("Every Java runtime provides SHA-256", e);
+        }
+        byte[] payload = new byte[length];
+        for (int i = 0; i < length; i++) {
+            payload[i] = digest[i % digest.length];
+        }
+        return payload;
     }
 }

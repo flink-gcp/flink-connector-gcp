@@ -23,6 +23,9 @@ import com.google.protobuf.DynamicMessage;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RecoveryRowsTest {
@@ -50,14 +53,26 @@ class RecoveryRowsTest {
                     .isEqualTo(sequence % 50);
             ByteString payload =
                     (ByteString) decoded.getField(descriptor.findFieldByName("payload"));
-            assertThat(payload.size()).isGreaterThan(mode.rowBytes - 100);
-            assertThat(
-                            java.util.stream.IntStream.range(0, payload.size())
-                                    .map(payload::byteAt)
-                                    .distinct()
-                                    .count())
-                    .isGreaterThan(200);
+            // The lengths and digest the Tier-3 query oracle recomputes for this run ID
+            // (tools/tier3/tests/bigquery/test_oracle.py holds the same figures).
+            int band = sequence < 128 ? 0 : sequence < 16384 ? 1 : 2;
+            int[] lengths =
+                    mode == RecoveryOptions.Mode.ALO
+                            ? new int[] {65515, 65514, 65513}
+                            : new int[] {1004, 1003, 1002};
+            byte[] digest =
+                    MessageDigest.getInstance("SHA-256")
+                            .digest(("bigquery-it:" + sequence).getBytes(StandardCharsets.UTF_8));
+            byte[] expected = new byte[lengths[band]];
+            for (int i = 0; i < expected.length; i++) {
+                expected[i] = digest[i % digest.length];
+            }
+            assertThat(payload.toByteArray())
+                    .as("payload of sequence %d", sequence)
+                    .isEqualTo(expected);
         }
+        assertThat(RecoveryRows.payload("bigquery-it", 0, 4))
+                .containsExactly(0x70, 0xd6, 0xdb, 0x27);
         assertThat(rows.serialize(0L)).isNotEqualTo(rows.serialize(1L));
         assertThat(rows.getTableSchema(options.table(0)).getFieldsList())
                 .extracting(field -> field.getName())

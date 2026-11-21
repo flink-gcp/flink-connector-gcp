@@ -19,7 +19,7 @@ import google.auth.exceptions
 import requests
 
 from ..common import Failure, transient, utc
-from ..exercise import FiniteInputExercise, RecoveryExercise
+from ..exercise import FaultSequence, FiniteInputExercise, RecoveryExercise
 from ..policy import (
     BIGQUERY,
     BIGQUERY_OBSERVATIONS,
@@ -28,8 +28,8 @@ from ..policy import (
     QUERY_EVIDENCE_BYTES,
 )
 from .observe import observation, vertices
-from .oracle import EXACTLY_ONCE, assess
-from .verdict import MEASUREMENT_EVENT, summarize, verdict
+from .oracle import EXACTLY_ONCE, SEQUENCE_KIND, assess
+from .verdict import MEASUREMENT_EVENT, sequence_verdict, summarize, verdict
 
 
 def require_handoff(env, handoff):
@@ -213,13 +213,7 @@ class BigQueryExercise(FiniteInputExercise):
             if self.trial.mode == "FILE_LOADS":
                 self.require_settled_loads(supervisor)
             name = f"final-{slot}"
-            result = supervisor.query(name, deadline=self.deadline)
-            self.check_open()
-            if not isinstance(result, dict) or "rows" not in result:
-                raise Failure("BigQuery archived observation has no rows")
-            report = assess(self.trial, result["rows"])
-            if result.get("report") != report:
-                raise Failure("BigQuery archived oracle differs from its rows")
+            report = self.read_rows(supervisor, name, self.deadline)
             if report["invalid_rows"] or (
                 self.trial.mode in EXACTLY_ONCE and report["duplicate_rows"]
             ):
@@ -236,3 +230,48 @@ class BigQueryExercise(FiniteInputExercise):
                 return
             self.env.sleep(min(POLL, max(0, self.deadline - self.env.clock())))
         raise Failure("BigQuery final visibility exhausted its approved query slots")
+
+    def read_rows(self, supervisor, name, deadline):
+        """One archived query result's report, checked against the rows it came with."""
+        result = supervisor.query(name, deadline=deadline)
+        self.check_open()
+        if not isinstance(result, dict) or "rows" not in result:
+            raise Failure("BigQuery archived observation has no rows")
+        report = assess(self.trial, result["rows"])
+        if result.get("report") != report:
+            raise Failure("BigQuery archived oracle differs from its rows")
+        return report
+
+
+class BigQuerySequenceExercise(FaultSequence, BigQueryExercise):
+    """The BigQuery trial as one fault sequence, judged by its data (ADR-0204).
+
+    The job finishes with its input, and one query then reads every table.
+    Its report is the verdict: rows that are invalid or missing fail the run
+    through the verdict rather than ending it, and the query is not repeated
+    until it passes, since the finished job, not the tables, says the input
+    was committed. No window samples the job, and no load is awaited before a
+    fault; settling a FILE_LOADS run's load jobs before its query belongs to
+    the exactly-once scenario of #2148, which this trial does not run.
+    """
+
+    def verify_rows(self, supervisor):
+        """Read the tables once, within the read window, and complete the run."""
+        if self.stage != "visibility":
+            raise Failure("BigQuery visibility requires the fault sequence and input")
+        self.check_open()
+        until = self.oracle_window()
+        if until <= self.env.clock():
+            # The job finished within the minute the record's write keeps.
+            raise Failure("Run reached its time limit at stage " + self.stage)
+        name = "final-0"
+        report = self.read_rows(supervisor, name, until)
+        self.outcomes["query"] = {"observation": name, "report": report}
+        self.complete(sequence_verdict)
+
+
+def bigquery_exercise(env, upgrade, connector_jobs):
+    """The exercise the approved BigQuery trial names."""
+    if env.approval.bigquery_plan.trial.kind == SEQUENCE_KIND:
+        return BigQuerySequenceExercise(env, upgrade, connector_jobs)
+    return BigQueryExercise(env, upgrade, connector_jobs)

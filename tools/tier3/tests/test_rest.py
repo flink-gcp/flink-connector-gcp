@@ -18,7 +18,7 @@ import pytest
 from flink_tier3 import rest
 from flink_tier3.common import ApiError
 
-from .bigquery.test_resources import NOW, Http, Response
+from .doubles import NOW, Http, Response
 
 
 class Service(rest.JsonService):

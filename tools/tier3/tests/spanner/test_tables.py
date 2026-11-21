@@ -23,7 +23,7 @@ from flink_tier3.spanner.instance import Instance
 from flink_tier3.spanner.oracle import BatchCopy, ChangeStream, Seed, Sink, micros
 from flink_tier3.spanner.trial import Trial, row_key
 
-from ..bigquery.test_resources import NOW, Response
+from ..doubles import NOW, Response
 
 TRIAL = Trial("sp-oracle", 20, 10, "2026-10-28T01:05:00Z", 30, 1)
 SESSION = TRIAL.database_path + "/sessions/s"

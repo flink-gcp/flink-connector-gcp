@@ -88,9 +88,9 @@ Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
 
-For a scenario still under ADR-0165, the owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
+For a run still under ADR-0165, the owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
 The estimate is `estimated_cost` over the window for smoke, and the scenario's plan estimate for a recovery trial, which its rendered proposal carries.
-[ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) drops the estimate and its approval: a scenario moved to it is bounded by its one-hour time limit instead, although a Firestore or Spanner proposal still carries the scenario's estimate until the last scenario moves.
+[ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) drops the estimate and its approval: a trial under it, such as BigQuery's `alo-10-sequence` beside that scenario's single-fault trials, is bounded by its one-hour time limit instead, although its proposal still carries the scenario's estimate until the last scenario moves.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.

@@ -25,7 +25,7 @@ from flink_tier3.cloudtasks.queue import (
 from flink_tier3.cloudtasks.trial import Trial
 from flink_tier3.common import ApiError, Failure, TransportError
 
-from ..bigquery.test_resources import NOW, Http, Response
+from ..doubles import NOW, Http, Response
 
 TRIAL = Trial("ct-queue", 100, 10)
 NAME = TRIAL.queue_path

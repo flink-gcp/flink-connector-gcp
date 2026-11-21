@@ -33,8 +33,8 @@ on:
         required: false
         type: string
         default: ''
-      trial:
-        description: 'BigQuery only: delivery method and destination count, -uploader for FILE_LOADS with the background staging uploader on, and the fault that replaces one recovery, if any'
+      bigquery_trial:
+        description: 'BigQuery only: delivery method and destination count, -uploader for FILE_LOADS with the background staging uploader on, and the fault that replaces one recovery, if any, or -sequence, which injects every fault in one run (ADR-0204)'
         required: false
         type: choice
         default: 'none'
@@ -55,6 +55,7 @@ on:
           - 'fl-10-uploader-tm-replacement'
           - 'fl-10-uploader-rescale-out'
           - 'fl-10-uploader-rescale-in'
+          - 'alo-10-sequence'
       pubsub_trial:
         description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml: reactive-scale-out, reactive-tm-kill or adaptive-scale-in, or a shared kind (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
@@ -173,6 +174,15 @@ jobs:
             echo "::error::rig_sha predates #2115; dispatch from a commit that contains it"
             exit 1
           fi
+      # The BigQuery trial is passed as --bigquery-trial since #2226; an older
+      # rig parses only --trial and would refuse the dispatch's arguments.
+      - name: Refuse a BigQuery rig that predates the renamed trial input
+        if: inputs.scenario == 'bigquery-recovery'
+        run: |
+          if ! grep -q -- '"--bigquery-trial"' tools/tier3/src/flink_tier3/lifecycle.py; then
+            echo "::error::rig_sha predates #2226's --bigquery-trial; dispatch from a commit that contains it"
+            exit 1
+          fi
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: cue kubectl uv opentofu helm
@@ -191,7 +201,7 @@ jobs:
           RUN_ID: ${{ inputs.run_id }}
           SCENARIO: ${{ inputs.scenario }}
           APPLICATION_DIGEST: ${{ inputs.application_digest }}
-          TRIAL: ${{ inputs.trial }}
+          BIGQUERY_TRIAL: ${{ inputs.bigquery_trial }}
           PUBSUB_TRIAL: ${{ inputs.pubsub_trial }}
           CLOUDTASKS_TRIAL: ${{ inputs.cloudtasks_trial }}
           BIGTABLE_TRIAL: ${{ inputs.bigtable_trial }}
@@ -210,7 +220,7 @@ jobs:
             start+=(--rig-sha "$RIG_SHA")
           fi
           if [ "$SCENARIO" = bigquery-recovery ]; then
-            start+=(--trial "$TRIAL" --application-digest "$APPLICATION_DIGEST")
+            start+=(--bigquery-trial "$BIGQUERY_TRIAL" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = pubsub-recovery ]; then
             start+=(--pubsub-trial "$PUBSUB_TRIAL" --application-digest "$APPLICATION_DIGEST")
           elif [ "$SCENARIO" = cloudtasks-recovery ]; then

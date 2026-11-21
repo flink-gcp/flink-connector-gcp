@@ -33,7 +33,7 @@ from ..policy import (
 )
 from ..proposal import verify_resources
 from ..workflow import render
-from .oracle import FAULTS, ROW_BYTES, Trial
+from .oracle import FAULTS, ROW_BYTES, SEQUENCE_KIND, Trial
 from .resources import ResourcePlan
 
 WINDOW_SECONDS = WINDOWS["bigquery-recovery"]
@@ -69,8 +69,17 @@ TRIALS.update(
         for fault in FAULTS
     }
 )
+# The at-least-once path's fault sequence (ADR-0204). The exactly-once paths
+# keep their single-fault trials until #2148 designs their scenario.
+SEQUENCE_TRIAL = "alo-10-" + SEQUENCE_KIND
+TRIALS[SEQUENCE_TRIAL] = ("ALO", 10, SEQUENCE_KIND, False)
 # A trial's offered input: 30 minutes at 1 MiB/s of its mode's row size.
 RECORDS = {mode: 1800 * 1024**2 // size for mode, size in ROW_BYTES.items()}
+# The fault sequence's input: six minutes at 1 MiB/s of 64 KiB rows, 16 a
+# second. The job finishes with its input, so the input only has to outlast
+# the faults; the runbook's "Fault sequence" section gives the timing behind
+# it.
+SEQUENCE_RECORDS = 360 * 1024**2 // ROW_BYTES["ALO"]
 
 
 def trial(name):
@@ -79,12 +88,14 @@ def trial(name):
         raise Failure("BigQuery trial must be one of " + ", ".join(TRIALS))
     mode, destinations, fault, uploader = TRIALS[name]
     # A trial without a fault or the uploader keeps the shape every earlier
-    # approval carried.
+    # approval carried; only the sequence names its own input.
     value = {"mode": mode, "destinations": destinations}
     if fault is not None:
         value["fault"] = fault
     if uploader:
         value["uploader"] = True
+    if fault == SEQUENCE_KIND:
+        value["records"] = SEQUENCE_RECORDS
     return value
 
 
@@ -95,6 +106,8 @@ def validate_trial(value):
             "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10 "
             "with or without the uploader, and a fault only for "
             + " or ".join(FAULT_CELLS)
+            + ", or be "
+            + SEQUENCE_TRIAL
         )
 
 
@@ -127,7 +140,7 @@ def resource_plan(run_id, nonce, expires_at, trial):
             run_id,
             trial["mode"],
             trial["destinations"],
-            RECORDS[trial["mode"]],
+            trial.get("records", RECORDS[trial["mode"]]),
             trial.get("fault"),
             trial.get("uploader", False),
         ),
@@ -177,6 +190,7 @@ def prepare(
         "bigquery_mode": identity.mode,
         "bigquery_destinations": identity.destinations,
         "bigquery_fault": identity.fault or "none",
+        "bigquery_records": identity.records,
         "bigquery_uploader": "true" if identity.uploader else "false",
     }
     initial, upgrade, delivery = render(
