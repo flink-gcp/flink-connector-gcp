@@ -69,17 +69,23 @@ TRIALS.update(
         for fault in FAULTS
     }
 )
-# The at-least-once path's fault sequence (ADR-0204). The exactly-once paths
-# keep their single-fault trials until #2148 designs their scenario.
-SEQUENCE_TRIAL = "alo-10-" + SEQUENCE_KIND
-TRIALS[SEQUENCE_TRIAL] = ("ALO", 10, SEQUENCE_KIND, False)
+# The fault sequence of ADR-0204, one trial per delivery method: the
+# at-least-once path (#2150), and the exactly-once paths (#2148), FILE_LOADS
+# with the background staging uploader on, as the connector runs it by
+# default. Each method runs alone, since one job holding both exactly-once
+# sinks would need TaskManagers the namespace's quota has no room for.
+SEQUENCE_TRIALS = {
+    f"{cell}-{SEQUENCE_KIND}": (*TRIALS[cell][:2], SEQUENCE_KIND, TRIALS[cell][3])
+    for cell in ("alo-10", "eo-10", "fl-10-uploader")
+}
+TRIALS.update(SEQUENCE_TRIALS)
 # A trial's offered input: 30 minutes at 1 MiB/s of its mode's row size.
 RECORDS = {mode: 1800 * 1024**2 // size for mode, size in ROW_BYTES.items()}
-# The fault sequence's input: six minutes at 1 MiB/s of 64 KiB rows, 16 a
-# second. The job finishes with its input, so the input only has to outlast
-# the faults; the runbook's "Fault sequence" section gives the timing behind
-# it.
-SEQUENCE_RECORDS = 360 * 1024**2 // ROW_BYTES["ALO"]
+# The fault sequence's input: six minutes at 1 MiB/s of its mode's rows, 16
+# a second of 64 KiB or 1,024 of 1 KiB. The job finishes with its input, so
+# the input only has to outlast the faults; the runbook's "Fault sequence"
+# section gives the timing behind it.
+SEQUENCE_RECORDS = {mode: 360 * 1024**2 // size for mode, size in ROW_BYTES.items()}
 
 
 def trial(name):
@@ -95,7 +101,7 @@ def trial(name):
     if uploader:
         value["uploader"] = True
     if fault == SEQUENCE_KIND:
-        value["records"] = SEQUENCE_RECORDS
+        value["records"] = SEQUENCE_RECORDS[mode]
     return value
 
 
@@ -107,7 +113,7 @@ def validate_trial(value):
             "with or without the uploader, and a fault only for "
             + " or ".join(FAULT_CELLS)
             + ", or be "
-            + SEQUENCE_TRIAL
+            + " or ".join(SEQUENCE_TRIALS)
         )
 
 

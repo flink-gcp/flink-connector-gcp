@@ -18,7 +18,7 @@ from __future__ import annotations
 import google.auth.exceptions
 import requests
 
-from ..common import Failure, transient, utc
+from ..common import Failure, StorageRequestFailed, transient, utc
 from ..exercise import FaultSequence, FiniteInputExercise, RecoveryExercise
 from ..policy import (
     BIGQUERY,
@@ -181,15 +181,19 @@ class BigQueryExercise(FiniteInputExercise):
 
     summarize = staticmethod(summarize)
 
-    def require_settled_loads(self, supervisor):
+    def require_settled_loads(self, supervisor, deadline):
         """Refuse to read while a job the committer issued is still running.
 
         The committer commits synchronously, so a FINISHED application has no
         job left by the connector's own account. The oracle checks that
         rather than waiting it out: rows still arriving after FINISHED are the
-        defect, and waiting would let them land and pass.
+        defect, and waiting would let them land and pass. The listing ends by
+        `deadline`.
         """
-        jobs = supervisor.connector_jobs(deadline=self.deadline)
+        self.refuse_unsettled(supervisor.connector_jobs(deadline=deadline))
+
+    def refuse_unsettled(self, jobs):
+        """Stop the run over the connector jobs a listing found not DONE."""
         if jobs:
             self.env.records.evidence(
                 "bigquery-unfinished-connector-jobs", {"jobs": jobs}
@@ -211,7 +215,7 @@ class BigQueryExercise(FiniteInputExercise):
         for slot in range(self.env.approval.bigquery_plan.query_slots):
             self.check_open()
             if self.trial.mode == "FILE_LOADS":
-                self.require_settled_loads(supervisor)
+                self.require_settled_loads(supervisor, self.deadline)
             name = f"final-{slot}"
             report = self.read_rows(supervisor, name, self.deadline)
             if report["invalid_rows"] or (
@@ -247,12 +251,14 @@ class BigQuerySequenceExercise(FaultSequence, BigQueryExercise):
     """The BigQuery trial as one fault sequence, judged by its data (ADR-0204).
 
     The job finishes with its input, and one query then reads every table.
-    Its report is the verdict: rows that are invalid or missing fail the run
-    through the verdict rather than ending it, and the query is not repeated
-    until it passes, since the finished job, not the tables, says the input
-    was committed. No window samples the job, and no load is awaited before a
-    fault; settling a FILE_LOADS run's load jobs before its query belongs to
-    the exactly-once scenario of #2148, which this trial does not run.
+    Its report is the verdict: rows that are invalid or missing, or in an
+    exactly-once mode duplicated, fail the run through the verdict rather than
+    ending it, and the query is not repeated until it passes, since the
+    finished job, not the tables, says the input was committed. No window
+    samples the job, and no load is awaited before a fault: the faults land
+    wherever the commits happen to be (#2148). A FILE_LOADS run refuses to
+    read while a job its committer issued is not DONE, as every FILE_LOADS
+    trial does, and lists them again while a listing gets no answer.
     """
 
     def verify_rows(self, supervisor):
@@ -264,10 +270,42 @@ class BigQuerySequenceExercise(FaultSequence, BigQueryExercise):
         if until <= self.env.clock():
             # The job finished within the minute the record's write keeps.
             raise Failure("Run reached its time limit at stage " + self.stage)
+        if self.trial.mode == "FILE_LOADS":
+            self.refuse_unsettled(self._listed_jobs(supervisor, until))
         name = "final-0"
         report = self.read_rows(supervisor, name, until)
         self.outcomes["query"] = {"observation": name, "report": report}
         self.complete(sequence_verdict)
+
+    def _listed_jobs(self, supervisor, until):
+        """The connector jobs not DONE, listed again while a listing gets no answer.
+
+        Only the listing repeats: a job it found is refused even when
+        recording it fails. A listing that failed part-way loses what it had
+        found, so a job that then finishes before the next one goes unseen as
+        a job; whatever it wrote was in the table before the query, which
+        judges it, and the verdict is the data (ADR-0204). A storage read without
+        an answer is told apart by the adapter, as the query handoff tells it.
+        Between listings a stop is honoured, and a listing due after the read
+        window is not begun, so its control reads cannot spend the minute the
+        record keeps.
+        """
+
+        def listing():
+            if self.env.clock() >= until:
+                raise Failure(
+                    "BigQuery read window closed while listing connector jobs"
+                )
+            self.check_open()
+            return supervisor.connector_jobs(deadline=until)
+
+        return self.retried(
+            listing,
+            until,
+            said_nothing=lambda error: (
+                transient(error) or isinstance(error, StorageRequestFailed)
+            ),
+        )
 
 
 def bigquery_exercise(env, upgrade, connector_jobs):

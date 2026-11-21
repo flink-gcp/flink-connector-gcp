@@ -31,7 +31,12 @@ from flink_tier3.bigquery.handoff import BigQueryHandoff
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
 from flink_tier3.bigquery.oracle import assess
 from flink_tier3.bigquery.verdict import MEASUREMENT_EVENT
-from flink_tier3.common import INCONCLUSIVE, Failure, TransportError
+from flink_tier3.common import (
+    INCONCLUSIVE,
+    Failure,
+    StorageRequestFailed,
+    TransportError,
+)
 from flink_tier3.environment import Environment
 from flink_tier3.exercise import RECORD_SECONDS, TIME_LIMIT_SECONDS
 from flink_tier3.model import Phase
@@ -1633,20 +1638,36 @@ def test_a_single_fault_trial_keeps_its_exercise(prepared, trial):
     assert type(supervised(prepared)) is BigQueryExercise
 
 
-@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+# Every delivery method's fault sequence, at its own input.
+SEQUENCE_TRIALS = [plan.trial(name) for name in plan.SEQUENCE_TRIALS]
+
+
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
 def test_the_sequence_trial_builds_the_sequence_exercise(prepared, trial):
     value = supervised(prepared)
     assert isinstance(value, BigQuerySequenceExercise)
     assert value.measurement_event is None
-    assert value.records == 5760
+    assert value.records == trial["records"]
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 
 class Rows:
-    """A query handoff answering one aggregate per destination."""
+    """A query handoff answering one aggregate per destination.
 
-    def __init__(self, exercise, **damage):
+    Its connector-job listing shows `running`, the jobs not yet DONE.
+    """
+
+    def __init__(self, exercise, running=(), errors=(), **damage):
         self.exercise, self.damage, self.observations = exercise, damage, []
+        self.running, self.listings = list(running), []
+        # Failures the listings raise first, one each, before they answer.
+        self.errors = list(errors)
+
+    def connector_jobs(self, *, deadline):
+        self.listings.append(deadline)
+        if self.errors:
+            raise self.errors.pop(0)
+        return self.running
 
     def query(self, name, *, deadline):
         self.observations.append((name, deadline))
@@ -1654,20 +1675,28 @@ class Rows:
         return {"rows": data, "report": assess(self.exercise.trial, data)}
 
 
-@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+NOT_PASSED = (INCONCLUSIVE, ["oracle-not-passed"])
+
+
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
 @pytest.mark.parametrize(
-    "damage,verdict,reasons",
+    "damage,expected",
     [
-        ({}, rt.USABLE, []),
-        ({"duplicate": True}, rt.USABLE, []),
-        ({"missing": True}, INCONCLUSIVE, ["oracle-not-passed"]),
-        ({"invalid": True}, INCONCLUSIVE, ["oracle-not-passed"]),
+        ({}, (rt.USABLE, [])),
+        # Reported at least once, failing exactly once.
+        (
+            {"duplicate": True},
+            {"ALO": (rt.USABLE, []), "EO": NOT_PASSED, "FILE_LOADS": NOT_PASSED},
+        ),
+        ({"missing": True}, NOT_PASSED),
+        ({"invalid": True}, NOT_PASSED),
     ],
 )
-def test_a_sequence_run_is_judged_by_one_query_alone(
-    prepared, trial, damage, verdict, reasons
-):
+def test_a_sequence_run_is_judged_by_one_query_alone(prepared, trial, damage, expected):
     """Lost or invalid rows are the verdict, not a stop, and are not read again."""
+    verdict, reasons = (
+        expected[trial["mode"]] if isinstance(expected, dict) else expected
+    )
     value = supervised(prepared)
     value.persist("complete")
     # Late in the run, so the read window is the time limit's, not the
@@ -1689,16 +1718,141 @@ def test_a_sequence_run_is_judged_by_one_query_alone(
     assert name == "final-0"
     assert value.deadline == limit
     assert deadline == limit - RECORD_SECONDS
+    # FILE_LOADS listed its loads first, within the same read window.
+    assert queries.listings == ([deadline] if trial["mode"] == "FILE_LOADS" else [])
 
 
-@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+def test_a_file_loads_sequence_refuses_to_read_while_a_load_still_runs(prepared, trial):
+    """FINISHED says the committer is done; a running load says otherwise."""
+    value = supervised(prepared)
+    value.persist("complete")
+    queries = Rows(value, running=[LOAD])
+    with pytest.raises(Failure, match="outlived the finished application"):
+        value.verify_rows(queries)
+    assert queries.observations == []
+    assert "query" not in value.outcomes
+
+
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: TransportError("GET BigQuery request failed: ReadTimeout"),
+        lambda: StorageRequestFailed("GET storage request failed: ConnectionError"),
+    ],
+    ids=["bigquery", "storage"],
+)
+def test_a_file_loads_sequence_lists_again_after_a_listing_without_an_answer(
+    prepared, trial, error
+):
+    """A listing that got no answer does not end the run without a verdict."""
+    value = supervised(prepared)
+    value.persist("complete")
+    queries = Rows(value, errors=[error()])
+    value.verify_rows(queries)
+    assert len(queries.listings) == 2
+    assert value.env.refresh().recovery["verdict"] == rt.USABLE
+
+
+def invalid_url():
+    """A storage failure the adapter does not read as a lost answer."""
+    try:
+        raise requests.exceptions.InvalidURL("bad URL")
+    except requests.exceptions.InvalidURL as error:
+        try:
+            raise Failure("GET storage request failed: InvalidURL") from error
+        except Failure as wrapped:
+            return wrapped
+
+
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+@pytest.mark.parametrize(
+    "error",
+    [lambda: Failure("Environment lock belongs to another run"), invalid_url],
+    ids=["lock", "invalid-url"],
+)
+def test_a_listing_failure_that_says_something_still_stops_the_run(
+    prepared, trial, error
+):
+    value = supervised(prepared)
+    value.persist("complete")
+    queries = Rows(value, errors=[error()])
+    with pytest.raises(Failure, match="lock|InvalidURL"):
+        value.verify_rows(queries)
+    assert len(queries.listings) == 1
+    assert queries.observations == []
+
+
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+def test_a_found_job_stops_the_run_even_when_its_record_fails(
+    prepared, monkeypatch, trial
+):
+    """The listing that found it is not repeated, so the job cannot slip away."""
+    value = supervised(prepared)
+    value.persist("complete")
+    records = value.env.records
+    evidence = records.evidence
+
+    def unrecorded(event, payload):
+        if event == "bigquery-unfinished-connector-jobs":
+            raise StorageRequestFailed("PUT storage request failed: ConnectionError")
+        return evidence(event, payload)
+
+    monkeypatch.setattr(records, "evidence", unrecorded)
+    queries = Rows(value, running=[LOAD])
+    with pytest.raises(StorageRequestFailed):
+        value.verify_rows(queries)
+    assert len(queries.listings) == 1
+    assert queries.observations == []
+
+
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+def test_no_listing_begins_after_the_read_window(prepared, trial):
+    """A retry that wakes past the window reads nothing more."""
+    value = supervised(prepared)
+    value.persist("complete")
+    value.env.clock.now = value.deadline - RECORD_SECONDS - 1
+    checks = []
+    check_open = value.check_open
+
+    def counted():
+        checks.append(value.env.clock())
+        check_open()
+
+    value.check_open = counted
+    queries = Rows(value, errors=[TransportError("GET BigQuery: reset")])
+    with pytest.raises(Failure, match="read window closed"):
+        value.verify_rows(queries)
+    # The first listing ran in the window; the retry, five seconds on, did not.
+    assert len(queries.listings) == 1
+    assert len(checks) == 2
+
+
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+def test_a_stop_ends_the_repeated_listing(prepared, trial):
+    value = supervised(prepared)
+    value.persist("complete")
+
+    class Stopped(Rows):
+        def connector_jobs(self, *, deadline):
+            value.env.records.request_stop()
+            return super().connector_jobs(deadline=deadline)
+
+    queries = Stopped(value, errors=[TransportError("GET BigQuery: reset")] * 3)
+    with pytest.raises(Failure, match="stopped"):
+        value.verify_rows(queries)
+    assert len(queries.listings) == 1
+
+
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
 def test_a_sequence_run_reads_only_once_the_input_is_done(prepared, trial):
     value = supervised(prepared)
     with pytest.raises(Failure, match="fault sequence and input"):
         value.verify_rows(Rows(value))
 
 
-@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
 def test_a_job_that_finished_in_the_last_minute_stops_at_the_time_limit(
     prepared, trial
 ):
@@ -1712,7 +1866,7 @@ def test_a_job_that_finished_in_the_last_minute_stops_at_the_time_limit(
     assert queries.observations == []
 
 
-@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
 @pytest.mark.parametrize("fault", ["before", "during", "no-rows"])
 def test_a_stop_or_an_empty_answer_leaves_the_sequence_without_a_verdict(
     prepared, trial, fault
@@ -1736,7 +1890,7 @@ def test_a_stop_or_an_empty_answer_leaves_the_sequence_without_a_verdict(
     assert len(queries.observations) == (0 if fault == "before" else 1)
 
 
-@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
 def test_a_forged_sequence_report_still_stops_the_run(prepared, trial):
     """The archived report must be the one its rows give."""
     value = supervised(prepared)

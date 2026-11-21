@@ -56,6 +56,8 @@ on:
           - 'fl-10-uploader-rescale-out'
           - 'fl-10-uploader-rescale-in'
           - 'alo-10-sequence'
+          - 'eo-10-sequence'
+          - 'fl-10-uploader-sequence'
       pubsub_trial:
         description: 'Pub/Sub only: the trial kind, either sequence, which injects every fault in one run (ADR-0204), or a single fault, which names the Pod deleted or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
