@@ -19,8 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-09-26 (design settled on [#355]); recorded with the first implementation, [#1540];
   change-stream reopen conditions revised by [#1832] (2026-10-18); the first shared helper's package
-  recorded by [#2066] (2026-11-07)
-- Issues: [#355], [#1540], [#1832], [#2066]
+  recorded by [#2066] (2026-11-07); the full-cache load's shared base by [#2225] (2026-11-21)
+- Issues: [#355], [#1540], [#1832], [#2066], [#2225]
 - Modules: firestore
 - Current behavior: `docs/content/docs/connectors/datastream/firestore.md` § Scope and provenance
 
@@ -82,6 +82,11 @@ The package needs no change to the uber jar's relocations or to its packaging te
 A third root, such as `connector.firestorecommon`, was declined: it would have needed either a relocation or an entry in that test, and an ADR-0055 product name that names no product.
 A package under the Datastore root, where `PropertyPaths` lives because only Datastore mode uses it, was declined because the Native root would then import from the Datastore one.
 
+The second helper is the `FULL` lookup cache's load (`FullCacheInputFormat`, [#2225], 2026-11-21, at the owner's request): the Native-mode format ([#1846]) and the Datastore-mode one ([#1847]) had each written out the same lifecycle of one input split read by the scan's split reader.
+The base class holds that lifecycle, the transient state Flink's per-load copy rebuilds, the rows queued between fetches, the failed-open cleanup and the load's log lines; each subclass plans its load, opens its page and split readers, converts a record and names its table.
+Its close releases the page reader even when the split reader fails to close, which neither format did, and reports an exception any release throws as an `IOException`, as the Spanner load does (an `Error` that is the first failure stays an `Error`, as ADR-0040 has it; a later one rides as suppressed on the first): Flink's loader logs one from `close()` and keeps a load it read, while an unchecked one escapes its `finally` block and discards the load (`InputSplitCacheLoadTask`, Flink 2.2.1 and 1.20.5).
+It reads until the split reader reports every query finished, with no guard against a fetch that returns nothing, because the two split readers differ exactly there: a Native-mode page with no document finishes its query, while a Datastore-mode one can carry a moved cursor and more results, and the Datastore format's first draft failed such a load by copying the Native-mode guard.
+
 ## Consequences
 
 - One uber jar serves both surfaces, so the module adds one shaded artifact per version line to each release; a second module would add two, and the uber jars are the bulk of what a release publishes.
@@ -103,3 +108,6 @@ A package under the Datastore root, where `PropertyPaths` lives because only Dat
 [apache/beam#23551]: https://github.com/apache/beam/issues/23551
 [DataflowTemplates]: https://github.com/GoogleCloudPlatform/DataflowTemplates/tree/main/v2/mongodb-to-mongodb
 [#2076]: https://github.com/flink-gcp/flink-connector-gcp/issues/2076
+[#2225]: https://github.com/flink-gcp/flink-connector-gcp/issues/2225
+[#1846]: https://github.com/flink-gcp/flink-connector-gcp/issues/1846
+[#1847]: https://github.com/flink-gcp/flink-connector-gcp/issues/1847

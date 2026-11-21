@@ -13,6 +13,15 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `@Internal`, no `firestore.v1`/`datastore.v1` types; owner 2026-11-07, not base, not a third
   root); extract a helper there only when its second consumer exists. Each root
   carries its own `CrossVersionSink` under `src/main/java-flink1` / `java-flink2`.
+- **Both `FULL` loads extend `firestore.common.table.FullCacheInputFormat`** (ADR-0170's #2225
+  refinement): it owns the one-split lifecycle (transient reset, pending rows, failed-open
+  cleanup, idempotent close, log lines, a release's exception as `IOException` so Flink keeps a
+  read load; an `Error` that fails first stays an `Error`). A subclass plans in `planLoad` (the
+  base's final `createInputSplits` returns it as the one split), opens its split reader in
+  `openReader` and passes the page reader to `closeWithLoad` the moment it opens it, converts in
+  `emit` and names its table in `describe`.
+  Never add a "no progress" guard to the read loop: a Datastore page can return no entity and
+  move its cursor (#1847's round-one defect).
 - The design comment and implementation order on #355 settled the sub-issues #1540–#1546; read
   them before starting one. CDC is deferred in ADR-0170 and an exactly-once mode on #355, each
   with reopen conditions — do not start either without engaging those conditions.
