@@ -25,7 +25,8 @@ limitations under the License.
   [#586](https://github.com/flink-gcp/flink-connector-gcp/issues/586),
   [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951),
   [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206),
-  [#2194](https://github.com/flink-gcp/flink-connector-gcp/issues/2194)
+  [#2194](https://github.com/flink-gcp/flink-connector-gcp/issues/2194),
+  [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -322,6 +323,11 @@ materializing the public mutation or any public entry/value/range object.
   for its watermark. Every hold starts with a pending close, so one periodic check covers both; it
   reads the oldest pending close and the oldest hold, because a close taken back and made again
   moves its pending close to the end with a new time while the hold keeps its own.
+- **A gauge of held successors** (#2257). A held successor already counts in `unassignedSplits`
+  and `unassignedChangeStreamPartitionLagMillis`, and a hold that lasts most often means checkpoints
+  are not completing, which Flink's checkpoint metrics show. A dedicated gauge was judged not worth
+  its metric name, reference row and Spanner counterpart; it is worth reconsidering if users report
+  unassigned lag they cannot attribute.
 - **Keep one progress event per heartbeat.** It sends every partition's position to the
   JobManager every five seconds and lets the ledger run ahead of the restored checkpoint, while
   nothing the coordinator decides needs a position newer than the last completed checkpoint.

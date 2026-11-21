@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, and by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21
+- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21, and by [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257) on 2026-11-21
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
@@ -26,7 +26,8 @@ limitations under the License.
   [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842),
   [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193),
   [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205),
-  [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204)
+  [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204),
+  [#2257](https://github.com/flink-gcp/flink-connector-gcp/issues/2257)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -183,6 +184,11 @@ For the lost finish, with the acknowledgement, all three cases read the child an
   It would recover a lost finish without a reader-side record, but it re-reads every partition's tail since the coordinator's last progress event and makes the coordinator's per-record progress a correctness input; a finish the reader kept is reported once and re-reads nothing.
 - **Fail a job without checkpointing, as the Pub/Sub source's first-checkpoint detector does.**
   A Spanner job without checkpointing loses nothing by starting children at once; it loses only the cross-partition order, so a warning and a fallback are proportionate where a Pub/Sub job would stall.
+- **A gauge of held children** (#2257). A held child stays `CREATED`, outside the unassigned
+  gauges, and `changeStreamFinishedParentProofs` stays raised while it waits, as it does while a
+  merge child waits for a parent still reading. As for the Bigtable source (ADR-0097), a hold that
+  lasts most often means checkpoints are not completing, and a dedicated gauge was judged not
+  worth its metric name and reference row.
 - **Make `IMMEDIATE` the default.**
   The reordering is silent, and an upsert sink then keeps a stale row; a delay of one checkpoint interval per partition split or merge is the cheaper default.
 - **Accept unknown partition modes as immutable.**
