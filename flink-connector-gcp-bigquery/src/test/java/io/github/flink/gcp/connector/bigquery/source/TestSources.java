@@ -17,6 +17,8 @@
 package io.github.flink.gcp.connector.bigquery.source;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.source.enumerator.ReadSessionCreatorFactory;
+import io.github.flink.gcp.connector.bigquery.source.reader.RowStreamOpener;
 import io.github.flink.gcp.connector.bigquery.source.serializer.BigQueryRowDeserializationSchema;
 import org.apache.avro.generic.GenericRecord;
 
@@ -101,5 +103,21 @@ public final class TestSources {
                         .emulatorRestEndpoint("localhost:1");
         return ((BigQueryStorageReadSource<GenericRecord>) customizer.apply(builder).build())
                 .getConfig();
+    }
+
+    /**
+     * Hands a builder in another package the scripted seams its package-private setters take.
+     *
+     * @param builder the builder
+     * @param sessionCreatorFactory mints the session creators the source plans through
+     * @param rowStreamOpener opens the source's streams
+     * @return the builder
+     */
+    public static <T> BigQuerySourceBuilder<T> withSeams(
+            BigQuerySourceBuilder<T> builder,
+            ReadSessionCreatorFactory sessionCreatorFactory,
+            RowStreamOpener rowStreamOpener) {
+        return builder.sessionCreatorFactory(sessionCreatorFactory)
+                .rowStreamOpener(rowStreamOpener);
     }
 }

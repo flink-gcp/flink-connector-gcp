@@ -76,8 +76,8 @@ releases the group's last lease shuts it down and waits for its threads.**
 **In the BigQuery connector, every client that owns gRPC channels holds a lease for its lifetime.**
 
 - The default-stream appender on the emulator path, the buffered-stream service, the source's
-  session creator (on the JobManager) and its row-stream opener each open their client as a
-  `LeasedClient`.
+  session creator (on the JobManager, and on a TaskManager for a full lookup cache load, ADR-0209)
+  and its row-stream opener each open their client as a `LeasedClient`.
 - **The session creator closes its client as soon as each `CreateReadSession` call returns**,
   instead of holding it until the enumerator closes, and its `close()` cancels a call still in
   flight, scheduled retries included, before it closes that call's client.

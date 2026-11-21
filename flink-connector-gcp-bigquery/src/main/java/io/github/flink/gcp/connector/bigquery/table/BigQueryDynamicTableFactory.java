@@ -26,6 +26,7 @@ import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.connector.source.lookup.LookupOptions;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.DynamicTableSourceFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -132,6 +133,12 @@ public class BigQueryDynamicTableFactory
                         BigQueryConnectorOptions.SCAN_MAX_RECORDS_PER_FETCH,
                         BigQueryConnectorOptions.SCAN_MAX_BYTES_PER_FETCH,
                         BigQueryConnectorOptions.SCAN_RETRY_MAX_ATTEMPTS,
+                        LookupOptions.CACHE_TYPE,
+                        LookupOptions.FULL_CACHE_RELOAD_STRATEGY,
+                        LookupOptions.FULL_CACHE_PERIODIC_RELOAD_INTERVAL,
+                        LookupOptions.FULL_CACHE_PERIODIC_RELOAD_SCHEDULE_MODE,
+                        LookupOptions.FULL_CACHE_TIMED_RELOAD_ISO_TIME,
+                        LookupOptions.FULL_CACHE_TIMED_RELOAD_INTERVAL_IN_DAYS,
                         BigQueryConnectorOptions.SINK_WRITE_METHOD,
                         BigQueryConnectorOptions.SINK_CREATE_DISPOSITION,
                         BigQueryConnectorOptions.SINK_LOCATION,
@@ -478,6 +485,7 @@ public class BigQueryDynamicTableFactory
                                         .orElse(null)
                                 : null)
                 .parallelism(config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null))
+                .lookupConfig(BigQueryLookupConfig.from(config))
                 .build();
     }
 

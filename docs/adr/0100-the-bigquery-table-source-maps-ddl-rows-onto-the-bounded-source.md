@@ -20,7 +20,9 @@ limitations under the License.
 - Date: 2026-08-12; BigQuery read-side option keys migrated by
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047) (2026-08-23); nested
   projection and nested-field restrictions added by
-  [#1840](https://github.com/flink-gcp/flink-connector-gcp/issues/1840) (2026-11-07)
+  [#1840](https://github.com/flink-gcp/flink-connector-gcp/issues/1840) (2026-11-07); full-cache
+  lookup recorded in ADR-0209 ([#1848](https://github.com/flink-gcp/flink-connector-gcp/issues/1848),
+  2026-11-21)
 - Issues: [#542](https://github.com/flink-gcp/flink-connector-gcp/issues/542),
   [#566](https://github.com/flink-gcp/flink-connector-gcp/issues/566),
   [#1047](https://github.com/flink-gcp/flink-connector-gcp/issues/1047),
@@ -55,8 +57,11 @@ Every source runtime option maps onto the existing builder, including query plac
 row restriction, snapshot time, stream counts, fetch size, retry attempts, emulator endpoints, and
 the service-account key-file path.
 The source advertises insert-only changelog mode and uses Flink's standard `scan.parallelism`.
-It does not offer lookup or unbounded semantics because the underlying Storage Read source offers
-neither.
+It does not offer unbounded semantics, or a lookup that reads per probe row, because the underlying
+Storage Read source offers neither.
+A lookup join served only by Flink's full cache, loaded through the same read, was added by
+[ADR-0209](0209-the-bigquery-table-source-serves-lookups-only-through-flinks-full-cache.md)
+(#1848, 2026-11-21).
 
 **Top-level planner projection becomes a Storage Read `selectedFields` request.**
 The converter addresses the returned Avro record by physical field name and emits fields in planner

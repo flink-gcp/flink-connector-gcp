@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.bigquery.source;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.serialization.DeserializationSchema;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
@@ -104,8 +103,13 @@ public class BigQueryStorageReadSource<T>
                 getBoundedness(), "bigquery", BigQueryLineage.resources(config.getTable()));
     }
 
-    @VisibleForTesting
-    BigQuerySourceConfig<T> getConfig() {
+    /**
+     * Returns the source's configuration, which the {@code bigquery} table's full lookup cache
+     * loads the table with, so that a load and a scan of the same table cannot drift apart.
+     *
+     * @return the configuration
+     */
+    public BigQuerySourceConfig<T> getConfig() {
         return config;
     }
 

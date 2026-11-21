@@ -30,9 +30,9 @@ import javax.annotation.Nullable;
  * <p>Flink's full cache keeps every loaded row under the projection of the planner's lookup keys
  * and finds a probe's rows by {@code GenericRowData.equals}, so a key must be a top-level field of
  * the produced row and of a type whose Flink value equality agrees with SQL {@code =}. The Spanner,
- * Firestore and Datastore lookup sources share this check (#1847), each with its own requirement
- * message; whether a connector accepts {@code FULL} at all, and how it loads the rows, stays with
- * the connector.
+ * Firestore, Datastore and BigQuery lookup sources share this check (#1847), each with its own
+ * requirement message; whether a connector accepts {@code FULL} at all, and how it loads the rows,
+ * stays with the connector.
  */
 @Internal
 public final class FullCacheLookupKeys {
@@ -79,11 +79,14 @@ public final class FullCacheLookupKeys {
 
     /**
      * Whether a type's Flink values match in the full cache's index exactly when SQL equality
-     * holds, among the types the Spanner, Firestore and Datastore tables produce. {@code FLOAT} and
-     * {@code DOUBLE} do not: their boxed {@code equals} tells {@code -0.0} from {@code 0.0} and
-     * matches {@code NaN} to itself. {@code ARRAY}, {@code MAP} and {@code ROW} do not either,
-     * because their binary and generic forms are not equal to each other. A type no table produces
-     * is refused too, so that accepting one is a decision taken with the connector that adds it.
+     * holds, among the types the Spanner, Firestore, Datastore and BigQuery tables produce. The
+     * integer types compare by value, {@code TIME} by its milliseconds of the day and {@code
+     * TIMESTAMP} by its {@code TimestampData}, whose equality covers every digit the declared
+     * precision keeps. {@code FLOAT} and {@code DOUBLE} do not: their boxed {@code equals} tells
+     * {@code -0.0} from {@code 0.0} and matches {@code NaN} to itself. {@code ARRAY}, {@code MAP}
+     * and {@code ROW} do not either, because their binary and generic forms are not equal to each
+     * other. A type no table produces is refused too, so that accepting one is a decision taken
+     * with the connector that adds it.
      *
      * @param type a key column's type
      * @return whether the type may key the cache
@@ -91,6 +94,9 @@ public final class FullCacheLookupKeys {
     static boolean hasSqlEquality(LogicalType type) {
         switch (type.getTypeRoot()) {
             case BOOLEAN:
+            case TINYINT:
+            case SMALLINT:
+            case INTEGER:
             case BIGINT:
             case DECIMAL:
             case CHAR:
@@ -98,6 +104,8 @@ public final class FullCacheLookupKeys {
             case BINARY:
             case VARBINARY:
             case DATE:
+            case TIME_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
                 return true;
             default:
