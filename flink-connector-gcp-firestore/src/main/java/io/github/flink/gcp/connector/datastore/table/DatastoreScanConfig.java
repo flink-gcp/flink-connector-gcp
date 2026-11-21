@@ -77,7 +77,7 @@ public final class DatastoreScanConfig implements Serializable {
                         config.getOptional(DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH)
                                 .orElse(null),
                         config.get(DatastoreConnectorOptions.SCAN_FILTER_PUSH_DOWN_ENABLED));
-        options.applyTo(DatastoreSource.builder(), true);
+        options.applyTo(DatastoreSource.builder(), true, true);
         return options;
     }
 
@@ -109,16 +109,20 @@ public final class DatastoreScanConfig implements Serializable {
      * @param builder the source builder
      * @param split whether the read is cut into key ranges; {@code scan.partition.max-partitions}
      *     applies only then, since a read of one split has no count to bound
+     * @param withReadTime whether {@code scan.read-time} applies: it names the scan's snapshot, and
+     *     a full lookup cache's load reads at the time it is planned instead
      */
-    public void applyTo(DatastoreSourceBuilder<?> builder, boolean split) {
+    public void applyTo(DatastoreSourceBuilder<?> builder, boolean split, boolean withReadTime) {
         if (split) {
             OptionSetters.accept(
                     DatastoreConnectorOptions.SCAN_PARTITION_MAX_PARTITIONS.key(),
                     maxPartitions,
                     builder::splitCount);
         }
-        OptionSetters.accept(
-                DatastoreConnectorOptions.SCAN_READ_TIME.key(), readTime, builder::readTime);
+        if (withReadTime) {
+            OptionSetters.accept(
+                    DatastoreConnectorOptions.SCAN_READ_TIME.key(), readTime, builder::readTime);
+        }
         OptionSetters.accept(
                 DatastoreConnectorOptions.SCAN_MAX_ROWS_PER_FETCH.key(),
                 maxRowsPerFetch,

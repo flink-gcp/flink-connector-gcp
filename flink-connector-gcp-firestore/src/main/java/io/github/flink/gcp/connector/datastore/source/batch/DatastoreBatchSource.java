@@ -17,7 +17,6 @@
 package io.github.flink.gcp.connector.datastore.source.batch;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
@@ -95,8 +94,12 @@ public final class DatastoreBatchSource<T>
                 List.of(DatastoreLineage.kind(config.getDatabase(), config.getNamespace(), kind)));
     }
 
-    /** Returns the configuration, for the source's own tests. */
-    @VisibleForTesting
+    /**
+     * Returns the configuration. The Table API's full lookup cache loads through it, so a load
+     * reads what this source would.
+     *
+     * @return the configuration
+     */
     public DatastoreSourceConfig<T> getConfig() {
         return config;
     }

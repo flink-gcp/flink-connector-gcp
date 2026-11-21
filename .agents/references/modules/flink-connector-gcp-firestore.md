@@ -270,7 +270,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   load; batch mode does not (#2219). Document both; never call a load "every document" or
   "filtered" without the mode.
 - `FULL` keys are any top-level produced field, metadata included, whose `GenericRowData.equals`
-  is SQL `=`: not DOUBLE, ARRAY, MAP or ROW. `document-path` is what joins a collection-group
+  is SQL `=`: not DOUBLE, ARRAY, MAP or ROW, checked by `base.table.FullCacheLookupKeys` (#1847). `document-path` is what joins a collection-group
   table, which `NONE`/`PARTIAL` still refuse. `lookup.async` with `FULL` is refused in
   `FirestoreLookupConfig`.
 
@@ -505,6 +505,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `scan.read-time` is scan-only and `read-time` is `LookupResponse.read_time` (owner).
 - `DatastoreLookupConfig` is a per-connector copy of the lookup config, as Firestore, Spanner and
   Bigtable keep theirs.
+- **`FULL` is loaded by the scan's own configuration** (ADR-0184's #1847 section, Native mode's
+  shape): `DatastoreFullCacheInputFormat` takes the `DatastoreSourceConfig` that `scanBuilder`
+  builds, without `scan.read-time` or a limit, and with `splitCount(1)` whenever the query is
+  splittable: ONE split reading ONE key range, planned again in `createInputSplits` per load. The
+  format refuses a configuration that would plan several ranges; never return several splits
+  (shared `RowDataSerializer`, #2217). A load reads whole entities, so it joins on unindexed
+  properties. Streaming mode pushes a condition into the load (property filters only under
+  `scan.filter-push-down.enabled`, which then drops unindexed values as a scan does); batch mode
+  does not (#2219). Keys: any top-level produced field, metadata included (`key-id`/`key-name`
+  make a keyless table joinable), not DOUBLE, ARRAY or ROW, through
+  `base.table.FullCacheLookupKeys`. `lookup.async` with `FULL` is refused in
+  `DatastoreLookupConfig`.
 
 ## Testing
 

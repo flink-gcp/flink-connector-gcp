@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.datastore.source.batch.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.metrics.Counter;
+import org.apache.flink.metrics.SimpleCounter;
 import org.apache.flink.metrics.ThreadSafeSimpleCounter;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.util.Preconditions;
@@ -47,6 +48,21 @@ public class DatastoreSourceReaderMetrics {
                 metricGroup.counter(
                         DatastoreMetricNames.ENTITIES_READ, new ThreadSafeSimpleCounter());
         this.recordsSkipped = metricGroup.counter(DatastoreMetricNames.RECORDS_SKIPPED);
+    }
+
+    private DatastoreSourceReaderMetrics(Counter entitiesRead, Counter recordsSkipped) {
+        this.entitiesRead = entitiesRead;
+        this.recordsSkipped = recordsSkipped;
+    }
+
+    /**
+     * Returns counters registered nowhere, for a read that runs without a metric group: Flink opens
+     * a full lookup cache's loader with no runtime context.
+     *
+     * @return counters that only count
+     */
+    public static DatastoreSourceReaderMetrics unregistered() {
+        return new DatastoreSourceReaderMetrics(new ThreadSafeSimpleCounter(), new SimpleCounter());
     }
 
     /** Counts one entity a page returned. Called from a fetcher thread. */
