@@ -35,11 +35,15 @@ import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.source.SpannerChangeStreamSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplitState;
+import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedAckEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
 import io.github.flink.gcp.connector.spanner.source.serializer.SpannerChangeStreamDeserializationSchema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -90,6 +94,19 @@ import java.util.concurrent.atomic.AtomicReference;
  * coordinator schedule the partition's children — sending it for a failed query would advance the
  * lineage past a partition nobody finished reading.
  *
+ * <h2>A finish stays checkpointed until the coordinator acknowledges it</h2>
+ *
+ * <p>Flink restores reader-to-coordinator events sent between the coordinator's snapshot and this
+ * reader's barrier into neither side, so a finish sent there would leave the partition running in
+ * the restored ledger with no reader holding it. A finished split therefore stays in {@link
+ * #snapshotState}, with the child-partitions reports it forwarded, until a {@link
+ * PartitionFinishedAckEvent} arrives. A restored reader sends those reports and the finish again
+ * once the coordinator is initialized, and the coordinator applies them only if it has not already.
+ * Flink holds the acknowledgement itself back until this reader's barrier, so the split is in the
+ * snapshot of any checkpoint whose coordinator snapshot missed the finish. This is Flink CDC's
+ * {@code finishedUnackedSplits}. A re-sent finish says that nothing was emitted: what the earlier
+ * attempt emitted before the restored checkpoint is downstream already.
+ *
  * <h2>Time</h2>
  *
  * <p>A data record is emitted at its own commit timestamp. The watermark is not this reader's to
@@ -109,6 +126,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class SpannerChangeStreamReader<T>
         implements SourceReader<T, ChangeStreamPartitionSplit> {
 
+    private static final Logger LOG = LoggerFactory.getLogger(SpannerChangeStreamReader.class);
+
     private final SourceReaderContext context;
     private final DatabaseDestination database;
     private final int maximumQueries;
@@ -117,6 +136,11 @@ public final class SpannerChangeStreamReader<T>
     private final SpannerChangeStreamRecordEmitter<T> emitter;
     private final Deque<ChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveQuery> active = new LinkedHashMap<>();
+
+    /** Finished splits the coordinator has not acknowledged, in finish order. */
+    private final Map<String, ChangeStreamPartitionSplit> finishedUnacknowledged =
+            new LinkedHashMap<>();
+
     private final Object availabilityLock = new Object();
     private CompletableFuture<Void> availability = new CompletableFuture<>();
 
@@ -230,11 +254,18 @@ public final class SpannerChangeStreamReader<T>
                     "Spanner Change Streams reader received initialization more than once.");
             if (initialization.shouldDiscardRestoredSplits()) {
                 queued.clear();
+                finishedUnacknowledged.clear();
                 metrics.queued(queued);
             }
             acceptSourceWatermark(initialization.getSourceWatermark());
             coordinatorInitialized = true;
+            reportRestoredFinishes();
             startAfterCoordinatorInitialization();
+            return;
+        }
+        if (sourceEvent instanceof PartitionFinishedAckEvent) {
+            finishedUnacknowledged.remove(((PartitionFinishedAckEvent) sourceEvent).getSplitId());
+            signalAvailable();
             return;
         }
         if (sourceEvent instanceof SpannerChangeStreamWatermarkEvent) {
@@ -302,7 +333,8 @@ public final class SpannerChangeStreamReader<T>
     }
 
     private void finishQuery(ActiveQuery query, ReaderOutput<T> output) {
-        ChangeStreamPartitionSplit split = query.state.toSplit();
+        ChangeStreamPartitionSplit split = query.state.toFinishedSplit();
+        finishedUnacknowledged.put(split.splitId(), split);
         context.sendSourceEventToCoordinator(
                 new PartitionFinishedEvent(
                         split.splitId(),
@@ -323,7 +355,35 @@ public final class SpannerChangeStreamReader<T>
             state.add(query.state.toSplit());
         }
         state.addAll(queued);
+        state.addAll(finishedUnacknowledged.values());
         return state;
+    }
+
+    /**
+     * Sends the child reports and the finish of every restored finished split again. Flink adds a
+     * reader's restored splits before the reader can receive the coordinator's initialization, and
+     * no query runs before it, so every finished split this reader holds then is a restored one.
+     * The coordinator applies the ones its restored ledger is missing and acknowledges every one.
+     */
+    private void reportRestoredFinishes() {
+        if (finishedUnacknowledged.isEmpty()) {
+            return;
+        }
+        LOG.info(
+                "Reporting the finish of {} restored Spanner Change Streams partition(s) again;"
+                        + " the coordinator had not acknowledged it before the checkpoint.",
+                finishedUnacknowledged.size());
+        for (ChangeStreamPartitionSplit split : finishedUnacknowledged.values()) {
+            for (ChildPartitionsEvent children : split.getFinishReport()) {
+                context.sendSourceEventToCoordinator(children);
+            }
+            context.sendSourceEventToCoordinator(
+                    new PartitionFinishedEvent(
+                            split.splitId(),
+                            split.getCurrentPosition(),
+                            split.getWatermark(),
+                            false));
+        }
     }
 
     @Override
@@ -339,7 +399,15 @@ public final class SpannerChangeStreamReader<T>
     @Override
     public void addSplits(List<ChangeStreamPartitionSplit> splits) {
         requestOutstanding = false;
-        queued.addAll(splits);
+        for (ChangeStreamPartitionSplit split : splits) {
+            if (split.awaitsFinishAcknowledgement()) {
+                // Only a restore hands this reader a finished split: the coordinator assigns
+                // unfinished ones.
+                finishedUnacknowledged.put(split.splitId(), split);
+            } else {
+                queued.add(split);
+            }
+        }
         metrics.queued(queued);
         if (started && coordinatorInitialized) {
             startQueuedQueries();
@@ -395,7 +463,10 @@ public final class SpannerChangeStreamReader<T>
     }
 
     private boolean finished() {
-        return noMoreSplits && active.isEmpty() && queued.isEmpty();
+        return noMoreSplits
+                && active.isEmpty()
+                && queued.isEmpty()
+                && finishedUnacknowledged.isEmpty();
     }
 
     private void signalAvailable() {
@@ -463,6 +534,7 @@ public final class SpannerChangeStreamReader<T>
         closing.add(client);
         active.clear();
         queued.clear();
+        finishedUnacknowledged.clear();
         metrics.closed();
         signalAvailable();
         Closers.closeAll(closing);

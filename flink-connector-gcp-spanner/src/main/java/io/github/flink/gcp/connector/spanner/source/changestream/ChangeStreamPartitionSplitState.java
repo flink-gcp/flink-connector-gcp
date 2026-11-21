@@ -20,14 +20,27 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.util.Preconditions;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
-/** Mutable task-thread progress for one Spanner Change Streams partition. */
+/**
+ * Mutable task-thread progress for one Spanner Change Streams partition.
+ *
+ * <p>Progress stops at the last record before the first child-partitions record, as the Debezium
+ * Spanner connector's offset does. Spanner ends a partition at its children's start timestamp, so a
+ * restored query must start before it to meet the child-partitions records again; what Spanner
+ * returns for a query that starts exactly there is neither documented nor measured. The watermark
+ * stops with the position, so a restored query that repeats records from that position never emits
+ * them behind its own watermark. The cost is that a restore repeats the records from that position
+ * on (ADR-0101).
+ */
 @Internal
 public final class ChangeStreamPartitionSplitState {
 
     private final ChangeStreamPartitionSplit original;
     private Instant currentPosition;
     private Instant watermark;
+    private final List<ChildPartitionsEvent> childReports = new ArrayList<>();
 
     /** Whether this attempt has emitted a record from the split; deliberately not checkpointed. */
     private boolean emittedRecords;
@@ -51,8 +64,25 @@ public final class ChangeStreamPartitionSplitState {
     }
 
     public void advance(Instant position, Instant newWatermark) {
-        currentPosition = later(currentPosition, position, "position");
-        watermark = later(watermark, newWatermark, "watermark");
+        Instant advancedPosition = later(currentPosition, position, "position");
+        Instant advancedWatermark = later(watermark, newWatermark, "watermark");
+        if (childReports.isEmpty()) {
+            currentPosition = advancedPosition;
+            watermark = advancedWatermark;
+        }
+    }
+
+    /**
+     * Records a child-partitions report this attempt forwarded to the coordinator. The finished
+     * split carries every one of them until the coordinator acknowledges the finish.
+     */
+    public void recordChildren(ChildPartitionsEvent report) {
+        childReports.add(Preconditions.checkNotNull(report, "report must not be null"));
+    }
+
+    /** Returns the split as a reader keeps it after its query ended, until the acknowledgement. */
+    public ChangeStreamPartitionSplit toFinishedSplit() {
+        return toSplit().withFinishReport(childReports);
     }
 
     /** Records that the reader emitted at least one output record from this split. */

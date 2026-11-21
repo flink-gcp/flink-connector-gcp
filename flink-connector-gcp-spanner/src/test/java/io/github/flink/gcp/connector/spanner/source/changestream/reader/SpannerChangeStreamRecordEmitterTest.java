@@ -152,7 +152,8 @@ class SpannerChangeStreamRecordEmitterTest {
     }
 
     @Test
-    void heartbeatAndChildrenAdvanceStateAndReportCoordinatorEventsInOrder() throws Exception {
+    void childrenStopThePositionAndAreRecordedWhileEventsReachTheCoordinatorInOrder()
+            throws Exception {
         ChangeStreamPartitionSplit initial =
                 ChangeStreamPartitionSplit.initial(START, null, 2_000)
                         .withLifecycleState(PartitionLifecycleState.RUNNING);
@@ -171,15 +172,25 @@ class SpannerChangeStreamRecordEmitterTest {
                 output,
                 state);
 
+        emitter.emitRecord(
+                new SpannerChangeStreamRecord.Heartbeat(START.plusSeconds(7)), output, state);
+
         assertThat(output.records()).isEmpty();
-        assertThat(state.getCurrentPosition()).isEqualTo(START.plusSeconds(6));
+        // A restore must meet the child-partitions record again, so progress stays before it,
+        // whatever Spanner returns after it.
+        assertThat(state.getCurrentPosition()).isEqualTo(START.plusSeconds(5));
         assertThat(state.getWatermark()).isEqualTo(START.plusSeconds(5));
+        assertThat(state.toFinishedSplit().getFinishReport())
+                .containsExactly((ChildPartitionsEvent) context.sourceEvents().get(1));
         assertThat(context.sourceEvents())
                 .extracting(SourceEvent::getClass)
                 .containsExactly(
                         PartitionProgressEvent.class,
                         ChildPartitionsEvent.class,
+                        PartitionProgressEvent.class,
                         PartitionProgressEvent.class);
+        assertThat(((PartitionProgressEvent) context.sourceEvents().get(3)).getCurrentPosition())
+                .isEqualTo(START.plusSeconds(5));
         ChildPartitionsEvent children = (ChildPartitionsEvent) context.sourceEvents().get(1);
         assertThat(children.getChildren().get(0).getParentPartitionIds())
                 .containsExactly(

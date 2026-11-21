@@ -38,6 +38,7 @@ import io.github.flink.gcp.connector.base.source.StartPositionResolver.RestoreEx
 import io.github.flink.gcp.connector.spanner.SpannerMetricNames;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedAckEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionLifecycleState;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
@@ -90,6 +91,18 @@ import java.util.function.LongSupplier;
  * <p><b>Child discovery does not finish a parent.</b> A reader forwards child-partitions records as
  * it meets them and sends a separate completion event only when its query ends successfully, so a
  * parent that failed part-way through cannot leave its children schedulable.
+ *
+ * <p><b>Every finish is acknowledged, and applying one is idempotent.</b> A reader keeps a finished
+ * split, with the child reports it forwarded, in its checkpointed state until the {@link
+ * PartitionFinishedAckEvent} arrives, and a restored reader sends both again. A restore from a
+ * checkpoint whose coordinator snapshot missed a finish therefore still receives it. A finish for a
+ * partition this ledger no longer holds is acknowledged and otherwise ignored, and so is a child
+ * report for one, including a child report for a compacted parent whose child has since finished
+ * too, unless that child finished after the last completed checkpoint: a region failover rolled its
+ * records back while keeping this coordinator, so the report fails the coordinator, which Flink
+ * turns into a global failover that restores this ledger from the checkpoint too. Only finishes are
+ * acknowledged; a reader sends its child reports before the finish and, after a restore, again
+ * before the repeated finish.
  *
  * <h2>A child waits for a checkpoint, not only for its parents</h2>
  *
@@ -197,6 +210,16 @@ public final class SpannerChangeStreamSplitEnumerator
      * checkpoint snapshotted after its finish, or {@code UNCOVERED} before one is.
      */
     private final Map<String, Long> heldParents = new LinkedHashMap<>();
+
+    /**
+     * Children of a still-proven parent that finished in this coordinator's lifetime and that no
+     * completed checkpoint covers yet. A failed-over reader may restore a checkpoint taken before
+     * such a finish, including the checkpoint this coordinator was restored from, so a repeated
+     * report of the child cannot be ignored (see {@link #acceptChildren}). An entry leaves when a
+     * completed checkpoint covers the finish, or when none of the child's parents is still a proof,
+     * because only a proven parent's report reaches that check; this bounds the map by the proofs.
+     */
+    private final Map<String, FinishedChild> uncommittedFinishedChildren = new LinkedHashMap<>();
 
     private final Deque<String> scheduledPartitions = new ArrayDeque<>();
     private final TreeMap<Long, Integer> scheduledPositionCounts = new TreeMap<>();
@@ -643,8 +666,11 @@ public final class SpannerChangeStreamSplitEnumerator
                 parent == null
                         && finishedParentProofReferences.containsKey(event.getParentSplitId());
         if (parent == null && !reportingParentIsProof) {
-            LOG.warn(
-                    "Ignoring child partitions for unknown split {} from subtask {}.",
+            // A restored reader repeats the child reports of a finish this ledger applied and
+            // compacted already.
+            LOG.debug(
+                    "Ignoring child partitions for split {} from subtask {}, which is not in the"
+                            + " ledger.",
                     event.getParentSplitId(),
                     subtaskId);
             return;
@@ -666,11 +692,22 @@ public final class SpannerChangeStreamSplitEnumerator
             String childId = ChangeStreamPartitionSplit.idForToken(child.getToken());
             ChangeStreamPartitionSplit existing = ledger.get(childId);
             if (reportingParentIsProof) {
-                Preconditions.checkArgument(
-                        existing != null,
-                        "child token %s was first reported after parent %s was compacted",
-                        child.getToken(),
-                        event.getParentSplitId());
+                if (existing == null) {
+                    // A restored reader repeats the reports of a finish this ledger applied
+                    // already; the child has been released and finished since. That is safe only
+                    // if a completed checkpoint covers the child's finish: otherwise the restore
+                    // rolled its records back too, and only a global failover, which restores this
+                    // ledger as well, reads them again.
+                    Preconditions.checkState(
+                            !uncommittedFinishedChildren.containsKey(childId),
+                            "Child partition %s of %s finished after the last completed checkpoint,"
+                                    + " and a restored reader reported it again; failing the"
+                                    + " coordinator so that a global failover restores it from that"
+                                    + " checkpoint.",
+                            childId,
+                            event.getParentSplitId());
+                    continue;
+                }
                 Preconditions.checkState(
                         sameCompactedChildReport(existing, child, event.getStartTimestamp()),
                         "child token %s was reported with conflicting partition metadata",
@@ -727,13 +764,26 @@ public final class SpannerChangeStreamSplitEnumerator
     }
 
     private void finishPartition(int subtaskId, PartitionFinishedEvent event) {
+        applyFinish(subtaskId, event);
+        acknowledgeFinish(subtaskId, event.getSplitId());
+    }
+
+    /**
+     * Lets the reader drop the finished split from its state. A reader that failed since sending
+     * the finish has no gateway; its restored attempt reports the finish again.
+     */
+    private void acknowledgeFinish(int subtaskId, String splitId) {
+        if (context.registeredReaders().containsKey(subtaskId)) {
+            context.sendEventToSourceReader(subtaskId, new PartitionFinishedAckEvent(splitId));
+        }
+    }
+
+    private void applyFinish(int subtaskId, PartitionFinishedEvent event) {
         ChangeStreamPartitionSplit current = ledger.get(event.getSplitId());
         if (current == null) {
-            if (finishedParentProofReferences.containsKey(event.getSplitId())) {
-                return;
-            }
-            LOG.warn(
-                    "Ignoring completion for unknown split {} from subtask {}.",
+            // A restored reader repeats a finish this ledger applied already.
+            LOG.debug(
+                    "Ignoring completion for split {} from subtask {}, which is not in the ledger.",
                     event.getSplitId(),
                     subtaskId);
             return;
@@ -749,6 +799,13 @@ public final class SpannerChangeStreamSplitEnumerator
         untrackUnfinishedWatermark(current);
         ledger.remove(current.splitId());
         unfinishedPartitions--;
+        for (String parentId : current.getParentPartitionIds()) {
+            if (finishedParentProofReferences.containsKey(parentId)) {
+                uncommittedFinishedChildren.put(
+                        current.splitId(), new FinishedChild(current.getParentPartitionIds()));
+                break;
+            }
+        }
         Set<String> children = childrenByParent.remove(current.splitId());
         if (children != null && !children.isEmpty()) {
             finishedParentProofReferences.put(current.splitId(), children.size());
@@ -853,6 +910,14 @@ public final class SpannerChangeStreamSplitEnumerator
             }
             if (references == 1) {
                 finishedParentProofReferences.remove(parentId);
+                uncommittedFinishedChildren
+                        .values()
+                        .removeIf(
+                                child ->
+                                        child.parentIds.stream()
+                                                .noneMatch(
+                                                        finishedParentProofReferences
+                                                                ::containsKey));
             } else {
                 finishedParentProofReferences.put(parentId, references - 1);
             }
@@ -977,6 +1042,11 @@ public final class SpannerChangeStreamSplitEnumerator
                         + " checkpoint after its deferred reader actions have been replayed.");
         heldParents.replaceAll(
                 (ignored, covering) -> covering == UNCOVERED ? checkpointId : covering);
+        for (FinishedChild child : uncommittedFinishedChildren.values()) {
+            if (child.covering == UNCOVERED) {
+                child.covering = checkpointId;
+            }
+        }
         return SpannerChangeStreamEnumeratorState.snapshotOfCoordinatorLedger(
                 ledger.values(),
                 finishedParentProofReferences.keySet(),
@@ -997,6 +1067,12 @@ public final class SpannerChangeStreamSplitEnumerator
             releasingWithoutCheckpoint = false;
         }
         checkpointCompleted = true;
+        // A reader restores the splits of the latest completed checkpoint, so once one completes
+        // after a fallback, no reader can restore the discarded ledger's splits any more.
+        discardRestoredReaderSplits = false;
+        uncommittedFinishedChildren
+                .values()
+                .removeIf(child -> child.covering != UNCOVERED && child.covering <= checkpointId);
         if (heldParents.isEmpty()) {
             return;
         }
@@ -1059,6 +1135,11 @@ public final class SpannerChangeStreamSplitEnumerator
     @VisibleForTesting
     int heldParentCount() {
         return heldParents.size();
+    }
+
+    @VisibleForTesting
+    int uncommittedFinishedChildCount() {
+        return uncommittedFinishedChildren.size();
     }
 
     private void registerMetrics() {
@@ -1180,6 +1261,19 @@ public final class SpannerChangeStreamSplitEnumerator
                     bounded,
                     false,
                     sourceWatermark);
+        }
+    }
+
+    /** A finished child that a repeated report may not skip yet, with what lets it leave. */
+    private static final class FinishedChild {
+
+        private final List<String> parentIds;
+
+        /** The first checkpoint snapshotted after the finish, or {@code UNCOVERED}. */
+        private long covering = UNCOVERED;
+
+        private FinishedChild(List<String> parentIds) {
+            this.parentIds = parentIds;
         }
     }
 

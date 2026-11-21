@@ -26,12 +26,20 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Connector-owned checkpoint format for a Spanner Change Streams partition split. */
+/**
+ * Connector-owned checkpoint format for a Spanner Change Streams partition split.
+ *
+ * <p>Version 2 appends the finish report a reader keeps for a split whose query ended until the
+ * coordinator acknowledges it. A version-1 split never had one, so it reads as a split without a
+ * report. The coordinator's ledger never holds a report, so {@link #writeSplit} keeps the shared
+ * per-split layout and the enumerator state format is unchanged.
+ */
 @Internal
 public final class ChangeStreamPartitionSplitSerializer
         implements SimpleVersionedSerializer<ChangeStreamPartitionSplit> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+    private static final int VERSION_WITHOUT_FINISH_REPORT = 1;
     private static final int INITIAL_BUFFER_SIZE = 512;
 
     @Override
@@ -43,13 +51,14 @@ public final class ChangeStreamPartitionSplitSerializer
     public byte[] serialize(ChangeStreamPartitionSplit split) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         writeSplit(out, split);
+        writeFinishReport(out, split.getFinishReport());
         return out.getCopyOfBuffer();
     }
 
     @Override
     public ChangeStreamPartitionSplit deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != VERSION) {
+        if (version != VERSION && version != VERSION_WITHOUT_FINISH_REPORT) {
             throw new IOException(
                     "Unsupported Spanner change-stream split serialization version "
                             + version
@@ -57,7 +66,68 @@ public final class ChangeStreamPartitionSplitSerializer
                             + VERSION
                             + ".");
         }
-        return readSplit(new DataInputDeserializer(serialized));
+        DataInputDeserializer in = new DataInputDeserializer(serialized);
+        ChangeStreamPartitionSplit split = readSplit(in);
+        if (version == VERSION_WITHOUT_FINISH_REPORT) {
+            return split;
+        }
+        if (!in.readBoolean()) {
+            return split;
+        }
+        if (split.getLifecycleState() != PartitionLifecycleState.FINISHED) {
+            throw new IOException(
+                    "Corrupt Spanner change-stream split state: a "
+                            + split.getLifecycleState()
+                            + " split carries a finish report.");
+        }
+        try {
+            return split.withFinishReport(readFinishReport(in, split.splitId()));
+        } catch (RuntimeException e) {
+            throw new IOException("Corrupt Spanner change-stream split state.", e);
+        }
+    }
+
+    private static void writeFinishReport(
+            DataOutputSerializer out, List<ChildPartitionsEvent> report) throws IOException {
+        out.writeBoolean(report != null);
+        if (report == null) {
+            return;
+        }
+        out.writeInt(report.size());
+        for (ChildPartitionsEvent childReport : report) {
+            writeInstant(out, childReport.getStartTimestamp());
+            out.writeInt(childReport.getChildren().size());
+            for (ChildPartitionsEvent.ChildPartition child : childReport.getChildren()) {
+                out.writeUTF(child.getToken());
+                out.writeInt(child.getParentPartitionIds().size());
+                for (String parent : child.getParentPartitionIds()) {
+                    out.writeUTF(parent);
+                }
+            }
+        }
+    }
+
+    private static List<ChildPartitionsEvent> readFinishReport(
+            DataInputDeserializer in, String splitId) throws IOException {
+        int reportCount = readCount(in, "child report");
+        List<ChildPartitionsEvent> report = new ArrayList<>(Math.min(reportCount, 1024));
+        for (int i = 0; i < reportCount; i++) {
+            Instant startTimestamp = readInstant(in);
+            int childCount = readCount(in, "child partition");
+            List<ChildPartitionsEvent.ChildPartition> children =
+                    new ArrayList<>(Math.min(childCount, 1024));
+            for (int j = 0; j < childCount; j++) {
+                String token = in.readUTF();
+                int parentCount = readCount(in, "child parent");
+                List<String> parents = new ArrayList<>(Math.min(parentCount, 1024));
+                for (int k = 0; k < parentCount; k++) {
+                    parents.add(in.readUTF());
+                }
+                children.add(new ChildPartitionsEvent.ChildPartition(token, parents));
+            }
+            report.add(new ChildPartitionsEvent(splitId, startTimestamp, children));
+        }
+        return report;
     }
 
     static void writeSplit(DataOutputSerializer out, ChangeStreamPartitionSplit split)

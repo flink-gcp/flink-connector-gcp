@@ -17,14 +17,15 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, and by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19
+- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, and by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
   [#635](https://github.com/flink-gcp/flink-connector-gcp/issues/635),
   [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141),
   [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842),
-  [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193)
+  [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193),
+  [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -49,6 +50,20 @@ Child discovery and parent completion are separate source events.
 A parent query can return several child-partitions records with the same start timestamp, so receiving one record does not prove that the query finished.
 The reader reports every child record first and reports completion only after the query ends successfully.
 The coordinator deduplicates identical child reports and moves a child from `CREATED` to `SCHEDULED` only when every named parent is `FINISHED`.
+
+A reader keeps a finished split in its checkpointed state until the coordinator acknowledges the finish ([#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205)).
+Flink snapshots the coordinator before it injects a checkpoint's barriers, and a reader's event sent between the two reaches neither snapshot.
+Before this, a finish sent there left the partition running in the restored ledger while no restored reader held it, so its children never started.
+The finished split now carries the child reports the reader forwarded, and a restored reader sends those reports and the finish again once the coordinator is initialized.
+The coordinator acknowledges every finish as soon as it handles it, and applying a report again changes nothing: a finish or child report for a partition the ledger no longer runs is ignored.
+One repeated report is refused instead: a child of a still-proven parent that finished after the last completed checkpoint, or since the restore when none has completed since.
+The coordinator remembers such a child only until a completed checkpoint covers its finish or none of its parents remains a proof, since only a proven parent's report can reach the check, so the bookkeeping stays bounded by the proofs.
+A region failover keeps this coordinator but rolls the readers back to that checkpoint, so the child's records were rolled back too; the coordinator fails, as it did before this revision, and Flink turns that into a global failover, which, when the restart strategy allows one, restores this ledger from the checkpoint as well.
+Flink holds a coordinator's events to a subtask back between the coordinator's snapshot and that subtask's barrier, so a finish the coordinator applied after its snapshot is still in the reader's snapshot of the same checkpoint.
+The `TaskExecutor` of Flink 2.2.1 and 1.20.5 fails the sending task when a reader-to-coordinator event cannot be delivered, so a restore is the only way a finish can be lost; unlike Flink CDC's MySQL source, which keeps its finished snapshot splits the same way, the coordinator does not periodically ask readers to report again.
+A re-sent finish says that its reader emitted nothing, because what the earlier attempt emitted before the restored checkpoint is downstream already, so it holds no child back.
+The reader's split position and watermark also stop before a partition's first child-partitions record, as the Debezium Spanner connector's offset does.
+Spanner ends a partition at its children's start timestamp, and what a query starting exactly there returns is neither documented nor measured here, so a restored query starts before it and meets the child records again; a restore repeats the records from that position on, never behind the split's own watermark.
 
 A finished parent's children wait, by default, for a checkpoint as well ([#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193)).
 A parent's finish is its reader's report that the query ended, and the parent's last records can still be in that reader's network buffer or a sink writer's batch at that moment.
@@ -97,9 +112,11 @@ The check is skipped for one case: the whole-ledger fallback is the one restore 
 
 Readers wait for a coordinator initialization event before opening any restored split.
 The event preserves reader-owned splits after a valid restore and discards them after an explicit whole-ledger fallback.
+The discard applies until a checkpoint completes after the fallback: a reader that fails before then restores the discarded ledger's splits again, while one that fails later restores the new checkpoint's.
 This handshake is necessary because Flink restores reader state independently of the enumerator's asynchronous metadata check; without it an expired token can reach Spanner before the coordinator has decided whether to fail or fall back.
 
 Both checkpoint serializers use connector-owned versioned formats.
+Split format version 2 appends the finish report; a version-1 split reads as one without a report, and the enumerator state's per-split layout does not carry it.
 They encode optional values and lifecycle states with explicit tags and reject unknown versions, tags, negative counts, and invalid timestamps.
 Enumerator state version 4 writes the bound or its absence, unfinished entries, finished-parent proof IDs, and the source-wide frontier.
 Version 3 wrote only whether the ledger was bounded, so a version-3 ledger's bound is read from its partitions and is unknown once every partition has finished.
@@ -126,6 +143,10 @@ Flink CDC's MySQL source makes the same trade between its snapshot and binlog ph
 Unit tests cover a checkpoint snapshotted before the finish, an uncompleted checkpoint covered by a later one, restore, parallelism 1, the immediate mode, a parent that emitted nothing, the first-checkpoint timeout and its single warning, a savepoint that does not end the wait, a wait measured from the oldest hold, and a zero timeout.
 An integration test runs a scripted two-level lineage through Flink's own source coordinator at parallelism 2, with checkpointing and without it.
 
+The lost finish ([#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205)) is reproduced by an integration test that runs a second source whose coordinator blocks in its own snapshot, which holds the checkpoint's barriers back while a scripted partition finishes.
+On the code before this revision, a restore from that checkpoint never read the partition's child, both when only the finish and when the child report as well fell between the snapshot and the barrier; the control, a partition that finished before the checkpoint, read it.
+With the acknowledgement, all three cases read the child and never reopen the finished partition, and the window cases fail unless the restored reader logs that it reported a finish again, so a run whose coordinator snapshot came too late to open the window cannot pass silently.
+
 ## Alternatives declined
 
 - **Let a restored ledger keep its bound whatever the configuration says.**
@@ -139,7 +160,10 @@ An integration test runs a scripted two-level lineage through Flink's own source
 - **Restart only each expired token.**
   The skipped interval can contain that token's terminal child record, which would strand all descendants even though the restarted query itself succeeded.
 - **Delay the finish in the reader until its own checkpoint completes.**
-  It holds the same order, but the reader would have to checkpoint finished-but-unreported splits and replay their finish after a restore, while the coordinator's hold is runtime state that a restore discards correctly.
+  It holds the same order, but each reader would decide from its own checkpoint notifications when a child may start, while the coordinator already sees every finish and every completed checkpoint in one place.
+  The reader does keep a finished split until the coordinator acknowledges it, but only so that a restore cannot lose the finish.
+- **Restart every running ledger entry from the coordinator's position after a restore.**
+  It would recover a lost finish without a reader-side record, but it re-reads every partition's tail since the coordinator's last progress event and makes the coordinator's per-record progress a correctness input; a finish the reader kept is reported once and re-reads nothing.
 - **Fail a job without checkpointing, as the Pub/Sub source's first-checkpoint detector does.**
   A Spanner job without checkpointing loses nothing by starting children at once; it loses only the cross-partition order, so a warning and a fallback are proportionate where a Pub/Sub job would stall.
 - **Make `IMMEDIATE` the default.**

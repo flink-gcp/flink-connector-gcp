@@ -91,11 +91,15 @@ final class SpannerChangeStreamRecordEmitter<T>
         } else if (record instanceof SpannerChangeStreamRecord.Heartbeat) {
             // The heartbeat advances the watermark below together with the current position.
         } else if (record instanceof SpannerChangeStreamRecord.Children) {
-            context.sendSourceEventToCoordinator(
+            ChildPartitionsEvent children =
                     childrenEvent(
                             state.splitId(),
                             state.isInitialPartition(),
-                            (SpannerChangeStreamRecord.Children) record));
+                            (SpannerChangeStreamRecord.Children) record);
+            context.sendSourceEventToCoordinator(children);
+            // From here the split's position stays where it is, so a restore meets this record
+            // again; the finished split carries it until the coordinator acknowledges the finish.
+            state.recordChildren(children);
         } else {
             throw new IllegalArgumentException("Unsupported Spanner Change Streams record.");
         }
