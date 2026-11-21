@@ -633,6 +633,7 @@ Admission publishes `before_checkpoint`, and on each poll the exercise asks the 
 The relay reads it at 100 ms per input per subtask, ten inputs a second per subscription at parallelism two and five at one.
 The input is 4,800 records per subscription, 480 seconds of input at parallelism two, so it outlasts the faults.
 The earlier sequence runs began their input 477 to 677 seconds into the window, the faults delayed it by 245 to 292 seconds, and it had advanced by 100 to 134 seconds when the last fault came, which puts the verdict at about 20.5 to 25.6 minutes.
+The first `sequence` run, `ps2151-seq-a1`, began its input 605 seconds into the window, finished it 406 seconds later than its length, and reached `usable` 24.9 minutes into its window, as its [findings](../../../docs/adr/evidence/0204-pubsub-fault-sequence-findings-2151.md) record.
 
 On each poll the exercise first pulls the output subscription, at most 20 batches, through the [output collector](#output-collector).
 The relay logs `event=pubsub-progress` with its attempt, whether it restored, the checkpoint it restored and how many inputs it processed, at its first input and then at least every ten seconds while it processes.
