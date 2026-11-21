@@ -66,7 +66,7 @@ The snapshot and reload contract is:
   The partitions are read sequentially at that timestamp, so a load longer than the version retention period fails; a table meant for `FULL` is expected to load well inside it.
 - **One split per load**: the format returns one input split whatever count Flink asks for, which plans the read and executes its partitions one after another through one reader client, then releases the transaction's session through the planner.
   Flink clones the format for every split of every load and the clones share nothing, so one split per partition would build a client per partition and leave no clone able to release the session the others read through.
-- **A failed partition fails the load**: the exception reaches Flink's loader, which does not swap in the partial copy and fails the lookups that follow until the job restarts and loads again.
+- **A failed partition fails the load**: the exception reaches Flink's loader, which does not swap in the partial copy and fails the lookups that follow until the job restarts and loads again, except the few made right after a failed first load, before Flink records the failure, which find the empty cache and join no row (measured on 2.2.1 and 1.20.5, [#2225](https://github.com/flink-gcp/flink-connector-gcp/issues/2225)).
   The connector adds no retry of its own; the client's batch-read retry settings apply, as for a bounded scan, and `lookup.max-retries` remains a point-read option.
 
 Flink indexes the loaded rows by the planner's lookup keys and keeps every row of a key, so `FULL` accepts any top-level physical scalar key, primary-key columns or not, and no `LookupKeyFilter` is involved.

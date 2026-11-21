@@ -242,7 +242,7 @@ The [DataStream source]({{< relref "docs/connectors/datastream/firestore" >}}#re
 Under the `NONE` and `PARTIAL` caches, a lookup join reads one entity of the table's kind, in its namespace, by the PRIMARY KEY column: the key's name for a `STRING` key column, its numeric id for a `BIGINT` one; the [full lookup cache](#full-lookup-cache) has keys of its own.
 A point lookup also accepts equality keys on other top-level physical scalar columns, whether a constant such as `c.tier = 'gold'` appears in `ON` or `WHERE`, or an input column supplies the comparison value.
 Only the entity key addresses the read; the additional keys compare against the converted Flink row before it is returned, with binary values compared by content.
-Nested key paths, metadata columns, and additional `ARRAY`, `MAP`, or `ROW` keys are rejected during planning.
+Nested key paths, metadata columns, and additional `ARRAY` or `ROW` keys are rejected during planning; the table declares no physical `MAP` column ([Keys and type mapping](#keys-and-type-mapping)).
 A NULL lookup key or a failed additional equality joins no row, and a condition that is not an equality, such as `c.tier <> 'gold'`, stays a filter applied after the lookup.
 A table without a PRIMARY KEY cannot be looked up by a point read; the [full lookup cache](#full-lookup-cache) can join it.
 
@@ -290,7 +290,7 @@ A key may be any top-level column of the produced row, a metadata column include
 A metadata column keys the cache only when it is declared in the type the metadata table under [Source](#source) lists, such as `TIMESTAMP_LTZ(6)` for `update-time`: a different precision makes the planner cast the column, and a cast column is not a lookup key.
 Its type must be one whose Flink value equality agrees with SQL `=`: `STRING`, `CHAR`, `BOOLEAN`, `BIGINT`, `BYTES`, `BINARY` or `TIMESTAMP_LTZ`.
 A `CHAR` or `BINARY` key matches as Flink's own `=` does over the scan's values: a stored value shorter than the declared length [reads unpadded](#reading-values-back), so a padded probe matches it neither here nor in a regular join.
-`DOUBLE` is rejected at planning, because Java equality tells `-0.0` from `0.0` and matches `NaN` to itself, and so are `ARRAY` and `ROW`, whose binary and generic Flink forms do not compare equal.
+`DOUBLE` is rejected at planning, because Java equality tells `-0.0` from `0.0` and matches `NaN` to itself, and so are `ARRAY` and `ROW`, whose binary and generic Flink forms do not compare equal; the table declares no physical `MAP` column.
 A row with a null key value is never matched, as SQL equality requires.
 Unlike a point lookup, a load skips no key: an empty name or the id `0` matches no entity's key, which never holds one.
 

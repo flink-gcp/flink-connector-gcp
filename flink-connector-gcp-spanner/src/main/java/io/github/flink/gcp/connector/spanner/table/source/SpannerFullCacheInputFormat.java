@@ -51,7 +51,9 @@ import java.util.Iterator;
  * reads a newer one. The partitions are read one after another on the loading thread through one
  * reader client, and {@link #close()} releases the transaction's session through the planner, the
  * same order the bounded scan's enumerator and readers follow. A partition that fails fails the
- * load: Flink keeps the cache it had and fails the lookups that follow.
+ * load: Flink keeps the cache it had and fails the lookups that follow, except a few right after a
+ * failed first load, which Flink answers from the empty cache before it records the failure
+ * (#2225).
  *
  * <p>One split rather than one per partition, because Flink clones this format for every split of
  * every load and the clones share nothing: each would build its own client and could not release

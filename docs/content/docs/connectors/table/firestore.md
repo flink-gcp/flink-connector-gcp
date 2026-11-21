@@ -275,6 +275,7 @@ A periodic reload every ten minutes of a collection of 100,000 documents, joined
 Each TaskManager holds one copy of the table per lookup join, shared by that join's subtasks; while a reload builds its new copy, the old copy keeps serving lookups, so a reload briefly needs memory for both.
 The first load blocks lookups until it completes.
 If a load fails, Flink keeps no partial result and fails the lookups that follow, so the job restarts and loads again.
+After a failed first load, though, Flink can answer the lookups made in the moment before it records the failure from the still-empty cache, as no match: an inner join drops those rows and a left join pads them with NULL, without an error ([#2225](https://github.com/flink-gcp/flink-connector-gcp/issues/2225), measured on Flink 2.2.1 and 1.20.5).
 `FULL` pays off when the table is small enough to hold twice per TaskManager and the join's probes would otherwise read far more documents than the loads do, or when the join needs a field other than the document id, which a point lookup cannot address; otherwise `PARTIAL` reads only the documents the job asks for.
 The loader runs with no Flink metric group, so the scan's `documentsRead` counter reports nothing for it; each load logs the number of documents it handed on, which leaves out what the bill also counts, such as the planner's probe reads and a page a client-library retry overfilled; Flink's own cache metrics report the load count and the latest load time.
 

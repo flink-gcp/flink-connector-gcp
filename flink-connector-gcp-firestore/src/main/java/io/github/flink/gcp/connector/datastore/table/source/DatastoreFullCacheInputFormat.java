@@ -18,10 +18,7 @@ package io.github.flink.gcp.connector.datastore.table.source;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
-import org.apache.flink.api.common.io.GenericInputFormat;
-import org.apache.flink.connector.base.source.reader.RecordsWithSplitIds;
-import org.apache.flink.connector.base.source.reader.splitreader.SplitsAddition;
-import org.apache.flink.core.io.GenericInputSplit;
+import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
@@ -30,7 +27,6 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.Timestamp;
 import com.google.datastore.v1.Query;
 import com.google.datastore.v1.RunQueryRequest;
-import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.datastore.DatastoreCredentials;
 import io.github.flink.gcp.connector.datastore.source.DatastoreSourceConfig;
 import io.github.flink.gcp.connector.datastore.source.batch.FetchedEntity;
@@ -42,18 +38,14 @@ import io.github.flink.gcp.connector.datastore.source.batch.reader.DatastoreSour
 import io.github.flink.gcp.connector.datastore.source.batch.reader.DatastoreSplitReader;
 import io.github.flink.gcp.connector.datastore.source.batch.reader.QueryPageReader;
 import io.github.flink.gcp.connector.datastore.source.serializer.DatastoreEntityMetadataDeserializationSchema;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import javax.annotation.Nullable;
+import io.github.flink.gcp.connector.firestore.common.table.FullCacheInputFormat;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
 import java.util.List;
 
 /**
  * The bounded read Flink's full lookup cache loads the table through: the bounded scan's plan and
- * page reads, run start to finish by one input split.
+ * page reads, run start to finish by one input split ({@link FullCacheInputFormat}).
  *
  * <p>Each load plans again in {@link #createInputSplits(int)}, so it reads at the service's time of
  * that planning and the next load reads a newer snapshot. The table's {@code scan.read-time} never
@@ -61,44 +53,28 @@ import java.util.List;
  * The planner is closed before the split is returned, because a plan is only a query and a read
  * time.
  *
- * <p>One split per load, reading the kind as one key range: one query, read page by page through
- * the scan's {@link DatastoreSplitReader}, so paging, cursor continuation and a page that moved its
- * cursor without returning an entity are the scan's. Flink runs the splits of one load on several
- * threads and gives every one of them the same cache-entry serializer, whose copy of a map that is
- * not already binary goes through reuse buffers the serializer keeps (Flink 2.2.1 and 1.20.5,
- * {@code InputFormatCacheLoader} and {@code MapDataSerializer}). The table maps no {@code MAP} type
- * today, but a split per key range would become exposed as soon as one is mapped, and cutting key
- * ranges that one split then reads serially would only add the planner's statistics read and {@code
- * __scatter__} sample to every load. A split whose page fails fails the load: Flink publishes no
- * part of it, and the lookups that follow fail until the job restarts, except a few right after a
- * failed first load, which Flink answers from the empty cache before it records the failure
- * (#2225).
- *
- * <p>No client metrics are exported to Flink: Flink's full cache configures and opens its copy of
- * this format with no runtime context, so no metric group reaches it. The load logs how many
- * entities it handed on instead; the bill also counts the planner's probe read.
+ * <p>The load reads the kind as one key range: one query, read page by page through the scan's
+ * {@link DatastoreSplitReader}, so paging, cursor continuation and a page that moved its cursor
+ * without returning an entity are the scan's. The table maps no {@code MAP} type today, but a split
+ * per key range would expose the loader's shared serializer as soon as one is mapped, and cutting
+ * key ranges that one split then reads serially would only add the planner's statistics read and
+ * {@code __scatter__} sample to every load. The bill also counts the planner's probe read, which
+ * the load's log leaves out.
  */
 @Internal
-final class DatastoreFullCacheInputFormat extends GenericInputFormat<RowData> {
+final class DatastoreFullCacheInputFormat
+        extends FullCacheInputFormat<
+                FetchedEntity, QuerySplit, DatastoreFullCacheInputFormat.LoadSplit> {
 
     private static final long serialVersionUID = 1L;
-
-    private static final Logger LOG = LoggerFactory.getLogger(DatastoreFullCacheInputFormat.class);
 
     /** The parallelism the planner is told; it only floors an estimated split count, never used. */
     private static final int PLANNING_PARALLELISM = 1;
 
     private final DatastoreSourceConfig<RowData> config;
 
-    @Nullable private transient QueryPageReader pageReader;
-    @Nullable private transient DatastoreSplitReader reader;
-    @Nullable private transient LoadSplit split;
-    private transient boolean finished;
-    private transient ArrayDeque<RowData> pending = new ArrayDeque<>();
-    @Nullable private transient Collector<RowData> pendingRows;
-    private transient long entities;
-
     DatastoreFullCacheInputFormat(DatastoreSourceConfig<RowData> config) {
+        super(LoadSplit.class, "entities");
         this.config = Preconditions.checkNotNull(config, "config must not be null");
         Preconditions.checkArgument(
                 config.getReadTime() == null,
@@ -128,13 +104,11 @@ final class DatastoreFullCacheInputFormat extends GenericInputFormat<RowData> {
     /**
      * Plans one load: takes the service's current time and the query to read at it.
      *
-     * @param minNumSplits ignored; Flink's loader asks for one, and a second split would run on
-     *     another thread beside the first
      * @return the one split of the load
      * @throws IOException if the credentials cannot be loaded or planning fails
      */
     @Override
-    public LoadSplit[] createInputSplits(int minNumSplits) throws IOException {
+    protected LoadSplit planLoad() throws IOException {
         GoogleCredentials credentials =
                 DatastoreCredentials.load(config.getServiceAccountKeyFile());
         QueryPlan plan;
@@ -149,115 +123,39 @@ final class DatastoreFullCacheInputFormat extends GenericInputFormat<RowData> {
                             + plan.getRequests().size()
                             + " queries; a load reads one.");
         }
-        LOG.info(
-                "Planned a full lookup cache load of {} at read time {}.",
-                describeTable(),
-                plan.getReadTime());
-        return new LoadSplit[] {new LoadSplit(plan.getRequests().get(0), plan.getReadTime())};
+        return new LoadSplit(plan.getRequests().get(0), plan.getReadTime());
+    }
+
+    @Override
+    protected SplitReader<FetchedEntity, QuerySplit> openReader() throws IOException {
+        QueryPageReader openReader = closeWithLoad(config.getPageReader());
+        openReader.useCredentials(DatastoreCredentials.load(config.getServiceAccountKeyFile()));
+        return new DatastoreSplitReader(
+                config.getDatabase(),
+                openReader,
+                config.getPageSize(),
+                DatastoreSourceReaderMetrics.unregistered());
+    }
+
+    @Override
+    protected List<QuerySplit> querySplits(LoadSplit split) {
+        return List.of(new QuerySplit("0", split.getQuery(), split.getReadTime()));
     }
 
     /**
-     * Opens the load's split for reading.
-     *
-     * @param split the split {@link #createInputSplits(int)} returned
-     * @throws IOException if the credentials cannot be loaded
-     * @throws IllegalArgumentException if the split was not planned by this format
+     * Hands one entity to the table's deserializer with its metadata, as the scan's record emitter
+     * does. The deserializer has nothing to open, so no context is needed, and a load has none to
+     * give.
      */
     @Override
-    public void open(GenericInputSplit split) throws IOException {
-        Preconditions.checkArgument(
-                split instanceof LoadSplit, "not a split of a full-cache load: %s", split);
-        super.open(split);
-        LoadSplit load = (LoadSplit) split;
-        this.split = load;
-        // Transient fields start null in the copy Flink deserializes for each load.
-        finished = false;
-        pending = new ArrayDeque<>();
-        pendingRows = new PendingRows(pending);
-        entities = 0;
-        try {
-            QueryPageReader openReader = config.getPageReader();
-            pageReader = openReader;
-            openReader.useCredentials(DatastoreCredentials.load(config.getServiceAccountKeyFile()));
-            DatastoreSplitReader splitReader =
-                    new DatastoreSplitReader(
-                            config.getDatabase(),
-                            openReader,
-                            config.getPageSize(),
-                            DatastoreSourceReaderMetrics.unregistered());
-            splitReader.handleSplitsChanges(new SplitsAddition<>(List.of(load.toQuerySplit())));
-            reader = splitReader;
-        } catch (Throwable e) {
-            // Flink's loader also closes the format after a failed open; closing here keeps this
-            // method from relying on that, and close() is idempotent.
-            Closers.closeAllSuppressing(e, this::close);
-            throw e;
-        }
+    protected void emit(FetchedEntity entity, Collector<RowData> out) throws IOException {
+        ((DatastoreEntityMetadataDeserializationSchema<RowData>) config.getDeserializer())
+                .deserialize(entity.getEntity(), entity.getMetadata(), out);
     }
 
+    /** Names the loaded kind and its namespace, if any, and database. */
     @Override
-    public boolean reachedEnd() throws IOException {
-        // A fetch reads one page. The split reader fails a page that claims more results without
-        // moving its cursor, so a page with no entity is progress and this loop cannot spin.
-        while (pending.isEmpty() && !finished && reader != null) {
-            RecordsWithSplitIds<FetchedEntity> batch = reader.fetch();
-            try {
-                while (batch.nextSplit() != null) {
-                    FetchedEntity entity;
-                    while ((entity = batch.nextRecordFromSplit()) != null) {
-                        entities++;
-                        // The table's deserializer has nothing to open, so no context is needed
-                        // here, and a load has none to give.
-                        ((DatastoreEntityMetadataDeserializationSchema<RowData>)
-                                        config.getDeserializer())
-                                .deserialize(entity.getEntity(), entity.getMetadata(), pendingRows);
-                    }
-                }
-                finished = batch.finishedSplits().contains(LoadSplit.QUERY_ID);
-            } finally {
-                batch.recycle();
-            }
-        }
-        return pending.isEmpty();
-    }
-
-    @Override
-    @Nullable
-    public RowData nextRecord(RowData reuse) throws IOException {
-        return reachedEnd() ? null : pending.poll();
-    }
-
-    @Override
-    public void close() throws IOException {
-        QueryPageReader openReader = pageReader;
-        DatastoreSplitReader openSplitReader = reader;
-        LoadSplit openSplit = split;
-        boolean complete = finished;
-        pageReader = null;
-        reader = null;
-        split = null;
-        finished = false;
-        pending = new ArrayDeque<>();
-        pendingRows = null;
-        if (openSplitReader != null) {
-            openSplitReader.close();
-        }
-        if (openSplit != null) {
-            LOG.info(
-                    "{} a full lookup cache load of {} at read time {} after reading {}"
-                            + " entity(ies).",
-                    complete ? "Finished" : "Stopped",
-                    describeTable(),
-                    openSplit.getReadTime(),
-                    entities);
-        }
-        if (openReader != null) {
-            openReader.close();
-        }
-    }
-
-    /** Names the loaded kind for a log line, so that two tables' loads can be told apart. */
-    private String describeTable() {
+    protected String describe(LoadSplit split) {
         String namespace = config.getNamespace();
         return "kind "
                 + SplittableQueries.kindOf(config.getQuery())
@@ -267,25 +165,15 @@ final class DatastoreFullCacheInputFormat extends GenericInputFormat<RowData> {
     }
 
     /** The planned query of one load and its read time. */
-    static final class LoadSplit extends GenericInputSplit {
+    static final class LoadSplit extends FullCacheInputFormat.LoadSplit {
 
         private static final long serialVersionUID = 1L;
 
-        /** The id of the load's one query split in the split reader. */
-        static final String QUERY_ID = "0";
-
         private final RunQueryRequest query;
-        private final Timestamp readTime;
 
         LoadSplit(RunQueryRequest query, Timestamp readTime) {
-            super(0, 1);
+            super(readTime);
             this.query = Preconditions.checkNotNull(query, "query must not be null");
-            this.readTime = Preconditions.checkNotNull(readTime, "readTime must not be null");
-        }
-
-        /** Returns the read time the load reads at. */
-        Timestamp getReadTime() {
-            return readTime;
         }
 
         /** Returns the query the load reads. */
@@ -293,31 +181,9 @@ final class DatastoreFullCacheInputFormat extends GenericInputFormat<RowData> {
             return query;
         }
 
-        private QuerySplit toQuerySplit() {
-            return new QuerySplit(QUERY_ID, query, readTime);
-        }
-
         @Override
         public String toString() {
-            return "LoadSplit{readTime=" + readTime + '}';
+            return "LoadSplit{readTime=" + getReadTime() + '}';
         }
-    }
-
-    /** Collects what the deserializer emits for one entity into the pending queue. */
-    private static final class PendingRows implements Collector<RowData> {
-
-        private final ArrayDeque<RowData> pending;
-
-        private PendingRows(ArrayDeque<RowData> pending) {
-            this.pending = pending;
-        }
-
-        @Override
-        public void collect(RowData record) {
-            pending.add(record);
-        }
-
-        @Override
-        public void close() {}
     }
 }
