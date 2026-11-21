@@ -38,6 +38,8 @@ import io.github.flink.gcp.connector.spanner.source.changestream.ChangeStreamPar
 import io.github.flink.gcp.connector.spanner.source.changestream.ChildPartitionsEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedAckEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.PartitionFinishedEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.spanner.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamInitializationEvent;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamRecordFilter;
 import io.github.flink.gcp.connector.spanner.source.changestream.SpannerChangeStreamWatermarkEvent;
@@ -54,8 +56,11 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 
 /**
  * Reads several Spanner Change Streams partition queries concurrently in one source subtask.
@@ -107,6 +112,16 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code finishedUnackedSplits}. A re-sent finish says that nothing was emitted: what the earlier
  * attempt emitted before the restored checkpoint is downstream already.
  *
+ * <h2>Progress reports</h2>
+ *
+ * <p>The coordinator learns positions from two reports, never from one event per record. When a
+ * checkpoint completes, the reader sends the positions it snapshotted for it, as Flink CDC's {@code
+ * IncrementalSourceReaderWithCommit} commits its offsets, and the coordinator's watermark frontier
+ * follows those. At most once a second it also sends its current positions, which the coordinator
+ * uses only while the job completes no checkpoint, so it stops sending them once a checkpoint
+ * completes. From {@link #start} it names the unfinished splits it restored, so that a coordinator
+ * a region failover kept can take back a finish its ledger still holds as pending.
+ *
  * <h2>Time</h2>
  *
  * <p>A data record is emitted at its own commit timestamp. The watermark is not this reader's to
@@ -128,6 +143,12 @@ public final class SpannerChangeStreamReader<T>
 
     private static final Logger LOG = LoggerFactory.getLogger(SpannerChangeStreamReader.class);
 
+    /** How often, at most, the reader reports its current positions. */
+    private static final long LIVE_PROGRESS_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
+
+    /** How many snapshots' positions, at most, wait for a completion to report them. */
+    private static final int MAX_RECORDED_CHECKPOINTS = 16;
+
     private final SourceReaderContext context;
     private final DatabaseDestination database;
     private final int maximumQueries;
@@ -148,6 +169,14 @@ public final class SpannerChangeStreamReader<T>
     private boolean coordinatorInitialized;
     private boolean requestOutstanding;
     private boolean noMoreSplits;
+
+    /** Positions each checkpoint's snapshot recorded, until a completion reports them. */
+    private final TreeMap<Long, List<PartitionProgressEvent.Progress>> checkpointProgress =
+            new TreeMap<>();
+
+    private final LongSupplier nanoTime;
+    private long lastLiveReportNanos;
+    private long maxCompletedCheckpointId = Long.MIN_VALUE;
     private long pendingSourceWatermark = Long.MIN_VALUE;
     private long emittedSourceWatermark = Long.MIN_VALUE;
     private boolean sourceWatermarkPending;
@@ -227,6 +256,28 @@ public final class SpannerChangeStreamReader<T>
             boolean filtersActive,
             int maximumQueries,
             SpannerChangeStreamQueryClient client) {
+        this(
+                context,
+                database,
+                deserializer,
+                recordFilter,
+                filtersActive,
+                maximumQueries,
+                client,
+                System::nanoTime);
+    }
+
+    @VisibleForTesting
+    SpannerChangeStreamReader(
+            SourceReaderContext context,
+            DatabaseDestination database,
+            SpannerChangeStreamDeserializationSchema<T> deserializer,
+            SpannerChangeStreamRecordFilter recordFilter,
+            boolean filtersActive,
+            int maximumQueries,
+            SpannerChangeStreamQueryClient client,
+            LongSupplier nanoTime) {
+        this.nanoTime = Preconditions.checkNotNull(nanoTime, "nanoTime must not be null");
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.database = Preconditions.checkNotNull(database, "database must not be null");
         Preconditions.checkArgument(maximumQueries > 0, "maximumQueries must be positive");
@@ -241,6 +292,14 @@ public final class SpannerChangeStreamReader<T>
     @Override
     public void start() {
         started = true;
+        lastLiveReportNanos = nanoTime.getAsLong();
+        if (!queued.isEmpty()) {
+            List<String> restored = new ArrayList<>();
+            for (ChangeStreamPartitionSplit split : queued) {
+                restored.add(split.splitId());
+            }
+            context.sendSourceEventToCoordinator(new PartitionsRestoredEvent(restored));
+        }
         startAfterCoordinatorInitialization();
     }
 
@@ -319,6 +378,7 @@ public final class SpannerChangeStreamReader<T>
             metrics.resumed(query.timing);
             query.handle.resume();
         }
+        reportLiveProgressIfDue();
         resetAvailability();
         if (firstAvailable() != null) {
             return InputStatus.MORE_AVAILABLE;
@@ -355,8 +415,65 @@ public final class SpannerChangeStreamReader<T>
             state.add(query.state.toSplit());
         }
         state.addAll(queued);
+        List<PartitionProgressEvent.Progress> progress = new ArrayList<>(state.size());
+        for (ChangeStreamPartitionSplit split : state) {
+            progress.add(PartitionProgressEvent.Progress.of(split));
+        }
+        checkpointProgress.put(checkpointId, progress);
+        // Savepoints and failing checkpoints are never reported; an older entry only matters as a
+        // floor for a completion, which a newer one serves as well.
+        while (checkpointProgress.size() > MAX_RECORDED_CHECKPOINTS) {
+            checkpointProgress.pollFirstEntry();
+        }
         state.addAll(finishedUnacknowledged.values());
         return state;
+    }
+
+    /**
+     * Reports the positions the completed checkpoint recorded. A completion can stand for earlier
+     * checkpoints whose own notification never came, so the latest recorded at or before it is the
+     * one reported.
+     */
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) {
+        if (checkpointId <= maxCompletedCheckpointId) {
+            return;
+        }
+        maxCompletedCheckpointId = checkpointId;
+        Map.Entry<Long, List<PartitionProgressEvent.Progress>> covered =
+                checkpointProgress.floorEntry(checkpointId);
+        checkpointProgress.headMap(checkpointId, true).clear();
+        if (covered != null && !covered.getValue().isEmpty()) {
+            context.sendSourceEventToCoordinator(
+                    PartitionProgressEvent.committed(covered.getValue()));
+        }
+    }
+
+    /** Forgets what an aborted checkpoint's snapshot recorded; no completion may report it. */
+    @Override
+    public void notifyCheckpointAborted(long checkpointId) {
+        checkpointProgress.remove(checkpointId);
+    }
+
+    /**
+     * Sends the active splits' current positions at most once per {@code
+     * LIVE_PROGRESS_INTERVAL_NANOS}.
+     */
+    private void reportLiveProgressIfDue() {
+        // The coordinator uses live positions only in a job whose checkpoints do not complete.
+        if (maxCompletedCheckpointId != Long.MIN_VALUE) {
+            return;
+        }
+        long now = nanoTime.getAsLong();
+        if (active.isEmpty() || now - lastLiveReportNanos < LIVE_PROGRESS_INTERVAL_NANOS) {
+            return;
+        }
+        lastLiveReportNanos = now;
+        List<PartitionProgressEvent.Progress> progress = new ArrayList<>(active.size());
+        for (ActiveQuery query : active.values()) {
+            progress.add(PartitionProgressEvent.Progress.of(query.state.toSplit()));
+        }
+        context.sendSourceEventToCoordinator(PartitionProgressEvent.live(progress));
     }
 
     /**
@@ -535,6 +652,7 @@ public final class SpannerChangeStreamReader<T>
         active.clear();
         queued.clear();
         finishedUnacknowledged.clear();
+        checkpointProgress.clear();
         metrics.closed();
         signalAvailable();
         Closers.closeAll(closing);

@@ -358,6 +358,8 @@ A bounded run without checkpointing therefore pauses once for the timeout, at it
 
 A reader checkpoint contains every active and queued split with its greatest consumed record timestamp and watermark, both of which stop before a partition's first child-partitions record, and every finished split whose finish the coordinator has not acknowledged.
 Recovery starts the partition query at that timestamp inclusively because several records can share one commit timestamp.
+A region failover, Flink's default, restarts the failed tasks from the last completed checkpoint but keeps the coordinator: every partition the failed subtasks were given since that checkpoint restarts where it was assigned, including one that finished since, and a finished partition a restored reader holds again makes its scheduled children wait for its next finish, while a child a reader already reads keeps running.
+While no checkpoint has completed within `firstCheckpointTimeout`, a finished partition is final at once and a region failover does not read it again.
 The boundary can therefore be delivered again; advancing past it could skip another record from the same timestamp.
 
 The coordinator checkpoint contains only unfinished partition entries.
@@ -372,6 +374,7 @@ Downstream state that requires uniqueness should deduplicate with a domain key t
 
 The start position is resolved once on the coordinator.
 A valid restored partition ledger takes precedence over the configured fresh start.
+The coordinator's positions are those the previous completed checkpoint recorded, so a restore within about one checkpoint interval of the stream's retention limit can be judged expired although its readers could still resume.
 If any unfinished restored position has expired, the default is to fail; configuring `resumeFallback` permits discarding the whole stale ledger and starting one new null-token query, which loses the unavailable interval and can repeat records at or after the fallback.
 An absent explicit retention row uses `absentRetentionFallback`, seven days by default.
 Readers do not open restored queries until this retention check finishes.
@@ -401,8 +404,10 @@ Restored positions remain subject to the stream's retention, as for an unbounded
 ### Event time
 
 Data records carry their Spanner commit timestamp as the Flink event timestamp.
-Heartbeat records advance their partition's safe progress in the coordinator ledger.
-The source watermark is one coordinator-owned minimum across every unfinished partition, including discovered, scheduled, reader-queued, and running partitions.
+Heartbeat records advance their partition's safe progress, which each reader reports to the coordinator when a checkpoint completes.
+The source watermark is one coordinator-owned minimum across every partition a completed checkpoint has not yet seen finish, including discovered, scheduled, reader-queued, and running partitions.
+Because it follows the positions of completed checkpoints, it trails the newest changes by about one checkpoint interval, and before the first checkpoint completes it stays at the start; while checkpoints complete, a failover therefore never re-reads a record behind it.
+A job without checkpointing sees it follow the readers' current positions once `firstCheckpointTimeout` (10 minutes by default) has passed with no checkpoint completed.
 The coordinator broadcasts that frontier to every source reader, including readers with no assigned split, so failover and rescaling do not omit temporarily unowned work.
 The conversion subtracts one millisecond from the heartbeat instant after truncation because a later nanosecond timestamp can occupy the same Flink millisecond; this prevents an on-time record from being classified as late.
 Quiet partitions are not marked idle because doing so would remove them from the safety minimum.

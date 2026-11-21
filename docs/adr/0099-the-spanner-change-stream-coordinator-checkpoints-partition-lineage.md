@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0099: The Spanner Change Streams coordinator checkpoints partition lineage
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, and by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20
+- Date: 2026-08-12; revised 2026-08-13, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842) on 2026-10-20, by [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193) on 2026-11-19, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, and by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#534](https://github.com/flink-gcp/flink-connector-gcp/issues/534),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
@@ -25,7 +25,8 @@ limitations under the License.
   [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141),
   [#1842](https://github.com/flink-gcp/flink-connector-gcp/issues/1842),
   [#2193](https://github.com/flink-gcp/flink-connector-gcp/issues/2193),
-  [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205)
+  [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205),
+  [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204)
 - Modules: base, spanner (`source.changestream`)
 - Current behavior: `source.changestream.enumerator.SpannerChangeStreamSplitEnumerator`
 
@@ -56,9 +57,7 @@ Flink snapshots the coordinator before it injects a checkpoint's barriers, and a
 Before this, a finish sent there left the partition running in the restored ledger while no restored reader held it, so its children never started.
 The finished split now carries the child reports the reader forwarded, and a restored reader sends those reports and the finish again once the coordinator is initialized.
 The coordinator acknowledges every finish as soon as it handles it, and applying a report again changes nothing: a finish or child report for a partition the ledger no longer runs is ignored.
-One repeated report is refused instead: a child of a still-proven parent that finished after the last completed checkpoint, or since the restore when none has completed since.
-The coordinator remembers such a child only until a completed checkpoint covers its finish or none of its parents remains a proof, since only a proven parent's report can reach the check, so the bookkeeping stays bounded by the proofs.
-A region failover keeps this coordinator but rolls the readers back to that checkpoint, so the child's records were rolled back too; the coordinator fails, as it did before this revision, and Flink turns that into a global failover, which, when the restart strategy allows one, restores this ledger from the checkpoint as well.
+A partition that finished but is still pending, as described next, stays in the ledger, so a repeated report for it is ignored as well.
 Flink holds a coordinator's events to a subtask back between the coordinator's snapshot and that subtask's barrier, so a finish the coordinator applied after its snapshot is still in the reader's snapshot of the same checkpoint.
 The `TaskExecutor` of Flink 2.2.1 and 1.20.5 fails the sending task when a reader-to-coordinator event cannot be delivered, so a restore is the only way a finish can be lost; unlike Flink CDC's MySQL source, which keeps its finished snapshot splits the same way, the coordinator does not periodically ask readers to report again.
 A re-sent finish says that its reader emitted nothing, because what the earlier attempt emitted before the restored checkpoint is downstream already, so it holds no child back.
@@ -79,15 +78,27 @@ The coordinator receives no checkpoint configuration, so it measures a job witho
 The evidence is a completed checkpoint, not a `snapshotState` call: Flink 2.2.1 snapshots coordinators for a savepoint too but notifies them only when a checkpoint or a synchronous savepoint completes (`CheckpointCoordinator`, the `!props.isSavepoint() || props.isSynchronous()` guard on `sendAcknowledgeMessages`; the same in the 1.20.5 bytecode), so a savepoint taken while a job without periodic checkpointing runs would otherwise end the measurement and hold the children for good.
 `PartitionHandoff.IMMEDIATE` schedules children as soon as their parents finish, for consumers that order each key's changes by their commit coordinates.
 
+A finish is final only once a completed checkpoint covers it ([#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204)), as a Debezium partition is `FINISHED` only once its offsets are committed.
+Region failover, the default, restarts the failed tasks from the last completed checkpoint but keeps this coordinator, and Flink returns the splits it assigned since that checkpoint through `addSplitsBack`.
+A finished partition therefore stays in the live ledger as a pending `FINISHED` entry, with the id of the first checkpoint snapshotted after its finish, until a checkpoint with that id or a later one completes; only then does it leave the ledger.
+A returned split restarts where Flink assigned it, not where its reader reported progress since, because that subtask's downstream rolled back with it; a returned split whose finish is pending is read again and becomes unfinished.
+A restored reader names the unfinished splits it restored from `start()`, before its task reports `RUNNING`, and a pending finish among them becomes running again, so a parent read again makes its children wait for its next finish.
+After either rollback, a scheduled child of an unfinished parent goes back to `CREATED`, a finished parent it still names is proven again, and the runtime indexes are rebuilt from the ledger; a child a live reader already reads keeps running, so its order relative to the re-read parent is not restored.
+Every finish is pending in this way, one whose reader emitted nothing included: a parent read again reports that partition as its child again, and only a ledger entry lets the report find it.
+When no checkpoint completes within `firstCheckpointTimeout` of the source starting, every finish becomes final at once until one does, because a job without checkpointing would otherwise keep every pending finish; a region failover then does not read a finished partition again.
+
 The coordinator checkpoints only unfinished entries.
-A finished parent leaves the live ledger immediately and remains as a compact split-id proof only while an already-discovered `CREATED` child still names it.
+A pending finish is final relative to the checkpoint whose snapshot sees it, so the snapshot leaves it out.
+A finished parent remains as a compact split-id proof only while an already-discovered `CREATED` child still names it.
 Successful query completion comes after every child record, so no future child can first name that parent; after all known children become schedulable, the proof is no longer needed and is removed.
-Reader progress events keep the running entries' current position and watermark monotonic.
-A returned split keeps that progress and moves back to `SCHEDULED`; a restored running entry waits for Flink to return its reader-owned split rather than being assigned twice.
+Readers report progress in two ways, never per record: when a checkpoint completes, each reader sends the positions its snapshot recorded for it, as Flink CDC's `IncrementalSourceReaderWithCommit` commits its offsets, and until its first completed checkpoint it also sends its current positions at most once a second.
+Committed reports keep the running and pending entries' positions and watermarks monotonic; current positions apply only while no checkpoint has completed within `firstCheckpointTimeout`.
+A restored running entry waits for Flink to return its reader-owned split rather than being assigned twice.
 The checkpoint records boundedness separately, so a bounded source whose final live entry has been removed can restore an empty ledger and still signal no more splits.
 
 The coordinator also owns the source-wide event-time frontier.
-It is the minimum safe watermark across every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` entry in the compact ledger, including partitions that no reader currently owns.
+It is the minimum safe watermark across every `CREATED`, `SCHEDULED`, `RUNNING` and pending `FINISHED` entry in the ledger, including partitions that no reader currently owns.
+Because running entries carry committed positions and a pending finish still counts, the frontier never passes a record that a region failover reads again, as Debezium's low watermark follows committed offsets; it trails the newest records by about one checkpoint interval.
 Finished-parent proofs carry no progress and do not participate in this minimum.
 The enumerator checkpoints the last emitted source frontier beside the ledger and sends it to every registered reader, including readers with no split, so restore and rescaling cannot move event time backwards.
 At runtime, a counted ordered index tracks unfinished partition watermarks and is rebuilt from the ledger after restore; ordinary data progress with an unchanged partition watermark does not scan or rewrite that index.
@@ -145,7 +156,9 @@ An integration test runs a scripted two-level lineage through Flink's own source
 
 The lost finish ([#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205)) is reproduced by an integration test that runs a second source whose coordinator blocks in its own snapshot, which holds the checkpoint's barriers back while a scripted partition finishes.
 On the code before this revision, a restore from that checkpoint never read the partition's child, both when only the finish and when the child report as well fell between the snapshot and the barrier; the control, a partition that finished before the checkpoint, read it.
-With the acknowledgement, all three cases read the child and never reopen the finished partition, and the window cases fail unless the restored reader logs that it reported a finish again, so a run whose coordinator snapshot came too late to open the window cannot pass silently.
+A region failover is reproduced by an integration test with a `keyBy` behind the source at parallelism 2, explicit checkpoints, and a map that throws once; a downstream operator counts a record only once a checkpoint covering it completes.
+After checkpoint 1, one child runs to its finish and another emits ten records before the failure; on the code before the [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) revision 15 or 16 of their 35 records, depending on timing, were never counted, while the control, with a second checkpoint covering both, lost none, and with the revision neither variant loses a record.
+For the lost finish, with the acknowledgement, all three cases read the child and never reopen the finished partition, and the window cases fail unless the restored reader logs that it reported a finish again, so a run whose coordinator snapshot came too late to open the window cannot pass silently.
 
 ## Alternatives declined
 
@@ -162,6 +175,10 @@ With the acknowledgement, all three cases read the child and never reopen the fi
 - **Delay the finish in the reader until its own checkpoint completes.**
   It holds the same order, but each reader would decide from its own checkpoint notifications when a child may start, while the coordinator already sees every finish and every completed checkpoint in one place.
   The reader does keep a finished split until the coordinator acknowledges it, but only so that a restore cannot lose the finish.
+- **Keep the reader's per-record progress events and roll the frontier back after a region failover.**
+  Readers had already emitted the higher frontier, so re-read records would arrive behind it unless every rolled-back split were also pinned to its restored subtask; frontier and pinning bookkeeping cost more than following committed positions, and one event per record is a coordinator RPC per change.
+- **Escalate every region failover to a global failover.**
+  It restores the coordinator with the readers, but it consumes two restart attempts per failure and gives up region isolation for a job whose regions are independent.
 - **Restart every running ledger entry from the coordinator's position after a restore.**
   It would recover a lost finish without a reader-side record, but it re-reads every partition's tail since the coordinator's last progress event and makes the coordinator's per-record progress a correctness input; a finish the reader kept is reported once and re-reads nothing.
 - **Fail a job without checkpointing, as the Pub/Sub source's first-checkpoint detector does.**
@@ -173,7 +190,11 @@ With the acknowledgement, all three cases read the child and never reopen the fi
 
 ## Consequences
 
-- Checkpoint and coordinator lineage state scale with unfinished topology and unresolved parent proofs rather than job lifetime.
+- Checkpoint and coordinator lineage state scale with unfinished topology and unresolved parent proofs rather than job lifetime; the live ledger also holds the partitions that finished since the last completed checkpoint.
+- The source watermark trails the newest records by about one checkpoint interval plus that checkpoint's duration, and holds before the first checkpoint completes; a job without checkpointing sees it follow current positions once `firstCheckpointTimeout` has passed.
+- Each reader sends one small report per completed checkpoint, plus at most one a second until the first completes, instead of one coordinator event per record.
+- The coordinator checkpoints the positions the previous completed checkpoint recorded, so a restore within about one checkpoint interval of the stream's retention can be refused as expired, or, with `resumeFallback`, discard a ledger its readers could still resume.
+- A running child may outlive its parent's finish in the ledger: a region failover reads the parent again while another reader keeps reading the child, so restore validation accepts a running partition with an unfinished parent.
 - By default each partition split or merge delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's duration, and the source watermark holds at the children's start meanwhile; once a checkpoint has completed, the children do not start while later checkpoints keep failing.
 - The order holds between failures and for operators that handle their input before the barrier; an unaligned checkpoint, an operator that stores pending elements, and a failover's replay are outside it.
 - `changeStreamPartitionLedgerEntries` and `changeStreamFinishedParentProofs` expose those two bounded structures without partition-token labels.

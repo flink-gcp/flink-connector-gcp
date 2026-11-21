@@ -264,10 +264,21 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   remain readable as validated complete ledgers and compact during restore; version 3 recorded
   only boundedness, so its completed bounded ledger compares by boundedness alone.
 - The enumerator owns one checkpointed source-watermark frontier: the minimum safe watermark across
-  every unfinished `CREATED`, `SCHEDULED`, and `RUNNING` ledger entry. Broadcast it to every reader,
-  including readers with no assigned split, and reject any transition that would move it backwards.
-  Maintain its counted ordered runtime index incrementally and rebuild that index from the ledger;
-  do not scan the complete lineage on every record-progress event.
+  every `CREATED`, `SCHEDULED`, `RUNNING` and pending `FINISHED` ledger entry, built from the
+  positions completed checkpoints recorded (Debezium's low watermark). Broadcast it to every reader,
+  including readers with no assigned split, and reject any transition that would move it backwards
+  unless live positions were ever applied. Maintain its counted ordered runtime index incrementally
+  and rebuild that index from the ledger. Readers report progress on `notifyCheckpointComplete`
+  (Flink CDC's `IncrementalSourceReaderWithCommit`) and, until their first completed checkpoint,
+  live at most once a second; never add a per-record coordinator event again (#2204).
+- A finish is final only once a completed checkpoint covers it (#2204, ADR-0099): every finished
+  partition, one that emitted nothing included, stays in the ledger as pending `FINISHED` until then, because region
+  failover keeps the coordinator while Flink returns post-checkpoint assignments through
+  `addSplitsBack`. A returned split restarts at the returned position, never at reported progress;
+  a returned or restored (`PartitionsRestoredEvent`) pending finish becomes unfinished, and
+  `reconcileAfterRollback` demotes scheduled children and re-proves parents. Without a completed
+  checkpoint within `firstCheckpointTimeout`, finishes become final at once and the frontier follows
+  live progress.
 - Child discovery does not finish a parent. A reader forwards every child-partitions record and
   sends a separate completion event only after its query ends successfully. A child becomes
   schedulable only after every named parent is finished.
@@ -275,9 +286,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   until a `PartitionFinishedAckEvent` arrives, and a restored reader sends both again (#2205,
   ADR-0099; Flink CDC's `finishedUnackedSplits`). The coordinator acknowledges every finish and
   must keep applying a repeated finish or child report idempotent, including a child report for a
-  compacted parent whose child has finished since, except a child that finished after the last
-  completed checkpoint: a region failover rolled its records back, so that report fails the
-  coordinator, which Flink turns into a global failover that restores the ledger too. Do not add a periodic re-request: a lost
+  compacted parent whose child has finished since. Do not add a periodic re-request: a lost
   reader-to-coordinator event fails the task. The split position and watermark stop before the
   first child-partitions record, as Debezium's offset does, so a restored query meets it again. The
   fallback's discard flag lasts only until a checkpoint completes.

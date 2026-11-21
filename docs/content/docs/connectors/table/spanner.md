@@ -392,7 +392,7 @@ The vocabulary follows Debezium's Spanner source metadata where it represents th
 The native `commit-timestamp` metadata type is non-null `TIMESTAMP_LTZ(9)`, preserving Spanner's nanosecond precision.
 Flink permits watermark columns only through precision 3, so the example declares that metadata column as `TIMESTAMP_LTZ(3)` and lets the planner apply the compatible precision cast.
 Omit the watermark declaration and use `TIMESTAMP_LTZ(9)` when downstream SQL must retain the full commit timestamp.
-`SOURCE_WATERMARK()` uses the Change Streams source's existing commit-timestamped records and coordinator-owned unfinished-ledger heartbeat frontier; it does not introduce a second clock or a second out-of-orderness policy.
+`SOURCE_WATERMARK()` uses the Change Streams source's existing commit-timestamped records and coordinator-owned heartbeat frontier, which follows completed checkpoints and so trails the newest changes by about one checkpoint interval; it does not introduce a second clock or a second out-of-orderness policy.
 
 `mod-number` is the zero-based position of the mod in its original Spanner data-change record.
 The adjacent before and after rows produced for one full-mode update carry the same `mod-number`, so metadata never splits the logical identity of that mod.
@@ -409,7 +409,7 @@ The checkpoint, retention, delivery, and capacity contracts therefore remain tho
 At source parallelism above 1, a child partition starts by default only after a checkpoint taken after its parents finished has completed, so one key's changes reach a `ChangelogNormalize`, an aggregation or an upsert sink in commit order across a partition split or merge.
 Each split or merge then delays its children until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration.
 `'scan.change-stream.partition-handoff' = 'immediate'` starts them at once, for a sink that orders each key's changes by their commit coordinates, such as a BigQuery CDC table with a `spanner-change-sequence`.
-A job without checkpointing, such as a bounded backfill, pauses once for `scan.first-checkpoint-timeout` at its first split or merge and then starts children at once with a warning.
+A job without checkpointing, such as a bounded backfill, pauses once for `scan.first-checkpoint-timeout` at its first split or merge and then starts children at once with a warning; its source watermark stays at the start for that long too.
 [One key's changes across a partition split or merge]({{< relref "docs/connectors/datastream/spanner" >}}#one-keys-changes-across-a-partition-split-or-merge) describes the wait, its limits under unaligned checkpoints, asynchronous operators and failover, and what a job without checkpointing does.
 
 ### A delete's own coordinates
@@ -477,7 +477,7 @@ The [native Change Streams SQL example]({{< relref "docs/examples/bigquery" >}}#
 | `scan.change-stream.heartbeat-interval` | `2 s` | Change Streams service heartbeat interval, from one second through five minutes |
 | `scan.max-concurrent-queries-per-subtask` | `8` | Maximum Change Streams partition queries opened concurrently by one source subtask |
 | `scan.change-stream.partition-handoff` | `after-checkpoint` | When a child partition starts after its parents finish: `after-checkpoint` waits for a checkpoint taken after they finished, keeping one key's changes in commit order across a split or merge; `immediate` starts it at once |
-| `scan.first-checkpoint-timeout` | `10 min` | How long a child partition waits for the job's first completed checkpoint before the source logs a warning and starts children without waiting, until a checkpoint completes. Zero waits indefinitely; a positive value must be at least 1 ms. No effect with `immediate` |
+| `scan.first-checkpoint-timeout` | `10 min` | How long the source waits for a completed checkpoint before it logs a warning: a child partition held this long starts without one, and once this long has passed since the source started, the source watermark follows current reader positions and a finished partition is final at once, until a checkpoint completes. Zero waits indefinitely, so the watermark of a job without checkpointing then never advances; a positive value must be at least 1 ms |
 | `scan.index` | *unset ⇒ primary-key table read* | Secondary index used only by bounded scans; one canonical quoted or unquoted component in the configured schema, validated from live metadata when the job plans partitions |
 | `scan.partition.max-partitions` | *unset* | Desired maximum partition count passed to Spanner as a hint |
 | `scan.partition.size-bytes` | *unset* | Desired partition size passed to Spanner as a hint |

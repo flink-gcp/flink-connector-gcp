@@ -320,10 +320,12 @@ public final class SpannerChangeStreamSourceBuilder<T> {
     }
 
     /**
-     * Sets how long a child partition waits for the job's first completed checkpoint before the
-     * source logs a warning and starts it anyway. Optional; defaults to 10 min. {@link
-     * Duration#ZERO} makes a child wait for a checkpoint however long that takes. Has no effect
-     * with {@link PartitionHandoff#IMMEDIATE}.
+     * Sets how long the source waits for a completed checkpoint before it logs a warning. Two waits
+     * use it: a child partition held for this long starts without a checkpoint, and once this long
+     * has passed since the source started without a completed checkpoint, the source watermark
+     * follows the readers' current positions and a finished partition is final at once; both last
+     * until a checkpoint completes. Optional; defaults to 10 min. {@link Duration#ZERO} waits
+     * however long that takes, so the watermark of a job without checkpointing then never advances.
      *
      * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} starts a child only after a checkpoint
      * completes, so a job running without checkpointing would never start one. The source cannot
@@ -332,6 +334,13 @@ public final class SpannerChangeStreamSourceBuilder<T> {
      * finish, until a checkpoint completes. A savepoint taken while the job runs does not count,
      * because Flink reports completion to the source only for a checkpoint or a savepoint that
      * stops the job. Raise this above the time a job's first checkpoint takes to complete.
+     *
+     * <p>The source watermark follows the positions that completed checkpoints recorded, so that a
+     * failover never re-reads a record behind it, and a partition's finish is final only once a
+     * completed checkpoint covers it. Without a completed checkpoint the watermark would not move,
+     * so after this wait it follows the readers' current positions, and a finished partition is not
+     * read again after a region failover, until a checkpoint completes. This applies with {@link
+     * PartitionHandoff#IMMEDIATE} as well, where nothing is held.
      *
      * @param firstCheckpointTimeout the wait, zero or from 1 ms to {@code
      *     Duration.ofNanos(Long.MAX_VALUE)}; zero waits indefinitely
