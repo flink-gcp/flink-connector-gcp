@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 
 import java.time.Duration;
 import java.util.List;
@@ -519,21 +520,38 @@ public final class BigtableConnectorOptions {
                                     + " timestamp.");
 
     /**
-     * How long a closed change-stream partition waits for a completed checkpoint: once one has
-     * waited this long with none completed, the source logs a warning and every close is final at
-     * once, so a region failover does not read it again, until a checkpoint completes. Zero keeps
-     * closes pending until one completes.
+     * When a change-stream partition's successors start after it closes: after-checkpoint waits for
+     * a checkpoint taken after the close, which keeps one row key's changes in commit order across
+     * a partition split or merge, while immediate starts them at once.
+     */
+    public static final ConfigOption<PartitionHandoff> SCAN_CHANGE_STREAM_PARTITION_HANDOFF =
+            ConfigOptions.key("scan.change-stream.partition-handoff")
+                    .enumType(PartitionHandoff.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "When a change-stream partition's successors start after it closes:"
+                                    + " after-checkpoint waits for a checkpoint taken after the close,"
+                                    + " which keeps one row key's changes in commit order across a"
+                                    + " partition split or merge, while immediate starts them at"
+                                    + " once.");
+
+    /**
+     * How long a closed change-stream partition, or a successor held for one, waits for a completed
+     * checkpoint: once one has waited this long with none completed, the source logs a warning,
+     * every close is final at once and its successors start at once, so a region failover does not
+     * read it again, until a checkpoint completes. Zero waits until one completes.
      */
     public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
             ConfigOptions.key("scan.first-checkpoint-timeout")
                     .durationType()
                     .noDefaultValue()
                     .withDescription(
-                            "How long a closed change-stream partition waits for a completed"
-                                    + " checkpoint: once one has waited this long with none completed,"
-                                    + " the source logs a warning and every close is final at once, so a"
-                                    + " region failover does not read it again, until a checkpoint"
-                                    + " completes. Zero keeps closes pending until one completes.");
+                            "How long a closed change-stream partition, or a successor held for"
+                                    + " one, waits for a completed checkpoint: once one has waited this"
+                                    + " long with none completed, the source logs a warning, every close"
+                                    + " is final at once and its successors start at once, so a region"
+                                    + " failover does not read it again, until a checkpoint completes."
+                                    + " Zero waits until one completes.");
 
     /**
      * Stop a Change Streams source after this epoch-millisecond instant. Requires scan.mode =

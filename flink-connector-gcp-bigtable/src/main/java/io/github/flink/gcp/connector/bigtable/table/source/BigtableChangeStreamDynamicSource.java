@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
@@ -86,6 +87,7 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final Instant boundedTimestamp;
     @Nullable private final Integer maxConcurrentStreamsPerSubtask;
     @Nullable private final Duration firstCheckpointTimeout;
+    @Nullable private final PartitionHandoff partitionHandoff;
     @Nullable private final Integer parallelism;
     private final DataType physicalDataType;
     private final ChangeStreamChangelogMode changelogMode;
@@ -116,6 +118,7 @@ public final class BigtableChangeStreamDynamicSource
         this.boundedTimestamp = builder.boundedTimestamp;
         this.maxConcurrentStreamsPerSubtask = builder.maxConcurrentStreamsPerSubtask;
         this.firstCheckpointTimeout = builder.firstCheckpointTimeout;
+        this.partitionHandoff = builder.partitionHandoff;
         this.parallelism = builder.parallelism;
         this.changelogMode =
                 builder.selectedCellSchema == null
@@ -271,6 +274,10 @@ public final class BigtableChangeStreamDynamicSource
                 BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT.key(),
                 firstCheckpointTimeout,
                 builder::firstCheckpointTimeout);
+        OptionSetters.accept(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF.key(),
+                partitionHandoff,
+                builder::partitionHandoff);
         BigtableChangeStreamSource<RowData> source = builder.build();
         if (lineageTableName != null) {
             source = source.withTableLineage(lineageTableName);
@@ -293,6 +300,7 @@ public final class BigtableChangeStreamDynamicSource
                         .boundedTimestamp(boundedTimestamp)
                         .maxConcurrentStreamsPerSubtask(maxConcurrentStreamsPerSubtask)
                         .firstCheckpointTimeout(firstCheckpointTimeout)
+                        .partitionHandoff(partitionHandoff)
                         .parallelism(parallelism);
         // One branch, over the two fields that decide the mode rather than over two argument
         // lists: everything above is shared, and the constructor re-derives the mode from what
@@ -340,6 +348,7 @@ public final class BigtableChangeStreamDynamicSource
                 && Objects.equals(
                         maxConcurrentStreamsPerSubtask, that.maxConcurrentStreamsPerSubtask)
                 && Objects.equals(firstCheckpointTimeout, that.firstCheckpointTimeout)
+                && partitionHandoff == that.partitionHandoff
                 && Objects.equals(parallelism, that.parallelism)
                 && physicalDataType.equals(that.physicalDataType)
                 && changelogMode == that.changelogMode
@@ -367,6 +376,7 @@ public final class BigtableChangeStreamDynamicSource
                 boundedTimestamp,
                 maxConcurrentStreamsPerSubtask,
                 firstCheckpointTimeout,
+                partitionHandoff,
                 parallelism,
                 physicalDataType,
                 changelogMode,
@@ -399,6 +409,7 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private Instant boundedTimestamp;
         @Nullable private Integer maxConcurrentStreamsPerSubtask;
         @Nullable private Duration firstCheckpointTimeout;
+        @Nullable private PartitionHandoff partitionHandoff;
         @Nullable private Integer parallelism;
         @Nullable private DataType physicalDataType;
         @Nullable private DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
@@ -531,6 +542,18 @@ public final class BigtableChangeStreamDynamicSource
          */
         public Builder firstCheckpointTimeout(@Nullable Duration firstCheckpointTimeout) {
             this.firstCheckpointTimeout = firstCheckpointTimeout;
+            return this;
+        }
+
+        /**
+         * Sets when a partition's successors start after it closes, or {@code null} for the
+         * source's default.
+         *
+         * @param partitionHandoff when a partition's successors start
+         * @return this builder
+         */
+        public Builder partitionHandoff(@Nullable PartitionHandoff partitionHandoff) {
+            this.partitionHandoff = partitionHandoff;
             return this;
         }
 

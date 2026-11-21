@@ -24,7 +24,8 @@ limitations under the License.
   [#533](https://github.com/flink-gcp/flink-connector-gcp/issues/533),
   [#586](https://github.com/flink-gcp/flink-connector-gcp/issues/586),
   [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951),
-  [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206)
+  [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206),
+  [#2194](https://github.com/flink-gcp/flink-connector-gcp/issues/2194)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -111,6 +112,32 @@ a warning, until a checkpoint completes. The wait counts from the oldest pending
 from the start, so a job whose first checkpoint is slow but whose partitions do not close in the
 meantime is not warned. A savepoint does not end that wait, because Flink reports completion only
 for a checkpoint or a stopping savepoint.
+
+Since #2194 a closed partition's successors also wait for that completed checkpoint, as the Spanner
+source's children do (ADR-0099). A partition's last records can still be in a network buffer or a
+sink writer's batch when its reader reports the close; a successor read by another subtask can
+overtake them, so one row key's changes reach a keyed operator out of commit order. The reader
+emits the partition's last record before it reports the close, so that record precedes the
+reader's barrier for the covering checkpoint. The coordinator still creates the successors when the
+transition arrives and holds back only their assignment: a snapshot that covers the close must
+carry them, because the reader drops the closed split once the transition is acknowledged, and a
+restore from that snapshot would otherwise find the range nowhere. The hold is therefore runtime
+state only, and a restored checkpoint, having completed, releases everything it records.
+
+A held partition blocks every split created after it whose range overlaps its own, rather than a
+list of its children. Split ids come from a monotonic counter, and every split created after a
+partition closed over its keys descends from it or is a reconciler recovery of part of its range,
+a merge child or a recovery from only some of a merge's tokens included. The direction matters: a
+partition read again after a rollback never waits for its own successors, so two holds cannot wait
+for each other. A close taken back by a region failover keeps its hold until the close of the
+re-read is final. Whether one partition blocks another never changes, so the coordinator remembers,
+for each waiting split, the held partition that blocked it, and rescans the holds only once that
+one is released. `partitionHandoff(PartitionHandoff.IMMEDIATE)` turns the hold off. Nothing is
+held at source parallelism 1, or after a partition whose reader attempt emitted no output record,
+which the transition reports. `firstCheckpointTimeout` bounds the hold too: it measures from the
+oldest pending close or the oldest hold, whichever is older, and a hold keeps its age when its
+close is taken back. When it fires, every hold ends, every pending close is final, and a partition
+being read again keeps its re-read mark, so its next close still creates nothing.
 
 The coordinator acknowledges a transition only to the reader attempt that sent it: one that has
 failed since has no gateway, and its restored attempt reports the transition again, and a later
@@ -210,6 +237,36 @@ materializing the public mutation or any public entry/value/range object.
   read nothing for 60 seconds while it kept running: the restored ledger held `P0` as assigned and
   no reader held it. After #2206 the restored reader reports the transition again and `C1` is read
   (`BigtableChangeStreamSourceRestoreWindowITCase`).
+- #2194 asked for a service measurement before adding the hold, because the emulator does not
+  implement Change Streams. The maintainer decided on 2026-11-20 that Bigtable gets the hold Spanner
+  got in #2193, and on 2026-11-21 that the decision stands in for the measurement: the coordinator
+  has the shape ADR-0099 measured on the Spanner emulator, where 3 of 6 runs without the hold
+  delivered ancestor-partition inversions to a keyed operator and none of 10 with it did. No
+  Bigtable measurement was taken.
+- `BigtableChangeStreamSourceHandOffITCase` runs a scripted split through Flink's own source
+  coordinator at parallelism 2: `P0` emits `P0#1` and splits into `C1` and `C2`, which emit `C1#2`
+  and `C2#3`. An operator in its own task behind the source keeps `P0#1` until a successor's record
+  reaches the keyed operator, or for five seconds, standing in for a parent's last record still in
+  a network buffer. Under `IMMEDIATE` without checkpointing a successor's record reaches the keyed
+  operator first; under `AFTER_CHECKPOINT` neither successor opens before `P0#1` arrives; without
+  checkpointing neither a successor record nor a successor open, timed by the stream itself, comes
+  within 900 ms of the parent under a one-second `firstCheckpointTimeout`, and the warning naming
+  the successors is logged. The open is timed because a successor on the parent's own reader would
+  queue behind the delayed record and pass an arrival check even if it opened at once. With a
+  100 ms checkpoint interval the `IMMEDIATE` case did not always reorder, and the default case
+  passed with the hold disabled: an aligned barrier in flight blocked the successor's channel at
+  the keyed operator until `P0#1` arrived. The test therefore runs `IMMEDIATE` without
+  checkpointing, uses a 2-second interval, and judges the default by when the successors open.
+- The gated real-GCP Bigtable suite, run on 2026-11-21 for an earlier implementation of #2194,
+  passed; one of its change-stream jobs is pinned to parallelism 2 with checkpointing, two to
+  parallelism 1, and one inherits the environment's parallelism. Its logs record only the initial partitions (1 or 4); the coordinator does not log
+  a split or merge, and nothing in the suite forces one, so the suite is not evidence about the hold
+  itself.
+- A coordinator unit measurement on 2026-11-21 closed every one of n partitions at parallelism 64
+  with output, so n holds and n waiting successors coexisted. Rescanning every hold for every
+  unassigned split on each event took 0.7, 5.2 and 33.7 seconds of coordinator time in all for n
+  = 500, 1000 and 2000, growing with n cubed. Remembering, for each waiting split, the hold that
+  last blocked it took 0.07, 0.06 and 0.28 seconds.
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
   prove restore does not generate new initial partitions, prove many parents require only bounded neighboring coverage checks, and prove expired coordinator-held state fails unless fallback was opted in.
 - Deterministic tests cover all 2.80.0 entry and value kinds, full-match family and qualified-column
@@ -243,6 +300,28 @@ materializing the public mutation or any public entry/value/range object.
   recur after another split or merge with a different token; once the successor reads, the
   ledger no longer holds the token it started from. The re-read mark on the parent is the
   identity that survives.
+- **Measure the reordering on the service before holding** (#2194's first plan). Bigtable splits
+  and merges partitions on its own schedule and no API forces a split, so a measurement would wait
+  an unbounded time on a new instance, and a run that showed no inversion would prove nothing,
+  because the race is in Flink's network path rather than in the service.
+- **Hold the close in the reader until its own checkpoint completes.** The reason ADR-0099 records
+  for Spanner applies: it would need closed-but-unreported splits in the reader's checkpoint, while
+  the coordinator already sees every close and hears of completed checkpoints, a later completion
+  covering one whose notification was lost.
+- **Create the successors only when the close becomes final**, and drop them when the close is
+  taken back. The covering snapshot would then hold neither the closed split nor its successors,
+  and the reader has dropped the split on the acknowledgement, so a restore from it would lose the
+  range until the reconciler's 20-minute tokenless restart.
+- **Hold a list of children per parent.** Each merge accumulator and each reconciler recovery
+  would have to inherit its parents' holds, and a recovery can use only some of a merge's tokens or
+  none, so a transfer misses cases a range overlap covers by construction.
+- **Hold by range overlap alone.** A restore can leave a partition and its successor both
+  unassigned; if both close with output and are taken back before a checkpoint, each overlaps the
+  other's held range and neither is assigned again. Ordering by creation breaks that cycle.
+- **A separate timeout check for holds**, as the Spanner source keeps one for children and one
+  for its watermark. Every hold starts with a pending close, so one periodic check covers both; it
+  reads the oldest pending close and the oldest hold, because a close taken back and made again
+  moves its pending close to the end with a new time while the hold keeps its own.
 - **Keep one progress event per heartbeat.** It sends every partition's position to the
   JobManager every five seconds and lets the ledger run ahead of the restored checkpoint, while
   nothing the coordinator decides needs a position newer than the last completed checkpoint.
@@ -272,9 +351,19 @@ A tokenless restart's WARN names the four collections its gap was measured again
 counter says a range was uncovered and only the ledger says by what.
 
 Since #2206 a region failover reads a partition again from where it was assigned, so records after
-the restored checkpoint can be delivered twice, as at-least-once already allowed, and a successor
-of a re-read partition can run beside it, so their relative order is not restored. The
-coordinator's positions are those of the previous completed checkpoint. A job without
-checkpointing keeps each close pending for up to `firstCheckpointTimeout` (10 minutes by default);
-zero keeps them pending for good, one small entry per closed partition. The split
+the restored checkpoint can be delivered twice, as at-least-once already allowed. A successor
+already running beside a re-read partition, because the hand-off was immediate, the partition
+emitted nothing, or the timeout had fired, keeps running, so their relative order is not restored.
+The coordinator's positions are those of the previous completed checkpoint. A job without
+checkpointing keeps each close pending, and its successors waiting, for up to
+`firstCheckpointTimeout` (10 minutes by default); zero keeps them so for good, one small entry per
+closed partition.
+
+Since #2194 each partition split or merge delays its successors by up to one checkpoint interval
+plus that checkpoint's duration, and longer while checkpoints fail; a waiting successor counts as
+unassigned. With a checkpoint interval above the reconciler's two-minute token grace, a merge whose
+other parent has not closed yet is recovered from the closed parent's token, so
+`changeStreamPartitionsReconciled` can count in a healthy job. Order holds only under aligned
+checkpoints, for operators that finish their input before the barrier, and between failures; the
+DataStream page states these limits. The split
 checkpoint format is version 2 and the enumerator state version 4; older versions still restore.

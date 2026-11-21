@@ -233,6 +233,9 @@ class BigtableChangeStreamSourceRegionFailoverITCase {
                 .opener(new RestoreScriptedChangeStreamOpener(run))
                 .restoreResolver(new KeepRestoredSplit())
                 .coordinatorClientFactory(WholeTableClient::new)
+                // The test pauses D before its first checkpoint, which a held D could not reach;
+                // BigtableChangeStreamSourceHandOffITCase runs the hold through the coordinator.
+                .partitionHandoff(PartitionHandoff.IMMEDIATE)
                 .build();
     }
 

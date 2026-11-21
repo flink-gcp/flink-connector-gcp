@@ -404,6 +404,17 @@ public final class RowRanges {
         return coalesce(intersections);
     }
 
+    /**
+     * Returns whether two ranges share a row key, without building the intersection's union.
+     *
+     * @param left one range
+     * @param right the other range
+     * @return whether some row key lies in both
+     */
+    public static boolean overlaps(ByteStringRange left, ByteStringRange right) {
+        return !isEmpty(intersectionOf(copyOf(left), copyOf(right)));
+    }
+
     /** Returns the possibly empty intersection of two ranges. */
     private static ByteStringRange intersectionOf(ByteStringRange left, ByteStringRange right) {
         ByteStringRange intersection = ByteStringRange.unbounded();

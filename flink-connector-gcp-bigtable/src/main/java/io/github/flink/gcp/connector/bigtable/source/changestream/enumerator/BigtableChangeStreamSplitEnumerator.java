@@ -89,9 +89,34 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>The successors of a close are created when the transition arrives, so a partition read again
  * after its close must not create them twice. Its id stays in {@code rereads}, which the checkpoint
  * records, until its next close is final; that close creates nothing, and a successor a reader
- * already reads keeps running. When a close has waited {@code firstCheckpointTimeout} and no
- * checkpoint has completed since {@link #start}, which is how a job without checkpointing looks
- * from here, every close is final at once until one does.
+ * already reads keeps running.
+ *
+ * <h2>A successor waits for a checkpoint, not only for its parent's close</h2>
+ *
+ * <p>A partition's last records can still be on their way downstream when its reader reports the
+ * {@code CloseStream}. If another subtask reads a successor, the successor's records take a
+ * different path and can reach a keyed operator first, so one row key's changes arrive out of
+ * commit order. With {@code holdSuccessorsUntilCheckpoint}, a closed partition whose reader emitted
+ * output stays in {@code heldParents} until its close is final, and no split created after it that
+ * overlaps its range is assigned meanwhile. The reader emitted those records before it reported the
+ * close, so they precede its barrier for the covering checkpoint, and a completed checkpoint means
+ * downstream processed them. This is the Spanner source's hold (ADR-0099).
+ *
+ * <p>The successors exist in the ledger from the transition on, and only their assignment waits: a
+ * snapshot that covers a close must carry its successors, because the reader dropped the closed
+ * split on the acknowledgement. The hold is therefore runtime state only, and a restored checkpoint
+ * has completed, so every split it records is assignable. A range rather than a lineage decides
+ * what waits, so a merge child, or a reconciler recovery of part of a held range, waits too; and
+ * only a split created after the held partition waits, so a partition read again never waits for
+ * its own successors. A close taken back by a region failover keeps its hold until the close of its
+ * re-read is final. Nothing is held at parallelism 1, where every record takes one path, or after a
+ * partition whose reader emitted nothing.
+ *
+ * <p>When a close or a hold has waited {@code firstCheckpointTimeout} and no checkpoint has
+ * completed since {@link #start}, which is how a job without checkpointing looks from here, every
+ * close is final and every successor starts at once until one does. The evidence is a completed
+ * checkpoint rather than a {@link #snapshotState} call: Flink snapshots the coordinator for every
+ * savepoint but reports completion only of a checkpoint or a synchronous savepoint.
  *
  * <p><b>Every transition is acknowledged, and applying one is idempotent.</b> A reader keeps a
  * closed split, with its successors, in its checkpointed state until the {@link
@@ -140,6 +165,9 @@ public final class BigtableChangeStreamSplitEnumerator
      */
     private static final Duration RETENTION_CLAMP_MARGIN = Duration.ofSeconds(60);
 
+    /** The prefix of every split id; the number after it orders the splits by creation. */
+    private static final String SPLIT_ID_PREFIX = "change-stream-";
+
     /** The covering checkpoint of a pending close that no snapshot has run after yet. */
     private static final long UNCOVERED = -1L;
 
@@ -155,6 +183,7 @@ public final class BigtableChangeStreamSplitEnumerator
     private final boolean bounded;
     private final boolean reconciliationEnabled;
     private final Duration firstCheckpointTimeout;
+    private final boolean holdSuccessorsUntilCheckpoint;
     private final Clock clock;
     @Nullable private final BigtableChangeStreamEnumeratorState restoredState;
 
@@ -170,6 +199,20 @@ public final class BigtableChangeStreamSplitEnumerator
 
     /** Closed partitions no completed checkpoint covers yet, by split id, in close order. */
     private final Map<String, PendingClose> pendingCloses = new LinkedHashMap<>();
+
+    /**
+     * Closed partitions whose successors wait for the close to be final, by split id, in hold
+     * order. A close taken back keeps its entry until the close of its re-read is final.
+     */
+    private final Map<String, HeldParent> heldParents = new LinkedHashMap<>();
+
+    /**
+     * For an unassigned split found waiting, the held partition that blocked it. Whether one
+     * partition blocks another never changes, so an entry is right for as long as that partition is
+     * held; it spares a rescan of every hold on every event, which grows with the cube of the
+     * partitions closing together.
+     */
+    private final Map<String, String> blockers = new HashMap<>();
 
     /** Unassigned, assigned or pending-close splits read again after their successors exist. */
     private final Set<String> rereads = new LinkedHashSet<>();
@@ -221,8 +264,11 @@ public final class BigtableChangeStreamSplitEnumerator
      * @param resumeFallback where a partition whose token has expired resumes, or {@code null}
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      * @param bounded whether the stream has an end time and so finishes
-     * @param firstCheckpointTimeout how long a close waits for a completed checkpoint before every
-     *     close becomes final at once, while none has completed; zero waits indefinitely
+     * @param firstCheckpointTimeout how long a close or a held successor waits for a completed
+     *     checkpoint before every close becomes final and every successor starts at once, while
+     *     none has completed; zero waits indefinitely
+     * @param holdSuccessorsUntilCheckpoint whether a closed partition's successors wait until a
+     *     completed checkpoint covers the close
      */
     public BigtableChangeStreamSplitEnumerator(
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
@@ -231,7 +277,8 @@ public final class BigtableChangeStreamSplitEnumerator
             @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded,
-            Duration firstCheckpointTimeout) {
+            Duration firstCheckpointTimeout,
+            boolean holdSuccessorsUntilCheckpoint) {
         this(
                 context,
                 client,
@@ -241,7 +288,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 bounded,
                 true,
                 Clock.systemUTC(),
-                firstCheckpointTimeout);
+                firstCheckpointTimeout,
+                holdSuccessorsUntilCheckpoint);
     }
 
     /**
@@ -249,7 +297,7 @@ public final class BigtableChangeStreamSplitEnumerator
      *
      * <p>A unit test taking the public constructor would schedule a real periodic reconciliation
      * scan against the wall clock, which is why both are parameters here rather than knobs there.
-     * The clock also measures how long a pending close has waited for a checkpoint.
+     * The clock also measures how long a pending close or a hold has waited for a checkpoint.
      */
     @VisibleForTesting
     BigtableChangeStreamSplitEnumerator(
@@ -261,7 +309,8 @@ public final class BigtableChangeStreamSplitEnumerator
             boolean bounded,
             boolean reconciliationEnabled,
             Clock clock,
-            Duration firstCheckpointTimeout) {
+            Duration firstCheckpointTimeout,
+            boolean holdSuccessorsUntilCheckpoint) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.client = Preconditions.checkNotNull(client, "client must not be null");
         this.startPosition =
@@ -274,6 +323,7 @@ public final class BigtableChangeStreamSplitEnumerator
         this.firstCheckpointTimeout =
                 Preconditions.checkNotNull(
                         firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
+        this.holdSuccessorsUntilCheckpoint = holdSuccessorsUntilCheckpoint;
     }
 
     @Override
@@ -599,15 +649,20 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         ReaderState reader = readers.get(subtaskId);
         int capacity = reader == null ? 0 : reader.free();
-        if (capacity <= 0 || unassigned.isEmpty()) {
+        if (capacity <= 0 || !hasAssignable()) {
             // Called for its effect, not its verdict: a bounded run with nothing left anywhere
             // signals no-more-splits here, and there is nothing to assign either way.
             signalBoundedCompletionIfDrained();
             return;
         }
         List<ChangeStreamPartitionSplit> splits = new ArrayList<>(capacity);
-        while (splits.size() < capacity && !unassigned.isEmpty()) {
-            ChangeStreamPartitionSplit split = unassigned.removeFirst();
+        Iterator<ChangeStreamPartitionSplit> candidates = unassigned.iterator();
+        while (splits.size() < capacity && candidates.hasNext()) {
+            ChangeStreamPartitionSplit split = candidates.next();
+            if (!isAssignable(split)) {
+                continue;
+            }
+            candidates.remove();
             assigned.put(split.splitId(), split);
             splits.add(split);
         }
@@ -748,7 +803,8 @@ public final class BigtableChangeStreamSplitEnumerator
                     subtaskId);
             return;
         }
-        if (rereads.contains(splitId)) {
+        boolean createsSuccessors = !rereads.contains(splitId);
+        if (!createsSuccessors) {
             LOG.info(
                     "Split {} closed again after a rollback; its successors already exist.",
                     splitId);
@@ -768,9 +824,17 @@ public final class BigtableChangeStreamSplitEnumerator
             }
         }
         if (closesFinalAtOnce) {
-            rereads.remove(splitId);
+            closeBecameFinal(splitId);
         } else {
             pendingCloses.put(splitId, new PendingClose(finished, clock.millis()));
+            if (createsSuccessors
+                    && !transition.getSuccessors().isEmpty()
+                    && holdsSuccessorsOf(transition)) {
+                heldParents.put(
+                        splitId,
+                        new HeldParent(
+                                finished.getPartition(), splitSequence(splitId), clock.millis()));
+            }
         }
         refreshUnassignedMetrics();
         serveAvailableReaders();
@@ -837,7 +901,7 @@ public final class BigtableChangeStreamSplitEnumerator
 
     private void serveAvailableReaders() {
         for (int subtaskId : new ArrayList<>(readers.keySet())) {
-            if (unassigned.isEmpty()) {
+            if (!hasAssignable()) {
                 break;
             }
             assignAvailable(subtaskId);
@@ -859,7 +923,7 @@ public final class BigtableChangeStreamSplitEnumerator
      * which holds the excess back for that long rather than piling it on the others.
      */
     private void assignBeyondFreeSlots() {
-        if (unassigned.isEmpty() || boundedComplete) {
+        if (boundedComplete || !hasAssignable()) {
             return;
         }
         Map<Integer, ?> registered = context.registeredReaders();
@@ -874,7 +938,12 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         Map<Integer, List<ChangeStreamPartitionSplit>> batches = new LinkedHashMap<>();
         int handedOut = 0;
-        while (!unassigned.isEmpty()) {
+        Iterator<ChangeStreamPartitionSplit> candidates = unassigned.iterator();
+        while (candidates.hasNext()) {
+            ChangeStreamPartitionSplit split = candidates.next();
+            if (!isAssignable(split)) {
+                continue;
+            }
             int target = -1;
             int fewest = Integer.MAX_VALUE;
             for (int subtaskId : registered.keySet()) {
@@ -884,7 +953,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     fewest = load;
                 }
             }
-            ChangeStreamPartitionSplit split = unassigned.removeFirst();
+            candidates.remove();
             assigned.put(split.splitId(), split);
             batches.computeIfAbsent(target, ignored -> new ArrayList<>()).add(split);
             readers.get(target).sentSplits++;
@@ -897,6 +966,60 @@ public final class BigtableChangeStreamSplitEnumerator
                     new SplitsAssignment<>(
                             Collections.singletonMap(batch.getKey(), batch.getValue())));
         }
+    }
+
+    private boolean holdsSuccessorsOf(PartitionTransitionEvent transition) {
+        // A partition whose reader emitted nothing has nothing downstream for its successors to
+        // overtake, and at parallelism 1 every record takes the same path.
+        return holdSuccessorsUntilCheckpoint
+                && context.currentParallelism() > 1
+                && transition.hasEmittedRecords();
+    }
+
+    /**
+     * Whether no held partition created before this split shares a row key with it. Every split
+     * created after a partition closed over its keys descends from it or recovers part of its
+     * range, and a split never waits for one created after it, so the waits cannot form a cycle.
+     */
+    private boolean isAssignable(ChangeStreamPartitionSplit split) {
+        if (heldParents.isEmpty()) {
+            blockers.clear();
+            return true;
+        }
+        String blocker = blockers.get(split.splitId());
+        if (blocker != null && heldParents.containsKey(blocker)) {
+            return false;
+        }
+        long sequence = splitSequence(split.splitId());
+        ByteStringRange partition = split.getPartition();
+        for (Map.Entry<String, HeldParent> parent : heldParents.entrySet()) {
+            if (parent.getValue().sequence < sequence
+                    && RowRanges.overlaps(parent.getValue().partition, partition)) {
+                blockers.put(split.splitId(), parent.getKey());
+                return false;
+            }
+        }
+        blockers.remove(split.splitId());
+        return true;
+    }
+
+    private boolean hasAssignable() {
+        for (ChangeStreamPartitionSplit split : unassigned) {
+            if (isAssignable(split)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Forgets a close's bookkeeping once no rollback can take it back.
+     *
+     * @return whether the close held successors back
+     */
+    private boolean closeBecameFinal(String splitId) {
+        rereads.remove(splitId);
+        return heldParents.remove(splitId) != null;
     }
 
     private boolean signalBoundedCompletionIfDrained() {
@@ -951,7 +1074,10 @@ public final class BigtableChangeStreamSplitEnumerator
                 checkpointedRereads);
     }
 
-    /** Makes final every pending close the completed checkpoint covers. */
+    /**
+     * Makes final every pending close the completed checkpoint covers, and starts the successors
+     * those closes held back.
+     */
     @Override
     public void notifyCheckpointComplete(long checkpointId) {
         if (closed) {
@@ -965,45 +1091,84 @@ public final class BigtableChangeStreamSplitEnumerator
                     checkpointId);
             closesFinalAtOnce = false;
         }
+        boolean released = false;
         Iterator<Map.Entry<String, PendingClose>> pending = pendingCloses.entrySet().iterator();
         while (pending.hasNext()) {
             Map.Entry<String, PendingClose> close = pending.next();
             long covering = close.getValue().covering;
             if (covering != UNCOVERED && covering <= checkpointId) {
                 pending.remove();
-                rereads.remove(close.getKey());
+                released |= closeBecameFinal(close.getKey());
             }
+        }
+        if (released) {
+            serveAvailableReaders();
         }
     }
 
     /**
-     * Makes every close final at once when a close has waited {@code firstCheckpointTimeout} and no
-     * checkpoint has completed: without one, pending closes would pile up for good.
+     * Makes every close final and starts every held successor when a close or a hold has waited
+     * {@code firstCheckpointTimeout} and no checkpoint has completed: without one, pending closes
+     * would pile up and held successors would never start.
      */
     private void checkFirstCheckpoint() {
-        if (closed || checkpointCompleted || closesFinalAtOnce || pendingCloses.isEmpty()) {
+        if (closed || checkpointCompleted || closesFinalAtOnce) {
             return;
         }
-        // Insertion order: a close taken back and made again moves to the end.
-        long oldest = pendingCloses.values().iterator().next().closedAtMillis;
-        if (clock.millis() - oldest < firstCheckpointTimeout.toMillis()) {
+        // Insertion order: a close taken back and made again moves to the end, while a hold keeps
+        // its place and its age across a close taken back, so a rollback does not restart it.
+        long oldest = Long.MAX_VALUE;
+        if (!pendingCloses.isEmpty()) {
+            oldest = pendingCloses.values().iterator().next().closedAtMillis;
+        }
+        if (!heldParents.isEmpty()) {
+            oldest = Math.min(oldest, heldParents.values().iterator().next().heldSinceMillis);
+        }
+        if (oldest == Long.MAX_VALUE
+                || clock.millis() - oldest < firstCheckpointTimeout.toMillis()) {
             return;
         }
-        LOG.warn(
-                "A closed partition has waited {} for a completed checkpoint and none has"
-                        + " completed, so a closed partition is final at once, and a region"
-                        + " failover does not read it again, until one does. Enable checkpointing,"
-                        + " or raise firstCheckpointTimeout ('scan.first-checkpoint-timeout') for a"
-                        + " job that checkpoints less often.",
-                firstCheckpointTimeout);
+        if (holdSuccessorsUntilCheckpoint) {
+            LOG.warn(
+                    "A closed partition has waited {} for a completed checkpoint and none has"
+                            + " completed, so a closed partition is final at once, its successors"
+                            + " start at once, and a region failover does not read it again, until"
+                            + " one does. Without one, a row key's changes can reach a keyed operator"
+                            + " out of commit order across a partition split or merge. Enable"
+                            + " checkpointing; raise firstCheckpointTimeout"
+                            + " ('scan.first-checkpoint-timeout') for a job that checkpoints less"
+                            + " often; or set partitionHandoff(IMMEDIATE)"
+                            + " ('scan.change-stream.partition-handoff' = 'immediate') to start"
+                            + " successors at once.",
+                    firstCheckpointTimeout);
+        } else {
+            LOG.warn(
+                    "A closed partition has waited {} for a completed checkpoint and none has"
+                            + " completed, so a closed partition is final at once, and a region"
+                            + " failover does not read it again, until one does. Enable"
+                            + " checkpointing, or raise firstCheckpointTimeout"
+                            + " ('scan.first-checkpoint-timeout') for a job that checkpoints less"
+                            + " often.",
+                    firstCheckpointTimeout);
+        }
         closesFinalAtOnce = true;
         for (String splitId : pendingCloses.keySet()) {
             rereads.remove(splitId);
         }
         pendingCloses.clear();
+        // A partition being read again keeps its rereads entry, so its next close still creates
+        // nothing; only what it held back starts.
+        boolean released = !heldParents.isEmpty();
+        heldParents.clear();
+        if (released) {
+            serveAvailableReaders();
+        }
     }
 
-    /** Returns how long a close waits for a completed checkpoint, as the source configured it. */
+    /**
+     * Returns how long a close or a held successor waits for a completed checkpoint, as the source
+     * configured it.
+     */
     @VisibleForTesting
     public Duration getFirstCheckpointTimeout() {
         return firstCheckpointTimeout;
@@ -1012,6 +1177,11 @@ public final class BigtableChangeStreamSplitEnumerator
     @VisibleForTesting
     int pendingCloseCount() {
         return pendingCloses.size();
+    }
+
+    @VisibleForTesting
+    int heldParentCount() {
+        return heldParents.size();
     }
 
     private List<PendingMerge> pendingMergeSnapshot() {
@@ -1082,7 +1252,16 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private static String splitId(long id) {
-        return "change-stream-" + id;
+        return SPLIT_ID_PREFIX + id;
+    }
+
+    /** Returns the creation number of a split id this enumerator made. */
+    private static long splitSequence(String splitId) {
+        Preconditions.checkArgument(
+                splitId.startsWith(SPLIT_ID_PREFIX),
+                "Bigtable Change Streams split id %s was not made by this enumerator.",
+                splitId);
+        return Long.parseLong(splitId.substring(SPLIT_ID_PREFIX.length()));
     }
 
     private static final class Initialization {
@@ -1167,6 +1346,23 @@ public final class BigtableChangeStreamSplitEnumerator
         private PendingClose(ChangeStreamPartitionSplit split, long closedAtMillis) {
             this.split = split;
             this.closedAtMillis = closedAtMillis;
+        }
+    }
+
+    /**
+     * A closed partition whose successors wait: its range, its creation number, and when its hold
+     * began.
+     */
+    private static final class HeldParent {
+
+        private final ByteStringRange partition;
+        private final long sequence;
+        private final long heldSinceMillis;
+
+        private HeldParent(ByteStringRange partition, long sequence, long heldSinceMillis) {
+            this.partition = partition;
+            this.sequence = sequence;
+            this.heldSinceMillis = heldSinceMillis;
         }
     }
 

@@ -35,6 +35,9 @@ public final class ChangeStreamPartitionSplitState {
     private Instant lowWatermark;
     @Nullable private List<PartitionTransitionEvent.Successor> closeSuccessors;
 
+    /** Whether this attempt has emitted a record from the split; deliberately not checkpointed. */
+    private boolean emittedRecords;
+
     public ChangeStreamPartitionSplitState(ChangeStreamPartitionSplit split) {
         this.original = split;
         this.tokens = split.getContinuationTokens();
@@ -60,6 +63,20 @@ public final class ChangeStreamPartitionSplitState {
     public void advance(ChangeStreamContinuationToken token, Instant watermark) {
         this.tokens = Collections.singletonList(token);
         this.lowWatermark = watermark;
+    }
+
+    /** Records that the reader emitted at least one output record from this split. */
+    public void markEmittedRecords() {
+        emittedRecords = true;
+    }
+
+    /**
+     * Returns whether this attempt emitted any output record from the split. Records an earlier
+     * attempt emitted before the restored checkpoint have reached downstream already, so only this
+     * attempt's output can still be on its way when the split closes.
+     */
+    public boolean hasEmittedRecords() {
+        return emittedRecords;
     }
 
     public List<ChangeStreamContinuationToken> getTokens() {

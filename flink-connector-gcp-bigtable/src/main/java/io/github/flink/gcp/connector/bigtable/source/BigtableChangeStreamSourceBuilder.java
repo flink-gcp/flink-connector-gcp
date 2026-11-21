@@ -57,6 +57,9 @@ public final class BigtableChangeStreamSourceBuilder<T> {
 
     private static final Duration DEFAULT_FIRST_CHECKPOINT_TIMEOUT = Duration.ofMinutes(10);
 
+    private static final PartitionHandoff DEFAULT_PARTITION_HANDOFF =
+            PartitionHandoff.AFTER_CHECKPOINT;
+
     @Nullable private TableDestination table;
     @Nullable private BigtableChangeStreamDeserializationSchema<T> deserializer;
     @Nullable private String appProfileId;
@@ -66,6 +69,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private Instant boundedTimestamp;
     private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
     private Duration firstCheckpointTimeout = DEFAULT_FIRST_CHECKPOINT_TIMEOUT;
+    private PartitionHandoff partitionHandoff = DEFAULT_PARTITION_HANDOFF;
     private List<Pattern> familyIncludeList = Collections.emptyList();
     private List<Pattern> familyExcludeList = Collections.emptyList();
     private List<Pattern> qualifierIncludeList = Collections.emptyList();
@@ -246,23 +250,46 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     }
 
     /**
-     * Sets how long a closed partition waits for a completed checkpoint before the source logs a
-     * warning and makes every close final at once. Optional; defaults to 10 min. {@link
-     * Duration#ZERO} keeps closes pending until a checkpoint completes.
+     * Sets when a partition's successors start after it closes. Optional; defaults to {@link
+     * PartitionHandoff#AFTER_CHECKPOINT}.
      *
-     * <p>A partition's close is final only once a completed checkpoint covers it, so that a region
-     * failover reads a partition that closed after the restored checkpoint again. Reading never
-     * waits for it; only the coordinator's record of the close does. A job without checkpointing
-     * never completes one, so its closes would stay pending for good, one entry each. The source
-     * cannot read the job's checkpoint configuration, so it measures instead: once a close has
-     * waited this long with no checkpoint completed, every close is final at once, and a region
-     * failover does not read it again, until a checkpoint completes. A savepoint taken while the
-     * job runs does not count, because Flink reports completion to the source only for a checkpoint
-     * or a savepoint that stops the job. Raise this above the time a job's first checkpoint takes
-     * to complete.
+     * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} keeps one row key's changes in commit order at a
+     * keyed operator or a sink when source parallelism is above 1, at the cost of delaying the
+     * successors of each partition split or merge until the next checkpoint completes. {@link
+     * PartitionHandoff#IMMEDIATE} starts them at once, for consumers that order each row key's
+     * changes by their commit timestamp and tie breaker.
+     *
+     * @param partitionHandoff when a partition's successors start
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> partitionHandoff(
+            PartitionHandoff partitionHandoff) {
+        this.partitionHandoff =
+                Preconditions.checkNotNull(partitionHandoff, "partitionHandoff must not be null");
+        return this;
+    }
+
+    /**
+     * Sets how long the source waits for a completed checkpoint before it logs a warning, makes
+     * every close final at once and starts every held successor, until a checkpoint completes.
+     * Optional; defaults to 10 min. {@link Duration#ZERO} waits however long that takes, so a job
+     * without checkpointing then never starts a held successor.
+     *
+     * <p>Two waits use it. A partition's close is final only once a completed checkpoint covers it,
+     * so that a region failover reads a partition that closed after the restored checkpoint again;
+     * reading never waits for that, only the coordinator's record of the close does. And with
+     * {@link PartitionHandoff#AFTER_CHECKPOINT} a partition's successors start only once its close
+     * is final. A job without checkpointing never completes a checkpoint, so its closes would stay
+     * pending and its successors held for good. The source cannot read the job's checkpoint
+     * configuration, so it measures instead: once a close or a held successor has waited this long
+     * with no checkpoint completed, every close is final at once, its successors start at once, and
+     * a region failover does not read it again, until a checkpoint completes. A savepoint taken
+     * while the job runs does not count, because Flink reports completion to the source only for a
+     * checkpoint or a savepoint that stops the job. Raise this above the time a job's first
+     * checkpoint takes to complete.
      *
      * @param firstCheckpointTimeout the wait, zero or from 1 ms to {@code
-     *     Duration.ofNanos(Long.MAX_VALUE)}; zero keeps closes pending until a checkpoint completes
+     *     Duration.ofNanos(Long.MAX_VALUE)}; zero waits indefinitely
      * @return this builder
      */
     public BigtableChangeStreamSourceBuilder<T> firstCheckpointTimeout(
@@ -431,7 +458,8 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                                         serviceAccountKeyFile,
                                         exportClientMetricsToCloudMonitoring),
                         exportClientMetricsToFlink,
-                        firstCheckpointTimeout));
+                        firstCheckpointTimeout,
+                        partitionHandoff));
     }
 
     private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {

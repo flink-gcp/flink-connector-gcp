@@ -66,6 +66,7 @@ class BigtableChangeStreamRecordEmitterTest {
 
         assertThat(output.records()).containsExactly("row");
         assertThat(output.timestamps()).containsExactly(commit.toEpochMilli());
+        assertThat(state.hasEmittedRecords()).isTrue();
         assertThat(state.toSplit().getContinuationTokens().get(0))
                 .satisfies(
                         token -> {
@@ -100,7 +101,9 @@ class BigtableChangeStreamRecordEmitterTest {
         assertThat(state.toSplit().getContinuationTokens())
                 .extracting(token -> token.getToken())
                 .containsExactly("heartbeat");
-        PartitionTransitionEvent event = state.toSplit().toTransitionEvent();
+        PartitionTransitionEvent event =
+                state.toSplit().toTransitionEvent(state.hasEmittedRecords());
+        assertThat(event.hasEmittedRecords()).isFalse();
         assertThat(event.getLowWatermark()).isEqualTo(watermark);
         assertThat(event.getSuccessors()).hasSize(1);
         assertThat(event.getSuccessors().get(0).getContinuationToken().getToken())
@@ -147,6 +150,7 @@ class BigtableChangeStreamRecordEmitterTest {
                 state);
 
         assertThat(output.records()).isEmpty();
+        assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(counter("recordsSkipped")).isEqualTo(1);
         assertThat(state.toSplit().getContinuationTokens().get(0).getToken()).isEqualTo("filtered");
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
@@ -260,6 +264,7 @@ class BigtableChangeStreamRecordEmitterTest {
                 state);
 
         assertThat(output.records()).isEmpty();
+        assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(counter("changeStreamMutationEntriesFiltered")).isEqualTo(1);
         assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isEqualTo(1);
         assertThat(counter("recordsSkipped")).isZero();

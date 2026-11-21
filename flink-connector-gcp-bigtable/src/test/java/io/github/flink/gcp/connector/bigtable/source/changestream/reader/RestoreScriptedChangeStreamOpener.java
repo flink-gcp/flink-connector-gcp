@@ -97,6 +97,7 @@ public final class RestoreScriptedChangeStreamOpener implements ChangeStreamOpen
             next = Integer.parseInt(token.substring(at + 1));
         }
         run.log.add("open " + label + "@" + next);
+        run.firstOpenNanos.putIfAbsent(label, System.nanoTime());
         run.opens.computeIfAbsent(label, ignored -> new AtomicInteger()).incrementAndGet();
         Stream stream = new Stream(run, label, run.partitions.get(label), next, observer);
         // Started first, so a cancel from onStart interrupts a running thread, as gax delivers a
@@ -125,8 +126,34 @@ public final class RestoreScriptedChangeStreamOpener implements ChangeStreamOpen
 
         private final Map<String, AtomicInteger> opens = new ConcurrentHashMap<>();
         private final Map<String, AtomicInteger> closes = new ConcurrentHashMap<>();
+        private final Map<String, Long> firstOpenNanos = new ConcurrentHashMap<>();
+        private final Map<String, Long> firstCloseNanos = new ConcurrentHashMap<>();
 
         private Run() {}
+
+        /**
+         * Returns the {@code System.nanoTime()} at which a partition first opened, taken when it
+         * happened rather than when a test thread noticed it.
+         */
+        public long firstOpenNanos(String label) {
+            Long nanos = firstOpenNanos.get(label);
+            if (nanos == null) {
+                throw new AssertionError(label + " never opened; log=" + log);
+            }
+            return nanos;
+        }
+
+        /**
+         * Returns the {@code System.nanoTime()} at which a partition's stream first handed its
+         * {@code CloseStream} to the reader, before the reader reported the transition.
+         */
+        public long firstCloseNanos(String label) {
+            Long nanos = firstCloseNanos.get(label);
+            if (nanos == null) {
+                throw new AssertionError(label + " never closed; log=" + log);
+            }
+            return nanos;
+        }
 
         /** Adds a partition with its row range and steps. */
         public Run partition(String label, ByteStringRange range, Step... steps) {
@@ -285,6 +312,9 @@ public final class RestoreScriptedChangeStreamOpener implements ChangeStreamOpen
                         observer.onResponse(mutation(step.sequence));
                     } else {
                         closeDelivered = true;
+                        // Before the hand-over: everything the reader does with the close,
+                        // reporting its transition included, comes after this time.
+                        run.firstCloseNanos.putIfAbsent(label, System.nanoTime());
                         observer.onResponse(close(step.successors));
                         // The reader cancels the stream once it has taken the CloseStream.
                         while (!cancelled) {

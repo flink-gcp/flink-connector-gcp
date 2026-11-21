@@ -26,6 +26,7 @@ import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceConfig;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.reader.DataClientChangeStreamOpener;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
@@ -129,6 +130,18 @@ class BigtableChangeStreamDynamicSourceTest {
                         config.getCoordinatorClientFactory().create()) {
             ClientMetricsSettings.assertExportsNothing(client.dataSettings());
         }
+    }
+
+    @Test
+    void carriesAndComparesThePartitionHandOff() {
+        BigtableChangeStreamDynamicSource immediate =
+                envelope().partitionHandoff(PartitionHandoff.IMMEDIATE).build();
+
+        assertThat(immediate.copy()).isEqualTo(immediate).hasSameHashCodeAs(immediate);
+        assertThat(immediate)
+                .isNotEqualTo(envelope().build())
+                .isNotEqualTo(
+                        envelope().partitionHandoff(PartitionHandoff.AFTER_CHECKPOINT).build());
     }
 
     @Test

@@ -465,7 +465,7 @@ retaining the collector or using it from another thread is invalid.
 Each subtask uses asynchronous `ReadChangeStream` calls with manual inbound flow control and one shared bounded handover budget.
 Callbacks may receive a continuation token before the task thread consumes its record, but checkpoints retain only the position the task thread has emitted.
 When assigned partitions outnumber the subtask limit, the reader queues the excess and rotates stable streams at service heartbeats so every queued partition can open or reopen from its checkpointed position.
-The coordinator fills each subtask's free read slots first, and once every source subtask has reported, it hands each partition still left to the subtask holding the fewest, which queues it.
+The coordinator fills each subtask's free read slots first, and once every source subtask has reported, it hands each assignable partition still left to the subtask holding the fewest, which queues it.
 So when a table has more partitions than the job has read slots, every partition is read part of the time rather than some waiting for a slot that a stable partition never frees.
 Connector-initiated rotation and shutdown cancellation do not complete or fail a partition.
 Every request asks for a five-second heartbeat, so a partition queued behind others waits several rotations, and a stream still draining responses rotates only once its next heartbeat reaches the task thread.
@@ -498,10 +498,48 @@ reconciler runs.
 
 Change Streams cover every column family. Garbage-collection changes can therefore appear beside
 application writes. Bigtable preserves the service's per-partition order, but records from
-different partitions have no connector-imposed global order. Delivery is at least once across a
+different partitions have no connector-imposed global order; under the default partition hand-off,
+one row key's changes keep their commit order across a partition split or merge, within the limits
+[One row key's changes across a partition split or merge](#one-row-keys-changes-across-a-partition-split-or-merge)
+describes. Delivery is at least once across a
 failure between downstream emission and the next completed checkpoint, so side effects should be
 idempotent. A savepoint is the supported cross-job handoff: starting a separate job at a wall-clock
 time is not an exact continuation-token transfer.
+
+### One row key's changes across a partition split or merge
+
+Bigtable closes a partition when it splits or merges and names the successors that continue its row keys.
+The partition's last records can still be on their way downstream when its reader sees the close, in a network buffer or a sink writer's batch.
+If another subtask reads a successor, the successor's records take a different path and can reach a keyed operator or a sink first.
+One row key's changes then arrive out of commit order, and an upsert keeps the older value until the row changes again.
+
+`partitionHandoff(PartitionHandoff.AFTER_CHECKPOINT)`, the default, starts a successor only after a checkpoint taken after its parent closed has completed.
+The parent's reader emitted its last records before that checkpoint's barrier.
+Once an aligned checkpoint completes, every operator that handles its input before the barrier has therefore processed those records, and every sink that flushes on the barrier has written them.
+Each split or merge delays its successors until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration.
+Once a checkpoint has completed, the successors do not start while later checkpoints keep failing; before the first completes, the timeout described below applies.
+Nothing waits at source parallelism 1, where every record takes one path, or after a partition whose reader emitted no record, such as a quiet partition that saw only heartbeats, since nothing of it is downstream to overtake.
+The coordinator records each successor when the close arrives and holds back only its assignment, so a waiting successor counts in `unassignedSplits` and `unassignedChangeStreamPartitionLagMillis`.
+When one parent of a merge is itself a waiting successor, the other parent's closed range is covered by no split until the waiting one is read and closes too; when that takes more than two minutes, the reconciler recovers that range from the closed parent's token, so `changeStreamPartitionsReconciled` counts in a healthy job, and the recovered partition waits like a successor.
+The waiting parent's own close then starts a merge that no other token completes, and its range is recovered the same way two minutes later.
+
+The order this buys has three limits.
+
+- **Unaligned checkpoints**: an unaligned checkpoint, including one that an aligned-checkpoint timeout switches to, stores records in flight without processing them. It covers a sink chained to the source, but not an operator behind a shuffle.
+- **Operators that store pending elements**: an operator that keeps elements in its state instead of finishing them before the barrier, such as asynchronous I/O or an asynchronous sink's buffered requests, can still emit a parent's last records after the successor's.
+- **Failover**: order holds between failures. A failover restores the last completed checkpoint and replays from it, at least once, so a parent read again by a restarted subtask can deliver its last changes after its successors'. A restore from a checkpoint taken while a parent was being read again also starts that parent's successors at once, because a restored checkpoint has completed.
+
+`PartitionHandoff.IMMEDIATE` starts a successor as soon as its parent closes.
+It suits a consumer that orders each row key's changes by their commit timestamp and tie breaker, when the delay is unwanted.
+
+A job without checkpointing never completes the checkpoint a successor waits for, and the coordinator cannot read the job's checkpoint configuration.
+The source therefore measures the wait: when no checkpoint has completed and a close or a waiting successor has waited `firstCheckpointTimeout`, 10 minutes by default, it logs a warning and starts successors as soon as their parent closes until a checkpoint completes.
+A savepoint taken while the job runs does not count, because Flink reports completion to the source only for a checkpoint or a savepoint that stops the job.
+The wait counts from a close rather than from the start, and it applies until the first checkpoint completes, so a job whose first checkpoint completes more than the timeout after a close, as a long checkpoint interval can make it, also starts successors at once until then; raise the timeout above the checkpoint interval plus a checkpoint's duration.
+Zero waits indefinitely, which suits only a job with checkpointing: without it, a held successor never starts and its position ages toward the retention limit.
+A bounded run without checkpointing therefore holds the successors of a split or merge once, for up to the timeout plus the 30 seconds or less between checks, while its other partitions keep reading, and then starts every successor at once; enable checkpointing, or set `IMMEDIATE` when the run's consumer does not need the order.
+With `IMMEDIATE` nothing waits, but a job without checkpointing still logs the timeout's warning once, for its pending closes.
+The emulator does not implement Change Streams, so the reordering this prevents was measured on the Spanner source, whose coordinator has the same shape, and a scripted Bigtable stream reproduces it in the connector's tests; [ADR-0097]({{< param BookRepo >}}/blob/main/docs/adr/0097-the-bigtable-change-stream-coordinator-checkpoints-the-partition-ledger.md) records the decision.
 
 ### Checkpoints and region failover
 
@@ -511,18 +549,24 @@ Every partition the failed subtasks were given since that checkpoint restarts wh
 assigned, including one that closed since, and a partition that closed after the checkpoint is read
 again when a restored reader holds it.
 So a close becomes final only once a checkpoint taken after it completes.
-The successors of a partition read again already exist: its next close creates none, and a
-successor another reader already reads keeps running, so the order of the two is not restored.
+The successors of a partition read again already exist: its next close creates none.
+A successor still waiting for the close goes on waiting until the close of the re-read is final.
+A successor already read beside it, because the source runs at parallelism 1, the hand-off was
+immediate, the partition emitted nothing, or no checkpoint had completed in time, keeps running,
+so the order of the two is not restored.
 A reader also keeps a closed partition in its checkpoint until the coordinator acknowledges the
 close, so a restore from a checkpoint whose coordinator snapshot missed the close still creates
 the successors.
 
-Reading never waits for that checkpoint; only the coordinator's record of the close does.
+Reading the partition never waits for that checkpoint; only the coordinator's record of the close
+does, and, under the default hand-off, the start of its successors.
 A job without checkpointing never completes a checkpoint, so `firstCheckpointTimeout` (10 minutes
 by default) bounds the wait.
-Once a close has waited that long with none completed, the source logs a warning, and every close
-is final at once, so a region failover does not read it again, until a checkpoint completes.
-Zero keeps closes pending until one completes, one small entry per closed partition.
+Once a close has waited that long with none completed, the source logs a warning, every close is
+final at once, so a region failover does not read it again, and its successors start at once,
+until a checkpoint completes.
+Zero waits until one completes: closes stay pending, one small entry per closed partition, and
+successors wait.
 The coordinator learns positions from a report each reader sends when a checkpoint completes, and,
 until one does, from current positions at most once a second.
 [ADR-0097]({{< param BookRepo >}}/blob/main/docs/adr/0097-the-bigtable-change-stream-coordinator-checkpoints-the-partition-ledger.md)
@@ -544,7 +588,12 @@ can mark a split idle while it still has records, the watermark can then pass th
 event-time operator downstream drops them as late.
 That policy is an application-owned completeness/latency trade-off rather than a Bigtable guarantee:
 the service publishes no finite maximum lateness, and connector concurrency can leave a partition
-queued or unassigned before Flink has a split output for it.
+queued or unassigned before Flink has a split output for it, a successor for as long as it
+[waits for a checkpoint](#one-row-keys-changes-across-a-partition-split-or-merge).
+Under the default partition hand-off that happens at every split or merge, so a successor's first
+records arrive about a checkpoint interval plus a checkpoint's duration behind the other
+partitions' output; an out-of-orderness below that makes them late every time, and `IMMEDIATE`
+with a consumer that orders by commit timestamp and tie breaker avoids the delay.
 Configure downstream allowed lateness or late-data routing for records that violate the chosen
 assumption.
 The decision and the difference from Spanner's heartbeat contract are recorded in
@@ -1495,9 +1544,9 @@ A JobManager failover, or a JobManager that loses and regains leadership, starts
 | `splitsAssigned` | counter | splits handed to a reader. On the enumerator, so one set per job |
 | `splitsReturned` | counter | splits a failed reader gave back. On the enumerator |
 | `changeStreamPartitionsDiscovered` | counter | initial and successor service partitions first accepted into the coordinator ledger. On the enumerator; an enumerator that rebuilds its ledger after a restart, from scratch or from an older checkpoint, counts the partitions it accepts again |
-| `changeStreamPartitionSplits` | counter | successor partitions released from one parent, including a one-to-one move. On the enumerator |
-| `changeStreamPartitionMerges` | counter | successor partitions released after tokens from multiple parents cover their target. On the enumerator |
-| `unassignedChangeStreamPartitionLagMillis` | gauge | wall-clock lag of the oldest coordinator-held unassigned partition, or zero when none are unassigned. On the enumerator |
+| `changeStreamPartitionSplits` | counter | successor partitions created from one parent, including a one-to-one move; a counted successor may still wait for a checkpoint before it is assigned. On the enumerator |
+| `changeStreamPartitionMerges` | counter | successor partitions created once tokens from multiple parents cover their target; a counted successor may still wait for a checkpoint before it is assigned. On the enumerator |
+| `unassignedChangeStreamPartitionLagMillis` | gauge | wall-clock lag of the oldest unassigned partition in the coordinator, a successor waiting for a checkpoint included, or zero when none are unassigned. On the enumerator |
 | `changeStreamPartitionsReconciled` | counter | missing service partitions reconstructed from tokens or a tracked low watermark. On the enumerator |
 | `changeStreamTokenlessRestarts` | counter | reconciliations that had to restart without a continuation token after the long grace period. On the enumerator |
 | `rowKeySamplesTaken` | counter | `SampleRowKeys` calls, on the enumerator: one each time an enumerator's planning call completes, none for one that restored the plan. A checkpoint that starts after a rise records the plan unless the job restarts first, so once such a checkpoint has completed with no restart in between, a further rise means the plan was recomputed; in a run started from a savepoint or a checkpoint that recorded the plan, any rise does. Inside a `HybridSource`, each sub-source that plans adds its own rise. A recomputed plan would renumber the splits the readers hold |
@@ -1515,7 +1564,7 @@ If aggregate active reads reach `source parallelism * maxConcurrentStreamsPerSub
 If the goal is fewer reads and less callback work in each subtask without reducing aggregate capacity, increase source parallelism before lowering the per-subtask bound.
 
 Persistently queued partitions beside free read slots indicate a reader scheduling, rotation, or handover problem; infer free slots in a subtask from its configured bound minus its active and queued counts.
-Partitions stay unassigned only until every source subtask has reported its reads, and while a failed subtask restarts; persistently unassigned partitions indicate an assignment-protocol problem.
+Partitions beyond the subtasks' free read slots stay unassigned until every source subtask has reported its reads; partitions also stay unassigned while a failed subtask restarts and, under the default partition hand-off, while a successor waits for its parent's close to be final: the first checkpoint taken after the close must complete, and a close a region failover takes back waits until its re-read closes again and a checkpoint taken after that close completes. Unassigned partitions that persist for several checkpoint intervals while checkpoints complete, no subtask restarts and no partition is being read again after a failover indicate an assignment-protocol problem.
 Alert before the minimum active or queued low watermark, or the oldest unassigned position, approaches the table's configured Change Streams retention boundary.
 
 The connector metrics cannot reproduce Bigtable cluster load or retained log volume.

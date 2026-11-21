@@ -24,6 +24,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
@@ -65,6 +66,7 @@ class ConnectorEnumOptionSpellingTest {
         assertSpellings(InsertOnlyInputMode.class, "upsert", "insert-only");
         assertSpellings(MapFamilyUpdateMode.class, "merge", "replace");
         assertSpellings(OrderingMode.class, "none", "per-key");
+        assertSpellings(PartitionHandoff.class, "after-checkpoint", "immediate");
     }
 
     @Test
@@ -82,6 +84,7 @@ class ConnectorEnumOptionSpellingTest {
         assertRoundTrips(InsertOnlyInputMode.class);
         assertRoundTrips(MapFamilyUpdateMode.class);
         assertRoundTrips(OrderingMode.class);
+        assertRoundTrips(PartitionHandoff.class);
     }
 
     private static <E extends Enum<E>> void assertRoundTrips(Class<E> enumClass) {

@@ -84,10 +84,11 @@ public final class BigtableChangeStreamRecordEmitter<T>
                 if (result.isSkipped()) {
                     metrics.skippedWithoutChange();
                 } else {
-                    emitMutation(result.getMutation(), output);
+                    emitMutation(result.getMutation(), output, state);
                 }
             } else {
-                emitMutation(BigtableChangeStreamMutationConverter.convert(sdkMutation), output);
+                emitMutation(
+                        BigtableChangeStreamMutationConverter.convert(sdkMutation), output, state);
             }
             state.advance(
                     ChangeStreamContinuationToken.create(
@@ -132,12 +133,18 @@ public final class BigtableChangeStreamRecordEmitter<T>
                 "Unsupported Bigtable change-stream record " + record + ".");
     }
 
-    private void emitMutation(BigtableChangeStreamMutation mutation, SourceOutput<T> output)
+    private void emitMutation(
+            BigtableChangeStreamMutation mutation,
+            SourceOutput<T> output,
+            ChangeStreamPartitionSplitState state)
             throws Exception {
         long timestamp = mutation.getCommitTime().toEpochMilli();
         long emittedCount =
                 SynchronousDeserializationCollector.<T, Exception>deserialize(
-                        emitted -> output.collect(emitted, timestamp),
+                        emitted -> {
+                            state.markEmittedRecords();
+                            output.collect(emitted, timestamp);
+                        },
                         out -> deserializer.deserialize(mutation, out));
         if (emittedCount == 0) {
             metrics.skipped();
