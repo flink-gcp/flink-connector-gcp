@@ -40,14 +40,29 @@ public final class PartitionTransitionEvent implements SourceEvent {
     private final String finishedSplitId;
     private final Instant lowWatermark;
     private final List<Successor> successors;
+    private final boolean emittedRecords;
 
+    /**
+     * Creates the report of one closed partition.
+     *
+     * @param finishedSplitId the closed split
+     * @param lowWatermark the split's low watermark at its close
+     * @param successors the successors its {@code CloseStream} named
+     * @param emittedRecords whether the reporting reader attempt emitted any output record from the
+     *     split; a transition sent again after a restore says it did not, because what an earlier
+     *     attempt emitted before the restored checkpoint is downstream already
+     */
     public PartitionTransitionEvent(
-            String finishedSplitId, Instant lowWatermark, List<Successor> successors) {
+            String finishedSplitId,
+            Instant lowWatermark,
+            List<Successor> successors,
+            boolean emittedRecords) {
         this.finishedSplitId =
                 Preconditions.checkNotNull(finishedSplitId, "finishedSplitId must not be null");
         this.lowWatermark =
                 Preconditions.checkNotNull(lowWatermark, "lowWatermark must not be null");
         this.successors = Collections.unmodifiableList(new ArrayList<>(successors));
+        this.emittedRecords = emittedRecords;
     }
 
     public String getFinishedSplitId() {
@@ -60,6 +75,11 @@ public final class PartitionTransitionEvent implements SourceEvent {
 
     public List<Successor> getSuccessors() {
         return successors;
+    }
+
+    /** Returns whether the reporting reader attempt emitted any output record from the split. */
+    public boolean hasEmittedRecords() {
+        return emittedRecords;
     }
 
     /** One target range from CloseStream paired with the token that arrived from this parent. */

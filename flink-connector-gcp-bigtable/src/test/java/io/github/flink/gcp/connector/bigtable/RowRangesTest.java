@@ -319,6 +319,29 @@ class RowRangesTest {
     }
 
     @Test
+    void overlapsOnlyWhereARowKeyLiesInBoth() {
+        ByteStringRange left = ByteStringRange.unbounded().endOpen("m");
+        ByteStringRange right = ByteStringRange.unbounded().startClosed("m");
+
+        assertThat(RowRanges.overlaps(left, right)).isFalse();
+        assertThat(RowRanges.overlaps(ByteStringRange.unbounded().endClosed("m"), right)).isTrue();
+        assertThat(RowRanges.overlaps(ByteStringRange.unbounded(), left)).isTrue();
+        assertThat(
+                        RowRanges.overlaps(
+                                ByteStringRange.create("a", "c"), ByteStringRange.create("b", "z")))
+                .isTrue();
+        assertThat(
+                        RowRanges.overlaps(
+                                ByteStringRange.create("a", "b"), ByteStringRange.create("c", "d")))
+                .isFalse();
+        // An empty key spells an unbounded end in the service's ranges.
+        assertThat(
+                        RowRanges.overlaps(
+                                ByteStringRange.create("a", ""), ByteStringRange.create("x", "y")))
+                .isTrue();
+    }
+
+    @Test
     void intersectsTwoRangeUnionsWithoutChangingTheirInputs() {
         List<ByteStringRange> left = Arrays.asList(range("a", "f"), range("m", "z"));
         List<ByteStringRange> right = Arrays.asList(range("d", "p"), range("x", "zz"));

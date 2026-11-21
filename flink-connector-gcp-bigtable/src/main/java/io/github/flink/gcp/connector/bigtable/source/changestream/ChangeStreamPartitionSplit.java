@@ -120,11 +120,13 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
     /**
      * Returns the transition this closed split reports.
      *
+     * @param emittedRecords whether the reporting reader attempt emitted any output record from
+     *     this split
      * @return the event naming this split, its low watermark and its successors
      */
-    public PartitionTransitionEvent toTransitionEvent() {
+    public PartitionTransitionEvent toTransitionEvent(boolean emittedRecords) {
         Preconditions.checkState(isClosed(), "split %s has not closed", splitId);
-        return new PartitionTransitionEvent(splitId, lowWatermark, closeSuccessors);
+        return new PartitionTransitionEvent(splitId, lowWatermark, closeSuccessors, emittedRecords);
     }
 
     /**

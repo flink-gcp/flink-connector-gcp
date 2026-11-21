@@ -462,6 +462,17 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   closes are final at once until one completes. Readers, not the coordinator, check restored
   assigned splits against retention: the ledger's copy lags one completed checkpoint. A restored
   closed split that has expired is read again from `resumeFallback`, never reported.
+- **Successors wait for the close to be final** (#2194, the Spanner hold of ADR-0099). Create
+  successors when the transition arrives and gate only their assignment: the covering snapshot must
+  carry them. `heldParents` blocks every unassigned split created *after* a held partition whose
+  range overlaps it; never drop the creation-order check (two holds would wait for each other) and
+  never switch to a per-child list (partial-token and tokenless recoveries escape it). Release a
+  hold only through a final close or the timeout; a close taken back keeps its hold and its age.
+  The timeout clears holds but keeps a re-read's `rereads` mark. No hold at parallelism 1, under
+  `PartitionHandoff.IMMEDIATE`, or when the transition says the reader attempt emitted nothing; a
+  restored re-sent transition says so. Any loop over `unassigned` must skip held splits, through
+  `isAssignable`, whose `blockers` cache is valid only while the cached blocker is still held:
+  without it, a mass close costs coordinator time cubic in the partitions (33.7 s for 2000).
 - **Every transition is acknowledged; applying one is idempotent.** A reader keeps a closed split
   (split format v2 carries its successors) until `PartitionTransitionAckEvent`, re-sends it from
   `start()` after a restore, and does not report `END_OF_INPUT` before every ack. The coordinator

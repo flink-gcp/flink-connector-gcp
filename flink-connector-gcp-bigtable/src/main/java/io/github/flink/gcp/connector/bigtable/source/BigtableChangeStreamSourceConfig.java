@@ -70,6 +70,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     private final ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     private final boolean exportClientMetricsToFlink;
     private final Duration firstCheckpointTimeout;
+    private final PartitionHandoff partitionHandoff;
 
     BigtableChangeStreamSourceConfig(
             TableDestination table,
@@ -85,7 +86,8 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             ChangeStreamRestoreResolver restoreResolver,
             ChangeStreamCoordinatorClientFactory coordinatorClientFactory,
             boolean exportClientMetricsToFlink,
-            Duration firstCheckpointTimeout) {
+            Duration firstCheckpointTimeout,
+            PartitionHandoff partitionHandoff) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
@@ -113,14 +115,21 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
         this.firstCheckpointTimeout =
                 Preconditions.checkNotNull(
                         firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
+        this.partitionHandoff =
+                Preconditions.checkNotNull(partitionHandoff, "partitionHandoff must not be null");
     }
 
     /**
-     * Returns how long after the coordinator starts without a completed checkpoint every close
-     * becomes final at once; zero waits indefinitely.
+     * Returns how long a close or a held successor waits for a completed checkpoint before every
+     * close becomes final and every successor starts at once; zero waits indefinitely.
      */
     public Duration getFirstCheckpointTimeout() {
         return firstCheckpointTimeout;
+    }
+
+    /** Returns when a partition's successors start after it closes. */
+    public PartitionHandoff getPartitionHandoff() {
+        return partitionHandoff;
     }
 
     /** Returns the table whose change stream is read. */

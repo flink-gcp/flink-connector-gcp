@@ -240,6 +240,22 @@ class BigtableChangeStreamSourceBuilderTest {
     }
 
     @Test
+    void holdsSuccessorsUntilACheckpointByDefault() {
+        assertThat(minimal().build().getConfig().getPartitionHandoff())
+                .isEqualTo(PartitionHandoff.AFTER_CHECKPOINT);
+        assertThat(
+                        minimal()
+                                .partitionHandoff(PartitionHandoff.IMMEDIATE)
+                                .build()
+                                .getConfig()
+                                .getPartitionHandoff())
+                .isEqualTo(PartitionHandoff.IMMEDIATE);
+        assertThatThrownBy(() -> minimal().partitionHandoff(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("partitionHandoff must not be null");
+    }
+
+    @Test
     void waitsTenMinutesForAFirstCheckpointByDefaultAndBoundsTheWait() {
         assertThat(minimal().build().getConfig().getFirstCheckpointTimeout())
                 .isEqualTo(Duration.ofMinutes(10));

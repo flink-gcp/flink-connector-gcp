@@ -1144,13 +1144,35 @@ because the same value paces how the reader rotates queued partitions in.
 [ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md)
 records that decision.
 
+At source parallelism above 1, a partition's successors start by default only after a checkpoint
+taken after the partition closed has completed, so one row key's changes reach a
+`ChangelogNormalize`, an aggregation or an upsert sink in commit order across a partition split or
+merge, within the limits the DataStream page describes.
+Each split or merge then delays its successors until the next checkpoint completes, up to one
+checkpoint interval plus that checkpoint's own duration.
+`'scan.change-stream.partition-handoff' = 'immediate'` starts them at once, for a consumer that
+orders each row key's changes by their commit timestamp and tie breaker, such as one reading the
+selected-cell mode's `scan.change-stream.commit-timestamp-column` and
+`scan.change-stream.tie-breaker-column`.
+A job without checkpointing, such as a bounded backfill, holds the successors of one split or
+merge for up to `scan.first-checkpoint-timeout` while its other partitions keep reading, and then
+starts successors at once with a warning.
+The timeout counts from a close and applies until the first checkpoint completes, so a job whose
+checkpoint interval plus a checkpoint's duration exceeds it starts successors at once until then;
+raise it above that.
+An application-owned watermark should allow for the delay too: a successor's first records arrive
+about a checkpoint interval behind the other partitions' output.
+[One row key's changes across a partition split or merge]({{< relref "docs/connectors/datastream/bigtable" >}}#one-row-keys-changes-across-a-partition-split-or-merge)
+describes the wait, its limits under unaligned checkpoints, asynchronous operators and failover,
+and what a job without checkpointing does.
+
 Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
 queryable metadata.
 The `estimated-low-watermark` value belongs to the partition that produced the mutation; it is not
 a safe stream-wide event-time frontier, and the connector does not provide native
 `SOURCE_WATERMARK()` support.
 Bigtable permits a future record below a previously observed estimate, so including queued and
-enumerator-held partitions would still not satisfy Flink's non-early contract.
+unassigned partitions in the enumerator would still not satisfy Flink's non-early contract.
 
 Do not declare `SOURCE_WATERMARK()` for this connector.
 Flink can retain that expression in a separate watermark operator when the source does not support
@@ -1276,7 +1298,8 @@ DataStream builder.
 | `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
 | `scan.bounded.timestamp-millis` | Long | `boundedTimestamp(...)`; makes Change Streams bounded at the epoch-millisecond instant. Requires `scan.mode = change-stream`; the separate `scan.mode = bounded` value selects a finite scan of the current table |
 | `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
-| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout(...)`: how long a closed partition waits for a completed checkpoint before every close is final at once; zero keeps closes pending until one completes, and a positive value must be at least 1 ms. Unset keeps the builder default of 10 minutes |
+| `scan.change-stream.partition-handoff` | Enum | `partitionHandoff(...)`: when a partition's successors start after it closes. `after-checkpoint` waits, at source parallelism above 1 and after a partition that emitted a record, for a checkpoint taken after the close, keeping one row key's changes in commit order across a split or merge; `immediate` starts them at once. Unset keeps the builder default of `after-checkpoint` |
+| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout(...)`: how long a closed partition, or a successor waiting for one, waits for a completed checkpoint before every close is final at once and its successors start at once, until a checkpoint completes; once one has completed since the source started it no longer applies. Zero waits until one completes, which without checkpointing means a held successor never starts; a positive value must be at least 1 ms. Unset keeps the builder default of 10 minutes |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Lookup

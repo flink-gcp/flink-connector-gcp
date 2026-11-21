@@ -393,7 +393,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         false,
                         Clock.fixed(metricTime, ZoneOffset.UTC),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
 
@@ -443,7 +444,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 new PartitionTransitionEvent(
                         parent.splitId(),
                         parent.getLowWatermark(),
-                        Arrays.asList(successor(LEFT, "left"), successor(RIGHT, "right"))));
+                        Arrays.asList(successor(LEFT, "left"), successor(RIGHT, "right")),
+                        false));
 
         // Where the children went is the assignment policy's business; that both exist at once,
         // each with its own token, is this test's.
@@ -761,7 +763,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         false,
                         Clock.systemUTC(),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -834,7 +837,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         true,
                         Clock.fixed(base, ZoneOffset.UTC),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
 
@@ -906,7 +910,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         true,
                         Clock.fixed(now, ZoneOffset.UTC),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -984,7 +989,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         true,
                         false,
                         Clock.systemUTC(),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -992,7 +998,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.handleSourceEvent(
                 0,
                 new PartitionTransitionEvent(
-                        only.splitId(), only.getLowWatermark(), Collections.emptyList()));
+                        only.splitId(), only.getLowWatermark(), Collections.emptyList(), false));
         assertThat(context.readersToldNoMoreSplits()).containsExactly(0);
 
         // SourceCoordinator registers a reader in its context before addReader reaches us.
@@ -1022,7 +1028,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         true,
                         false,
                         Clock.systemUTC(),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1034,13 +1041,16 @@ class BigtableChangeStreamSplitEnumeratorTest {
         enumerator.handleSourceEvent(
                 0,
                 new PartitionTransitionEvent(
-                        first.splitId(), first.getLowWatermark(), Collections.emptyList()));
+                        first.splitId(), first.getLowWatermark(), Collections.emptyList(), false));
 
         assertThat(context.readersToldNoMoreSplits()).isEmpty();
         enumerator.handleSourceEvent(
                 1,
                 new PartitionTransitionEvent(
-                        second.splitId(), second.getLowWatermark(), Collections.emptyList()));
+                        second.splitId(),
+                        second.getLowWatermark(),
+                        Collections.emptyList(),
+                        false));
         assertThat(context.readersToldNoMoreSplits()).containsExactly(0, 1, 2);
         enumerator.close();
     }
@@ -1222,7 +1232,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         true,
                         clock,
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1256,7 +1267,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         true,
                         false,
                         Clock.systemUTC(),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         assertThat(context.readersToldNoMoreSplits()).isEmpty();
@@ -1436,7 +1448,14 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 ScriptedChangeStreamCoordinatorClient.with(WHOLE);
         BigtableChangeStreamSplitEnumerator enumerator =
                 new BigtableChangeStreamSplitEnumerator(
-                        context, client, StartPosition.latest(), null, null, false, Duration.ZERO);
+                        context,
+                        client,
+                        StartPosition.latest(),
+                        null,
+                        null,
+                        false,
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         int beforeScan = client.retentionCalls();
@@ -1669,7 +1688,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         false,
                         clock,
-                        Duration.ofMinutes(10));
+                        Duration.ofMinutes(10),
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSourceEvent(0, new ReaderCapacityEvent(3, 0, 0));
@@ -1754,7 +1774,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 new PartitionTransitionEvent(
                         parent.splitId(),
                         parent.getLowWatermark(),
-                        Collections.singletonList(successor(WHOLE, "successor"))));
+                        Collections.singletonList(successor(WHOLE, "successor")),
+                        false));
         context.unregisterReader(0);
 
         context.runAsyncCalls();
@@ -1851,7 +1872,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         false,
                         false,
                         clock,
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1877,7 +1899,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         true,
                         false,
                         Clock.systemUTC(),
-                        Duration.ZERO);
+                        Duration.ZERO,
+                        true);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1927,7 +1950,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 false,
                 false,
                 Clock.systemUTC(),
-                Duration.ZERO);
+                Duration.ZERO,
+                true);
     }
 
     private static BigtableChangeStreamSplitEnumerator reconciling(
@@ -1944,7 +1968,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 false,
                 true,
                 Clock.fixed(now, ZoneOffset.UTC),
-                Duration.ZERO);
+                Duration.ZERO,
+                true);
     }
 
     private static BigtableChangeStreamSplitEnumerator boundedReconciling(
@@ -1961,7 +1986,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 true,
                 true,
                 clock,
-                Duration.ZERO);
+                Duration.ZERO,
+                true);
     }
 
     private static BigtableChangeStreamEnumeratorState restoredWithMissing(
@@ -1998,7 +2024,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
     private static PartitionTransitionEvent transition(
             ChangeStreamPartitionSplit parent, PartitionTransitionEvent.Successor... successors) {
         return new PartitionTransitionEvent(
-                parent.splitId(), parent.getLowWatermark(), Arrays.asList(successors));
+                parent.splitId(), parent.getLowWatermark(), Arrays.asList(successors), false);
     }
 
     private static PartitionTransitionEvent.Successor successor(

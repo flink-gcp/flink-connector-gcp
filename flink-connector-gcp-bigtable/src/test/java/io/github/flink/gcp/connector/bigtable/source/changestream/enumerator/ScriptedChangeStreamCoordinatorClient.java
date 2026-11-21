@@ -72,6 +72,12 @@ final class ScriptedChangeStreamCoordinatorClient implements ChangeStreamCoordin
         closeCalls++;
     }
 
+    /** Answers later scans with these partitions, as a table whose tablets moved does. */
+    void replacePartitions(ByteStringRange... replacements) {
+        partitions.clear();
+        partitions.addAll(Arrays.asList(replacements));
+    }
+
     /** Fails the next partition generation, as a scan against a live table can. */
     void failNextGenerationWith(RuntimeException failure) {
         failNextGeneration = failure;
