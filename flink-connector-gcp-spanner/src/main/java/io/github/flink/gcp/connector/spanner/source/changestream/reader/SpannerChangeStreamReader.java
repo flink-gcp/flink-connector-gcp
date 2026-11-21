@@ -54,8 +54,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -112,6 +114,17 @@ import java.util.function.LongSupplier;
  * {@code finishedUnackedSplits}. A re-sent finish says that nothing was emitted: what the earlier
  * attempt emitted before the restored checkpoint is downstream already.
  *
+ * <p>Flink creates a split output for every split a reader restores, finished ones included, and
+ * this reader otherwise releases an output only when a query finishes. It therefore releases the
+ * output of each restored finished split, and of each restored split a fallback discards, at the
+ * top of the next {@link #pollNext(ReaderOutput)}, unless a split with the same id is queued or
+ * running again by then: that split shares the output, and its own finish releases it. In streaming
+ * execution, Flink fails the task on releasing an output it does not hold, so no output is released
+ * twice. An output nothing emits to would otherwise stay registered for the task attempt and, under
+ * a timestamp-based watermark strategy without idleness, hold the split-local watermark at {@code
+ * Long.MIN_VALUE}; the coordinator's source watermark, which goes through the main output, is
+ * unaffected.
+ *
  * <h2>Progress reports</h2>
  *
  * <p>The coordinator learns positions from two reports, never from one event per record. When a
@@ -161,6 +174,9 @@ public final class SpannerChangeStreamReader<T>
     /** Finished splits the coordinator has not acknowledged, in finish order. */
     private final Map<String, ChangeStreamPartitionSplit> finishedUnacknowledged =
             new LinkedHashMap<>();
+
+    /** Restored splits no query will finish, whose outputs Flink created and nothing released. */
+    private final Set<String> outputsToRelease = new LinkedHashSet<>();
 
     private final Object availabilityLock = new Object();
     private CompletableFuture<Void> availability = new CompletableFuture<>();
@@ -312,9 +328,14 @@ public final class SpannerChangeStreamReader<T>
                     !coordinatorInitialized,
                     "Spanner Change Streams reader received initialization more than once.");
             if (initialization.shouldDiscardRestoredSplits()) {
+                // No query opened before initialization, so every queued split is a restored one.
+                for (ChangeStreamPartitionSplit split : queued) {
+                    outputsToRelease.add(split.splitId());
+                }
                 queued.clear();
                 finishedUnacknowledged.clear();
                 metrics.queued(queued);
+                signalAvailable();
             }
             acceptSourceWatermark(initialization.getSourceWatermark());
             coordinatorInitialized = true;
@@ -349,6 +370,7 @@ public final class SpannerChangeStreamReader<T>
 
     @Override
     public InputStatus pollNext(ReaderOutput<T> output) throws Exception {
+        releaseRestoredOutputs(output);
         if (sourceWatermarkPending) {
             output.emitWatermark(new Watermark(pendingSourceWatermark));
             emittedSourceWatermark = pendingSourceWatermark;
@@ -384,6 +406,31 @@ public final class SpannerChangeStreamReader<T>
             return InputStatus.MORE_AVAILABLE;
         }
         return finished() ? InputStatus.END_OF_INPUT : InputStatus.NOTHING_AVAILABLE;
+    }
+
+    /**
+     * Releases the outputs Flink created for restored splits that no query will finish. A split
+     * queued or running under the same id shares the output, and its finish releases it.
+     */
+    private void releaseRestoredOutputs(ReaderOutput<T> output) {
+        if (outputsToRelease.isEmpty()) {
+            return;
+        }
+        for (String splitId : outputsToRelease) {
+            if (!active.containsKey(splitId) && !isQueued(splitId)) {
+                output.releaseOutputForSplit(splitId);
+            }
+        }
+        outputsToRelease.clear();
+    }
+
+    private boolean isQueued(String splitId) {
+        for (ChangeStreamPartitionSplit split : queued) {
+            if (split.splitId().equals(splitId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void emit(SpannerChangeStreamRecord record, ActiveQuery query, ReaderOutput<T> output)
@@ -506,7 +553,10 @@ public final class SpannerChangeStreamReader<T>
     @Override
     public CompletableFuture<Void> isAvailable() {
         synchronized (availabilityLock) {
-            if (sourceWatermarkPending || firstAvailable() != null || finished()) {
+            if (sourceWatermarkPending
+                    || !outputsToRelease.isEmpty()
+                    || firstAvailable() != null
+                    || finished()) {
                 return CompletableFuture.completedFuture(null);
             }
             return availability;
@@ -519,8 +569,9 @@ public final class SpannerChangeStreamReader<T>
         for (ChangeStreamPartitionSplit split : splits) {
             if (split.awaitsFinishAcknowledgement()) {
                 // Only a restore hands this reader a finished split: the coordinator assigns
-                // unfinished ones.
+                // unfinished ones. Flink created an output for it, which nothing will emit to.
                 finishedUnacknowledged.put(split.splitId(), split);
+                outputsToRelease.add(split.splitId());
             } else {
                 queued.add(split);
             }
@@ -652,6 +703,7 @@ public final class SpannerChangeStreamReader<T>
         active.clear();
         queued.clear();
         finishedUnacknowledged.clear();
+        outputsToRelease.clear();
         checkpointProgress.clear();
         metrics.closed();
         signalAvailable();
