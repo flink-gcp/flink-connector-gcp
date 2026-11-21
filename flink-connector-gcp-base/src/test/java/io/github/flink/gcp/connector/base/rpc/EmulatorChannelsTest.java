@@ -19,10 +19,13 @@ package io.github.flink.gcp.connector.base.rpc;
 import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.ServerSocket;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,6 +35,11 @@ class EmulatorChannelsTest {
 
     private static final EmulatorEndpoint ENDPOINT =
             EmulatorEndpoint.parse("localhost:8086", "emulatorEndpoint");
+
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isRunning()).as("an event-loop lease was left open").isFalse();
+    }
 
     @Test
     void theProviderDialsTheEndpointOverPlaintext() {
@@ -92,6 +100,33 @@ class EmulatorChannelsTest {
     }
 
     @Test
+    void aLeasedChannelDialsTheEndpointOnTheGroupAndReleasesItOnClose() throws Exception {
+        try (ServerSocket server = new ServerSocket(0)) {
+            GrpcEventLoops.LeasedClient<GrpcTransportChannel> leased =
+                    EmulatorChannels.openLeasedPlaintextChannel(
+                            EmulatorEndpoint.parse(
+                                    "127.0.0.1:" + server.getLocalPort(), "emulatorEndpoint"));
+            try {
+                FixedTransportChannelProvider provider = EmulatorChannels.fixedProvider(leased);
+                assertThat(provider.shouldAutoClose()).isFalse();
+                assertThat(provider.getTransportChannel()).isSameAs(leased.client());
+
+                // Connecting registers the channel on an event loop, which starts its thread.
+                ManagedChannel channel = (ManagedChannel) leased.client().getChannel();
+                assertThat(channel.authority()).isEqualTo("127.0.0.1:" + server.getLocalPort());
+                channel.getState(true);
+                assertThat(GrpcEventLoopThreads.awaitAlive())
+                        .as("a group thread once the channel connects")
+                        .isTrue();
+            } finally {
+                leased.close();
+            }
+            assertThat(leased.client().isTerminated()).isTrue();
+            assertThat(GrpcEventLoops.isRunning()).isFalse();
+        }
+    }
+
+    @Test
     void rejectsNull() {
         assertThatThrownBy(() -> EmulatorChannels.plaintextProvider(anApiDefaultBuilder(), null))
                 .isInstanceOf(NullPointerException.class)
@@ -102,7 +137,16 @@ class EmulatorChannelsTest {
         assertThatThrownBy(() -> EmulatorChannels.openPlaintextChannel(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("endpoint must not be null");
-        assertThatThrownBy(() -> EmulatorChannels.fixedProvider(null))
+        assertThatThrownBy(() -> EmulatorChannels.openLeasedPlaintextChannel(null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("endpoint must not be null");
+        assertThatThrownBy(() -> EmulatorChannels.fixedProvider((ManagedChannel) null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("channel must not be null");
+        assertThatThrownBy(
+                        () ->
+                                EmulatorChannels.fixedProvider(
+                                        (GrpcEventLoops.LeasedClient<GrpcTransportChannel>) null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessage("channel must not be null");
     }
