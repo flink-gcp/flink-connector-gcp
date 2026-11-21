@@ -1460,7 +1460,7 @@ Declined: a dedicated `in-flight` trial input, because every FILE_LOADS trial's 
 The cluster recovery trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362) writes through the staged Cloud Tasks sink to a queue its lifecycle creates paused for the run ([#1768](https://github.com/flink-gcp/flink-connector-gcp/issues/1768)).
 Three custom roles carry the queue access, each holding only what its identity calls.
 The runner creates the queue, pauses it and reads it back, so that only a paused queue with the retention the staged sink requires is admitted.
-The supervisor reads the queue, lists its tasks for the oracle, which compares task names and so needs no full task view, and deletes it at cleanup.
+The supervisor reads the queue, lists its tasks for the oracle, and deletes it at cleanup; it lists them in the full view, which `cloudtasks.tasks.fullView` authorizes, because the oracle checks each task's body against its name ([#2250](https://github.com/flink-gcp/flink-connector-gcp/issues/2250)).
 The workload creates tasks and reads the queue, because the sink's committer reads `tombstoneTtl` back before its first create.
 The runner and supervisor also take the benchmark bucket's run-prefix state access the BigQuery bucket grants, `.inprogress/` staging included, because the shared cleanup lists and deletes a run's state as either actor.
 
@@ -1497,7 +1497,7 @@ BigQuery's runner serves queries until the run closes and releases only then, an
 BigQuery's runner token is not carried over: it keeps the supervisor from adopting a binding written by a process other than the submitting runner, and here the release is the only write the supervisor waits on, written only by the controller the dispatching runner builds, since the recovery workflow's plain runner builds none.
 
 The oracle reads the listing, not a counter: the supervisor lists the paused queue's tasks and exports each page as evidence before it decides, so the offline analyzer recomputes the report from the same pages.
-A failing listing is repeated only while another attempt as long as the last still fits the listing window, transient listing errors are retried, and a listing call still failing when the window closes, however it fails, leaves the last whole attempt in place, while a non-transient error before then ends the run, the window closing a minute before the cleanup start at the latest so that the record can still be written, so a listing that keeps failing is recorded as the trial's finding, with what was missing, repeated, foreign or dispatched, rather than lost to the deadline.
+A failing listing is repeated only while another attempt as long as the last still fits the listing window, transient listing errors are retried, and a listing call still failing when the window closes, however it fails, leaves the last whole attempt in place, while a non-transient error before then ends the run, the window closing a minute before the cleanup start at the latest so that the record can still be written, so a listing that keeps failing is recorded as the trial's finding, with what was missing, repeated, foreign, dispatched or carrying another body, rather than lost to the deadline.
 No query budget or slot accounting is carried over: a listing costs operations priced in the estimate, not billed bytes.
 
 ### Cloud Tasks deployed trial findings

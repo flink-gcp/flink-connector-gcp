@@ -13,7 +13,6 @@
 # limitations under the License.
 """Offline Cloud Tasks proposal contracts; cloud access is never invoked."""
 
-import copy
 import hashlib
 import json
 from decimal import Decimal
@@ -26,98 +25,9 @@ from flink_tier3.cloudtasks.trial import Trial
 from flink_tier3.common import Failure, digest
 from flink_tier3.policy import CLOUDTASKS_OBSERVATIONS, GAR, POLL
 
-RUN_ID = "ct-proposal"
-
-
-@pytest.fixture
-def inputs():
-    return {
-        "run_id": RUN_ID,
-        "nonce": "a" * 32,
-        "started_at": "2026-10-13T00:00:00Z",
-        "expires_at": "2026-10-13T01:30:00Z",
-        "active_seconds": 5220,
-        "revision": "b" * 40,
-        "application_image": GAR + "cloudtasks-recovery@sha256:" + "c" * 64,
-        "trial": plan.trial("jm-replacement"),
-    }
-
-
-@pytest.fixture
-def renderer(monkeypatch):
-    """What `lifecycle/cloudtasks.cue` renders, as the CUE suite pins it."""
-    calls = []
-
-    def render(run_id, nonce, expiry, seconds, **options):
-        calls.append((run_id, nonce, expiry, seconds, options))
-        trial = Trial(
-            run_id,
-            options["cloudtasks_records"],
-            options["cloudtasks_records_per_second"],
-            options["cloudtasks_trial"],
-        )
-        size = trial.parallelism("initial")
-        resources = {
-            category: dict(plan.POD_RESOURCES["smoke"])
-            for category in ("requests", "limits")
-        }
-        initial = {
-            "metadata": {
-                "name": run_id,
-                "namespace": "tier3-cloudtasks",
-                "annotations": {
-                    "flink-gcp.io/approval": nonce,
-                    "flink-gcp.io/expires-at": expiry,
-                },
-            },
-            "spec": {
-                "image": options["application_image"],
-                "jobManager": {"replicas": 1, "resource": {"cpu": 1, "memory": "2Gi"}},
-                "taskManager": {
-                    "replicas": size,
-                    "resource": {"cpu": 1, "memory": "2Gi"},
-                },
-                "job": {"parallelism": size, "args": trial.arguments("initial")},
-            },
-        }
-        for manager in ("jobManager", "taskManager"):
-            initial["spec"][manager]["podTemplate"] = {
-                "spec": {"containers": [{"resources": copy.deepcopy(resources)}]}
-            }
-        upgrade = copy.deepcopy(initial)
-        upgrade["spec"]["job"]["args"] = trial.arguments("upgrade")
-        upgrade["spec"]["job"]["parallelism"] = trial.parallelism("upgrade")
-        upgrade["spec"]["taskManager"]["replicas"] = trial.parallelism("upgrade")
-        delivery = {
-            "config": {
-                "data": {
-                    "approval.json": "{}",
-                    "application.json": json.dumps(initial),
-                    "upgrade-application.json": json.dumps(upgrade),
-                }
-            },
-            "supervisor": {
-                "spec": {
-                    "template": {
-                        "spec": {
-                            "containers": [
-                                {
-                                    "resources": {
-                                        category: dict(plan.POD_RESOURCES["supervisor"])
-                                        for category in ("requests", "limits")
-                                    },
-                                    "image": GAR + "lifecycle-tools@sha256:" + "d" * 64,
-                                }
-                            ]
-                        }
-                    }
-                }
-            },
-        }
-        return initial, upgrade, delivery
-
-    monkeypatch.setattr(proposal, "render", render)
-    return calls
+from ..dispatched import RUN_ID
+from ..dispatched import inputs as inputs  # noqa: PLC0414
+from ..dispatched import renderer as renderer  # noqa: PLC0414
 
 
 def test_a_task_name_is_the_sha256_of_the_run_and_sequence():
@@ -210,7 +120,7 @@ def test_the_arguments_are_the_ones_the_cue_package_renders():
         "100",
         "--require-restored",
         "false",
-        "--sink-parallelism",
+        "--parallelism",
         "2",
     ]
     upgrade = trial.arguments("upgrade")
@@ -218,8 +128,8 @@ def test_the_arguments_are_the_ones_the_cue_package_renders():
         i for i, (a, b) in enumerate(zip(trial.arguments("initial"), upgrade)) if a != b
     ] == [5, 11]
     rescale = Trial(RUN_ID, 180000, 100, "rescale-in")
-    assert rescale.arguments("initial")[-2:] == ["--sink-parallelism", "2"]
-    assert rescale.arguments("upgrade")[-2:] == ["--sink-parallelism", "1"]
+    assert rescale.arguments("initial")[-2:] == ["--parallelism", "2"]
+    assert rescale.arguments("upgrade")[-2:] == ["--parallelism", "1"]
 
 
 @pytest.mark.parametrize(
@@ -239,21 +149,35 @@ def test_the_arguments_are_the_ones_the_cue_package_renders():
         {"records": 180000, "records_per_second": 100},
         {"kind": "upgrade-failover", "records": 180000, "records_per_second": 100},
         ["jm-replacement"],
+        # Each kind's input is its own: the sequence's is not the single faults'.
+        {"kind": "sequence", "records": 180000, "records_per_second": 100},
+        {"kind": "jm-replacement", "records": 3600, "records_per_second": 10},
     ],
 )
-def test_only_the_four_trials_are_dispatchable(value):
-    with pytest.raises(ValueError, match="180,000 records at 100"):
+def test_only_the_five_trials_are_dispatchable(value):
+    with pytest.raises(ValueError, match="with its fixed input"):
         plan.validate_trial(value)
 
 
-@pytest.mark.parametrize("kind", plan.KINDS)
-def test_each_trial_is_its_kind_and_the_fixed_input(kind):
+@pytest.mark.parametrize("kind", [kind for kind in plan.KINDS if kind != "sequence"])
+def test_each_single_fault_trial_is_its_kind_and_the_fixed_input(kind):
     plan.validate_trial(plan.trial(kind))
     assert plan.trial(kind) == {
         "kind": kind,
         "records": 180000,
         "records_per_second": 100,
     }
+
+
+def test_the_sequence_trial_is_six_minutes_of_input_at_two_subtasks():
+    """The fault sequence (ADR-0204) starts and upgrades at two, as a
+    JobManager replacement does, and patches its rescales itself."""
+    trial = plan.trial("sequence")
+    plan.validate_trial(trial)
+    assert trial == {"kind": "sequence", "records": 3600, "records_per_second": 10}
+    identity = Trial(RUN_ID, **trial)
+    assert (identity.parallelism("initial"), identity.parallelism("upgrade")) == (2, 2)
+    assert identity.arguments("upgrade")[-2:] == ["--parallelism", "2"]
 
 
 def test_an_unknown_kind_has_no_trial():

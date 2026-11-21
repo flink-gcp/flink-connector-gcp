@@ -48,9 +48,6 @@ class SequenceWorld(World):
 
     def __init__(self, prepared, monkeypatch):
         super().__init__(prepared, monkeypatch, exercise=Sequenced)
-        args = self.upgrade["spec"]["job"]["args"]
-        if "--parallelism" not in args:
-            args += ["--parallelism", "2"]
         self.exercise.upgrade = self.upgrade
         self.emitted = []
         self.patch_errors = []

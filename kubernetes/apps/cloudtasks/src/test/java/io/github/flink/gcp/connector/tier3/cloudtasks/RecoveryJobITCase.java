@@ -99,7 +99,7 @@ class RecoveryJobITCase {
         var options =
                 RecoveryOptions.parse(
                         RecoveryOptionsTest.arguments(
-                                "--sink-parallelism", String.valueOf(parallelism)));
+                                "--parallelism", String.valueOf(parallelism)));
         var env = StreamExecutionEnvironment.getExecutionEnvironment();
         CloudTasksRecoveryJob.configure(
                 env,
@@ -140,7 +140,7 @@ class RecoveryJobITCase {
                                     "300",
                                     "--records-per-second",
                                     "20",
-                                    "--sink-parallelism",
+                                    "--parallelism",
                                     before));
             var first = start(initial, server, null);
             String savepoint;
@@ -171,7 +171,7 @@ class RecoveryJobITCase {
                                     "upgrade",
                                     "--require-restored",
                                     "true",
-                                    "--sink-parallelism",
+                                    "--parallelism",
                                     after));
             var second = start(upgrade, server, savepoint);
             try {

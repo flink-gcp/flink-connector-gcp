@@ -14,76 +14,20 @@
 """Queue intent, paused admission, release and cleanup over a fake queue."""
 
 import copy
-from types import SimpleNamespace
 
 import pytest
 from flink_tier3.cloudtasks.lifecycle import CloudTasksLifecycle
 from flink_tier3.cloudtasks.queue import QUEUE_CONFIGURATION
 from flink_tier3.cloudtasks.trial import Trial
-from flink_tier3.common import ApiError, Failure, TransportError, digest
-from flink_tier3.model import Phase, RunRecord
-from flink_tier3.records import Records
+from flink_tier3.common import ApiError, Failure, TransportError
+from flink_tier3.model import Phase
 from flink_tier3.resource import require_resources_clean
 from flink_tier3.rest import Unsent
 
-from ..test_lifecycle import Store
+from ..controller_environment import TRIAL, Environment, application
+from ..doubles import NOW
 
-NOW = 1700000000
-TRIAL = Trial("ct-lifecycle", 100, 10)
 DEADLINE = NOW + 600
-
-
-def application(trial=TRIAL):
-    return {
-        "metadata": {"name": trial.run_id, "namespace": "tier3-cloudtasks"},
-        "spec": {"job": {"args": trial.arguments("initial")}},
-    }
-
-
-class Environment:
-    """The controller's caller contract, over generation-checked storage."""
-
-    def __init__(self, trial=TRIAL):
-        self.approval = SimpleNamespace(
-            scenario="cloudtasks-recovery",
-            run_id=trial.run_id,
-            nonce="a" * 32,
-            cloudtasks_plan=trial,
-            application_sha256=digest(application(trial)),
-        )
-        self.actor = "runner"
-        self.now = NOW
-        self.owner = True
-        self.store = Store()
-        self.records = Records(self.store, self.approval, lambda: self.now)
-        self.store.write(self.records.path, RunRecord("a" * 32).to_dict())
-        self.events = []
-
-    def clock(self):
-        return self.now
-
-    def sleep(self, seconds):
-        self.now += seconds
-
-    def emit(self, event, payload):
-        self.events.append((event, payload))
-
-    def assert_owner(self):
-        if not self.owner:
-            raise Failure("Environment ownership lost")
-
-    def refresh(self):
-        return self.records.read()[0]
-
-    def admission_open(self):
-        self.assert_owner()
-        record = self.refresh()
-        if (
-            record.phase not in (Phase.APPROVED, Phase.READY)
-            or record.stop_requested
-            or record.evidence_failed
-        ):
-            raise Failure("Admission closed")
 
 
 class FakeQueue:

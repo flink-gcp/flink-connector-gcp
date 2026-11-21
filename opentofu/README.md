@@ -192,7 +192,7 @@ Its [GCP grants](flink-gcp/tier3-cloudtasks.tf) are three project-wide custom ro
 | --- | --- | --- |
 | `tier3-cloudtasks` | `tier3CloudTasksRecoveryWorkload` | `cloudtasks.queues.get`, `cloudtasks.tasks.create` |
 | `tier3-runner` | `tier3CloudTasksRecoveryRunner` | `cloudtasks.queues.create`, `cloudtasks.queues.get`, `cloudtasks.queues.pause` |
-| `tier3-supervisor` | `tier3CloudTasksRecoverySupervisor` | `cloudtasks.queues.delete`, `cloudtasks.queues.get`, `cloudtasks.tasks.list` |
+| `tier3-supervisor` | `tier3CloudTasksRecoverySupervisor` | `cloudtasks.queues.delete`, `cloudtasks.queues.get`, `cloudtasks.tasks.fullView`, `cloudtasks.tasks.list` |
 
 The runner and supervisor also hold Object Viewer on the state bucket and Object User on its `runs/` and `.inprogress/flink-gcp-tier3-cloudtasks/runs/` prefixes, as for the BigQuery state bucket.
 The bindings are project-wide, and the lifecycle acts only on the queue its run's intent names; [ADR-0165](../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-foundation) records why no predefined role or narrower binding is used.

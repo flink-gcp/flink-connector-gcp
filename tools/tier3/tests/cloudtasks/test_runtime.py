@@ -13,14 +13,18 @@
 # limitations under the License.
 """The shared lifecycle with a Cloud Tasks approval, its queue faked."""
 
-import copy
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from flink_tier3 import actors
 from flink_tier3.cloudtasks import plan
-from flink_tier3.cloudtasks.exercise import LISTING_STAGE, CloudTasksExercise
+from flink_tier3.cloudtasks.exercise import (
+    LISTING_STAGE,
+    CloudTasksExercise,
+    CloudTasksSequenceExercise,
+)
 from flink_tier3.cloudtasks.verdict import (
     COMPLETE_EVENT,
     MEASUREMENT_EVENT,
@@ -28,9 +32,9 @@ from flink_tier3.cloudtasks.verdict import (
     PAGE_EVENT,
     SAMPLED_STAGES,
 )
-from flink_tier3.common import Failure, TransportError, digest
-from flink_tier3.environment import Environment
-from flink_tier3.model import APPROVAL_VERSION, Approval, validate_approval
+from flink_tier3.common import Failure, TransportError
+from flink_tier3.exercise import TIME_LIMIT_SECONDS
+from flink_tier3.model import Approval, validate_approval
 from flink_tier3.policy import (
     CLOUDTASKS,
     CLOUDTASKS_OBSERVATIONS,
@@ -41,47 +45,13 @@ from flink_tier3.policy import (
 from flink_tier3.resource import require_resources_clean
 from flink_tier3.rest import Unsent
 from flink_tier3.runner import Runner
+from flink_tier3.supervisor import RESOURCE_EXERCISES
 
+from ..dispatched import inputs as inputs  # noqa: PLC0414
+from ..dispatched import prepared as prepared  # noqa: PLC0414
+from ..dispatched import renderer as renderer  # noqa: PLC0414
 from ..test_lifecycle import app, lifecycle, prepared_supervisor, rt
 from ..test_lifecycle import env as env  # noqa: PLC0414 - shared fixture
-from .test_plan import inputs as inputs  # noqa: PLC0414
-from .test_plan import renderer as renderer  # noqa: PLC0414
-
-
-@pytest.fixture
-def prepared(env, inputs, renderer):
-    """A dispatched Cloud Tasks approval over the shared fake cluster."""
-    kube, store, approval, clock = env
-    inputs.update(run_id=approval["run_id"], nonce=approval["nonce"])
-    bundle = plan.prepare(**inputs)
-    proposal = bundle["proposal"]
-    clock.now = rt.timestamp(inputs["started_at"])
-    application = bundle["application"]
-    application.update(apiVersion="flink.apache.org/v1beta1", kind="FlinkDeployment")
-    upgrade = copy.deepcopy(application)
-    upgrade["spec"]["job"]["args"] = bundle["upgrade_application"]["spec"]["job"][
-        "args"
-    ]
-    saved = approval["namespaces"].pop(rt.SMOKE)
-    quota = kube.get("ResourceQuota", rt.SMOKE, "tier3-idle")
-    quota["metadata"].update(namespace=CLOUDTASKS, uid=CLOUDTASKS + "-quota")
-    kube.put(quota)
-    saved.update(uid=CLOUDTASKS + "-uid", quota_uid=CLOUDTASKS + "-quota")
-    approval["namespaces"][CLOUDTASKS] = saved
-    approval.update(
-        version=APPROVAL_VERSION,
-        scenario="cloudtasks-recovery",
-        started_at=proposal["started_at"],
-        expires_at=proposal["expires_at"],
-        cleanup_at=proposal["cleanup_at"],
-        cloudtasks_trial=plan.trial("jm-replacement"),
-        application_sha256=digest(application),
-        upgrade_application_sha256=digest(upgrade),
-    )
-    approval["images"].pop("smoke")
-    approval["images"]["application"] = inputs["application_image"]
-    environment = Environment(kube, store, approval, clock, clock.sleep, actor="runner")
-    return environment, application, upgrade, proposal
 
 
 class Controller:
@@ -478,7 +448,13 @@ def test_supervision_requires_its_exercise(prepared):
 
 def listing(trial, sequences, per_page=2):
     names = [
-        {"name": trial.queue_path + "/tasks/" + trial.task_id(n)} for n in sequences
+        {
+            "name": trial.queue_path + "/tasks/" + trial.task_id(n),
+            "httpRequest": {
+                "body": base64.b64encode(f"{trial.run_id}/{n}".encode()).decode()
+            },
+        }
+        for n in sequences
     ]
     return [names[i : i + per_page] for i in range(0, len(names), per_page)] or [[]]
 
@@ -1197,3 +1173,94 @@ def test_the_actors_bind_the_queue_to_the_cleanup_end_and_their_role(prepared):
         actors._controller(environment, application, object(), "supervisor")
     with pytest.raises(Failure, match="belongs to its supervisor"):
         actors.barrier(environment)
+
+
+def built(prepared, kind, monkeypatch):
+    """The exercise the supervisor builds for a four-record trial of `kind`."""
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    small = plan.Trial(environment.approval.run_id, 4, 1, kind)
+    monkeypatch.setattr(
+        type(environment.approval),
+        "cloudtasks_plan",
+        property(lambda self: small),
+    )
+    controller = Controller(environment, small)
+    environment.records.set_phase(rt.Phase.READY)
+    environment.records.set_phase(rt.Phase.RUNNING)
+    value = RESOURCE_EXERCISES[environment.approval.scenario](
+        environment, upgrade, controller
+    )
+    value.persist("baseline")
+    return value, controller, small
+
+
+@pytest.mark.parametrize(
+    "kind", ["jm-replacement", "tm-replacement", "rescale-out", "rescale-in"]
+)
+def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
+    value, _, _ = built(prepared, kind, monkeypatch)
+    assert type(value) is CloudTasksExercise
+
+
+def test_the_sequence_trial_builds_the_sequence_exercise(prepared, monkeypatch):
+    value, _, _ = built(prepared, "sequence", monkeypatch)
+    assert isinstance(value, CloudTasksSequenceExercise)
+    assert value.measurement_event is None
+    assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("sequences", "verdict", "reasons"),
+    [
+        (range(4), "usable", []),
+        ([0, 1, 2, 2], "inconclusive", ["oracle-not-passed"]),
+        ([0, 1, 2], "inconclusive", ["oracle-not-passed"]),
+    ],
+)
+def test_a_sequence_run_is_judged_by_its_listing_alone(
+    prepared, monkeypatch, sequences, verdict, reasons
+):
+    """No coverage or recovery proofs: the exactly-once listing decides."""
+    value, controller, small = built(prepared, "sequence", monkeypatch)
+    # The finished application's transition, which waits for the listing.
+    value.persist("complete")
+    assert value.stage == LISTING_STAGE
+    controller.pages = [listing(small, sequences)] * 100
+    value.verify_tasks()
+    record = value.env.refresh().recovery
+    assert (record["stage"], record["verdict"]) == ("complete", verdict)
+    assert record["reasons"] == reasons
+
+
+def test_the_sequence_rescales_the_sink_through_its_parallelism_argument(
+    prepared, monkeypatch
+):
+    """The approved upgrade names `--parallelism` once, as the patch needs."""
+    value, _, _ = built(prepared, "sequence", monkeypatch)
+    spec = value.sequence_spec(1)
+    args = spec["job"]["args"]
+    assert args[args.index("--parallelism") + 1] == "1"
+    assert (spec["job"]["parallelism"], spec["taskManager"]["replicas"]) == (1, 1)
+    # Nothing else of the approved upgrade's arguments moves.
+    expected = list(value.upgrade["spec"]["job"]["args"])
+    expected[expected.index("--parallelism") + 1] = "1"
+    assert args == expected
+
+
+def test_a_sequence_run_whose_task_carries_another_records_body_is_not_usable(
+    prepared, monkeypatch
+):
+    """Every name listed once is not enough: each body must be its own key."""
+    value, controller, small = built(prepared, "sequence", monkeypatch)
+    value.persist("complete")
+    pages = listing(small, range(4))
+    pages[1][1]["httpRequest"]["body"] = pages[1][0]["httpRequest"]["body"]
+    controller.pages = [pages] * 100
+    value.verify_tasks()
+    record = value.env.refresh().recovery
+    assert (record["verdict"], record["reasons"]) == (
+        "inconclusive",
+        ["oracle-not-passed"],
+    )
+    assert record["outcomes"]["listing"]["report"]["mismatched"] == 1

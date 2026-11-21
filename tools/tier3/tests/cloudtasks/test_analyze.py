@@ -13,6 +13,7 @@
 # limitations under the License.
 """Recompute a Cloud Tasks run's verdict from a synthetic evidence directory."""
 
+import base64
 import json
 
 import pytest
@@ -26,6 +27,7 @@ from flink_tier3.cloudtasks.verdict import (
     OBSERVED,
     PAGE_EVENT,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
 )
@@ -37,8 +39,21 @@ TRIAL = Trial("ct-analyze", 4, 1)
 PREFIX = TRIAL.queue_path + "/tasks/"
 
 
-def tasks(sequences):
-    return [{"name": PREFIX + TRIAL.task_id(n), "dispatchCount": 0} for n in sequences]
+def tasks(sequences, bodies=None):
+    """Listed tasks; `bodies` maps a sequence to the record its body carries."""
+    bodies = bodies or {}
+    return [
+        {
+            "name": PREFIX + TRIAL.task_id(n),
+            "dispatchCount": 0,
+            "httpRequest": {
+                "body": base64.b64encode(
+                    f"{TRIAL.run_id}/{bodies.get(n, n)}".encode()
+                ).decode()
+            },
+        }
+        for n in sequences
+    ]
 
 
 def write(directory, name, value):
@@ -55,11 +70,13 @@ def run_directory(
     attempt=2,
     complete=True,
     readings=None,
+    faults=None,
 ):
     """A completed run whose record names `attempt`, exporting `pages`.
 
     It exported one full reading in each sampled window unless `readings`,
-    pairs of stage and reading, says otherwise.
+    pairs of stage and reading, says otherwise. With `faults` it is a
+    fault-sequence run (ADR-0204), which proves no recovery and reads nothing.
     """
     directory = tmp_path / TRIAL.run_id
     write(
@@ -68,7 +85,11 @@ def run_directory(
         {
             "run_id": TRIAL.run_id,
             "scenario": "cloudtasks-recovery",
-            "cloudtasks_trial": {"records": 4, "records_per_second": 1},
+            "cloudtasks_trial": {
+                "records": 4,
+                "records_per_second": 1,
+                **({"kind": "sequence"} if faults is not None else {}),
+            },
         },
     )
     items = [page(TRIAL, listed) for listed in (stored_pages or pages)]
@@ -79,6 +100,9 @@ def run_directory(
         "report": assess(TRIAL, items),
     }
     outcomes = {"upgrade": {}, "failover": {}, "listing": listing}
+    if faults is not None:
+        outcomes = {"faults": faults, "listing": listing}
+        readings = readings or []
     if readings is None:
         readings = [(stage, reading()) for stage in SAMPLED_STAGES]
     coverage = {}
@@ -95,7 +119,7 @@ def run_directory(
             },
         )
     record = {"stage": "complete", "outcomes": outcomes, "coverage": coverage}
-    record.update(verdict(record))
+    record.update((verdict if faults is None else sequence_verdict)(record))
     write(directory, "result.json", {"success": True, "idle": True, "recovery": record})
     for index, listed in enumerate(pages):
         write(
@@ -430,3 +454,188 @@ def test_a_replay_window_reads_every_place_a_poll_holds_a_checkpoint(tmp_path):
             "to_ms": 119_000,
         }
     }
+
+
+FAULTS = [
+    {"kind": "upgrade", "at": "2026-10-13T00:00:10Z"},
+    {"kind": "jobmanager", "at": "2026-10-13T00:00:20Z"},
+]
+
+
+def test_a_sequence_run_is_assessed_by_its_listing_without_samples(tmp_path):
+    """A fault-sequence run (ADR-0204) samples nothing and lists its faults."""
+    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert (result["verdict"], result["stored"]) == ("usable", "usable")
+    assert result["problems"] == []
+    assert result["samples"] == 0
+    assert result["faults"] == FAULTS
+    assert result["recoveries"] == [] and result["replay"] == {}
+    # The report lists the faults rather than claiming windows it never had.
+    [row] = [
+        line for line in analyze.render([result]).splitlines() if "ct-analyze" in line
+    ]
+    assert "| upgrade, jobmanager |" in row
+
+
+def test_a_sequence_runs_duplicate_task_is_recomputed_from_its_pages(tmp_path):
+    """The exactly-once rule: a task listed twice withholds `usable`."""
+    directory = run_directory(
+        tmp_path,
+        [tasks([0, 1]), tasks([2, 3, 3])],
+        stored_pages=[tasks([0, 1]), tasks([2, 3])],
+        faults=FAULTS,
+    )
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert result["verdict"] == "inconclusive"
+    assert result["reasons"] == ["oracle-not-passed"]
+    assert result["report"]["duplicates"] == 1
+    assert "report-differs-from-pages" in result["problems"]
+
+
+def test_a_stopped_sequence_run_is_inconclusive_by_its_own_reasons(tmp_path):
+    """A sequence run stopped before its listing names no single-fault reason."""
+    directory = run_directory(tmp_path, [tasks([0, 1])], faults=FAULTS, complete=False)
+    record = {"stage": "faults", "outcomes": {"faults": FAULTS}, "coverage": {}}
+    record.update(sequence_verdict(record))
+    write(
+        directory, "result.json", {"success": False, "idle": True, "recovery": record}
+    )
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert result["verdict"] == "inconclusive"
+    assert result["reasons"] == [
+        "recovery-incomplete",
+        "queue-not-paused",
+        "oracle-not-passed",
+    ]
+    assert result["problems"] == []
+
+
+def test_the_report_table_keeps_its_columns_for_both_kinds(tmp_path):
+    """Header, separator and rows agree; a single-fault run lists no faults."""
+    sequence = run_directory(
+        tmp_path / "s", [tasks([0, 1]), tasks([2, 3])], faults=FAULTS
+    )
+    single = run_directory(tmp_path / "f", [tasks([0, 1]), tasks([2, 3])])
+    results = [
+        analyze.assess(run) for d in (sequence, single) for run in discover_runs(d)
+    ]
+    lines = analyze.render(results).splitlines()
+    table = [line for line in lines if line.startswith("| ")]
+    header, separator, *rows = table[:4]
+    assert header.count("|") == separator.count("|") == rows[0].count("|")
+    assert rows[1].count("|") == header.count("|")
+    faults = [cell.strip() for cell in header.split("|")].index("faults")
+    assert [row.split("|")[faults].strip() for row in rows] == [
+        "upgrade, jobmanager",
+        "-",
+    ]
+    assert any("samples no window" in line for line in lines)
+
+
+@pytest.mark.parametrize("kind", ["sequence", "single-fault"])
+def test_a_completed_record_without_a_listing_has_no_verdict(
+    kind,
+    tmp_path,
+):
+    """A completed run is decided by its listing, which this export lacks."""
+    faults = FAULTS if kind == "sequence" else None
+    directory = run_directory(tmp_path, [tasks([0, 1])], faults=faults)
+    record = {"stage": "complete", "outcomes": {"faults": FAULTS}, "coverage": {}}
+    record.update(sequence_verdict(record))
+    write(
+        directory, "result.json", {"success": False, "idle": True, "recovery": record}
+    )
+    write(
+        directory,
+        "supervisor/complete.json",
+        {"event": COMPLETE_EVENT, "at": "2026-10-13T00:01:00Z", "payload": record},
+    )
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert (result["verdict"], result["reasons"]) == (None, [])
+    assert result["problems"] == ["missing-listing-record"]
+
+
+def test_a_task_carrying_another_records_body_is_recomputed_as_failing(tmp_path):
+    """The analyzer re-counts the wrong bodies the exported pages name."""
+    directory = run_directory(
+        tmp_path, [tasks([0, 1]), tasks([2, 3], bodies={3: 2})], faults=FAULTS
+    )
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert (result["verdict"], result["reasons"]) == (
+        "inconclusive",
+        ["oracle-not-passed"],
+    )
+    assert result["report"]["mismatched"] == 1
+    assert result["problems"] == []
+
+
+def test_a_page_exported_without_its_mismatched_ids_has_no_verdict(tmp_path):
+    """A page that omits the body check cannot be read as having passed it."""
+    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
+    path = directory / "supervisor/page-2-1.json"
+    event = json.loads(path.read_text())
+    del event["payload"]["mismatched"]
+    path.write_text(json.dumps(event))
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert result["verdict"] is None
+    assert result["problems"] == ["malformed-pages:1"]
+
+
+@pytest.mark.parametrize(
+    "mismatched",
+    [
+        # An id from another page.
+        lambda ids: [TRIAL.task_id(0)],
+        # Named more often than the page lists it.
+        lambda ids: [ids[0], ids[0]],
+    ],
+)
+def test_a_wrong_body_named_for_a_task_off_its_page_has_no_verdict(
+    tmp_path, mismatched
+):
+    """The supervisor names a wrong body only for a task its page lists."""
+    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
+    path = directory / "supervisor/page-2-1.json"
+    event = json.loads(path.read_text())
+    event["payload"]["mismatched"] = mismatched(event["payload"]["ids"])
+    path.write_text(json.dumps(event))
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert result["verdict"] is None
+    assert result["problems"] == ["malformed-pages:1"]
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_a_listing_record_of_no_pages_has_no_verdict(tmp_path, count):
+    """Every listing exports at least one page, so none is a damaged record."""
+    # No pages exported, and the record says so.
+    directory = run_directory(tmp_path, [], faults=FAULTS)
+    assert not list(directory.glob("supervisor/page-2-*.json"))
+    for name in ("result.json", "supervisor/complete.json"):
+        path = directory / name
+        value = json.loads(path.read_text())
+        record = value["recovery"] if name == "result.json" else value["payload"]
+        record["outcomes"]["listing"]["pages"] = count
+        path.write_text(json.dumps(value))
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert result["verdict"] is None
+    assert result["problems"] == ["malformed-listing-record"]
+
+
+def test_a_task_listed_twice_with_both_bodies_wrong_is_a_readable_page(tmp_path):
+    """The supervisor names a task once per listing of it, so twice is valid."""
+    directory = run_directory(
+        tmp_path, [tasks([0, 1]), tasks([2, 3, 3], bodies={3: 2})], faults=FAULTS
+    )
+    [run] = discover_runs(directory)
+    result = analyze.assess(run)
+    assert result["problems"] == []
+    assert (result["report"]["duplicates"], result["report"]["mismatched"]) == (1, 2)

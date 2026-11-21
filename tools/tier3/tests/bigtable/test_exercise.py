@@ -29,9 +29,9 @@ from flink_tier3.common import TransportError, timestamp, utc
 from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.supervisor import RESOURCE_EXERCISES
 
-from ..cloudtasks.test_plan import inputs as inputs  # noqa: PLC0414
-from ..cloudtasks.test_plan import renderer as renderer  # noqa: PLC0414
-from ..cloudtasks.test_runtime import prepared as prepared  # noqa: PLC0414
+from ..dispatched import inputs as inputs  # noqa: PLC0414
+from ..dispatched import prepared as prepared  # noqa: PLC0414
+from ..dispatched import renderer as renderer  # noqa: PLC0414
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
 from .test_tables import eo_row, relay_row

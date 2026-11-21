@@ -16,7 +16,7 @@
 import hashlib
 from dataclasses import dataclass
 
-from ..exercise import DEFAULT_FAULT, FAULTS
+from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND
 from ..policy import PROJECT, REGION, RUN_ID
 
 # The application's bounds (kubernetes/apps/cloudtasks RecoveryOptions) and the
@@ -25,9 +25,10 @@ MAX_RECORDS = 360000
 MAX_RECORDS_PER_SECOND = 100
 MAX_INPUT_SECONDS = 1800
 QUEUE_PREFIX = "ct1362-"
-# Every trial runs a savepoint upgrade and then a Pod deletion; each shared
-# fault kind but the default replaces one of the two with the fault it names.
-KINDS = tuple(FAULTS)
+# A single-fault trial runs a savepoint upgrade and then a Pod deletion; each
+# shared fault kind but the default replaces one of the two with the fault it
+# names. The fault sequence of ADR-0204 runs every fault in one run.
+KINDS = (*FAULTS, SEQUENCE_KIND)
 
 
 def parent():
@@ -71,16 +72,25 @@ class Trial:
     @property
     def failover(self):
         """The Pod the second recovery deletes, as the shared exercise names it."""
-        return FAULTS[self.kind].failover
+        return FAULTS[self.fault].failover
 
     @property
     def rescale(self):
         """The direction the upgrade rescales the sink in, or None."""
-        return FAULTS[self.kind].rescale
+        return FAULTS[self.fault].rescale
+
+    @property
+    def fault(self):
+        """The kind whose sizes the run starts and upgrades at.
+
+        The fault sequence starts and upgrades at two, as a JobManager
+        replacement does, and patches its rescales itself.
+        """
+        return DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind
 
     def parallelism(self, phase):
         """The sink's subtasks in one phase, and the TaskManagers running them."""
-        return FAULTS[self.kind].parallelism(phase)
+        return FAULTS[self.fault].parallelism(phase)
 
     @property
     def queue(self):
@@ -105,7 +115,7 @@ class Trial:
             str(self.records_per_second),
             "--require-restored",
             str(phase == "upgrade").lower(),
-            "--sink-parallelism",
+            "--parallelism",
             str(self.parallelism(phase)),
         ]
 
