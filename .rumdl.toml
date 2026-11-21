@@ -1,0 +1,107 @@
+# rumdl configuration for `just lint`. Scope is the *rendered* markdown — the
+# docs site sources, the READMEs, CONTRIBUTING.md and the ADRs (rendered by
+# GitHub rather than Hugo). CLAUDE.md files are Claude-facing and unrendered, so
+# they stay out for the same reason they are exempt from the explicit-issue-link
+# rule.
+[global]
+# A leading "/" anchors a pattern to the repository root: an unanchored
+# "README.md" would also match every nested README, including ones under
+# .agents/ and the docs test fixtures.
+include = [
+    "/docs/content/**/*.md",
+    "/docs/adr/**/*.md",
+    "/README.md",
+    "/CONTRIBUTING.md",
+    "/flink-*/README.md",
+    "/opentofu/README.md",
+    "/opentofu/*/README.md",
+    "/tools/README.md",
+    "/kubernetes/README.md",
+    "/kubernetes/images/README.md",
+    "/kubernetes/lifecycle/README.md",
+    "/kubernetes/apps/*/README.md",
+]
+# The rule set markdownlint 0.41.1 (bundled by markdownlint-cli2 0.23.2, the
+# previous linter) ran by default, minus the two this repository turned off.
+# Listing it keeps rules that rumdl enables beyond markdownlint's set (MD057,
+# MD061 and later) out, and a rumdl release that adds a default rule cannot fail
+# a pull request that changed nothing; mise.toml pins rumdl exactly for the same
+# reason. MD043 and MD044 configure no headings or names, so they check nothing,
+# as in markdownlint.
+#
+# Not enabled:
+# - MD013 (line length). The ~100-column wrap is a soft convention kept by
+#   review, and issue-link syntax (`[#N]({{< param BookRepo >}}/issues/N)`)
+#   legitimately pushes source lines far past any cap while rendering short —
+#   enforcing a source-line limit would force mid-link wraps or per-line
+#   disables on dozens of correct lines.
+# - MD060 (table column style). Tables here deliberately pair compact delimiter
+#   rows (`|---|`) with spaced content cells; MD060 wants one style for both.
+#
+# MD051 (in-page anchor fragments resolve) is a default rule this file exists to
+# keep: Hugo's build validates `relref` cross-page links but never
+# `[text](#anchor)` fragments. rumdl also resolves the fragment of a link to
+# another linted Markdown file.
+enable = [
+    "MD001", "MD003", "MD004", "MD005", "MD007", "MD009", "MD010", "MD011",
+    "MD012", "MD014", "MD018", "MD019", "MD020", "MD021", "MD022", "MD023",
+    "MD024", "MD025", "MD026", "MD027", "MD028", "MD029", "MD030", "MD031",
+    "MD032", "MD033", "MD034", "MD035", "MD036", "MD037", "MD038", "MD039",
+    "MD040", "MD041", "MD042", "MD043", "MD044", "MD045", "MD046", "MD047",
+    "MD048", "MD049", "MD050", "MD051", "MD052", "MD053", "MD054", "MD055",
+    "MD056", "MD058", "MD059",
+]
+# Lint every file on every run, as CI does, instead of reusing results cached
+# by an earlier run.
+cache = false
+
+# The Hugo pages carry a front-matter `title` *and* an H1 (the Flink page
+# shape); an empty front-matter-title stops the front matter from counting as a
+# second top-level heading.
+[MD025]
+front-matter-title = ""
+
+# The ADRs' issue-link idiom is the shortcut reference — `[#N]` in prose,
+# `[#N]: url` in a definition block — and MD052's default checks only full and
+# collapsed references, so a missing definition rendered as literal `[#N]` with
+# every check green: seven shipped that way, introduced five times in eight
+# days with no natural fix ever observed (#1035). docs/content/.rumdl.toml turns
+# it back off for the Hugo pages, whose shortcode link destinations a CommonMark
+# parser cannot read.
+[MD052]
+shortcut-syntax = true
+# markdownlint's default; rumdl's is empty.
+ignore = ["x"]
+
+# The remaining options set markdownlint's defaults where rumdl's differ.
+# markdownlint finds a front-matter title with this case-insensitive pattern;
+# rumdl's default `front-matter-title = "title"` misses `Title:` and `title =`.
+[MD001]
+front-matter-title-pattern = '(?i)^\s*"?title"?\s*[:=]'
+
+[MD041]
+front-matter-title-pattern = '(?i)^\s*"?title"?\s*[:=]'
+
+[MD007]
+style = "fixed"
+
+[MD010]
+code-blocks = true
+
+[MD024]
+siblings-only = false
+
+[MD026]
+punctuation = ".,;:!。，；：！"
+
+[MD027]
+list-items = true
+
+[MD036]
+punctuation = ".,;:!?。，；：！？"
+
+[MD051]
+ignore-case = false
+
+[MD053]
+ignored-definitions = ["//"]
