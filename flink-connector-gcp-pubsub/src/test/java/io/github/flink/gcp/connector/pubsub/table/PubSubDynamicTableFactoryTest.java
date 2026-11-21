@@ -24,6 +24,7 @@ import org.apache.flink.table.connector.sink.SinkV2Provider;
 import org.apache.flink.table.connector.source.DynamicTableSource;
 import org.apache.flink.table.connector.source.ScanTableSource;
 import org.apache.flink.table.connector.source.SourceProvider;
+import org.apache.flink.table.connector.source.abilities.SupportsWatermarkPushDown;
 import org.apache.flink.table.factories.utils.FactoryMocks;
 import org.apache.flink.table.runtime.connector.sink.SinkRuntimeProviderContext;
 import org.apache.flink.table.runtime.connector.source.ScanRuntimeProviderContext;
@@ -33,6 +34,7 @@ import io.github.flink.gcp.connector.pubsub.source.PubSubSourceConfig;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.PubSubStreamingPullSource;
 import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
+import io.github.flink.gcp.connector.pubsub.table.source.PubSubWatermarkPushDownSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -284,6 +286,23 @@ class PubSubDynamicTableFactoryTest {
         assertThatThrownBy(() -> FactoryMocks.createTableSource(SCHEMA, options))
                 .hasStackTraceContaining("Option 'scan.restore-deduplication.ttl' is invalid")
                 .hasStackTraceContaining("restoreDeduplicationTtl must be positive");
+    }
+
+    @Test
+    void onlyTheWatermarkPushDownOptionGivesTheSourceTheAbility() {
+        // The planner pushes a watermark into any source implementing the ability, so the class
+        // is the switch: a table that has not opted in must not implement it at all (#1837).
+        Map<String, String> enabled = minimalSourceOptions();
+        enabled.put("scan.watermark-push-down.enabled", "true");
+        Map<String, String> disabled = minimalSourceOptions();
+        disabled.put("scan.watermark-push-down.enabled", "false");
+
+        assertThat(FactoryMocks.createTableSource(SCHEMA, enabled))
+                .isInstanceOf(PubSubWatermarkPushDownSource.class);
+        assertThat(FactoryMocks.createTableSource(SCHEMA, disabled))
+                .isNotInstanceOf(SupportsWatermarkPushDown.class);
+        assertThat(FactoryMocks.createTableSource(SCHEMA, minimalSourceOptions()))
+                .isNotInstanceOf(SupportsWatermarkPushDown.class);
     }
 
     private static PubSubSourceConfig<?> builtSourceConfig(Map<String, String> options) {

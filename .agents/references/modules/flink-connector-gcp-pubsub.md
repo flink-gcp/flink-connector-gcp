@@ -253,6 +253,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   Its key set must equal `subscription`; the remaining `scan.auto-create.*` settings are shared
   across the per-subscription creation objects, and an absent map requires all subscriptions to
   exist.
+- **Watermark push-down is a class the option selects, never a flag** (`docs/adr/0207`). The
+  planner pushes into any source implementing `SupportsWatermarkPushDown`, so only
+  `scan.watermark-push-down.enabled` returns `PubSubWatermarkPushDownSource`. It keeps the
+  `SourceProvider` until `applyWatermark` runs, then returns the `fromSource` stream itself from a
+  `DataStreamScanProvider` with `generateUid("source")`. `applyWatermark` refuses a positive idle
+  timeout resolved with the planner's precedence (table value of zero or more, else
+  `table.exec.source.idle-timeout`), reading the session value from the live session
+  configuration at that moment, never from a value captured in the factory: a `sqlQuery` table is
+  optimized after later session changes. Source idleness is FLINK-40234's path. The lineage loss on
+  Flink 2.x is accepted and pinned by `PubSubLineageGraphTest`; do not build a virtual-transformation
+  workaround. #2223 tracks contributing FLINK-19722; #2232 tracks FLINK-39219, whose open
+  pull request would restore the dataset with no change here and fail that test.
 
 ## SQL uber-jar (`docs/adr/0015` — the record every later `flink-sql-connector-gcp-*` inherits)
 

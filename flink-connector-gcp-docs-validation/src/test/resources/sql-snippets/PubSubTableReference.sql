@@ -112,3 +112,41 @@ FROM staged
 GROUP BY id
 -- Table sink ... doesn't support consuming update changes
 -- end::updating-query-rejected[]
+
+-- tag::watermark-alignment[]
+CREATE TABLE clicks (
+  user_id      STRING,
+  page         STRING,
+  publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
+  WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
+) WITH (
+  'connector'    = 'pubsub',
+  'project'      = 'my-project',
+  'subscription' = 'clicks-sub',
+  'format'       = 'json',
+  'scan.watermark-push-down.enabled'   = 'true',
+  'scan.watermark.alignment.group'     = 'user-activity',
+  'scan.watermark.alignment.max-drift' = '1 min'
+);
+
+CREATE TABLE purchases (
+  user_id      STRING,
+  amount       INT,
+  publish_time TIMESTAMP_LTZ(3) METADATA FROM 'publish-time' VIRTUAL,
+  WATERMARK FOR publish_time AS publish_time - INTERVAL '5' SECOND
+) WITH (
+  'connector'    = 'pubsub',
+  'project'      = 'my-project',
+  'subscription' = 'purchases-sub',
+  'format'       = 'json',
+  'scan.watermark-push-down.enabled'   = 'true',
+  'scan.watermark.alignment.group'     = 'user-activity',
+  'scan.watermark.alignment.max-drift' = '1 min'
+);
+
+SELECT c.user_id, c.page, p.amount
+FROM clicks AS c
+JOIN purchases AS p
+  ON c.user_id = p.user_id
+ AND p.publish_time BETWEEN c.publish_time AND c.publish_time + INTERVAL '10' MINUTE;
+-- end::watermark-alignment[]

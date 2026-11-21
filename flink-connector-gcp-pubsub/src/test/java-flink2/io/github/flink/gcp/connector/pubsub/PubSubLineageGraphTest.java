@@ -33,6 +33,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -235,5 +236,68 @@ class PubSubLineageGraphTest {
                                                                     "topic:sql-project:events");
                                                 }));
         assertThat(graph.relations()).hasSize(1);
+    }
+
+    /**
+     * Pins the lineage a pushed watermark costs (#1837), which the SQL page documents. The planner
+     * extracts a table's connector dataset only from a {@code SourceProvider} (FLINK-39219), and a
+     * pushed strategy reaches the source only through a {@code DataStreamScanProvider}
+     * (FLINK-19722). The open pull request for FLINK-39219 reuses the lineage vertex the returned
+     * source transformation already carries, which this source's does, so the first assertion fails
+     * on a Flink line that ships that revision: lift the limitation then (#2232). An opted-in table
+     * without a {@code WATERMARK} has nothing pushed, reads through the {@code SourceProvider}, and
+     * keeps the dataset.
+     */
+    @ParameterizedTest
+    @CsvSource({"false,true", "true,true", "true,false"})
+    void aPushedWatermarkLeavesThePlannerWithoutTheConnectorDataset(
+            boolean pushDown, boolean watermark) {
+        boolean pushed = pushDown && watermark;
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        StreamTableEnvironment table = StreamTableEnvironment.create(env);
+        String keyFile = directory.resolve("missing.json").toString();
+        table.executeSql(
+                "CREATE TABLE source_table (id INT, ts TIMESTAMP_LTZ(3) METADATA FROM"
+                        + " 'publish-time' VIRTUAL"
+                        + (watermark ? ", WATERMARK FOR ts AS ts" : "")
+                        + ") WITH ('connector' = 'pubsub', 'project' = 'sql-project', 'subscription' = 'first',"
+                        + " 'format' = 'json', 'service-account-key-file' = '"
+                        + keyFile
+                        + "', 'scan.watermark-push-down.enabled' = '"
+                        + pushDown
+                        + "')");
+        table.executeSql(
+                "CREATE TABLE sink_table (id INT) WITH ('connector' = 'pubsub', 'project' ="
+                        + " 'sql-project', 'topic' = 'events', 'format' = 'json',"
+                        + " 'service-account-key-file' = '"
+                        + keyFile
+                        + "')");
+        table.createStatementSet()
+                .addInsertSql("INSERT INTO sink_table SELECT id FROM source_table")
+                .attachAsDataStream();
+
+        LineageGraph graph = env.getStreamGraph().getLineageGraph();
+
+        assertThat(graph.sources())
+                .singleElement()
+                .satisfies(
+                        vertex ->
+                                assertThat(vertex.datasets())
+                                        .singleElement()
+                                        .satisfies(
+                                                dataset -> {
+                                                    assertThat(dataset.namespace())
+                                                            .isEqualTo(pushed ? "" : "pubsub");
+                                                    assertThat(dataset.facets())
+                                                            .as("the connector's gcp facet")
+                                                            .matches(
+                                                                    facets ->
+                                                                            facets.containsKey(
+                                                                                            "gcp")
+                                                                                    != pushed);
+                                                    assertThat(dataset.name())
+                                                            .isEqualTo(
+                                                                    "default_catalog.default_database.source_table");
+                                                }));
     }
 }
