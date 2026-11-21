@@ -42,6 +42,7 @@ import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -84,6 +85,7 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant boundedTimestamp;
     @Nullable private final Integer maxConcurrentStreamsPerSubtask;
+    @Nullable private final Duration firstCheckpointTimeout;
     @Nullable private final Integer parallelism;
     private final DataType physicalDataType;
     private final ChangeStreamChangelogMode changelogMode;
@@ -113,6 +115,7 @@ public final class BigtableChangeStreamDynamicSource
         this.resumeFallback = builder.resumeFallback;
         this.boundedTimestamp = builder.boundedTimestamp;
         this.maxConcurrentStreamsPerSubtask = builder.maxConcurrentStreamsPerSubtask;
+        this.firstCheckpointTimeout = builder.firstCheckpointTimeout;
         this.parallelism = builder.parallelism;
         this.changelogMode =
                 builder.selectedCellSchema == null
@@ -264,6 +267,10 @@ public final class BigtableChangeStreamDynamicSource
                 BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK.key(),
                 maxConcurrentStreamsPerSubtask,
                 builder::maxConcurrentStreamsPerSubtask);
+        OptionSetters.accept(
+                BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT.key(),
+                firstCheckpointTimeout,
+                builder::firstCheckpointTimeout);
         BigtableChangeStreamSource<RowData> source = builder.build();
         if (lineageTableName != null) {
             source = source.withTableLineage(lineageTableName);
@@ -285,6 +292,7 @@ public final class BigtableChangeStreamDynamicSource
                         .resumeFallback(resumeFallback)
                         .boundedTimestamp(boundedTimestamp)
                         .maxConcurrentStreamsPerSubtask(maxConcurrentStreamsPerSubtask)
+                        .firstCheckpointTimeout(firstCheckpointTimeout)
                         .parallelism(parallelism);
         // One branch, over the two fields that decide the mode rather than over two argument
         // lists: everything above is shared, and the constructor re-derives the mode from what
@@ -331,6 +339,7 @@ public final class BigtableChangeStreamDynamicSource
                 && Objects.equals(boundedTimestamp, that.boundedTimestamp)
                 && Objects.equals(
                         maxConcurrentStreamsPerSubtask, that.maxConcurrentStreamsPerSubtask)
+                && Objects.equals(firstCheckpointTimeout, that.firstCheckpointTimeout)
                 && Objects.equals(parallelism, that.parallelism)
                 && physicalDataType.equals(that.physicalDataType)
                 && changelogMode == that.changelogMode
@@ -357,6 +366,7 @@ public final class BigtableChangeStreamDynamicSource
                 resumeFallback,
                 boundedTimestamp,
                 maxConcurrentStreamsPerSubtask,
+                firstCheckpointTimeout,
                 parallelism,
                 physicalDataType,
                 changelogMode,
@@ -388,6 +398,7 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private StartPosition resumeFallback;
         @Nullable private Instant boundedTimestamp;
         @Nullable private Integer maxConcurrentStreamsPerSubtask;
+        @Nullable private Duration firstCheckpointTimeout;
         @Nullable private Integer parallelism;
         @Nullable private DataType physicalDataType;
         @Nullable private DecodingFormat<DeserializationSchema<RowData>> decodingFormat;
@@ -508,6 +519,18 @@ public final class BigtableChangeStreamDynamicSource
         public Builder maxConcurrentStreamsPerSubtask(
                 @Nullable Integer maxConcurrentStreamsPerSubtask) {
             this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
+            return this;
+        }
+
+        /**
+         * Sets how long the source waits for a completed checkpoint, or {@code null} for the
+         * source's default.
+         *
+         * @param firstCheckpointTimeout the wait
+         * @return this builder
+         */
+        public Builder firstCheckpointTimeout(@Nullable Duration firstCheckpointTimeout) {
+            this.firstCheckpointTimeout = firstCheckpointTimeout;
             return this;
         }
 

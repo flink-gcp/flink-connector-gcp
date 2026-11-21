@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.connector.source.ReaderOutput;
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.SourceOutput;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
@@ -40,8 +41,13 @@ import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceC
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionAckEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
@@ -53,15 +59,57 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 
-/** Reads a bounded number of Bigtable Change Streams partitions concurrently. */
+/**
+ * Reads a bounded number of Bigtable Change Streams partitions concurrently.
+ *
+ * <h2>A closed split stays checkpointed until the coordinator acknowledges it</h2>
+ *
+ * <p>Flink restores reader-to-coordinator events sent between the coordinator's snapshot and this
+ * reader's barrier into neither side, so a transition sent there would leave the partition assigned
+ * in the restored ledger with no reader holding it. A split whose {@code CloseStream} this reader
+ * has seen therefore stays in {@link #snapshotState}, with the successors the record named, until a
+ * {@link PartitionTransitionAckEvent} arrives, and a restored reader sends its transition again
+ * from {@link #start}. The coordinator applies it only if it has not already. Flink holds the
+ * acknowledgement back until this reader's barrier, so the split is in the snapshot of any
+ * checkpoint whose coordinator snapshot missed the transition. This is Flink CDC's {@code
+ * finishedUnackedSplits}.
+ *
+ * <p>A restored closed split is checked against retention like an open one. One that has expired is
+ * read again from the resume fallback rather than reported, because its successors' tokens are as
+ * expired as its own position. Flink creates an output for every restored split, so the reader
+ * releases the outputs of the closed ones it keeps, which nothing emits to and which would
+ * otherwise hold the source watermark back.
+ *
+ * <h2>Progress reports</h2>
+ *
+ * <p>The coordinator learns positions from batched reports, never from one event per heartbeat.
+ * When a checkpoint completes, the reader sends the positions it snapshotted for it, as Flink CDC's
+ * {@code IncrementalSourceReaderWithCommit} commits its offsets. Until a checkpoint completes, it
+ * also sends its current positions at most once a second. From {@link #start} it names the unclosed
+ * splits it restored, so that a coordinator a region failover kept can take back a close its ledger
+ * still holds as pending.
+ *
+ * <p>See {@code docs/adr/0097} for the coordinator protocol these events belong to.
+ */
 @Internal
 public final class BigtableChangeStreamReader<T>
         implements SourceReader<T, ChangeStreamPartitionSplit> {
+
+    private static final Logger LOG = LoggerFactory.getLogger(BigtableChangeStreamReader.class);
+
+    /** How often, at most, the reader reports its current positions. */
+    private static final long LIVE_PROGRESS_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(1);
+
+    /** How many snapshots' positions, at most, wait for a completion to report them. */
+    private static final int MAX_RECORDED_CHECKPOINTS = 16;
 
     private final SourceReaderContext context;
     private final TableDestination table;
@@ -74,6 +122,19 @@ public final class BigtableChangeStreamReader<T>
     private final BigtableChangeStreamReaderMetrics metrics;
     private final Deque<ChangeStreamPartitionSplit> queued = new ArrayDeque<>();
     private final Map<String, ActiveRead> active = new LinkedHashMap<>();
+
+    /** Closed splits the coordinator has not acknowledged, in close order. */
+    private final Map<String, ChangeStreamPartitionSplit> closedUnacknowledged =
+            new LinkedHashMap<>();
+
+    /** Restored closed splits whose outputs Flink created and this reader has not released. */
+    private final List<String> outputsToRelease = new ArrayList<>();
+
+    /** Positions each checkpoint's snapshot recorded, until a completion reports them. */
+    private final TreeMap<Long, List<PartitionProgressEvent.Progress>> checkpointProgress =
+            new TreeMap<>();
+
+    private final LongSupplier nanoTime;
     private final ArrayBlockingQueue<Delivery<T>> handover;
     private final Object availabilityLock = new Object();
     private CompletableFuture<Void> availability = new CompletableFuture<>();
@@ -85,6 +146,8 @@ public final class BigtableChangeStreamReader<T>
     private int advertisedHeldSplits = -1;
     private long receivedSplits;
     private long advertisedReceivedSplits = -1;
+    private long lastLiveReportNanos;
+    private long maxCompletedCheckpointId = Long.MIN_VALUE;
 
     public BigtableChangeStreamReader(
             SourceReaderContext context, BigtableChangeStreamSourceConfig<T> config) {
@@ -98,7 +161,8 @@ public final class BigtableChangeStreamReader<T>
                 config.getBoundedTimestamp(),
                 config.getMaxConcurrentStreamsPerSubtask(),
                 config.getMutationFilter(),
-                new BigtableChangeStreamReaderMetrics(context.metricGroup()));
+                new BigtableChangeStreamReaderMetrics(context.metricGroup()),
+                System::nanoTime);
     }
 
     @VisibleForTesting
@@ -122,7 +186,8 @@ public final class BigtableChangeStreamReader<T>
                 boundedTimestamp,
                 maximumStreams,
                 BigtableChangeStreamMutationFilter.none(),
-                metrics);
+                metrics,
+                System::nanoTime);
     }
 
     @VisibleForTesting
@@ -136,7 +201,9 @@ public final class BigtableChangeStreamReader<T>
             @Nullable Instant boundedTimestamp,
             int maximumStreams,
             BigtableChangeStreamMutationFilter mutationFilter,
-            BigtableChangeStreamReaderMetrics metrics) {
+            BigtableChangeStreamReaderMetrics metrics,
+            LongSupplier nanoTime) {
+        this.nanoTime = Preconditions.checkNotNull(nanoTime, "nanoTime must not be null");
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.opener = Preconditions.checkNotNull(opener, "opener must not be null");
@@ -147,24 +214,69 @@ public final class BigtableChangeStreamReader<T>
         Preconditions.checkArgument(maximumStreams > 0, "maximumStreams must be positive");
         this.maximumStreams = maximumStreams;
         this.metrics = Preconditions.checkNotNull(metrics, "metrics must not be null");
-        emitter =
-                new BigtableChangeStreamRecordEmitter<>(
-                        deserializer, mutationFilter, context, metrics);
+        emitter = new BigtableChangeStreamRecordEmitter<>(deserializer, mutationFilter, metrics);
         handover = new ArrayBlockingQueue<>(maximumStreams);
     }
 
     @Override
     public void start() {
         started = true;
+        lastLiveReportNanos = nanoTime.getAsLong();
+        if (!queued.isEmpty()) {
+            List<String> restored = new ArrayList<>(queued.size());
+            for (ChangeStreamPartitionSplit split : queued) {
+                restored.add(split.splitId());
+            }
+            context.sendSourceEventToCoordinator(new PartitionsRestoredEvent(restored));
+        }
+        reportRestoredTransitions();
         startQueuedReads();
         advertiseCapacity();
     }
 
+    /**
+     * Sends the transition of every restored closed split again. Flink adds a reader's restored
+     * splits before {@link #start}, and nothing closes before it, so every closed split this reader
+     * holds then is a restored one. The coordinator defers events until it is initialized, applies
+     * the transitions its restored ledger is missing, and acknowledges every one.
+     */
+    private void reportRestoredTransitions() {
+        if (closedUnacknowledged.isEmpty()) {
+            return;
+        }
+        LOG.info(
+                "Reporting the transition of {} restored Bigtable Change Streams partition(s)"
+                        + " again; the coordinator had not acknowledged it before the checkpoint.",
+                closedUnacknowledged.size());
+        for (ChangeStreamPartitionSplit split : closedUnacknowledged.values()) {
+            context.sendSourceEventToCoordinator(split.toTransitionEvent());
+        }
+    }
+
+    @Override
+    public void handleSourceEvents(SourceEvent sourceEvent) {
+        if (sourceEvent instanceof PartitionTransitionAckEvent) {
+            closedUnacknowledged.remove(((PartitionTransitionAckEvent) sourceEvent).getSplitId());
+            signalAvailable();
+            return;
+        }
+        throw new IllegalArgumentException(
+                "Unsupported Bigtable Change Streams reader event " + sourceEvent + ".");
+    }
+
     @Override
     public InputStatus pollNext(ReaderOutput<T> output) throws Exception {
+        if (!outputsToRelease.isEmpty()) {
+            // An output nothing emits to would hold the source's combined watermark back.
+            for (String splitId : outputsToRelease) {
+                output.releaseOutputForSplit(splitId);
+            }
+            outputsToRelease.clear();
+        }
         Delivery<T> delivery = handover.poll();
         if (delivery != null) {
             consume(delivery, output);
+            reportLiveProgressIfDue();
             return nextStatus();
         }
 
@@ -210,6 +322,9 @@ public final class BigtableChangeStreamReader<T>
             emitter.emitRecord(close, splitOutput, read.emittedState);
             metrics.progress(read.splitId(), read.emittedState.getLowWatermark());
             metrics.closeStream();
+            ChangeStreamPartitionSplit closed = read.emittedState.toSplit();
+            closedUnacknowledged.put(closed.splitId(), closed);
+            context.sendSourceEventToCoordinator(closed.toTransitionEvent());
             read.closeSeen = true;
             read.cancellation = CancellationReason.COMPLETION;
             terminalAlreadyPublished = terminal != null;
@@ -264,7 +379,60 @@ public final class BigtableChangeStreamReader<T>
     public List<ChangeStreamPartitionSplit> snapshotState(long checkpointId) {
         List<ChangeStreamPartitionSplit> state = activeSplits();
         state.addAll(queued);
+        checkpointProgress.put(checkpointId, PartitionProgressEvent.Progress.of(state));
+        // Savepoints and failing checkpoints are never reported; an older entry only matters as a
+        // floor for a completion, which a newer one serves as well.
+        while (checkpointProgress.size() > MAX_RECORDED_CHECKPOINTS) {
+            checkpointProgress.pollFirstEntry();
+        }
+        state.addAll(closedUnacknowledged.values());
         return state;
+    }
+
+    /**
+     * Reports the positions the completed checkpoint recorded. A completion can stand for earlier
+     * checkpoints whose own notification never came, so the latest recorded at or before it is the
+     * one reported.
+     */
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) {
+        if (checkpointId <= maxCompletedCheckpointId) {
+            return;
+        }
+        maxCompletedCheckpointId = checkpointId;
+        Map.Entry<Long, List<PartitionProgressEvent.Progress>> covered =
+                checkpointProgress.floorEntry(checkpointId);
+        checkpointProgress.headMap(checkpointId, true).clear();
+        if (covered != null && !covered.getValue().isEmpty()) {
+            context.sendSourceEventToCoordinator(new PartitionProgressEvent(covered.getValue()));
+        }
+    }
+
+    /** Forgets what an aborted checkpoint's snapshot recorded; no completion may report it. */
+    @Override
+    public void notifyCheckpointAborted(long checkpointId) {
+        checkpointProgress.remove(checkpointId);
+    }
+
+    /**
+     * Sends the active splits' current positions at most once per {@code
+     * LIVE_PROGRESS_INTERVAL_NANOS}, until a checkpoint completes.
+     */
+    private void reportLiveProgressIfDue() {
+        if (maxCompletedCheckpointId != Long.MIN_VALUE) {
+            return;
+        }
+        long now = nanoTime.getAsLong();
+        if (now - lastLiveReportNanos < LIVE_PROGRESS_INTERVAL_NANOS) {
+            return;
+        }
+        List<ChangeStreamPartitionSplit> splits = activeSplits();
+        if (splits.isEmpty()) {
+            return;
+        }
+        lastLiveReportNanos = now;
+        context.sendSourceEventToCoordinator(
+                new PartitionProgressEvent(PartitionProgressEvent.Progress.of(splits)));
     }
 
     /**
@@ -272,9 +440,10 @@ public final class BigtableChangeStreamReader<T>
      *
      * <p>One method rather than the same loop twice, because the rule it applies is not obvious: a
      * read that has seen {@code CloseStream} has finished its partition and is no longer assigned
-     * anything, even though it is still in {@code active} until the reader drains it. The
-     * checkpoint and the {@code partitionLowWatermarkMillis} gauge both answer with this, so a copy
-     * that drifted would make the two disagree about the same reader.
+     * anything, even though it is still in {@code active} until the reader drains it; until the
+     * coordinator acknowledges the transition, the checkpoint holds it as a closed split instead.
+     * The checkpoint, the progress reports and the {@code partitionLowWatermarkMillis} gauge all
+     * answer with this, so a copy that drifted would make them disagree about the same reader.
      */
     private List<ChangeStreamPartitionSplit> activeSplits() {
         List<ChangeStreamPartitionSplit> splits = new ArrayList<>(active.size());
@@ -289,7 +458,10 @@ public final class BigtableChangeStreamReader<T>
     @Override
     public CompletableFuture<Void> isAvailable() {
         synchronized (availabilityLock) {
-            if (!handover.isEmpty() || firstTerminal() != null || finished()) {
+            if (!handover.isEmpty()
+                    || firstTerminal() != null
+                    || finished()
+                    || !outputsToRelease.isEmpty()) {
                 return CompletableFuture.completedFuture(null);
             }
             if (availability.isDone()) {
@@ -305,8 +477,10 @@ public final class BigtableChangeStreamReader<T>
         if (!started) {
             additions = new ArrayList<>(splits.size());
             for (ChangeStreamPartitionSplit split : splits) {
+                ChangeStreamPartitionSplit open = split.isClosed() ? split.reopened() : split;
+                ChangeStreamPartitionSplit resolved;
                 try {
-                    additions.add(restoreResolver.resolve(split, resumeFallback));
+                    resolved = restoreResolver.resolve(open, resumeFallback);
                 } catch (Exception e) {
                     throw new FlinkRuntimeException(
                             "Failed to validate restored Bigtable Change Streams split "
@@ -314,6 +488,22 @@ public final class BigtableChangeStreamReader<T>
                                     + ".",
                             e);
                 }
+                if (split.isClosed() && resolved.equals(open)) {
+                    // Only a restore hands this reader a closed split: the coordinator assigns
+                    // open ones. Flink created an output for it, which nothing will emit to.
+                    closedUnacknowledged.put(split.splitId(), split);
+                    outputsToRelease.add(split.splitId());
+                    continue;
+                }
+                if (split.isClosed()) {
+                    // Its successors' tokens are as expired as its own position, so it is read
+                    // again from the fallback rather than reported.
+                    LOG.warn(
+                            "Restored Bigtable Change Streams split {} had closed, but its position"
+                                    + " has expired; it is read again from the resume fallback.",
+                            split.splitId());
+                }
+                additions.add(resolved);
             }
         }
         queued.addAll(additions);
@@ -407,7 +597,11 @@ public final class BigtableChangeStreamReader<T>
     }
 
     private boolean finished() {
-        return noMoreSplits && active.isEmpty() && queued.isEmpty() && handover.isEmpty();
+        return noMoreSplits
+                && active.isEmpty()
+                && queued.isEmpty()
+                && handover.isEmpty()
+                && closedUnacknowledged.isEmpty();
     }
 
     private void signalAvailable() {
@@ -425,6 +619,9 @@ public final class BigtableChangeStreamReader<T>
         active.clear();
         queued.clear();
         handover.clear();
+        closedUnacknowledged.clear();
+        outputsToRelease.clear();
+        checkpointProgress.clear();
         metrics.closed();
         signalAvailable();
         Closers.closeAll(opener);

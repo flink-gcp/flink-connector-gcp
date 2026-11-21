@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 
 /** Reports that a partition closed and names each successor range and its continuation token. */
 @Internal
@@ -86,6 +87,24 @@ public final class PartitionTransitionEvent implements SourceEvent {
 
         public ChangeStreamContinuationToken getContinuationToken() {
             return continuationToken;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof Successor)) {
+                return false;
+            }
+            Successor other = (Successor) o;
+            return partition.equals(other.partition)
+                    && continuationToken.equals(other.continuationToken);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(partition, continuationToken);
         }
     }
 }

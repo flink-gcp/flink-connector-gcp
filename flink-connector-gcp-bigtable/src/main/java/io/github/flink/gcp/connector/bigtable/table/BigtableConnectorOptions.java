@@ -519,6 +519,23 @@ public final class BigtableConnectorOptions {
                                     + " timestamp.");
 
     /**
+     * How long a closed change-stream partition waits for a completed checkpoint: once one has
+     * waited this long with none completed, the source logs a warning and every close is final at
+     * once, so a region failover does not read it again, until a checkpoint completes. Zero keeps
+     * closes pending until one completes.
+     */
+    public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
+            ConfigOptions.key("scan.first-checkpoint-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "How long a closed change-stream partition waits for a completed"
+                                    + " checkpoint: once one has waited this long with none completed,"
+                                    + " the source logs a warning and every close is final at once, so a"
+                                    + " region failover does not read it again, until a checkpoint"
+                                    + " completes. Zero keeps closes pending until one completes.");
+
+    /**
      * Stop a Change Streams source after this epoch-millisecond instant. Requires scan.mode =
      * change-stream; scan.mode = bounded instead selects a finite scan of the current table.
      */

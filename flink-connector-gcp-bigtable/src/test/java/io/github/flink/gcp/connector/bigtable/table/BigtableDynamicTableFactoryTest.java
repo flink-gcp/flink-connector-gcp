@@ -70,6 +70,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
@@ -119,6 +120,7 @@ class BigtableDynamicTableFactoryTest {
                     Map.entry("scan.resume-fallback.timestamp-millis", "1000"),
                     Map.entry("scan.bounded.timestamp-millis", "2000"),
                     Map.entry("scan.max-concurrent-streams-per-subtask", "1"),
+                    Map.entry("scan.first-checkpoint-timeout", "5 min"),
                     Map.entry("scan.change-stream.selected-cell.family", "state"),
                     Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
                     Map.entry("scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
@@ -1390,6 +1392,7 @@ class BigtableDynamicTableFactoryTest {
         configured.put("scan.resume-fallback.mode", "earliest");
         configured.put("scan.bounded.timestamp-millis", "2000");
         configured.put("scan.max-concurrent-streams-per-subtask", "5");
+        configured.put("scan.first-checkpoint-timeout", "5 min");
         configured.put("scan.parallelism", "3");
 
         DynamicTableSource actual = source(CHANGE_STREAM_SCHEMA, configured);
@@ -1400,6 +1403,7 @@ class BigtableDynamicTableFactoryTest {
                         .resumeFallback(StartPosition.earliest())
                         .boundedTimestamp(Instant.ofEpochMilli(2000L))
                         .maxConcurrentStreamsPerSubtask(5)
+                        .firstCheckpointTimeout(Duration.ofMinutes(5))
                         .parallelism(3)
                         .build();
 
@@ -1653,6 +1657,19 @@ class BigtableDynamicTableFactoryTest {
         zeroConcurrency.put("scan.max-concurrent-streams-per-subtask", "0");
         assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, zeroConcurrency))
                 .hasStackTraceContaining("must be positive, but was 0");
+    }
+
+    @Test
+    void namesTheFirstCheckpointTimeoutOptionWhenItsValueIsRejected() {
+        Map<String, String> options = minimalChangeStreamOptions();
+        options.put("scan.first-checkpoint-timeout", "500 micros");
+        ScanTableSource source =
+                (ScanTableSource) FactoryMocks.createTableSource(CHANGE_STREAM_SCHEMA, options);
+
+        assertThatThrownBy(() -> source.getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE))
+                .isInstanceOf(ValidationException.class)
+                .hasMessageContaining("Option 'scan.first-checkpoint-timeout' is invalid")
+                .hasMessageContaining("firstCheckpointTimeout must be at least 1 millisecond");
     }
 
     @Test

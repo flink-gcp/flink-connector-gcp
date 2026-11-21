@@ -30,6 +30,7 @@ import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeSt
 import javax.annotation.Nullable;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.time.Instant;
 
 /**
@@ -68,6 +69,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     private final ChangeStreamRestoreResolver restoreResolver;
     private final ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     private final boolean exportClientMetricsToFlink;
+    private final Duration firstCheckpointTimeout;
 
     BigtableChangeStreamSourceConfig(
             TableDestination table,
@@ -82,7 +84,8 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             ChangeStreamOpener opener,
             ChangeStreamRestoreResolver restoreResolver,
             ChangeStreamCoordinatorClientFactory coordinatorClientFactory,
-            boolean exportClientMetricsToFlink) {
+            boolean exportClientMetricsToFlink,
+            Duration firstCheckpointTimeout) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
                 Preconditions.checkNotNull(deserializer, "deserializer must not be null");
@@ -107,6 +110,17 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
                 Preconditions.checkNotNull(
                         coordinatorClientFactory, "coordinatorClientFactory must not be null");
         this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.firstCheckpointTimeout =
+                Preconditions.checkNotNull(
+                        firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
+    }
+
+    /**
+     * Returns how long after the coordinator starts without a completed checkpoint every close
+     * becomes final at once; zero waits indefinitely.
+     */
+    public Duration getFirstCheckpointTimeout() {
+        return firstCheckpointTimeout;
     }
 
     /** Returns the table whose change stream is read. */

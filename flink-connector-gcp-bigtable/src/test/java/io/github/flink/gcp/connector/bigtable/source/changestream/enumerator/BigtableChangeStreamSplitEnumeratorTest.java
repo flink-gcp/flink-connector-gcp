@@ -26,10 +26,13 @@ import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.BigtableMetricNames;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorStateSerializer;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionAckEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
@@ -389,7 +392,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         restored,
                         false,
                         false,
-                        Clock.fixed(metricTime, ZoneOffset.UTC));
+                        Clock.fixed(metricTime, ZoneOffset.UTC),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
 
@@ -756,7 +760,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         restored,
                         false,
                         false,
-                        Clock.systemUTC());
+                        Clock.systemUTC(),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -828,7 +833,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         restored,
                         false,
                         true,
-                        Clock.fixed(base, ZoneOffset.UTC));
+                        Clock.fixed(base, ZoneOffset.UTC),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
 
@@ -899,7 +905,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         restored,
                         false,
                         true,
-                        Clock.fixed(now, ZoneOffset.UTC));
+                        Clock.fixed(now, ZoneOffset.UTC),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -935,7 +942,10 @@ class BigtableChangeStreamSplitEnumeratorTest {
     }
 
     @Test
-    void lateReturnedParentIsNotResurrectedAfterItsTransition() throws Exception {
+    void aReturnedSplitWhoseCloseNoCheckpointCoversIsReadAgainFromWhereItWasAssigned()
+            throws Exception {
+        // #2206: a region failover returns a split assigned after the restored checkpoint, and
+        // its downstream rolled back with it, so a close after that checkpoint is taken back.
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         BigtableChangeStreamSplitEnumerator enumerator =
                 enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
@@ -943,16 +953,19 @@ class BigtableChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
         ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(0, progress(parent, "later", parent.getLowWatermark()));
         enumerator.handleSourceEvent(
-                0,
-                new PartitionTransitionEvent(
-                        parent.splitId(), parent.getLowWatermark(), Collections.emptyList()));
+                0, transition(parent, successor(LEFT, "left"), successor(RIGHT, "right")));
 
         enumerator.addSplitsBack(Collections.singletonList(parent), 0);
 
         BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
         assertThat(checkpoint.getAssignedSplits()).isEmpty();
-        assertThat(checkpoint.getUnassignedSplits()).isEmpty();
+        assertThat(checkpoint.getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1", "change-stream-2", parent.splitId());
+        assertThat(checkpoint.getUnassignedSplits().get(2)).isEqualTo(parent);
+        assertThat(checkpoint.getRereadSplitIds()).containsExactly(parent.splitId());
         enumerator.close();
     }
 
@@ -970,7 +983,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         null,
                         true,
                         false,
-                        Clock.systemUTC());
+                        Clock.systemUTC(),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -984,8 +998,13 @@ class BigtableChangeStreamSplitEnumeratorTest {
         // SourceCoordinator registers a reader in its context before addReader reaches us.
         context.registerReader(1);
         enumerator.addReader(1);
+        // A new attempt of a subtask already told, with nothing to return, is told again.
+        enumerator.addReader(0);
 
         assertThat(context.readersToldNoMoreSplits()).containsExactly(0, 1);
+        assertThat(context.events())
+                .filteredOn(event -> event.startsWith("noMoreSplits:"))
+                .containsExactly("noMoreSplits:0", "noMoreSplits:1", "noMoreSplits:0");
         assertThat(context.assignedSplits(1)).isEmpty();
         enumerator.close();
     }
@@ -1002,7 +1021,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         null,
                         true,
                         false,
-                        Clock.systemUTC());
+                        Clock.systemUTC(),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1201,7 +1221,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         null,
                         false,
                         true,
-                        clock);
+                        clock,
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
@@ -1234,7 +1255,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                         null,
                         true,
                         false,
-                        Clock.systemUTC());
+                        Clock.systemUTC(),
+                        Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         assertThat(context.readersToldNoMoreSplits()).isEmpty();
@@ -1247,7 +1269,9 @@ class BigtableChangeStreamSplitEnumeratorTest {
     }
 
     @Test
-    void aProgressEventOlderThanTheAssignedPositionDoesNotRewindIt() throws Exception {
+    void everyProgressReportReplacesTheAssignedPositionEvenAnOlderOne() throws Exception {
+        // A committed report follows the live ones a reader sent before its first checkpoint
+        // completed, and it is older: the ledger takes it, because it is what a failover restores.
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         BigtableChangeStreamSplitEnumerator enumerator =
                 enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
@@ -1255,28 +1279,26 @@ class BigtableChangeStreamSplitEnumeratorTest {
         context.runAsyncCalls();
         enumerator.handleSplitRequest(0, "localhost");
         ChangeStreamPartitionSplit assigned = context.assignedSplits(0).get(0);
-        Instant advanced = assigned.getLowWatermark().plusSeconds(60);
-        enumerator.handleSourceEvent(
-                0,
-                new PartitionProgressEvent(
-                        assigned.splitId(),
-                        TestChangeStreamTokens.token(WHOLE, "recent"),
-                        advanced));
+        Instant live = assigned.getLowWatermark().plusSeconds(60);
+        enumerator.handleSourceEvent(0, progress(assigned, "live", live));
 
+        enumerator.handleSourceEvent(0, progress(assigned, "committed", live.minusSeconds(30)));
         enumerator.handleSourceEvent(
                 0,
-                new PartitionProgressEvent(
-                        assigned.splitId(),
-                        TestChangeStreamTokens.token(WHOLE, "stale"),
-                        advanced.minusSeconds(30)));
+                progress(
+                        restoredSplit("change-stream-99", WHOLE, live),
+                        "unknown",
+                        live.plusSeconds(30)));
 
         assertThat(enumerator.snapshotState(1).getAssignedSplits())
                 .singleElement()
                 .satisfies(
                         split -> {
-                            assertThat(split.getLowWatermark()).isEqualTo(advanced);
+                            assertThat(split.splitId()).isEqualTo(assigned.splitId());
+                            assertThat(split.getLowWatermark()).isEqualTo(live.minusSeconds(30));
                             assertThat(split.getContinuationTokens())
-                                    .containsExactly(TestChangeStreamTokens.token(WHOLE, "recent"));
+                                    .containsExactly(
+                                            TestChangeStreamTokens.token(WHOLE, "committed"));
                         });
         enumerator.close();
     }
@@ -1414,7 +1436,7 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 ScriptedChangeStreamCoordinatorClient.with(WHOLE);
         BigtableChangeStreamSplitEnumerator enumerator =
                 new BigtableChangeStreamSplitEnumerator(
-                        context, client, StartPosition.latest(), null, null, false);
+                        context, client, StartPosition.latest(), null, null, false, Duration.ZERO);
         enumerator.start();
         context.runAsyncCalls();
         int beforeScan = client.retentionCalls();
@@ -1426,6 +1448,460 @@ class BigtableChangeStreamSplitEnumeratorTest {
         // having run. With reconciliation off nothing is registered for runPeriodicAsyncCalls to
         // run at all, and the count stands still. No clock assertion, so no wall-clock coupling.
         assertThat(client.retentionCalls()).isGreaterThan(beforeScan);
+        enumerator.close();
+    }
+
+    @Test
+    void acknowledgesEveryTransitionAppliedOrNot() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        PartitionTransitionEvent transition = transition(parent, successor(LEFT, "left"));
+
+        enumerator.handleSourceEvent(0, transition);
+        enumerator.handleSourceEvent(0, transition);
+        enumerator.handleSourceEvent(
+                0, transition(restoredSplit("change-stream-99", WHOLE, Instant.now())));
+
+        assertThat(context.sourceEvents(0))
+                .extracting(event -> ((PartitionTransitionAckEvent) event).getSplitId())
+                .containsExactly(parent.splitId(), parent.splitId(), "change-stream-99");
+        enumerator.close();
+    }
+
+    @Test
+    void aCloseIsFinalOnlyOnceACheckpointTakenAfterItCompletes() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        ChangeStreamPartitionSplit left = context.assignedSplits(0).get(0);
+        ChangeStreamPartitionSplit right = context.assignedSplits(0).get(1);
+        enumerator.handleSourceEvent(0, transition(left, successor(LEFT, "left-child")));
+        enumerator.snapshotState(1);
+        enumerator.handleSourceEvent(0, transition(right, successor(RIGHT, "right-child")));
+
+        enumerator.notifyCheckpointComplete(1);
+
+        // Checkpoint 1's snapshot ran after the left close, so it covers it; the right close
+        // came after that snapshot and is still pending.
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(1);
+        enumerator.addSplitsBack(Arrays.asList(left, right), 0);
+        assertThat(enumerator.snapshotState(2).getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly(right.splitId());
+
+        enumerator.notifyCheckpointComplete(2);
+        assertThat(enumerator.pendingCloseCount()).isZero();
+        enumerator.close();
+    }
+
+    @Test
+    void aSplitReadAgainAfterItsCloseCreatesItsSuccessorsOnce() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        PartitionTransitionEvent close =
+                transition(parent, successor(LEFT, "left"), successor(RIGHT, "right"));
+        enumerator.handleSourceEvent(0, close);
+        enumerator.addSplitsBack(Collections.singletonList(parent), 0);
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(3, 0, 0));
+
+        enumerator.handleSourceEvent(0, close);
+
+        assertThat(context.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly(
+                        parent.splitId(), "change-stream-1", "change-stream-2", parent.splitId());
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
+        assertThat(checkpoint.getUnassignedSplits()).isEmpty();
+        assertThat(checkpoint.getAssignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1", "change-stream-2");
+        assertThat(checkpoint.getNextSplitId()).isEqualTo(3);
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(1);
+        enumerator.notifyCheckpointComplete(1);
+        assertThat(enumerator.pendingCloseCount()).isZero();
+        assertThat(enumerator.snapshotState(2).getRereadSplitIds()).isEmpty();
+        enumerator.close();
+    }
+
+    @Test
+    void aRestoredReaderTakesBackAPendingCloseAndItsNextCloseCreatesNothing() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        PartitionTransitionEvent close = transition(parent, successor(LEFT, "left"));
+        enumerator.handleSourceEvent(0, close);
+
+        // A region failover restored the parent from a checkpoint taken before it closed.
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionsRestoredEvent(
+                        Arrays.asList(parent.splitId(), "change-stream-unknown")));
+
+        assertThat(enumerator.pendingCloseCount()).isZero();
+        BigtableChangeStreamEnumeratorState reopened = enumerator.snapshotState(1);
+        assertThat(reopened.getAssignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly(parent.splitId());
+        assertThat(reopened.getRereadSplitIds()).containsExactly(parent.splitId());
+        assertThat(reopened.getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1");
+
+        enumerator.handleSourceEvent(0, close);
+
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(1);
+        BigtableChangeStreamEnumeratorState reclosed = enumerator.snapshotState(2);
+        assertThat(reclosed.getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1");
+        assertThat(reclosed.getNextSplitId()).isEqualTo(2);
+        enumerator.close();
+    }
+
+    @Test
+    void aRestoreKeepsTheRereadMarkSoTheNextCloseCreatesNothing() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        PartitionTransitionEvent close = transition(parent, successor(LEFT, "left"));
+        enumerator.handleSourceEvent(0, close);
+        enumerator.addSplitsBack(Collections.singletonList(parent), 0);
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
+        enumerator.close();
+
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> restoredContext = context(1);
+        BigtableChangeStreamSplitEnumerator restored =
+                enumerator(
+                        restoredContext,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        new BigtableChangeStreamEnumeratorStateSerializer()
+                                .deserialize(
+                                        new BigtableChangeStreamEnumeratorStateSerializer()
+                                                .getVersion(),
+                                        new BigtableChangeStreamEnumeratorStateSerializer()
+                                                .serialize(checkpoint)));
+        restored.start();
+        restoredContext.runAsyncCalls();
+        restored.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        assertThat(restoredContext.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1", parent.splitId());
+
+        restored.handleSourceEvent(0, close);
+
+        BigtableChangeStreamEnumeratorState reclosed = restored.snapshotState(2);
+        assertThat(reclosed.getAssignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1");
+        assertThat(reclosed.getUnassignedSplits()).isEmpty();
+        assertThat(reclosed.getNextSplitId()).isEqualTo(2);
+        restored.close();
+    }
+
+    @Test
+    void aTransitionTheRestoredSnapshotMissedIsAppliedWhenTheReaderReportsItAgain()
+            throws Exception {
+        // #2206: the close was reported after the coordinator's snapshot and before the reader's
+        // barrier, so the restored ledger holds the split as assigned.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit parent = context.assignedSplits(0).get(0);
+        BigtableChangeStreamEnumeratorState checkpoint = enumerator.snapshotState(1);
+        enumerator.close();
+
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> restoredContext = context(1);
+        BigtableChangeStreamSplitEnumerator restored =
+                enumerator(
+                        restoredContext,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        checkpoint);
+        restored.start();
+        // The re-sent transition arrives before initialization completes and waits for it.
+        restored.handleSourceEvent(0, transition(parent, successor(WHOLE, "successor")));
+        restoredContext.runAsyncCalls();
+        restored.handleSourceEvent(0, new ReaderCapacityEvent(1, 0, 0));
+
+        assertThat(restoredContext.assignedSplits(0))
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1");
+        assertThat(restoredContext.sourceEvents(0))
+                .extracting(event -> ((PartitionTransitionAckEvent) event).getSplitId())
+                .containsExactly(parent.splitId());
+        restored.close();
+    }
+
+    @Test
+    void withoutACompletedCheckpointClosesBecomeFinalOnceOneHasWaitedTheTimeout() throws Exception {
+        AdvanceableClock clock = new AdvanceableClock(Instant.parse("2026-11-21T00:00:00Z"));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(LEFT, RIGHT, WHOLE),
+                        StartPosition.latest(),
+                        null,
+                        null,
+                        false,
+                        false,
+                        clock,
+                        Duration.ofMinutes(10));
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(3, 0, 0));
+        List<ChangeStreamPartitionSplit> splits = context.assignedSplits(0);
+        ChangeStreamPartitionSplit first = splits.get(0);
+        ChangeStreamPartitionSplit second = splits.get(1);
+
+        // The wait counts from a close, not from the start: nothing closed, so nothing is final.
+        clock.advance(Duration.ofMinutes(11));
+        context.runPeriodicAsyncCalls();
+        enumerator.handleSourceEvent(0, transition(first));
+        enumerator.handleSourceEvent(0, transition(second));
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(2);
+
+        // Both are read again; the second closes again before the timeout, the first does not.
+        enumerator.addSplitsBack(Arrays.asList(first, second), 0);
+        enumerator.handleSourceEvent(0, new ReaderCapacityEvent(2, 0, 0));
+        enumerator.handleSourceEvent(0, transition(second));
+        clock.advance(Duration.ofMinutes(10).minusMillis(1));
+        context.runPeriodicAsyncCalls();
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(1);
+
+        clock.advance(Duration.ofMillis(1));
+        context.runPeriodicAsyncCalls();
+        assertThat(enumerator.pendingCloseCount()).isZero();
+        // The first is still being read again, so it stays a re-read; the second is final.
+        assertThat(enumerator.snapshotState(1).getRereadSplitIds())
+                .containsExactly(first.splitId());
+        enumerator.handleSourceEvent(0, transition(first));
+        assertThat(enumerator.pendingCloseCount()).isZero();
+        assertThat(enumerator.snapshotState(2).getRereadSplitIds()).isEmpty();
+        enumerator.addSplitsBack(Arrays.asList(first, second), 0);
+        assertThat(enumerator.snapshotState(3).getUnassignedSplits()).isEmpty();
+
+        // A completed checkpoint makes closes wait for coverage again, for good.
+        enumerator.notifyCheckpointComplete(3);
+        enumerator.handleSourceEvent(0, transition(splits.get(2)));
+        clock.advance(Duration.ofDays(1));
+        context.runPeriodicAsyncCalls();
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(1);
+        enumerator.close();
+    }
+
+    @Test
+    void aNotificationForALaterCheckpointSettlesAnEarlierCoveredClose() throws Exception {
+        // Flink may notify only the latest of several completed checkpoints.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        enumerator.handleSourceEvent(0, transition(context.assignedSplits(0).get(0)));
+        enumerator.snapshotState(3);
+        enumerator.snapshotState(4);
+
+        enumerator.notifyCheckpointComplete(4);
+
+        assertThat(enumerator.pendingCloseCount()).isZero();
+        enumerator.close();
+    }
+
+    @Test
+    void aDeferredTransitionFromAReaderThatFailedSinceIsAppliedWithoutAnAck() throws Exception {
+        // An unguarded send to an attempt without a gateway throws and fails the job in Flink.
+        ChangeStreamPartitionSplit parent =
+                restoredSplit("change-stream-0", WHOLE, Instant.now().minus(Duration.ofHours(1)));
+        BigtableChangeStreamEnumeratorState checkpoint =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        parent.getLowWatermark(),
+                        1,
+                        Collections.emptyList(),
+                        Collections.singletonList(parent),
+                        Collections.emptyList());
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), checkpoint);
+        enumerator.start();
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionTransitionEvent(
+                        parent.splitId(),
+                        parent.getLowWatermark(),
+                        Collections.singletonList(successor(WHOLE, "successor"))));
+        context.unregisterReader(0);
+
+        context.runAsyncCalls();
+
+        assertThat(context.sourceEvents(0)).isEmpty();
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1");
+        enumerator.close();
+    }
+
+    @Test
+    void aRestoreKeepsAnExpiredAssignedSplitForTheReaderThatRestoresIt() throws Exception {
+        // Readers check the splits they restore; the ledger's copy of an assigned split carries
+        // only the previous completed checkpoint's position, so it is not checked here.
+        Instant expired = Instant.now().minus(Duration.ofDays(8));
+        ChangeStreamPartitionSplit assigned =
+                new ChangeStreamPartitionSplit(
+                        "change-stream-0",
+                        WHOLE,
+                        Collections.singletonList(TestChangeStreamTokens.token(WHOLE, "old")),
+                        expired);
+        BigtableChangeStreamEnumeratorState checkpoint =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        expired,
+                        1,
+                        Collections.emptyList(),
+                        Collections.singletonList(assigned),
+                        Collections.emptyList());
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(
+                        context,
+                        new ScriptedChangeStreamCoordinatorClient(
+                                Duration.ofDays(7), Collections.singletonList(WHOLE)),
+                        checkpoint);
+
+        enumerator.start();
+        context.runAsyncCalls();
+
+        assertThat(enumerator.snapshotState(1).getAssignedSplits()).containsExactly(assigned);
+        enumerator.close();
+    }
+
+    @Test
+    void aDeferredTransitionFromAnEarlierAttemptIsNotAcknowledgedToTheNextOne() throws Exception {
+        // The next attempt may close the same split again; a stale acknowledgement would drop
+        // that close from its checkpoint before the coordinator had applied it.
+        ChangeStreamPartitionSplit parent =
+                restoredSplit("change-stream-0", WHOLE, Instant.now().minus(Duration.ofHours(1)));
+        BigtableChangeStreamEnumeratorState checkpoint =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        parent.getLowWatermark(),
+                        1,
+                        Collections.emptyList(),
+                        Collections.singletonList(parent),
+                        Collections.emptyList());
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                enumerator(context, ScriptedChangeStreamCoordinatorClient.with(WHOLE), checkpoint);
+        enumerator.start();
+        enumerator.addReader(0);
+        PartitionTransitionEvent close = transition(parent, successor(WHOLE, "successor"));
+        enumerator.handleSourceEvent(0, close);
+        enumerator.addReader(0);
+
+        context.runAsyncCalls();
+
+        assertThat(context.sourceEvents(0)).isEmpty();
+        assertThat(enumerator.snapshotState(1).getUnassignedSplits())
+                .extracting(ChangeStreamPartitionSplit::splitId)
+                .containsExactly("change-stream-1");
+        // The current attempt's own transition is acknowledged.
+        enumerator.handleSourceEvent(0, close);
+        assertThat(context.sourceEvents(0))
+                .extracting(event -> ((PartitionTransitionAckEvent) event).getSplitId())
+                .containsExactly(parent.splitId());
+        enumerator.close();
+    }
+
+    @Test
+    void aZeroTimeoutKeepsClosesPendingWithoutACheckpoint() throws Exception {
+        AdvanceableClock clock = new AdvanceableClock(Instant.parse("2026-11-21T00:00:00Z"));
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        StartPosition.latest(),
+                        null,
+                        null,
+                        false,
+                        false,
+                        clock,
+                        Duration.ZERO);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        enumerator.handleSourceEvent(0, transition(context.assignedSplits(0).get(0)));
+
+        clock.advance(Duration.ofDays(365));
+        context.runPeriodicAsyncCalls();
+
+        assertThat(enumerator.pendingCloseCount()).isEqualTo(1);
+        enumerator.close();
+    }
+
+    @Test
+    void aBoundedRunThatDrainedReadsAReturnedPendingCloseAgain() throws Exception {
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(2);
+        BigtableChangeStreamSplitEnumerator enumerator =
+                new BigtableChangeStreamSplitEnumerator(
+                        context,
+                        ScriptedChangeStreamCoordinatorClient.with(WHOLE),
+                        StartPosition.latest(),
+                        null,
+                        null,
+                        true,
+                        false,
+                        Clock.systemUTC(),
+                        Duration.ZERO);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit only = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(0, transition(only));
+        assertThat(context.events()).containsSubsequence("noMoreSplits:0", "noMoreSplits:1");
+
+        // Subtask 0 fails before a checkpoint covers the close; its next attempt registers.
+        enumerator.addSplitsBack(Collections.singletonList(only), 0);
+        enumerator.addReader(0);
+        enumerator.handleSplitRequest(0, "localhost");
+        assertThat(context.assignedSplits(0)).containsExactly(only, only);
+        enumerator.handleSourceEvent(0, transition(only));
+
+        // The new attempt is told only after it has read the split again, and subtask 1, which was
+        // told and may have finished, is not told again.
+        assertThat(context.events())
+                .containsExactly(
+                        "assign:0",
+                        "noMoreSplits:0",
+                        "noMoreSplits:1",
+                        "assign:0",
+                        "noMoreSplits:0");
+        assertThat(enumerator.snapshotState(1).getCompletedPartitions()).containsExactly(WHOLE);
         enumerator.close();
     }
 
@@ -1450,7 +1926,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 restored,
                 false,
                 false,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                Duration.ZERO);
     }
 
     private static BigtableChangeStreamSplitEnumerator reconciling(
@@ -1466,7 +1943,8 @@ class BigtableChangeStreamSplitEnumeratorTest {
                 restored,
                 false,
                 true,
-                Clock.fixed(now, ZoneOffset.UTC));
+                Clock.fixed(now, ZoneOffset.UTC),
+                Duration.ZERO);
     }
 
     private static BigtableChangeStreamSplitEnumerator boundedReconciling(
@@ -1475,7 +1953,15 @@ class BigtableChangeStreamSplitEnumeratorTest {
             BigtableChangeStreamEnumeratorState restored,
             Clock clock) {
         return new BigtableChangeStreamSplitEnumerator(
-                context, client, StartPosition.latest(), null, restored, true, true, clock);
+                context,
+                client,
+                StartPosition.latest(),
+                null,
+                restored,
+                true,
+                true,
+                clock,
+                Duration.ZERO);
     }
 
     private static BigtableChangeStreamEnumeratorState restoredWithMissing(
@@ -1493,6 +1979,20 @@ class BigtableChangeStreamSplitEnumeratorTest {
     private static ChangeStreamPartitionSplit restoredSplit(
             String id, ByteStringRange partition, Instant lowWatermark) {
         return new ChangeStreamPartitionSplit(id, partition, Collections.emptyList(), lowWatermark);
+    }
+
+    private static PartitionProgressEvent progress(
+            ChangeStreamPartitionSplit split, String token, Instant lowWatermark) {
+        return new PartitionProgressEvent(
+                Collections.singletonList(
+                        PartitionProgressEvent.Progress.of(
+                                new ChangeStreamPartitionSplit(
+                                        split.splitId(),
+                                        split.getPartition(),
+                                        Collections.singletonList(
+                                                TestChangeStreamTokens.token(
+                                                        split.getPartition(), token)),
+                                        lowWatermark))));
     }
 
     private static PartitionTransitionEvent transition(

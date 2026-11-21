@@ -203,6 +203,7 @@ class BigtableOptionParityTest {
         map.put(
                 "maxConcurrentStreamsPerSubtask",
                 BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK);
+        map.put("firstCheckpointTimeout", BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT);
         map.put(
                 "exportClientMetricsToFlink",
                 BigtableConnectorOptions.CLIENT_METRICS_EXPORT_TO_FLINK);

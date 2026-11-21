@@ -27,11 +27,9 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChange
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
-import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.CollectingSourceOutput;
-import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -48,7 +46,6 @@ class BigtableChangeStreamRecordEmitterTest {
     private final MetricListener listener = new MetricListener();
     private final SourceReaderMetricGroup metricGroup =
             InternalSourceReaderMetricGroup.mock(listener.getMetricGroup());
-    private final FakeSourceReaderContext context = new FakeSourceReaderContext(metricGroup);
     private final BigtableChangeStreamReaderMetrics metrics =
             new BigtableChangeStreamReaderMetrics(metricGroup);
 
@@ -59,7 +56,7 @@ class BigtableChangeStreamRecordEmitterTest {
         ChangeStreamPartitionSplitState state = state();
         CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
         BigtableChangeStreamRecordEmitter<String> emitter =
-                new BigtableChangeStreamRecordEmitter<>(schema(), context, metrics);
+                new BigtableChangeStreamRecordEmitter<>(schema(), metrics);
 
         emitter.emitRecord(
                 TestChangeStreamRecords.mutation(commit, watermark, "mutation-token"),
@@ -85,12 +82,12 @@ class BigtableChangeStreamRecordEmitterTest {
     }
 
     @Test
-    void heartbeatAdvancesStateWithoutEmittingAndCloseReportsTopology() throws Exception {
+    void heartbeatAdvancesStateWithoutEmittingAndCloseRecordsTopology() throws Exception {
         Instant watermark = Instant.parse("2026-08-11T02:00:00Z");
         ChangeStreamPartitionSplitState state = state();
         CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
         BigtableChangeStreamRecordEmitter<String> emitter =
-                new BigtableChangeStreamRecordEmitter<>(schema(), context, metrics);
+                new BigtableChangeStreamRecordEmitter<>(schema(), metrics);
 
         emitter.emitRecord(
                 TestChangeStreamRecords.heartbeat(watermark, "heartbeat"), output, state);
@@ -99,11 +96,11 @@ class BigtableChangeStreamRecordEmitterTest {
 
         assertThat(output.records()).isEmpty();
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
-        assertThat(context.sourceEvents()).hasSize(2);
-        PartitionProgressEvent progress = (PartitionProgressEvent) context.sourceEvents().get(0);
-        assertThat(progress.getLowWatermark()).isEqualTo(watermark);
-        assertThat(progress.getContinuationToken().getToken()).isEqualTo("heartbeat");
-        PartitionTransitionEvent event = (PartitionTransitionEvent) context.sourceEvents().get(1);
+        assertThat(state.toSplit().isClosed()).isTrue();
+        assertThat(state.toSplit().getContinuationTokens())
+                .extracting(token -> token.getToken())
+                .containsExactly("heartbeat");
+        PartitionTransitionEvent event = state.toSplit().toTransitionEvent();
         assertThat(event.getLowWatermark()).isEqualTo(watermark);
         assertThat(event.getSuccessors()).hasSize(1);
         assertThat(event.getSuccessors().get(0).getContinuationToken().getToken())
@@ -138,7 +135,6 @@ class BigtableChangeStreamRecordEmitterTest {
                                 return org.apache.flink.api.common.typeinfo.Types.STRING;
                             }
                         },
-                        context,
                         metrics);
         Instant watermark = Instant.parse("2026-08-11T02:59:00Z");
         ChangeStreamPartitionSplitState state = state();
@@ -176,7 +172,6 @@ class BigtableChangeStreamRecordEmitterTest {
                             }
                         },
                         familyInclude("absent", false),
-                        context,
                         metrics);
         Instant watermark = Instant.parse("2026-08-11T03:59:00Z");
         ChangeStreamPartitionSplitState state = state();
@@ -217,7 +212,6 @@ class BigtableChangeStreamRecordEmitterTest {
                             }
                         },
                         familyInclude("family-2", false),
-                        context,
                         metrics);
 
         emitter.emitRecord(
@@ -254,7 +248,6 @@ class BigtableChangeStreamRecordEmitterTest {
                             }
                         },
                         familyInclude("absent", true),
-                        context,
                         metrics);
         Instant watermark = Instant.parse("2026-08-11T04:59:00Z");
         ChangeStreamPartitionSplitState state = state();
@@ -283,7 +276,7 @@ class BigtableChangeStreamRecordEmitterTest {
         CollectingSourceOutput<String> output = new CollectingSourceOutput<>();
         output.failOnCollect(new IllegalStateException("downstream"));
         BigtableChangeStreamRecordEmitter<String> emitter =
-                new BigtableChangeStreamRecordEmitter<>(schema(), context, metrics);
+                new BigtableChangeStreamRecordEmitter<>(schema(), metrics);
 
         assertThatThrownBy(
                         () ->
@@ -327,7 +320,6 @@ class BigtableChangeStreamRecordEmitterTest {
                                 return org.apache.flink.api.common.typeinfo.Types.STRING;
                             }
                         },
-                        context,
                         metrics);
 
         emitter.emitRecord(
@@ -369,7 +361,6 @@ class BigtableChangeStreamRecordEmitterTest {
                                 return org.apache.flink.api.common.typeinfo.Types.STRING;
                             }
                         },
-                        context,
                         metrics);
 
         assertThatThrownBy(

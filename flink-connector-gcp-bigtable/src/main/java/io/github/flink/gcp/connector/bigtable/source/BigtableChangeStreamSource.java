@@ -199,7 +199,8 @@ public final class BigtableChangeStreamSource<T>
                     config.getStartPosition(),
                     config.getResumeFallback(),
                     restored,
-                    config.getBoundedTimestamp() != null);
+                    config.getBoundedTimestamp() != null,
+                    config.getFirstCheckpointTimeout());
         } catch (Throwable e) {
             // The enumerator never took ownership, so nothing else will close what was just minted.
             Closers.closeAllSuppressing(e, client);

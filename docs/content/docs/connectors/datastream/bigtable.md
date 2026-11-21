@@ -447,9 +447,12 @@ Fresh jobs default to `StartPosition.latest()`. Restores use the exact checkpoin
 token and estimated low watermark instead. If that position has fallen outside the table's
 retention, restore fails by default; `resumeFallback(...)` explicitly accepts the resulting gap and
 restarts the affected partition without its stale token. The check covers every restored position:
-assigned and unassigned partitions, pending merges, and the reconciler's checkpointed
-missing-partition ledger. A bounded run's completed ranges are restored without one, because a
-range that has already been read to the end time is never resumed from.
+each reader checks the partitions it restores, closed ones included, and reads an expired closed
+one again from the fallback rather than report successors whose tokens have expired with it; the
+coordinator checks unassigned partitions, pending merges, and the reconciler's checkpointed
+missing-partition ledger. A bounded
+run's completed ranges are restored without one, because a range that has already been read to the
+end time is never resumed from.
 `boundedTimestamp(...)` makes the source bounded.
 
 Each mutation is handed to `BigtableChangeStreamDeserializationSchema` and may produce zero or more
@@ -486,10 +489,12 @@ A tracked low watermark that falls before one minute inside the retention window
 to that point, because the service answers no request for a position it no longer retains. Such a
 restart skips the changes between the position it tracked and the one it starts from, and nothing
 tells the two apart: `changeStreamTokenlessRestarts` counts a clamped restart and an unclamped one
-alike, and the WARN names the position the restart used rather than the one it replaced. An
-expired restored position cannot reach this clamp, because the restore-expiry check fails the job
-or applies `resumeFallback(...)` before the reconciler runs; the clamp covers only a position that
-ages past retention while the job runs.
+alike, and the WARN names the position the restart used rather than the one it replaced. The clamp
+covers a position that ages past retention while the job runs, and the coordinator's copy of an
+assigned partition, which lags its reader by a completed checkpoint and which a restore leaves to
+that reader to check. An expired unassigned, pending-merge or missing position cannot reach it,
+because the restore-expiry check fails the job or applies `resumeFallback(...)` before the
+reconciler runs.
 
 Change Streams cover every column family. Garbage-collection changes can therefore appear beside
 application writes. Bigtable preserves the service's per-partition order, but records from
@@ -497,6 +502,33 @@ different partitions have no connector-imposed global order. Delivery is at leas
 failure between downstream emission and the next completed checkpoint, so side effects should be
 idempotent. A savepoint is the supported cross-job handoff: starting a separate job at a wall-clock
 time is not an exact continuation-token transfer.
+
+### Checkpoints and region failover
+
+Region failover, Flink's default, restarts the failed tasks from the last completed checkpoint but
+keeps the source coordinator.
+Every partition the failed subtasks were given since that checkpoint restarts where it was
+assigned, including one that closed since, and a partition that closed after the checkpoint is read
+again when a restored reader holds it.
+So a close becomes final only once a checkpoint taken after it completes.
+The successors of a partition read again already exist: its next close creates none, and a
+successor another reader already reads keeps running, so the order of the two is not restored.
+A reader also keeps a closed partition in its checkpoint until the coordinator acknowledges the
+close, so a restore from a checkpoint whose coordinator snapshot missed the close still creates
+the successors.
+
+Reading never waits for that checkpoint; only the coordinator's record of the close does.
+A job without checkpointing never completes a checkpoint, so `firstCheckpointTimeout` (10 minutes
+by default) bounds the wait.
+Once a close has waited that long with none completed, the source logs a warning, and every close
+is final at once, so a region failover does not read it again, until a checkpoint completes.
+Zero keeps closes pending until one completes, one small entry per closed partition.
+The coordinator learns positions from a report each reader sends when a checkpoint completes, and,
+until one does, from current positions at most once a second.
+[ADR-0097]({{< param BookRepo >}}/blob/main/docs/adr/0097-the-bigtable-change-stream-coordinator-checkpoints-the-partition-ledger.md)
+records the protocol.
+
+### Event time
 
 Watermark generation remains the job's `WatermarkStrategy`; the source does not emit Bigtable's
 estimated low watermark as a Flink watermark.

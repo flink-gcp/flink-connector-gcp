@@ -27,6 +27,7 @@ import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamEnumeratorState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.BigtableChangeStreamSplitEnumerator;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClient;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.ChangeStreamCoordinatorClientFactory;
 import io.github.flink.gcp.connector.bigtable.source.changestream.enumerator.DefaultChangeStreamCoordinatorClient;
@@ -36,6 +37,7 @@ import io.github.flink.gcp.connector.testutils.FakeSplitEnumeratorContext;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -64,6 +66,36 @@ class BigtableChangeStreamSourceCoordinatorClientLifecycleTest {
                 .startPosition(StartPosition.latest())
                 .coordinatorClientFactory(clients)
                 .build();
+    }
+
+    @Test
+    void bothEnumeratorsTakeTheConfiguredFirstCheckpointTimeout() throws Exception {
+        BigtableChangeStreamSource<String> source =
+                BigtableChangeStreamSource.<String>builder()
+                        .table(TableDestination.of("project", "instance", "table"))
+                        .appProfileId("single-cluster")
+                        .deserializer(new TokenDeserializer())
+                        .firstCheckpointTimeout(Duration.ofMinutes(3))
+                        .coordinatorClientFactory(new RecordingFactory())
+                        .build();
+
+        try (BigtableChangeStreamSplitEnumerator created =
+                        (BigtableChangeStreamSplitEnumerator)
+                                source.createEnumerator(new FakeSplitEnumeratorContext<>(1));
+                BigtableChangeStreamSplitEnumerator restored =
+                        (BigtableChangeStreamSplitEnumerator)
+                                source.restoreEnumerator(
+                                        new FakeSplitEnumeratorContext<>(1),
+                                        new BigtableChangeStreamEnumeratorState(
+                                                false,
+                                                Instant.EPOCH,
+                                                0,
+                                                Collections.emptyList(),
+                                                Collections.emptyList(),
+                                                Collections.emptyList()))) {
+            assertThat(created.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(3));
+            assertThat(restored.getFirstCheckpointTimeout()).isEqualTo(Duration.ofMinutes(3));
+        }
     }
 
     @Test
