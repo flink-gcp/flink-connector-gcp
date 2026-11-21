@@ -24,6 +24,7 @@ import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.ReadRowsRequest;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.source.BigQueryReadClients;
 
 import javax.annotation.Nullable;
@@ -60,7 +61,9 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final int retryMaxAttempts;
 
-    private transient BigQueryReadClient client;
+    /** The client with the event-loop lease covering it; closing it releases both, in order. */
+    private transient GrpcEventLoops.LeasedClient<BigQueryReadClient> client;
+
     private transient boolean closed;
 
     /**
@@ -131,7 +134,7 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
                         BigQueryReadClients.createForReads(
                                 serviceAccountKeyFile, emulatorEndpoint, retryMaxAttempts, onRetry);
             }
-            open = client;
+            open = client.client();
         }
         ReadRowsRequest.Builder request = ReadRowsRequest.newBuilder().setReadStream(streamName);
         if (offset > 0) {
@@ -143,7 +146,7 @@ public final class ReadClientRowStreamOpener implements RowStreamOpener {
 
     @Override
     public void close() {
-        BigQueryReadClient open;
+        GrpcEventLoops.LeasedClient<BigQueryReadClient> open;
         synchronized (this) {
             closed = true;
             open = client;

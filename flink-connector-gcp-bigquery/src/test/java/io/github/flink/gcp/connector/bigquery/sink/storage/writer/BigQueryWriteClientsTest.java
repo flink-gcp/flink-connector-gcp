@@ -21,6 +21,7 @@ import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,9 +38,12 @@ class BigQueryWriteClientsTest {
 
     @Test
     void productionSettingsCarryTheConfiguredCredentials() throws Exception {
-        BigQueryWriteSettings settings =
-                BigQueryWriteClients.productionSettings(
-                        ServiceAccountKeyFiles.create(tempDir).toString());
+        BigQueryWriteSettings settings;
+        try (GrpcEventLoops.Lease lease = GrpcEventLoops.acquire()) {
+            settings =
+                    BigQueryWriteClients.productionSettings(
+                            ServiceAccountKeyFiles.create(tempDir).toString(), lease);
+        }
 
         assertThat(settings.getCredentialsProvider().getCredentials())
                 .isInstanceOf(ServiceAccountCredentials.class)
@@ -72,9 +76,23 @@ class BigQueryWriteClientsTest {
         assertThat(settings.getCredentialsProvider()).isInstanceOf(NoCredentialsProvider.class);
     }
 
+    /**
+     * The production client's channels run on the connector's event-loop group (#2237). The SDK's
+     * default provider carries no configurator, so one here is the group's.
+     */
+    @Test
+    void theProductionSettingsRunOnTheEventLoopGroup() throws IOException {
+        BigQueryWriteSettings settings;
+        try (GrpcEventLoops.Lease lease = GrpcEventLoops.acquire()) {
+            settings = BigQueryWriteClients.productionSettings(null, lease);
+        }
+
+        assertThat(provider(settings).toBuilder().getChannelConfigurator()).isNotNull();
+    }
+
     private static InstantiatingGrpcChannelProvider provider(BigQueryWriteSettings settings) {
-        // The cast is safe by construction: the settings come from EmulatorChannels, whose
-        // plaintextProvider returns this type.
+        // The cast is safe by construction: both the SDK's default provider and EmulatorChannels'
+        // plaintextProvider are this type.
         return (InstantiatingGrpcChannelProvider) settings.getTransportChannelProvider();
     }
 }

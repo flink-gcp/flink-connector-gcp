@@ -30,7 +30,7 @@ record — context, evidence, declined alternatives — is the named ADR under `
   It stores no resources, vertices or callbacks. Share this value without replacing runtime
   interfaces that expose state, committers or topologies.
 - Dependencies are `flink-core`, `flink-runtime`, `flink-streaming-java` and `flink-table-common`
-  (provided) plus `gax`/`gax-grpc`/`grpc-api`/`protobuf-java`/`google-auth-library-oauth2-http`
+  (provided) plus `gax`/`gax-grpc`/`grpc-api`/`grpc-netty-shaded` (for `GrpcEventLoops`)/`protobuf-java`/`google-auth-library-oauth2-http`
   (BOM-managed) and `opentelemetry-api` (managed by the root `opentelemetry-bom` import,
   **optional**: a connector adopting `ClientMetrics` declares it itself, and base adds it to no
   other connector's SQL jar, though a client may bring it; `docs/adr/0186`). **No OpenTelemetry SDK**: `ClientMetrics` implements
@@ -286,6 +286,25 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `setChannelConfigurator`, so its five client-owned emulator sites ride that Beta surface — the
   three caller-owned `openPlaintextChannel`/`fixedProvider` sites do not. An internal call,
   tier-irrelevant under `docs/adr/0141`; reread the annotation on a gax bump.
+- `GrpcEventLoops` (`docs/adr/0208`, #2237) is the event-loop group every connector gRPC channel
+  runs on instead of gRPC's own, whose delayed destroy runs after Flink closes a job jar's class
+  loader and exits the TaskManager under `cluster.uncaught-exception-handling: FAIL`. **A client
+  that owns its channels is opened with `GrpcEventLoops.open(lease -> create(lease.applyTo(
+  settings).build()))`** and closed through the returned `LeasedClient`, which awaits the channels
+  before releasing the lease and releases it if creation fails. A bare `acquire()` is only for
+  channels something else closes and awaits (the Storage Write API pool). The rules: never build
+  a channel while no lease covers it, and never release a lease under a live channel. `applyTo`
+  composes after an existing configurator, so the emulator's plaintext one survives, and refuses a
+  provider that does not build its own channels (a `fixedProvider`), which #2243 has to reach
+  another way. Apply the lease to a settings *builder*: a gapic `toBuilder()` can drop
+  hand-written fields (`BigQueryReadSettings` drops its retry listener). The group is process-wide
+  and refcounted, so a test opening leases closes every one in a `finally` (`GrpcEventLoopsTest`
+  asserts it after each test). **On the JobManager a client must close when its call returns**, not
+  when the enumerator closes: at the end of a job Flink 2.2.1 closes coordinators asynchronously and
+  does not wait before releasing the job's class loader, and a client open then can exit a session
+  cluster's JobManager under `FAIL`
+  (measured 8 of 8 on BigQuery's source before #2237's fix). BigQuery is migrated; the other
+  connectors are #2243.
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

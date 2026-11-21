@@ -17,9 +17,12 @@
 package io.github.flink.gcp.connector.bigquery.sink.storage.writer;
 
 import com.google.api.gax.core.CredentialsProvider;
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.auth.oauth2.ServiceAccountCredentials;
+import com.google.cloud.bigquery.storage.v1.TestStreamWriterSettings;
 import com.google.protobuf.Empty;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
 import io.github.flink.gcp.connector.bigquery.sink.storage.DefaultStreamOptions;
@@ -193,5 +196,34 @@ class StreamWriterRowAppenderFactoryTest {
                 .isEqualTo(new StreamWriterRowAppenderFactory.PoolBounds(2, 20))
                 .isNotEqualTo(new StreamWriterRowAppenderFactory.PoolBounds(3, 20))
                 .isNotEqualTo(new StreamWriterRowAppenderFactory.PoolBounds(2, 21));
+    }
+
+    /**
+     * Setting a transport provider replaces the one the SDK builds for a pooled writer, so the
+     * provider restates the SDK's settings and adds only the event-loop configurator (#2237). It is
+     * compared against the SDK's own provider, so a google-cloud-bigquerystorage release that
+     * changes those settings fails here instead of being silently overridden.
+     */
+    @Test
+    void theProductionProviderRestatesTheSdksPooledWriterProvider() throws Exception {
+        InstantiatingGrpcChannelProvider sdk = TestStreamWriterSettings.pooledWriterProvider();
+        try (GrpcEventLoops.Lease lease = GrpcEventLoops.acquire()) {
+            InstantiatingGrpcChannelProvider provider =
+                    StreamWriterRowAppenderFactory.productionChannelProvider(lease);
+
+            assertThat(provider.getKeepAliveTimeDuration())
+                    .isEqualTo(sdk.getKeepAliveTimeDuration());
+            assertThat(provider.getKeepAliveTimeoutDuration())
+                    .isEqualTo(sdk.getKeepAliveTimeoutDuration());
+            assertThat(provider.getKeepAliveWithoutCalls())
+                    .isEqualTo(sdk.getKeepAliveWithoutCalls());
+            assertThat(provider.getChannelPoolSettings()).isEqualTo(sdk.getChannelPoolSettings());
+            assertThat(provider.toBuilder().getMaxInboundMessageSize())
+                    .isEqualTo(sdk.toBuilder().getMaxInboundMessageSize());
+            assertThat(provider.getEndpoint()).isEqualTo(sdk.getEndpoint());
+            // The SDK's provider carries no configurator, so one here is the group's.
+            assertThat(sdk.toBuilder().getChannelConfigurator()).isNull();
+            assertThat(provider.toBuilder().getChannelConfigurator()).isNotNull();
+        }
     }
 }

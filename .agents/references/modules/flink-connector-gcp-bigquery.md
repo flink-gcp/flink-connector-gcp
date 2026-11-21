@@ -469,6 +469,18 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   live in exactly one place (`StreamWriterRowAppenderFactory`) and retire piecewise as releases
   carry their upstream fixes — per-deviation status and the canary trigger
   (`BigQueryEmulatorMissingTableDeviationITCase`) are in `docs/adr/0029`.
+- **Every gRPC client holds a `GrpcEventLoops` lease** (`docs/adr/0208`): the emulator
+  default-stream appender, `WriteClientBufferedStreamService`, `ReadClientSessionCreator` and
+  `ReadClientRowStreamOpener` open a `LeasedClient`; the pooled default-stream appender holds a bare
+  lease. **`ReadClientSessionCreator` opens a client per `create` and closes it when the call
+  returns** (JobManager: at the end of a job Flink does not wait for the enumerator's close before
+  releasing the class loader); do not
+  bring back a client held until `close()`. The pooled path sets `productionChannelProvider`, which restates the SDK's own
+  pooled-writer transport settings; `StreamWriterRowAppenderFactoryTest` compares it with the SDK's
+  through `TestStreamWriterSettings` (in the SDK's package, the `docs/adr/0067` reach), so a bump
+  that changes them fails there. A new client site takes a lease too;
+  `BigQueryWriteEventLoopITCase`/`BigQueryReadEventLoopITCase` observe the group's threads per
+  client.
 
 ## Table API / SQL (`docs/adr/0031`–`0033`, `0035`; shared rules `docs/adr/0014`, `docs/adr/0139`)
 

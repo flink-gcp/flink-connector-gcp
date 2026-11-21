@@ -23,12 +23,14 @@ import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.grpc.GrpcStatusCode;
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.NotFoundException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.AppendRowsResponse;
 import com.google.cloud.bigquery.storage.v1.BigQueryWriteClient;
+import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import com.google.cloud.bigquery.storage.v1.ConnectionWorkerPool;
 import com.google.cloud.bigquery.storage.v1.GetWriteStreamRequest;
 import com.google.cloud.bigquery.storage.v1.ProtoRows;
@@ -36,6 +38,7 @@ import com.google.cloud.bigquery.storage.v1.ProtoSchemaConverter;
 import com.google.cloud.bigquery.storage.v1.StreamWriter;
 import com.google.protobuf.Descriptors;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 import io.github.flink.gcp.connector.bigquery.sink.storage.BufferedStreamOptions;
@@ -170,8 +173,41 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
         if (location != null) {
             builder.setLocation(location);
         }
-        StreamWriter streamWriter = builder.build();
-        return new StreamWriterRowAppender(streamWriter, null);
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+        try {
+            builder.setChannelProvider(productionChannelProvider(lease));
+            return new StreamWriterRowAppender(builder.build(), lease::close);
+        } catch (IOException | RuntimeException | Error e) {
+            lease.close();
+            throw e;
+        }
+    }
+
+    /**
+     * Builds the transport provider the SDK would build for a pooled writer, with its channels on
+     * the connector's event-loop group.
+     *
+     * <p>Setting a provider at all replaces the SDK's, so its settings are restated here: {@code
+     * StreamWriter.getBigQueryWriteSettings} (google-cloud-bigquerystorage 3.38.0) starts from the
+     * API's default provider and adds one-minute keepalives that run without calls, and two
+     * channels per CPU. The provider reaches every channel a pooled writer opens — the short-lived
+     * client the SDK looks the table's location up with, and each connection the pool opens from
+     * the first writer's settings, which belong to the pool for the life of the class loader.
+     *
+     * <p>A connection the pool opens after that first writer's appender closed still lands on the
+     * group: it is opened for a writer whose own appender holds a lease, and the group is shared by
+     * every open lease. The pool closes and awaits a connection when its last writer closes, which
+     * {@code StreamWriterRowAppender.close()} does before releasing its lease.
+     */
+    @VisibleForTesting
+    static InstantiatingGrpcChannelProvider productionChannelProvider(GrpcEventLoops.Lease lease) {
+        return lease.applyTo(
+                        BigQueryWriteSettings.defaultGrpcTransportProviderBuilder()
+                                .setKeepAliveTimeDuration(Duration.ofMinutes(1))
+                                .setKeepAliveTimeoutDuration(Duration.ofMinutes(1))
+                                .setKeepAliveWithoutCalls(true)
+                                .setChannelsPerCpu(2))
+                .build();
     }
 
     @VisibleForTesting
@@ -199,7 +235,9 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
     private RowAppender createAgainstEmulator(
             TableDestination destination, Descriptors.Descriptor rowDescriptor) throws IOException {
         String streamName = destination.toTablePath() + "/streams/_default";
-        BigQueryWriteClient client = BigQueryWriteClients.forEmulator(emulatorEndpoint);
+        GrpcEventLoops.LeasedClient<BigQueryWriteClient> leased =
+                BigQueryWriteClients.forEmulator(emulatorEndpoint);
+        BigQueryWriteClient client = leased.client();
         StreamWriter streamWriter = null;
         try {
             client.getWriteStream(GetWriteStreamRequest.newBuilder().setName(streamName).build());
@@ -220,10 +258,10 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
             throw new NotFoundException(e, GrpcStatusCode.of(Status.Code.NOT_FOUND), false);
         } finally {
             if (streamWriter == null) {
-                client.close();
+                leased.close();
             }
         }
-        return new StreamWriterRowAppender(streamWriter, client);
+        return new StreamWriterRowAppender(streamWriter, leased::close);
     }
 
     /**
@@ -346,15 +384,16 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
         private final StreamWriter streamWriter;
 
         /**
-         * The client the writer is bound to, when this appender owns one. Null on the production
-         * path, where the writer draws its connection from the SDK's JVM-static pool and there is
-         * nothing per-appender to release.
+         * What the writer's channels are released with, after the writer closes: on the emulator
+         * path the client the writer is bound to, with its lease; on the production path only the
+         * lease, since the SDK's pool has already closed and awaited any connection this writer was
+         * the last user of.
          */
-        @Nullable private final BigQueryWriteClient client;
+        private final Runnable release;
 
-        StreamWriterRowAppender(StreamWriter streamWriter, @Nullable BigQueryWriteClient client) {
+        StreamWriterRowAppender(StreamWriter streamWriter, Runnable release) {
             this.streamWriter = streamWriter;
-            this.client = client;
+            this.release = release;
         }
 
         @Override
@@ -362,14 +401,16 @@ public class StreamWriterRowAppenderFactory implements RowAppenderFactory {
             return streamWriter.append(rows);
         }
 
+        /**
+         * Closes the writer and then releases its channels, so the event-loop group never stops
+         * under a live channel.
+         */
         @Override
         public void close() {
             try {
                 streamWriter.close();
             } finally {
-                if (client != null) {
-                    client.close();
-                }
+                release.run();
             }
         }
     }

@@ -76,6 +76,11 @@ limitations under the License.
             <artifactId>gax-grpc</artifactId>
         </dependency>
         <dependency>
+            <!-- The connector-owned Netty event-loop group behind rpc.GrpcEventLoops (#2237). -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+        </dependency>
+        <dependency>
             <!-- StatusRuntimeException on the status-code extraction path, and
                  ManagedChannel(Builder) on the emulator channel path. -->
             <groupId>io.grpc</groupId>
