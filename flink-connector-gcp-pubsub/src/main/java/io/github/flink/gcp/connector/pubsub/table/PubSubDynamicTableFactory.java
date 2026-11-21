@@ -42,6 +42,7 @@ import io.github.flink.gcp.connector.pubsub.table.sink.PubSubDynamicSink;
 import io.github.flink.gcp.connector.pubsub.table.sink.PublisherOptionsMapper;
 import io.github.flink.gcp.connector.pubsub.table.sink.TopicCreateOptionsMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.PubSubDynamicSource;
+import io.github.flink.gcp.connector.pubsub.table.source.PubSubWatermarkPushDownSource;
 import io.github.flink.gcp.connector.pubsub.table.source.StartPositionMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.SubscriberOptionsMapper;
 import io.github.flink.gcp.connector.pubsub.table.source.SubscriptionCreateOptionsMapper;
@@ -106,6 +107,7 @@ public class PubSubDynamicTableFactory
                         PubSubConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
                         PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_ENABLED,
                         PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_TTL,
+                        PubSubConnectorOptions.SCAN_WATERMARK_PUSH_DOWN_ENABLED,
                         PubSubConnectorOptions.SCAN_STARTUP_MODE,
                         PubSubConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         PubSubConnectorOptions.SCAN_AUTO_CREATE_TOPICS,
@@ -217,22 +219,31 @@ public class PubSubDynamicTableFactory
                 config.getOptional(PubSubConnectorOptions.SCAN_RESTORE_DEDUPLICATION_ENABLED)
                         .orElse(false);
         Duration restoreDeduplicationTtl = restoreDeduplicationTtl(config, restoreDeduplication);
-        return new PubSubDynamicSource(
-                context.getObjectIdentifier().asSummaryString(),
-                context.getPhysicalRowDataType(),
-                decodingFormat,
-                subscriptions,
-                SubscriptionCreateOptionsMapper.map(config),
-                StartPositionMapper.map(config),
-                config.getOptional(PubSubConnectorOptions.SCAN_ORDERING_MODE).orElse(null),
-                config.getOptional(PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY)
-                        .orElse(null),
-                SubscriberOptionsMapper.map(config),
-                restoreDeduplication,
-                restoreDeduplicationTtl,
-                config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE).orElse(null),
-                config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
-                config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+        PubSubDynamicSource source =
+                new PubSubDynamicSource(
+                        context.getObjectIdentifier().asSummaryString(),
+                        context.getPhysicalRowDataType(),
+                        decodingFormat,
+                        subscriptions,
+                        SubscriptionCreateOptionsMapper.map(config),
+                        StartPositionMapper.map(config),
+                        config.getOptional(PubSubConnectorOptions.SCAN_ORDERING_MODE).orElse(null),
+                        config.getOptional(
+                                        PubSubConnectorOptions.SCAN_DESERIALIZATION_FAILURE_POLICY)
+                                .orElse(null),
+                        SubscriberOptionsMapper.map(config),
+                        restoreDeduplication,
+                        restoreDeduplicationTtl,
+                        config.getOptional(PubSubConnectorOptions.SERVICE_ACCOUNT_KEY_FILE)
+                                .orElse(null),
+                        config.getOptional(PubSubConnectorOptions.EMULATOR_ENDPOINT).orElse(null),
+                        config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null));
+        // A separate class rather than a flag: the planner pushes a watermark into any source
+        // implementing the ability, and pushing one has costs a table must opt into (#1837).
+        return config.getOptional(PubSubConnectorOptions.SCAN_WATERMARK_PUSH_DOWN_ENABLED)
+                        .orElse(false)
+                ? PubSubWatermarkPushDownSource.of(source, config, context.getConfiguration())
+                : source;
     }
 
     /**

@@ -39,6 +39,7 @@ On Flink 2.2 and 2.3, the planner keeps the SQL catalog identifier as the logica
 The dataset has namespace `pubsub` and a `gcp` facet containing every configured physical subscription for a source, or the configured topic for a sink.
 A source with several subscriptions retains the complete set in this single facet.
 Physical names are `subscription:{project}:{subscription}` and `topic:{project}:{topic}`, respectively; the source is unbounded.
+A source table that has opted into [watermarks generated in the source](#watermarks-generated-in-the-source) and declares a `WATERMARK` is the exception: its dataset keeps the catalog name but loses the namespace and the facet.
 
 Selecting writable `ordering-key` metadata preserves the existing keyed routing before the sink writer.
 Lineage inspection does not add another sink or exchange; parallelism one still skips the ordering shuffle.
@@ -284,6 +285,95 @@ order.
 The [DataStream source explanation]({{< relref "docs/connectors/datastream/pubsub"
 >}}#message-ordering) covers subscriber connections, checkpoints, and the throughput cost.
 
+### Watermarks generated in the source
+
+By default the planner generates a table's `WATERMARK` in an operator of its own after the source.
+That operator sees rows, not splits, so it cannot pause a split, and the Flink table options that
+configure a source's watermarks have no effect on a `pubsub` table:
+`scan.watermark.alignment.group`, `scan.watermark.alignment.max-drift`,
+`scan.watermark.alignment.update-interval`, `scan.watermark.emit.strategy` and
+`scan.watermark.idle-timeout` are accepted and ignored.
+
+Setting `scan.watermark-push-down.enabled` to `true` hands the `WATERMARK` to the source, which then
+generates it per split, as the [DataStream source]({{< relref "docs/connectors/datastream/pubsub"
+>}}#watermark-alignment) does with a `WatermarkStrategy`.
+The option changes nothing for a table without a `WATERMARK`.
+For a table with one, the two settings differ as follows.
+
+| | Unset or `false` (default) | `true` |
+|---|---|---|
+| Where the watermark is generated | An operator after the source, from the rows of every split the subtask reads | The source, per split; the subtask's watermark is the slowest split's |
+| Rows of a split that lags behind another split of the same subtask | Can be made late by the other split's progress and dropped | Are not made late by another split; rows out of order within one split can still be late |
+| A subscription that receives nothing, read by a subtask that also reads one that carries rows | The watermark follows the rows that arrive | The watermark stops until it receives rows |
+| A subtask that reads subscriptions, none of which receives anything | The watermark stops unless `table.exec.source.idle-timeout` is positive | The watermark stops |
+| `scan.watermark.alignment.*`, `scan.watermark.emit.strategy` | Ignored | Take effect |
+| A positive `scan.watermark.idle-timeout` | Ignored | Rejected at planning |
+| A positive `table.exec.source.idle-timeout` | Marks the planner's operator idle | Rejected at planning, unless the table sets `scan.watermark.idle-timeout` to `0` |
+| Lineage on Flink 2.x | `pubsub` namespace and `gcp` facet | Catalog name only |
+
+Two things improve when the option is set.
+First, a subtask that reads several splits no longer drops the rows of the one that lags because
+another is ahead.
+Without it, the watermark follows the newest timestamps the subtask has seen from any split, so
+the rows of a subscription replaying a backlog beside a current one arrive behind it, and a
+window or interval join drops them as late with no error.
+With it, the subtask's watermark is the slowest split's, so another split's progress no longer
+makes a row late; a row that arrives out of order within its own split by more than the
+`WATERMARK` delay can still be.
+This happens when a table reads more subscriptions than it has source subtasks, since each
+subscription is at least one split and [the splits are dealt out]({{< relref
+"docs/connectors/datastream/pubsub" >}}#subscriptions-splits-and-parallelism) across the subtasks.
+Second, watermark alignment works: tables in one alignment group hold back whichever of them runs
+ahead, for instance a subscription catching up a backlog while the stream it is joined with is
+current, so the join does not buffer the current side's rows until the backlog is read.
+
+{{< sql-snippet file="flink/PubSubTableReference.sql" tag="watermark-alignment" >}}
+
+Alignment pauses splits, not subscriptions, and a paused split is not drained.
+Everything the DataStream page says about it applies unchanged, including the bounds that park a
+paused split's subscriber and the redeliveries a park costs.
+In particular, as that page's [watermark alignment]({{< relref "docs/connectors/datastream/pubsub"
+>}}#watermark-alignment) section explains, a subscription that goes quiet holds every other member
+of its group paused for as long as it stays quiet, and the idle timeout that would release it is
+rejected here.
+
+Opting in has three costs, which is why it is a choice per table rather than the default.
+
+- **A subscription that receives nothing stops the table's watermark, and nothing releases it.**
+  The watermark is the slowest split's, and a split with no rows does not advance, whether it
+  never received any or stopped receiving them. Event-time windows over the table then fire
+  nothing, and interval joins keep their state, until that subscription receives rows again, even
+  though the other subscriptions keep flowing. Without the option this happens only when every
+  subscription its subtask reads is quiet, and a positive `table.exec.source.idle-timeout` releases it
+  there; with the option the next cost rules any idle timeout out. Do not opt in a table whose
+  subscriptions can go quiet while the others carry traffic.
+
+- **A positive idle timeout is rejected.** Flink adds source idleness to the pushed watermark from
+  `scan.watermark.idle-timeout`, or from the session's `table.exec.source.idle-timeout` when the
+  table sets none. Source idleness can mark a split idle while the split still has records
+  ([FLINK-40234](https://issues.apache.org/jira/browse/FLINK-40234)), and an event-time operator
+  downstream then drops them as late, with no failure and no log line. Planning fails instead,
+  naming the option the timeout came from; set `'scan.watermark.idle-timeout' = '0'` on the table
+  to keep a session-wide timeout that other sources use. Without push-down the session option is
+  used by the planner's own operator, which this does not affect. The check reads the session the
+  plan is built in, so restoring a compiled plan in a session with a positive
+  `table.exec.source.idle-timeout` fails the same way; set it to `'0'` for that job.
+- **On Flink 2.x the table's lineage loses its connector dataset.** Flink hands a source that it
+  reads through a `SourceProvider` no watermark strategy
+  ([FLINK-19722](https://issues.apache.org/jira/browse/FLINK-19722)), so this source reads through
+  a `DataStreamScanProvider` once a watermark is pushed, and Flink extracts the connector's lineage
+  dataset only from a `SourceProvider`
+  ([FLINK-39219](https://issues.apache.org/jira/browse/FLINK-39219)). The table's dataset keeps its
+  catalog name but has an empty namespace and no `gcp` facet, unlike the one [Lineage](#lineage)
+  describes.
+
+Set the option on a table whose `WATERMARK` feeds an event-time operator when it reads more
+subscriptions than it has source subtasks and every one of them carries traffic, when the table
+is to be aligned with another source, or when it needs `scan.watermark.emit.strategy` set to
+`on-event`.
+A table read as one split per subtask, such as one subscription under per-key ordering, gains
+nothing else from it, and keeps its lineage and any idle timeout by leaving it unset.
+
 ## Sink
 
 The concise DDL-to-builder map remains in the [sink option inventory](#sink-options).
@@ -391,6 +481,7 @@ default" rule as the [sink](#sink-options); `subscription` is required.
 | `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout` |
 | `scan.restore-deduplication.enabled` | Boolean | `restoreDeduplication` |
 | `scan.restore-deduplication.ttl` | Duration, requires `scan.restore-deduplication.enabled` | `restoreDeduplicationTtl` |
+| `scan.watermark-push-down.enabled` | Boolean | the `WatermarkStrategy` of `fromSource(...)`; see [Watermarks generated in the source](#watermarks-generated-in-the-source) |
 | `scan.startup.mode` | `continue-from-subscription` \| `earliest-retained` \| `latest` \| `timestamp` | `PubSubStartPosition.of(mode, ...)` |
 | `scan.startup.timestamp-millis` | Long, required by and only by `timestamp` | the instant of `PubSubStartPosition.of(...)` |
 | `scan.auto-create.topics` | Map<String, String> | each subscription key maps to its `topic(...)` — see [Subscription auto-creation](#subscription-auto-creation-maps-every-subscription-to-its-topic) for both accepted syntaxes |

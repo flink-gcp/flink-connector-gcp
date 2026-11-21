@@ -680,6 +680,9 @@ public class DocumentationSqlPlanTest {
                                 "packed-subscription-map",
                                 DocumentationSqlPlanTest::packedPubSubMapScenario)),
                 scenario(
+                        "Pub/Sub table reference source-generated watermarks with alignment",
+                        snippet("flink/PubSubTableReference.sql", "watermark-alignment")),
+                scenario(
                         "Spanner table reference overview",
                         List.of(
                                 setup(

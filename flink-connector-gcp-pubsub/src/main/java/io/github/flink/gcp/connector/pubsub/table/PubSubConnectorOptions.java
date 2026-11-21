@@ -349,6 +349,27 @@ public final class PubSubConnectorOptions {
                                     + " starts consuming. A redelivery that arrives later is"
                                     + " emitted. Requires 'scan.restore-deduplication.enabled'.");
 
+    /**
+     * Whether the source generates the table's WATERMARK itself, per split, which is what makes the
+     * 'scan.watermark.*' table options, such as watermark alignment, take effect. On Flink 2.x the
+     * table's lineage then has no connector namespace or 'gcp' facet. A positive
+     * 'scan.watermark.idle-timeout', or 'table.exec.source.idle-timeout' when the table sets none,
+     * is rejected, because source idleness can mark a split idle while it still has records
+     * (FLINK-40234).
+     */
+    public static final ConfigOption<Boolean> SCAN_WATERMARK_PUSH_DOWN_ENABLED =
+            ConfigOptions.key("scan.watermark-push-down.enabled")
+                    .booleanType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Whether the source generates the table's WATERMARK itself, per split, which is"
+                                    + " what makes the 'scan.watermark.*' table options, such as watermark alignment,"
+                                    + " take effect. On Flink 2.x the table's lineage then has no connector namespace"
+                                    + " or 'gcp' facet. A positive 'scan.watermark.idle-timeout', or"
+                                    + " 'table.exec.source.idle-timeout' when the table sets none, is rejected,"
+                                    + " because source idleness can mark a split idle while it still has records"
+                                    + " (FLINK-40234).");
+
     // ------------------------------------------------------------------------
     //  Source — start position
     // ------------------------------------------------------------------------
