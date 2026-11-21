@@ -20,7 +20,7 @@ limitations under the License.
 - Date: 2026-11-12
 - Issues: [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143), [#2144](https://github.com/flink-gcp/flink-connector-gcp/issues/2144), [#2145](https://github.com/flink-gcp/flink-connector-gcp/issues/2145), [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146), [#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150), [#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153), [#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)
 - Modules: tools/tier3, kubernetes
-- Evidence: [Firestore fault sequence findings](evidence/0204-firestore-fault-sequence-findings-2147.md), [Spanner fault sequence findings](evidence/0204-spanner-fault-sequence-findings-2154.md), [Bigtable fault sequence findings](evidence/0204-bigtable-fault-sequence-findings-2153.md)
+- Evidence: [Firestore fault sequence findings](evidence/0204-firestore-fault-sequence-findings-2147.md), [Spanner fault sequence findings](evidence/0204-spanner-fault-sequence-findings-2154.md), [Bigtable fault sequence findings](evidence/0204-bigtable-fault-sequence-findings-2153.md), [BigQuery fault sequence findings](evidence/0204-bigquery-fault-sequence-findings-2150.md)
 - Partially supersedes: [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md)'s rules for ending an attempt, its measurement windows and verdicts, one fault per trial, its input sizes, and spend approval from an estimate
 
 ## Context
