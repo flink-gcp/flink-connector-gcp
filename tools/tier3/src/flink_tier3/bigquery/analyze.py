@@ -37,11 +37,13 @@ from ..recovery_analysis import (
     unreadable,
     verdict_problems,
 )
+from .oracle import SEQUENCE_KIND
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     SAMPLED_STAGES,
+    sequence_verdict,
     summarize,
     verdict,
 )
@@ -54,10 +56,30 @@ def assess(run):
 
     The timing is read from whatever recovery record the run exported, so a
     run whose verdict cannot be recomputed still reports the recoveries it
-    proved.
+    proved. A fault-sequence run (ADR-0204) lists the faults it injected
+    instead, and has no recovery proofs to time.
     """
     record = recovery_record(run, COMPLETE_EVENT)
+    if _sequence(run):
+        outcomes = record.get("outcomes") if isinstance(record, dict) else None
+        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+        return {
+            **_verdict(run),
+            "faults": faults if isinstance(faults, list) else [],
+            "recoveries": [],
+        }
     return {**_verdict(run), "recoveries": recovery_timings(run, record)}
+
+
+def _trial(run):
+    result = run.result if isinstance(run.result, dict) else None
+    trial = result.get("bigquery_trial") if result else None
+    return trial if isinstance(trial, dict) else None
+
+
+def _sequence(run):
+    trial = _trial(run)
+    return trial is not None and trial.get("fault") == SEQUENCE_KIND
 
 
 def _verdict(run):
@@ -87,17 +109,23 @@ def _verdict(run):
     # is an export missing a file.
     if not complete and record.get("stage") == COMPLETE_STAGE:
         return unreadable(run, record, ["missing-" + COMPLETE_EVENT], len(readings))
-    # Decide over the coverage the readings support, never the coverage the
-    # record claims: recomputing from the record's own field would only restate
-    # it.
-    coverage = rebuild(readings, summarize)
-    if missing := missing_samples(record.get("coverage"), coverage):
-        return unreadable(run, record, [f"missing-samples:{missing}"], len(readings))
-    trial = result.get("bigquery_trial")
-    decided = verdict(
-        {**record, "coverage": coverage},
-        trial.get("mode") if isinstance(trial, dict) else None,
-    )
+    if _sequence(run):
+        # Decided by the data alone; nothing was sampled.
+        decided = sequence_verdict(record)
+    else:
+        # Decide over the coverage the readings support, never the coverage
+        # the record claims: recomputing from the record's own field would
+        # only restate it.
+        coverage = rebuild(readings, summarize)
+        if missing := missing_samples(record.get("coverage"), coverage):
+            return unreadable(
+                run, record, [f"missing-samples:{missing}"], len(readings)
+            )
+        trial = _trial(run)
+        decided = verdict(
+            {**record, "coverage": coverage},
+            trial.get("mode") if trial is not None else None,
+        )
     return {
         "run_id": run.run_id,
         "verdict": decided["verdict"],
@@ -113,6 +141,16 @@ def assess_runs(runs):
     return [assess(run) for run in runs if run.scenario == SCENARIO]
 
 
+def _faults(item):
+    """A sequence run's injected faults in order, or `-` for a single-fault run."""
+    kinds = [
+        fault.get("kind")
+        for fault in item.get("faults") or []
+        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
+    ]
+    return ", ".join(kinds) or "-"
+
+
 def render(assessments):
     """The report's BigQuery section, or nothing when it holds no such run."""
     if not assessments:
@@ -123,26 +161,32 @@ def render(assessments):
         "",
         "A verdict recomputed from the exported evidence, beside the one the run stored.",
         "",
-        "| run | verdict | stored | samples | reasons | problems |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| run | verdict | stored | samples | faults | reasons | problems |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         lines.append(
-            "| {run} | {verdict} | {stored} | {samples} | {reasons} | {problems} |".format(
+            "| {run} | {verdict} | {stored} | {samples} | {faults} | {reasons} "
+            "| {problems} |".format(
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
                 samples=item["samples"],
+                faults=_faults(item),
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",
             )
         )
     lines.append("")
     lines.append(
-        "Each family is required in the "
+        "For a single-fault run, each family is required in the "
         + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
         + f" and `{SAMPLED_STAGES[-1]}`"
         + " windows, and counts as observed only where a reading returned it."
+    )
+    lines.append(
+        "A `sequence` run (ADR-0204) is judged by its query oracle alone, "
+        "through the faults listed, so it samples no window."
     )
     lines.append(
         f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which is "

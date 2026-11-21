@@ -23,6 +23,7 @@ import json
 
 import pytest
 from flink_tier3 import analyze
+from flink_tier3.bigquery import plan
 from flink_tier3.bigquery.analyze import SCENARIO, render
 from flink_tier3.bigquery.verdict import (
     COMPLETE_EVENT,
@@ -405,9 +406,11 @@ def test_the_rendered_section_names_each_column_of_each_run(tmp_path):
     write_run(tmp_path, good, None, run_id="bq-0002")
     report, _ = assessed(tmp_path, expected=2)
     section = render(report["bigquery"])
-    assert "| run | verdict | stored | samples | reasons | problems |" in section
-    assert f"| bq-0001 | usable | usable | {SAMPLES} | - | - |" in section
-    assert f"| bq-0002 | - | - | {SAMPLES} | - | missing-result.json |" in section
+    assert (
+        "| run | verdict | stored | samples | faults | reasons | problems |" in section
+    )
+    assert f"| bq-0001 | usable | usable | {SAMPLES} | - | - | - |" in section
+    assert f"| bq-0002 | - | - | {SAMPLES} | - | - | missing-result.json |" in section
     assert "`baseline`, `upgraded` and `finishing` windows" in section
     assert f"not `{COMPLETE_STAGE}`" in section
 
@@ -482,3 +485,78 @@ def test_evidence_from_before_readings_named_their_window_is_inconclusive(tmp_pa
     # The rules changed under it; the export is whole.
     assert item["problems"] == ["verdict-differs-from-the-record"]
     assert item["samples"] == 2 * ATTEMPTS
+
+
+SEQUENCE_TRIAL = {
+    "mode": "ALO",
+    "destinations": 10,
+    "fault": "sequence",
+    "records": 5760,
+}
+FAULTS = ["upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out"]
+
+
+def sequence_record(report_verdict="pass", **overrides):
+    """A fault-sequence run's record: faults and a query, no proofs or coverage."""
+    value = {
+        "stage": COMPLETE_STAGE,
+        "at": "2026-09-22T00:00:00Z",
+        "outcomes": {
+            "faults": [{"kind": kind, "at": "2026-09-22T00:00:00Z"} for kind in FAULTS],
+            "query": {"report": {"verdict": report_verdict}},
+        },
+        "coverage": {},
+        "verdict": USABLE if report_verdict == "pass" else INCONCLUSIVE,
+        "reasons": [] if report_verdict == "pass" else ["oracle-not-passed"],
+    }
+    value.update(overrides)
+    return value
+
+
+@pytest.mark.parametrize(
+    "report_verdict,verdict,reasons",
+    [("pass", USABLE, []), ("fail", INCONCLUSIVE, ["oracle-not-passed"])],
+)
+def test_a_sequence_run_is_decided_by_its_query_and_lists_its_faults(
+    tmp_path, report_verdict, verdict, reasons
+):
+    """No window was sampled, so no coverage is asked of it."""
+    value = sequence_record(report_verdict)
+    write_run(tmp_path, value, receipt_for(value, bigquery_trial=SEQUENCE_TRIAL))
+    report, item = assessed(tmp_path)
+    assert item == {
+        "run_id": RUN,
+        "verdict": verdict,
+        "stored": verdict,
+        "reasons": reasons,
+        "problems": [],
+        "samples": 0,
+        "faults": value["outcomes"]["faults"],
+        "recoveries": [],
+    }
+    section = render(report["bigquery"])
+    assert f"| {RUN} | {verdict} | {verdict} | 0 | {', '.join(FAULTS)} |" in section
+    assert "A `sequence` run (ADR-0204) is judged by its query oracle alone" in (
+        section
+    )
+
+
+@pytest.mark.parametrize("trial", ["alo-10", "eo-10-tm-replacement"])
+def test_the_same_record_without_the_sequence_trial_asks_for_coverage(tmp_path, trial):
+    """The trial in the receipt, not the record's shape, picks the rule."""
+    value = sequence_record()
+    write_run(tmp_path, value, receipt_for(value, bigquery_trial=plan.trial(trial)))
+    _, item = assessed(tmp_path)
+    assert item["verdict"] == INCONCLUSIVE
+    assert "missing-upgrade" in item["reasons"]
+
+
+def test_a_sequence_run_stopped_before_its_query_is_incomplete(tmp_path):
+    """A record the run left mid-sequence is judged by its own stage."""
+    value = sequence_record(stage="taskmanager", verdict=None, reasons=[])
+    del value["outcomes"]["query"]
+    write_run(tmp_path, value, receipt_for(value, bigquery_trial=SEQUENCE_TRIAL))
+    _, item = assessed(tmp_path)
+    assert item["verdict"] == INCONCLUSIVE
+    assert item["reasons"] == ["recovery-incomplete", "oracle-not-passed"]
+    assert item["stored"] is None

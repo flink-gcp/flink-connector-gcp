@@ -21,13 +21,19 @@ import google.auth.exceptions
 import pytest
 import requests
 from flink_tier3 import analyze
-from flink_tier3.bigquery.exercise import BigQueryExercise, require_handoff
+from flink_tier3.bigquery import plan
+from flink_tier3.bigquery.exercise import (
+    BigQueryExercise,
+    BigQuerySequenceExercise,
+    require_handoff,
+)
 from flink_tier3.bigquery.handoff import BigQueryHandoff
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
 from flink_tier3.bigquery.oracle import assess
 from flink_tier3.bigquery.verdict import MEASUREMENT_EVENT
 from flink_tier3.common import INCONCLUSIVE, Failure, TransportError
 from flink_tier3.environment import Environment
+from flink_tier3.exercise import RECORD_SECONDS, TIME_LIMIT_SECONDS
 from flink_tier3.model import Phase
 from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, MIB
 from flink_tier3.runner import Runner
@@ -1603,3 +1609,145 @@ def test_a_file_loads_failover_waits_for_a_running_load_and_no_longer(
     else:
         # A stop is checked once a poll, not on every listing.
         assert len(world.listings) == rt.POLL
+
+
+def supervised(prepared):
+    """The exercise the supervisor builds for the approved trial."""
+    environment, _, upgrade, _ = prepared
+    environment.actor = "supervisor"
+    environment.records.set_phase(Phase.READY)
+    environment.records.set_phase(Phase.RUNNING)
+    value = Supervisor(environment, upgrade).exercise
+    value.persist("baseline")
+    return value
+
+
+@pytest.mark.parametrize(
+    "trial",
+    [
+        plan.trial(name)
+        for name in ("eo-10", "eo-10-tm-replacement", "fl-10-rescale-in")
+    ],
+)
+def test_a_single_fault_trial_keeps_its_exercise(prepared, trial):
+    assert type(supervised(prepared)) is BigQueryExercise
+
+
+@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+def test_the_sequence_trial_builds_the_sequence_exercise(prepared, trial):
+    value = supervised(prepared)
+    assert isinstance(value, BigQuerySequenceExercise)
+    assert value.measurement_event is None
+    assert value.records == 5760
+    assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
+
+
+class Rows:
+    """A query handoff answering one aggregate per destination."""
+
+    def __init__(self, exercise, **damage):
+        self.exercise, self.damage, self.observations = exercise, damage, []
+
+    def query(self, name, *, deadline):
+        self.observations.append((name, deadline))
+        data = rows(self.exercise.trial, **self.damage)
+        return {"rows": data, "report": assess(self.exercise.trial, data)}
+
+
+@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+@pytest.mark.parametrize(
+    "damage,verdict,reasons",
+    [
+        ({}, rt.USABLE, []),
+        ({"duplicate": True}, rt.USABLE, []),
+        ({"missing": True}, INCONCLUSIVE, ["oracle-not-passed"]),
+        ({"invalid": True}, INCONCLUSIVE, ["oracle-not-passed"]),
+    ],
+)
+def test_a_sequence_run_is_judged_by_one_query_alone(
+    prepared, trial, damage, verdict, reasons
+):
+    """Lost or invalid rows are the verdict, not a stop, and are not read again."""
+    value = supervised(prepared)
+    value.persist("complete")
+    # Late in the run, so the read window is the time limit's, not the
+    # visibility allowance's.
+    limit = value.env.schedule.started + TIME_LIMIT_SECONDS
+    value.env.clock.now = limit - 300
+    queries = Rows(value, **damage)
+    value.verify_rows(queries)
+    record = value.env.refresh().recovery
+    assert (record["stage"], record["verdict"], record["reasons"]) == (
+        "complete",
+        verdict,
+        reasons,
+    )
+    report = record["outcomes"]["query"]["report"]
+    assert report["duplicate_rows"] == (10 if damage.get("duplicate") else 0)
+    # One read, which ends before the run's time limit leaves its record.
+    [(name, deadline)] = queries.observations
+    assert name == "final-0"
+    assert value.deadline == limit
+    assert deadline == limit - RECORD_SECONDS
+
+
+@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+def test_a_sequence_run_reads_only_once_the_input_is_done(prepared, trial):
+    value = supervised(prepared)
+    with pytest.raises(Failure, match="fault sequence and input"):
+        value.verify_rows(Rows(value))
+
+
+@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+def test_a_job_that_finished_in_the_last_minute_stops_at_the_time_limit(
+    prepared, trial
+):
+    """No read can end before the record's write, so none is asked for."""
+    value = supervised(prepared)
+    value.persist("complete")
+    value.env.clock.now = value.deadline - RECORD_SECONDS + 1
+    queries = Rows(value)
+    with pytest.raises(Failure, match="time limit"):
+        value.verify_rows(queries)
+    assert queries.observations == []
+
+
+@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+@pytest.mark.parametrize("fault", ["before", "during", "no-rows"])
+def test_a_stop_or_an_empty_answer_leaves_the_sequence_without_a_verdict(
+    prepared, trial, fault
+):
+    value = supervised(prepared)
+    value.persist("complete")
+
+    class Answer(Rows):
+        def query(self, name, *, deadline):
+            result = super().query(name, deadline=deadline)
+            if fault == "during":
+                value.env.records.request_stop()
+            return {} if fault == "no-rows" else result
+
+    if fault == "before":
+        value.env.records.request_stop()
+    queries = Answer(value)
+    with pytest.raises(Failure):
+        value.verify_rows(queries)
+    assert "query" not in value.outcomes
+    assert len(queries.observations) == (0 if fault == "before" else 1)
+
+
+@pytest.mark.parametrize("trial", [plan.trial("alo-10-sequence")])
+def test_a_forged_sequence_report_still_stops_the_run(prepared, trial):
+    """The archived report must be the one its rows give."""
+    value = supervised(prepared)
+    value.persist("complete")
+
+    class Forged(Rows):
+        def query(self, name, *, deadline):
+            result = super().query(name, deadline=deadline)
+            result["report"]["verdict"] = "fail"
+            return result
+
+    with pytest.raises(Failure, match="archived oracle differs"):
+        value.verify_rows(Forged(value))
+    assert "query" not in value.outcomes

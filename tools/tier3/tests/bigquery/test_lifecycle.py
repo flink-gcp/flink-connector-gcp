@@ -27,8 +27,9 @@ from flink_tier3.model import Phase, RunRecord
 from flink_tier3.policy import BIGQUERY_STATE
 from flink_tier3.records import Records
 
+from ..doubles import NOW, Response
 from ..test_lifecycle import Store
-from .test_resources import NOW, Response, client, job, page, table
+from .test_resources import client, job, page, table
 
 
 class Environment:

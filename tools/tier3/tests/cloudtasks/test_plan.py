@@ -442,7 +442,7 @@ def test_the_render_command_takes_its_trial_by_kind(inputs, renderer, capsys):
     assert proposal["cost"]["usd"] == str(plan.estimate())
     assert proposal["trial"]["kind"] == "rescale-in"
     for extra in (
-        ["--trial", "eo-10"],
+        ["--bigquery-trial", "eo-10"],
         ["--trial-file", "x.json"],
         ["--cloudtasks-trial", "upgrade-failover"],
     ):

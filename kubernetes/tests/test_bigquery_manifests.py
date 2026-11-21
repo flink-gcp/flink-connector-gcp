@@ -163,7 +163,7 @@ def test_bigquery_initial_and_upgrade_preserve_the_trial(
         assert config["execution.checkpointing.storage"] == "filesystem"
         assert config["high-availability.type"] == "kubernetes"
         assert config["restart-strategy.type"] == "fixed-delay"
-        assert config["restart-strategy.fixed-delay.attempts"] == "3"
+        assert config["restart-strategy.fixed-delay.attempts"] == "2147483647"
         assert config["restart-strategy.fixed-delay.delay"] == "10 s"
         for option, suffix in [
             ("execution.checkpointing.dir", "checkpoints"),
@@ -485,6 +485,7 @@ def bigquery_proposal(module, *tags):
         (None, 2, 2),
         ("none", 2, 2),
         ("tm-replacement", 2, 2),
+        ("sequence", 2, 2),
         ("rescale-out", 1, 2),
         ("rescale-in", 2, 1),
     ],
@@ -705,3 +706,25 @@ def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
         name: data["flink_tier3_" + name.replace("/", ".")]
         for name in delivered_sources()
     } == delivered_sources()
+
+
+@pytest.mark.parametrize("records", [None, 5760])
+def test_bigquery_records_tag_sets_the_input_or_keeps_the_default(module, records):
+    """Dispatch names every trial's count; without it the mode's default renders."""
+    tags = ["-t", "bigquery_mode=ALO", "-t", "bigquery_fault=sequence"]
+    if records is not None:
+        tags += ["-t", f"bigquery_records={records}"]
+    result = bigquery_proposal(module, *tags)
+    assert result.returncode == 0, result.stderr
+    for app in json.loads(result.stdout):
+        args = app["spec"]["job"]["args"]
+        assert args[args.index("--records") + 1] == str(records or 28800)
+
+
+@pytest.mark.parametrize("records", [32768, 32769])
+def test_bigquery_records_tag_keeps_the_package_bounds(module, records):
+    """An ALO input above the package's 2 GiB bound is refused."""
+    result = bigquery_proposal(
+        module, "-t", "bigquery_mode=ALO", "-t", f"bigquery_records={records}"
+    )
+    assert (result.returncode == 0) is (records == 32768), result.stderr

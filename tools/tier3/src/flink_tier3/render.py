@@ -59,7 +59,9 @@ def main(argv=None):
         help="application digest reference; an offline render may be synthetic",
     )
     parser.add_argument("--trial-file", type=Path, help="unapproved Pub/Sub trial JSON")
-    parser.add_argument("--trial", choices=tuple(TRIALS), help="BigQuery trial")
+    parser.add_argument(
+        "--bigquery-trial", choices=tuple(TRIALS), help="BigQuery trial"
+    )
     parser.add_argument(
         "--cloudtasks-trial", choices=cloudtasks_trial.KINDS, help="Cloud Tasks trial"
     )
@@ -85,7 +87,7 @@ def main(argv=None):
     if resource := RESOURCE_SCENARIOS.get(args.scenario):
         flag = f"--{resource.field}-trial"
         kind = getattr(args, resource.field + "_trial")
-        if args.trial or args.trial_file:
+        if args.bigquery_trial or args.trial_file:
             parser.error(f"{args.scenario} takes its trial as {flag}")
         if not all((kind, args.started_at, args.revision, args.application_image)):
             parser.error(
@@ -111,16 +113,17 @@ def main(argv=None):
         print(json.dumps(bundle, indent=2))
         return
     if args.scenario in ("bigquery-recovery", "pubsub-recovery"):
-        choice = args.trial_file if args.scenario == "pubsub-recovery" else args.trial
-        wrong = args.trial if args.scenario == "pubsub-recovery" else args.trial_file
+        flag, choice, wrong = (
+            ("--trial-file", args.trial_file, args.bigquery_trial)
+            if args.scenario == "pubsub-recovery"
+            else ("--bigquery-trial", args.bigquery_trial, args.trial_file)
+        )
         if wrong or not all(
             (choice, args.started_at, args.revision, args.application_image)
         ):
             parser.error(
-                args.scenario
-                + " requires "
-                + ("--trial-file" if args.scenario == "pubsub-recovery" else "--trial")
-                + ", --started-at, --revision and --application-image"
+                f"{args.scenario} requires {flag}, --started-at, --revision "
+                "and --application-image"
             )
         if args.expression != "delivery.resources":
             parser.error("Trial proposals cannot select a raw expression")
@@ -144,7 +147,7 @@ def main(argv=None):
             parser.error(str(error))
         print(json.dumps(bundle, indent=2))
         return
-    if args.trial_file or args.trial or args.started_at or args.revision:
+    if args.trial_file or args.bigquery_trial or args.started_at or args.revision:
         parser.error("trial inputs apply only to service trial proposals")
     if args.application_image:
         parser.error("--application-image applies only to service trial proposals")

@@ -24,9 +24,10 @@ from flink_tier3.common import ApiError, Failure, TransportError, digest, json_b
 from flink_tier3.model import Phase
 from flink_tier3.records import Records
 
+from ..doubles import NOW, Response
 from .test_lifecycle import Resources
 from .test_lifecycle import setup as setup  # noqa: PLC0414 - re-export fixture
-from .test_resources import NOW, Response, client, job, page, table
+from .test_resources import client, job, page, table
 
 
 class QueryResources(Resources):

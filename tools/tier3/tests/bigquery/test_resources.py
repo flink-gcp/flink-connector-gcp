@@ -14,8 +14,6 @@
 # limitations under the License.
 """Synthetic REST contracts, including ambiguous writes and unsafe cleanup."""
 
-import copy
-import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -26,37 +24,7 @@ from flink_tier3.bigquery.resources import BASE, BigQueryResources, ResourcePlan
 from flink_tier3.common import ApiError, Failure, TransportError
 from flink_tier3.policy import BIGQUERY_STATE
 
-NOW = 1700000000
-
-
-class Response:
-    def __init__(self, value, status=200):
-        self.status_code = status
-        self.data = value if isinstance(value, bytes) else json.dumps(value).encode()
-        self.closed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        self.closed = True
-
-    def iter_content(self, size):
-        for start in range(0, len(self.data), size):
-            yield self.data[start : start + size]
-
-
-class Http:
-    def __init__(self, *responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def request(self, method, url, **kwargs):
-        self.calls.append((method, url, copy.deepcopy(kwargs)))
-        value = self.responses.pop(0)
-        if isinstance(value, Exception):
-            raise value
-        return value if isinstance(value, Response) else Response(value)
+from ..doubles import NOW, Http, Response
 
 
 @pytest.fixture

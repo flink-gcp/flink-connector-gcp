@@ -33,6 +33,7 @@ from flink_tier3.bigquery.verdict import (
     MEMORY,
     OBSERVED,
     SAMPLED_STAGES,
+    sequence_verdict,
     verdict,
 )
 from flink_tier3.common import INCONCLUSIVE, USABLE
@@ -384,3 +385,40 @@ def test_the_committer_family_is_credited_by_the_committer_reading_only():
         "sink": [*FULL["sink"], {"id": "Sink__Writer.activeCommitDestinations"}],
     }
     assert COMMITTER not in summarize({}, "baseline", reading)["baseline"]["observed"]
+
+
+@pytest.mark.parametrize(
+    "record,reasons",
+    [
+        # Only the data decides: no proofs, windows or coverage are asked for.
+        (
+            {
+                "stage": COMPLETE_STAGE,
+                "outcomes": {"query": {"report": {"verdict": "pass"}}},
+            },
+            [],
+        ),
+        (
+            {
+                "stage": COMPLETE_STAGE,
+                "outcomes": {"query": {"report": {"verdict": "fail"}}},
+            },
+            ["oracle-not-passed"],
+        ),
+        (
+            {"stage": "visibility", "outcomes": {}},
+            ["recovery-incomplete", "oracle-not-passed"],
+        ),
+        # Untrusted JSON: a field of the wrong type is a reason, never a raise.
+        (
+            {"stage": COMPLETE_STAGE, "outcomes": {"query": "pass"}},
+            ["oracle-not-passed"],
+        ),
+        ([], ["recovery-incomplete", "oracle-not-passed"]),
+    ],
+)
+def test_a_sequence_verdict_is_its_data_alone(record, reasons):
+    assert sequence_verdict(record) == {
+        "verdict": INCONCLUSIVE if reasons else USABLE,
+        "reasons": reasons,
+    }

@@ -68,7 +68,7 @@ def dispatching(monkeypatch):
 def args(tmp_path, **overrides):
     value = {
         "scenario": "bigquery-recovery",
-        "trial": "eo-10",
+        "bigquery_trial": "eo-10",
         "application_digest": DIGEST,
         "run_id": "bq-1424-0001",
         "kubeconfig": tmp_path / "kubeconfig",
@@ -87,9 +87,9 @@ def test_the_trial_resolves_from_its_name_and_the_live_digest(reviewed, tmp_path
 @pytest.mark.parametrize(
     "change, match",
     [
-        ({"trial": None}, "one of alo-10"),
-        ({"trial": "none"}, "one of alo-10"),
-        ({"trial": "eo-10.json"}, "one of alo-10"),
+        ({"bigquery_trial": None}, "one of alo-10"),
+        ({"bigquery_trial": "none"}, "one of alo-10"),
+        ({"bigquery_trial": "eo-10.json"}, "one of alo-10"),
         ({"application_digest": None}, "sha256 --application-digest"),
         ({"application_digest": "latest"}, "sha256 --application-digest"),
     ],
@@ -112,7 +112,7 @@ def test_the_window_starts_at_admission_and_lasts_the_scenario_window(monkeypatc
     [
         ({}, {"GITHUB_REF": "refs/heads/feature"}, "run from main"),
         ({"rig_sha": "f" * 39}, {}, "exact rig commit"),
-        ({"trial": "none"}, {}, "one of alo-10"),
+        ({"bigquery_trial": "none"}, {}, "one of alo-10"),
         ({"run_id": "Not A Run"}, {}, "Invalid run ID"),
     ],
 )

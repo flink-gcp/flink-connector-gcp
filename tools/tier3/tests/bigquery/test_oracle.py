@@ -15,6 +15,7 @@
 """Run the generated SQL on synthetic tables and assess its actual aggregate rows."""
 
 import copy
+import hashlib
 import json
 import sqlite3
 
@@ -23,24 +24,47 @@ from flink_tier3 import cli
 from flink_tier3.bigquery import oracle as bq
 
 
+def payload(run_id, sequence, length):
+    """What `RecoveryRows.payload` writes, computed here without the oracle's SQL."""
+    digest = hashlib.sha256(f"{run_id}:{sequence}".encode()).digest()
+    return (digest * (length // len(digest) + 1))[:length]
+
+
 class Tables:
     def __init__(self, trial):
         self.trial = trial
         self.db = sqlite3.connect(":memory:")
         self.db.row_factory = sqlite3.Row
+        # The GoogleSQL functions the payload check calls, as BigQuery defines them.
+        self.db.create_function(
+            "SHA256", 1, lambda text: hashlib.sha256(text.encode()).digest()
+        )
+        self.db.create_function("REPEAT", 2, lambda value, count: value * count)
+        self.db.create_function(
+            "CONCAT", -1, lambda *parts: "".join(str(part) for part in parts)
+        )
         for destination in range(trial.destinations):
             self.db.execute(
                 f"CREATE TABLE `{trial.table(destination)}` "
-                "(run_id TEXT, sequence INTEGER, destination INTEGER)"
+                "(run_id TEXT, sequence INTEGER, destination INTEGER, payload BLOB)"
             )
         for sequence in range(trial.records):
             destination = sequence % trial.destinations
             self.add(destination, trial.run_id, sequence, destination)
 
-    def add(self, physical, run_id, sequence, destination):
+    def add(self, physical, run_id, sequence, destination, value=None):
+        """One row, with the payload the oracle expects unless `value` names one.
+
+        The payload is this trial's, whatever `run_id` says, so a row made
+        invalid by another field is not also invalid by its payload.
+        """
+        if value is None and isinstance(sequence, int):
+            value = payload(
+                self.trial.run_id, sequence, self.trial.payload_length(sequence)
+            )
         self.db.execute(
-            f"INSERT INTO `{self.trial.table(physical)}` VALUES (?, ?, ?)",
-            (run_id, sequence, destination),
+            f"INSERT INTO `{self.trial.table(physical)}` VALUES (?, ?, ?, ?)",
+            (run_id, sequence, destination, value),
         )
 
     def result(self):
@@ -295,3 +319,61 @@ def test_offline_cli_needs_no_repository_and_returns_data_failure_code(
     with pytest.raises(SystemExit) as error:
         cli.main(["bigquery", "assess", *args, "--result", str(path)])
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "null",
+        "truncated",
+        "altered",
+        "another-sequence",
+    ],
+)
+def test_a_row_whose_payload_is_not_the_expected_value_is_invalid(tables, damage):
+    """ADR-0204: an expected record with a wrong value fails the run."""
+    trial = tables.trial
+    table = trial.table(3)
+    tables.db.execute(f"DELETE FROM `{table}` WHERE sequence = 3")
+    expected = payload(trial.run_id, 3, trial.payload_length(3))
+    value = {
+        "null": None,
+        "truncated": expected[:-1],
+        "altered": expected[:-1] + bytes([expected[-1] ^ 1]),
+        "another-sequence": payload(trial.run_id, 13, trial.payload_length(3)),
+    }[damage]
+    tables.db.execute(
+        f"INSERT INTO `{table}` VALUES (?, ?, ?, ?)", (trial.run_id, 3, 3, value)
+    )
+    report = tables.report()
+    assert report["invalid_rows"] == 1
+    assert report["missing_sequences"] == 1
+    assert report["verdict"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "mode,lengths",
+    [
+        ("ALO", (65515, 65515, 65514, 65514, 65513, 65513)),
+        ("EO", (1004, 1004, 1003, 1003, 1002, 1002)),
+    ],
+)
+def test_the_payload_lengths_are_the_applications(mode, lengths):
+    """RecoveryRowsTest pins the same lengths for the same run ID and sequences."""
+    trial = bq.Trial("bigquery-it", mode, 50, 28800 if mode == "ALO" else 1843200)
+    sequences = (0, 127, 128, 16383, 16384, trial.records - 1)
+    assert tuple(trial.payload_length(n) for n in sequences) == lengths
+    assert payload("bigquery-it", 0, 4) == bytes([0x70, 0xD6, 0xDB, 0x27])
+
+
+def test_the_payload_check_spans_every_varint_band_of_the_input():
+    """Rows past each band's edge pass with their own length and fail with another."""
+    trial = bq.Trial("oracle-1312", "EO", 10, 16500)
+    tables = Tables(trial)
+    try:
+        assert tables.report()["verdict"] == "pass"
+        tables.db.execute(f"DELETE FROM `{trial.table(4)}` WHERE sequence = 16384")
+        tables.add(4, trial.run_id, 16384, 4, payload(trial.run_id, 16384, 1003))
+        assert tables.report()["invalid_rows"] == 1
+    finally:
+        tables.db.close()

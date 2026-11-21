@@ -17,7 +17,6 @@
 import copy
 
 import pytest
-import requests
 from flink_tier3.bigquery import actors, plan
 from flink_tier3.common import Failure, timestamp
 from flink_tier3.environment import Environment
@@ -26,44 +25,15 @@ from flink_tier3.policy import BIGQUERY, ENVIRONMENT, MIB, SMOKE
 from flink_tier3.records import Records
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
-from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.credentials import Credentials
 
+from ..doubles import wire as wire  # noqa: PLC0414
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 from .test_plan import trial as trial  # noqa: PLC0414
 
 TOKEN = "e" * 32
-
-
-class Wire:
-    """Every request and close an actor session would make, none of them sent."""
-
-    def __init__(self):
-        self.calls = []
-        self.closed = []
-
-
-@pytest.fixture
-def wire(monkeypatch):
-    value = Wire()
-
-    def request(_session, method, url, *_args, **_kwargs):
-        value.calls.append((method, url))
-        raise AssertionError("an actor factory made a request")
-
-    monkeypatch.setattr(requests.Session, "request", request)
-    monkeypatch.setattr(
-        requests.Session,
-        "close",
-        lambda session: (
-            value.closed.append(type(session).__name__)
-            if isinstance(session, AuthorizedSession)
-            else None
-        ),
-    )
-    return value
 
 
 @pytest.fixture

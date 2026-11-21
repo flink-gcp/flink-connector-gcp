@@ -15,7 +15,6 @@
 """BigQuery approval, namespace and budget contracts without cloud execution."""
 
 import copy
-import json
 from dataclasses import asdict, replace
 
 import pytest
@@ -37,6 +36,7 @@ from flink_tier3.policy import BIGQUERY, BIGQUERY_STATE, CLEANUP_SECONDS
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
+from ..doubles import mount
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, rt
 from .test_lifecycle import Resources
@@ -379,15 +379,6 @@ def test_an_actor_without_its_handoff_refuses_before_mutation(
         Supervisor(environment).supervise("unused")
     assert environment.kube.calls == []
     assert environment.store.data == before
-
-
-def mount(directory, environment, application, upgrade, **approval_changes):
-    approval = environment.approval.to_dict()
-    approval.update(approval_changes)
-    (directory / "approval.json").write_text(json.dumps(approval))
-    (directory / "application.json").write_text(json.dumps(application))
-    if upgrade is not None:
-        (directory / "upgrade-application.json").write_text(json.dumps(upgrade))
 
 
 def test_a_valid_bigquery_delivery_is_admitted_by_the_entrypoint(prepared, tmp_path):

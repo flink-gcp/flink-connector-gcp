@@ -32,7 +32,7 @@ from flink_tier3.pubsub.resources import BASE
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
-from ..bigquery.test_runtime_approval import mount
+from ..doubles import mount
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, supervisor_pod
 from .test_actors import approval as approval  # noqa: PLC0414

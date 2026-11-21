@@ -21,7 +21,7 @@ from flink_tier3.bigtable.oracle import AtLeastOnce, ExactlyOnce, Relay
 from flink_tier3.bigtable.trial import Trial
 from flink_tier3.common import Failure, TransportError
 
-from ..bigquery.test_resources import NOW, Http
+from ..doubles import NOW, Http
 
 TRIAL = Trial("bt-oracle", 20, 10, "2026-10-20T01:05:00Z")
 ONE = (1).to_bytes(8, "big")

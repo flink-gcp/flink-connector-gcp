@@ -20,7 +20,7 @@ import math
 import re
 import uuid
 
-from .bigquery.exercise import BigQueryExercise, require_handoff
+from .bigquery.exercise import BigQueryExercise, bigquery_exercise, require_handoff
 from .bigtable.exercise import BigtableExercise, bigtable_exercise
 from .cleanup import Cleanup
 from .cloudtasks.exercise import CloudTasksExercise
@@ -69,7 +69,7 @@ class Supervisor:
         self.log_since = {}
         self.pod_read_failures = {}
         self.exercise = (
-            BigQueryExercise(env, upgrade, self.connector_jobs)
+            bigquery_exercise(env, upgrade, self.connector_jobs)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
             else PubSubExercise(env, upgrade, pubsub)
             if env.approval.scenario == "pubsub-recovery"

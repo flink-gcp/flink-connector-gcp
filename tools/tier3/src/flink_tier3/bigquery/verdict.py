@@ -121,3 +121,23 @@ def verdict(recovery, mode=None):
     required = OBSERVED + (FILE_LOADS_OBSERVED if mode == "FILE_LOADS" else ())
     reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_STAGES, required))
     return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+
+
+def sequence_verdict(recovery):
+    """A fault-sequence run's verdict: its data alone (ADR-0204).
+
+    `usable` says the run completed and the query oracle passed: every input
+    sequence in its table and no invalid row, duplicates being reported.
+    Interruptions, restarts, timings and metrics decide nothing.
+    """
+    record = recovery if isinstance(recovery, dict) else {}
+    outcomes = record.get("outcomes")
+    outcomes = outcomes if isinstance(outcomes, dict) else {}
+    reasons = []
+    if record.get("stage") != COMPLETE_STAGE:
+        reasons.append("recovery-incomplete")
+    query = outcomes.get("query")
+    report = query.get("report") if isinstance(query, dict) else None
+    if not isinstance(report, dict) or report.get("verdict") != "pass":
+        reasons.append("oracle-not-passed")
+    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}

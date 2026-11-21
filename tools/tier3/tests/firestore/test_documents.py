@@ -22,7 +22,7 @@ from flink_tier3.firestore.database import Databases
 from flink_tier3.firestore.oracle import BatchCopy, Seed, Sink
 from flink_tier3.firestore.trial import MODES, Trial, record_key
 
-from ..bigquery.test_resources import NOW, Response
+from ..doubles import NOW, Response
 
 TRIAL = Trial("fs-oracle", 20, 10, 30, 1)
 READ_AT = "2026-10-28T01:20:00.123456Z"

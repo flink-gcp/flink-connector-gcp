@@ -63,6 +63,7 @@ def renderer(monkeypatch):
             "tm-replacement": (2, 2),
             "rescale-out": (1, 2),
             "rescale-in": (2, 1),
+            "sequence": (2, 2),
         }[options["bigquery_fault"]]
         initial = {
             "metadata": {
@@ -92,7 +93,7 @@ def renderer(monkeypatch):
                         "--destinations",
                         str(options["bigquery_destinations"]),
                         "--records",
-                        "28800" if mode == "ALO" else "1843200",
+                        str(options["bigquery_records"]),
                         "--bytes-per-second",
                         "1048576",
                         "--parallelism",
@@ -337,6 +338,12 @@ def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
             }
             for fault in faults
         },
+        "alo-10-sequence": {
+            "mode": "ALO",
+            "destinations": 10,
+            "fault": "sequence",
+            "records": 5760,
+        },
     }
     with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50, fl-10, "):
         plan.trial("none")
@@ -417,7 +424,7 @@ def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
         "b" * 40,
         "--application-image",
         plan.GAR + "bigquery-recovery@sha256:" + "c" * 64,
-        "--trial",
+        "--bigquery-trial",
         "eo-10",
     ]
     command.main(args)
@@ -728,3 +735,85 @@ def test_the_input_outlasts_every_window_and_both_recoveries(mode):
     # The deadline for the checkpoint after the baseline is two intervals and a
     # poll each.
     assert timing["upgrade_wait_seconds"] >= 2 * (checkpoint_intervals()[mode] + POLL)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # The sequence only at its cell and with its own input.
+        {"mode": "ALO", "destinations": 10, "fault": "sequence"},
+        {"mode": "ALO", "destinations": 10, "fault": "sequence", "records": 5761},
+        {"mode": "EO", "destinations": 10, "fault": "sequence", "records": 5760},
+        {"mode": "ALO", "destinations": 50, "fault": "sequence", "records": 5760},
+        {"mode": "ALO", "destinations": 10, "records": 5760},
+    ],
+)
+def test_the_sequence_is_refused_outside_its_cell(value):
+    with pytest.raises(ValueError, match="or be alo-10-sequence"):
+        plan.validate_trial(value)
+
+
+def test_the_sequence_proposes_its_input_at_the_default_sizes(inputs, renderer):
+    """Six minutes of 64 KiB rows, started and upgraded at two writers."""
+    inputs["trial"] = plan.trial("alo-10-sequence")
+    bundle = plan.prepare(**inputs)
+    options = renderer[0][4]
+    assert (options["bigquery_fault"], options["bigquery_records"]) == (
+        "sequence",
+        5760,
+    )
+    resources = bundle["proposal"]["resources"]["trial"]
+    assert (resources["fault"], resources["records"]) == ("sequence", 5760)
+    assert bundle["proposal"]["limits"]["input_bytes"] == 360 * 1024**2
+    for application in ("application", "upgrade_application"):
+        spec = bundle[application]["spec"]
+        assert spec["job"]["parallelism"] == spec["taskManager"]["replicas"] == 2
+        args = spec["job"]["args"]
+        assert args[args.index("--records") + 1] == "5760"
+
+
+PROPOSAL = [
+    "--started-at",
+    "2026-09-21T00:00:00Z",
+    "--revision",
+    "b" * 40,
+    "--application-image",
+    plan.GAR + "pubsub-recovery@sha256:" + "c" * 64,
+]
+
+
+@pytest.mark.parametrize(
+    "scenario,extra,message",
+    [
+        (
+            "smoke",
+            ["--bigquery-trial", "eo-10"],
+            "trial inputs apply only to service trial proposals",
+        ),
+        (
+            "pubsub-recovery",
+            [*PROPOSAL, "--trial-file", "x.json", "--bigquery-trial", "eo-10"],
+            "pubsub-recovery requires --trial-file, --started-at",
+        ),
+    ],
+)
+def test_the_bigquery_trial_flag_is_refused_outside_its_scenario(
+    capsys, scenario, extra, message
+):
+    argv = [
+        "--run-id",
+        "proposal-1312",
+        "--nonce",
+        "a" * 32,
+        "--expires-at",
+        "2026-09-21T01:30:00Z",
+        "--active-seconds",
+        "5220",
+        "--scenario",
+        scenario,
+        *extra,
+    ]
+    with pytest.raises(SystemExit) as error:
+        command.main(argv)
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err

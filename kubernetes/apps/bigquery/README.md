@@ -97,7 +97,7 @@ The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap
 [`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator schema and Flink 2.2.1 application image.
 A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
 A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`, `backgroundStagingUploadEnabled`, and `maxInFlightUploadOperations` only when the uploader is on), whose defaults and ranges are the connector's except that `backgroundStagingUploadEnabled` defaults to `false`, so that only the uploader trials run it, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders each knob that exists as an argument, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
-The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, and its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it.
+The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it, and its `bigquery_records` tag, which dispatch always sets, the record count.
 Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
 The offered rate is fixed at 1 MiB/s.
 The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
@@ -115,7 +115,7 @@ No PVC or application volume is requested.
 
 Checkpoints run every 30 seconds in the Storage Write modes and every 120 seconds in FILE_LOADS mode, matching the interval the application enables, with at most one concurrent checkpoint, a 120-second timeout, two retained checkpoints and two consecutive failed checkpoints tolerated before the job restarts.
 The hashmap backend uses filesystem checkpoint storage, with checkpoints, savepoints and Kubernetes HA state below `gs://flink-gcp-tier3-bigquery/runs/<run-id>/` in separate `checkpoints`, `savepoints` and `ha` prefixes.
-The fixed-delay restart strategy permits three attempts with a ten-second delay; the external supervisor must bound wall-clock runtime and repeated process incarnations.
+The fixed-delay restart strategy restarts the job any number of times with a ten-second delay, as [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) asks; the external supervisor bounds wall-clock runtime.
 
 For the upgrade, render the same inputs with `run.phase: "upgrade"` and update the same deployment.
 Both phases use `upgradeMode: savepoint` and `allowNonRestoredState: false`; only the phase argument and `--require-restored` change, with the latter becoming `true` on upgrade.
@@ -129,6 +129,25 @@ The package describes that transition; it does not wait for baseline observation
 Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
 The [production dispatch](#production-dispatch) path must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
 
+## Fault sequence
+
+The `alo-10-sequence` trial runs the at-least-once path under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)); the trials and the execution the sections after this one describe still follow ADR-0165.
+Every other trial, `alo-10` and `alo-50` included, keeps ADR-0165's rules until the single-fault trials are removed; the exactly-once paths move to ADR-0204 with the exactly-once scenario of [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148).
+Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two writers to one and back; the rescales are the approved upgrade with only its parallelism, its TaskManager count and its `--parallelism` argument changed.
+Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
+No window samples the job.
+
+The input is 5,760 rows of 64 KiB at 1 MiB/s, 16 rows a second for six minutes, to ten destinations.
+The job finishes with its input, so the input only has to outlast the faults.
+The first [Spanner](../spanner/README.md#fault-sequence), [Firestore](../firestore/README.md#fault-sequence) and [Bigtable](../bigtable/README.md#fault-sequence) `sequence` runs had consumed 106 to 134 seconds of their input when their jobs ran again after the last fault, because the input pauses while the job is down and a deleted Pod's restore goes back to the last checkpoint.
+Six minutes therefore leaves about four after the faults, room for at least two interruptions as long as the slowest of those faults, 87 seconds.
+Those runs' inputs began 477 to 677 seconds into the window and finished 245 to 292 seconds later than their length; a BigQuery run whose input begins as late reaches its verdict about 18 to 23 minutes into its window.
+
+When the job has finished after the last fault, with its whole input processed, one query reads the ten tables with the [offline query oracle](#offline-query-oracle), and its report is the verdict: `usable` when every input sequence is in its table with its expected payload and no row is invalid, with duplicates reported.
+A missing or invalid row makes the run `inconclusive` with `oracle-not-passed` rather than stopping it, and the query is not repeated until it passes, because the finished job, not the tables, says the input was committed; the read ends at the latest a minute before the run's one-hour limit, and a job that finishes later than that stops the run at its time limit.
+An archived report that differs from the rows it came with still stops the run.
+`just tier3-analyze` decides a `sequence` run by its query alone and lists its faults; its proposal still carries the estimate below, which nothing approves.
+
 ## Offline execution proposal
 
 `flink-tier3 render --scenario bigquery-recovery` combines one trial's proposed limits, initial/upgrade applications and supervisor delivery into a JSON bundle.
@@ -136,7 +155,7 @@ A proposal is not an approval: dispatch admits this scenario only through the [p
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
-Name the trial with `--trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one delivery method at one destination count.
+Name the trial with `--bigquery-trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one delivery method at one destination count, or the [fault sequence](#fault-sequence) `alo-10-sequence`.
 `fl-10` is the FILE_LOADS trial at 10 destinations with the sink inputs at the connector's defaults except the background staging uploader, which it keeps off: it asks whether finalization survives the two recoveries, not how it scales.
 `fl-10-uploader` is the same trial with the background staging uploader on at its default of two in-flight upload operations ([#2030](https://github.com/flink-gcp/flink-connector-gcp/issues/2030)); its runs across these recoveries are what turned the connector's default on, as ADR-0195 records, and `fl-10` stays the task-thread comparison.
 These run a savepoint upgrade and a JobManager failover, with the writers at parallelism two in both phases.
@@ -152,8 +171,9 @@ The `eo-10`, `fl-10` and `fl-10-uploader` cells also name a fault that takes the
 A rescale stays inside the namespace's three-Pod quota, the one the estimate charges for every trial, so the estimate is the same; the three `eo-10` ones are preregistered as [Production dispatch](#production-dispatch) lists.
 That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation inside the recovery's 600-second deadline; in the deployed trial the refused request came while the job was restarting and delayed nothing measurable, as the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#taskmanager-replacement) record.
 Every trial now renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
+Likewise an image built before [#2226](https://github.com/flink-gcp/flink-connector-gcp/issues/2226) pads its rows with pseudorandom bytes, which the [query oracle](#offline-query-oracle) now counts as invalid, so every trial needs an image published after that change too.
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
-The record count is fixed to the mode's 30-minute-equivalent input above.
+The record count is fixed to the mode's 30-minute-equivalent input above, except for the fault sequence's six minutes.
 Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
 Every visibility retry that submits a new job must consume another slot.
 
@@ -161,7 +181,7 @@ For example, render from the repository root with a synthetic image digest for l
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
-  --scenario bigquery-recovery --trial eo-10 \
+  --scenario bigquery-recovery --bigquery-trial eo-10 \
   --run-id example-1312 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
@@ -196,7 +216,7 @@ The external runner must pre-create exactly those empty tables before admission.
 The sink uses `CREATE_NEVER`; the workload creates no tables or datasets.
 
 Rows contain nullable `run_id STRING`, `sequence INTEGER`, `destination INTEGER` and `payload BYTES` columns, with a value supplied for every field.
-Padding is deterministic pseudorandom data derived from run ID and sequence, avoiding an all-zero fixture.
+The payload pads each row to its mode's size with the SHA-256 digest of `<run-id>:<sequence>`, repeated, so the query oracle can recompute every row's expected value.
 Replay serializes the same sequence into the same bytes and table.
 The deployed query oracle must require every expected sequence in its correct table; EO and FILE_LOADS additionally require exact uniqueness, while ALO records duplicate multiplicities.
 The [offline query oracle](#offline-query-oracle) below supplies the aggregate data check.
@@ -300,7 +320,8 @@ A raw REST `rows[].f[].v` envelope or job-metadata wrapper is not this format.
 The internal resource adapter supplies this collector; a deployed run reaches it only through the [query handoff](#query-requests-and-runner-release), and no CLI subcommand submits or exports a query on its own.
 
 The query reads exactly the run's 10 or 50 named tables and emits an aggregate even for an empty table.
-It counts every row, including rows with another run ID, null identity fields, an out-of-range sequence, or a mismatch between physical table, declared destination and sequence modulo destination count.
+It counts every row, including rows with another run ID, null identity fields, an out-of-range sequence, a mismatch between physical table, declared destination and sequence modulo destination count, or a payload other than the one the application writes for that sequence.
+The expected payload is recomputed in the query with `SHA256` and `REPEAT`; its length, which the protobuf fields before it decide, changes only where the sequence's varint widens, so the query names one length for each such band of the input.
 Only rows satisfying all those conditions contribute to `valid_rows` and exact `distinct_sequences`.
 It uses [exact aggregate functions](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/aggregate_functions), without an approximate distinct count or a WHERE clause that could hide invalid rows.
 The expected sequence count for each table includes the remainder when the input count is not divisible by the destination count.
@@ -308,7 +329,7 @@ A matching distinct count over the valid finite sequence domain proves completen
 
 | Report field | Meaning |
 | --- | --- |
-| `invalid_rows` | All observed rows minus rows with valid identity, range and routing |
+| `invalid_rows` | All observed rows minus rows with valid identity, range, routing and payload |
 | `missing_sequences` | Expected sequences minus distinct valid sequences, summed across tables |
 | `duplicate_rows` | Valid rows minus distinct valid sequences; extra copies, not the number of duplicated identities |
 | `verdict` | `pass` only with no invalid or missing rows, and also no duplicate rows in EO or FILE_LOADS mode |
@@ -316,11 +337,11 @@ A matching distinct count over the valid finite sequence domain proves completen
 ALO reports duplicate copies while permitting them; EO and FILE_LOADS reject them.
 FILE_LOADS derives each load job's id from the staged files it loads, so a retried commit re-attaches to its job instead of loading the files twice, and the connector claims exactly-once for it.
 The report includes per-destination counts and totals, with `scope=query-result` to distinguish this check from a deployed recovery verdict.
-It does not inspect payload bytes, prove table ownership, authenticate evidence, establish a checkpoint/fault boundary or prove that no later writes occur.
+It does not prove table ownership, authenticate evidence, establish a checkpoint/fault boundary or prove that no later writes occur.
 Identity fields in the aggregate bind the input parameters for accidental-mismatch detection; they are query literals, not a service attestation.
 A substituted or edited aggregate can pass this offline check.
-In particular, generating and assessing an EO trial with `--mode ALO` can permit duplicates when that input count also fits the ALO limit.
-Rows contain no mode field, so this check cannot discover that mistake; the executor must take the mode from the approved application configuration, and the report must be interpreted with its recorded mode.
+Rows contain no mode field, but the expected payload's length follows the mode's row size, so generating and assessing an EO or FILE_LOADS trial with `--mode ALO`, or the reverse, counts every row invalid and fails when its record count fits both modes; otherwise the input check refuses the count before any query.
+EO and FILE_LOADS share a row size and fail duplicates alike, so a mistake between them changes no verdict; the executor must still take the mode from the approved application configuration, and the report must be interpreted with its recorded mode.
 
 The [resource adapter](#resource-adapter) creates the tables and binds a completed query job's result pages to a trial.
 The internal resource controller persists intent, query slots and query evidence as described below.
@@ -513,7 +534,7 @@ The conditional GCS grants, including the `.inprogress/` grant [#1498](https://g
 ### Approval and shared resource policy
 
 [Production dispatch](#production-dispatch) builds a `bigquery-recovery` approval and validates it once, before it takes the lock; the internal integration and cleanup tests construct one directly.
-It binds `bigquery_trial` to the trial's delivery method and destination count, the only fields a trial chooses.
+It binds `bigquery_trial` to the trial the dispatch named: its delivery method and destination count, and the fault, uploader and record count of the trials that name them.
 The approval also pins the initial and upgrade manifest hashes, the rig commit, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
 A valid document is not execution permission on its own: dispatch still requires the environment lock, and the in-cluster entrypoint builds its supervisor only through the actor factory.
@@ -522,8 +543,8 @@ Internal runner admission requires an explicit environment-bound handoff; intern
 The approval requires a 90-minute window with the final 15 minutes reserved for cleanup.
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
 The control quota covers the Operator, supervisor and one Operator replacement while the previous Pod terminates; five Pods run in the steady state.
-The quotas, not a count in the approval, bound the Pods and PVCs; the approval carries no cost ceiling, because spend is approved from the estimate before dispatch.
-Every trial retains its mode's fixed finite input size; the approval model derives the resource plan rather than accepting another independently editable copy.
+The quotas, not a count in the approval, bound the Pods and PVCs; the approval carries no cost ceiling, because a single-fault trial's spend is approved from the estimate before dispatch and a fault sequence is bounded by its time limit.
+Every trial retains a fixed finite input size, its mode's or the fault sequence's; the approval model derives the resource plan rather than accepting another independently editable copy.
 The resource controller refuses a plan that differs from this approval before reading or creating service resources.
 
 Common creation/adoption uses the approved application namespace.
@@ -577,10 +598,10 @@ The `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector
 
 | Input | Contract |
 | --- | --- |
-| `trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, or one of the `eo-10`, `fl-10` and `fl-10-uploader` fault trials above; the default `none` is refused |
+| `bigquery_trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one of the `eo-10`, `fl-10` and `fl-10-uploader` fault trials above, or the fault sequence `alo-10-sequence`; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 
-The owner approves the run's estimate before dispatching it; dispatching is the approval.
+For a single-fault trial the owner approves the run's estimate before dispatching it, and dispatching is the approval; a [fault sequence](#fault-sequence) carries an estimate that nothing approves, as ADR-0204 decides.
 The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget.
 
 The checks that need neither the cluster nor the lock run first: the trial and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.

@@ -29,7 +29,7 @@ from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 from google.oauth2.credentials import Credentials
 
-from ..bigquery.test_actors import wire as wire  # noqa: PLC0414
+from ..doubles import wire as wire  # noqa: PLC0414
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
