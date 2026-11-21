@@ -34,11 +34,21 @@ public final class ChangeStreamPartitionSplitState {
     private List<ChangeStreamContinuationToken> tokens;
     private Instant lowWatermark;
     @Nullable private List<PartitionTransitionEvent.Successor> closeSuccessors;
+    private boolean emittedRecords;
 
-    public ChangeStreamPartitionSplitState(ChangeStreamPartitionSplit split) {
+    /**
+     * Creates the state of a split a reader attempt reads.
+     *
+     * @param split the split to read from
+     * @param emittedRecords whether this reader attempt already emitted a record for the split, as
+     *     it has when a rotation reopens it
+     */
+    public ChangeStreamPartitionSplitState(
+            ChangeStreamPartitionSplit split, boolean emittedRecords) {
         this.original = split;
         this.tokens = split.getContinuationTokens();
         this.lowWatermark = split.getLowWatermark();
+        this.emittedRecords = emittedRecords;
     }
 
     public ChangeStreamPartitionSplit toSplit() {
@@ -60,6 +70,19 @@ public final class ChangeStreamPartitionSplitState {
     public void advance(ChangeStreamContinuationToken token, Instant watermark) {
         this.tokens = Collections.singletonList(token);
         this.lowWatermark = watermark;
+    }
+
+    /** Records that the deserializer collected a record for this split. */
+    public void markEmittedRecords() {
+        this.emittedRecords = true;
+    }
+
+    /**
+     * Whether this reader attempt emitted a record for the split. It is runtime state, never
+     * checkpointed: what an earlier attempt emitted preceded the checkpoint a restore starts from.
+     */
+    public boolean hasEmittedRecords() {
+        return emittedRecords;
     }
 
     public List<ChangeStreamContinuationToken> getTokens() {

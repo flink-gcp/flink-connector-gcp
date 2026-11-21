@@ -76,6 +76,7 @@ class BigtableChangeStreamRecordEmitterTest {
                                     .isEqualTo(BoundType.OPEN);
                         });
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
+        assertThat(state.hasEmittedRecords()).isTrue();
         assertThat(counter("changeStreamMutationsRead")).isEqualTo(1);
         assertThat(counter("recordsSkipped")).isZero();
         assertThat(gauge("partitionLowWatermarkMillis")).isEqualTo(watermark.toEpochMilli());
@@ -95,12 +96,13 @@ class BigtableChangeStreamRecordEmitterTest {
         metrics.assigned(Collections.singletonList(state.toSplit()), Collections.emptyList());
 
         assertThat(output.records()).isEmpty();
+        assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
         assertThat(state.toSplit().isClosed()).isTrue();
         assertThat(state.toSplit().getContinuationTokens())
                 .extracting(token -> token.getToken())
                 .containsExactly("heartbeat");
-        PartitionTransitionEvent event = state.toSplit().toTransitionEvent();
+        PartitionTransitionEvent event = state.toSplit().toTransitionEvent(false);
         assertThat(event.getLowWatermark()).isEqualTo(watermark);
         assertThat(event.getSuccessors()).hasSize(1);
         assertThat(event.getSuccessors().get(0).getContinuationToken().getToken())
@@ -148,6 +150,7 @@ class BigtableChangeStreamRecordEmitterTest {
 
         assertThat(output.records()).isEmpty();
         assertThat(counter("recordsSkipped")).isEqualTo(1);
+        assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(state.toSplit().getContinuationTokens().get(0).getToken()).isEqualTo("filtered");
         assertThat(state.getLowWatermark()).isEqualTo(watermark);
     }
@@ -263,6 +266,7 @@ class BigtableChangeStreamRecordEmitterTest {
         assertThat(counter("changeStreamMutationEntriesFiltered")).isEqualTo(1);
         assertThat(counter("changeStreamRecordsSkippedWithoutChange")).isEqualTo(1);
         assertThat(counter("recordsSkipped")).isZero();
+        assertThat(state.hasEmittedRecords()).isFalse();
         assertThat(counter("changeStreamMutationsRead")).isEqualTo(1);
         assertThat(state.toSplit().getContinuationTokens().get(0).getToken())
                 .isEqualTo("skipped-empty");
@@ -393,7 +397,8 @@ class BigtableChangeStreamRecordEmitterTest {
                         "change-stream-0",
                         ByteStringRange.unbounded(),
                         Collections.emptyList(),
-                        Instant.EPOCH));
+                        Instant.EPOCH),
+                false);
     }
 
     private static BigtableChangeStreamDeserializationSchema<String> schema() {

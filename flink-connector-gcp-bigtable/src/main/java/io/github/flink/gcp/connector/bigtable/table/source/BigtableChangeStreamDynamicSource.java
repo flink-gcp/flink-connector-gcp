@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.base.table.OptionSetters;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSourceBuilder;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
 import io.github.flink.gcp.connector.bigtable.table.ChangeStreamChangelogMode;
 import io.github.flink.gcp.connector.bigtable.table.SelectedCellTableSchema;
@@ -85,6 +86,7 @@ public final class BigtableChangeStreamDynamicSource
     @Nullable private final StartPosition resumeFallback;
     @Nullable private final Instant boundedTimestamp;
     @Nullable private final Integer maxConcurrentStreamsPerSubtask;
+    @Nullable private final PartitionHandoff partitionHandoff;
     @Nullable private final Duration firstCheckpointTimeout;
     @Nullable private final Integer parallelism;
     private final DataType physicalDataType;
@@ -115,6 +117,7 @@ public final class BigtableChangeStreamDynamicSource
         this.resumeFallback = builder.resumeFallback;
         this.boundedTimestamp = builder.boundedTimestamp;
         this.maxConcurrentStreamsPerSubtask = builder.maxConcurrentStreamsPerSubtask;
+        this.partitionHandoff = builder.partitionHandoff;
         this.firstCheckpointTimeout = builder.firstCheckpointTimeout;
         this.parallelism = builder.parallelism;
         this.changelogMode =
@@ -268,6 +271,10 @@ public final class BigtableChangeStreamDynamicSource
                 maxConcurrentStreamsPerSubtask,
                 builder::maxConcurrentStreamsPerSubtask);
         OptionSetters.accept(
+                BigtableConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF.key(),
+                partitionHandoff,
+                builder::partitionHandoff);
+        OptionSetters.accept(
                 BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT.key(),
                 firstCheckpointTimeout,
                 builder::firstCheckpointTimeout);
@@ -292,6 +299,7 @@ public final class BigtableChangeStreamDynamicSource
                         .resumeFallback(resumeFallback)
                         .boundedTimestamp(boundedTimestamp)
                         .maxConcurrentStreamsPerSubtask(maxConcurrentStreamsPerSubtask)
+                        .partitionHandoff(partitionHandoff)
                         .firstCheckpointTimeout(firstCheckpointTimeout)
                         .parallelism(parallelism);
         // One branch, over the two fields that decide the mode rather than over two argument
@@ -339,6 +347,7 @@ public final class BigtableChangeStreamDynamicSource
                 && Objects.equals(boundedTimestamp, that.boundedTimestamp)
                 && Objects.equals(
                         maxConcurrentStreamsPerSubtask, that.maxConcurrentStreamsPerSubtask)
+                && partitionHandoff == that.partitionHandoff
                 && Objects.equals(firstCheckpointTimeout, that.firstCheckpointTimeout)
                 && Objects.equals(parallelism, that.parallelism)
                 && physicalDataType.equals(that.physicalDataType)
@@ -366,6 +375,7 @@ public final class BigtableChangeStreamDynamicSource
                 resumeFallback,
                 boundedTimestamp,
                 maxConcurrentStreamsPerSubtask,
+                partitionHandoff,
                 firstCheckpointTimeout,
                 parallelism,
                 physicalDataType,
@@ -398,6 +408,7 @@ public final class BigtableChangeStreamDynamicSource
         @Nullable private StartPosition resumeFallback;
         @Nullable private Instant boundedTimestamp;
         @Nullable private Integer maxConcurrentStreamsPerSubtask;
+        @Nullable private PartitionHandoff partitionHandoff;
         @Nullable private Duration firstCheckpointTimeout;
         @Nullable private Integer parallelism;
         @Nullable private DataType physicalDataType;
@@ -519,6 +530,18 @@ public final class BigtableChangeStreamDynamicSource
         public Builder maxConcurrentStreamsPerSubtask(
                 @Nullable Integer maxConcurrentStreamsPerSubtask) {
             this.maxConcurrentStreamsPerSubtask = maxConcurrentStreamsPerSubtask;
+            return this;
+        }
+
+        /**
+         * Sets when a closed partition's successors start, or {@code null} for the source's
+         * default.
+         *
+         * @param partitionHandoff when a successor partition starts
+         * @return this builder
+         */
+        public Builder partitionHandoff(@Nullable PartitionHandoff partitionHandoff) {
+            this.partitionHandoff = partitionHandoff;
             return this;
         }
 

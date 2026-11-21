@@ -498,7 +498,10 @@ reconciler runs.
 
 Change Streams cover every column family. Garbage-collection changes can therefore appear beside
 application writes. Bigtable preserves the service's per-partition order, but records from
-different partitions have no connector-imposed global order. Delivery is at least once across a
+different partitions have no connector-imposed global order; across a partition split or merge,
+one row key's order at a keyed operator is the subject of
+[One row key's changes across a partition split or merge](#one-row-keys-changes-across-a-partition-split-or-merge).
+Delivery is at least once across a
 failure between downstream emission and the next completed checkpoint, so side effects should be
 idempotent. A savepoint is the supported cross-job handoff: starting a separate job at a wall-clock
 time is not an exact continuation-token transfer.
@@ -517,16 +520,51 @@ A reader also keeps a closed partition in its checkpoint until the coordinator a
 close, so a restore from a checkpoint whose coordinator snapshot missed the close still creates
 the successors.
 
-Reading never waits for that checkpoint; only the coordinator's record of the close does.
+The successors of a close wait for the same checkpoint by default, as the next section describes;
+reading the partitions already assigned never waits for it.
 A job without checkpointing never completes a checkpoint, so `firstCheckpointTimeout` (10 minutes
 by default) bounds the wait.
-Once a close has waited that long with none completed, the source logs a warning, and every close
-is final at once, so a region failover does not read it again, until a checkpoint completes.
-Zero keeps closes pending until one completes, one small entry per closed partition.
+Once a close has waited that long with none completed, the source logs a warning, and until a
+checkpoint completes every close is final at once, so a region failover does not read it again and
+its successors start at once.
+Zero keeps closes pending, and successors waiting, until one completes, one small entry per closed
+partition.
 The coordinator learns positions from a report each reader sends when a checkpoint completes, and,
 until one does, from current positions at most once a second.
 [ADR-0097]({{< param BookRepo >}}/blob/main/docs/adr/0097-the-bigtable-change-stream-coordinator-checkpoints-the-partition-ledger.md)
 records the protocol.
+
+### One row key's changes across a partition split or merge
+
+Bigtable splits and merges change-stream partitions while a job runs, and a closing partition names the successors that continue its range.
+The partition's last records can still be on their way downstream when its reader reports the close, in a network buffer or a sink writer's batch.
+If another subtask reads a successor, the successor's records take a different path and can reach a keyed operator or a sink first.
+One row key's changes then arrive out of commit order, and an upsert keeps the older value until the row changes again.
+
+`partitionHandoff(PartitionHandoff.AFTER_CHECKPOINT)`, the default, starts a successor only after a checkpoint taken after its parents closed has completed; a merge waits for that checkpoint after every parent.
+The parents' readers emitted their last records before that checkpoint's barrier.
+Once an aligned checkpoint completes, every operator that handles its input before the barrier has therefore processed those records, and every sink that flushes on the barrier has written them.
+Each split or merge delays its successors until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration.
+Once a checkpoint has completed, the successors do not start while later checkpoints keep failing; before the first completes, the timeout described below applies.
+Nothing waits at source parallelism 1, where every record takes one path, or after a partition whose reader emitted no record for it, since nothing of it is downstream to overtake.
+A partition the coordinator's reconciler restarts from a pending merge's tokens, or without a token over part of a pending merge's range, waits for that merge's parents in the same way.
+The successors stay in the coordinator's checkpointed ledger meanwhile, so the wait adds nothing to the checkpoint format, and a restore starts them at once.
+
+The order this buys has three limits.
+
+- **Unaligned checkpoints**: an unaligned checkpoint, including one that an aligned-checkpoint timeout switches to, stores records in flight without processing them. It covers a sink chained to the source, but not an operator behind a shuffle.
+- **Operators that store pending elements**: an operator that keeps elements in its state instead of finishing them before the barrier, such as asynchronous I/O or an asynchronous sink's buffered requests, can still emit a parent's last records after its successor's.
+- **Failover**: order holds between failures. A failover restores the last completed checkpoint and replays from it, at least once, so a parent read again by a restarted subtask can deliver its last changes after its successors', whether a successor was already running or a restore starts it while the parent is read again.
+
+`PartitionHandoff.IMMEDIATE` starts a successor as soon as its parents close.
+It suits a consumer that orders each row key's changes by their commit coordinates, such as a BigQuery CDC table with a change sequence number, when the delay is unwanted.
+
+A job without checkpointing never completes the checkpoint a successor waits for, and the coordinator cannot read the job's checkpoint configuration.
+The source therefore measures the wait with `firstCheckpointTimeout`, as the previous section describes: once a close has waited that long with no checkpoint completed, it logs a warning and starts successors as soon as their parents close until a checkpoint completes.
+A savepoint taken while the job runs does not count, because Flink reports completion to the source only for a checkpoint or a savepoint that stops the job.
+A bounded run without checkpointing therefore pauses once for the timeout, at its first partition split or merge; enable checkpointing, or set `IMMEDIATE` when the run's consumer does not need the order.
+The emulator does not implement Change Streams, so the wait was not measured against the service; a scripted lineage that delays a parent's last record behind the source reproduces the reordering under `IMMEDIATE` and shows none under the default.
+[ADR-0097]({{< param BookRepo >}}/blob/main/docs/adr/0097-the-bigtable-change-stream-coordinator-checkpoints-the-partition-ledger.md) records the decision.
 
 ### Event time
 
@@ -1515,7 +1553,7 @@ If aggregate active reads reach `source parallelism * maxConcurrentStreamsPerSub
 If the goal is fewer reads and less callback work in each subtask without reducing aggregate capacity, increase source parallelism before lowering the per-subtask bound.
 
 Persistently queued partitions beside free read slots indicate a reader scheduling, rotation, or handover problem; infer free slots in a subtask from its configured bound minus its active and queued counts.
-Partitions stay unassigned only until every source subtask has reported its reads, and while a failed subtask restarts; persistently unassigned partitions indicate an assignment-protocol problem.
+Partitions stay unassigned only until every source subtask has reported its reads, while a failed subtask restarts, and, under `PartitionHandoff.AFTER_CHECKPOINT`, while a split or merge's successors wait for a checkpoint taken after their parents closed to complete; persistently unassigned partitions in a job whose checkpoints complete indicate an assignment-protocol problem.
 Alert before the minimum active or queued low watermark, or the oldest unassigned position, approaches the table's configured Change Streams retention boundary.
 
 The connector metrics cannot reproduce Bigtable cluster load or retained log volume.

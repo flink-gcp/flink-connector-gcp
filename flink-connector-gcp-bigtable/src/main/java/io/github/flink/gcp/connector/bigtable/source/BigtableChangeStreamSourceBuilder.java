@@ -56,6 +56,8 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     public static final int DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK = 2;
 
     private static final Duration DEFAULT_FIRST_CHECKPOINT_TIMEOUT = Duration.ofMinutes(10);
+    private static final PartitionHandoff DEFAULT_PARTITION_HANDOFF =
+            PartitionHandoff.AFTER_CHECKPOINT;
 
     @Nullable private TableDestination table;
     @Nullable private BigtableChangeStreamDeserializationSchema<T> deserializer;
@@ -65,6 +67,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private StartPosition resumeFallback;
     @Nullable private Instant boundedTimestamp;
     private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
+    private PartitionHandoff partitionHandoff = DEFAULT_PARTITION_HANDOFF;
     private Duration firstCheckpointTimeout = DEFAULT_FIRST_CHECKPOINT_TIMEOUT;
     private List<Pattern> familyIncludeList = Collections.emptyList();
     private List<Pattern> familyExcludeList = Collections.emptyList();
@@ -246,20 +249,39 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     }
 
     /**
+     * Sets when the partitions that replace a closed one start. Optional; defaults to {@link
+     * PartitionHandoff#AFTER_CHECKPOINT}.
+     *
+     * <p>{@link PartitionHandoff#AFTER_CHECKPOINT} keeps one row key's changes in commit order at a
+     * keyed operator across a partition split or merge, at the cost of delaying the successors
+     * until the next checkpoint completes; {@link PartitionHandoff#IMMEDIATE} starts them at once,
+     * for consumers that order each row key's changes by their commit coordinates.
+     *
+     * @param partitionHandoff when a successor partition starts
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> partitionHandoff(
+            PartitionHandoff partitionHandoff) {
+        this.partitionHandoff =
+                Preconditions.checkNotNull(partitionHandoff, "partitionHandoff must not be null");
+        return this;
+    }
+
+    /**
      * Sets how long a closed partition waits for a completed checkpoint before the source logs a
      * warning and makes every close final at once. Optional; defaults to 10 min. {@link
      * Duration#ZERO} keeps closes pending until a checkpoint completes.
      *
      * <p>A partition's close is final only once a completed checkpoint covers it, so that a region
-     * failover reads a partition that closed after the restored checkpoint again. Reading never
-     * waits for it; only the coordinator's record of the close does. A job without checkpointing
-     * never completes one, so its closes would stay pending for good, one entry each. The source
-     * cannot read the job's checkpoint configuration, so it measures instead: once a close has
-     * waited this long with no checkpoint completed, every close is final at once, and a region
-     * failover does not read it again, until a checkpoint completes. A savepoint taken while the
-     * job runs does not count, because Flink reports completion to the source only for a checkpoint
-     * or a savepoint that stops the job. Raise this above the time a job's first checkpoint takes
-     * to complete.
+     * failover reads a partition that closed after the restored checkpoint again, and under {@link
+     * PartitionHandoff#AFTER_CHECKPOINT} its successors start only then. A job without
+     * checkpointing never completes one, so its closes would stay pending, and its successors
+     * waiting, for good. The source cannot read the job's checkpoint configuration, so it measures
+     * instead: once a close has waited this long with no checkpoint completed, every close is final
+     * at once, a region failover does not read it again, and successors start at once, until a
+     * checkpoint completes. A savepoint taken while the job runs does not count, because Flink
+     * reports completion to the source only for a checkpoint or a savepoint that stops the job.
+     * Raise this above the time a job's first checkpoint takes to complete.
      *
      * @param firstCheckpointTimeout the wait, zero or from 1 ms to {@code
      *     Duration.ofNanos(Long.MAX_VALUE)}; zero keeps closes pending until a checkpoint completes
@@ -431,6 +453,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                                         serviceAccountKeyFile,
                                         exportClientMetricsToCloudMonitoring),
                         exportClientMetricsToFlink,
+                        partitionHandoff,
                         firstCheckpointTimeout));
     }
 

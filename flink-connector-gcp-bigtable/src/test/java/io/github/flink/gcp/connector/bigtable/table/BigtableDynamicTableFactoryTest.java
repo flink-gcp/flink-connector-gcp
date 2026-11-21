@@ -59,6 +59,7 @@ import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableStagedSink;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.writer.SingleRowRequestConfig;
 import io.github.flink.gcp.connector.bigtable.source.BigtableChangeStreamSource;
 import io.github.flink.gcp.connector.bigtable.source.BigtableSourceConfig;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 import io.github.flink.gcp.connector.bigtable.source.readrows.BigtableScanSource;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.source.BigtableChangeStreamDynamicSource;
@@ -121,6 +122,7 @@ class BigtableDynamicTableFactoryTest {
                     Map.entry("scan.bounded.timestamp-millis", "2000"),
                     Map.entry("scan.max-concurrent-streams-per-subtask", "1"),
                     Map.entry("scan.first-checkpoint-timeout", "5 min"),
+                    Map.entry("scan.change-stream.partition-handoff", "immediate"),
                     Map.entry("scan.change-stream.selected-cell.family", "state"),
                     Map.entry("scan.change-stream.selected-cell.qualifier-base64", "cQ=="),
                     Map.entry("scan.change-stream.selected-cell.source-cluster-id", "cluster-1"),
@@ -1393,6 +1395,7 @@ class BigtableDynamicTableFactoryTest {
         configured.put("scan.bounded.timestamp-millis", "2000");
         configured.put("scan.max-concurrent-streams-per-subtask", "5");
         configured.put("scan.first-checkpoint-timeout", "5 min");
+        configured.put("scan.change-stream.partition-handoff", "immediate");
         configured.put("scan.parallelism", "3");
 
         DynamicTableSource actual = source(CHANGE_STREAM_SCHEMA, configured);
@@ -1404,6 +1407,7 @@ class BigtableDynamicTableFactoryTest {
                         .boundedTimestamp(Instant.ofEpochMilli(2000L))
                         .maxConcurrentStreamsPerSubtask(5)
                         .firstCheckpointTimeout(Duration.ofMinutes(5))
+                        .partitionHandoff(PartitionHandoff.IMMEDIATE)
                         .parallelism(3)
                         .build();
 
@@ -1657,6 +1661,51 @@ class BigtableDynamicTableFactoryTest {
         zeroConcurrency.put("scan.max-concurrent-streams-per-subtask", "0");
         assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, zeroConcurrency))
                 .hasStackTraceContaining("must be positive, but was 0");
+    }
+
+    @Test
+    void thePartitionHandOffReachesTheSourceInBothChangelogModes() {
+        Map<String, String> envelope = minimalChangeStreamOptions();
+        envelope.put("scan.change-stream.partition-handoff", "immediate");
+        Map<String, String> selectedCell = minimalSelectedCellOptions();
+        selectedCell.put("scan.change-stream.partition-handoff", "IMMEDIATE");
+
+        // Flink matches an enum's spelling case-insensitively.
+        assertThat(
+                        changeStreamSource(CHANGE_STREAM_SCHEMA, envelope)
+                                .getConfig()
+                                .getPartitionHandoff())
+                .isEqualTo(PartitionHandoff.IMMEDIATE);
+        assertThat(
+                        changeStreamSource(selectedCellSchema("row_id"), selectedCell)
+                                .getConfig()
+                                .getPartitionHandoff())
+                .isEqualTo(PartitionHandoff.IMMEDIATE);
+        assertThat(
+                        changeStreamSource(CHANGE_STREAM_SCHEMA, minimalChangeStreamOptions())
+                                .getConfig()
+                                .getPartitionHandoff())
+                .isEqualTo(PartitionHandoff.AFTER_CHECKPOINT);
+    }
+
+    @Test
+    void namesThePartitionHandOffOptionWhenItsValueIsRejected() {
+        Map<String, String> options = minimalChangeStreamOptions();
+        options.put("scan.change-stream.partition-handoff", "sometimes");
+
+        assertThatThrownBy(() -> source(CHANGE_STREAM_SCHEMA, options))
+                .hasStackTraceContaining(
+                        "Could not parse value 'sometimes' for key"
+                                + " 'scan.change-stream.partition-handoff'");
+    }
+
+    private static BigtableChangeStreamSource<?> changeStreamSource(
+            ResolvedSchema schema, Map<String, String> options) {
+        SourceProvider provider =
+                (SourceProvider)
+                        ((ScanTableSource) source(schema, options))
+                                .getScanRuntimeProvider(ScanRuntimeProviderContext.INSTANCE);
+        return (BigtableChangeStreamSource<?>) provider.createSource();
     }
 
     @Test

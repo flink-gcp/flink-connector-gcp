@@ -1144,6 +1144,12 @@ because the same value paces how the reader rotates queued partitions in.
 [ADR-0103]({{< param BookRepo >}}/blob/main/docs/adr/0103-the-bigtable-change-stream-reader-bounds-asynchronous-partition-reads.md)
 records that decision.
 
+At source parallelism above 1, the partitions that replace a closed one start by default only after a checkpoint taken after it closed has completed, so one row key's changes reach a `ChangelogNormalize`, an aggregation or an upsert sink in commit order across a partition split or merge.
+Each split or merge then delays its successors until the next checkpoint completes, up to one checkpoint interval plus that checkpoint's own duration.
+`'scan.change-stream.partition-handoff' = 'immediate'` starts them at once, for a sink that orders each row key's changes by their commit coordinates.
+A job without checkpointing, such as a bounded backfill, pauses once for `scan.first-checkpoint-timeout` at its first split or merge and then starts successors at once with a warning.
+[One row key's changes across a partition split or merge]({{< relref "docs/connectors/datastream/bigtable" >}}#one-row-keys-changes-across-a-partition-split-or-merge) describes the wait, its limits under unaligned checkpoints, asynchronous operators and failover, and what a job without checkpointing does.
+
 Continuation tokens and partition ranges remain internal checkpoint protocol state rather than
 queryable metadata.
 The `estimated-low-watermark` value belongs to the partition that produced the mutation; it is not
@@ -1276,7 +1282,8 @@ DataStream builder.
 | `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
 | `scan.bounded.timestamp-millis` | Long | `boundedTimestamp(...)`; makes Change Streams bounded at the epoch-millisecond instant. Requires `scan.mode = change-stream`; the separate `scan.mode = bounded` value selects a finite scan of the current table |
 | `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
-| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout(...)`: how long a closed partition waits for a completed checkpoint before every close is final at once; zero keeps closes pending until one completes, and a positive value must be at least 1 ms. Unset keeps the builder default of 10 minutes |
+| `scan.change-stream.partition-handoff` | Enum | `partitionHandoff(...)`: `after-checkpoint` starts the partitions that replace a closed one only after a checkpoint taken after it closed has completed, keeping one row key's changes in commit order across a split or merge; `immediate` starts them at once. Unset keeps the builder default, `after-checkpoint` |
+| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout(...)`: how long a closed partition waits for a completed checkpoint before every close is final at once and its successors start at once; zero keeps closes pending until one completes, and a positive value must be at least 1 ms. Unset keeps the builder default of 10 minutes |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Lookup

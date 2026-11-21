@@ -200,11 +200,25 @@ public final class BigtableChangeStreamSource<T>
                     config.getResumeFallback(),
                     restored,
                     config.getBoundedTimestamp() != null,
+                    holdsSuccessorsUntilCheckpoint(config.getPartitionHandoff()),
                     config.getFirstCheckpointTimeout());
         } catch (Throwable e) {
             // The enumerator never took ownership, so nothing else will close what was just minted.
             Closers.closeAllSuppressing(e, client);
             throw e;
+        }
+    }
+
+    // Every constant is named, so a new one fails here rather than meaning "no hold" by default.
+    private static boolean holdsSuccessorsUntilCheckpoint(PartitionHandoff handoff) {
+        switch (handoff) {
+            case AFTER_CHECKPOINT:
+                return true;
+            case IMMEDIATE:
+                return false;
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported partition hand-off " + handoff + ".");
         }
     }
 

@@ -84,7 +84,7 @@ class ChangeStreamPartitionSplitSerializerTest {
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(closed));
 
         assertThat(restored).isEqualTo(closed);
-        assertThat(restored.toTransitionEvent().getSuccessors())
+        assertThat(restored.toTransitionEvent(false).getSuccessors())
                 .extracting(successor -> successor.getContinuationToken().getToken())
                 .containsExactly("left-token", "right-token");
     }

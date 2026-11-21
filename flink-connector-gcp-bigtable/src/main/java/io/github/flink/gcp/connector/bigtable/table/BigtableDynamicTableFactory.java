@@ -46,6 +46,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableStagedOptions;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.singlerow.BigtableRequestOptions;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 import io.github.flink.gcp.connector.bigtable.table.sink.AggregateOptionsMapper;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableConditionalDynamicSink;
 import io.github.flink.gcp.connector.bigtable.table.sink.BigtableDynamicSink;
@@ -150,6 +151,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF,
                         BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
                         BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK,
@@ -379,6 +381,9 @@ public class BigtableDynamicTableFactory
                         .map(millis -> Instant.ofEpochMilli(millis.longValue()))
                         .orElse(null);
         Integer parallelism = config.getOptional(FactoryUtil.SOURCE_PARALLELISM).orElse(null);
+        PartitionHandoff partitionHandoff =
+                config.getOptional(BigtableConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF)
+                        .orElse(null);
         Duration firstCheckpointTimeout =
                 config.getOptional(BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT)
                         .orElse(null);
@@ -409,6 +414,7 @@ public class BigtableDynamicTableFactory
                     .resumeFallback(resumeFallback)
                     .boundedTimestamp(boundedTimestamp)
                     .maxConcurrentStreamsPerSubtask(maxConcurrentStreams)
+                    .partitionHandoff(partitionHandoff)
                     .firstCheckpointTimeout(firstCheckpointTimeout)
                     .parallelism(parallelism)
                     .physicalDataType(physicalDataType)
@@ -463,6 +469,7 @@ public class BigtableDynamicTableFactory
                 .resumeFallback(resumeFallback)
                 .boundedTimestamp(boundedTimestamp)
                 .maxConcurrentStreamsPerSubtask(maxConcurrentStreams)
+                .partitionHandoff(partitionHandoff)
                 .firstCheckpointTimeout(firstCheckpointTimeout)
                 .parallelism(parallelism)
                 .selectedCellSchema(schema)
@@ -693,6 +700,7 @@ public class BigtableDynamicTableFactory
                         BigtableConnectorOptions.SCAN_STARTUP_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_MODE,
                         BigtableConnectorOptions.SCAN_RESUME_FALLBACK_TIMESTAMP_MILLIS,
+                        BigtableConnectorOptions.SCAN_CHANGE_STREAM_PARTITION_HANDOFF,
                         BigtableConnectorOptions.SCAN_FIRST_CHECKPOINT_TIMEOUT,
                         BigtableConnectorOptions.SCAN_BOUNDED_TIMESTAMP_MILLIS,
                         BigtableConnectorOptions.SCAN_MAX_CONCURRENT_STREAMS_PER_SUBTASK));

@@ -27,9 +27,12 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NavigableSet;
+import java.util.Set;
 import java.util.TreeSet;
 
 /** Mutable coordinator-thread accumulator for one pending merge target. */
@@ -43,6 +46,13 @@ final class PendingMergeAccumulator {
     private final NavigableSet<TokenEntry> tokens = new TreeSet<>(TOKEN_ORDER);
     private Instant lowWatermark;
     private int disconnectedPairs;
+
+    /**
+     * The closed splits that contributed a token since this coordinator started. It is runtime
+     * state that a checkpoint leaves out: the closes behind a restored accumulator's tokens
+     * preceded a completed checkpoint, so the merge target never waits for them.
+     */
+    private final Set<String> parentSplitIds = new LinkedHashSet<>();
 
     /**
      * How many neighbour comparisons {@link #add} has made, counted because its bound is the
@@ -103,6 +113,20 @@ final class PendingMergeAccumulator {
         }
     }
 
+    /**
+     * Records a closed split that contributed a token to this merge target.
+     *
+     * @param splitId the id of the parent split
+     */
+    void addParent(String splitId) {
+        parentSplitIds.add(Preconditions.checkNotNull(splitId, "splitId must not be null"));
+    }
+
+    /** Returns the closed splits that contributed a token since this coordinator started. */
+    Set<String> getParentSplitIds() {
+        return Collections.unmodifiableSet(parentSplitIds);
+    }
+
     boolean isComplete() {
         return !tokens.isEmpty()
                 && disconnectedPairs == 0
@@ -116,6 +140,16 @@ final class PendingMergeAccumulator {
 
     Instant getLowWatermark() {
         return lowWatermark;
+    }
+
+    /** Whether any of the candidates is a token this accumulator holds. */
+    boolean sharesATokenWith(List<ChangeStreamContinuationToken> candidates) {
+        for (TokenEntry token : tokens) {
+            if (candidates.contains(token.token)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     boolean tokensAreContainedBy(List<ChangeStreamContinuationToken> candidates) {

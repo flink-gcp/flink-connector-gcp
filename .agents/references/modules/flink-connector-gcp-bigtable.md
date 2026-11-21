@@ -462,6 +462,21 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   closes are final at once until one completes. Readers, not the coordinator, check restored
   assigned splits against retention: the ledger's copy lags one completed checkpoint. A restored
   closed split that has expired is read again from `resumeFallback`, never reported.
+- **A successor waits until its parents' closes are final** (#2194, ADR-0097's revision; the
+  Spanner counterpart is ADR-0099's `PartitionHandoff`). Under the default
+  `PartitionHandoff.AFTER_CHECKPOINT` a successor stays in `unassigned` but is skipped by
+  assignment while `heldSuccessors` names a parent whose pending close holds successors or that
+  is being re-read; a reconciler restart from a pending merge's tokens, or a tokenless one over
+  part of its range, waits for that merge's parents too. Keep the hold runtime-only (a held
+  successor checkpoints as unassigned, and a restore starts it, even beside a parent the
+  checkpoint records as re-read: that is a failover's replay, outside the order), skip it under `IMMEDIATE`, at parallelism 1 and after a transition
+  that says its reader attempt emitted nothing (a re-sent transition always says so), and release
+  it with the closes when `firstCheckpointTimeout` makes them final at once. The emitted mark survives a rotation through
+  the reader's `rotatedWithOutput`. Do not measure the order on the emulator (no Change Streams);
+  `BigtableChangeStreamSourceHandOffITCase` reproduces the race with a delaying operator. Keep its
+  checkpoint interval long (2 s) and its `IMMEDIATE` case without checkpointing: an aligned barrier
+  in flight blocks the successor's channel and keeps the order without the hold, so a short interval
+  lets a broken hold pass.
 - **Every transition is acknowledged; applying one is idempotent.** A reader keeps a closed split
   (split format v2 carries its successors) until `PartitionTransitionAckEvent`, re-sends it from
   `start()` after a restore, and does not report `END_OF_INPUT` before every ack. The coordinator

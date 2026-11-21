@@ -56,9 +56,11 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
@@ -126,6 +128,12 @@ public final class BigtableChangeStreamReader<T>
     /** Closed splits the coordinator has not acknowledged, in close order. */
     private final Map<String, ChangeStreamPartitionSplit> closedUnacknowledged =
             new LinkedHashMap<>();
+
+    /**
+     * Queued splits a rotation took out of an active read after it emitted a record for them, so
+     * that the transition the split reports when it closes still says so.
+     */
+    private final Set<String> rotatedWithOutput = new HashSet<>();
 
     /** Restored closed splits whose outputs Flink created and this reader has not released. */
     private final List<String> outputsToRelease = new ArrayList<>();
@@ -238,7 +246,9 @@ public final class BigtableChangeStreamReader<T>
      * Sends the transition of every restored closed split again. Flink adds a reader's restored
      * splits before {@link #start}, and nothing closes before it, so every closed split this reader
      * holds then is a restored one. The coordinator defers events until it is initialized, applies
-     * the transitions its restored ledger is missing, and acknowledges every one.
+     * the transitions its restored ledger is missing, and acknowledges every one. Each says it
+     * emitted nothing: what the earlier attempt emitted preceded the restored checkpoint, so none
+     * of it is downstream for a successor to overtake.
      */
     private void reportRestoredTransitions() {
         if (closedUnacknowledged.isEmpty()) {
@@ -249,7 +259,7 @@ public final class BigtableChangeStreamReader<T>
                         + " again; the coordinator had not acknowledged it before the checkpoint.",
                 closedUnacknowledged.size());
         for (ChangeStreamPartitionSplit split : closedUnacknowledged.values()) {
-            context.sendSourceEventToCoordinator(split.toTransitionEvent());
+            context.sendSourceEventToCoordinator(split.toTransitionEvent(false));
         }
     }
 
@@ -324,7 +334,8 @@ public final class BigtableChangeStreamReader<T>
             metrics.closeStream();
             ChangeStreamPartitionSplit closed = read.emittedState.toSplit();
             closedUnacknowledged.put(closed.splitId(), closed);
-            context.sendSourceEventToCoordinator(closed.toTransitionEvent());
+            context.sendSourceEventToCoordinator(
+                    closed.toTransitionEvent(read.emittedState.hasEmittedRecords()));
             read.closeSeen = true;
             read.cancellation = CancellationReason.COMPLETION;
             terminalAlreadyPublished = terminal != null;
@@ -367,6 +378,9 @@ public final class BigtableChangeStreamReader<T>
         active.remove(read.splitId());
         metrics.terminated(read.timing);
         if (cancellation == CancellationReason.ROTATION) {
+            if (read.emittedState.hasEmittedRecords()) {
+                rotatedWithOutput.add(read.splitId());
+            }
             queued.addLast(read.emittedState.toSplit());
         } else if (cancellation == CancellationReason.COMPLETION) {
             output.releaseOutputForSplit(read.splitId());
@@ -620,6 +634,7 @@ public final class BigtableChangeStreamReader<T>
         queued.clear();
         handover.clear();
         closedUnacknowledged.clear();
+        rotatedWithOutput.clear();
         outputsToRelease.clear();
         checkpointProgress.clear();
         metrics.closed();
@@ -639,7 +654,9 @@ public final class BigtableChangeStreamReader<T>
         private boolean closeSeen;
 
         private ActiveRead(ChangeStreamPartitionSplit split) {
-            emittedState = new ChangeStreamPartitionSplitState(split);
+            emittedState =
+                    new ChangeStreamPartitionSplitState(
+                            split, rotatedWithOutput.remove(split.splitId()));
             splitId = split.splitId();
             timing = metrics.opening();
         }

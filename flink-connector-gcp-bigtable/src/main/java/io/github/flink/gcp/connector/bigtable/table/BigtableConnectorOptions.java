@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.bigtable.sink.BigtableDeliveryGuarantee;
 import io.github.flink.gcp.connector.bigtable.sink.CreateDisposition;
 import io.github.flink.gcp.connector.bigtable.sink.OrderingMode;
 import io.github.flink.gcp.connector.bigtable.sink.conditional.EmptyBranchPolicy;
+import io.github.flink.gcp.connector.bigtable.source.PartitionHandoff;
 
 import java.time.Duration;
 import java.util.List;
@@ -468,6 +469,22 @@ public final class BigtableConnectorOptions {
                                     + " column.");
 
     /**
+     * When the change-stream partitions that replace a closed one start: after-checkpoint waits for
+     * a checkpoint taken after their parents closed, which keeps one row key's changes in commit
+     * order across a partition split or merge, while immediate starts them at once.
+     */
+    public static final ConfigOption<PartitionHandoff> SCAN_CHANGE_STREAM_PARTITION_HANDOFF =
+            ConfigOptions.key("scan.change-stream.partition-handoff")
+                    .enumType(PartitionHandoff.class)
+                    .noDefaultValue()
+                    .withDescription(
+                            "When the change-stream partitions that replace a closed one start:"
+                                    + " after-checkpoint waits for a checkpoint taken after their"
+                                    + " parents closed, which keeps one row key's changes in commit"
+                                    + " order across a partition split or merge, while immediate"
+                                    + " starts them at once.");
+
+    /**
      * The Flink decoding format for the selected cell's complete logical row. The mutation row key
      * supplies the declared primary key, so the format decodes every other physical column except
      * the commit-timestamp and tie-breaker columns.
@@ -520,9 +537,9 @@ public final class BigtableConnectorOptions {
 
     /**
      * How long a closed change-stream partition waits for a completed checkpoint: once one has
-     * waited this long with none completed, the source logs a warning and every close is final at
-     * once, so a region failover does not read it again, until a checkpoint completes. Zero keeps
-     * closes pending until one completes.
+     * waited this long with none completed, the source logs a warning and, until a checkpoint
+     * completes, every close is final at once, so a region failover does not read it again and its
+     * successors start at once. Zero keeps closes pending until one completes.
      */
     public static final ConfigOption<Duration> SCAN_FIRST_CHECKPOINT_TIMEOUT =
             ConfigOptions.key("scan.first-checkpoint-timeout")
@@ -530,10 +547,12 @@ public final class BigtableConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "How long a closed change-stream partition waits for a completed"
-                                    + " checkpoint: once one has waited this long with none completed,"
-                                    + " the source logs a warning and every close is final at once, so a"
-                                    + " region failover does not read it again, until a checkpoint"
-                                    + " completes. Zero keeps closes pending until one completes.");
+                                    + " checkpoint: once one has waited this long with none"
+                                    + " completed, the source logs a warning and, until a"
+                                    + " checkpoint completes, every close is final at once, so a"
+                                    + " region failover does not read it again and its successors"
+                                    + " start at once. Zero keeps closes pending until one"
+                                    + " completes.");
 
     /**
      * Stop a Change Streams source after this epoch-millisecond instant. Requires scan.mode =

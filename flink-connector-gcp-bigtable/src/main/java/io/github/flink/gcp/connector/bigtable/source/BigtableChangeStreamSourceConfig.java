@@ -69,6 +69,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
     private final ChangeStreamRestoreResolver restoreResolver;
     private final ChangeStreamCoordinatorClientFactory coordinatorClientFactory;
     private final boolean exportClientMetricsToFlink;
+    private final PartitionHandoff partitionHandoff;
     private final Duration firstCheckpointTimeout;
 
     BigtableChangeStreamSourceConfig(
@@ -85,6 +86,7 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
             ChangeStreamRestoreResolver restoreResolver,
             ChangeStreamCoordinatorClientFactory coordinatorClientFactory,
             boolean exportClientMetricsToFlink,
+            PartitionHandoff partitionHandoff,
             Duration firstCheckpointTimeout) {
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.deserializer =
@@ -110,14 +112,21 @@ public final class BigtableChangeStreamSourceConfig<T> implements Serializable {
                 Preconditions.checkNotNull(
                         coordinatorClientFactory, "coordinatorClientFactory must not be null");
         this.exportClientMetricsToFlink = exportClientMetricsToFlink;
+        this.partitionHandoff =
+                Preconditions.checkNotNull(partitionHandoff, "partitionHandoff must not be null");
         this.firstCheckpointTimeout =
                 Preconditions.checkNotNull(
                         firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
     }
 
+    /** Returns when a closed partition's successors start. */
+    public PartitionHandoff getPartitionHandoff() {
+        return partitionHandoff;
+    }
+
     /**
-     * Returns how long after the coordinator starts without a completed checkpoint every close
-     * becomes final at once; zero waits indefinitely.
+     * Returns how long a close waits for a completed checkpoint, while none has completed, before
+     * every close becomes final at once; zero waits indefinitely.
      */
     public Duration getFirstCheckpointTimeout() {
         return firstCheckpointTimeout;

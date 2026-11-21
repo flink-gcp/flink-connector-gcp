@@ -233,6 +233,11 @@ class BigtableChangeStreamSourceRegionFailoverITCase {
                 .opener(new RestoreScriptedChangeStreamOpener(run))
                 .restoreResolver(new KeepRestoredSplit())
                 .coordinatorClientFactory(WholeTableClient::new)
+                // These jobs test what a rollback reads again, not one key's order across a
+                // hand-off, and they take only the checkpoints they trigger: a successor waiting
+                // for one would wait for the test instead
+                // (BigtableChangeStreamSourceHandOffITCase).
+                .partitionHandoff(PartitionHandoff.IMMEDIATE)
                 .build();
     }
 

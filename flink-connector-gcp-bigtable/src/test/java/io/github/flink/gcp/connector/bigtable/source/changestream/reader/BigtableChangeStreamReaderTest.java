@@ -593,6 +593,63 @@ class BigtableChangeStreamReaderTest {
     }
 
     @Test
+    void aTransitionSaysWhetherTheReadEmittedARecord() throws Exception {
+        reader = reader(2);
+        reader.addSplits(Arrays.asList(split("busy"), split("quiet")));
+        reader.start();
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+        Instant watermark = Instant.parse("2026-08-13T01:00:00Z");
+
+        opener.deliver(
+                0, TestChangeStreamRecords.mutation(watermark.plusSeconds(1), watermark, "row"));
+        reader.pollNext(output);
+        opener.deliver(1, TestChangeStreamRecords.heartbeat(watermark, "heartbeat"));
+        reader.pollNext(output);
+        opener.deliver(0, TestChangeStreamRecords.close("busy-successor"));
+        reader.pollNext(output);
+        opener.deliver(1, TestChangeStreamRecords.close("quiet-successor"));
+        reader.pollNext(output);
+
+        assertThat(transitions())
+                .extracting(
+                        PartitionTransitionEvent::getFinishedSplitId,
+                        PartitionTransitionEvent::hasEmittedRecords)
+                .containsExactly(tuple("busy", true), tuple("quiet", false));
+    }
+
+    @Test
+    void aRotationKeepsTheMarkThatTheSplitEmittedARecord() throws Exception {
+        reader = reader(1);
+        reader.addSplits(Arrays.asList(split("first"), split("second")));
+        reader.start();
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+        Instant watermark = Instant.parse("2026-08-13T01:00:00Z");
+
+        opener.deliver(
+                0, TestChangeStreamRecords.mutation(watermark.plusSeconds(1), watermark, "row"));
+        reader.pollNext(output);
+        opener.deliver(0, TestChangeStreamRecords.heartbeat(watermark, "first-heartbeat"));
+        reader.pollNext(output);
+        reader.pollNext(output);
+        opener.deliver(1, TestChangeStreamRecords.heartbeat(watermark, "second-heartbeat"));
+        reader.pollNext(output);
+        reader.pollNext(output);
+        assertThat(opener.openedSplitIds()).containsExactly("first", "second", "first");
+
+        // The reopened read emits nothing before the close, but the split did before the rotation.
+        opener.deliver(2, TestChangeStreamRecords.close("successor"));
+        reader.pollNext(output);
+
+        assertThat(transitions())
+                .singleElement()
+                .satisfies(
+                        transition -> {
+                            assertThat(transition.getFinishedSplitId()).isEqualTo("first");
+                            assertThat(transition.hasEmittedRecords()).isTrue();
+                        });
+    }
+
+    @Test
     void aRestoredReaderNamesItsOpenSplitsAndReportsItsClosedOnesAgain() throws Exception {
         ChangeStreamPartitionSplit closed =
                 split("closed")
@@ -623,6 +680,8 @@ class BigtableChangeStreamReaderTest {
                             assertThat(event.getFinishedSplitId()).isEqualTo("closed");
                             assertThat(event.getSuccessors())
                                     .isEqualTo(closed.getCloseSuccessors());
+                            // What the earlier attempt emitted preceded the restored checkpoint.
+                            assertThat(event.hasEmittedRecords()).isFalse();
                         });
         assertThat(reader.snapshotState(1L)).containsExactly(split("open"), closed);
     }
@@ -797,6 +856,16 @@ class BigtableChangeStreamReaderTest {
         public void releaseOutputForSplit(String splitId) {
             released.add(splitId);
         }
+    }
+
+    private List<PartitionTransitionEvent> transitions() {
+        List<PartitionTransitionEvent> transitions = new ArrayList<>();
+        for (Object event : context.sourceEvents()) {
+            if (event instanceof PartitionTransitionEvent) {
+                transitions.add((PartitionTransitionEvent) event);
+            }
+        }
+        return transitions;
     }
 
     private List<String> progressTokens() {

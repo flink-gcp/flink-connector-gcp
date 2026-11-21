@@ -31,7 +31,15 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
-/** Reports that a partition closed and names each successor range and its continuation token. */
+/**
+ * Reports that a partition closed and names each successor range and its continuation token.
+ *
+ * <p>It also says whether the reader attempt that read the partition emitted a record for it. The
+ * coordinator holds the successors of a partition that did until a checkpoint covers the close, so
+ * that none of them overtakes the partition's last records on their way downstream; a partition
+ * that emitted nothing has nothing downstream to overtake. A transition sent again after a restore
+ * says it emitted nothing: what the earlier attempt emitted preceded the restored checkpoint.
+ */
 @Internal
 public final class PartitionTransitionEvent implements SourceEvent {
 
@@ -40,14 +48,19 @@ public final class PartitionTransitionEvent implements SourceEvent {
     private final String finishedSplitId;
     private final Instant lowWatermark;
     private final List<Successor> successors;
+    private final boolean emittedRecords;
 
     public PartitionTransitionEvent(
-            String finishedSplitId, Instant lowWatermark, List<Successor> successors) {
+            String finishedSplitId,
+            Instant lowWatermark,
+            List<Successor> successors,
+            boolean emittedRecords) {
         this.finishedSplitId =
                 Preconditions.checkNotNull(finishedSplitId, "finishedSplitId must not be null");
         this.lowWatermark =
                 Preconditions.checkNotNull(lowWatermark, "lowWatermark must not be null");
         this.successors = Collections.unmodifiableList(new ArrayList<>(successors));
+        this.emittedRecords = emittedRecords;
     }
 
     public String getFinishedSplitId() {
@@ -60,6 +73,11 @@ public final class PartitionTransitionEvent implements SourceEvent {
 
     public List<Successor> getSuccessors() {
         return successors;
+    }
+
+    /** Whether the reader attempt that sends this emitted a record for the partition. */
+    public boolean hasEmittedRecords() {
+        return emittedRecords;
     }
 
     /** One target range from CloseStream paired with the token that arrived from this parent. */

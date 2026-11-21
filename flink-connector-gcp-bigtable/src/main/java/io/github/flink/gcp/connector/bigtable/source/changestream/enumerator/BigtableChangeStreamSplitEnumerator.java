@@ -93,6 +93,29 @@ import java.util.concurrent.atomic.AtomicLong;
  * checkpoint has completed since {@link #start}, which is how a job without checkpointing looks
  * from here, every close is final at once until one does.
  *
+ * <h2>Successors wait for a checkpoint</h2>
+ *
+ * <p>A partition's last records can still be on their way downstream when its reader reports the
+ * {@code CloseStream}, in a network buffer or a sink writer's batch. If another subtask reads a
+ * successor, the successor's records take a different path and can reach a keyed operator first, so
+ * one row key's changes arrive out of commit order (#2194, the same shape as Spanner's #2193). With
+ * {@code holdSuccessorsUntilCheckpoint}, a successor stays in {@code unassigned} but is not handed
+ * out while {@code heldSuccessors} names a parent close that is not final yet: one whose pending
+ * close holds successors, or one being read again after a rollback. A close becomes final when a
+ * completed checkpoint covers it, as above. The reader emitted the parent's records before it
+ * reported the close, so they precede its barrier for that checkpoint, and a completed checkpoint
+ * means downstream processed them.
+ *
+ * <p>A partition the reconciler restarts from a pending merge's tokens, or without a token over
+ * part of its range, waits for that merge's parents in the same way. The hold is runtime state
+ * only, and the checkpoint format is unchanged: a held successor is checkpointed as unassigned, and
+ * a restore starts it at once. That is exact for a parent whose close the restored checkpoint
+ * covers; a parent the checkpoint records as read again is replayed after the restore, and its
+ * order against its successors is a failover's, which the hold does not restore. Nothing is held at
+ * parallelism 1, where every record takes one path, or after a close whose reader emitted no record
+ * for the partition, since nothing of it is downstream to overtake. When closes become final at
+ * once for want of a checkpoint, so does the hold.
+ *
  * <p><b>Every transition is acknowledged, and applying one is idempotent.</b> A reader keeps a
  * closed split, with its successors, in its checkpointed state until the {@link
  * PartitionTransitionAckEvent} arrives, and a restored reader sends the transition again. A restore
@@ -154,6 +177,7 @@ public final class BigtableChangeStreamSplitEnumerator
     @Nullable private final StartPosition resumeFallback;
     private final boolean bounded;
     private final boolean reconciliationEnabled;
+    private final boolean holdSuccessorsUntilCheckpoint;
     private final Duration firstCheckpointTimeout;
     private final Clock clock;
     @Nullable private final BigtableChangeStreamEnumeratorState restoredState;
@@ -173,6 +197,12 @@ public final class BigtableChangeStreamSplitEnumerator
 
     /** Unassigned, assigned or pending-close splits read again after their successors exist. */
     private final Set<String> rereads = new LinkedHashSet<>();
+
+    /**
+     * Unassigned successors not handed out yet, by split id, each with the parent closes it waits
+     * for. Runtime state only; every key is also in {@code unassigned}.
+     */
+    private final Map<String, Set<String>> heldSuccessors = new LinkedHashMap<>();
 
     /** Reader attempts told that no more splits are coming. */
     private final Set<Integer> toldNoMoreSplits = new HashSet<>();
@@ -221,6 +251,8 @@ public final class BigtableChangeStreamSplitEnumerator
      * @param resumeFallback where a partition whose token has expired resumes, or {@code null}
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      * @param bounded whether the stream has an end time and so finishes
+     * @param holdSuccessorsUntilCheckpoint whether a successor waits until a completed checkpoint
+     *     covers its parents' closes
      * @param firstCheckpointTimeout how long a close waits for a completed checkpoint before every
      *     close becomes final at once, while none has completed; zero waits indefinitely
      */
@@ -231,6 +263,7 @@ public final class BigtableChangeStreamSplitEnumerator
             @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded,
+            boolean holdSuccessorsUntilCheckpoint,
             Duration firstCheckpointTimeout) {
         this(
                 context,
@@ -241,6 +274,7 @@ public final class BigtableChangeStreamSplitEnumerator
                 bounded,
                 true,
                 Clock.systemUTC(),
+                holdSuccessorsUntilCheckpoint,
                 firstCheckpointTimeout);
     }
 
@@ -261,6 +295,7 @@ public final class BigtableChangeStreamSplitEnumerator
             boolean bounded,
             boolean reconciliationEnabled,
             Clock clock,
+            boolean holdSuccessorsUntilCheckpoint,
             Duration firstCheckpointTimeout) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.client = Preconditions.checkNotNull(client, "client must not be null");
@@ -271,6 +306,7 @@ public final class BigtableChangeStreamSplitEnumerator
         this.bounded = bounded;
         this.reconciliationEnabled = reconciliationEnabled;
         this.clock = Preconditions.checkNotNull(clock, "clock must not be null");
+        this.holdSuccessorsUntilCheckpoint = holdSuccessorsUntilCheckpoint;
         this.firstCheckpointTimeout =
                 Preconditions.checkNotNull(
                         firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
@@ -464,25 +500,40 @@ public final class BigtableChangeStreamSplitEnumerator
         // what a reader of the warning needs is what the scan saw, not what it left behind.
         String ledgerDescription = tokenlessAmong(result.recoveries) ? describeLedger() : "";
         for (ChangeStreamPartitionReconciler.Recovery recovery : result.recoveries) {
-            pendingMerges
-                    .values()
-                    .removeIf(
-                            merge ->
-                                    merge.tokensAreContainedBy(recovery.tokens)
-                                            || (recovery.tokenless
-                                                    && merge.partitionKey()
-                                                            .equals(recovery.partition)));
+            // A recovery continues from the parents' tokens, or restarts part of their range, so it
+            // waits for those parents' closes as a completed merge would. A tokenless restart may
+            // cover only part of a merge target, after the service split it again.
+            Set<String> parents = new LinkedHashSet<>();
+            Iterator<PendingMergeAccumulator> merges = pendingMerges.values().iterator();
+            while (merges.hasNext()) {
+                PendingMergeAccumulator merge = merges.next();
+                boolean replaced =
+                        merge.tokensAreContainedBy(recovery.tokens)
+                                || (recovery.tokenless
+                                        && merge.partitionKey().equals(recovery.partition));
+                if (replaced
+                        || merge.sharesATokenWith(recovery.tokens)
+                        || (recovery.tokenless
+                                && overlaps(merge.partitionKey(), recovery.partition))) {
+                    parents.addAll(merge.getParentSplitIds());
+                }
+                if (replaced) {
+                    merges.remove();
+                }
+            }
             Instant recoveryLowWatermark =
                     recovery.tokenless
                             ? clampToRetention(
                                     recovery.lowWatermark, scan.retention, Instant.now(clock))
                             : recovery.lowWatermark;
-            unassigned.add(
+            ChangeStreamPartitionSplit restart =
                     new ChangeStreamPartitionSplit(
                             splitId(nextSplitId++),
                             recovery.partition,
                             recovery.tokens,
-                            recoveryLowWatermark));
+                            recoveryLowWatermark);
+            unassigned.add(restart);
+            holdUntilParentsSettle(restart.splitId(), parents);
             partitionsReconciled.inc();
             if (recovery.tokenless) {
                 tokenlessRestarts.inc();
@@ -501,6 +552,12 @@ public final class BigtableChangeStreamSplitEnumerator
         // A scan that recovered the last missing partition of an otherwise drained bounded run is
         // the moment that run became complete, and no reader event is owed afterwards to notice it.
         signalBoundedCompletionIfDrained();
+    }
+
+    private static boolean overlaps(ByteStringRange left, ByteStringRange right) {
+        return !RowRanges.intersect(
+                        Collections.singletonList(left), Collections.singletonList(right))
+                .isEmpty();
     }
 
     private static Instant clampToRetention(Instant lowWatermark, Duration retention, Instant now) {
@@ -599,15 +656,15 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         ReaderState reader = readers.get(subtaskId);
         int capacity = reader == null ? 0 : reader.free();
-        if (capacity <= 0 || unassigned.isEmpty()) {
+        if (capacity <= 0 || !hasAssignable()) {
             // Called for its effect, not its verdict: a bounded run with nothing left anywhere
             // signals no-more-splits here, and there is nothing to assign either way.
             signalBoundedCompletionIfDrained();
             return;
         }
         List<ChangeStreamPartitionSplit> splits = new ArrayList<>(capacity);
-        while (splits.size() < capacity && !unassigned.isEmpty()) {
-            ChangeStreamPartitionSplit split = unassigned.removeFirst();
+        while (splits.size() < capacity && hasAssignable()) {
+            ChangeStreamPartitionSplit split = takeAssignable();
             assigned.put(split.splitId(), split);
             splits.add(split);
         }
@@ -748,7 +805,15 @@ public final class BigtableChangeStreamSplitEnumerator
                     subtaskId);
             return;
         }
-        if (rereads.contains(splitId)) {
+        boolean reread = rereads.contains(splitId);
+        if (closesFinalAtOnce) {
+            rereads.remove(splitId);
+        } else {
+            pendingCloses.put(
+                    splitId,
+                    new PendingClose(finished, clock.millis(), holdsSuccessorsOf(transition)));
+        }
+        if (reread) {
             LOG.info(
                     "Split {} closed again after a rollback; its successors already exist.",
                     splitId);
@@ -764,13 +829,14 @@ public final class BigtableChangeStreamSplitEnumerator
                 acceptSuccessor(
                         successor.getPartition(),
                         successor.getContinuationToken(),
-                        transition.getLowWatermark());
+                        transition.getLowWatermark(),
+                        splitId);
             }
         }
-        if (closesFinalAtOnce) {
-            rereads.remove(splitId);
-        } else {
-            pendingCloses.put(splitId, new PendingClose(finished, clock.millis()));
+        if (reread && closesFinalAtOnce) {
+            // A close read again after a rollback settles at once here, which frees what waited
+            // for it; any other close settles only when a checkpoint completes.
+            releaseSettledSuccessors();
         }
         refreshUnassignedMetrics();
         serveAvailableReaders();
@@ -808,7 +874,10 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     private void acceptSuccessor(
-            ByteStringRange partition, ChangeStreamContinuationToken token, Instant lowWatermark) {
+            ByteStringRange partition,
+            ChangeStreamContinuationToken token,
+            Instant lowWatermark,
+            String parentSplitId) {
         ByteStringRange partitionKey = RowRanges.copyOf(partition);
         PendingMergeAccumulator merge = pendingMerges.get(partitionKey);
         if (merge == null) {
@@ -817,6 +886,7 @@ public final class BigtableChangeStreamSplitEnumerator
             partitionsDiscovered.inc();
         }
         merge.add(token, lowWatermark);
+        merge.addParent(parentSplitId);
         if (!merge.isComplete()) {
             return;
         }
@@ -827,17 +897,96 @@ public final class BigtableChangeStreamSplitEnumerator
         } else {
             partitionSplits.inc();
         }
-        unassigned.add(
+        ChangeStreamPartitionSplit successor =
                 new ChangeStreamPartitionSplit(
                         splitId(nextSplitId++),
                         completed.getPartition(),
                         completed.getContinuationTokens(),
-                        completed.getLowWatermark()));
+                        completed.getLowWatermark());
+        unassigned.add(successor);
+        holdUntilParentsSettle(successor.splitId(), merge.getParentSplitIds());
+    }
+
+    /** Holds a new unassigned successor until every one of these parents' closes has settled. */
+    private void holdUntilParentsSettle(String successorId, Set<String> parents) {
+        if (!holdsSuccessors()) {
+            return;
+        }
+        Set<String> waitingFor = new LinkedHashSet<>();
+        for (String parent : parents) {
+            if (!closeIsSettled(parent)) {
+                waitingFor.add(parent);
+            }
+        }
+        if (!waitingFor.isEmpty()) {
+            heldSuccessors.put(successorId, waitingFor);
+        }
+    }
+
+    /** Whether successors wait at all: at parallelism 1 every record takes the same path. */
+    private boolean holdsSuccessors() {
+        return holdSuccessorsUntilCheckpoint && context.currentParallelism() > 1;
+    }
+
+    private boolean holdsSuccessorsOf(PartitionTransitionEvent transition) {
+        // A partition whose reader emitted nothing has nothing downstream for a successor to
+        // overtake.
+        return holdsSuccessors() && transition.hasEmittedRecords();
+    }
+
+    /**
+     * Whether a successor no longer waits for this parent: its close holds nothing back, or it is
+     * final, and it is not being read again after a rollback.
+     */
+    private boolean closeIsSettled(String parentSplitId) {
+        if (rereads.contains(parentSplitId)) {
+            return false;
+        }
+        PendingClose pending = pendingCloses.get(parentSplitId);
+        return pending == null || !pending.holdsSuccessors;
+    }
+
+    /** Hands out the held successors whose every parent close has settled. */
+    private void releaseSettledSuccessors() {
+        if (heldSuccessors.isEmpty()) {
+            return;
+        }
+        boolean released = false;
+        Iterator<Set<String>> held = heldSuccessors.values().iterator();
+        while (held.hasNext()) {
+            Set<String> waitingFor = held.next();
+            waitingFor.removeIf(this::closeIsSettled);
+            if (waitingFor.isEmpty()) {
+                held.remove();
+                released = true;
+            }
+        }
+        if (released) {
+            serveAvailableReaders();
+        }
+    }
+
+    /** Whether {@code unassigned} holds a split that no parent close holds back. */
+    private boolean hasAssignable() {
+        return unassigned.size() > heldSuccessors.size();
+    }
+
+    /** Removes and returns the first unassigned split that no parent close holds back. */
+    private ChangeStreamPartitionSplit takeAssignable() {
+        Iterator<ChangeStreamPartitionSplit> candidates = unassigned.iterator();
+        while (candidates.hasNext()) {
+            ChangeStreamPartitionSplit candidate = candidates.next();
+            if (!heldSuccessors.containsKey(candidate.splitId())) {
+                candidates.remove();
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("No unassigned split is free of a hold.");
     }
 
     private void serveAvailableReaders() {
         for (int subtaskId : new ArrayList<>(readers.keySet())) {
-            if (unassigned.isEmpty()) {
+            if (!hasAssignable()) {
                 break;
             }
             assignAvailable(subtaskId);
@@ -859,7 +1008,7 @@ public final class BigtableChangeStreamSplitEnumerator
      * which holds the excess back for that long rather than piling it on the others.
      */
     private void assignBeyondFreeSlots() {
-        if (unassigned.isEmpty() || boundedComplete) {
+        if (!hasAssignable() || boundedComplete) {
             return;
         }
         Map<Integer, ?> registered = context.registeredReaders();
@@ -874,7 +1023,7 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         Map<Integer, List<ChangeStreamPartitionSplit>> batches = new LinkedHashMap<>();
         int handedOut = 0;
-        while (!unassigned.isEmpty()) {
+        while (hasAssignable()) {
             int target = -1;
             int fewest = Integer.MAX_VALUE;
             for (int subtaskId : registered.keySet()) {
@@ -884,7 +1033,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     fewest = load;
                 }
             }
-            ChangeStreamPartitionSplit split = unassigned.removeFirst();
+            ChangeStreamPartitionSplit split = takeAssignable();
             assigned.put(split.splitId(), split);
             batches.computeIfAbsent(target, ignored -> new ArrayList<>()).add(split);
             readers.get(target).sentSplits++;
@@ -961,8 +1110,9 @@ public final class BigtableChangeStreamSplitEnumerator
         if (closesFinalAtOnce) {
             LOG.info(
                     "Checkpoint {} completed, so a closed partition is final again only once a"
-                            + " completed checkpoint covers it.",
-                    checkpointId);
+                            + " completed checkpoint covers it{}.",
+                    checkpointId,
+                    holdsSuccessors() ? ", and its successors wait for that" : "");
             closesFinalAtOnce = false;
         }
         Iterator<Map.Entry<String, PendingClose>> pending = pendingCloses.entrySet().iterator();
@@ -974,6 +1124,7 @@ public final class BigtableChangeStreamSplitEnumerator
                 rereads.remove(close.getKey());
             }
         }
+        releaseSettledSuccessors();
     }
 
     /**
@@ -989,18 +1140,39 @@ public final class BigtableChangeStreamSplitEnumerator
         if (clock.millis() - oldest < firstCheckpointTimeout.toMillis()) {
             return;
         }
-        LOG.warn(
-                "A closed partition has waited {} for a completed checkpoint and none has"
-                        + " completed, so a closed partition is final at once, and a region"
-                        + " failover does not read it again, until one does. Enable checkpointing,"
-                        + " or raise firstCheckpointTimeout ('scan.first-checkpoint-timeout') for a"
-                        + " job that checkpoints less often.",
-                firstCheckpointTimeout);
+        boolean holding = !heldSuccessors.isEmpty();
+        for (PendingClose pending : pendingCloses.values()) {
+            holding |= pending.holdsSuccessors;
+        }
+        if (holding) {
+            LOG.warn(
+                    "A closed partition has waited {} for a completed checkpoint and none has"
+                            + " completed, so until one does, a closed partition is final at once,"
+                            + " a region failover does not read it again, and its successors start"
+                            + " at once. Without a checkpoint, a row key's changes can reach a"
+                            + " keyed operator out of commit order across a partition split or"
+                            + " merge. Enable checkpointing; raise firstCheckpointTimeout"
+                            + " ('scan.first-checkpoint-timeout') for a job that checkpoints less"
+                            + " often; or set partitionHandoff(IMMEDIATE)"
+                            + " ('scan.change-stream.partition-handoff' = 'immediate') to start"
+                            + " successors at once.",
+                    firstCheckpointTimeout);
+        } else {
+            LOG.warn(
+                    "A closed partition has waited {} for a completed checkpoint and none has"
+                            + " completed, so a closed partition is final at once, and a region"
+                            + " failover does not read it again, until one does. Enable"
+                            + " checkpointing, or raise firstCheckpointTimeout"
+                            + " ('scan.first-checkpoint-timeout') for a job that checkpoints less"
+                            + " often.",
+                    firstCheckpointTimeout);
+        }
         closesFinalAtOnce = true;
         for (String splitId : pendingCloses.keySet()) {
             rereads.remove(splitId);
         }
         pendingCloses.clear();
+        releaseSettledSuccessors();
     }
 
     /** Returns how long a close waits for a completed checkpoint, as the source configured it. */
@@ -1012,6 +1184,11 @@ public final class BigtableChangeStreamSplitEnumerator
     @VisibleForTesting
     int pendingCloseCount() {
         return pendingCloses.size();
+    }
+
+    @VisibleForTesting
+    int heldSuccessorCount() {
+        return heldSuccessors.size();
     }
 
     private List<PendingMerge> pendingMergeSnapshot() {
@@ -1155,18 +1332,21 @@ public final class BigtableChangeStreamSplitEnumerator
     }
 
     /**
-     * A closed partition, when it closed, and the first checkpoint whose snapshot ran after its
-     * close.
+     * A closed partition, when it closed, whether its successors wait for the close to become
+     * final, and the first checkpoint whose snapshot ran after its close.
      */
     private static final class PendingClose {
 
         private final ChangeStreamPartitionSplit split;
         private final long closedAtMillis;
+        private final boolean holdsSuccessors;
         private long covering = UNCOVERED;
 
-        private PendingClose(ChangeStreamPartitionSplit split, long closedAtMillis) {
+        private PendingClose(
+                ChangeStreamPartitionSplit split, long closedAtMillis, boolean holdsSuccessors) {
             this.split = split;
             this.closedAtMillis = closedAtMillis;
+            this.holdsSuccessors = holdsSuccessors;
         }
     }
 

@@ -17,14 +17,15 @@ limitations under the License.
 # ADR-0097: The Bigtable Change Streams coordinator checkpoints the partition ledger
 
 - Status: Accepted
-- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17, 2026-11-21)
+- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17, 2026-11-21, and again on 2026-11-21 for #2194)
 - Issues: [#35](https://github.com/flink-gcp/flink-connector-gcp/issues/35),
   [#510](https://github.com/flink-gcp/flink-connector-gcp/issues/510),
   [#532](https://github.com/flink-gcp/flink-connector-gcp/issues/532),
   [#533](https://github.com/flink-gcp/flink-connector-gcp/issues/533),
   [#586](https://github.com/flink-gcp/flink-connector-gcp/issues/586),
   [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951),
-  [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206)
+  [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206),
+  [#2194](https://github.com/flink-gcp/flink-connector-gcp/issues/2194)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -111,6 +112,25 @@ a warning, until a checkpoint completes. The wait counts from the oldest pending
 from the start, so a job whose first checkpoint is slow but whose partitions do not close in the
 meantime is not warned. A savepoint does not end that wait, because Flink reports completion only
 for a checkpoint or a stopping savepoint.
+
+A successor waits until its parents' closes are final (#2194), the same hold ADR-0099 records for
+Spanner's children. A partition's last records can still be on their way downstream when its reader
+reports the `CloseStream`, and a successor read by another subtask takes a different path, so one
+row key's changes could reach a keyed operator out of commit order. Under
+`PartitionHandoff.AFTER_CHECKPOINT`, the default, a successor stays in the unassigned ledger but is
+not handed out while a parent's close is pending or the parent is being read again after a
+rollback; a merge waits for every parent. The reader emitted the parent's records before it sent the
+transition, so they precede its barrier for the checkpoint that makes the close final. Nothing is
+held at source parallelism 1, or after a close whose reader attempt emitted no record for the
+partition, which the transition now says; a transition sent again after a restore says it emitted
+nothing, because what the earlier attempt emitted preceded the restored checkpoint. A partition the
+reconciler restarts from a pending merge's tokens, or without a token over part of a pending
+merge's range, waits for that merge's parents too. The hold is runtime state: a held successor is
+checkpointed as unassigned, and a restore starts it at once,
+even when the checkpoint records a parent as read again; that parent's replay is a failover's, which
+the order does not cover.
+When closes become final at once for want of a checkpoint, so does the hold, and the warning names
+`partitionHandoff(IMMEDIATE)`, which never holds.
 
 The coordinator acknowledges a transition only to the reader attempt that sent it: one that has
 failed since has no gateway, and its restored attempt reports the transition again, and a later
@@ -210,6 +230,18 @@ materializing the public mutation or any public entry/value/range object.
   read nothing for 60 seconds while it kept running: the restored ledger held `P0` as assigned and
   no reader held it. After #2206 the restored reader reports the transition again and `C1` is read
   (`BigtableChangeStreamSourceRestoreWindowITCase`).
+- Successor hold (#2194): a scripted `MiniCluster` job at parallelism 2 split `P0`, which emitted
+  `P0#1`, into `C1` and `C2`, which emitted `C1#2` and `C2#3`. An operator in its own task behind
+  the source kept `P0#1` until a successor's record reached the keyed operator, or for three
+  seconds. Under `IMMEDIATE` without checkpointing, a successor's record reached the keyed operator
+  first. With a 100 ms checkpoint interval it did not in some runs, even with the hold disabled,
+  because an aligned barrier blocked the successor's channel until `P0#1` arrived; at a 2-second
+  interval the test fails when the hold is disabled. Under `AFTER_CHECKPOINT`, `P0#1` arrived first,
+  and without checkpointing the successors started after a one-second `firstCheckpointTimeout` with
+  the warning (`BigtableChangeStreamSourceHandOffITCase`). The service was not measured: the emulator
+  does not implement Change Streams, no API forces a partition split, and a run that showed no
+  inversion would prove nothing, because the race is in Flink's network path rather than in the
+  service.
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
   prove restore does not generate new initial partitions, prove many parents require only bounded neighboring coverage checks, and prove expired coordinator-held state fails unless fallback was opted in.
 - Deterministic tests cover all 2.80.0 entry and value kinds, full-match family and qualified-column
@@ -253,6 +285,14 @@ materializing the public mutation or any public entry/value/range object.
   the completion signal too. That trades a hang that restarts partitions for one that does
   nothing.
 
+- **Measure the reordering on the service before holding (#2194's first plan).** Bigtable splits
+  and merges partitions on its own schedule, so a measurement would wait an unbounded time for a
+  split on a new instance, and its only service-side premise, that a successor continues from its
+  parent's token, is the protocol itself. Decided with the maintainer on 2026-11-21.
+- **Hold the close in the reader until its own checkpoint completes.** The same reason ADR-0099
+  records for Spanner: it would need closed-but-unreported splits in the reader's checkpoint, while
+  the coordinator already sees every close and every completed checkpoint.
+
 ## Consequences
 
 Enumerator state intentionally carries an assigned ledger, unlike the bounded scan source in
@@ -278,3 +318,11 @@ coordinator's positions are those of the previous completed checkpoint. A job wi
 checkpointing keeps each close pending for up to `firstCheckpointTimeout` (10 minutes by default);
 zero keeps them pending for good, one small entry per closed partition. The split
 checkpoint format is version 2 and the enumerator state version 4; older versions still restore.
+
+Since #2194 each partition split or merge at source parallelism above 1 delays its successors until
+the next checkpoint completes, up to one checkpoint interval plus that checkpoint's duration, and
+for as long as later checkpoints keep failing once one has completed. A job without checkpointing, such
+as a bounded run, pauses once for `firstCheckpointTimeout` at its first split or merge. The order
+holds between failures and for operators that handle their input before the barrier; an unaligned
+checkpoint, an operator that stores pending elements, and a failover's replay are outside it.
+Unassigned-partition gauges count held successors.
