@@ -29,12 +29,17 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Connector-owned checkpoint format for {@link BigtableChangeStreamEnumeratorState}. */
+/**
+ * Connector-owned checkpoint format for {@link BigtableChangeStreamEnumeratorState}.
+ *
+ * <p>Version 2 added missing partitions, version 3 completed ones, and version 4 the re-read split
+ * ids; each older version still reads, without the fields it lacks.
+ */
 @Internal
 public final class BigtableChangeStreamEnumeratorStateSerializer
         implements SimpleVersionedSerializer<BigtableChangeStreamEnumeratorState> {
 
-    private static final int VERSION = 3;
+    private static final int VERSION = 4;
     private static final int INITIAL_BUFFER_SIZE = 4096;
 
     @Override
@@ -71,6 +76,10 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
         out.writeInt(completedPartitions.size());
         for (ByteStringRange completed : completedPartitions) {
             ChangeStreamPartitionSplitSerializer.writePartition(out, completed);
+        }
+        out.writeInt(state.getRereadSplitIds().size());
+        for (String splitId : state.getRereadSplitIds()) {
+            out.writeUTF(splitId);
         }
         return out.getCopyOfBuffer();
     }
@@ -137,15 +146,28 @@ public final class BigtableChangeStreamEnumeratorStateSerializer
                 completedPartitions.add(ChangeStreamPartitionSplitSerializer.readPartition(in));
             }
         }
-        return new BigtableChangeStreamEnumeratorState(
-                initialized,
-                startTime,
-                nextSplitId,
-                unassigned,
-                assigned,
-                pendingMerges,
-                missingPartitions,
-                completedPartitions);
+        List<String> rereadSplitIds = new ArrayList<>();
+        if (version >= 4) {
+            int rereadCount = ChangeStreamPartitionSplitSerializer.readCount(in, "re-read split");
+            rereadSplitIds = new ArrayList<>(Math.min(rereadCount, 1024));
+            for (int i = 0; i < rereadCount; i++) {
+                rereadSplitIds.add(in.readUTF());
+            }
+        }
+        try {
+            return new BigtableChangeStreamEnumeratorState(
+                    initialized,
+                    startTime,
+                    nextSplitId,
+                    unassigned,
+                    assigned,
+                    pendingMerges,
+                    missingPartitions,
+                    completedPartitions,
+                    rereadSplitIds);
+        } catch (IllegalArgumentException e) {
+            throw new IOException("Corrupt Bigtable change-stream enumerator state.", e);
+        }
     }
 
     private static void writeSplits(

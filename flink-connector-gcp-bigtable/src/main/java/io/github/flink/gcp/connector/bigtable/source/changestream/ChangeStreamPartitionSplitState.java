@@ -20,6 +20,8 @@ import org.apache.flink.annotation.Internal;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 
+import javax.annotation.Nullable;
+
 import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
@@ -31,6 +33,7 @@ public final class ChangeStreamPartitionSplitState {
     private final ChangeStreamPartitionSplit original;
     private List<ChangeStreamContinuationToken> tokens;
     private Instant lowWatermark;
+    @Nullable private List<PartitionTransitionEvent.Successor> closeSuccessors;
 
     public ChangeStreamPartitionSplitState(ChangeStreamPartitionSplit split) {
         this.original = split;
@@ -39,8 +42,19 @@ public final class ChangeStreamPartitionSplitState {
     }
 
     public ChangeStreamPartitionSplit toSplit() {
-        return new ChangeStreamPartitionSplit(
-                original.splitId(), original.getPartition(), tokens, lowWatermark);
+        ChangeStreamPartitionSplit split =
+                new ChangeStreamPartitionSplit(
+                        original.splitId(), original.getPartition(), tokens, lowWatermark);
+        return closeSuccessors == null ? split : split.closedWith(closeSuccessors);
+    }
+
+    /**
+     * Records the partition's {@code CloseStream}, which leaves the position where it was.
+     *
+     * @param successors the successors the record named
+     */
+    public void close(List<PartitionTransitionEvent.Successor> successors) {
+        this.closeSuccessors = successors;
     }
 
     public void advance(ChangeStreamContinuationToken token, Instant watermark) {

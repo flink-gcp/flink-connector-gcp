@@ -24,13 +24,21 @@ import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 
+import javax.annotation.Nullable;
+
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
-/** One Bigtable Change Streams partition and the exact position from which it resumes. */
+/**
+ * One Bigtable Change Streams partition and the exact position from which it resumes.
+ *
+ * <p>A split whose reader has seen the partition's {@code CloseStream} also carries the successors
+ * that record named, until the coordinator acknowledges the transition: a reader keeps such a split
+ * in its checkpointed state so that a restore can report the transition again.
+ */
 @Internal
 public final class ChangeStreamPartitionSplit implements SourceSplit {
 
@@ -38,12 +46,22 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
     private final ByteStringRange partition;
     private final List<ChangeStreamContinuationToken> continuationTokens;
     private final Instant lowWatermark;
+    @Nullable private final List<PartitionTransitionEvent.Successor> closeSuccessors;
 
     public ChangeStreamPartitionSplit(
             String splitId,
             ByteStringRange partition,
             List<ChangeStreamContinuationToken> continuationTokens,
             Instant lowWatermark) {
+        this(splitId, partition, continuationTokens, lowWatermark, null);
+    }
+
+    private ChangeStreamPartitionSplit(
+            String splitId,
+            ByteStringRange partition,
+            List<ChangeStreamContinuationToken> continuationTokens,
+            Instant lowWatermark,
+            @Nullable List<PartitionTransitionEvent.Successor> closeSuccessors) {
         this.splitId = Preconditions.checkNotNull(splitId, "splitId must not be null");
         this.partition =
                 RowRanges.copyOf(
@@ -52,6 +70,10 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
         this.continuationTokens = Collections.unmodifiableList(new ArrayList<>(continuationTokens));
         this.lowWatermark =
                 Preconditions.checkNotNull(lowWatermark, "lowWatermark must not be null");
+        this.closeSuccessors =
+                closeSuccessors == null
+                        ? null
+                        : Collections.unmodifiableList(new ArrayList<>(closeSuccessors));
     }
 
     @Override
@@ -72,8 +94,52 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
     }
 
     public ChangeStreamPartitionSplit restartAt(Instant startTime) {
+        Preconditions.checkState(!isClosed(), "a closed split %s cannot restart", splitId);
         return new ChangeStreamPartitionSplit(
                 splitId, partition, Collections.emptyList(), startTime);
+    }
+
+    /**
+     * Returns this split as its reader saw the partition's {@code CloseStream}.
+     *
+     * @param successors the successors the record named, empty for a partition that ended
+     * @return the closed split
+     */
+    public ChangeStreamPartitionSplit closedWith(
+            List<PartitionTransitionEvent.Successor> successors) {
+        Preconditions.checkNotNull(successors, "successors must not be null");
+        return new ChangeStreamPartitionSplit(
+                splitId, partition, continuationTokens, lowWatermark, successors);
+    }
+
+    /** Whether the reader has seen this partition's {@code CloseStream}. */
+    public boolean isClosed() {
+        return closeSuccessors != null;
+    }
+
+    /**
+     * Returns the transition this closed split reports.
+     *
+     * @return the event naming this split, its low watermark and its successors
+     */
+    public PartitionTransitionEvent toTransitionEvent() {
+        Preconditions.checkState(isClosed(), "split %s has not closed", splitId);
+        return new PartitionTransitionEvent(splitId, lowWatermark, closeSuccessors);
+    }
+
+    /**
+     * Returns this split without its close, at the position it closed at.
+     *
+     * @return the open split
+     */
+    public ChangeStreamPartitionSplit reopened() {
+        return new ChangeStreamPartitionSplit(splitId, partition, continuationTokens, lowWatermark);
+    }
+
+    /** Returns the successors a closed split's {@code CloseStream} named. */
+    public List<PartitionTransitionEvent.Successor> getCloseSuccessors() {
+        Preconditions.checkState(isClosed(), "split %s has not closed", splitId);
+        return closeSuccessors;
     }
 
     @Override
@@ -88,12 +154,13 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
         return splitId.equals(other.splitId)
                 && partition.equals(other.partition)
                 && continuationTokens.equals(other.continuationTokens)
-                && lowWatermark.equals(other.lowWatermark);
+                && lowWatermark.equals(other.lowWatermark)
+                && Objects.equals(closeSuccessors, other.closeSuccessors);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(splitId, partition, continuationTokens, lowWatermark);
+        return Objects.hash(splitId, partition, continuationTokens, lowWatermark, closeSuccessors);
     }
 
     @Override
@@ -106,6 +173,7 @@ public final class ChangeStreamPartitionSplit implements SourceSplit {
                 + continuationTokens.size()
                 + ", lowWatermark="
                 + lowWatermark
+                + (closeSuccessors == null ? "" : ", closed, successors=" + closeSuccessors.size())
                 + '}';
     }
 }

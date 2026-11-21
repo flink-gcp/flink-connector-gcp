@@ -1276,6 +1276,7 @@ DataStream builder.
 | `scan.resume-fallback.timestamp-millis` | Long | Epoch-millisecond instant paired with resume-fallback mode `timestamp` |
 | `scan.bounded.timestamp-millis` | Long | `boundedTimestamp(...)`; makes Change Streams bounded at the epoch-millisecond instant. Requires `scan.mode = change-stream`; the separate `scan.mode = bounded` value selects a finite scan of the current table |
 | `scan.max-concurrent-streams-per-subtask` | Integer | `maxConcurrentStreamsPerSubtask(...)`; unset keeps the builder default of two |
+| `scan.first-checkpoint-timeout` | Duration | `firstCheckpointTimeout(...)`: how long a closed partition waits for a completed checkpoint before every close is final at once; zero keeps closes pending until one completes, and a positive value must be at least 1 ms. Unset keeps the builder default of 10 minutes |
 | `scan.parallelism` | Integer | The scan's parallelism (Flink's own option) |
 
 ### Lookup

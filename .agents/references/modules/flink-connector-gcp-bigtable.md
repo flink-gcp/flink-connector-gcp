@@ -452,6 +452,27 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
   start time and a monotonic split-id counter; there is no
   Beam-style metadata table or change-stream name. A restored plan never calls
   `GenerateInitialChangeStreamPartitions` again.
+- **A close is final only once a completed checkpoint covers it** (#2206). Keep a closed split in
+  `pendingCloses` until a checkpoint whose coordinator snapshot ran after the transition completes,
+  and leave it out of the snapshot. `addSplitsBack` re-queues the *returned* split, never the
+  ledger's progressed copy, including one whose close is pending; a `PartitionsRestoredEvent`
+  from a reader's `start()` takes a pending close back. A re-read split's successors already
+  exist: its id stays in the checkpointed `rereads` until its next close is final, and that close
+  creates none. Once a close has waited `firstCheckpointTimeout` with no completed checkpoint,
+  closes are final at once until one completes. Readers, not the coordinator, check restored
+  assigned splits against retention: the ledger's copy lags one completed checkpoint. A restored
+  closed split that has expired is read again from `resumeFallback`, never reported.
+- **Every transition is acknowledged; applying one is idempotent.** A reader keeps a closed split
+  (split format v2 carries its successors) until `PartitionTransitionAckEvent`, re-sends it from
+  `start()` after a restore, and does not report `END_OF_INPUT` before every ack. The coordinator
+  acks a transition for a split it does not hold as assigned and ignores it, and acks only the
+  attempt that sent it: an unguarded `sendEventToSourceReader` to a failed attempt fails the job,
+  and a stale ack to the next attempt drops its own close. Registrations are counted per subtask
+  (Flink passes attempt numbers only under concurrent execution attempts). Readers release the
+  split output Flink creates for each restored closed split, or the source watermark stalls.
+- **Positions arrive per completed checkpoint, not per heartbeat.** Readers send the floor entry
+  of their recorded snapshots from `notifyCheckpointComplete`, and current positions at most once
+  a second only until a checkpoint completes; an assigned split takes every report.
 - **A merge target waits for coverage, not a token count.** Every `CloseStream` contributes a token
   whose own partition range names its parent; only a coalesced set covering the entire target can
   become one split with the full token list. A split is the same rule's one-token case.

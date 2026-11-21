@@ -41,7 +41,9 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChange
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
 import io.github.flink.gcp.connector.bigtable.source.changestream.MissingPartition;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionAckEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PendingMerge;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
 import org.slf4j.Logger;
@@ -57,14 +59,54 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** Coordinates Bigtable Change Streams partitions, split successors, and merge-parent tokens. */
+/**
+ * Coordinates Bigtable Change Streams partitions, split successors, and merge-parent tokens.
+ *
+ * <h2>A close is final only once a completed checkpoint covers it</h2>
+ *
+ * <p>Region failover restarts the failed tasks from the last completed checkpoint but keeps this
+ * coordinator, and Flink returns the splits it assigned since that checkpoint through {@link
+ * #addSplitsBack}. A partition whose {@code CloseStream} a reader reported therefore stays in
+ * {@code pendingCloses} until a checkpoint whose {@link #snapshotState} ran after the transition
+ * completes, as a Debezium partition is {@code FINISHED} only once its offsets are committed. A
+ * returned split whose close is pending is read again from where Flink assigned it, because its
+ * downstream rolled back with it, and so is a pending close a restored reader names in a {@link
+ * PartitionsRestoredEvent}. A snapshot leaves pending closes out: the checkpoint it belongs to
+ * already covers them.
+ *
+ * <p>The successors of a close are created when the transition arrives, so a partition read again
+ * after its close must not create them twice. Its id stays in {@code rereads}, which the checkpoint
+ * records, until its next close is final; that close creates nothing, and a successor a reader
+ * already reads keeps running. When a close has waited {@code firstCheckpointTimeout} and no
+ * checkpoint has completed since {@link #start}, which is how a job without checkpointing looks
+ * from here, every close is final at once until one does.
+ *
+ * <p><b>Every transition is acknowledged, and applying one is idempotent.</b> A reader keeps a
+ * closed split, with its successors, in its checkpointed state until the {@link
+ * PartitionTransitionAckEvent} arrives, and a restored reader sends the transition again. A restore
+ * from a checkpoint whose coordinator snapshot missed a transition therefore still receives it. A
+ * transition for a partition this ledger does not hold as assigned is acknowledged and otherwise
+ * ignored: its successors already exist.
+ *
+ * <h2>Progress reports</h2>
+ *
+ * <p>Readers report the positions a completed checkpoint recorded, and their current positions
+ * until one completes; an assigned split takes every report. The positions serve the reconciler,
+ * never a restart or a restore check: a returned split restarts from the split Flink returns, and a
+ * restored assigned split is checked against retention by the reader that restores it.
+ */
 @Internal
 public final class BigtableChangeStreamSplitEnumerator
         implements SplitEnumerator<
@@ -98,12 +140,21 @@ public final class BigtableChangeStreamSplitEnumerator
      */
     private static final Duration RETENTION_CLAMP_MARGIN = Duration.ofSeconds(60);
 
+    /** The covering checkpoint of a pending close that no snapshot has run after yet. */
+    private static final long UNCOVERED = -1L;
+
+    /** Bounds on how often a coordinator waiting for its first checkpoint looks at the clock. */
+    private static final long MIN_FIRST_CHECKPOINT_CHECK_MILLIS = 1_000L;
+
+    private static final long MAX_FIRST_CHECKPOINT_CHECK_MILLIS = 30_000L;
+
     private final SplitEnumeratorContext<ChangeStreamPartitionSplit> context;
     private final ChangeStreamCoordinatorClient client;
     private final StartPosition startPosition;
     @Nullable private final StartPosition resumeFallback;
     private final boolean bounded;
     private final boolean reconciliationEnabled;
+    private final Duration firstCheckpointTimeout;
     private final Clock clock;
     @Nullable private final BigtableChangeStreamEnumeratorState restoredState;
 
@@ -116,6 +167,21 @@ public final class BigtableChangeStreamSplitEnumerator
     private final ChangeStreamPartitionReconciler reconciler =
             new ChangeStreamPartitionReconciler();
     private final Map<Integer, ReaderState> readers = new LinkedHashMap<>();
+
+    /** Closed partitions no completed checkpoint covers yet, by split id, in close order. */
+    private final Map<String, PendingClose> pendingCloses = new LinkedHashMap<>();
+
+    /** Unassigned, assigned or pending-close splits read again after their successors exist. */
+    private final Set<String> rereads = new LinkedHashSet<>();
+
+    /** Reader attempts told that no more splits are coming. */
+    private final Set<Integer> toldNoMoreSplits = new HashSet<>();
+
+    /**
+     * How many reader attempts have registered for each subtask. An event deferred while the
+     * enumerator initializes is acknowledged only if the attempt that sent it is still the latest.
+     */
+    private final Map<Integer, Integer> readerAttempts = new HashMap<>();
 
     private final List<DeferredAction> deferredActions = new ArrayList<>();
     private final AtomicInteger unassignedMetricCount = new AtomicInteger();
@@ -135,6 +201,8 @@ public final class BigtableChangeStreamSplitEnumerator
     private Counter partitionMerges = new ThreadSafeSimpleCounter();
     private boolean initialized;
     private boolean boundedComplete;
+    private boolean checkpointCompleted;
+    private boolean closesFinalAtOnce;
     private volatile boolean closed;
     private Instant resolvedStartTime = Instant.EPOCH;
     private long nextSplitId;
@@ -153,6 +221,8 @@ public final class BigtableChangeStreamSplitEnumerator
      * @param resumeFallback where a partition whose token has expired resumes, or {@code null}
      * @param restoredState the checkpointed state, or {@code null} on a fresh start
      * @param bounded whether the stream has an end time and so finishes
+     * @param firstCheckpointTimeout how long a close waits for a completed checkpoint before every
+     *     close becomes final at once, while none has completed; zero waits indefinitely
      */
     public BigtableChangeStreamSplitEnumerator(
             SplitEnumeratorContext<ChangeStreamPartitionSplit> context,
@@ -160,7 +230,8 @@ public final class BigtableChangeStreamSplitEnumerator
             StartPosition startPosition,
             @Nullable StartPosition resumeFallback,
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
-            boolean bounded) {
+            boolean bounded,
+            Duration firstCheckpointTimeout) {
         this(
                 context,
                 client,
@@ -169,7 +240,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 restoredState,
                 bounded,
                 true,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                firstCheckpointTimeout);
     }
 
     /**
@@ -177,6 +249,7 @@ public final class BigtableChangeStreamSplitEnumerator
      *
      * <p>A unit test taking the public constructor would schedule a real periodic reconciliation
      * scan against the wall clock, which is why both are parameters here rather than knobs there.
+     * The clock also measures how long a pending close has waited for a checkpoint.
      */
     @VisibleForTesting
     BigtableChangeStreamSplitEnumerator(
@@ -187,7 +260,8 @@ public final class BigtableChangeStreamSplitEnumerator
             @Nullable BigtableChangeStreamEnumeratorState restoredState,
             boolean bounded,
             boolean reconciliationEnabled,
-            Clock clock) {
+            Clock clock,
+            Duration firstCheckpointTimeout) {
         this.context = Preconditions.checkNotNull(context, "context must not be null");
         this.client = Preconditions.checkNotNull(client, "client must not be null");
         this.startPosition =
@@ -197,12 +271,25 @@ public final class BigtableChangeStreamSplitEnumerator
         this.bounded = bounded;
         this.reconciliationEnabled = reconciliationEnabled;
         this.clock = Preconditions.checkNotNull(clock, "clock must not be null");
+        this.firstCheckpointTimeout =
+                Preconditions.checkNotNull(
+                        firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
     }
 
     @Override
     public void start() {
         registerMetrics();
         context.callAsync(this::initialize, this::onInitialized);
+        if (!firstCheckpointTimeout.isZero()) {
+            long period =
+                    Math.max(
+                            MIN_FIRST_CHECKPOINT_CHECK_MILLIS,
+                            Math.min(
+                                    firstCheckpointTimeout.toMillis() / 4,
+                                    MAX_FIRST_CHECKPOINT_CHECK_MILLIS));
+            context.callAsync(
+                    () -> null, (ignored, error) -> checkFirstCheckpoint(), period, period);
+        }
     }
 
     private Initialization initialize() throws Exception {
@@ -223,8 +310,11 @@ public final class BigtableChangeStreamSplitEnumerator
 
         List<ChangeStreamPartitionSplit> restoredUnassigned =
                 restartExpiredSplits(resolver, restoredState.getUnassignedSplits());
-        List<ChangeStreamPartitionSplit> restoredAssigned =
-                restartExpiredSplits(resolver, restoredState.getAssignedSplits());
+        // Every assigned split is in some reader's restored state, which that reader checks
+        // against retention itself, closed ones included. The ledger's copy carries only the
+        // positions of the previous completed checkpoint, so checking it here could refuse a
+        // restore whose readers are still within retention.
+        List<ChangeStreamPartitionSplit> restoredAssigned = restoredState.getAssignedSplits();
         List<PendingMerge> restoredMerges = new ArrayList<>();
         long restoredNextSplitId = restoredState.getNextSplitId();
         for (PendingMerge merge : restoredState.getPendingMerges()) {
@@ -263,7 +353,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 restoredAssigned,
                 restoredMerges,
                 restoredMissing,
-                restoredState.getCompletedPartitions());
+                restoredState.getCompletedPartitions(),
+                restoredState.getRereadSplitIds());
     }
 
     private List<ChangeStreamPartitionSplit> restartExpiredSplits(
@@ -304,6 +395,7 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         missingPartitions.addAll(initialization.missingPartitions);
         completedPartitions.addAll(initialization.completedPartitions);
+        rereads.addAll(initialization.rereads);
         if (initialization.fresh) {
             partitionsDiscovered.inc(initialization.unassigned.size());
         }
@@ -544,11 +636,30 @@ public final class BigtableChangeStreamSplitEnumerator
         addSplitsBackInitialized(splits, subtaskId);
     }
 
+    /**
+     * Takes back what a region failover returns: the splits Flink assigned since the checkpoint the
+     * failed subtask restores. That subtask's downstream rolled back to the checkpoint too, so each
+     * split restarts from where it was assigned, and a split whose close no completed checkpoint
+     * covers yet is read again.
+     */
     private void addSplitsBackInitialized(List<ChangeStreamPartitionSplit> splits, int subtaskId) {
         readers.remove(subtaskId);
+        toldNoMoreSplits.remove(subtaskId);
         for (ChangeStreamPartitionSplit split : splits) {
             if (assigned.remove(split.splitId()) != null) {
                 unassigned.add(split);
+            } else if (pendingCloses.remove(split.splitId()) != null) {
+                rereads.add(split.splitId());
+                unassigned.add(split);
+                // A bounded run that had drained has work again; readers that registered since
+                // were told nothing is coming, and the next drain tells only the ones not told.
+                boundedComplete = false;
+            } else {
+                LOG.warn(
+                        "Ignoring returned split {}, which is no longer in the ledger: either a"
+                                + " completed checkpoint covers its close, or it closed while no"
+                                + " checkpoint completed.",
+                        split.splitId());
             }
         }
         refreshUnassignedMetrics();
@@ -560,8 +671,11 @@ public final class BigtableChangeStreamSplitEnumerator
     public void addReader(int subtaskId) {
         // The drain-time broadcast reaches only readers already registered. Flink registers a
         // later reader in the context before calling this method, so replay the terminal signal.
+        // A new attempt of a subtask was told nothing yet, whatever its previous attempt was.
+        toldNoMoreSplits.remove(subtaskId);
+        readerAttempts.merge(subtaskId, 1, Integer::sum);
         if (boundedComplete) {
-            context.signalNoMoreSplits(subtaskId);
+            signalNoMoreSplits(subtaskId);
             return;
         }
         // Readers request their first partition when they start.
@@ -570,13 +684,23 @@ public final class BigtableChangeStreamSplitEnumerator
     @Override
     public void handleSourceEvent(int subtaskId, SourceEvent sourceEvent) {
         if (!initialized) {
-            deferredActions.add(new DeferredSourceEvent(subtaskId, sourceEvent));
+            deferredActions.add(
+                    new DeferredSourceEvent(subtaskId, readerAttempt(subtaskId), sourceEvent));
             return;
         }
-        handleSourceEventInitialized(subtaskId, sourceEvent);
+        handleSourceEventInitialized(subtaskId, readerAttempt(subtaskId), sourceEvent);
     }
 
-    private void handleSourceEventInitialized(int subtaskId, SourceEvent sourceEvent) {
+    private int readerAttempt(int subtaskId) {
+        return readerAttempts.getOrDefault(subtaskId, 0);
+    }
+
+    /**
+     * Applies a reader event.
+     *
+     * @param attempt the subtask's reader attempt that sent it, counted by {@link #addReader}
+     */
+    private void handleSourceEventInitialized(int subtaskId, int attempt, SourceEvent sourceEvent) {
         if (sourceEvent instanceof ReaderCapacityEvent) {
             ReaderCapacityEvent capacity = (ReaderCapacityEvent) sourceEvent;
             ReaderState reader = readers.computeIfAbsent(subtaskId, ignored -> new ReaderState());
@@ -589,17 +713,23 @@ public final class BigtableChangeStreamSplitEnumerator
             return;
         }
         if (sourceEvent instanceof PartitionProgressEvent) {
-            PartitionProgressEvent progress = (PartitionProgressEvent) sourceEvent;
-            ChangeStreamPartitionSplit current = assigned.get(progress.getSplitId());
-            if (current != null && progress.getLowWatermark().isAfter(current.getLowWatermark())) {
-                assigned.put(
-                        current.splitId(),
-                        new ChangeStreamPartitionSplit(
-                                current.splitId(),
-                                current.getPartition(),
-                                Collections.singletonList(progress.getContinuationToken()),
-                                progress.getLowWatermark()));
+            for (PartitionProgressEvent.Progress progress :
+                    ((PartitionProgressEvent) sourceEvent).getPartitions()) {
+                ChangeStreamPartitionSplit current = assigned.get(progress.getSplitId());
+                if (current != null) {
+                    assigned.put(
+                            current.splitId(),
+                            new ChangeStreamPartitionSplit(
+                                    current.splitId(),
+                                    current.getPartition(),
+                                    progress.getContinuationTokens(),
+                                    progress.getLowWatermark()));
+                }
             }
+            return;
+        }
+        if (sourceEvent instanceof PartitionsRestoredEvent) {
+            acceptRestoredPartitions((PartitionsRestoredEvent) sourceEvent);
             return;
         }
         if (!(sourceEvent instanceof PartitionTransitionEvent)) {
@@ -607,30 +737,74 @@ public final class BigtableChangeStreamSplitEnumerator
                     "Unsupported Bigtable Change Streams source event " + sourceEvent + ".");
         }
         PartitionTransitionEvent transition = (PartitionTransitionEvent) sourceEvent;
-        ChangeStreamPartitionSplit finished = assigned.remove(transition.getFinishedSplitId());
+        String splitId = transition.getFinishedSplitId();
+        acknowledgeTransition(subtaskId, attempt, splitId);
+        ChangeStreamPartitionSplit finished = assigned.remove(splitId);
         if (finished == null) {
-            LOG.warn(
-                    "Ignoring duplicate transition for finished split {} from subtask {}.",
-                    transition.getFinishedSplitId(),
+            LOG.info(
+                    "Ignoring a repeated transition for closed split {} from subtask {}; its"
+                            + " successors already exist.",
+                    splitId,
                     subtaskId);
             return;
         }
-        if (bounded && transition.getSuccessors().isEmpty()) {
-            // No successor means an OK CloseStream, which java-bigtable's own precondition proves
-            // carries no continuation token: the service ended the stream at the end time rather
-            // than at a split or a merge, so this range is the run's finished business.
-            // getPartition() already hands back an independent normalised copy.
-            completedPartitions.add(finished.getPartition());
+        if (rereads.contains(splitId)) {
+            LOG.info(
+                    "Split {} closed again after a rollback; its successors already exist.",
+                    splitId);
+        } else {
+            if (bounded && transition.getSuccessors().isEmpty()) {
+                // No successor means an OK CloseStream, which java-bigtable's own precondition
+                // proves carries no continuation token: the service ended the stream at the end
+                // time rather than at a split or a merge, so this range is the run's finished
+                // business. getPartition() already hands back an independent normalised copy.
+                completedPartitions.add(finished.getPartition());
+            }
+            for (PartitionTransitionEvent.Successor successor : transition.getSuccessors()) {
+                acceptSuccessor(
+                        successor.getPartition(),
+                        successor.getContinuationToken(),
+                        transition.getLowWatermark());
+            }
         }
-        for (PartitionTransitionEvent.Successor successor : transition.getSuccessors()) {
-            acceptSuccessor(
-                    successor.getPartition(),
-                    successor.getContinuationToken(),
-                    transition.getLowWatermark());
+        if (closesFinalAtOnce) {
+            rereads.remove(splitId);
+        } else {
+            pendingCloses.put(splitId, new PendingClose(finished, clock.millis()));
         }
         refreshUnassignedMetrics();
         serveAvailableReaders();
         signalBoundedCompletionIfDrained();
+    }
+
+    /**
+     * Acknowledges a transition to the reader attempt that sent it. An attempt that has failed
+     * since has no gateway to send to, and its restored attempt reports the transition again; a
+     * later attempt of the same subtask must not take the acknowledgement as its own, because it
+     * may close the same split again and would then drop that close from its checkpoint. Flink
+     * names the sending attempt only under concurrent execution attempts, so the enumerator counts
+     * the registrations itself.
+     */
+    private void acknowledgeTransition(int subtaskId, int attempt, String splitId) {
+        if (attempt == readerAttempt(subtaskId)
+                && context.registeredReaders().containsKey(subtaskId)) {
+            context.sendEventToSourceReader(subtaskId, new PartitionTransitionAckEvent(splitId));
+        }
+    }
+
+    /**
+     * Takes back the close of every restored split the ledger still holds as pending: its reader
+     * reads it again from the restored checkpoint.
+     */
+    private void acceptRestoredPartitions(PartitionsRestoredEvent restored) {
+        for (String splitId : restored.getSplitIds()) {
+            PendingClose pending = pendingCloses.remove(splitId);
+            if (pending == null) {
+                continue;
+            }
+            rereads.add(splitId);
+            assigned.put(splitId, pending.split);
+        }
     }
 
     private void acceptSuccessor(
@@ -736,10 +910,16 @@ public final class BigtableChangeStreamSplitEnumerator
         }
         boundedComplete = true;
         for (int subtaskId : context.registeredReaders().keySet()) {
-            context.signalNoMoreSplits(subtaskId);
+            signalNoMoreSplits(subtaskId);
         }
         readers.clear();
         return true;
+    }
+
+    private void signalNoMoreSplits(int subtaskId) {
+        if (toldNoMoreSplits.add(subtaskId)) {
+            context.signalNoMoreSplits(subtaskId);
+        }
     }
 
     @Override
@@ -748,6 +928,17 @@ public final class BigtableChangeStreamSplitEnumerator
                 initialized,
                 "Bigtable Change Streams initialization is still outstanding; retry the"
                         + " checkpoint after its deferred reader actions have been replayed.");
+        for (PendingClose pending : pendingCloses.values()) {
+            if (pending.covering == UNCOVERED) {
+                pending.covering = checkpointId;
+            }
+        }
+        List<String> checkpointedRereads = new ArrayList<>();
+        for (String splitId : rereads) {
+            if (!pendingCloses.containsKey(splitId)) {
+                checkpointedRereads.add(splitId);
+            }
+        }
         return new BigtableChangeStreamEnumeratorState(
                 initialized,
                 resolvedStartTime,
@@ -756,7 +947,71 @@ public final class BigtableChangeStreamSplitEnumerator
                 new ArrayList<>(assigned.values()),
                 pendingMergeSnapshot(),
                 missingPartitions,
-                completedPartitions);
+                completedPartitions,
+                checkpointedRereads);
+    }
+
+    /** Makes final every pending close the completed checkpoint covers. */
+    @Override
+    public void notifyCheckpointComplete(long checkpointId) {
+        if (closed) {
+            return;
+        }
+        checkpointCompleted = true;
+        if (closesFinalAtOnce) {
+            LOG.info(
+                    "Checkpoint {} completed, so a closed partition is final again only once a"
+                            + " completed checkpoint covers it.",
+                    checkpointId);
+            closesFinalAtOnce = false;
+        }
+        Iterator<Map.Entry<String, PendingClose>> pending = pendingCloses.entrySet().iterator();
+        while (pending.hasNext()) {
+            Map.Entry<String, PendingClose> close = pending.next();
+            long covering = close.getValue().covering;
+            if (covering != UNCOVERED && covering <= checkpointId) {
+                pending.remove();
+                rereads.remove(close.getKey());
+            }
+        }
+    }
+
+    /**
+     * Makes every close final at once when a close has waited {@code firstCheckpointTimeout} and no
+     * checkpoint has completed: without one, pending closes would pile up for good.
+     */
+    private void checkFirstCheckpoint() {
+        if (closed || checkpointCompleted || closesFinalAtOnce || pendingCloses.isEmpty()) {
+            return;
+        }
+        // Insertion order: a close taken back and made again moves to the end.
+        long oldest = pendingCloses.values().iterator().next().closedAtMillis;
+        if (clock.millis() - oldest < firstCheckpointTimeout.toMillis()) {
+            return;
+        }
+        LOG.warn(
+                "A closed partition has waited {} for a completed checkpoint and none has"
+                        + " completed, so a closed partition is final at once, and a region"
+                        + " failover does not read it again, until one does. Enable checkpointing,"
+                        + " or raise firstCheckpointTimeout ('scan.first-checkpoint-timeout') for a"
+                        + " job that checkpoints less often.",
+                firstCheckpointTimeout);
+        closesFinalAtOnce = true;
+        for (String splitId : pendingCloses.keySet()) {
+            rereads.remove(splitId);
+        }
+        pendingCloses.clear();
+    }
+
+    /** Returns how long a close waits for a completed checkpoint, as the source configured it. */
+    @VisibleForTesting
+    public Duration getFirstCheckpointTimeout() {
+        return firstCheckpointTimeout;
+    }
+
+    @VisibleForTesting
+    int pendingCloseCount() {
+        return pendingCloses.size();
     }
 
     private List<PendingMerge> pendingMergeSnapshot() {
@@ -839,6 +1094,7 @@ public final class BigtableChangeStreamSplitEnumerator
         private final List<PendingMerge> pendingMerges;
         private final List<MissingPartition> missingPartitions;
         private final List<ByteStringRange> completedPartitions;
+        private final List<String> rereads;
         private final boolean fresh;
 
         private Initialization(
@@ -849,6 +1105,7 @@ public final class BigtableChangeStreamSplitEnumerator
                 List<PendingMerge> pendingMerges,
                 List<MissingPartition> missingPartitions,
                 List<ByteStringRange> completedPartitions,
+                List<String> rereads,
                 boolean fresh) {
             this.startTime = startTime;
             this.nextSplitId = nextSplitId;
@@ -857,6 +1114,7 @@ public final class BigtableChangeStreamSplitEnumerator
             this.pendingMerges = pendingMerges;
             this.missingPartitions = missingPartitions;
             this.completedPartitions = completedPartitions;
+            this.rereads = rereads;
             this.fresh = fresh;
         }
 
@@ -866,6 +1124,7 @@ public final class BigtableChangeStreamSplitEnumerator
                     startTime,
                     nextSplitId,
                     partitions,
+                    Collections.emptyList(),
                     Collections.emptyList(),
                     Collections.emptyList(),
                     Collections.emptyList(),
@@ -880,7 +1139,8 @@ public final class BigtableChangeStreamSplitEnumerator
                 List<ChangeStreamPartitionSplit> assigned,
                 List<PendingMerge> pendingMerges,
                 List<MissingPartition> missingPartitions,
-                List<ByteStringRange> completedPartitions) {
+                List<ByteStringRange> completedPartitions,
+                List<String> rereads) {
             return new Initialization(
                     startTime,
                     nextSplitId,
@@ -889,7 +1149,24 @@ public final class BigtableChangeStreamSplitEnumerator
                     pendingMerges,
                     missingPartitions,
                     completedPartitions,
+                    rereads,
                     false);
+        }
+    }
+
+    /**
+     * A closed partition, when it closed, and the first checkpoint whose snapshot ran after its
+     * close.
+     */
+    private static final class PendingClose {
+
+        private final ChangeStreamPartitionSplit split;
+        private final long closedAtMillis;
+        private long covering = UNCOVERED;
+
+        private PendingClose(ChangeStreamPartitionSplit split, long closedAtMillis) {
+            this.split = split;
+            this.closedAtMillis = closedAtMillis;
         }
     }
 
@@ -911,16 +1188,18 @@ public final class BigtableChangeStreamSplitEnumerator
     private static final class DeferredSourceEvent implements DeferredAction {
 
         private final int subtaskId;
+        private final int attempt;
         private final SourceEvent sourceEvent;
 
-        private DeferredSourceEvent(int subtaskId, SourceEvent sourceEvent) {
+        private DeferredSourceEvent(int subtaskId, int attempt, SourceEvent sourceEvent) {
             this.subtaskId = subtaskId;
+            this.attempt = attempt;
             this.sourceEvent = sourceEvent;
         }
 
         @Override
         public void replay(BigtableChangeStreamSplitEnumerator enumerator) {
-            enumerator.handleSourceEventInitialized(subtaskId, sourceEvent);
+            enumerator.handleSourceEventInitialized(subtaskId, attempt, sourceEvent);
         }
     }
 

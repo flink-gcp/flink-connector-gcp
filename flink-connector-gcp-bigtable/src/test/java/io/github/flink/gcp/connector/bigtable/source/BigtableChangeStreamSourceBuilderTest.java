@@ -48,6 +48,7 @@ import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collection;
@@ -236,6 +237,29 @@ class BigtableChangeStreamSourceBuilderTest {
         } finally {
             reader.close();
         }
+    }
+
+    @Test
+    void waitsTenMinutesForAFirstCheckpointByDefaultAndBoundsTheWait() {
+        assertThat(minimal().build().getConfig().getFirstCheckpointTimeout())
+                .isEqualTo(Duration.ofMinutes(10));
+        assertThat(
+                        minimal()
+                                .firstCheckpointTimeout(Duration.ZERO)
+                                .build()
+                                .getConfig()
+                                .getFirstCheckpointTimeout())
+                .isZero();
+        assertThatThrownBy(() -> minimal().firstCheckpointTimeout(Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout must not be negative");
+        assertThatThrownBy(() -> minimal().firstCheckpointTimeout(Duration.ofNanos(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout must be at least 1 millisecond");
+        assertThatThrownBy(
+                        () -> minimal().firstCheckpointTimeout(Duration.ofSeconds(Long.MAX_VALUE)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("firstCheckpointTimeout");
     }
 
     @Test

@@ -31,12 +31,19 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Connector-owned checkpoint format for {@link ChangeStreamPartitionSplit}. */
+/**
+ * Connector-owned checkpoint format for {@link ChangeStreamPartitionSplit}.
+ *
+ * <p>Version 2 appends a closed split's successors; version 1, which has no such field, still
+ * reads. The enumerator state embeds splits through {@link #writeSplit} and {@link #readSplit},
+ * which carry no close: the coordinator never checkpoints a closed split.
+ */
 @Internal
 public final class ChangeStreamPartitionSplitSerializer
         implements SimpleVersionedSerializer<ChangeStreamPartitionSplit> {
 
-    private static final int VERSION = 1;
+    private static final int VERSION = 2;
+    private static final int VERSION_WITHOUT_CLOSE = 1;
     private static final int INITIAL_BUFFER_SIZE = 512;
 
     @Override
@@ -48,13 +55,22 @@ public final class ChangeStreamPartitionSplitSerializer
     public byte[] serialize(ChangeStreamPartitionSplit split) throws IOException {
         DataOutputSerializer out = new DataOutputSerializer(INITIAL_BUFFER_SIZE);
         writeSplit(out, split);
+        out.writeBoolean(split.isClosed());
+        if (split.isClosed()) {
+            List<PartitionTransitionEvent.Successor> successors = split.getCloseSuccessors();
+            out.writeInt(successors.size());
+            for (PartitionTransitionEvent.Successor successor : successors) {
+                writePartition(out, successor.getPartition());
+                writeBytes(out, successor.getContinuationToken().toByteString());
+            }
+        }
         return out.getCopyOfBuffer();
     }
 
     @Override
     public ChangeStreamPartitionSplit deserialize(int version, byte[] serialized)
             throws IOException {
-        if (version != VERSION) {
+        if (version != VERSION && version != VERSION_WITHOUT_CLOSE) {
             throw new IOException(
                     "Unsupported Bigtable change-stream split serialization version "
                             + version
@@ -62,7 +78,23 @@ public final class ChangeStreamPartitionSplitSerializer
                             + VERSION
                             + ".");
         }
-        return readSplit(new DataInputDeserializer(serialized));
+        DataInputDeserializer in = new DataInputDeserializer(serialized);
+        ChangeStreamPartitionSplit split = readSplit(in);
+        if (version == VERSION_WITHOUT_CLOSE || !in.readBoolean()) {
+            return split;
+        }
+        int count = readCount(in, "successor");
+        List<PartitionTransitionEvent.Successor> successors =
+                new ArrayList<>(Math.min(count, 1024));
+        for (int i = 0; i < count; i++) {
+            ByteStringRange partition = readPartition(in);
+            successors.add(
+                    new PartitionTransitionEvent.Successor(
+                            partition,
+                            ChangeStreamContinuationToken.fromByteString(
+                                    readBytes(in, "successor token"))));
+        }
+        return split.closedWith(successors);
     }
 
     static void writeSplit(DataOutputSerializer out, ChangeStreamPartitionSplit split)

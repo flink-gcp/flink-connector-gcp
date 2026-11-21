@@ -17,13 +17,14 @@ limitations under the License.
 # ADR-0097: The Bigtable Change Streams coordinator checkpoints the partition ledger
 
 - Status: Accepted
-- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17)
+- Date: 2026-08-11 (revised 2026-08-14, 2026-08-17, 2026-11-21)
 - Issues: [#35](https://github.com/flink-gcp/flink-connector-gcp/issues/35),
   [#510](https://github.com/flink-gcp/flink-connector-gcp/issues/510),
   [#532](https://github.com/flink-gcp/flink-connector-gcp/issues/532),
   [#533](https://github.com/flink-gcp/flink-connector-gcp/issues/533),
   [#586](https://github.com/flink-gcp/flink-connector-gcp/issues/586),
-  [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951)
+  [#951](https://github.com/flink-gcp/flink-connector-gcp/issues/951),
+  [#2206](https://github.com/flink-gcp/flink-connector-gcp/issues/2206)
 - Modules: bigtable (`source.changestream`)
 - Current behavior: `source.changestream.BigtableChangeStreamSplitEnumerator`
 
@@ -71,8 +72,59 @@ covered, and checkpoints them with the rest of the ledger so a restore keeps the
 continuous run records nothing: with no end time to close a stream at, a partition that disappears
 without successors is a loss rather than a completion, and must still be restarted.
 
-Initial partitions are generated only for a fresh start. A restored enumerator validates every
-checkpointed low watermark through ADR-0094 and never calls the initial-partition RPC. The source
+A close is final only once a completed checkpoint covers it (#2206), as a Debezium Spanner
+partition is `FINISHED` only once its offsets are committed. Region failover, Flink's default,
+restarts the failed tasks from the last completed checkpoint but keeps the coordinator, so the
+ledger must not have moved past what that checkpoint restores. A closed partition therefore stays
+in a pending-close index until a checkpoint whose coordinator snapshot ran after the transition
+completes, and the snapshot leaves it out, because the checkpoint it belongs to covers it. A split
+Flink returns through `addSplitsBack` restarts from the returned split, which is where Flink
+assigned it, and one whose close is pending is read again; a reader names the unclosed splits it
+restored in a `PartitionsRestoredEvent` from `start()`, and a pending close among them is taken
+back. The successors of such a partition already exist, so its id is recorded, and checkpointed,
+as a re-read until its next close is final, and that close creates no successor. A successor that
+another reader already reads keeps running beside the re-read partition.
+
+Every transition is acknowledged, and applying one is idempotent (#2206). A reader keeps a closed
+split, with the successors its `CloseStream` named, in its checkpointed state until the
+coordinator's `PartitionTransitionAckEvent` arrives, and a restored reader sends the transition
+again. Flink restores a reader-to-coordinator event sent between the coordinator's snapshot and
+the reader's barrier into neither side, and holds coordinator-to-reader events back over the same
+window, so the closed split is in the reader's snapshot of exactly the checkpoints whose
+coordinator snapshot missed its transition. A transition for a split the ledger does not hold as
+assigned is acknowledged and otherwise ignored: its successors already exist. This is Flink CDC's
+`finishedUnackedSplits`.
+
+Readers report positions per completed checkpoint rather than per heartbeat, the shape of Flink
+CDC's `IncrementalSourceReaderWithCommit`: a reader keeps the positions each snapshot recorded and
+sends the latest one at or before a completed checkpoint from `notifyCheckpointComplete`. Until
+one completes, it also sends its current positions at most once a second. An assigned split takes
+every report, older or newer. The positions serve the reconciler, not a restart or a restore
+check: an assigned split is in the restored state of the reader that holds it, and that reader
+checks it against retention, a closed one included, while the coordinator's copy carries only the
+previous completed checkpoint's position and would refuse a restore whose readers are still within
+retention. A restored closed split whose position has expired is read again from `resumeFallback`
+rather than reported, because its successors' tokens are as expired as its own position. A job
+without checkpointing never completes a checkpoint, so its pending closes would pile up: once a
+close has waited `firstCheckpointTimeout` with none completed, every close is final at once, with
+a warning, until a checkpoint completes. The wait counts from the oldest pending close rather than
+from the start, so a job whose first checkpoint is slow but whose partitions do not close in the
+meantime is not warned. A savepoint does not end that wait, because Flink reports completion only
+for a checkpoint or a stopping savepoint.
+
+The coordinator acknowledges a transition only to the reader attempt that sent it: one that has
+failed since has no gateway, and its restored attempt reports the transition again, and a later
+attempt of the same subtask may close the same split again and would drop that close from its
+checkpoint on a stale acknowledgement. Flink names the sending attempt only under concurrent
+execution attempts, so the coordinator counts reader registrations per subtask and acknowledges a
+transition deferred during its initialization only if no attempt has registered since. A reader
+releases the split output Flink creates for each restored closed split, which nothing emits to and
+which would otherwise hold the source watermark back.
+
+Initial partitions are generated only for a fresh start. A restored enumerator validates the
+checkpointed low watermarks no reader holds (unassigned splits, pending merges and missing
+partitions) through ADR-0094, and each reader validates the assigned splits it restores, closed
+ones included; the enumerator never calls the initial-partition RPC on a restore. The source
 requires an application profile id because Change Streams accepts only single-cluster routing. The
 coordinator preflights the routing policy when the principal can read it; a data-plane-only
 principal is allowed through and the reader translates the service rejection if the profile is
@@ -145,6 +197,19 @@ materializing the public mutation or any public entry/value/range object.
   missing ledger blocks the bounded completion signal, and that signal is the only thing that stops
   the scans, so the two guards deadlocked and each cycle re-emitted the mutations it had already
   delivered.
+- On `main` at `dc7d8acb`, a `MiniCluster` job keyed behind the source at parallelism 2 failed
+  once after checkpoint 1, with `P0` splitting into `C1` (5 mutations, then its end) and `C2` (30
+  mutations) after it. A downstream operator counted a record only once a checkpoint covering it
+  completed. Every one of the 35 records was lost: both successors had closed by the time Flink
+  returned them, and the coordinator dropped a returned split it no longer held as assigned. The control,
+  with a second checkpoint after `C1` closed, lost none. After #2206 both variants deliver all 35,
+  and `P0` is read again without creating its successors twice
+  (`BigtableChangeStreamSourceRegionFailoverITCase`).
+- In the same harness, a second source's coordinator held the barrier back while `P0` closed
+  between the Bigtable coordinator's snapshot and the reader's barrier. On `main` the restored job
+  read nothing for 60 seconds while it kept running: the restored ledger held `P0` as assigned and
+  no reader held it. After #2206 the restored reader reports the transition again and `C1` is read
+  (`BigtableChangeStreamSourceRestoreWindowITCase`).
 - Unit tests round-trip pending merge state, prove one token cannot release a two-parent merge,
   prove restore does not generate new initial partitions, prove many parents require only bounded neighboring coverage checks, and prove expired coordinator-held state fails unless fallback was opted in.
 - Deterministic tests cover all 2.80.0 entry and value kinds, full-match family and qualified-column
@@ -168,6 +233,19 @@ materializing the public mutation or any public entry/value/range object.
   deserializer choice.
 - **Push the filters into the service request.** `ReadChangeStream` returns complete logical
   mutations and exposes no equivalent family or qualifier predicate in the pinned client.
+- **A close final at once, with a returned closed split read again only when Flink returns it.**
+  A partition assigned before the restored checkpoint is restored into its reader rather than
+  returned, so the coordinator would not hear that it is being read again; nor could it tell a
+  re-read close from a duplicate one, and a global restore would then create its successors
+  twice. The pending close, the restored-splits event and the checkpointed re-read mark are what
+  make the second close recognisable.
+- **Recognise a repeated successor by its token.** A successor is a range, and the same range can
+  recur after another split or merge with a different token; once the successor reads, the
+  ledger no longer holds the token it started from. The re-read mark on the parent is the
+  identity that survives.
+- **Keep one progress event per heartbeat.** It sends every partition's position to the
+  JobManager every five seconds and lets the ledger run ahead of the restored checkpoint, while
+  nothing the coordinator decides needs a position newer than the last completed checkpoint.
 - **Stop reconciling once a bounded run passes its end time**, or never reconcile a bounded run at
   all. Either removes the loop without a checkpoint field, and both give up the recovery the
   reconciler exists for at exactly the point a bounded run cannot afford it: a merge close lost
@@ -192,3 +270,11 @@ older checkpoint comes back without it, which puts that run back where the loop 
 grace period rather than corrupting it.
 A tokenless restart's WARN names the four collections its gap was measured against, because the
 counter says a range was uncovered and only the ledger says by what.
+
+Since #2206 a region failover reads a partition again from where it was assigned, so records after
+the restored checkpoint can be delivered twice, as at-least-once already allowed, and a successor
+of a re-read partition can run beside it, so their relative order is not restored. The
+coordinator's positions are those of the previous completed checkpoint. A job without
+checkpointing keeps each close pending for up to `firstCheckpointTimeout` (10 minutes by default);
+zero keeps them pending for good, one small entry per closed partition. The split
+checkpoint format is version 2 and the enumerator state version 4; older versions still restore.

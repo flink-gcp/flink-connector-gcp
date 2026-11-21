@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -55,6 +56,55 @@ class ChangeStreamPartitionSplitSerializerTest {
         assertThat(restored.getContinuationTokens())
                 .extracting(ChangeStreamContinuationToken::getToken)
                 .containsExactly("left-token", "right-token");
+    }
+
+    @Test
+    void roundTripsAClosedSplitWithItsSuccessors() throws IOException {
+        ByteStringRange left = ByteStringRange.unbounded().endOpen("m");
+        ByteStringRange right = ByteStringRange.unbounded().startClosed("m");
+        ChangeStreamPartitionSplit closed =
+                new ChangeStreamPartitionSplit(
+                                "change-stream-7",
+                                ByteStringRange.unbounded(),
+                                Collections.singletonList(
+                                        TestChangeStreamTokens.token(
+                                                ByteStringRange.unbounded(), "last")),
+                                Instant.parse("2026-08-11T12:34:56Z"))
+                        .closedWith(
+                                Arrays.asList(
+                                        new PartitionTransitionEvent.Successor(
+                                                left,
+                                                TestChangeStreamTokens.token(left, "left-token")),
+                                        new PartitionTransitionEvent.Successor(
+                                                right,
+                                                TestChangeStreamTokens.token(
+                                                        right, "right-token"))));
+
+        ChangeStreamPartitionSplit restored =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(closed));
+
+        assertThat(restored).isEqualTo(closed);
+        assertThat(restored.toTransitionEvent().getSuccessors())
+                .extracting(successor -> successor.getContinuationToken().getToken())
+                .containsExactly("left-token", "right-token");
+    }
+
+    @Test
+    void readsAVersionOneSplitAsOpen() throws IOException {
+        ChangeStreamPartitionSplit split =
+                new ChangeStreamPartitionSplit(
+                        "change-stream-0",
+                        ByteStringRange.unbounded(),
+                        Collections.emptyList(),
+                        Instant.EPOCH);
+        byte[] current = serializer.serialize(split);
+        // Version 1 is version 2 without the trailing closed flag.
+        byte[] versionOne = Arrays.copyOf(current, current.length - 1);
+
+        ChangeStreamPartitionSplit restored = serializer.deserialize(1, versionOne);
+
+        assertThat(restored).isEqualTo(split);
+        assertThat(restored.isClosed()).isFalse();
     }
 
     @Test

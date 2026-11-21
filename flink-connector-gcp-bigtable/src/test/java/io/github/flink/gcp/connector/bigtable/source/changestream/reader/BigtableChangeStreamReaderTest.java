@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.core.io.InputStatus;
 import org.apache.flink.metrics.groups.SourceReaderMetricGroup;
 import org.apache.flink.metrics.testutils.MetricListener;
@@ -31,9 +32,14 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutation;
+import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplit;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionAckEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionsRestoredEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ReaderCapacityEvent;
+import io.github.flink.gcp.connector.bigtable.source.changestream.TestChangeStreamTokens;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 import io.github.flink.gcp.connector.testutils.CollectingReaderOutput;
 import io.github.flink.gcp.connector.testutils.FakeSourceReaderContext;
@@ -49,9 +55,12 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 class BigtableChangeStreamReaderTest {
 
@@ -244,6 +253,10 @@ class BigtableChangeStreamReaderTest {
 
         opener.complete(0);
 
+        // Not until the coordinator acknowledges the transition the reader keeps checkpointing.
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+        reader.handleSourceEvents(new PartitionTransitionAckEvent("closing"));
+
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
     }
 
@@ -258,6 +271,7 @@ class BigtableChangeStreamReaderTest {
 
         CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.MORE_AVAILABLE);
+        reader.handleSourceEvents(new PartitionTransitionAckEvent("closing"));
         assertThat(reader.pollNext(output)).isEqualTo(InputStatus.END_OF_INPUT);
         assertThat(context.sourceEvents()).anyMatch(PartitionTransitionEvent.class::isInstance);
     }
@@ -425,9 +439,12 @@ class BigtableChangeStreamReaderTest {
         reader.pollNext(new CollectingReaderOutput<>());
 
         assertThat(opener.openedSplitIds()).containsExactly("closing");
+        // The closed split stays in the checkpoint, as closed, until its transition is
+        // acknowledged.
         assertThat(reader.snapshotState(1L))
-                .extracting(ChangeStreamPartitionSplit::splitId)
-                .containsExactly("next");
+                .extracting(
+                        ChangeStreamPartitionSplit::splitId, ChangeStreamPartitionSplit::isClosed)
+                .containsExactly(tuple("next", false), tuple("closing", true));
 
         opener.complete(0);
         reader.pollNext(new CollectingReaderOutput<>());
@@ -544,6 +561,270 @@ class BigtableChangeStreamReaderTest {
         reader.addSplits(Collections.singletonList(split("restored")));
 
         assertThat(seen).containsExactly(fallback);
+    }
+
+    @Test
+    void aClosedSplitStaysCheckpointedUntilItsTransitionIsAcknowledged() throws Exception {
+        reader = reader(1);
+        reader.addSplits(Collections.singletonList(split("closing")));
+        reader.start();
+        opener.deliver(0, TestChangeStreamRecords.close("successor"));
+        reader.pollNext(new CollectingReaderOutput<>());
+
+        List<ChangeStreamPartitionSplit> checkpointed = reader.snapshotState(1L);
+        assertThat(checkpointed)
+                .singleElement()
+                .satisfies(split -> assertThat(split.isClosed()).isTrue());
+        assertThat(context.sourceEvents())
+                .filteredOn(PartitionTransitionEvent.class::isInstance)
+                .singleElement()
+                .satisfies(
+                        event -> {
+                            PartitionTransitionEvent transition = (PartitionTransitionEvent) event;
+                            assertThat(transition.getFinishedSplitId()).isEqualTo("closing");
+                            assertThat(transition.getSuccessors())
+                                    .isEqualTo(checkpointed.get(0).getCloseSuccessors())
+                                    .hasSize(1);
+                        });
+
+        reader.handleSourceEvents(new PartitionTransitionAckEvent("closing"));
+
+        assertThat(reader.snapshotState(2L)).isEmpty();
+    }
+
+    @Test
+    void aRestoredReaderNamesItsOpenSplitsAndReportsItsClosedOnesAgain() throws Exception {
+        ChangeStreamPartitionSplit closed =
+                split("closed")
+                        .closedWith(
+                                Collections.singletonList(
+                                        new PartitionTransitionEvent.Successor(
+                                                ByteStringRange.create("a", "z"),
+                                                TestChangeStreamTokens.token(
+                                                        ByteStringRange.create("a", "z"),
+                                                        "successor"))));
+        reader = reader(2);
+        reader.addSplits(Arrays.asList(split("open"), closed));
+
+        reader.start();
+
+        assertThat(opener.openedSplitIds()).containsExactly("open");
+        assertThat(context.sourceEvents())
+                .filteredOn(
+                        event ->
+                                event instanceof PartitionsRestoredEvent
+                                        || event instanceof PartitionTransitionEvent)
+                .satisfiesExactly(
+                        restored ->
+                                assertThat(((PartitionsRestoredEvent) restored).getSplitIds())
+                                        .containsExactly("open"),
+                        transition -> {
+                            PartitionTransitionEvent event = (PartitionTransitionEvent) transition;
+                            assertThat(event.getFinishedSplitId()).isEqualTo("closed");
+                            assertThat(event.getSuccessors())
+                                    .isEqualTo(closed.getCloseSuccessors());
+                        });
+        assertThat(reader.snapshotState(1L)).containsExactly(split("open"), closed);
+    }
+
+    @Test
+    void aFreshReaderNamesNoRestoredSplits() {
+        reader = reader(1);
+        reader.start();
+        reader.addSplits(Collections.singletonList(split("assigned")));
+
+        assertThat(context.sourceEvents()).noneMatch(PartitionsRestoredEvent.class::isInstance);
+    }
+
+    @Test
+    void reportsThePositionsTheCompletedCheckpointRecorded() throws Exception {
+        Instant watermark = Instant.parse("2026-08-13T01:00:00Z");
+        reader = reader(1, () -> 0L);
+        reader.addSplits(Collections.singletonList(split("partition")));
+        reader.start();
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+        opener.deliver(0, TestChangeStreamRecords.mutation(watermark, watermark, "first"));
+        reader.pollNext(output);
+        reader.snapshotState(1L);
+        opener.deliver(
+                0, TestChangeStreamRecords.mutation(watermark, watermark.plusSeconds(1), "second"));
+        reader.pollNext(output);
+        reader.snapshotState(3L);
+        opener.deliver(
+                0, TestChangeStreamRecords.mutation(watermark, watermark.plusSeconds(2), "third"));
+        reader.pollNext(output);
+        reader.snapshotState(4L);
+
+        // Checkpoint 2's notification stands for 1, whose snapshot it covers, once.
+        reader.notifyCheckpointComplete(2L);
+        reader.notifyCheckpointComplete(2L);
+        assertThat(progressTokens()).containsExactly("first");
+
+        // Checkpoint 4 was aborted, so its completion reports what checkpoint 3 recorded.
+        reader.notifyCheckpointAborted(4L);
+        reader.notifyCheckpointComplete(4L);
+        reader.notifyCheckpointComplete(3L);
+        assertThat(progressTokens()).containsExactly("first", "second");
+    }
+
+    @Test
+    void reportsCurrentPositionsAtMostOnceASecondUntilACheckpointCompletes() throws Exception {
+        Instant watermark = Instant.parse("2026-08-13T01:00:00Z");
+        long[] now = {0L};
+        reader = reader(1, () -> now[0]);
+        reader.addSplits(Collections.singletonList(split("partition")));
+        reader.start();
+        CollectingReaderOutput<String> output = new CollectingReaderOutput<>();
+
+        now[0] = TimeUnit.MILLISECONDS.toNanos(999);
+        opener.deliver(0, TestChangeStreamRecords.mutation(watermark, watermark, "early"));
+        reader.pollNext(output);
+        now[0] = TimeUnit.SECONDS.toNanos(1);
+        opener.deliver(0, TestChangeStreamRecords.mutation(watermark, watermark, "due"));
+        reader.pollNext(output);
+        now[0] = TimeUnit.MILLISECONDS.toNanos(1500);
+        opener.deliver(0, TestChangeStreamRecords.mutation(watermark, watermark, "throttled"));
+        reader.pollNext(output);
+        assertThat(progressTokens()).containsExactly("due");
+
+        reader.snapshotState(1L);
+        reader.notifyCheckpointComplete(1L);
+        now[0] = TimeUnit.SECONDS.toNanos(10);
+        opener.deliver(0, TestChangeStreamRecords.mutation(watermark, watermark, "after"));
+        reader.pollNext(output);
+
+        assertThat(progressTokens()).containsExactly("due", "throttled");
+    }
+
+    @Test
+    void rejectsAnEventOfAnUnknownKind() {
+        reader = reader(1);
+
+        assertThatThrownBy(() -> reader.handleSourceEvents(new SourceEvent() {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported Bigtable Change Streams reader event");
+    }
+
+    @Test
+    void aRestoredClosedSplitReleasesTheOutputFlinkCreatedForIt() throws Exception {
+        // Flink creates an output for every restored split; one nothing emits to would hold the
+        // combined watermark back for good.
+        reader = reader(1);
+        reader.addSplits(Collections.singletonList(closed(split("closed"))));
+        reader.start();
+        assertThat(reader.isAvailable()).isCompleted();
+        ReleaseRecordingOutput output = new ReleaseRecordingOutput();
+
+        reader.pollNext(output);
+        reader.pollNext(output);
+
+        assertThat(output.released).containsExactly("closed");
+    }
+
+    @Test
+    void anExpiredRestoredClosedSplitIsReadAgainFromTheFallback() throws Exception {
+        // Its successors' tokens are as expired as its own position.
+        ChangeStreamPartitionSplit restarted =
+                split("expired").restartAt(Instant.ofEpochSecond(60));
+        reader =
+                new BigtableChangeStreamReader<>(
+                        context,
+                        TableDestination.of("project", "instance", "table"),
+                        schema(),
+                        opener,
+                        (split, fallback) -> split.splitId().equals("expired") ? restarted : split,
+                        StartPosition.latest(),
+                        null,
+                        1,
+                        new BigtableChangeStreamReaderMetrics(metricGroup));
+        reader.addSplits(Collections.singletonList(closed(split("expired"))));
+
+        reader.start();
+
+        assertThat(opener.openedSplitIds()).containsExactly("expired");
+        assertThat(context.sourceEvents()).noneMatch(PartitionTransitionEvent.class::isInstance);
+        assertThat(reader.snapshotState(1L)).containsExactly(restarted);
+    }
+
+    private static ChangeStreamPartitionSplit closed(ChangeStreamPartitionSplit split) {
+        return split.closedWith(
+                Collections.singletonList(
+                        new PartitionTransitionEvent.Successor(
+                                ByteStringRange.create("a", "m"),
+                                TestChangeStreamTokens.token(
+                                        ByteStringRange.create("a", "m"), "successor"))));
+    }
+
+    /** Records which split outputs the reader released. */
+    private static final class ReleaseRecordingOutput
+            implements org.apache.flink.api.connector.source.ReaderOutput<String> {
+
+        private final CollectingReaderOutput<String> delegate = new CollectingReaderOutput<>();
+        private final List<String> released = new ArrayList<>();
+
+        @Override
+        public void collect(String record) {
+            delegate.collect(record);
+        }
+
+        @Override
+        public void collect(String record, long timestamp) {
+            delegate.collect(record, timestamp);
+        }
+
+        @Override
+        public void emitWatermark(org.apache.flink.api.common.eventtime.Watermark watermark) {
+            delegate.emitWatermark(watermark);
+        }
+
+        @Override
+        public void markIdle() {
+            delegate.markIdle();
+        }
+
+        @Override
+        public void markActive() {
+            delegate.markActive();
+        }
+
+        @Override
+        public org.apache.flink.api.connector.source.SourceOutput<String> createOutputForSplit(
+                String splitId) {
+            return delegate.createOutputForSplit(splitId);
+        }
+
+        @Override
+        public void releaseOutputForSplit(String splitId) {
+            released.add(splitId);
+        }
+    }
+
+    private List<String> progressTokens() {
+        List<String> tokens = new ArrayList<>();
+        for (SourceEvent event : context.sourceEvents()) {
+            if (event instanceof PartitionProgressEvent) {
+                for (PartitionProgressEvent.Progress progress :
+                        ((PartitionProgressEvent) event).getPartitions()) {
+                    tokens.add(progress.getContinuationTokens().get(0).getToken());
+                }
+            }
+        }
+        return tokens;
+    }
+
+    private BigtableChangeStreamReader<String> reader(int maximumStreams, LongSupplier nanoTime) {
+        return new BigtableChangeStreamReader<>(
+                context,
+                TableDestination.of("project", "instance", "table"),
+                schema(),
+                opener,
+                (split, ignored) -> split,
+                null,
+                null,
+                maximumStreams,
+                BigtableChangeStreamMutationFilter.none(),
+                new BigtableChangeStreamReaderMetrics(metricGroup),
+                nanoTime);
     }
 
     private BigtableChangeStreamReader<String> reader(int maximumStreams) {

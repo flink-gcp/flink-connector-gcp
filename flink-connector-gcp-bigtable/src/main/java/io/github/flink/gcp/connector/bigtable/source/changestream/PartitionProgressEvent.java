@@ -18,37 +18,99 @@ package io.github.flink.gcp.connector.bigtable.source.changestream;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceEvent;
+import org.apache.flink.util.Preconditions;
 
 import com.google.cloud.bigtable.data.v2.models.ChangeStreamContinuationToken;
 
+import java.io.Serializable;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
-/** Reader heartbeat progress used to keep the coordinator's recovery watermark current. */
+/**
+ * A reader's positions for the splits it reads, sent as one event per report rather than one per
+ * heartbeat.
+ *
+ * <p>A reader reports the positions a checkpoint recorded once that checkpoint completes, as Flink
+ * CDC's {@code IncrementalSourceReaderWithCommit} commits its offsets, so the coordinator's ledger
+ * never runs ahead of what a region failover restores. Until a checkpoint completes, it also
+ * reports its current positions at most once a second, so that a job that completes none still
+ * keeps the ledger near its readers.
+ */
 @Internal
 public final class PartitionProgressEvent implements SourceEvent {
 
     private static final long serialVersionUID = 1L;
 
-    private final String splitId;
-    private final ChangeStreamContinuationToken continuationToken;
-    private final Instant lowWatermark;
+    private final List<Progress> partitions;
 
-    public PartitionProgressEvent(
-            String splitId, ChangeStreamContinuationToken continuationToken, Instant lowWatermark) {
-        this.splitId = splitId;
-        this.continuationToken = continuationToken;
-        this.lowWatermark = lowWatermark;
+    public PartitionProgressEvent(List<Progress> partitions) {
+        Preconditions.checkNotNull(partitions, "partitions must not be null");
+        this.partitions = Collections.unmodifiableList(new ArrayList<>(partitions));
     }
 
-    public String getSplitId() {
-        return splitId;
+    public List<Progress> getPartitions() {
+        return partitions;
     }
 
-    public ChangeStreamContinuationToken getContinuationToken() {
-        return continuationToken;
+    @Override
+    public String toString() {
+        return "PartitionProgressEvent{partitions=" + partitions.size() + '}';
     }
 
-    public Instant getLowWatermark() {
-        return lowWatermark;
+    /** One split's position: its continuation tokens and low watermark. */
+    @Internal
+    public static final class Progress implements Serializable {
+
+        private static final long serialVersionUID = 1L;
+
+        private final String splitId;
+        private final List<ChangeStreamContinuationToken> continuationTokens;
+        private final Instant lowWatermark;
+
+        private Progress(
+                String splitId,
+                List<ChangeStreamContinuationToken> continuationTokens,
+                Instant lowWatermark) {
+            this.splitId = Preconditions.checkNotNull(splitId, "splitId must not be null");
+            this.continuationTokens =
+                    Collections.unmodifiableList(
+                            new ArrayList<>(
+                                    Preconditions.checkNotNull(
+                                            continuationTokens,
+                                            "continuationTokens must not be null")));
+            this.lowWatermark =
+                    Preconditions.checkNotNull(lowWatermark, "lowWatermark must not be null");
+        }
+
+        /** Returns the position of an unclosed split. */
+        public static Progress of(ChangeStreamPartitionSplit split) {
+            Preconditions.checkArgument(
+                    !split.isClosed(), "closed split %s has no position to report", split);
+            return new Progress(
+                    split.splitId(), split.getContinuationTokens(), split.getLowWatermark());
+        }
+
+        /** Returns the positions of unclosed splits, in order. */
+        public static List<Progress> of(List<ChangeStreamPartitionSplit> splits) {
+            List<Progress> progress = new ArrayList<>(splits.size());
+            for (ChangeStreamPartitionSplit split : splits) {
+                progress.add(of(split));
+            }
+            return progress;
+        }
+
+        public String getSplitId() {
+            return splitId;
+        }
+
+        public List<ChangeStreamContinuationToken> getContinuationTokens() {
+            return continuationTokens;
+        }
+
+        public Instant getLowWatermark() {
+            return lowWatermark;
+        }
     }
 }

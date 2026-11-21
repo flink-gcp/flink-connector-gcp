@@ -29,6 +29,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class BigtableChangeStreamEnumeratorStateSerializerTest {
 
@@ -69,7 +70,8 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
                                         watermark.minusSeconds(10))),
                         Arrays.asList(
                                 ByteStringRange.unbounded().endOpen("c"),
-                                ByteStringRange.create("d", "m")));
+                                ByteStringRange.create("d", "m")),
+                        Collections.singletonList("change-stream-3"));
         BigtableChangeStreamEnumeratorStateSerializer serializer =
                 new BigtableChangeStreamEnumeratorStateSerializer();
 
@@ -80,6 +82,85 @@ class BigtableChangeStreamEnumeratorStateSerializerTest {
         assertThat(restored.getCompletedPartitions())
                 .containsExactly(
                         ByteStringRange.unbounded().endOpen("c"), ByteStringRange.create("d", "m"));
+        assertThat(restored.getRereadSplitIds()).containsExactly("change-stream-3");
+    }
+
+    @Test
+    void restoresVersionThreeStateWithNoRereads() throws IOException {
+        ChangeStreamPartitionSplit assigned =
+                new ChangeStreamPartitionSplit(
+                        "change-stream-0",
+                        ByteStringRange.unbounded(),
+                        Collections.emptyList(),
+                        Instant.EPOCH);
+        BigtableChangeStreamEnumeratorState state =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        Instant.EPOCH,
+                        1,
+                        Collections.emptyList(),
+                        Collections.singletonList(assigned),
+                        Collections.emptyList());
+        BigtableChangeStreamEnumeratorStateSerializer serializer =
+                new BigtableChangeStreamEnumeratorStateSerializer();
+        byte[] current = serializer.serialize(state);
+        // Version 3 is version 4 without the trailing re-read count.
+        byte[] versionThree = Arrays.copyOf(current, current.length - Integer.BYTES);
+
+        BigtableChangeStreamEnumeratorState restored = serializer.deserialize(3, versionThree);
+
+        assertThat(restored).isEqualTo(state);
+        assertThat(restored.getRereadSplitIds()).isEmpty();
+    }
+
+    @Test
+    void rejectsARereadSplitOutsideTheLedger() throws IOException {
+        BigtableChangeStreamEnumeratorState state =
+                new BigtableChangeStreamEnumeratorState(
+                        true,
+                        Instant.EPOCH,
+                        1,
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        Collections.emptyList());
+        DataOutputSerializer out = new DataOutputSerializer(64);
+        out.write(new BigtableChangeStreamEnumeratorStateSerializer().serialize(state));
+        byte[] bytes = out.getCopyOfBuffer();
+        DataOutputSerializer corrupt = new DataOutputSerializer(64);
+        corrupt.write(bytes, 0, bytes.length - Integer.BYTES);
+        corrupt.writeInt(1);
+        corrupt.writeUTF("change-stream-0");
+
+        assertThatThrownBy(
+                        () ->
+                                new BigtableChangeStreamEnumeratorStateSerializer()
+                                        .deserialize(4, corrupt.getCopyOfBuffer()))
+                .isInstanceOf(IOException.class)
+                .hasRootCauseMessage(
+                        "re-read split change-stream-0 is neither unassigned nor assigned");
+    }
+
+    @Test
+    void refusesToCheckpointAClosedSplit() {
+        ChangeStreamPartitionSplit closed =
+                new ChangeStreamPartitionSplit(
+                                "change-stream-0",
+                                ByteStringRange.unbounded(),
+                                Collections.emptyList(),
+                                Instant.EPOCH)
+                        .closedWith(Collections.emptyList());
+
+        assertThatThrownBy(
+                        () ->
+                                new BigtableChangeStreamEnumeratorState(
+                                        true,
+                                        Instant.EPOCH,
+                                        1,
+                                        Collections.emptyList(),
+                                        Collections.singletonList(closed),
+                                        Collections.emptyList()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not checkpoint closed split");
     }
 
     /**

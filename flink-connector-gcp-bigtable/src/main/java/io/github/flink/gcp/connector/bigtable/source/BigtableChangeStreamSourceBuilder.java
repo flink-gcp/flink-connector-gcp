@@ -20,6 +20,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.source.StartPosition;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -34,6 +35,7 @@ import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeSt
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -53,6 +55,8 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     /** Default maximum number of open partition streams in one source subtask. */
     public static final int DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK = 2;
 
+    private static final Duration DEFAULT_FIRST_CHECKPOINT_TIMEOUT = Duration.ofMinutes(10);
+
     @Nullable private TableDestination table;
     @Nullable private BigtableChangeStreamDeserializationSchema<T> deserializer;
     @Nullable private String appProfileId;
@@ -61,6 +65,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     @Nullable private StartPosition resumeFallback;
     @Nullable private Instant boundedTimestamp;
     private int maxConcurrentStreamsPerSubtask = DEFAULT_MAX_CONCURRENT_STREAMS_PER_SUBTASK;
+    private Duration firstCheckpointTimeout = DEFAULT_FIRST_CHECKPOINT_TIMEOUT;
     private List<Pattern> familyIncludeList = Collections.emptyList();
     private List<Pattern> familyExcludeList = Collections.emptyList();
     private List<Pattern> qualifierIncludeList = Collections.emptyList();
@@ -241,6 +246,43 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     }
 
     /**
+     * Sets how long a closed partition waits for a completed checkpoint before the source logs a
+     * warning and makes every close final at once. Optional; defaults to 10 min. {@link
+     * Duration#ZERO} keeps closes pending until a checkpoint completes.
+     *
+     * <p>A partition's close is final only once a completed checkpoint covers it, so that a region
+     * failover reads a partition that closed after the restored checkpoint again. Reading never
+     * waits for it; only the coordinator's record of the close does. A job without checkpointing
+     * never completes one, so its closes would stay pending for good, one entry each. The source
+     * cannot read the job's checkpoint configuration, so it measures instead: once a close has
+     * waited this long with no checkpoint completed, every close is final at once, and a region
+     * failover does not read it again, until a checkpoint completes. A savepoint taken while the
+     * job runs does not count, because Flink reports completion to the source only for a checkpoint
+     * or a savepoint that stops the job. Raise this above the time a job's first checkpoint takes
+     * to complete.
+     *
+     * @param firstCheckpointTimeout the wait, zero or from 1 ms to {@code
+     *     Duration.ofNanos(Long.MAX_VALUE)}; zero keeps closes pending until a checkpoint completes
+     * @return this builder
+     */
+    public BigtableChangeStreamSourceBuilder<T> firstCheckpointTimeout(
+            Duration firstCheckpointTimeout) {
+        Preconditions.checkNotNull(
+                firstCheckpointTimeout, "firstCheckpointTimeout must not be null");
+        Preconditions.checkArgument(
+                !firstCheckpointTimeout.isNegative(),
+                "firstCheckpointTimeout must not be negative, but was %s",
+                firstCheckpointTimeout);
+        // The coordinator checks the wait at most once a second, and a positive value under a
+        // millisecond reads as "wait indefinitely" to anything that converts it to millis.
+        OptionChecks.checkAtLeastOneMilliOrZero(firstCheckpointTimeout, "firstCheckpointTimeout");
+        this.firstCheckpointTimeout =
+                OptionChecks.checkExpressibleInNanos(
+                        firstCheckpointTimeout, "firstCheckpointTimeout");
+        return this;
+    }
+
+    /**
      * Includes entries whose column-family names fully match at least one Java regular expression.
      *
      * <p>An empty collection disables this filter. It is mutually exclusive with {@link
@@ -388,7 +430,8 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                                         appProfileId,
                                         serviceAccountKeyFile,
                                         exportClientMetricsToCloudMonitoring),
-                        exportClientMetricsToFlink));
+                        exportClientMetricsToFlink,
+                        firstCheckpointTimeout));
     }
 
     private static List<Pattern> compilePatterns(Collection<String> patterns, String option) {

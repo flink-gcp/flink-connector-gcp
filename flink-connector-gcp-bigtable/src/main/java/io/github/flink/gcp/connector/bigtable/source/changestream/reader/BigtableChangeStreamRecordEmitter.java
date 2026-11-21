@@ -18,7 +18,6 @@ package io.github.flink.gcp.connector.bigtable.source.changestream.reader;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.connector.source.SourceOutput;
-import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.connector.base.source.reader.RecordEmitter;
 import org.apache.flink.util.Preconditions;
 
@@ -33,38 +32,38 @@ import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChange
 import io.github.flink.gcp.connector.bigtable.source.changestream.BigtableChangeStreamMutationFilter;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitionSplitState;
 import io.github.flink.gcp.connector.bigtable.source.changestream.ChangeStreamPartitions;
-import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionProgressEvent;
 import io.github.flink.gcp.connector.bigtable.source.changestream.PartitionTransitionEvent;
 import io.github.flink.gcp.connector.bigtable.source.serializer.BigtableChangeStreamDeserializationSchema;
 
 import java.util.ArrayList;
 import java.util.List;
 
-/** Emits mutations with commit timestamps and advances token/watermark state. */
+/**
+ * Emits mutations with commit timestamps and advances token/watermark state.
+ *
+ * <p>A {@code CloseStream} only records its successors on the split state; the reader reports the
+ * transition, because it keeps the closed split until the coordinator acknowledges it.
+ */
 @Internal
 public final class BigtableChangeStreamRecordEmitter<T>
         implements RecordEmitter<ChangeStreamRecord, T, ChangeStreamPartitionSplitState> {
 
     private final BigtableChangeStreamDeserializationSchema<T> deserializer;
     private final BigtableChangeStreamMutationFilter mutationFilter;
-    private final SourceReaderContext context;
     private final BigtableChangeStreamReaderMetrics metrics;
 
     public BigtableChangeStreamRecordEmitter(
             BigtableChangeStreamDeserializationSchema<T> deserializer,
-            SourceReaderContext context,
             BigtableChangeStreamReaderMetrics metrics) {
-        this(deserializer, BigtableChangeStreamMutationFilter.none(), context, metrics);
+        this(deserializer, BigtableChangeStreamMutationFilter.none(), metrics);
     }
 
     public BigtableChangeStreamRecordEmitter(
             BigtableChangeStreamDeserializationSchema<T> deserializer,
             BigtableChangeStreamMutationFilter mutationFilter,
-            SourceReaderContext context,
             BigtableChangeStreamReaderMetrics metrics) {
         this.deserializer = deserializer;
         this.mutationFilter = mutationFilter;
-        this.context = context;
         this.metrics = metrics;
     }
 
@@ -106,11 +105,6 @@ public final class BigtableChangeStreamRecordEmitter<T>
             state.advance(
                     heartbeat.getChangeStreamContinuationToken(),
                     heartbeat.getEstimatedLowWatermarkTime());
-            context.sendSourceEventToCoordinator(
-                    new PartitionProgressEvent(
-                            state.toSplit().splitId(),
-                            heartbeat.getChangeStreamContinuationToken(),
-                            heartbeat.getEstimatedLowWatermarkTime()));
             metrics.heartbeat();
             return;
         }
@@ -131,9 +125,7 @@ public final class BigtableChangeStreamRecordEmitter<T>
                         partitions.isEmpty() ? tokens.get(i).getPartition() : partitions.get(i);
                 successors.add(new PartitionTransitionEvent.Successor(target, tokens.get(i)));
             }
-            context.sendSourceEventToCoordinator(
-                    new PartitionTransitionEvent(
-                            state.toSplit().splitId(), state.getLowWatermark(), successors));
+            state.close(successors);
             return;
         }
         throw new IllegalArgumentException(

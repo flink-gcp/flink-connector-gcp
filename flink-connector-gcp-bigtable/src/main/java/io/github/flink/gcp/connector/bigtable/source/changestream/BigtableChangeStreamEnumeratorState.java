@@ -25,8 +25,10 @@ import io.github.flink.gcp.connector.bigtable.RowRanges;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /** Checkpointed coordinator state for the Bigtable Change Streams partition topology. */
 @Internal
@@ -40,6 +42,7 @@ public final class BigtableChangeStreamEnumeratorState {
     private final List<PendingMerge> pendingMerges;
     private final List<MissingPartition> missingPartitions;
     private final List<ByteStringRange> completedPartitions;
+    private final List<String> rereadSplitIds;
 
     public BigtableChangeStreamEnumeratorState(
             boolean initialized,
@@ -86,12 +89,35 @@ public final class BigtableChangeStreamEnumeratorState {
             List<PendingMerge> pendingMerges,
             List<MissingPartition> missingPartitions,
             List<ByteStringRange> completedPartitions) {
+        this(
+                initialized,
+                startTime,
+                nextSplitId,
+                unassignedSplits,
+                assignedSplits,
+                pendingMerges,
+                missingPartitions,
+                completedPartitions,
+                Collections.emptyList());
+    }
+
+    public BigtableChangeStreamEnumeratorState(
+            boolean initialized,
+            Instant startTime,
+            long nextSplitId,
+            List<ChangeStreamPartitionSplit> unassignedSplits,
+            List<ChangeStreamPartitionSplit> assignedSplits,
+            List<PendingMerge> pendingMerges,
+            List<MissingPartition> missingPartitions,
+            List<ByteStringRange> completedPartitions,
+            List<String> rereadSplitIds) {
         Preconditions.checkArgument(nextSplitId >= 0, "nextSplitId must not be negative");
         Preconditions.checkNotNull(unassignedSplits, "unassignedSplits must not be null");
         Preconditions.checkNotNull(assignedSplits, "assignedSplits must not be null");
         Preconditions.checkNotNull(pendingMerges, "pendingMerges must not be null");
         Preconditions.checkNotNull(missingPartitions, "missingPartitions must not be null");
         Preconditions.checkNotNull(completedPartitions, "completedPartitions must not be null");
+        Preconditions.checkNotNull(rereadSplitIds, "rereadSplitIds must not be null");
         Preconditions.checkArgument(
                 initialized || (unassignedSplits.isEmpty() && assignedSplits.isEmpty()),
                 "an uninitialized enumerator cannot hold partitions");
@@ -104,6 +130,28 @@ public final class BigtableChangeStreamEnumeratorState {
         this.missingPartitions = Collections.unmodifiableList(new ArrayList<>(missingPartitions));
         this.completedPartitions =
                 Collections.unmodifiableList(RowRanges.copyAll(completedPartitions));
+        Set<String> ledgerIds = new HashSet<>();
+        for (ChangeStreamPartitionSplit split : this.unassignedSplits) {
+            Preconditions.checkArgument(
+                    !split.isClosed(),
+                    "the coordinator does not checkpoint closed split %s",
+                    split);
+            ledgerIds.add(split.splitId());
+        }
+        for (ChangeStreamPartitionSplit split : this.assignedSplits) {
+            Preconditions.checkArgument(
+                    !split.isClosed(),
+                    "the coordinator does not checkpoint closed split %s",
+                    split);
+            ledgerIds.add(split.splitId());
+        }
+        for (String splitId : rereadSplitIds) {
+            Preconditions.checkArgument(
+                    ledgerIds.contains(splitId),
+                    "re-read split %s is neither unassigned nor assigned",
+                    splitId);
+        }
+        this.rereadSplitIds = Collections.unmodifiableList(new ArrayList<>(rereadSplitIds));
     }
 
     private static List<ChangeStreamPartitionSplit> immutableCopy(
@@ -152,6 +200,16 @@ public final class BigtableChangeStreamEnumeratorState {
         return RowRanges.copyAll(completedPartitions);
     }
 
+    /**
+     * Returns the unassigned or assigned splits read again after a rollback whose successors the
+     * ledger already holds, so that their next close creates none.
+     *
+     * @return the split ids, empty when no partition was rolled back past its close
+     */
+    public List<String> getRereadSplitIds() {
+        return rereadSplitIds;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -168,7 +226,8 @@ public final class BigtableChangeStreamEnumeratorState {
                 && assignedSplits.equals(other.assignedSplits)
                 && pendingMerges.equals(other.pendingMerges)
                 && missingPartitions.equals(other.missingPartitions)
-                && completedPartitions.equals(other.completedPartitions);
+                && completedPartitions.equals(other.completedPartitions)
+                && rereadSplitIds.equals(other.rereadSplitIds);
     }
 
     @Override
@@ -181,6 +240,7 @@ public final class BigtableChangeStreamEnumeratorState {
                 assignedSplits,
                 pendingMerges,
                 missingPartitions,
-                completedPartitions);
+                completedPartitions,
+                rereadSplitIds);
     }
 }
