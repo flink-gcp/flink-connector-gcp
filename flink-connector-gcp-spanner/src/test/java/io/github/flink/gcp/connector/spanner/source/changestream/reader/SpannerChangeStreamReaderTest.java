@@ -51,9 +51,12 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
@@ -286,6 +289,129 @@ class SpannerChangeStreamReaderTest {
 
         assertThat(context.sourceEvents()).isEmpty();
         assertThat(reader.snapshotState(1)).isEmpty();
+    }
+
+    @Test
+    void theOutputFlinkCreatesForARestoredFinishedSplitIsReleasedOnTheFirstPoll() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        ChangeStreamPartitionSplit finished =
+                split("a").withFinishReport(Collections.<ChildPartitionsEvent>emptyList());
+        reader.addSplits(java.util.Arrays.asList(finished, split("b")));
+        reader.start();
+        // Flink creates an output for every restored split before the reader's first poll.
+        TrackingOutput<String> output =
+                TrackingOutput.withFlinkOutputs(finished.splitId(), "change-stream-token:b");
+        assertThat(reader.isAvailable()).isDone();
+
+        assertThat(reader.pollNext(output)).isEqualTo(InputStatus.NOTHING_AVAILABLE);
+
+        assertThat(output.releasedSplits).containsExactly(finished.splitId());
+        assertThat(output.watermarks).isEmpty();
+        assertThat(reader.isAvailable()).isNotDone();
+
+        long sourceWatermark = START.toEpochMilli();
+        reader.handleSourceEvents(
+                new SpannerChangeStreamInitializationEvent(false, sourceWatermark));
+        reader.handleSourceEvents(new PartitionFinishedAckEvent(finished.splitId()));
+        reader.pollNext(output);
+
+        assertThat(output.watermarks).containsExactly(sourceWatermark);
+        assertThat(output.releasedSplits).containsExactly(finished.splitId());
+        assertThat(client.openIds()).containsExactly("change-stream-token:b");
+    }
+
+    @Test
+    void aFallbackReleasesTheOutputsOfTheRestoredSplitsItDiscards() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 2, client);
+        ChangeStreamPartitionSplit finished =
+                split("a").withFinishReport(Collections.<ChildPartitionsEvent>emptyList());
+        reader.addSplits(java.util.Arrays.asList(finished, split("b")));
+        reader.start();
+        TrackingOutput<String> output =
+                TrackingOutput.withFlinkOutputs(finished.splitId(), "change-stream-token:b");
+        reader.pollNext(output);
+        output.releasedSplits.clear();
+        // Flink waits on this future after a poll that found nothing.
+        CompletableFuture<Void> held = reader.isAvailable();
+        assertThat(held).isNotDone();
+
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true, Long.MIN_VALUE));
+
+        assertThat(held).isDone();
+        reader.pollNext(output);
+        assertThat(output.releasedSplits).containsExactly("change-stream-token:b");
+    }
+
+    @Test
+    void aReplacementUnderARestoredSplitsIdKeepsTheOutputUntilItsOwnFinish() throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 1, client);
+        ChangeStreamPartitionSplit restored =
+                ChangeStreamPartitionSplit.initial(START, null, 2_000)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        reader.addSplits(Collections.singletonList(restored));
+        reader.start();
+        TrackingOutput<String> output = TrackingOutput.withFlinkOutputs(restored.splitId());
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true, Long.MIN_VALUE));
+        assertThat(context.splitRequests()).isEqualTo(1);
+
+        // The fallback's replacement is a null-token split again, so it has the discarded one's
+        // id, and Flink hands it the output it already holds under that id.
+        ChangeStreamPartitionSplit replacement =
+                ChangeStreamPartitionSplit.initial(START.plusSeconds(10), null, 2_000);
+        output.createOutputForSplit(replacement.splitId());
+        reader.addSplits(Collections.singletonList(replacement));
+        reader.pollNext(output);
+
+        assertThat(output.releasedSplits).isEmpty();
+        assertThat(client.openIds()).containsExactly(replacement.splitId());
+
+        client.finish(replacement.splitId());
+        reader.pollNext(output);
+        reader.pollNext(output);
+
+        assertThat(output.releasedSplits).containsExactly(replacement.splitId());
+        assertThat(reader.isAvailable()).isNotDone();
+    }
+
+    @Test
+    void aQueuedReplacementUnderARestoredSplitsIdKeepsTheOutputUntilItsOwnFinish()
+            throws Exception {
+        reader =
+                new SpannerChangeStreamReader<>(
+                        context, DATABASE, new SequenceDeserializer(), 1, client);
+        ChangeStreamPartitionSplit restored =
+                ChangeStreamPartitionSplit.initial(START, null, 2_000)
+                        .withLifecycleState(PartitionLifecycleState.RUNNING);
+        reader.addSplits(Collections.singletonList(restored));
+        reader.start();
+        TrackingOutput<String> output = TrackingOutput.withFlinkOutputs(restored.splitId());
+        reader.handleSourceEvents(new SpannerChangeStreamInitializationEvent(true, Long.MIN_VALUE));
+
+        // Behind another split at capacity, the replacement waits in the queue at the next poll.
+        ChangeStreamPartitionSplit replacement =
+                ChangeStreamPartitionSplit.initial(START.plusSeconds(10), null, 2_000);
+        output.createOutputForSplit("change-stream-token:a");
+        output.createOutputForSplit(replacement.splitId());
+        reader.addSplits(java.util.Arrays.asList(split("a"), replacement));
+        reader.pollNext(output);
+
+        assertThat(output.releasedSplits).isEmpty();
+        assertThat(client.openIds()).containsExactly("change-stream-token:a");
+
+        client.finish("change-stream-token:a");
+        reader.pollNext(output);
+        client.finish(replacement.splitId());
+        reader.pollNext(output);
+        reader.pollNext(output);
+
+        assertThat(output.releasedSplits)
+                .containsExactly("change-stream-token:a", replacement.splitId());
     }
 
     @Test
@@ -1295,8 +1421,22 @@ class SpannerChangeStreamReaderTest {
         private final List<String> recordSplits = new ArrayList<>();
         private final Map<String, List<Long>> splitWatermarks = new LinkedHashMap<>();
         private final Map<String, Integer> splitIdleMarks = new LinkedHashMap<>();
+        private final List<String> releasedSplits = new ArrayList<>();
+        private final Set<String> flinkOutputs = new HashSet<>();
+        private boolean releasesOnlyHeldOutputs;
         private int mainIdleMarks;
         private RuntimeException collectFailure;
+
+        /**
+         * An output that, like Flink's under a watermark strategy, holds the outputs it created and
+         * fails on releasing one it does not hold.
+         */
+        private static <T> TrackingOutput<T> withFlinkOutputs(String... splitIds) {
+            TrackingOutput<T> output = new TrackingOutput<>();
+            output.releasesOnlyHeldOutputs = true;
+            Collections.addAll(output.flinkOutputs, splitIds);
+            return output;
+        }
 
         private void failOnCollect(RuntimeException failure) {
             collectFailure = failure;
@@ -1333,11 +1473,17 @@ class SpannerChangeStreamReaderTest {
 
         @Override
         public SourceOutput<T> createOutputForSplit(String splitId) {
+            flinkOutputs.add(splitId);
             return new TrackingSplitOutput(splitId);
         }
 
         @Override
-        public void releaseOutputForSplit(String splitId) {}
+        public void releaseOutputForSplit(String splitId) {
+            if (!flinkOutputs.remove(splitId) && releasesOnlyHeldOutputs) {
+                throw new NullPointerException("No output is held for split " + splitId + ".");
+            }
+            releasedSplits.add(splitId);
+        }
 
         private int totalIdleMarks() {
             return mainIdleMarks

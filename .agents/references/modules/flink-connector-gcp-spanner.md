@@ -290,6 +290,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   reader-to-coordinator event fails the task. The split position and watermark stop before the
   first child-partitions record, as Debezium's offset does, so a restored query meets it again. The
   fallback's discard flag lasts only until a checkpoint completes.
+- The reader releases the split output Flink creates for each restored finished split, and for
+  each restored split a fallback discards, on its next `pollNext` (#2238). It skips an id queued or
+  running again (the fallback's replacement null-token split shares the initial id), because
+  releasing an output Flink no longer holds fails the task in streaming execution (even with
+  `noWatermarks()`). The coordinator's source watermark goes through the main output, so an
+  unreleased output does not hold it back, but under a timestamp-based strategy without idleness
+  it pins the split-local watermark at `Long.MIN_VALUE`.
 - A finished parent's children wait for a checkpoint too (#2193, ADR-0099's revision): under the
   default `PartitionHandoff.AFTER_CHECKPOINT` the coordinator holds the parent until a checkpoint
   whose `snapshotState` ran after the finish completes, because the parent's last records can still

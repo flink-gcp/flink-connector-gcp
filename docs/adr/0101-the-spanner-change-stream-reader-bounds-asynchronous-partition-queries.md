@@ -17,7 +17,7 @@ limitations under the License.
 # ADR-0101: The Spanner Change Streams reader bounds asynchronous partition queries
 
 - Status: Accepted
-- Date: 2026-08-12; revised 2026-08-14, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, and by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21
+- Date: 2026-08-12; revised 2026-08-14, by [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053) on 2026-08-23, by [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141) on 2026-08-29, by [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205) on 2026-11-20, by [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204) on 2026-11-21, and by [#2238](https://github.com/flink-gcp/flink-connector-gcp/issues/2238) on 2026-11-21
 - Issues: [#222](https://github.com/flink-gcp/flink-connector-gcp/issues/222),
   [#536](https://github.com/flink-gcp/flink-connector-gcp/issues/536),
   [#535](https://github.com/flink-gcp/flink-connector-gcp/issues/535),
@@ -29,7 +29,8 @@ limitations under the License.
   [#1053](https://github.com/flink-gcp/flink-connector-gcp/issues/1053),
   [#1141](https://github.com/flink-gcp/flink-connector-gcp/issues/1141),
   [#2205](https://github.com/flink-gcp/flink-connector-gcp/issues/2205),
-  [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204)
+  [#2204](https://github.com/flink-gcp/flink-connector-gcp/issues/2204),
+  [#2238](https://github.com/flink-gcp/flink-connector-gcp/issues/2238)
 - Modules: spanner (`source`, `source.changestream.reader`)
 - Current behavior: [Change Streams source](../content/docs/connectors/datastream/spanner.md#change-streams-source)
 
@@ -97,6 +98,9 @@ This can repeat the boundary record and gives the source at-least-once delivery;
 On restore, the reader queues but does not open those splits until the coordinator has validated their positions against the effective retention.
 An explicit whole-ledger fallback tells the reader to discard that queue and request the replacement null-token split.
 A split whose query ended stays in the reader's checkpointed state until the coordinator acknowledges the finish, and a restored reader reports it again instead of opening it (ADR-0099).
+Flink creates a split output for every split a reader restores, and a query's finish is what releases one, so the reader releases on its next poll the output of each restored finished split and of each restored split a fallback discards.
+It skips a split queued or running again under the same id, such as the fallback's replacement null-token split, whose own finish releases the shared output: in streaming execution, Flink fails the task on releasing an output it no longer holds.
+An unreleased output costs a split-local output for the task attempt and, under a timestamp-based watermark strategy without idleness, holds the split-local watermark at `Long.MIN_VALUE`; the coordinator's source watermark goes through the main output and is unaffected.
 
 The enumerator counts child partitions when it first accepts them and reports scheduled-partition count, oldest scheduled-position lag, compact unfinished-ledger entries, and finished-parent proofs still needed by created children.
 Each reader reports successful query opens, currently active queries, queued assigned partitions, oldest queued-position lag, missed heartbeat intervals, and both the latest and longest waits for a non-heartbeat result.
