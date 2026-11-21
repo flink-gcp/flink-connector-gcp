@@ -75,6 +75,23 @@ class ReadClientSessionCreatorTest {
     }
 
     @Test
+    void recognizesAViewRefusalWhetherBareOrInsideTheHintCreateThrows() {
+        ApiException refusal = invalidArgument(VIEW_MESSAGE);
+
+        assertThat(ReadClientSessionCreator.refusedAsView(refusal)).isTrue();
+        assertThat(
+                        ReadClientSessionCreator.refusedAsView(
+                                new IOException(
+                                        ReadClientSessionCreator.viewHint(refusal), refusal)))
+                .isTrue();
+        assertThat(
+                        ReadClientSessionCreator.refusedAsView(
+                                new IOException(invalidArgument("Invalid row restriction"))))
+                .isFalse();
+        assertThat(ReadClientSessionCreator.refusedAsView(new IOException(VIEW_MESSAGE))).isFalse();
+    }
+
+    @Test
     void staysOffAnInvalidArgumentThatIsNotAboutANonTable() {
         assertThat(ReadClientSessionCreator.viewHint(invalidArgument("Invalid row restriction")))
                 .isNull();

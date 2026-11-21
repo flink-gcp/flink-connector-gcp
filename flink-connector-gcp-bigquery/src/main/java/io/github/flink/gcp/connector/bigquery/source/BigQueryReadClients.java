@@ -53,12 +53,14 @@ public final class BigQueryReadClients {
     private BigQueryReadClients() {}
 
     /**
-     * Creates the client the enumerator creates its read session with.
+     * Creates the client a read session is created with: the enumerator's, and a {@code bigquery}
+     * table's full lookup cache load's.
      *
      * <p>{@code CreateReadSession}'s own retry settings are left as the SDK ships them — a
-     * ten-minute budget over {@code DEADLINE_EXCEEDED} and {@code UNAVAILABLE}. That call happens
-     * once per job, on the coordinator thread, before anything has been read, and a failure there
-     * is reported immediately rather than sitting inside a fetch.
+     * ten-minute budget over {@code DEADLINE_EXCEEDED} and {@code UNAVAILABLE}. The enumerator
+     * makes that call when it plans, on a coordinator worker thread, and a full lookup cache load
+     * makes it on the loading TaskManager. Either way it comes before any of the session's rows is
+     * read, so a failure there surfaces before the first fetch rather than inside one.
      *
      * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself

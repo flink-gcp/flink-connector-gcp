@@ -68,6 +68,7 @@ public final class ReadStreamSplit implements SourceSplit {
      * @param offset how many input rows of this stream have already been consumed
      * @param avroSchemaJson the read session's Avro schema, in its JSON form
      * @param sessionExpireTime when the read session expires, or {@code null} when it is not known
+     *     or the reader is to leave it out of its failure messages
      */
     public ReadStreamSplit(
             String streamName,
@@ -97,7 +98,10 @@ public final class ReadStreamSplit implements SourceSplit {
         return avroSchemaJson;
     }
 
-    /** Returns when the read session expires, or {@code null} when it is not known. */
+    /**
+     * Returns when the read session expires, or {@code null} when it is not known or is left out of
+     * the reader's failure messages.
+     */
     @Nullable
     public Instant getSessionExpireTime() {
         return sessionExpireTime;
