@@ -278,9 +278,9 @@ PUBSUB_EXERCISE = {
     # displaced: a replacement Pod may need a new node.
     "recovery_seconds": 600,
     # From the last cohort's request to its processing observed on both
-    # inputs and a checkpoint completed after it. A restore-deduplication
-    # trial's restored job may still be working through its delayed replay
-    # cohort first.
+    # inputs and a checkpoint completed after it. Raised for the removed
+    # restore-deduplication trials, whose restored job could still be working
+    # through a delayed replay cohort; kept until the single-fault trials go.
     "after_seconds": 600,
     "measure_seconds": 60,
     # Output pulls per poll at most; an empty batch ends a poll's drain

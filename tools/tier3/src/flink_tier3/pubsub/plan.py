@@ -16,47 +16,71 @@
 import copy
 import json
 import re
-import tomllib
 from decimal import Decimal
 
 from ..bundle import package_sources
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
-from ..exercise import FAULTS
+from ..exercise import FAULTS, SEQUENCE_KIND
 from ..model import Schedule, _hourly
 from ..policy import CLEANUP_SECONDS, GAR, POD_RESOURCES, SHA, WINDOWS
 from ..workflow import render
 from .access import probe_spec
-from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges
+from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges, publications
 from .resources import ResourcePlan
-from .verdict import (
-    ADAPTIVE,
-    ADAPTIVE_MAX_OUTSTANDING,
-    ADAPTIVE_REPLAY_DELAY_MILLIS,
-    MAX_OUTSTANDING,
-    application_pods,
-    sizes,
-)
+from .verdict import application_pods, sizes
 
-TRIALS = (*FAULTS, *ADAPTIVE)
-ENTRY_POINTS = ("datastream", "table")
+TRIALS = (*FAULTS, SEQUENCE_KIND)
 WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 # When the rates behind the estimate were read from the official pricing
 # pages: the basis of the number the owner approves, not an admission deadline.
 REVIEWED_AT = "2026-10-10T00:00:00Z"
 RESERVE_USD = Decimal("1.00")
-VERSION = 6
+# Version 7 removed `entry_point` with the relay's Table entry point (#2240).
+VERSION = 7
 FIELDS = {
     "version",
     "trial",
-    "entry_point",
     "records_per_subscription",
     "restore_deduplication",
 }
+# What a single-fault trial runs: 1,000 records per subscription, with
+# restore deduplication off, as #1361 ran them.
+SINGLE_FAULT_RECORDS = 1000
+# The fault sequence's input (ADR-0204): 4,800 records per subscription, which
+# the relay reads at ten a second per subtask, 480 seconds of input at
+# parallelism two. The earlier sequence runs' inputs began 477 to 677 seconds
+# into the window, the faults delayed them by 245 to 292 seconds, and 100 to
+# 134 seconds of input had been read when the last fault came, so the input
+# outlasts the faults and the run reaches its verdict in about 20.5 to 25.6
+# minutes. It runs with restore deduplication on, so that every run also shows
+# the source's ledger suppressing nothing it should deliver.
+SEQUENCE_RECORDS = 4800
+RECORD_DELAY_MILLIS = 100
+
+
+def trial(kind):
+    """The trial a dispatch of ``kind`` runs; nothing else of it is chosen."""
+    if kind not in TRIALS:
+        raise Failure("Unknown Pub/Sub trial")
+    sequence = kind == SEQUENCE_KIND
+    return {
+        "version": VERSION,
+        "trial": kind,
+        "records_per_subscription": SEQUENCE_RECORDS
+        if sequence
+        else SINGLE_FAULT_RECORDS,
+        "restore_deduplication": sequence,
+    }
+
+
+def record_delay_millis(kind):
+    """How long the relay waits before each record of a ``kind`` trial."""
+    return RECORD_DELAY_MILLIS if kind == SEQUENCE_KIND else 0
 
 
 def validate_trial(value):
-    """Validate a trial's kind, entry point and input domain."""
+    """Validate a trial's kind and input domain."""
     if not isinstance(value, dict) or set(value) != FIELDS:
         raise Failure(f"Pub/Sub trial fields must match the version {VERSION} schema")
     if type(value["version"]) is not int or value["version"] != VERSION:
@@ -66,33 +90,17 @@ def validate_trial(value):
         raise Failure("Invalid Pub/Sub trial field: records_per_subscription")
     if value["trial"] not in TRIALS:
         raise Failure("Unknown Pub/Sub trial")
-    if value["entry_point"] not in ENTRY_POINTS:
-        raise Failure("Unknown Pub/Sub entry point")
     if type(value["restore_deduplication"]) is not bool:
         raise Failure("Invalid Pub/Sub trial field: restore_deduplication")
-    if value["trial"] in ADAPTIVE and (
-        value["restore_deduplication"] is not True
-        or value["entry_point"] != "datastream"
-    ):
-        # Each AdaptiveScheduler kind shows restore deduplication suppressing
-        # its case;
-        # with the setting off it would show only the duplicate, and the hold
-        # needs the observer chained to the source, as only the DataStream
-        # entry point chains it.
-        raise Failure(
-            "An AdaptiveScheduler Pub/Sub trial runs the DataStream entry point with"
-            " restore_deduplication = true"
-        )
 
 
 def estimate(kind):
     """Planning estimate for one trial; not a bound on bills or SDK retries.
 
     It charges the Pod slots the admission quotas hold for the whole window:
-    the application's at the Flink shape, four for a kind that runs at most
-    two TaskManagers and five for one that runs three, and the three control
-    slots at the Operator's, which is
-    at least the supervisor's, with no Spot or commitment discount. The
+    the application's at the Flink shape, four for every kind, which runs at
+    most two TaskManagers, and the three control slots at the Operator's,
+    which is at least the supervisor's, with no Spot or commitment discount. The
     reserve covers what the input domain and the window bound: Pub/Sub
     throughput, Cloud Storage operations and storage, Cloud Logging ingestion
     and the logs and evidence leaving Google Cloud, each a fraction of it at
@@ -103,41 +111,6 @@ def estimate(kind):
     ] * 3
     compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
     return compute + RESERVE_USD
-
-
-def load_trial(path):
-    """Read at most 8 KiB, refusing unknown fields and duplicate object keys."""
-
-    def pairs(items):
-        result = {}
-        for key, value in items:
-            if key in result:
-                raise ValueError("Duplicate trial field: " + key)
-            result[key] = value
-        return result
-
-    try:
-        with path.open("rb") as stream:
-            data = stream.read(8193)
-        if len(data) > 8192:
-            raise ValueError("Trial input exceeds 8 KiB")
-        result = json.loads(data, object_pairs_hook=pairs)
-        validate_trial(result)
-        return result
-    except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as error:
-        raise Failure("Invalid Pub/Sub trial proposal: " + str(error)) from error
-
-
-def load_reviewed_trial(path):
-    """Read a reviewed trial file: the same schema, as TOML beside its licence."""
-    try:
-        with path.open("rb") as stream:
-            trial = tomllib.load(stream)
-    # TOML is UTF-8 by definition; other bytes fail to decode before parsing.
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
-        raise Failure("Unreadable Pub/Sub trial file") from error
-    validate_trial(trial)
-    return trial
 
 
 def _pod(pod, role):
@@ -197,9 +170,7 @@ def input_plan(run_id, trial):
     input_bytes = sum(
         len(f"v1|{run_id}|{i}|{n}".encode()) for i in range(2) for n in range(records)
     )
-    publish_calls = 2 * sum(
-        (c["count"] + PUBLISH_BATCH - 1) // PUBLISH_BATCH for c in cohorts.values()
-    )
+    publish_calls = len(list(publications(records)))
     return {
         "subscriptions": 2,
         "records_per_subscription": records,
@@ -212,43 +183,23 @@ def input_plan(run_id, trial):
     }
 
 
-def replica_counts(kind):
-    """The TaskManager replicas the initial and recovery manifests name.
-
-    The adaptive kind runs in native mode, where the resource manager
-    releases the TaskManager a scale-in leaves idle, so both of its manifests
-    name the initial count and differ only in the parallelism override.
-    """
-    initial, recovery = sizes(kind)
-    if kind in ADAPTIVE and ADAPTIVE[kind]["scheduler"] == "adaptive":
-        return initial, initial
-    return initial, recovery
-
-
 def manifest_jobs(run_id, trial):
     """The (parallelism, job arguments) of the initial and recovery manifests.
 
     Replacement trials keep both manifests at parallelism two; a rescale trial
     changes one to two or two to one and requires restored state in the
-    upgrade phase. An AdaptiveScheduler trial's manifests run the same job:
-    a reactive kind's recovery manifest changes only the replica count, from
-    which the reactive scheduler takes the parallelism, and the adaptive
-    kind's only the job vertex's parallelism override.
+    upgrade phase. The fault sequence's recovery manifest is its savepoint
+    upgrade at two, from which the exercise patches its rescales.
     """
     validate_trial(trial)
     kind = trial["trial"]
-    adaptive = kind in ADAPTIVE
     initial, recovery = sizes(kind)
-    if adaptive:
-        steps = ((initial, "initial"), (initial, "initial"))
-    else:
-        rescale = FAULTS[kind].rescale
-        steps = (
-            (initial, "initial"),
-            (recovery, "initial" if rescale is None else "upgrade"),
-        )
+    upgraded = kind == SEQUENCE_KIND or FAULTS[kind].rescale is not None
     jobs = []
-    for parallelism, phase in steps:
+    for parallelism, phase in (
+        (initial, "initial"),
+        (recovery, "upgrade" if upgraded else "initial"),
+    ):
         jobs.append(
             (
                 parallelism,
@@ -258,15 +209,9 @@ def manifest_jobs(run_id, trial):
                     f"--records-per-subscription={trial['records_per_subscription']}",
                     f"--parallelism={parallelism}",
                     f"--require-restored={str(phase == 'upgrade').lower()}",
-                    f"--entry-point={trial['entry_point']}",
                     "--restore-deduplication="
                     + str(trial["restore_deduplication"]).lower(),
-                    "--replay-delay-millis="
-                    + str(ADAPTIVE_REPLAY_DELAY_MILLIS if adaptive else 0),
-                    "--max-outstanding-messages="
-                    + str(ADAPTIVE_MAX_OUTSTANDING if adaptive else MAX_OUTSTANDING),
-                    "--hold-after-checkpoint-millis="
-                    + str(ADAPTIVE[kind]["hold_millis"] if adaptive else 0),
+                    f"--record-delay-millis={record_delay_millis(kind)}",
                 ],
             )
         )
@@ -323,7 +268,7 @@ def prepare(
         or active_seconds != ACTIVE_SECONDS
     ):
         raise Failure(
-            "Pub/Sub proposal requires a one-hour window and 3420 supervisor seconds"
+            "Pub/Sub proposal requires a 90-minute window and 5220 supervisor seconds"
         )
     schedule = Schedule.for_window(start, end)
     planned_input = input_plan(run_id, trial)
@@ -338,15 +283,13 @@ def prepare(
         application_image=application_image,
         pubsub_trial=trial["trial"],
         pubsub_records=records,
-        pubsub_entry_point=trial["entry_point"],
         pubsub_restore_deduplication=str(trial["restore_deduplication"]).lower(),
+        pubsub_record_delay_millis=record_delay_millis(trial["trial"]),
         pubsub_probe=probe_argument(resources, schedule),
         pubsub_probe_source=probe_command()[3],
     )
     require_trial_jobs(run_id, trial, initial, recovery)
-    for application, replicas in zip(
-        (initial, recovery), replica_counts(trial["trial"])
-    ):
+    for application, replicas in zip((initial, recovery), sizes(trial["trial"])):
         metadata = application["metadata"]
         annotations = metadata.get("annotations", {})
         if (

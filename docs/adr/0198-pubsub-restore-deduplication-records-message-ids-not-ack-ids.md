@@ -95,8 +95,13 @@ Those trials left the race to chance, so [#2126] made the relay hold the first r
 A reactive scale-out, a TaskManager deleted without a grace period, and an AdaptiveScheduler scale-in that Operator 1.16.1 applied in place each restored a checkpoint whose notification had not run, from ledgers of 1,796, 2,590 and 3,268 distinct ids across two subscriptions.
 In each, the source suppressed as many redeliveries as its ledger held distinct ids, no entry expired, and the oracle found every input with no repeated processing or duplicate, including where two restored readers shared a subscription.
 
+[#2240] removed those three Tier-3 kinds and the relay's hold: proving that their case happened is the per-fault proof that [ADR-0204] declined, and they could not join its fault sequence, which runs in native mode and rescales through savepoint upgrades.
+The IT above keeps the case, and the Pub/Sub fault sequence runs with the setting on, so every such run checks that the ledger suppresses nothing the restored checkpoint did not cover; the findings keep the interpretation of the revision that produced them.
+
 [ADR-0011]: 0011-the-pubsub-source-is-flip27-streaming-pull-and-readers-checkpoint-no-splits.md
 [#2049]: https://github.com/flink-gcp/flink-connector-gcp/issues/2049
 [#2056]: https://github.com/flink-gcp/flink-connector-gcp/issues/2056
 [#2126]: https://github.com/flink-gcp/flink-connector-gcp/issues/2126
 [#2127]: https://github.com/flink-gcp/flink-connector-gcp/issues/2127
+[#2240]: https://github.com/flink-gcp/flink-connector-gcp/issues/2240
+[ADR-0204]: 0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md

@@ -49,8 +49,6 @@ from .render import RESOURCE_PLANS
 from .resource import RESOURCE_SCENARIOS
 from .spanner import trial as spanner_trial
 
-PUBSUB_TRIALS = Path("kubernetes/lifecycle/pubsub-trials")
-
 
 def trial_inputs(args):
     """Resolve the named trial and the live application digest."""
@@ -112,14 +110,12 @@ def bigquery_approval(
 
 
 def pubsub_inputs(args):
-    """Resolve the reviewed trial file and the live application digest."""
-    if not rt.RUN_ID.fullmatch(args.pubsub_trial or ""):
-        raise rt.Failure("Pub/Sub trials need a reviewed --pubsub-trial name")
+    """Resolve the trial its kind names and the live application digest."""
+    if args.pubsub_trial not in pubsub_plan.TRIALS:
+        raise rt.Failure("Pub/Sub trials need a known --pubsub-trial kind")
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure("Pub/Sub trials need a sha256 --application-digest")
-    trial = pubsub_plan.load_reviewed_trial(
-        repository.ROOT / PUBSUB_TRIALS / (args.pubsub_trial + ".toml")
-    )
+    trial = pubsub_plan.trial(args.pubsub_trial)
     return trial, rt.GAR + "pubsub-recovery@" + args.application_digest
 
 
@@ -165,7 +161,7 @@ def pubsub_approval(
 
 
 def start_pubsub(args, store):
-    """Dispatch one Pub/Sub recovery trial from its reviewed file.
+    """Dispatch one Pub/Sub recovery trial of the kind it names.
 
     Everything that can refuse without the lock does so first: the cluster's
     idle state, the image receipts, the rendering and the ConfigMap size.
@@ -912,7 +908,7 @@ def main(argv=None):
     )
     run.add_argument(
         "--pubsub-trial",
-        help=f"Pub/Sub trial: a file under {PUBSUB_TRIALS}/, without .toml",
+        help="Pub/Sub trial: " + ", ".join(pubsub_plan.TRIALS),
     )
     run.add_argument(
         "--cloudtasks-trial",

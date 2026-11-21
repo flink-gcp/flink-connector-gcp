@@ -110,7 +110,7 @@ public final class PubSubRecoveryReport {
      *
      * <p>An earlier processing is covered when its attempt's origin is below the later attempt's
      * and its epoch is below the end of its own run. A run ends at the first restart after it: the
-     * next origin above its own, since restores only move forward and a reactive restart restarts
+     * next origin above its own, since restores only move forward and a whole-job restart restarts
      * every subtask, or the same subtask's next attempt, since Flink numbers a subtask's attempts
      * upwards across restarts and so two restores of one checkpoint are two runs. A subtask a
      * scale-in removed and a later restore brought back is bounded by the origin above, not by its

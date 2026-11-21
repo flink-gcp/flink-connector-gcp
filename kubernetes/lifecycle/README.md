@@ -27,7 +27,6 @@ lifecycle/
   bigtable.cue       # Bigtable trial inputs and applications
   spanner.cue        # Spanner trial inputs and applications
   firestore.cue      # Firestore trial inputs and applications
-  pubsub-trials/     # Reviewed Pub/Sub trial files
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
@@ -93,7 +92,7 @@ The estimate is `estimated_cost` over the window for smoke, and the scenario's p
 [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) drops the estimate and its approval: a trial under it, such as BigQuery's `alo-10-sequence` beside that scenario's single-fault trials, is bounded by its one-hour time limit instead, although its proposal still carries the scenario's estimate until the last scenario moves.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
-The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run and a Pub/Sub trial end 60 minutes after admission, and a BigQuery, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.
+The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run ends 60 minutes after admission, and a BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
 A run under ADR-0204 also stops as abnormal one hour after admission if it has no verdict by then.
 
@@ -382,19 +381,8 @@ The offline `spanner-recovery` proposal is described in the [Spanner trial runbo
 The offline `firestore-recovery` proposal is described in the [Firestore trial runbook](../apps/firestore/README.md#trial-and-estimate).
 The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
 A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, or an `eo-10`, `fl-10` or `fl-10-uploader` fault trial) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
-A Pub/Sub trial is dispatched the same way from a [reviewed trial file](#reviewed-pubsub-trials), as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
+A Pub/Sub trial takes its kind and the published application digest, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
 A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
 A Bigtable trial takes its kind and the published application digest, as [Dispatch](../apps/bigtable/README.md#dispatch) describes.
 A Spanner trial takes its kind and the published application digest, as [Dispatch](../apps/spanner/README.md#dispatch) describes, and so does a Firestore trial, as [its Dispatch section](../apps/firestore/README.md#dispatch) describes.
 A Cloud Tasks, Bigtable, Spanner or Firestore dispatch can also carry a campaign, the kinds to run after its own and a repeat budget, which dispatches each next attempt once the last is idle, as the [Bigtable dispatch section](../apps/bigtable/README.md#dispatch) describes, which applies to all four.
-
-## Reviewed Pub/Sub trials
-
-A `pubsub-recovery` dispatch names one file under `kubernetes/lifecycle/pubsub-trials/`, without `.toml`, through the run workflow's `pubsub_trial` input.
-Each file holds the [offline trial schema](../apps/pubsub/README.md#offline-trial-proposal) as TOML beside the Apache licence header that apache-rat requires.
-The dispatched commit must contain the file: the workflow checks that commit out fresh, so no untracked file is there to name.
-
-The directory holds the four trials [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs once each: `jm-replacement`, `tm-replacement`, `rescale-out` and `rescale-in`, on the DataStream entry point with 1,000 records per subscription.
-It also holds the three [restore-deduplication trials](../apps/pubsub/README.md#restore-deduplication-trials) of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054), `reactive-scale-out`, `reactive-tm-kill` and `adaptive-scale-in`, each with restore deduplication on, on the DataStream entry point with 10,000 records per subscription.
-They use the version 6 schema, which carries no traffic limits; each run is dispatched only after the owner approves its [estimate](../apps/pubsub/README.md#offline-trial-proposal).
-A file under that path is a runnable trial, so the example the tests use lives in `tools/tier3/tests/fixtures/pubsub-trials/` instead, where no dispatch can name it.

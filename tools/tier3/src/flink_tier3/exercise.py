@@ -1007,13 +1007,10 @@ class RecoveryExercise:
                 return pod
         return None
 
-    def delete_pod(self, pod, role, force=False):
-        """Delete one planned Pod once; a lost response must show it going.
-
-        ``force`` deletes it without a grace period.
-        """
+    def delete_pod(self, pod, role):
+        """Delete one planned Pod once; a lost response must show it going."""
         try:
-            if self.env.kube.delete(pod, force=force) is False:
+            if self.env.kube.delete(pod) is False:
                 raise Failure(role + " disappeared before its planned deletion")
         except (ApiError, TransportError) as error:
             if isinstance(error, ApiError) and error.status not in (500, 502, 503, 504):
@@ -1598,9 +1595,15 @@ class FaultSequence:
         spec["job"]["parallelism"] = parallelism
         spec["taskManager"]["replicas"] = parallelism
         args = spec["job"]["args"]
-        if args.count("--parallelism") != 1:
+        # A separate value, as most applications take it, or `--parallelism=N`,
+        # as the Pub/Sub relay does.
+        named = [i for i, arg in enumerate(args) if arg.startswith("--parallelism=")]
+        if args.count("--parallelism") + len(named) != 1:
             raise Failure("Approved upgrade does not name its parallelism once")
-        args[args.index("--parallelism") + 1] = str(parallelism)
+        if named:
+            args[named[0]] = f"--parallelism={parallelism}"
+        else:
+            args[args.index("--parallelism") + 1] = str(parallelism)
         return spec
 
     def patch(self, app):

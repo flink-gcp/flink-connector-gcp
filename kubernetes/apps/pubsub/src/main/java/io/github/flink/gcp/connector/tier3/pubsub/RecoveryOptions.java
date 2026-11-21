@@ -33,20 +33,14 @@ final class RecoveryOptions implements Serializable {
     final int parallelism;
     final String phase;
     final boolean requireRestored;
-    final String entryPoint;
     final boolean restoreDeduplication;
-    final int replayDelayMillis;
-    final long maxOutstandingMessages;
-    final int holdAfterCheckpointMillis;
+    // How long the observer waits before each record, which paces the input the subscriptions
+    // hold: one subtask reads at most 1000 / recordDelayMillis records a second.
+    final int recordDelayMillis;
 
     RecoveryOptions(
-            String runId,
-            int records,
-            int parallelism,
-            String phase,
-            boolean requireRestored,
-            String entryPoint) {
-        this(runId, records, parallelism, phase, requireRestored, entryPoint, false, 0, 1000, 0);
+            String runId, int records, int parallelism, String phase, boolean requireRestored) {
+        this(runId, records, parallelism, phase, requireRestored, false, 0);
     }
 
     RecoveryOptions(
@@ -55,11 +49,8 @@ final class RecoveryOptions implements Serializable {
             int parallelism,
             String phase,
             boolean requireRestored,
-            String entryPoint,
             boolean restoreDeduplication,
-            int replayDelayMillis,
-            long maxOutstandingMessages,
-            int holdAfterCheckpointMillis) {
+            int recordDelayMillis) {
         if (runId == null || !runId.matches("[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?")) {
             throw new IllegalArgumentException(
                     "--run-id must be a Tier-3 label of at most 40 characters");
@@ -67,37 +58,24 @@ final class RecoveryOptions implements Serializable {
         if (records < 1 || records > 10000) {
             throw new IllegalArgumentException("--records-per-subscription must be in [1, 10000]");
         }
-        if (parallelism < 1 || parallelism > 3) {
-            throw new IllegalArgumentException("--parallelism must be in [1, 3]");
+        if (parallelism < 1 || parallelism > 2) {
+            throw new IllegalArgumentException("--parallelism must be in [1, 2]");
         }
         if (!Set.of("initial", "upgrade").contains(phase)
                 || (phase.equals("upgrade") && !requireRestored)) {
             throw new IllegalArgumentException(
                     "--phase must be initial or upgrade; upgrade requires --require-restored=true");
         }
-        if (!Set.of("datastream", "table").contains(entryPoint)) {
-            throw new IllegalArgumentException("--entry-point must be datastream or table");
-        }
-        if (replayDelayMillis < 0 || replayDelayMillis > 1000) {
-            throw new IllegalArgumentException("--replay-delay-millis must be in [0, 1000]");
-        }
-        if (maxOutstandingMessages < 1 || maxOutstandingMessages > 100000) {
-            throw new IllegalArgumentException("--max-outstanding-messages must be in [1, 100000]");
-        }
-        if (holdAfterCheckpointMillis < 0 || holdAfterCheckpointMillis > 600000) {
-            throw new IllegalArgumentException(
-                    "--hold-after-checkpoint-millis must be in [0, 600000]");
+        if (recordDelayMillis < 0 || recordDelayMillis > 1000) {
+            throw new IllegalArgumentException("--record-delay-millis must be in [0, 1000]");
         }
         this.runId = runId;
         this.records = records;
         this.parallelism = parallelism;
         this.phase = phase;
         this.requireRestored = requireRestored;
-        this.entryPoint = entryPoint;
         this.restoreDeduplication = restoreDeduplication;
-        this.replayDelayMillis = replayDelayMillis;
-        this.maxOutstandingMessages = maxOutstandingMessages;
-        this.holdAfterCheckpointMillis = holdAfterCheckpointMillis;
+        this.recordDelayMillis = recordDelayMillis;
     }
 
     static RecoveryOptions parse(String[] args) {
@@ -109,11 +87,8 @@ final class RecoveryOptions implements Serializable {
                         "parallelism",
                         "phase",
                         "require-restored",
-                        "entry-point",
                         "restore-deduplication",
-                        "replay-delay-millis",
-                        "max-outstanding-messages",
-                        "hold-after-checkpoint-millis");
+                        "record-delay-millis");
         for (String arg : args) {
             int split = arg.indexOf('=');
             if (!arg.startsWith("--")
@@ -139,11 +114,8 @@ final class RecoveryOptions implements Serializable {
                 Integer.parseInt(values.getOrDefault("parallelism", "1")),
                 values.getOrDefault("phase", "initial"),
                 Boolean.parseBoolean(restored),
-                values.getOrDefault("entry-point", "datastream"),
                 Boolean.parseBoolean(deduplication),
-                Integer.parseInt(values.getOrDefault("replay-delay-millis", "0")),
-                Long.parseLong(values.getOrDefault("max-outstanding-messages", "1000")),
-                Integer.parseInt(values.getOrDefault("hold-after-checkpoint-millis", "0")));
+                Integer.parseInt(values.getOrDefault("record-delay-millis", "0")));
     }
 
     String input(int index) {
@@ -155,17 +127,6 @@ final class RecoveryOptions implements Serializable {
 
     String output() {
         return "t3-" + runId + "-out";
-    }
-
-    /**
-     * Whether a tagged input belongs to the replay cohort, the middle third of each input's
-     * sequence domain, split as the supervisor splits it: at {@code floor(records / 3)} and {@code
-     * floor(2 * records / 3)}.
-     */
-    boolean inReplayCohort(String taggedInput) {
-        String[] fields = taggedInput.split("\\|", -1);
-        int sequence = Integer.parseInt(fields[3]);
-        return records / 3 <= sequence && sequence < 2 * records / 3;
     }
 
     String identity() {

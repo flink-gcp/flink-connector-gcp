@@ -253,7 +253,7 @@ class World:
         self.upgrade_at = self.clock()
         return current
 
-    def delete(self, value, force=False):
+    def delete(self, value):
         component = value["metadata"].get("labels", {}).get("component")
         if value["kind"] == "Pod" and component in ("jobmanager", "taskmanager"):
             self.calls.append(("failover", self.clock()))
@@ -261,7 +261,7 @@ class World:
             self.failover_at = self.clock()
             self.failover_kind = component
             self.deleted = value["metadata"]["name"]
-        return self.original_delete(value, force)
+        return self.original_delete(value)
 
     def request(self, method, path, *args, **kwargs):
         # The measurement collector reads the job plan, the sink's metric ids

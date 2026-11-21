@@ -161,10 +161,10 @@ def admitting(prepared, monkeypatch):
 
     delete = kube.delete
 
-    def deleted(value, force=False):
+    def deleted(value):
         if value["kind"] == "Pod" and value["metadata"]["name"].endswith("-probe"):
             events.append(("probe", "deleted"))
-        return delete(value, force)
+        return delete(value)
 
     monkeypatch.setattr(kube, "create", created)
     monkeypatch.setattr(kube, "logs", logs)
@@ -574,14 +574,14 @@ def test_the_application_waits_until_the_probe_pod_is_gone(admitting, monkeypatc
     delete, create = kube.delete, kube.create
     terminating = []
 
-    def slow_delete(value, force=False):
+    def slow_delete(value):
         if value["kind"] == "Pod" and value["metadata"]["name"].endswith("-probe"):
             current = kube.get("Pod", PUBSUB, value["metadata"]["name"])
             current["metadata"]["deletionTimestamp"] = "2026-09-21T00:00:00Z"
             kube.put(current)
             terminating.append(value)
             return True
-        return delete(value, force)
+        return delete(value)
 
     def created(manifest, dry_run=False, before_repeat=None):
         if manifest["kind"] == "FlinkDeployment" and not dry_run:
@@ -766,9 +766,9 @@ def test_a_stopped_supervisor_waits_for_the_runner_before_deleting(
     delete = kube.delete
     order = []
 
-    def deleted(value, force=False):
+    def deleted(value):
         order.append(("delete", value["kind"]))
-        return delete(value, force)
+        return delete(value)
 
     monkeypatch.setattr(kube, "delete", deleted)
     original = a.observer.sleep
@@ -844,9 +844,9 @@ def test_a_stopped_supervisor_leaves_the_application_until_the_runner_released(
     delete = kube.delete
     order = []
 
-    def deleted(value, force=False):
+    def deleted(value):
         order.append(("delete", value["kind"]))
-        return delete(value, force)
+        return delete(value)
 
     monkeypatch.setattr(kube, "delete", deleted)
     original = a.observer.sleep

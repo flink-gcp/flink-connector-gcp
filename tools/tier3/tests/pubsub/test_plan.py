@@ -16,23 +16,19 @@
 import copy
 import json
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
-from flink_tier3 import lifecycle
 from flink_tier3 import render as command
 from flink_tier3.common import Failure
 from flink_tier3.model import validate_approval
 from flink_tier3.pubsub import plan
-from flink_tier3.pubsub.verdict import ADAPTIVE
 
 
 @pytest.fixture
 def trial():
     return {
-        "version": 6,
+        "version": 7,
         "trial": "rescale-out",
-        "entry_point": "table",
         "records_per_subscription": 1000,
         "restore_deduplication": False,
     }
@@ -47,8 +43,8 @@ def inputs(trial, monkeypatch):
         "run_id": "proposal-1361",
         "nonce": "a" * 32,
         "started_at": "2026-09-21T00:00:00Z",
-        "expires_at": "2026-09-21T01:00:00Z",
-        "active_seconds": 3420,
+        "expires_at": "2026-09-21T01:30:00Z",
+        "active_seconds": 5220,
         "revision": "b" * 40,
         "application_image": plan.GAR + "pubsub-recovery@sha256:" + "c" * 64,
         "trial": trial,
@@ -73,7 +69,6 @@ def renderer(monkeypatch):
         }
 
     def application(run_id, nonce, expiry, options, parallelism, phase, replicas=None):
-        adaptive = options["pubsub_trial"] in ADAPTIVE
         replicas = parallelism if replicas is None else replicas
         spec = {
             "image": options["application_image"],
@@ -86,17 +81,10 @@ def renderer(monkeypatch):
                     f"--records-per-subscription={options['pubsub_records']}",
                     f"--parallelism={parallelism}",
                     f"--require-restored={str(phase == 'upgrade').lower()}",
-                    f"--entry-point={options['pubsub_entry_point']}",
                     "--restore-deduplication="
                     + options["pubsub_restore_deduplication"],
-                    f"--replay-delay-millis={100 if adaptive else 0}",
-                    f"--max-outstanding-messages={100000 if adaptive else 1000}",
-                    "--hold-after-checkpoint-millis="
-                    + str(
-                        ADAPTIVE[options["pubsub_trial"]]["hold_millis"]
-                        if adaptive
-                        else 0
-                    ),
+                    "--record-delay-millis="
+                    + str(options["pubsub_record_delay_millis"]),
                 ],
             },
         }
@@ -123,48 +111,22 @@ def renderer(monkeypatch):
     def render(run_id, nonce, expiry, seconds, **options):
         calls.append((run_id, nonce, expiry, seconds, options))
         kind = options["pubsub_trial"]
-        if kind in ADAPTIVE and ADAPTIVE[kind]["scheduler"] == "adaptive":
-            # Native mode; the recovery manifest adds only the override.
-            sizes = ADAPTIVE[kind]
-            initial = application(
-                run_id, nonce, expiry, options, sizes["initial"], "initial"
-            )
-            initial["spec"]["flinkConfiguration"] = {"jobmanager.scheduler": "adaptive"}
-            recovery = copy.deepcopy(initial)
-            recovery["spec"]["flinkConfiguration"][
-                "pipeline.jobvertex-parallelism-overrides"
-            ] = f"1fc1e910bda7a08a74f8b1a434d3e9b9:{sizes['recovery']}"
-        elif kind in ADAPTIVE:
-            sizes = ADAPTIVE[kind]
-            initial = application(
-                run_id, nonce, expiry, options, sizes["initial"], "initial"
-            )
-            recovery = application(
-                run_id,
-                nonce,
-                expiry,
-                options,
-                sizes["initial"],
-                "initial",
-                sizes["recovery"],
-            )
-        else:
-            initial = application(
-                run_id,
-                nonce,
-                expiry,
-                options,
-                1 if kind == "rescale-out" else 2,
-                "initial",
-            )
-            recovery = application(
-                run_id,
-                nonce,
-                expiry,
-                options,
-                1 if kind == "rescale-in" else 2,
-                "upgrade" if kind.startswith("rescale-") else "initial",
-            )
+        initial = application(
+            run_id,
+            nonce,
+            expiry,
+            options,
+            1 if kind == "rescale-out" else 2,
+            "initial",
+        )
+        recovery = application(
+            run_id,
+            nonce,
+            expiry,
+            options,
+            1 if kind == "rescale-in" else 2,
+            "initial" if kind.endswith("-replacement") else "upgrade",
+        )
         supervisor = pod("supervisor")
         supervisor["containers"][0]["image"] = (
             plan.GAR + "lifecycle-tools@sha256:" + "9" * 64
@@ -230,9 +192,6 @@ def renderer(monkeypatch):
 def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
     """The dispatch and actor tests stand on it, so it must pass as the CUE does."""
     inputs["trial"]["trial"] = kind
-    if kind in ADAPTIVE:
-        # An AdaptiveScheduler kind runs only on the DataStream entry point, with the setting on.
-        inputs["trial"].update(entry_point="datastream", restore_deduplication=True)
     proposal = plan.prepare(**inputs)["proposal"]
     assert proposal["approved"] is False
     assert renderer[0][4]["pubsub_trial"] == kind
@@ -245,29 +204,19 @@ def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
         ("tm-replacement", (2, "initial"), (2, "initial")),
         ("rescale-out", (1, "initial"), (2, "upgrade")),
         ("rescale-in", (2, "initial"), (1, "upgrade")),
-        # An AdaptiveScheduler kind runs one job; only the TaskManagers or the
-        # parallelism override change.
-        ("reactive-scale-out", (2, "initial"), (2, "initial")),
-        ("reactive-tm-kill", (3, "initial"), (3, "initial")),
-        ("adaptive-scale-in", (3, "initial"), (3, "initial")),
+        # The sequence's recovery manifest is its savepoint upgrade at two.
+        ("sequence", (2, "initial"), (2, "upgrade")),
     ],
 )
 @pytest.mark.parametrize("deduplication", [False, True])
 def test_the_trial_fixes_each_manifests_job(
     trial, kind, initial, recovery, deduplication
 ):
-    adaptive = kind in ADAPTIVE
-    entry_point = "datastream" if adaptive else "table"
     trial.update(
         trial=kind,
-        entry_point=entry_point,
         records_per_subscription=40,
         restore_deduplication=deduplication,
     )
-    if adaptive and not deduplication:
-        with pytest.raises(Failure, match="restore_deduplication = true"):
-            plan.manifest_jobs("run-1430", trial)
-        return
     jobs = plan.manifest_jobs("run-1430", trial)
     assert jobs == tuple(
         (
@@ -278,12 +227,9 @@ def test_the_trial_fixes_each_manifests_job(
                 "--records-per-subscription=40",
                 f"--parallelism={parallelism}",
                 f"--require-restored={str(phase == 'upgrade').lower()}",
-                f"--entry-point={entry_point}",
                 f"--restore-deduplication={str(deduplication).lower()}",
-                f"--replay-delay-millis={100 if adaptive else 0}",
-                f"--max-outstanding-messages={100000 if adaptive else 1000}",
-                "--hold-after-checkpoint-millis="
-                + str(ADAPTIVE[kind]["hold_millis"] if adaptive else 0),
+                # Only the sequence paces its input.
+                f"--record-delay-millis={100 if kind == 'sequence' else 0}",
             ],
         )
         for parallelism, phase in (initial, recovery)
@@ -295,9 +241,6 @@ def test_rendered_manifests_run_the_trial_they_were_rendered_for(
     inputs, renderer, kind
 ):
     inputs["trial"]["trial"] = kind
-    if kind in ADAPTIVE:
-        # An AdaptiveScheduler kind runs only on the DataStream entry point, with the setting on.
-        inputs["trial"].update(entry_point="datastream", restore_deduplication=True)
     rendered = plan.prepare(**inputs)
     plan.require_trial_jobs(
         inputs["run_id"],
@@ -329,7 +272,6 @@ def _tamper(job, change):
             "--records-per-subscription": lambda: "999",
             "--parallelism": lambda: str(3 - int(value)),
             "--require-restored": lambda: "false" if value == "true" else "true",
-            "--entry-point": lambda: "datastream",
         }[flag]()
         job["args"][index] = flag + "=" + flipped
 
@@ -343,7 +285,6 @@ def _tamper(job, change):
         "--records-per-subscription",
         "--parallelism",
         "--require-restored",
-        "--entry-point",
         "parallelism",
         "parallelism-bool",
         "dropped",
@@ -378,9 +319,12 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         ("version", 1),
         ("version", 2),
         ("trial", "combined"),
-        ("entry_point", "sql"),
-        ("entry_point", "Table"),
-        ("entry_point", None),
+        # The AdaptiveScheduler kinds of #2054 are gone (#2240).
+        ("trial", "reactive-scale-out"),
+        ("trial", "adaptive-scale-in"),
+        # Version 7 removed the entry point with the Table relay (#2240).
+        ("version", 6),
+        ("entry_point", "datastream"),
         ("trial", None),
         ("records_per_subscription", 1),
         ("records_per_subscription", 2),
@@ -419,8 +363,8 @@ def test_the_planned_pass_publishes_each_cohort_in_one_batch(trial):
         ("application_image", plan.GAR + "smoke@sha256:" + "c" * 64),
         ("expires_at", "2026-09-21T01:00:01Z"),
         ("started_at", "2026-09-21T00:00:00.500Z"),
-        ("active_seconds", 3420.0),
-        ("active_seconds", 3600),
+        ("active_seconds", 5220.0),
+        ("active_seconds", 5400),
     ],
 )
 def test_invalid_identity_or_window_refused(inputs, field, value):
@@ -429,47 +373,10 @@ def test_invalid_identity_or_window_refused(inputs, field, value):
         plan.prepare(**inputs)
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "{}",
-        "[]",
-        "{",
-    ],
-)
-def test_strict_file_input(tmp_path, text):
-    path = tmp_path / "trial.json"
-    path.write_text(text)
-    with pytest.raises(Failure):
-        plan.load_trial(path)
-
-
-def test_duplicate_keys_and_size_guard_on_otherwise_valid_input(trial, tmp_path):
-    path = tmp_path / "trial.json"
-    valid = json.dumps(trial)
-    # The exact limit remains readable, so a rejected file is not malformed JSON.
-    path.write_text(valid.ljust(8192))
-    assert plan.load_trial(path) == trial
-    for text, reason in (
-        ('{"version": 1, ' + valid[1:], "Duplicate trial field: version"),
-        (
-            valid.replace('"trial":', '"trial": "jm-replacement", "trial":'),
-            "Duplicate trial field: trial",
-        ),
-        (valid.ljust(8193), "Trial input exceeds 8 KiB"),
-    ):
-        path.write_text(text)
-        with pytest.raises(Failure, match=reason):
-            plan.load_trial(path)
-
-
-def test_missing_unknown_fields_and_file(trial, tmp_path):
-    with pytest.raises(Failure):
-        plan.load_trial(tmp_path / "missing.json")
+def test_missing_and_unknown_fields(trial):
     for candidate in (
         {**trial, "approved": True},
         {k: v for k, v in trial.items() if k != "version"},
-        {k: v for k, v in trial.items() if k != "entry_point"},
     ):
         with pytest.raises(Failure):
             plan.validate_trial(candidate)
@@ -477,26 +384,7 @@ def test_missing_unknown_fields_and_file(trial, tmp_path):
         validate_approval({"scenario": "pubsub-recovery", "version": 4})
 
 
-def test_nested_json_is_a_trial_error(tmp_path, monkeypatch):
-    path = tmp_path / "trial.json"
-    path.write_text("[" * 4000 + "]" * 4000)
-    # Python versions differ in the C decoder's nesting limit.
-    with pytest.raises(Failure):
-        plan.load_trial(path)
-
-    def recursion_limit(*args, **kwargs):
-        raise RecursionError("decoder nesting limit")
-
-    monkeypatch.setattr(plan.json, "loads", recursion_limit)
-    with pytest.raises(
-        Failure, match="Invalid Pub/Sub trial proposal: decoder nesting limit"
-    ):
-        plan.load_trial(path)
-
-
-def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, capsys):
-    path = tmp_path / "trial.json"
-    path.write_text(json.dumps(trial))
+def test_cli_routes_pubsub_without_authentication(monkeypatch, capsys):
     calls = []
 
     def prepare(**kwargs):
@@ -514,18 +402,18 @@ def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, 
         "--started-at",
         "2026-09-21T00:00:00Z",
         "--expires-at",
-        "2026-09-21T01:00:00Z",
+        "2026-09-21T01:30:00Z",
         "--active-seconds",
-        "3420",
+        "5220",
         "--revision",
         "b" * 40,
         "--application-image",
         "synthetic",
-        "--trial-file",
-        str(path),
+        "--pubsub-trial",
+        "sequence",
     ]
     command.main(arguments)
-    assert calls[0]["trial"] == trial
+    assert calls[0]["trial"] == plan.trial("sequence")
     assert json.loads(capsys.readouterr().out)["proposal"]["approved"] is False
     for extra in (["--expression", "application"],):
         with pytest.raises(SystemExit):
@@ -533,81 +421,20 @@ def test_cli_routes_pubsub_without_authentication(trial, tmp_path, monkeypatch, 
     assert len(calls) == 1
 
 
-REVIEWED = Path(__file__).parents[4] / lifecycle.PUBSUB_TRIALS
-# The tests' example trial, kept where no dispatch can name it.
-FIXTURE_TRIALS = Path(__file__).parent.parent / "fixtures/pubsub-trials"
-
-
-def test_every_reviewed_trial_file_is_a_valid_trial():
-    """A dispatch names one of these; a broken one would refuse only on the day."""
-    from flink_tier3.policy import RUN_ID
-
-    if not REVIEWED.exists():
-        return
-    for path in sorted(REVIEWED.iterdir()):
-        assert path.suffix == ".toml", path
-        assert RUN_ID.fullmatch(path.stem), path
-        # The one-pass feasibility check dispatch reaches only after the cluster.
-        plan.input_plan("feasibility", plan.load_reviewed_trial(path))
-
-
-def test_no_reviewed_trial_is_the_tests_example():
-    """Admission would run any file there, and the example authorizes nothing."""
-    assert not (REVIEWED / "example-wiring.toml").exists()
-    example = plan.load_reviewed_trial(FIXTURE_TRIALS / "example-wiring.toml")
-    for path in REVIEWED.glob("*.toml"):
-        assert plan.load_reviewed_trial(path) != example, path
-
-
-def test_the_example_trial_is_the_one_the_tests_use(trial):
-    assert plan.load_reviewed_trial(FIXTURE_TRIALS / "example-wiring.toml") == trial
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "",
-        "version = 4\nversion = 4\n",
-        "version = ",
-        # JSON is the offline renderer's format, not a reviewed file's.
-        '{"version": 4}',
-    ],
-)
-def test_a_reviewed_trial_file_that_does_not_parse_or_validate_is_refused(
-    tmp_path, text
-):
-    path = tmp_path / "trial.toml"
-    path.write_text(text)
-    with pytest.raises(Failure):
-        plan.load_reviewed_trial(path)
-
-
-def test_a_missing_reviewed_trial_file_is_refused(tmp_path):
-    with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
-        plan.load_reviewed_trial(tmp_path / "missing.toml")
-
-
-def test_a_reviewed_trial_file_that_is_not_utf8_is_refused(tmp_path):
-    path = tmp_path / "trial.toml"
-    path.write_bytes(b"# caf\xe9\nversion = 4\n")
-    with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
-        plan.load_reviewed_trial(path)
-
-
 @pytest.mark.parametrize(
     "kind, slots",
     [
         ("jm-replacement", 7),
         ("rescale-out", 7),
-        # Three TaskManagers take one application slot more.
-        ("reactive-scale-out", 8),
-        ("reactive-tm-kill", 8),
-        ("adaptive-scale-in", 8),
+        ("sequence", 7),
     ],
 )
 def test_the_estimate_charges_the_pod_budget_and_the_reserve(kind, slots):
-    # Pods of 1 vCPU, 2 GiB and 1 GiB for the hour, at 0.141 each, and the reserve.
-    assert plan.estimate(kind) == slots * Decimal("0.141") + Decimal("1.00")
+    # Pods of 1 vCPU, 2 GiB and 1 GiB for the 90 minutes, at 0.141 an hour
+    # each, and the reserve.
+    assert plan.estimate(kind) == slots * Decimal("0.141") * Decimal("1.5") + Decimal(
+        "1.00"
+    )
 
 
 def test_the_estimate_charges_each_slot_at_its_own_shape(monkeypatch):
@@ -616,16 +443,45 @@ def test_the_estimate_charges_each_slot_at_its_own_shape(monkeypatch):
     shapes = dict(plan.POD_RESOURCES)
     shapes["operator"] = {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}
     monkeypatch.setattr(plan, "POD_RESOURCES", shapes)
-    # Three control slots at 0.10 more each.
-    assert plan.estimate("jm-replacement") == Decimal("0.987") + 3 * Decimal(
-        "0.10"
-    ) + Decimal("1.00")
+    # Three control slots at 0.10 more an hour each, for the 90 minutes.
+    assert plan.estimate("jm-replacement") == (
+        Decimal("0.987") + 3 * Decimal("0.10")
+    ) * Decimal("1.5") + Decimal("1.00")
 
 
 def test_the_proposal_carries_the_estimate_and_its_basis(inputs, renderer):
     assert plan.prepare(**inputs)["proposal"]["cost"] == {
         "kind": "planning-estimate",
-        "usd": "1.987",
+        "usd": "2.4805",
         "reviewed_at": "2026-10-10T00:00:00Z",
         "other_reserve_usd": "1.00",
     }
+
+
+@pytest.mark.parametrize("kind", plan.TRIALS)
+def test_a_kind_names_its_whole_trial(kind):
+    """A dispatch chooses only the kind; the plan fixes everything else."""
+    trial = plan.trial(kind)
+    plan.validate_trial(trial)
+    sequence = kind == "sequence"
+    assert trial == {
+        "version": plan.VERSION,
+        "trial": kind,
+        "records_per_subscription": 4800 if sequence else 1000,
+        "restore_deduplication": sequence,
+    }
+    # The one-pass feasibility check dispatch reaches only after the cluster.
+    plan.input_plan("feasibility", trial)
+
+
+def test_an_unknown_kind_names_no_trial():
+    for kind in ("none", "reactive-tm-kill", "", None):
+        with pytest.raises(Failure, match="Unknown Pub/Sub trial"):
+            plan.trial(kind)
+
+
+def test_the_sequence_input_is_three_cohorts_of_whole_batches():
+    planned = plan.input_plan("proposal-2240", plan.trial("sequence"))
+    assert planned["messages"] == 9600
+    # 1,600 a cohort on each input: two publications of 1,000 and 600.
+    assert planned["publish_calls"] == 12

@@ -20,9 +20,13 @@ import re
 import uuid
 
 from ..common import Failure
+from .handoff import AnsweredTransient
 from .messages import _encode, cohort_ranges
 
 PHASES = ("initial", "upgrade")
+# The event a refused pull writes, naming its batch, which the offline
+# analysis reads so that it does not count the batch as lost.
+RETRIED_EVENT = "pubsub-pull-retried"
 DECIMAL = re.compile(r"0|[1-9][0-9]{0,4}")
 # A checkpoint id; Java's long bounds its value.
 CHECKPOINT = re.compile(r"0|[1-9][0-9]{0,18}")
@@ -117,8 +121,14 @@ class OutputCollector:
     two collectors collide only if their prefixes do.
     """
 
-    def __init__(self, handoff):
+    def __init__(self, handoff, *, retry_answered=False):
         self.handoff, self.env = handoff, handoff.env
+        # Whether a pull the service answered with a transient error is left
+        # for the next round rather than stopping the run (ADR-0204).
+        self.retry_answered = retry_answered
+        # The batches such a pull named, which hold an intent and no
+        # observations.
+        self.retried = []
         self.run_id = self.env.approval.run_id
         self.records = handoff.records_per_subscription
         self.prefix = "out-" + uuid.uuid4().hex[:8]
@@ -131,10 +141,15 @@ class OutputCollector:
         self.lines = []
 
     def pull(self):
-        """Pull one batch; return how many messages it received."""
+        """Pull one batch; return how many messages it received, or None if retried."""
         self.batches += 1
         batch = f"{self.prefix}-{self.batches:06d}"
-        result = self.handoff.collect(batch)
+        try:
+            result = self.handoff.collect(batch, retry_answered=self.retry_answered)
+        except AnsweredTransient as error:
+            self.retried.append(batch)
+            self.env.emit(RETRIED_EVENT, {"batch": batch, "cause": str(error)})
+            return None
         at = self.env.clock()
         lines = result["tsv"].splitlines()
         if len(lines) != result["count"]:
@@ -153,16 +168,16 @@ class OutputCollector:
 
         A short batch does not end the round, because an immediate pull
         answers with what is ready at once; an empty one does not prove the
-        subscription empty either.
+        subscription empty either. A pull left for the next round ends it.
         """
         if type(max_pulls) is not int or max_pulls < 1:
             raise ValueError("A drain needs at least one pull")
         received = 0
         for _ in range(max_pulls):
             count = self.pull()
-            received += count
-            if count == 0:
+            if not count:
                 break
+            received += count
         return received
 
     def processed(self, input_index, start, count, *, where=None):

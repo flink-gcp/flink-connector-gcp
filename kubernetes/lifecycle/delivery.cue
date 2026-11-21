@@ -41,12 +41,12 @@ packageSources: {
 	[=~"^[a-z0-9_]+(/[a-z0-9_]+)*[.](py|toml)$"]: string
 }
 
-// A smoke run and a Pub/Sub trial have a 60-minute window, a BigQuery, Cloud Tasks, Bigtable,
-// Spanner or Firestore trial a 90-minute one.
+// A smoke run has a 60-minute window, and a BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner or
+// Firestore trial a 90-minute one.
 activeSeconds: <={
 	"smoke":               3420
-	"pubsub-recovery":     3420
 	"bigquery-recovery":   5220
+	"pubsub-recovery":     5220
 	"cloudtasks-recovery": 5220
 	"bigtable-recovery":   5220
 	"spanner-recovery":    5220

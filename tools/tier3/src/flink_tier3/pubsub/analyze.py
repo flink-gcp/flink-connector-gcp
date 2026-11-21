@@ -22,6 +22,8 @@ coverage from the measurement events, and the replay cohort's output from the
 attempts the fault started from the observations themselves. Whether the
 boundary held and which observations were collected before the fault are read
 from the record; rebuilding them outright would re-run the exercise offline.
+A fault-sequence run (ADR-0204) is decided by the rebuilt oracle and the
+receipts' check of every output alone, and lists the faults it injected.
 
 It imports nothing from ``analyze``, which calls it.
 """
@@ -30,6 +32,7 @@ import json
 import re
 
 from ..common import Failure
+from ..exercise import SEQUENCE_KIND
 from ..recovery_analysis import (
     measurements,
     missing_samples,
@@ -38,12 +41,13 @@ from ..recovery_analysis import (
     verdict_problems,
 )
 from .messages import COHORTS, cohort_ranges, output_line
-from .oracle import COUNTERS, reconcile
-from .output import parse
+from .oracle import COUNTERS, input_ids, published_ids, reconcile
+from .output import RETRIED_EVENT, parse
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
+    sequence_verdict,
     started_by_fault,
     summarize,
     verdict,
@@ -89,7 +93,7 @@ def _published(directory, records):
     API binds returned IDs to request order, so the receipt alone maps each ID
     to its input. An intent without a receipt is an unknown outcome.
     """
-    published, malformed = {}, 0
+    receipts, malformed = [], 0
     for path in sorted((directory / "input").glob("*/*/intent.json")):
         index, interval = path.parent.parent.name, path.parent.name
         start, _, count = interval.partition("-")
@@ -105,18 +109,16 @@ def _published(directory, records):
         response = _read(path.parent / "response.json")
         if response is None:
             continue
-        span = range(int(start), int(start) + int(count))
         ids = response.get("messageIds") if isinstance(response, dict) else None
         if (
             not isinstance(ids, list)
-            or len(ids) != len(span)
+            or len(ids) != int(count)
             or not all(isinstance(value, str) and value for value in ids)
         ):
             malformed += 1
             continue
-        for sequence, message_id in zip(span, ids, strict=True):
-            published.setdefault((int(index), sequence), []).append(message_id)
-    return published, malformed
+        receipts.append((int(index), int(start), ids))
+    return published_ids(receipts), malformed
 
 
 def _derived(received):
@@ -133,7 +135,33 @@ def _derived(received):
     return lines
 
 
-def _collected(directory):
+def _sequence(approval):
+    """Whether the approved trial is the fault sequence (ADR-0204)."""
+    trial = approval.get("pubsub_trial")
+    return isinstance(trial, dict) and trial.get("trial") == SEQUENCE_KIND
+
+
+def _retried(run, record):
+    """The batches a refused pull left without observations.
+
+    Each is named by a `pubsub-pull-retried` event when it happens, so a run
+    that stopped before its record listed them still names them; a completed
+    record lists them too.
+    """
+    batches = [
+        (event.get("payload") or {}).get("batch")
+        for event in run.events_of(RETRIED_EVENT)
+    ]
+    listed = record.get("retried_pulls")
+    batches += listed if isinstance(listed, list) else []
+    return {
+        (match.group(1), int(match.group(2)))
+        for batch in batches
+        if isinstance(batch, str) and (match := BATCH.fullmatch(batch))
+    }
+
+
+def _collected(directory, retried=frozenset()):
     """Every collected line in batch order, what fails, and what is lost.
 
     Batch IDs carry the collector's prefix and a zero-padded counter from 1,
@@ -141,9 +169,12 @@ def _collected(directory):
     counter is a batch the download lost. A batch is the collector's once its
     `observations.json` was saved; its lines are derived again from the saved
     pull response, as the collector derived them, so that file's content is
-    not read.
+    not read. A batch whose pull was refused holds no observations, and is
+    not lost.
     """
     lines, malformed, counters = [], 0, {}
+    for prefix, number in retried:
+        counters.setdefault(prefix, set()).add(number)
     for path in sorted((directory / "output").glob("*/observations.json")):
         match = BATCH.fullmatch(path.parent.name)
         response = _read(path.parent / "response.json")
@@ -154,7 +185,7 @@ def _collected(directory):
         if match is None or derived is None:
             malformed += 1
             continue
-        counters.setdefault(match.group(1), []).append(int(match.group(2)))
+        counters.setdefault(match.group(1), set()).add(int(match.group(2)))
         lines.extend(derived)
     lost = sum(max(numbers) - len(numbers) for numbers in counters.values())
     return lines, malformed, lost
@@ -208,6 +239,7 @@ def _unreadable(run, record, problems, samples):
         **unreadable(run, record, problems, samples),
         "oracle": None,
         "extra_publications": None,
+        "faults": None,
     }
 
 
@@ -240,7 +272,8 @@ def assess(run):
     records, nonce = identity
     directory = run.directory / "pubsub" / "messages" / nonce
     published, bad_inputs = _published(directory, records)
-    lines, bad_batches, lost = _collected(directory)
+    sequence = _sequence(approval)
+    lines, bad_batches, lost = _collected(directory, _retried(run, record))
     if bad_inputs or bad_batches:
         return _unreadable(
             run,
@@ -249,8 +282,9 @@ def assess(run):
             samples,
         )
     problems = []
-    coverage = rebuild(readings, summarize)
-    if missing := missing_samples(record.get("coverage"), coverage):
+    # A sequence run samples nothing; its verdict is the output's alone.
+    coverage = None if sequence else rebuild(readings, summarize)
+    if not sequence and (missing := missing_samples(record.get("coverage"), coverage)):
         problems.append(f"missing-samples:{missing}")
     if lost:
         problems.append(f"missing-output-batches:{lost}")
@@ -273,26 +307,31 @@ def assess(run):
     # this run.
     # An unfinished run can hold an output whose publication response was
     # lost, which is an unknown outcome rather than an unpublished input.
-    unpublished = sum(
-        1
-        for item in observations
-        if (item["input_index"], item["sequence"]) in published
-        and item["input_message_id"]
-        not in published[(item["input_index"], item["sequence"])]
-    )
-    if unpublished:
-        problems.append(f"unpublished-input-ids:{unpublished}")
-    outcomes = record.get("outcomes")
-    outcomes = outcomes if isinstance(outcomes, dict) else {}
+    inputs = input_ids(observations, published)
     oracle = reconcile(lines, run.run_id, records)
-    decided = verdict(
-        {
-            **record,
-            "outcomes": _replayed(outcomes, observations, records),
-            "coverage": coverage,
-            "oracle": oracle,
-        }
-    )
+    if sequence:
+        # The verdict itself checks every output's input ID against the
+        # receipts, as the supervisor did.
+        decided = sequence_verdict(
+            {
+                **record,
+                "oracle": oracle,
+                "inputs": inputs,
+            }
+        )
+    else:
+        if inputs["unpublished"]:
+            problems.append(f"unpublished-input-ids:{inputs['unpublished']}")
+        outcomes = record.get("outcomes")
+        outcomes = outcomes if isinstance(outcomes, dict) else {}
+        decided = verdict(
+            {
+                **record,
+                "outcomes": _replayed(outcomes, observations, records),
+                "coverage": coverage,
+                "oracle": oracle,
+            }
+        )
     problems.extend(verdict_problems(record, decided, complete))
     return {
         "run_id": run.run_id,
@@ -303,7 +342,19 @@ def assess(run):
         "samples": samples,
         "oracle": oracle,
         "extra_publications": sum(len(ids) - 1 for ids in published.values()),
+        "faults": _faults(record) if sequence else None,
     }
+
+
+def _faults(record):
+    """The kinds of the faults a sequence run's record says it injected, in order."""
+    outcomes = record.get("outcomes")
+    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+    return [
+        fault["kind"]
+        for fault in (faults if isinstance(faults, list) else ())
+        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
+    ]
 
 
 def assess_runs(runs):
@@ -334,16 +385,16 @@ def render(assessments):
         "",
         (
             "| run | verdict | stored | samples | logical inputs | duplicates | "
-            "covered redeliveries | extra publications | reasons | problems |"
+            "covered redeliveries | extra publications | faults | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracle = item["oracle"] if isinstance(item["oracle"], dict) else {}
         extra = item["extra_publications"]
         lines.append(
             "| {run} | {verdict} | {stored} | {samples} | {inputs} | {duplicates} | "
-            "{covered} | {extra} | {reasons} | {problems} |".format(
+            "{covered} | {extra} | {faults} | {reasons} | {problems} |".format(
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
@@ -356,6 +407,7 @@ def render(assessments):
                     else oracle.get("covered_redeliveries", "-")
                 ),
                 extra="-" if extra is None else extra,
+                faults=", ".join(item.get("faults") or ()) or "-",
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",
             )
@@ -372,8 +424,7 @@ def render(assessments):
                 "in the restored checkpoint's lineage, which covered them; restore "
                 "deduplication exists to suppress them. The count is an upper "
                 "bound where the job restored one checkpoint twice and the "
-                "second restore removed a subtask, and the source's "
-                "redeliveriesSuppressed reading is its cross-check. Extra "
+                "second restore removed a subtask. Extra "
                 "publications "
                 "counts the runner's own receipts beyond one per input. They are "
                 "reported apart from the verdict and decide nothing."
@@ -382,6 +433,12 @@ def render(assessments):
                 "A usable verdict establishes completeness and the trial's recovery, "
                 "not ordering across the replay and not exactly-once output: unique "
                 "message IDs and a deduplicated count cannot show either."
+            ),
+            (
+                "A `sequence` run (ADR-0204) is judged by its output alone, "
+                "through the faults listed: the oracle, and every output's input "
+                "message ID against the publication receipts. It samples nothing "
+                "and has no replay cohort."
             ),
             (
                 f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which "

@@ -19,13 +19,13 @@ import copy
 import pytest
 from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.pubsub.verdict import (
+    COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     OBSERVED,
     SAMPLED_WINDOWS,
     WINDOWS,
-    held,
+    sequence_verdict,
     summarize,
-    suppressed,
     verdict,
 )
 
@@ -301,53 +301,52 @@ def test_windows_name_every_stage_before_the_fault_and_after_recovery():
     assert MEASUREMENT_EVENT == "pubsub-measurement"
 
 
-HOLD = {
-    "checkpoint": 7,
-    "triggered_at": 1_000_000,
-    "hold_millis": 30_000,
-    "event_at": 1_010_000,
-    "relay_holds": 2,
-}
+def sequence_record(**overrides):
+    record = {
+        "stage": COMPLETE_STAGE,
+        "outcomes": {"faults": [{"kind": "upgrade"}]},
+        "oracle": dict(ORACLE),
+        "inputs": {"unpublished": 0, "unreceipted": 0},
+    }
+    record.update(overrides)
+    return record
 
 
-def test_a_restore_inside_a_logged_hold_is_the_case():
-    assert held({"id": 7}, HOLD)
+def test_a_complete_sequence_with_its_output_is_usable():
+    assert sequence_verdict(sequence_record()) == {"verdict": USABLE, "reasons": []}
 
 
-@pytest.mark.parametrize(
-    "change",
-    [
-        # Another checkpoint than the one the hold covered.
-        {"restored": 8},
-        # No relay attempt logged a hold after the checkpoint.
-        {"relay_holds": 0},
-        # The fault came once the hold had run out, or before the trigger.
-        {"event_at": 1_030_000},
-        {"event_at": 999_999},
-        {"hold_millis": 0},
-        # A field the record lacks, or one of the wrong type.
-        {"triggered_at": None},
-        {"relay_holds": True},
-        {"event_at": "1010000"},
-    ],
-)
-def test_a_restore_outside_a_logged_hold_is_not_the_case(change):
-    hold = dict(HOLD)
-    restored = {"id": change.pop("restored", 7)}
-    hold.update(change)
-    assert not held(restored, hold)
+def test_a_sequence_needs_no_window_outcome_or_replay():
+    # Coverage, recovery outcomes and duplicates decide nothing (ADR-0204).
+    record = sequence_record(coverage={}, outcomes={})
+    record["oracle"]["repeated_input_processing"] = 900
+    assert sequence_verdict(record)["verdict"] == USABLE
 
 
 @pytest.mark.parametrize(
-    "reading, expected",
+    "change, reasons",
     [
-        ({"redeliveriesSuppressed": 3}, True),
-        ({"redeliveriesSuppressed": 0.5}, True),
-        ({"redeliveriesSuppressed": 0}, False),
-        ({"redeliveriesSuppressed": float("nan")}, False),
-        ({"ledgerEntries": 40}, False),
-        (None, False),
+        ({"stage": "upgrade"}, ["recovery-incomplete"]),
+        ({"oracle": None}, ["oracle-missing"]),
+        ({"oracle": {"rejected": "Invalid output observation"}}, ["oracle-rejected"]),
+        ({"oracle": {**ORACLE, "missing_inputs": 3}}, ["oracle-incomplete"]),
+        ({"inputs": None}, ["inputs-missing"]),
+        ({"inputs": {"unpublished": 1, "unreceipted": 0}}, ["input-ids-unpublished"]),
+        ({"inputs": {"unpublished": 0, "unreceipted": 2}}, ["input-receipts-missing"]),
+        # `False == 0` in Python, so a count is compared with its type.
+        (
+            {"inputs": {"unpublished": False, "unreceipted": None}},
+            ["input-ids-unpublished", "input-receipts-missing"],
+        ),
     ],
 )
-def test_only_a_suppressed_redelivery_shows_the_setting(reading, expected):
-    assert suppressed(reading) is expected
+def test_each_sequence_shortfall_is_inconclusive_with_its_reason(change, reasons):
+    assert sequence_verdict(sequence_record(**change)) == {
+        "verdict": INCONCLUSIVE,
+        "reasons": reasons,
+    }
+
+
+@pytest.mark.parametrize("value", [None, [], "complete", 7])
+def test_an_untyped_sequence_record_is_inconclusive_without_raising(value):
+    assert sequence_verdict(value)["verdict"] == INCONCLUSIVE

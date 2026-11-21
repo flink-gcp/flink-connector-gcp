@@ -52,6 +52,35 @@ def cohort_ranges(records):
     }
 
 
+def cohort_publications(cohort):
+    """The (input index, start, count) of each publication one cohort makes.
+
+    A cohort goes to both inputs in ascending batches of at most
+    ``PUBLISH_BATCH``, without crossing its range, so each publication's
+    receipt path, and the inputs it covers, follow from the domain alone.
+    """
+    end = cohort["start"] + cohort["count"]
+    for index in range(2):
+        for start in range(cohort["start"], end, PUBLISH_BATCH):
+            yield index, start, min(PUBLISH_BATCH, end - start)
+
+
+def publications(records):
+    """Every publication the three cohorts of a domain make, in order."""
+    for cohort in cohort_ranges(records).values():
+        yield from cohort_publications(cohort)
+
+
+def message_prefix(run_id, nonce):
+    """Where one run's message intents and receipts live in the evidence bucket."""
+    return f"runs/{run_id}/pubsub/messages/{nonce}"
+
+
+def input_path(prefix, index, start, count):
+    """One publication's directory, which holds its intent and receipt."""
+    return f"{prefix}/input/{index}/{start}-{count}"
+
+
 def _integer(value, low, high, name):
     if type(value) is not int or not low <= value <= high:
         raise Failure("Invalid Pub/Sub " + name)
@@ -96,6 +125,10 @@ def output_line(message):
     return _encode(message_id.encode("utf-8")) + "\t" + _encode(payload)
 
 
+class PullRefused(ApiError):
+    """The service answered a pull with an error, before anything was observed."""
+
+
 class Messages:
     """Internal helper; construction does not authenticate or admit a run.
 
@@ -120,7 +153,7 @@ class Messages:
         self.http, self.store, self.plan = http, store, plan
         self.actor, self.records = actor, records_per_subscription
         self.before_operation = before_operation
-        self.prefix = f"runs/{plan.run_id}/pubsub/messages/{plan.nonce}"
+        self.prefix = message_prefix(plan.run_id, plan.nonce)
 
     def _role(self, expected):
         if self.actor != expected:
@@ -197,7 +230,7 @@ class Messages:
                 for sequence in range(start, start + count)
             ]
         }
-        path = f"{self.prefix}/input/{input_index}/{start}-{count}"
+        path = input_path(self.prefix, input_index, start, count)
         self._save(
             "publish", path + "/intent.json", self._intent("publish", topic, request)
         )
@@ -235,7 +268,12 @@ class Messages:
             path + "/intent.json",
             self._intent("pull", subscription, request),
         )
-        response = self._post("collect", subscription + ":pull", request)
+        try:
+            response = self._post("collect", subscription + ":pull", request)
+        except ApiError as error:
+            # Nothing is saved after the intent, so the batch holds no
+            # observations; an acknowledgement's failure, below, is not this.
+            raise PullRefused(error.status, "POST", subscription + ":pull") from error
         self._save("collect", path + "/response.json", response)
         received = response.get("receivedMessages", [])
         if not isinstance(received, list) or len(received) > max_messages:

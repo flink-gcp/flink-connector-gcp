@@ -17,7 +17,13 @@
 import math
 
 from ..common import INCONCLUSIVE, USABLE
-from ..exercise import FAULTS, REPLACEMENT_KINDS, RESCALE_KINDS
+from ..exercise import (
+    FAULTS,
+    REPLACEMENT_KINDS,
+    RESCALE_KINDS,
+    SEQUENCE_KIND,
+    SEQUENCE_PARALLELISM,
+)
 from ..metrics import coverage_reasons, fold_coverage, metric_name
 from .observe import FAMILIES
 
@@ -27,71 +33,17 @@ COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 MEASUREMENT_EVENT = "pubsub-measurement"
 REPLACEMENTS = tuple(REPLACEMENT_KINDS.values())
 RESCALES = tuple(RESCALE_KINDS.values())
-# The AdaptiveScheduler kinds (#2055, reworked by #2126), which only the
-# Pub/Sub scenario runs. The scheduler restarts the whole job from its latest
-# checkpoint for every rescale and failure. Each kind produces one case of
-# restore deduplication (#2054) on purpose and runs only with the setting on:
-# with it, a trial that shows the case shows the setting's effect, and one
-# with the setting off would show only that the case duplicates.
-# - `reactive-scale-out` runs in the Operator's standalone mode under reactive
-#   mode and patches the TaskManager replica count, which the Operator applies
-#   in place; the scheduler restarts the job when its next checkpoint
-#   completes, the checkpoint-triggered rescale whose cancellation races the
-#   completion notification.
-# - `reactive-tm-kill`, in the same mode, deletes a TaskManager Pod without a
-#   grace period once a checkpoint covering replay-cohort input has completed:
-#   a failure that lands before the notification ran.
-# - `adaptive-scale-in` runs in native mode under the AdaptiveScheduler
-#   without reactive mode and patches the job vertex's parallelism override,
-#   which the Operator applies in place through the resource-requirements API,
-#   as an autoscaler does; the scheduler again rescales when its next
-#   checkpoint completes. Reactive mode refuses that API, so this is the
-#   checkpoint-triggered scale-in.
-# `initial` and `recovery` are the job vertex's parallelism before and after
-# the fault, which a reactive kind sets through its TaskManagers.
-# `hold_millis` is how long the relay holds the first replay-cohort record
-# after each snapshot of an attempt that restored nothing, which keeps that
-# checkpoint's notification queued on the task thread; the fault must land
-# within it for the trial to show its case.
-# `kubernetes/lifecycle/pubsub.cue` renders the same sizes and holds, and a
-# test holds it to this table.
-ADAPTIVE = {
-    "reactive-scale-out": {
-        "scheduler": "reactive",
-        "fault": "scale",
-        "initial": 2,
-        "recovery": 3,
-        "hold_millis": 30000,
-    },
-    "reactive-tm-kill": {
-        "scheduler": "reactive",
-        "fault": "kill",
-        "initial": 3,
-        "recovery": 3,
-        "hold_millis": 90000,
-    },
-    "adaptive-scale-in": {
-        "scheduler": "adaptive",
-        "fault": "override",
-        "initial": 3,
-        "recovery": 2,
-        "hold_millis": 30000,
-    },
-}
-# The AdaptiveScheduler kinds' delay per replay-cohort input and flow-control limit,
-# which keep the replay cohort flowing while the fault lands; the Pub/Sub
-# application README's "Restore-deduplication trials" section gives the
-# reasons.
-ADAPTIVE_REPLAY_DELAY_MILLIS = 100
-ADAPTIVE_MAX_OUTSTANDING = 100000
-# The flow-control limit every other kind renders: the SDK's default.
-MAX_OUTSTANDING = 1000
 
 
 def sizes(kind):
-    """The job vertex's parallelism in a kind's initial and recovery phases."""
-    if kind in ADAPTIVE:
-        return ADAPTIVE[kind]["initial"], ADAPTIVE[kind]["recovery"]
+    """The job vertex's parallelism in a kind's initial and recovery phases.
+
+    The fault sequence starts at two and its recovery manifest is the
+    savepoint upgrade at two; the exercise patches its rescales to one and
+    back from that manifest.
+    """
+    if kind == SEQUENCE_KIND:
+        return SEQUENCE_PARALLELISM["upgrade"], SEQUENCE_PARALLELISM["upgrade"]
     return FAULTS[kind].initial, FAULTS[kind].upgrade
 
 
@@ -175,21 +127,6 @@ def _replay(kind, recovery, after):
     replay-cohort output from the attempts it started leaves it inconclusive.
     """
     replay = recovery.get("replay")
-    if kind in ADAPTIVE:
-        # An AdaptiveScheduler restart restores a checkpoint, so what it displaced is
-        # redelivered and the oracle's completeness counts it; what the
-        # restored checkpoint already covered is the oracle's covered count.
-        # The record carries the size the exercise read, which an offline
-        # recomputation checks again.
-        reasons = []
-        resized = recovery.get("parallelism")
-        if type(resized) is not int or resized != ADAPTIVE[kind]["recovery"]:
-            reasons.append("rescale-unproven")
-        if not held(recovery.get("first_restored"), recovery.get("hold")):
-            reasons.append("case-unproduced")
-        if not suppressed(after.get("deduplication")):
-            reasons.append("suppression-unobserved")
-        return reasons
     if kind in RESCALES:
         reasons = [] if replay == "not-expected" else ["replay-unexpected"]
         replayed = after.get("replay_by_new_attempts")
@@ -216,64 +153,17 @@ def _replay(kind, recovery, after):
     return reasons
 
 
-def held(restored, hold):
-    """Whether the case's restore was of a checkpoint whose notification was held.
-
-    The relay holds the first replay-cohort record after a snapshot for
-    `hold_millis`, and logs it, so until then the checkpoint's completion
-    notification is queued behind that record. The case is the first restore
-    after the fault: it must restore that checkpoint, at least one relay
-    attempt must have logged a hold after it, and the fault must come before
-    the hold ran out. The hold is counted from the checkpoint's trigger,
-    which precedes every subtask's snapshot, so the bound errs short.
-    `event_at` is the deletion for a TaskManager kill and the restore for a
-    rescale, whose cancellation precedes it.
-    """
-    if not isinstance(restored, dict) or not isinstance(hold, dict):
-        return False
-    values = [
-        hold.get(key)
-        for key in ("checkpoint", "triggered_at", "hold_millis", "relay_holds")
-    ]
-    event = hold.get("event_at")
-    if any(type(value) is not int for value in values) or type(event) not in (
-        int,
-        float,
-    ):
-        return False
-    checkpoint, triggered, millis, holds = values
-    return (
-        type(restored.get("id")) is int
-        and restored["id"] == checkpoint
-        and holds > 0
-        and millis > 0
-        and triggered <= event < triggered + millis
-    )
-
-
-def suppressed(reading):
-    """Whether the restored job's ledger suppressed at least one redelivery.
-
-    Without one, the restored checkpoint either covered no unacknowledged
-    input or Pub/Sub redelivered none of it, and the trial showed nothing
-    about the setting.
-    """
-    if not isinstance(reading, dict):
-        return False
-    count = reading.get("redeliveriesSuppressed")
-    return type(count) in (int, float) and math.isfinite(count) and count > 0
-
-
 def started_by_fault(attempt, restored, phase, before, kind):
     """Whether an attempt is one the fault started, from restored state.
 
-    A replacement or an AdaptiveScheduler restart starts attempts in the same phase; a
-    savepoint rescale's are the upgraded job's. The exercise and the offline analysis ask the same thing.
+    A replacement starts attempts in the same phase; a savepoint rescale's are
+    the upgraded job's. The exercise and the offline analysis ask the same
+    thing.
     """
     return (
         attempt not in before
         and restored is True
-        and (kind in REPLACEMENTS or kind in ADAPTIVE or phase == "upgrade")
+        and (kind in REPLACEMENTS or phase == "upgrade")
     )
 
 
@@ -322,4 +212,44 @@ def verdict(recovery):
         reasons.extend(_replay(fault.get("kind"), recovery_outcome, after))
     reasons.extend(oracle_reasons(record.get("oracle")))
     reasons.extend(coverage_reasons(record.get("coverage"), SAMPLED_WINDOWS, OBSERVED))
+    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+
+
+def input_reasons(inputs):
+    """Why the outputs' input message IDs do not carry the claim, if they do not.
+
+    The relay copies each input's message ID into its output, and the
+    runner's publication receipts bind every ID the service returned to its
+    input, so an output that names its input under an ID no receipt of that
+    input holds carries a wrong value, and one whose input has no receipt
+    cannot be checked.
+    """
+    if not isinstance(inputs, dict):
+        return ["inputs-missing"]
+    reasons = []
+    for key, reason in (
+        ("unpublished", "input-ids-unpublished"),
+        ("unreceipted", "input-receipts-missing"),
+    ):
+        count = inputs.get(key)
+        if type(count) is not int or count != 0:
+            reasons.append(reason)
+    return reasons
+
+
+def sequence_verdict(recovery):
+    """A fault-sequence run's verdict: its output alone (ADR-0204).
+
+    `usable` says the run completed, the oracle accepted every collected line
+    and found every logical input of both subscriptions, and every output
+    named its input under an ID the input was published with. Duplicates are
+    reported beside it, and interruptions, restarts, timings and metrics
+    decide nothing.
+    """
+    record = recovery if isinstance(recovery, dict) else {}
+    reasons = []
+    if record.get("stage") != COMPLETE_STAGE:
+        reasons.append("recovery-incomplete")
+    reasons.extend(oracle_reasons(record.get("oracle")))
+    reasons.extend(input_reasons(record.get("inputs")))
     return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}

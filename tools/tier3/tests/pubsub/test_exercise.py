@@ -22,14 +22,12 @@ import uuid
 import pytest
 from flink_tier3.common import INCONCLUSIVE
 from flink_tier3.policy import PUBSUB, PUBSUB_STATE
-from flink_tier3.pubsub import exercise as pubsub_exercise
 from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
 from flink_tier3.pubsub.observe import (
-    DEDUPLICATION_METRICS,
     SINK_METRICS,
     SOURCE_METRICS,
 )
-from flink_tier3.pubsub.verdict import ADAPTIVE, MEASUREMENT_EVENT
+from flink_tier3.pubsub.verdict import MEASUREMENT_EVENT
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import obj, rt
@@ -50,12 +48,10 @@ INTERVAL = 120
 )
 def trial(request):
     return {
-        "version": 6,
+        "version": 7,
         "trial": request.param,
-        "entry_point": "datastream",
         "records_per_subscription": RECORDS,
-        # An AdaptiveScheduler kind runs only with the setting on.
-        "restore_deduplication": request.param in ADAPTIVE,
+        "restore_deduplication": False,
     }
 
 
@@ -87,10 +83,7 @@ class Relay:
         ignore_delete=False,
         savepoint_acks=True,
         pull_limit=None,
-        lose_notification=False,
-        linger_idle=False,
-        holds=True,
-        checkpoint_between=False,
+        pace=None,
     ):
         self.a, self.kube, self.clock = a, a.environment.kube, a.environment.clock
         self.approval = a.environment.approval
@@ -111,27 +104,15 @@ class Relay:
         # An immediate pull answers at most this many, as the service's
         # answer holds what it has ready at once rather than the backlog.
         self.pull_limit = pull_limit
-        # A reactive restart cancels the job before the latest completed
-        # checkpoint's notification acknowledged what it covered (#2049), as
-        # the relay's hold makes it; otherwise the restart comes after the
-        # hold, once the notification has acknowledged it.
-        self.lose_notification = lose_notification
-        # A scale-in leaves its idle TaskManager running until the resource
-        # manager's idle timeout releases it, a minute later.
-        self.linger_idle = linger_idle
-        # The relay logs a hold after each snapshot; without one, nothing
-        # proves the notification was held.
-        self.holds = holds
-        # A kill's second restart restores a checkpoint that completed after
-        # its first, as when the replacement registers late.
-        self.checkpoint_between = checkpoint_between
-        # With restore deduplication on, the restored ledger acknowledges a
-        # covered redelivery instead of emitting it, and counts it here.
-        self.deduplicates = self.approval.pubsub_trial["restore_deduplication"]
-        self.suppressed = 0
-        # A rescale waiting for the next completed checkpoint.
-        self.rescale_on_checkpoint = None
-        self.last_covered = []
+        # How many waiting inputs each subtask processes a step, as the
+        # relay's delay per record paces them; all of them without one.
+        self.pace = pace
+        # How many inputs each attempt processed, which its progress lines say.
+        self.processed = {}
+        # How many more pulls the service refuses with a 429, and how many
+        # acknowledgements it answers with a 503.
+        self.pull_failures = 0
+        self.ack_failures = 0
         # Each attempt's restored checkpoint, and the latest checkpoint
         # barrier the job has passed.
         self.origins = {}
@@ -146,14 +127,7 @@ class Relay:
         # Deleted Pods still terminating, and when they go.
         self.terminating = []
         self.jm_down = False
-        self.adaptive = ADAPTIVE.get(self.kind)
-        self.parallelism = (
-            self.adaptive["initial"]
-            if self.adaptive
-            else 1
-            if self.kind == "rescale-out"
-            else 2
-        )
+        self.parallelism = 1 if self.kind == "rescale-out" else 2
         self.phase = "initial"
         self.pending = {0: [], 1: []}
         # Processed and not yet acknowledged: (message, attempt).
@@ -177,10 +151,6 @@ class Relay:
         self.hooks = []
         # The connector metric names the vertex lists once its operators open.
         self.listed = (*SOURCE_METRICS, *SINK_METRICS)
-        if self.deduplicates:
-            # The source registers its deduplication metrics only with the
-            # setting on.
-            self.listed = (*self.listed, *DEDUPLICATION_METRICS)
         # The vertex metrics endpoints alone answer 503.
         self.metrics_down = False
         # The job plan answers 503 this many more times.
@@ -224,6 +194,9 @@ class Relay:
 
     def pull(self, original, method, url, **kwargs):
         if url.endswith(":acknowledge"):
+            if self.ack_failures:
+                self.ack_failures -= 1
+                return Response({}, status=503)
             return Response({})
         # The supervisor pulls only the output subscription: its access probe
         # at admission, while nothing is relayed, and then its collection.
@@ -232,6 +205,9 @@ class Relay:
         # The service may hold a pull that does not return immediately until
         # messages arrive, past the transport timeout.
         assert kwargs["json"].get("returnImmediately") is True
+        if self.pull_failures:
+            self.pull_failures -= 1
+            return Response({}, status=429)
         size = min(kwargs["json"]["maxMessages"], self.pull_limit or len(self.output))
         batch, self.output = self.output[:size], self.output[size:]
         self.delivered.extend(batch)
@@ -349,19 +325,6 @@ class Relay:
         self.epoch = cp["id"]
         # The barrier covers what was processed before it.
         self.inflight = (cp, list(self.unacked))
-        if self.adaptive and self.holds:
-            # Each attempt that restored nothing holds a record after the
-            # snapshot and logs it, as the relay does while input flows.
-            for attempt in self.attempts.values():
-                pod = self.attempt_pod(attempt)
-                if attempt in self.restored_attempts or pod is None:
-                    continue
-                line = (
-                    f"{rt.utc(self.clock())} INFO event=pubsub-hold "
-                    f"run_id={self.run_id} phase={self.phase} attempt={attempt} "
-                    f"checkpoint_id={cp['id']} millis={self.adaptive['hold_millis']}\n"
-                )
-                self.logs.setdefault(pod, []).append((self.clock(), line))
 
     def complete_checkpoint(self):
         cp, covered = self.inflight
@@ -372,7 +335,6 @@ class Relay:
             end_to_end_duration=900,
         )
         self.completed = dict(cp)
-        self.last_covered = list(covered)
         # Completion acknowledges what the checkpoint covers, nothing later.
         self.unacked = [item for item in self.unacked if item not in covered]
 
@@ -381,7 +343,8 @@ class Relay:
             attempt = self.attempts.get(index if self.parallelism >= 2 else 0)
             origin = self.origins.get(attempt, 0)
             epoch = max(origin, self.epoch)
-            for message in self.pending[index]:
+            taken = self.pending[index][: self.pace]
+            for message in taken:
                 fields = message["payload"].split("|")
                 data = "|".join(
                     [
@@ -398,7 +361,24 @@ class Relay:
                 )
                 self.output.append({"messageId": uuid.uuid4().hex, "data": data})
                 self.unacked.append((message, attempt))
-            self.pending[index] = []
+            self.pending[index] = self.pending[index][len(taken) :]
+            if taken:
+                self.progress(attempt, origin, len(taken))
+
+    def progress(self, attempt, origin, count):
+        """The relay's progress line for ``attempt``, on the Pod that runs it."""
+        self.processed[attempt] = self.processed.get(attempt, 0) + count
+        pod = self.attempt_pod(attempt)
+        if pod is None:
+            return
+        restored = "true" if attempt in self.restored_attempts else "false"
+        line = (
+            f"{rt.utc(self.clock())} INFO event=pubsub-progress "
+            f"run_id={self.run_id} phase={self.phase} attempt={attempt} "
+            f"restored={restored} origin={origin} "
+            f"processed={self.processed[attempt]}\n"
+        )
+        self.logs.setdefault(pod, []).append((self.clock(), line))
 
     def advance(self):
         app = self.app()
@@ -429,16 +409,6 @@ class Relay:
         self.process()
         if self.inflight:
             self.complete_checkpoint()
-            if self.rescale_on_checkpoint is not None:
-                # The reactive scheduler rescales when a checkpoint completes:
-                # at once, inside the relay's hold, or only after it.
-                size, self.rescale_on_checkpoint = self.rescale_on_checkpoint, None
-                self.reactive_restart(size)
-                if self.lose_notification:
-                    # Within milliseconds of the completion, as deployed.
-                    restart, self.restart_at, self.restart = self.restart, None, None
-                    restart()
-                return
         if now >= self.next_trigger:
             self.trigger_checkpoint()
             self.next_trigger += self.interval
@@ -475,7 +445,7 @@ class Relay:
             "external_path": cp["external_path"],
         }
 
-    def delete(self, value, force=False):
+    def delete(self, value):
         component = value["metadata"].get("labels", {}).get("component")
         if value["kind"] == "Pod" and component in ("jobmanager", "taskmanager"):
             self.events.append(("delete", component, value["metadata"]["name"]))
@@ -487,9 +457,6 @@ class Relay:
                 self.kube.put(current)
                 self.terminating.append((current, self.clock() + 45))
             restored = self.restored_flag
-            if self.adaptive and component == "taskmanager":
-                self.reactive_restart(self.parallelism - 1, then=self.parallelism)
-                return True
             if component == "jobmanager":
                 # The Operator has not noticed yet, and the REST API is gone
                 # with the JobManager.
@@ -536,7 +503,7 @@ class Relay:
 
             self.restart_at, self.restart = self.clock() + 30, restart
             return True
-        return self.original_delete(value, force)
+        return self.original_delete(value)
 
     def attempt_pod(self, attempt):
         for uid, lines in self.logs.items():
@@ -548,75 +515,6 @@ class Relay:
         app = self.app()
         app["status"]["jobStatus"]["state"] = "RUNNING"
         self.kube.put(app)
-
-    def reactive_restart(self, size, *, then=None, delay=None):
-        """The reactive scheduler restarting the job from its latest checkpoint.
-
-        The TaskManagers change to ``size``, and every attempt restarts
-        restored; ``then`` is the size a replaced Pod's Deployment brings it
-        back to in a second restart.
-        """
-        lost = set(self.attempts.values())
-
-        def restart():
-            managers = [
-                p for p in self.managers() if not p["metadata"].get("deletionTimestamp")
-            ]
-            for pod in managers[size:]:
-                if self.linger_idle:
-                    self.terminating.append((pod, self.clock() + 60))
-                else:
-                    self.original_delete(pod)
-            for _ in range(size - len(managers)):
-                self.pod("taskmanager")
-            # The counter is per reader, so every attempt starts at zero.
-            self.suppressed = 0
-            if self.lose_notification:
-                # The notification was cancelled: what the restored
-                # checkpoint covered comes back as well, unless the restored
-                # ledger acknowledges it instead.
-                if self.deduplicates:
-                    self.suppressed += len(self.last_covered)
-                else:
-                    self.unacked = self.last_covered + self.unacked
-                self.last_covered = []
-            self.requeue(lost)
-            self.restore(kept=True)
-            self.parallelism = size
-            self.attempts = {}
-            self.start_attempts(range(size), restored=self.restored_flag)
-            current = self.app()
-            current["status"].update(
-                observedGeneration=current["metadata"]["generation"],
-                reconciliationStatus={"state": "DEPLOYED"},
-            )
-            self.kube.put(current)
-            if then is not None:
-                # The replacement registers after the restarted job's 120 s
-                # resource stabilization, so the smaller job serves meanwhile.
-                self.reactive_restart(then, delay=120)
-                if self.checkpoint_between:
-                    second = self.restart
-
-                    def checkpoint_then_restart():
-                        self.trigger_checkpoint()
-                        self.complete_checkpoint()
-                        second()
-
-                    self.restart = checkpoint_then_restart
-
-        # A restart that loses the notification comes inside the hold, at
-        # once; otherwise it comes after the hold, once the notification ran.
-        self.restart_at, self.restart = (
-            (
-                self.clock() + delay
-                if delay is not None
-                else self.clock()
-                if self.lose_notification
-                else self.clock() + self.adaptive["hold_millis"] / 1000
-            ),
-            restart,
-        )
 
     def patch(self, value, changes, subresource="", before_repeat=None):
         if value["kind"] != "FlinkDeployment":
@@ -631,18 +529,8 @@ class Relay:
             for key in parents:
                 target = target[key]
             target[leaf] = change["value"]
-        app["metadata"].update(generation=2, resourceVersion="2")
-        if self.adaptive:
-            # The Operator scales the TaskManager Deployment, or changes the
-            # job's resource requirements, in place.
-            app["status"]["reconciliationStatus"] = {"state": "DEPLOYED"}
-            self.kube.put(app)
-            self.rescale_on_checkpoint = (
-                self.adaptive["recovery"]
-                if self.adaptive["fault"] == "override"
-                else app["spec"]["taskManager"]["replicas"]
-            )
-            return app
+        generation = app["metadata"]["generation"] + 1
+        app["metadata"].update(generation=generation, resourceVersion=str(generation))
         # Stop with a savepoint: it completes and acknowledges what it covers.
         savepoint = {
             "id": self.next_id,
@@ -665,12 +553,12 @@ class Relay:
                 self.pod("taskmanager")
             current = self.app()
             current["status"].update(
-                observedGeneration=2,
+                observedGeneration=generation,
                 reconciliationStatus={"state": "DEPLOYED"},
             )
             current["status"]["jobStatus"].update(
                 state="RUNNING",
-                jobId="2" * 32,
+                jobId=str(generation % 10) * 32,
                 savepointInfo={
                     "lastSavepoint": {
                         "location": savepoint["external_path"],
@@ -715,10 +603,7 @@ class Relay:
             ]
         if "/vertices/relay/subtasks/metrics?get=" in suffix:
             ids = suffix.split("?get=")[1].split("&")[0].split(",")
-            values = {
-                "pendingAcks": len(self.unacked),
-                "redeliveriesSuppressed": self.suppressed,
-            }
+            values = {"pendingAcks": len(self.unacked)}
             if not self.values_held:
                 return []
             return [
@@ -1621,210 +1506,3 @@ def test_a_stage_that_expired_during_its_own_reads_does_not_advance(
     control = world.run()
     assert late and "deadline expired: boundary" in control.reason
     assert not [e for e in world.relay.events if e[0] == "delete"]
-
-
-@pytest.mark.parametrize("lost", [False, True], ids=["notified", "notification-lost"])
-@pytest.mark.parametrize("trial", list(ADAPTIVE), indirect=True)
-def test_each_adaptive_trial_restores_a_checkpoint_and_shows_its_case(
-    admitting, monkeypatch, lost
-):
-    world = World(admitting, monkeypatch, lose_notification=lost)
-    control = world.run()
-    kind = world.relay.kind
-    sizes = ADAPTIVE[kind]
-    assert control.recovery["stage"] == "complete", control.reason
-    assert control.pubsub["stage"] == "cleaned"
-    outcomes = control.recovery["outcomes"]
-    recovery, fault = outcomes["recovery"], outcomes["fault"]
-    assert recovery["replay"] == "restored-checkpoint"
-    assert recovery["parallelism"] == world.relay.parallelism == sizes["recovery"]
-    assert recovery["restored"]["is_savepoint"] is False
-    # A kill restarts twice: down when the Pod goes, up when it returns.
-    assert recovery["restores"] == (2 if sizes["fault"] == "kill" else 1)
-    hold = recovery["hold"]
-    assert hold["hold_millis"] == sizes["hold_millis"]
-    if sizes["fault"] in ("scale", "override"):
-        path = (
-            "/spec/taskManager/replicas"
-            if sizes["fault"] == "scale"
-            else "/spec/flinkConfiguration/pipeline.jobvertex-parallelism-overrides"
-        )
-        assert ("patch", [path]) in world.relay.events
-        assert fault["pod"] is None
-        # The restart restored the checkpoint whose completion triggered it.
-        assert hold["checkpoint"] == recovery["restored"]["id"]
-    else:
-        assert ("delete", "taskmanager", fault["pod"]) in world.relay.events
-        # The kill landed inside the hold of the checkpoint it waited for.
-        assert hold["checkpoint"] == fault["held_checkpoint"]
-        assert hold["event_at"] < hold["triggered_at"] + hold["hold_millis"]
-    oracle = control.recovery["oracle"]
-    assert oracle["rejected"] is None and oracle["missing_inputs"] == 0
-    # With the setting on, the restored ledger acknowledges what the restored
-    # checkpoint covered, so nothing it covered is emitted again either way.
-    assert oracle["covered_redeliveries"] == 0
-    reading = outcomes["after"]["deduplication"]
-    assert reading["suppressed_samples"] > 0
-    if lost:
-        assert control.recovery["verdict"] == rt.USABLE, control.recovery["reasons"]
-        assert reading["redeliveriesSuppressed"] > 0
-    else:
-        # The notification ran: nothing was redelivered for the ledger to
-        # suppress, and a scale-out that came after the hold restored a
-        # checkpoint whose notification had already run.
-        assert control.recovery["verdict"] == INCONCLUSIVE
-        reasons = control.recovery["reasons"]
-        assert "suppression-unobserved" in reasons
-        assert ("case-unproduced" in reasons) is (sizes["fault"] != "kill")
-
-
-@one("reactive-tm-kill")
-def test_a_kill_passes_over_a_completion_seen_too_late_and_then_gives_up(
-    admitting, monkeypatch
-):
-    """A deletion after the hold would find the notification run; none is made."""
-    # The fake sees a completion one poll after its trigger, which this
-    # margin leaves no room for.
-    monkeypatch.setattr(pubsub_exercise, "KILL_MARGIN_MILLIS", 80000)
-    world = World(admitting, monkeypatch, lose_notification=True)
-    control = world.run()
-    assert "No completed checkpoint was seen early enough" in control.reason
-    assert not [e for e in world.relay.events if e[0] == "delete"]
-    assert world.a.supervisor.exercise.kill_passes == pubsub_exercise.KILL_PASSES + 1
-
-
-@pytest.mark.parametrize("trial", list(ADAPTIVE), indirect=True)
-def test_a_restore_without_a_logged_hold_does_not_show_the_case(admitting, monkeypatch):
-    """Suppression from a race lost by chance is not the trial's case."""
-    world = World(admitting, monkeypatch, lose_notification=True, holds=False)
-    control = world.run()
-    assert control.recovery["stage"] == "complete", control.reason
-    assert control.recovery["verdict"] == INCONCLUSIVE
-    assert control.recovery["reasons"] == ["case-unproduced"]
-    assert control.recovery["outcomes"]["recovery"]["hold"]["relay_holds"] == 0
-
-
-@one("reactive-tm-kill")
-def test_a_kill_is_judged_on_its_first_restore(admitting, monkeypatch):
-    """A later restore, of a checkpoint nobody held, does not undo the case."""
-    world = World(
-        admitting, monkeypatch, lose_notification=True, checkpoint_between=True
-    )
-    control = world.run()
-    assert control.recovery["stage"] == "complete", control.reason
-    recovery = control.recovery["outcomes"]["recovery"]
-    assert recovery["restored"]["id"] > recovery["first_restored"]["id"]
-    assert recovery["hold"]["checkpoint"] == recovery["first_restored"]["id"]
-    assert control.recovery["verdict"] == rt.USABLE, control.recovery["reasons"]
-
-
-class RestoredAt:
-    """A REST reader that answers one suppressed count."""
-
-    def __init__(self, suppressed):
-        self.suppressed = suppressed
-
-    def job(self, path, limit=None):
-        if path == "":
-            return {"vertices": [{"id": "relay"}]}
-        if path.endswith("/subtasks/metrics"):
-            return [{"id": "Source__Pub_Sub_input.redeliveriesSuppressed"}]
-        return [
-            {
-                "id": "Source__Pub_Sub_input.redeliveriesSuppressed",
-                "sum": self.suppressed,
-            }
-        ]
-
-
-@one("reactive-tm-kill")
-def test_the_highest_suppressed_count_after_the_first_restore_is_kept(
-    admitting, monkeypatch
-):
-    """A maximum only repeats a value a stale metric store answers again."""
-    world = World(admitting, monkeypatch, lose_notification=True)
-    world.run()
-    exercise = world.a.supervisor.exercise
-    exercise.most_suppressed = exercise.suppressed_samples = 0
-    exercise.first_restore = None
-    exercise.rest = RestoredAt(9)
-    # Before the fault's first restore, no attempt had a ledger to count.
-    exercise.track_suppression()
-    exercise.first_restore = {"id": 1}
-    for count in (5, 5, 0):
-        # The second 5 is the store answering for an attempt that is gone,
-        # and the 0 a later attempt's fresh counter.
-        exercise.rest = RestoredAt(count)
-        exercise.track_suppression()
-    assert (exercise.most_suppressed, exercise.suppressed_samples) == (5, 3)
-    assert exercise.deduplication()["redeliveriesSuppressed"] == 5
-
-
-@one("reactive-tm-kill")
-def test_suppression_waits_while_the_rest_service_is_gone(admitting, monkeypatch):
-    """The loop tolerates a missing REST Service while the job recovers."""
-    world = World(admitting, monkeypatch, lose_notification=True)
-    world.run()
-    exercise = world.a.supervisor.exercise
-    exercise.rest = None
-    assert exercise.track_suppression() == {}
-
-
-@one("adaptive-scale-in")
-def test_an_adaptive_scale_in_waits_for_its_idle_taskmanager_to_go(
-    admitting, monkeypatch
-):
-    """Proving recovery while the idle Pod runs would take its release for a loss."""
-    world = World(admitting, monkeypatch, lose_notification=True, linger_idle=True)
-    control = world.run()
-    assert control.recovery["stage"] == "complete", control.reason
-    assert control.recovery["verdict"] == rt.USABLE, control.recovery["reasons"]
-
-
-@one("reactive-scale-out")
-def test_a_restart_after_a_reactive_recovery_is_still_unplanned(admitting, monkeypatch):
-    world = World(admitting, monkeypatch)
-    fired = []
-
-    def restart():
-        if stage(world) == "after" and not fired:
-            fired.append(True)
-            world.relay.reactive_restart(world.relay.parallelism)
-
-    world.relay.hooks.append(restart)
-    control = world.run()
-    assert control.recovery["stage"] != "complete"
-    assert "Unplanned job restart" in control.reason
-
-
-@one("reactive-scale-out")
-def test_a_transient_plan_read_while_recovering_waits_for_the_next_poll(
-    admitting, monkeypatch
-):
-    world = World(admitting, monkeypatch)
-    failed = []
-
-    def unavailable():
-        if stage(world) == "recovering" and not failed:
-            failed.append(True)
-            world.relay.plan_down = 3
-
-    world.relay.hooks.append(unavailable)
-    control = world.run()
-    assert failed and world.relay.plan_down == 0
-    assert control.recovery["stage"] == "complete", control.reason
-
-
-@one("reactive-scale-out")
-def test_restore_deduplication_readings_are_sampled_when_listed(admitting, monkeypatch):
-    world = World(admitting, monkeypatch)
-    world.relay.listed = (*world.relay.listed, *DEDUPLICATION_METRICS)
-    control = world.run()
-    assert control.recovery["stage"] == "complete", control.reason
-    names = {
-        item["id"].rsplit(".")[-1]
-        for m in world.evidence(MEASUREMENT_EVENT)
-        for vertex in m["payload"]["vertices"]
-        for item in vertex["metrics"]
-    }
-    assert set(DEDUPLICATION_METRICS) <= names

@@ -55,7 +55,6 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.containers.PubSubEmulatorContainer;
 
 import java.nio.file.Path;
@@ -105,14 +104,12 @@ class PubSubRecoveryITCase {
     }
 
     @ParameterizedTest
-    @CsvSource({"datastream,1,2", "datastream,2,1", "table,1,2", "table,2,1"})
-    void productionSourceAndSinkRestoreAndReachBothSubscriptions(
-            String entryPoint, int from, int to) throws Exception {
+    @CsvSource({"1,2", "2,1"})
+    void productionSourceAndSinkRestoreAndReachBothSubscriptions(int from, int to)
+            throws Exception {
         RecoveryOptions initial =
-                new RecoveryOptions(
-                        "it-" + UUID.randomUUID(), 2, from, "initial", false, entryPoint);
-        RecoveryOptions upgrade =
-                new RecoveryOptions(initial.runId, 2, to, "upgrade", true, entryPoint);
+                new RecoveryOptions("it-" + UUID.randomUUID(), 2, from, "initial", false);
+        RecoveryOptions upgrade = new RecoveryOptions(initial.runId, 2, to, "upgrade", true);
         try (PubSubTestClients clients =
                         PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
                 AutoCloseable resources = () -> deleteResources(clients, initial)) {
@@ -140,12 +137,11 @@ class PubSubRecoveryITCase {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"datastream", "table"})
-    void taskManagerLossRestoresACompletedCheckpoint(
-            String entryPoint, @InjectMiniCluster MiniCluster cluster) throws Exception {
+    @Test
+    void taskManagerLossRestoresACompletedCheckpoint(@InjectMiniCluster MiniCluster cluster)
+            throws Exception {
         RecoveryOptions options =
-                new RecoveryOptions("it-" + UUID.randomUUID(), 3, 2, "initial", false, entryPoint);
+                new RecoveryOptions("it-" + UUID.randomUUID(), 3, 2, "initial", false);
         try (PubSubTestClients clients =
                         PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
                 AutoCloseable resources = () -> deleteResources(clients, options)) {
@@ -190,11 +186,10 @@ class PubSubRecoveryITCase {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"datastream", "table"})
-    void freshUpgradeFailsWithoutLosingItsCauseDuringCleanup(String entryPoint) throws Exception {
+    @Test
+    void freshUpgradeFailsWithoutLosingItsCauseDuringCleanup() throws Exception {
         RecoveryOptions options =
-                new RecoveryOptions("it-" + UUID.randomUUID(), 1, 1, "upgrade", true, entryPoint);
+                new RecoveryOptions("it-" + UUID.randomUUID(), 1, 1, "upgrade", true);
         try (PubSubTestClients clients =
                         PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
                 AutoCloseable resources = () -> deleteResources(clients, options)) {
@@ -210,46 +205,9 @@ class PubSubRecoveryITCase {
     }
 
     @Test
-    void aSavepointOfOneEntryPointDoesNotRestoreTheOther() throws Exception {
-        RecoveryOptions initial =
-                new RecoveryOptions(
-                        "it-" + UUID.randomUUID(), 2, 1, "initial", false, "datastream");
-        RecoveryOptions upgrade =
-                new RecoveryOptions(initial.runId, 2, 1, "upgrade", true, "table");
-        try (PubSubTestClients clients =
-                        PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
-                AutoCloseable resources = () -> deleteResources(clients, initial)) {
-            createResources(clients, initial);
-            publish(clients, initial, 0);
-            JobClient first = submit(initial, null);
-            String savepoint;
-            try (AutoCloseable firstCleanup = () -> cancelIfRunning(first)) {
-                collect(clients, initial, new PubSubRecoveryReport(initial), 2, -1);
-                savepoint =
-                        first.stopWithSavepoint(
-                                        false,
-                                        temporary.toUri().toString(),
-                                        SavepointFormatType.CANONICAL)
-                                .get(60, TimeUnit.SECONDS);
-            }
-            // The entry points share no operator UID, so unclaimed state refuses the restore
-            // before either observer compares run identity.
-            assertThatThrownBy(
-                            () -> {
-                                JobClient second = submit(upgrade, savepoint);
-                                try (AutoCloseable secondCleanup = () -> cancelIfRunning(second)) {
-                                    second.getJobExecutionResult().get(60, TimeUnit.SECONDS);
-                                }
-                            })
-                    .hasStackTraceContaining("Cannot map checkpoint/savepoint state");
-        }
-    }
-
-    @ParameterizedTest
-    @ValueSource(strings = {"datastream", "table"})
-    void theSinkNeverCreatesTheOutputTopic(String entryPoint) throws Exception {
+    void theSinkNeverCreatesTheOutputTopic() throws Exception {
         RecoveryOptions options =
-                new RecoveryOptions("it-" + UUID.randomUUID(), 1, 1, "initial", false, entryPoint);
+                new RecoveryOptions("it-" + UUID.randomUUID(), 1, 1, "initial", false);
         try (PubSubTestClients clients =
                         PubSubTestClients.forEmulator(EMULATOR.getEmulatorEndpoint());
                 AutoCloseable resources = () -> deleteResources(clients, options)) {

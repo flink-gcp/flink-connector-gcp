@@ -16,19 +16,34 @@
 
 import re
 
-from ..common import ApiError, Failure, TransportError, contains, utc
-from ..exercise import FAILOVERS, FAULTS, RecoveryExercise
-from ..metrics import metric_name, sample, subset, unavailable
+from ..common import Failure, contains, timestamp, utc
+from ..exercise import (
+    FAILOVERS,
+    FAULTS,
+    SEQUENCE,
+    SEQUENCE_KIND,
+    SEQUENCE_PARALLELISM,
+    UNCONFIRMED,
+    FaultSequence,
+    RecoveryExercise,
+)
+from ..metrics import sample, subset, unavailable
 from ..policy import PUBSUB, PUBSUB_EXERCISE, PUBSUB_STATE
-from .messages import COHORTS, cohort_ranges
-from .observe import DEDUPLICATION_METRICS, connector_metrics
-from .oracle import reconcile
+from .messages import (
+    COHORTS,
+    cohort_ranges,
+    input_path,
+    message_prefix,
+    publications,
+)
+from .observe import connector_metrics
+from .oracle import input_ids, published_ids, reconcile
 from .output import OutputCollector
 from .verdict import (
-    ADAPTIVE,
     COMPLETE_STAGE,
     MEASUREMENT_EVENT,
     REPLACEMENTS,
+    sequence_verdict,
     started_by_fault,
     summarize,
     verdict,
@@ -39,10 +54,6 @@ ATTEMPT = re.compile(
     r"event=pubsub-attempt run_id=(\S+) phase=(\S+) attempt=(\S+) "
     r"restored=(true|false)"
 )
-HOLD = re.compile(
-    r"event=pubsub-hold run_id=(\S+) phase=(\S+) attempt=(\S+) "
-    r"checkpoint_id=([0-9]+) millis=([0-9]+)"
-)
 # The cohorts the supervisor has requested by each stage; the first is
 # published at admission.
 REQUESTED = {
@@ -52,16 +63,21 @@ REQUESTED = {
     "recovering": (FIRST, REPLAY),
     "after": COHORTS,
 }
-# How much of a checkpoint's hold a TaskManager kill leaves unspent at the
-# latest: the deletion request, the kubelet's reaction and the poll that saw
-# the completion all come out of it.
-KILL_MARGIN_MILLIS = 30000
-# How many completions a kill passes over before it gives up.
-KILL_PASSES = 3
-# The Flink option an adaptive scale-in's recovery manifest adds.
-PARALLELISM_OVERRIDES = "pipeline.jobvertex-parallelism-overrides"
 # The fields a rescale's recovery manifest changes.
 RESCALED = (("job", "args"), ("job", "parallelism"), ("taskManager", "replicas"))
+
+
+def summary(collector):
+    """What a collector has seen so far, which the record counts."""
+    observations = collector.observations
+    return {
+        "observations": len(observations),
+        "foreign": len(collector.foreign),
+        "attempts": sorted({item["attempt"] for item in observations}),
+        "last_output_at": utc(max(item["at"] for item in observations))
+        if observations
+        else None,
+    }
 
 
 def _identities(observations):
@@ -99,35 +115,10 @@ class PubSubExercise(RecoveryExercise):
             raise Failure("Pub/Sub exercise requires a Pub/Sub approval")
         super().__init__(env, upgrade)
         self.kind = env.approval.pubsub_trial["trial"]
-        # An AdaptiveScheduler kind's sizes, fault and hold, or None.
-        self.adaptive = ADAPTIVE.get(self.kind)
-        # The Pod a replacement or a TaskManager kill deletes; a rescale
-        # deletes none.
+        # The Pod a replacement deletes; a rescale deletes none.
         self.replaced = (
-            FAULTS[self.kind].failover
-            if self.kind in REPLACEMENTS
-            else "taskmanager"
-            if self.adaptive and self.adaptive["fault"] == "kill"
-            else None
+            FAULTS[self.kind].failover if self.kind in REPLACEMENTS else None
         )
-        # A TaskManager kill's mark: the highest checkpoint id the job had
-        # reported once replay-cohort output was seen, so that a checkpoint
-        # completing above it covers some of the cohort; `replay_seen` takes
-        # the history as the mark only on the poll after, as `marked` does.
-        self.kill_after = None
-        self.replay_seen = False
-        # Completions a kill saw too late to land inside their hold.
-        self.kill_passes = 0
-        # The checkpoints the relay logged a hold after, with how many holds.
-        self.relay_holds = {}
-        # The first restore after the fault, which is the case's; a kill may
-        # restore again once the replacement TaskManager registers.
-        self.first_restore = None
-        # The highest suppressed-redelivery count a restored attempt
-        # reported, and how many readings it was taken over: the counter is
-        # per reader and starts again with every attempt.
-        self.most_suppressed = 0
-        self.suppressed_samples = 0
         self.handoff = handoff
         self.collector = OutputCollector(handoff)
         self.ranges = cohort_ranges(self.collector.records)
@@ -188,45 +179,9 @@ class PubSubExercise(RecoveryExercise):
                 "phase": phase,
                 "restored": restored == "true",
             }
-        for line in text.splitlines():
-            match = HOLD.search(line)
-            if not match or match.group(1) != self.env.approval.run_id:
-                continue
-            # Logs are read again from their start, so a hold is counted once
-            # per attempt and checkpoint.
-            self.relay_holds.setdefault(match.group(4), set()).add(match.group(3))
 
     def attach_rest(self, service, job_id):
         self.track_rest(service, job_id)
-
-    def restarts(self, rest):
-        """Accept every restore of an in-place recovery; otherwise as the base does.
-
-        The AdaptiveScheduler keeps its JobMaster and restarts the job from
-        its latest checkpoint whenever its TaskManagers or its resource
-        requirements change: once for a rescale, and twice for a kill, down
-        when the Pod goes and up when
-        its Deployment's replacement registers. A lost TaskManager may also
-        fail the job before its slots are released, which would add one.
-        Restores outside the recovery stay unplanned.
-        """
-        if self.adaptive is None or not self.recovering:
-            super().restarts(rest)
-            return
-        restored = (rest.get("latest") or {}).get("restored")
-        if not restored:
-            return
-        at = restored.get("restore_timestamp")
-        if type(at) is not int:
-            raise Failure("Restored checkpoint has no restore time")
-        if self.last_restore and at <= self.last_restore["at"]:
-            return
-        count = (rest.get("counts") or {}).get("restored")
-        if type(count) is not int:
-            raise Failure("Checkpoint statistics have no restore count")
-        self.last_restore = {"at": at, "count": count, "stage": self.stage, "base": 0}
-        if self.first_restore is None:
-            self.first_restore = dict(restored)
 
     def backlog(self):
         """Requested input not yet seen on the output subscription.
@@ -306,15 +261,7 @@ class PubSubExercise(RecoveryExercise):
         return cp
 
     def summary(self):
-        observations = self.collector.observations
-        return {
-            "observations": len(observations),
-            "foreign": len(self.collector.foreign),
-            "attempts": sorted({item["attempt"] for item in observations}),
-            "last_output_at": utc(max(item["at"] for item in observations))
-            if observations
-            else None,
-        }
+        return summary(self.collector)
 
     def in_cohort(self, name, item):
         cohort = self.ranges[name]
@@ -341,8 +288,6 @@ class PubSubExercise(RecoveryExercise):
         self.check_open()
         if status != "RUNNING":
             return False
-        if self.adaptive and self.stage in ("recovering", "after"):
-            self.track_suppression()
         if self.stage == "baseline":
             self.after_input(rest)
         elif self.stage == "checkpoint":
@@ -397,13 +342,12 @@ class PubSubExercise(RecoveryExercise):
         """The Pod the fault removes, or None while it cannot yet be named."""
         if self.replaced == "jobmanager":
             return self.jobmanager(pods)
-        return self.busiest(pods, replayed, required=True)
+        return self.busiest(pods, replayed)
 
-    def busiest(self, pods, replayed, *, required):
+    def busiest(self, pods, replayed):
         """The running TaskManager whose attempts processed most of ``replayed``.
 
-        A ``required`` count excludes a TaskManager that processed none; a
-        kill takes the first by name when none did yet.
+        A TaskManager that processed none of it is not a candidate.
         """
         counts = {}
         for item in replayed:
@@ -418,7 +362,7 @@ class PubSubExercise(RecoveryExercise):
                 and pod["metadata"].get("labels", {}).get("component") == "taskmanager"
                 and not pod["metadata"].get("deletionTimestamp")
                 and pod.get("status", {}).get("phase") == "Running"
-                and (pod["metadata"]["uid"] in counts or not required)
+                and pod["metadata"]["uid"] in counts
             ),
             key=lambda pod: pod["metadata"]["name"],
         )
@@ -427,9 +371,6 @@ class PubSubExercise(RecoveryExercise):
         return max(managers, key=lambda pod: counts.get(pod["metadata"]["uid"], 0))
 
     def inject(self, pods, rest):
-        if self.adaptive:
-            self.inject_adaptive(pods, rest)
-            return
         if not self.collector.complete(REPLAY):
             return
         cohort = self.handoff.cohorts().get(REPLAY)
@@ -501,263 +442,8 @@ class PubSubExercise(RecoveryExercise):
                 ],
             )
 
-    def inject_adaptive(self, pods, rest):
-        """Rescale as soon as the replay cohort is published, or kill on a held checkpoint.
-
-        The relay holds the first replay-cohort record after each snapshot,
-        so every checkpoint taken while the cohort flows completes with its
-        notification queued behind that record for the kind's hold.
-
-        A reactive scale-out patches the replica count at once, and an
-        adaptive scale-in the job vertex's parallelism override. The new
-        resources or requirements stabilize while the cohort is still
-        flowing, and the scheduler restarts the job when its next checkpoint
-        completes, inside that checkpoint's hold.
-
-        A kill waits for replay-cohort output, then for a checkpoint
-        triggered after it to complete, and deletes the TaskManager that
-        processed the most replay-cohort input without a grace period while
-        the hold still has a margin left; a completion seen too late to keep
-        it is passed over for the next one.
-
-        Every attempt restarts, so every one is displaced; what reappears is
-        either redelivery of what the restored checkpoint had not covered,
-        which the oracle's completeness counts, or what it had covered, which
-        restore deduplication suppresses and the oracle would count as
-        covered redeliveries.
-        """
-        cohort = self.handoff.cohorts().get(REPLAY)
-        if not cohort or cohort["published_at"] is None:
-            return
-        jm = self.jobmanager(pods)
-        if jm is None:
-            return
-        pod = None
-        held = None
-        if self.replaced:
-            replayed = [
-                o for o in self.collector.observations if self.in_cohort(REPLAY, o)
-            ]
-            if not replayed:
-                return
-            if not self.replay_seen:
-                # This poll's history was read before this poll's pulls, so it
-                # is taken as the mark only on the next poll, as `marked` does.
-                self.replay_seen = True
-                return
-            if self.kill_after is None:
-                self.kill_after = self.known_id(rest)
-                self.renew(self.env.clock(), self.timing["checkpoint_seconds"])
-                return
-            held = self.completed_after(rest, self.kill_after)
-            if held is None:
-                return
-            triggered = held.get("trigger_timestamp")
-            if type(triggered) is not int:
-                raise Failure("Completed checkpoint has no trigger timestamp")
-            hold = self.adaptive["hold_millis"]
-            if self.env.clock() * 1000 >= triggered + hold - KILL_MARGIN_MILLIS:
-                # Too late to land inside this checkpoint's hold; the next
-                # checkpoint, which the cohort still feeds, gets its own, but
-                # only a few times: the cohort drains, and a checkpoint taken
-                # after that has nothing to hold.
-                self.kill_passes += 1
-                if self.kill_passes > KILL_PASSES:
-                    raise Failure(
-                        "No completed checkpoint was seen early enough in its"
-                        " hold; trial is inconclusive"
-                    )
-                self.kill_after = held["id"]
-                self.renew(self.env.clock(), self.timing["checkpoint_seconds"])
-                return
-            pod = self.busiest(pods, replayed, required=False)
-            if pod is None:
-                return
-        app = self.env.root("application")
-        if not app:
-            raise Failure("Application disappeared before completion")
-        if not self.replaced:
-            self.generation = app["metadata"]["generation"] + 1
-        before = {item["attempt"] for item in self.collector.observations}
-        latest = ((rest.get("latest") or {}).get("completed") or {}).get("id")
-        self.fault = {
-            "kind": self.kind,
-            "at": self.env.clock(),
-            "checkpoint": self.outcomes["checkpoint"]["id"],
-            "latest_completed": latest,
-            # The checkpoint a kill landed inside the hold of, and when it
-            # was triggered; a scale-out cannot know its restart's yet.
-            "held_checkpoint": held["id"] if held else None,
-            "held_triggered_at": held["trigger_timestamp"] if held else None,
-            "cohort": cohort,
-            "jm_uid": jm["metadata"]["uid"],
-            "pod_uid": pod["metadata"]["uid"] if pod else None,
-            "pod": pod["metadata"]["name"] if pod else None,
-            "generation": self.generation,
-            "before": sorted(before),
-            "displaced": sorted(set(self.attempts) | before),
-            "expected_replay": [],
-        }
-        self.renew(self.fault["at"], self.timing["recovery_seconds"])
-        self.outcomes["fault"] = self.fault
-        self.persist("recovering", observed=self.summary())
-        self.check_open()
-        if pod is not None:
-            # Without a grace period, so the TaskManager has no time to run
-            # the held checkpoint's notification; the kubelet's shortest
-            # termination still signals the container first, and whether the
-            # dying reader nacks its leases decides only how soon Pub/Sub
-            # redelivers them.
-            self.delete_pod(pod, FAILOVERS["taskmanager"], force=True)
-            # The deletion is the event the hold must cover, after the
-            # decision and the record above; the outcome holds this dict.
-            self.fault["deleted_at"] = self.env.clock()
-        elif self.adaptive["fault"] == "override":
-            # The only field the recovery manifest adds; the Operator applies
-            # it in place through the resource-requirements API.
-            self.patch_upgrade(
-                app,
-                [
-                    {
-                        "op": "add",
-                        "path": "/spec/flinkConfiguration/" + PARALLELISM_OVERRIDES,
-                        "value": self.upgrade["spec"]["flinkConfiguration"][
-                            PARALLELISM_OVERRIDES
-                        ],
-                    }
-                ],
-            )
-        else:
-            self.patch_upgrade(
-                app,
-                [
-                    {
-                        "op": "replace",
-                        "path": "/spec/taskManager/replicas",
-                        "value": self.upgrade["spec"]["taskManager"]["replicas"],
-                    }
-                ],
-            )
-
-    def running_managers(self, pods):
-        """The application's TaskManager Pods that are running and not going."""
-        return [
-            pod
-            for pod in pods
-            if pod["metadata"]["namespace"] == self.namespace
-            and pod["metadata"].get("labels", {}).get("component") == "taskmanager"
-            and not pod["metadata"].get("deletionTimestamp")
-            and pod.get("status", {}).get("phase") == "Running"
-        ]
-
-    def hold_proof(self, rest, restored):
-        """The case's checkpoint, its hold window, the event that must fall in it,
-        and how many relay attempts logged a hold after that checkpoint.
-
-        The case is the first restore after the fault; a kill may restore
-        again once the replacement TaskManager registers. A kill's event is
-        its deletion, inside the hold of the checkpoint it waited for. A
-        rescale's is the first restore, of whichever checkpoint completed and
-        triggered it, read from the job's checkpoint history; the
-        cancellation came before the restore.
-        """
-        first = self.first_restore or restored
-        hold = self.adaptive["hold_millis"]
-        if self.replaced:
-            checkpoint = self.fault["held_checkpoint"]
-            triggered = self.fault["held_triggered_at"]
-            deleted = self.fault.get("deleted_at")
-            event = deleted * 1000 if deleted is not None else None
-        else:
-            checkpoint = first.get("id")
-            entry = next(
-                (
-                    item
-                    for item in rest.get("history") or []
-                    if item.get("id") == checkpoint
-                ),
-                {},
-            )
-            triggered = entry.get("trigger_timestamp")
-            event = first.get("restore_timestamp")
-        return {
-            "checkpoint": checkpoint,
-            "triggered_at": triggered,
-            "hold_millis": hold,
-            "event_at": event,
-            "relay_holds": len(self.relay_holds.get(str(checkpoint), ())),
-        }
-
-    def restored_adaptive(self, app, rest, pods):
-        """The checkpoint the job last restored, once it runs at the recovery size.
-
-        The AdaptiveScheduler restores the latest checkpoint each time it
-        restarts, so the restore is the last one after the fault, and the
-        recovery is complete when every vertex runs at the kind's recovery
-        parallelism: after a kill, that is the restart that takes in the
-        replacement, the first when it registers within the scheduler's
-        resource stabilization. After an adaptive scale-in, the TaskManager
-        it left idle must also be gone.
-        """
-        restored = (rest.get("latest") or {}).get("restored") or {}
-        if restored.get("restore_timestamp", 0) / 1000 <= self.fault["at"]:
-            return None
-        if (
-            type(restored.get("id")) is not int
-            or restored.get("is_savepoint") is not False
-            or restored["id"] < self.fault["checkpoint"]
-            or not restored.get("external_path", "").startswith(
-                self.prefix("checkpoints")
-            )
-        ):
-            raise Failure("In-place restart did not restore a retained checkpoint")
-        jm = self.jobmanager(pods)
-        if jm is None:
-            return None
-        if self.fault["jm_uid"] != jm["metadata"]["uid"]:
-            raise Failure("JobManager was replaced during an in-place recovery")
-        if self.replaced:
-            if any(pod["metadata"]["uid"] == self.fault["pod_uid"] for pod in pods):
-                return None
-        else:
-            status = app.get("status", {})
-            if (
-                status.get("observedGeneration", 0) < self.generation
-                or status.get("reconciliationStatus", {}).get("state") != "DEPLOYED"
-            ):
-                return None
-            if not contains(app["spec"], self.upgrade["spec"]):
-                raise Failure("Application differs from the approved recovery manifest")
-            if self.adaptive["fault"] == "override" and (
-                len(self.running_managers(pods)) != self.adaptive["recovery"]
-            ):
-                # The resource manager releases the TaskManager the scale-in
-                # left idle once its idle timeout passes; recovery is proven
-                # after that, so the Pods running then are the stable set.
-                return None
-        try:
-            plan = self.rest.job("")
-            # The sizes are read after the poll's checkpoint statistics, so a
-            # restart between the two would pair this restore with the next
-            # restart's sizes; the restore is read again to rule that out.
-            again = (self.rest.job("/checkpoints").get("latest") or {}).get("restored")
-        except (ApiError, TransportError) as error:
-            if self.tolerate_rest(error):
-                return None
-            raise
-        sizes = {vertex.get("parallelism") for vertex in plan.get("vertices") or []}
-        if (
-            sizes != {self.adaptive["recovery"]}
-            or (again or {}).get("restore_timestamp") != restored["restore_timestamp"]
-        ):
-            return None
-        self.resized = sizes.pop()
-        return restored
-
     def restored(self, app, rest, pods):
         """What the job restored after the fault, or None while it has not."""
-        if self.adaptive:
-            return self.restored_adaptive(app, rest, pods)
         restored = (rest.get("latest") or {}).get("restored") or {}
         if restored.get("restore_timestamp", 0) / 1000 <= self.fault["at"]:
             return None
@@ -839,24 +525,6 @@ class PubSubExercise(RecoveryExercise):
         if not started:
             return
         after = [o for o in self.collector.observations if self.restarted(o)]
-        if self.adaptive:
-            self.outcomes["recovery"] = {
-                "restored": restored,
-                "replay": "restored-checkpoint",
-                # The size every vertex ran at when recovery was proven.
-                "parallelism": self.resized,
-                "restores": self.last_restore["count"] if self.last_restore else None,
-                "first_restored": self.first_restore or restored,
-                "hold": self.hold_proof(rest, restored),
-                "first_output_after_fault": (
-                    utc(min(o["at"] for o in after)) if after else None
-                ),
-                "attempts": started,
-            }
-            self.rebaseline(pods)
-            self.marker = None
-            self.request(LAST, self.timing["after_seconds"], "after")
-            return
         held = self.kind in REPLACEMENTS and restored["id"] == self.fault["checkpoint"]
         expected = {tuple(identity) for identity in self.fault["expected_replay"]}
         replays = [o for o in after if self.in_cohort(REPLAY, o)]
@@ -887,68 +555,6 @@ class PubSubExercise(RecoveryExercise):
         self.rebaseline(pods)
         self.marker = None
         self.request(LAST, self.timing["after_seconds"], "after")
-
-    def deduplication_reading(self):
-        """The source's restore-deduplication readings now, summed over its subtasks.
-
-        A reading the service did not answer is left out, which the verdict
-        does not credit.
-        """
-        reading = {}
-        if self.rest is None:
-            # The REST Service is gone while the job recovers, which the loop
-            # tolerates; the next poll reads again.
-            return reading
-        try:
-            plan = self.rest.job("")
-        except (ApiError, TransportError) as error:
-            if self.tolerate_rest(error):
-                return reading
-            raise
-        for vertex in plan.get("vertices") or []:
-            if not vertex.get("id"):
-                continue
-            metrics = connector_metrics(self.rest, vertex["id"])
-            for item in metrics if isinstance(metrics, list) else ():
-                name = metric_name(item.get("id", ""))
-                if name in DEDUPLICATION_METRICS and type(item.get("sum")) in (
-                    int,
-                    float,
-                ):
-                    reading[name] = reading.get(name, 0) + item["sum"]
-        return reading
-
-    def track_suppression(self):
-        """Keep the highest suppressed count any restored attempt reported.
-
-        Read on every poll after the fault's first restore, because each
-        attempt's counter starts at zero: a kill that restores twice would
-        otherwise lose what the first restored attempts suppressed. The
-        highest reading, not a sum, is kept: Flink answers metrics from a
-        store that may still hold an earlier attempt's value, which a sum
-        would count twice and a maximum only repeats, and the attempts before
-        the fault restored no ledger, so their counter stays at zero. An
-        attempt that ends between two polls can go unread, which errs towards
-        inconclusive.
-        """
-        reading = self.deduplication_reading()
-        count = reading.get("redeliveriesSuppressed")
-        if self.first_restore is not None and count is not None:
-            self.suppressed_samples += 1
-            self.most_suppressed = max(self.most_suppressed, count)
-        return reading
-
-    def deduplication(self):
-        """The restore-deduplication readings the verdict reads at completion.
-
-        `redeliveriesSuppressed` is the highest count a restored attempt
-        reported on any poll after the fault, including this one; the ledger
-        readings are the serving attempts' at completion.
-        """
-        reading = self.track_suppression()
-        reading["redeliveriesSuppressed"] = self.most_suppressed
-        reading["suppressed_samples"] = self.suppressed_samples
-        return reading
 
     def ids_preserved(self):
         """Whether each replay seen so far came under an input ID processed before.
@@ -1009,8 +615,6 @@ class PubSubExercise(RecoveryExercise):
             ),
             "replay_ids_preserved": self.ids_preserved(),
         }
-        if self.adaptive:
-            self.outcomes["after"]["deduplication"] = self.deduplication()
         # Decide the verdict over the record this transition writes, so it
         # reaches the `recovery-complete` evidence and not only the receipt,
         # and so the offline analysis can recompute it from that record.
@@ -1030,3 +634,281 @@ class PubSubExercise(RecoveryExercise):
         )
         self.persist(COMPLETE_STAGE, observed=self.summary(), **details, **decided)
         return True
+
+
+# The relay's progress line, which an attempt logs at its first record and
+# then at least every ten seconds while it processes: how many records it has
+# processed.
+PROGRESS = re.compile(
+    r"event=pubsub-progress run_id=(\S+) phase=(\S+) attempt=(\S+) "
+    r"restored=(true|false) origin=([0-9]+) processed=([0-9]+)"
+)
+# Pub/Sub's longest acknowledgement deadline, to which the client library caps
+# each lease extension. A lease the attempts a restart stopped held has lapsed
+# this long after the restore (ADR-0204). The wait counts from the job's latest
+# restore or progress line, whichever is later, so the paced input is through
+# before it starts.
+REDELIVERY_SECONDS = 600
+# How many pulls the last round may take before the verdict, once the
+# redelivery horizon has passed with records still missing.
+FINAL_PULLS = 200
+
+
+class PubSubSequenceExercise(FaultSequence, RecoveryExercise):
+    """The Pub/Sub trial as one fault sequence, judged by its output (ADR-0204).
+
+    The runner publishes the whole input, the admission cohort and then the
+    other two as soon as the one before is out, and the relay paces it. The
+    faults land while it flows, as in the other sequences; the relay's
+    progress lines, by the attempt that logged them, show the job running
+    again after each.
+
+    The source never ends, so the job never finishes. It completes once it
+    runs again after the last fault and either every expected record is on
+    the output subscription, or `REDELIVERY_SECONDS` have passed since its
+    latest restore or progress line, whichever came later, and a checkpoint
+    triggered after them has completed: the input is through by then, and
+    every lease the stopped attempts held has lapsed, so a redelivery would
+    have logged progress and moved the wait on; a record still missing is
+    lost. The output only ends the wait early when
+    nothing is missing.
+
+    Every output is checked against the runner's publication receipts, and
+    the verdict is the oracle's and that check's alone. A pull the service
+    answers with a transient error is tried again on the next poll.
+    """
+
+    namespace = PUBSUB
+    state_bucket = PUBSUB_STATE
+    timing = PUBSUB_EXERCISE
+    progress_event = "pubsub-progress"
+
+    def __init__(self, env, upgrade, handoff):
+        if env.approval.scenario != "pubsub-recovery":
+            raise Failure("Pub/Sub exercise requires a Pub/Sub approval")
+        trial = env.approval.pubsub_trial
+        if trial["trial"] != SEQUENCE_KIND:
+            raise Failure("Pub/Sub fault sequence requires a sequence trial")
+        self.records = trial["records_per_subscription"]
+        # The JobManager and the TaskManagers the sequence starts with.
+        self.expected_pods = 1 + SEQUENCE_PARALLELISM["upgrade"]
+        super().__init__(env, upgrade)
+        self.handoff = handoff
+        self.collector = OutputCollector(handoff, retry_answered=True)
+        # Attempt UUID to the Pod whose progress lines named it, and to when it
+        # announced itself on its initialization.
+        self.attempts = {}
+        self.announced = {}
+        # How many cohorts have been asked for; admission publishes the first.
+        self.requested = 1
+        # The relay has no input lineage to fix: a fresh start reads the same
+        # subscriptions. Set, so the first fault records none.
+        self.lineage = env.approval.run_id
+
+    def progress(self, pod, text):
+        """Read the relay's progress lines as the job's progress."""
+        uid = pod["metadata"]["uid"]
+        for line in text.splitlines():
+            match = ATTEMPT.search(line)
+            if match and match.group(1) == self.env.approval.run_id:
+                at = timestamp(line.split(" ", 1)[0])
+                attempt = match.group(3)
+                self.announced[attempt] = min(self.announced.get(attempt, at), at)
+        for line in text.splitlines():
+            match = PROGRESS.search(line)
+            if not match:
+                continue
+            run_id, phase, attempt, restored, origin, processed = match.groups()
+            at = timestamp(line.split(" ", 1)[0])
+            if run_id != self.env.approval.run_id or phase not in (
+                "initial",
+                "upgrade",
+            ):
+                raise Failure("Pub/Sub progress belongs to another run or phase")
+            if at < self.env.schedule.started:
+                raise Failure("Pub/Sub progress predates this run")
+            if at > self.env.clock():
+                raise Failure("Pub/Sub progress is dated in the future")
+            if phase == "upgrade" and (self.step == 0 or restored != "true"):
+                raise Failure("Upgrade progress appeared before its approved operation")
+            known = self.attempts.get(attempt)
+            if known and known["pod_uid"] != uid:
+                raise Failure("One Pub/Sub attempt was announced by two Pods")
+            self.attempts[attempt] = {
+                "pod_uid": uid,
+                "pod": pod["metadata"]["name"],
+                "phase": phase,
+                "restored": restored == "true",
+                "origin": int(origin),
+            }
+            self.samples[(uid, at, attempt, int(processed))] = {
+                "at": at,
+                "phase": phase,
+                "processed": int(processed),
+                "attempt": attempt,
+                "pod_uid": uid,
+            }
+
+    def observed(self):
+        """Every logical input seen on the output subscription."""
+        return {
+            (item["input_index"], item["sequence"])
+            for item in self.collector.observations
+        }
+
+    def input_complete(self):
+        """Whether every record of both subscriptions is on the output."""
+        return len(self.observed()) == 2 * self.records
+
+    def finished(self):
+        """Never: the source does not end, so the job does not finish."""
+        return False
+
+    def ran_after_restore(self):
+        """Whether an attempt that started after the awaited fault has logged progress.
+
+        After a TaskManager's loss only its own region restores, so a line from
+        the attempt on the other TaskManager, which never stopped, is not the
+        job running again, even when that attempt logs its first progress only
+        then. An attempt started after the fault when it announced itself, on
+        its initialization, after the fault.
+        """
+        at, fault = self.restored_at, self.awaiting["at"]
+        return (
+            at is not None
+            and at > fault
+            and any(
+                s["phase"] == "upgrade"
+                and s["at"] > at
+                and self.announced.get(s["attempt"], fault) > fault
+                for s in self.samples.values()
+            )
+        )
+
+    def restored_idle(self, app, status, pods):
+        """Whether the job runs again after the awaited fault but logs no progress.
+
+        Everything that shows a job running again holds except its progress:
+        an applied patch deployed, the restore after the fault, the JobManager
+        and the TaskManagers.
+        """
+        return (
+            self.restored_at is not None
+            and self.restored_at > self.awaiting["at"]
+            and status == "RUNNING"
+            and self.reconciled(app)
+            and self.jobmanager(pods) is not None
+            and len(self.running(pods, "taskmanager")) >= self.parallelism
+        )
+
+    def observe(self, app, rest, pods):
+        self.check_open()
+        self.collector.drain(self.timing["drain_pulls"])
+        # The pulls can outlast the time limit, which is enforced first.
+        self.check_open()
+        self.request_input()
+        if super().observe(app, rest, pods):
+            raise Failure("Pub/Sub fault sequence completed without its output")
+        return self.settle(app, rest, pods)
+
+    def request_input(self):
+        """Ask the runner for the next cohort once the one before it is out."""
+        if self.requested == len(COHORTS):
+            return
+        previous = self.handoff.cohorts().get(COHORTS[self.requested - 1])
+        if previous is None or previous["published_at"] is None:
+            return
+        self.handoff.request_cohort(
+            COHORTS[self.requested],
+            deadline=min(
+                self.env.clock() + self.timing["cohort_seconds"],
+                self.env.schedule.cleanup_at,
+            ),
+        )
+        self.requested += 1
+
+    def settle(self, app, rest, pods):
+        """Complete the run once the job ran again after the last fault and its output is settled.
+
+        The input is through when every record is on the output, and the job
+        has nothing left to process when it logs no progress for
+        `REDELIVERY_SECONDS` after a restore. Either, before the job is seen
+        running again after the last fault, leaves the run unconfirmed: no
+        fault goes ahead, and no patch not yet sent is sent, once the input is
+        through, and a restored job with nothing to process logs no progress.
+        """
+        status = app.get("status", {}).get("jobStatus", {}).get("state", "")
+        awaiting = self.awaiting
+        unapplied = awaiting is not None and awaiting.get("generation", 0) is None
+        if (unapplied or (awaiting is None and self.step < len(SEQUENCE))) and (
+            self.input_complete()
+        ):
+            raise Failure(UNCONFIRMED)
+        if (
+            awaiting is not None
+            and not unapplied
+            and self.restored_idle(app, status, pods)
+            and (
+                self.input_complete()
+                or self.env.clock() >= self.restored_at + REDELIVERY_SECONDS
+            )
+        ):
+            raise Failure(UNCONFIRMED)
+        if awaiting is not None or self.step < len(SEQUENCE) or status != "RUNNING":
+            return False
+        if self.input_complete():
+            completion = "all-observed"
+        else:
+            # The input still flowing would read as lost; it logs progress.
+            latest = max((s["at"] for s in self.samples.values()), default=None)
+            marks = [at for at in (self.restored_at, latest) if at is not None]
+            if not marks or not self.completed(rest, max(marks) + REDELIVERY_SECONDS):
+                return False
+            completion = "redelivery-horizon"
+            refused = len(self.collector.retried)
+            self.collector.drain(FINAL_PULLS)
+            if len(self.collector.retried) > refused:
+                # The last round was cut short; the next poll pulls again.
+                return False
+        details = {
+            "completion": completion,
+            "oracle": reconcile(
+                self.collector.lines, self.env.approval.run_id, self.records
+            ),
+            "inputs": input_ids(self.collector.observations, self.published()),
+            "attempts": self.attempts,
+            # Batches a refused pull left without observations, which an
+            # offline analysis does not count as lost.
+            "retried_pulls": list(self.collector.retried),
+        }
+        decided = sequence_verdict(
+            {"stage": COMPLETE_STAGE, "outcomes": self.outcomes, **details}
+        )
+        self.persist(
+            COMPLETE_STAGE, observed=summary(self.collector), **details, **decided
+        )
+        return True
+
+    def published(self):
+        """Each logical input's published IDs, from the runner's receipts.
+
+        A receipt that is missing or does not cover its interval leaves its
+        inputs unreceipted, which the verdict reports.
+        """
+        prefix = message_prefix(self.env.approval.run_id, self.env.approval.nonce)
+        receipts = []
+        for index, start, count in publications(self.records):
+            value, _ = self.env.store.read(
+                input_path(prefix, index, start, count) + "/response.json"
+            )
+            ids = value.get("messageIds") if isinstance(value, dict) else None
+            if isinstance(ids, list) and len(ids) == count:
+                receipts.append((index, start, ids))
+        return published_ids(receipts)
+
+
+def pubsub_exercise(env, upgrade, handoff):
+    """The exercise the approved Pub/Sub trial names."""
+    if env.approval.pubsub_trial["trial"] == SEQUENCE_KIND:
+        return PubSubSequenceExercise(env, upgrade, handoff)
+    return PubSubExercise(env, upgrade, handoff)

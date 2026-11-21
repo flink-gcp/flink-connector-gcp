@@ -20,7 +20,7 @@ from flink_tier3.cleanup import Cleanup, verify_idle
 from flink_tier3.common import Failure, digest
 from flink_tier3.environment import Environment
 from flink_tier3.model import Approval, Phase, check_window, validate_approval
-from flink_tier3.policy import PUBSUB
+from flink_tier3.policy import CLEANUP_SECONDS, PUBSUB
 from flink_tier3.pubsub import plan
 from flink_tier3.pubsub.handoff import PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle
@@ -53,7 +53,11 @@ def prepared(env, trial):
             "args": ["--run-id=" + value["run_id"], "--records-per-subscription=1000"]
         },
     }
+    started = rt.timestamp(value["started_at"])
+    window = rt.WINDOWS["pubsub-recovery"]
     value.update(
+        expires_at=rt.utc(started + window),
+        cleanup_at=rt.utc(started + window - CLEANUP_SECONDS),
         version=6,
         scenario="pubsub-recovery",
         pubsub_trial=copy.deepcopy(trial),
@@ -68,17 +72,13 @@ def prepared(env, trial):
 
 @pytest.mark.parametrize("kind", plan.TRIALS)
 @pytest.mark.parametrize("records", [3, 101, 10000])
-@pytest.mark.parametrize("entry_point", plan.ENTRY_POINTS)
-def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
+def test_trial_roundtrip_and_derived_plan(prepared, kind, records):
     environment, _ = prepared
     value = environment.approval.to_dict()
-    value["pubsub_trial"].update(
-        trial=kind, records_per_subscription=records, entry_point=entry_point
-    )
+    value["pubsub_trial"].update(trial=kind, records_per_subscription=records)
     validate_approval(value)
     approval = Approval.from_dict(value)
     assert Approval.from_dict(approval.to_dict()) == approval
-    assert approval.pubsub_trial["entry_point"] == entry_point
     value["pubsub_trial"]["records_per_subscription"] = 4
     assert approval.pubsub_trial["records_per_subscription"] == records
     resources = approval.pubsub_plan.manifest()
@@ -86,7 +86,7 @@ def test_trial_roundtrip_and_derived_plan(prepared, kind, records, entry_point):
     assert resources["nonce"] == approval.nonce
     assert len(resources["topics"]) == len(resources["subscriptions"]) == 3
     assert approval.application_namespace == PUBSUB
-    assert approval.schedule.active_seconds(approval.schedule.started) == 3420
+    assert approval.schedule.active_seconds(approval.schedule.started) == 5220
 
 
 @pytest.mark.parametrize(

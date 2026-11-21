@@ -21,23 +21,13 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// The reviewed trial's inputs, which dispatch and the offline renderer supply.
-// The AdaptiveScheduler kinds only this scenario runs (#2055, reworked by #2126), as
-// `flink_tier3/pubsub/verdict.py` declares them in its `ADAPTIVE` table, which a test holds this
-// to: whether the scheduler runs in reactive mode, the job vertex's parallelism before and after
-// the fault, and how long the relay holds a checkpoint's notification. Their per-record delay and
-// flow-control limit are the same module's constants.
-pubsubAdaptiveKinds: {
-	"reactive-scale-out": {scheduler: "reactive", initial: 2, recovery: 3, holdMillis: 30000}
-	"reactive-tm-kill": {scheduler: "reactive", initial: 3, recovery: 3, holdMillis: 90000}
-	"adaptive-scale-in": {scheduler: "adaptive", initial: 3, recovery: 2, holdMillis: 30000}
-}
-pubsubAdaptiveReplayDelayMillis: 100
-pubsubAdaptiveMaxOutstanding:    100000
-pubsubTrial: *defaultFault | or([for kind, _ in faultKinds {kind}, for kind, _ in pubsubAdaptiveKinds {kind}]) @tag(pubsub_trial)
-pubsubRecords:              *1000 | (int & >=2 & <=10000) @tag(pubsub_records,type=int)
-pubsubEntryPoint:           *"datastream" | "table"       @tag(pubsub_entry_point)
+// The trial's inputs, which dispatch and the offline renderer supply: its kind, a single fault
+// or `sequence`, which runs every fault in one run (ADR-0204), and the input and relay settings
+// that `flink_tier3/pubsub/plan.py` fixes for that kind.
+pubsubTrial: *defaultFault | or([for kind, _ in sequenceKinds {kind}]) @tag(pubsub_trial)
+pubsubRecords:              *1000 | (int & >=3 & <=10000) @tag(pubsub_records,type=int)
 pubsubRestoreDeduplication: *false | bool                 @tag(pubsub_restore_deduplication,type=bool)
+pubsubRecordDelayMillis:    *0 | (int & >=0 & <=1000)     @tag(pubsub_record_delay_millis,type=int)
 // The workload access probe's test plan and program, from `pubsub_plan.prepare`,
 // which checks the rendered Pod against both.
 pubsubProbe:       *"{}" | string @tag(pubsub_probe)
@@ -49,40 +39,14 @@ if scenario == "pubsub-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-pubsub", image: applicationImage}
 			delivery: resources: app: (pubsub.#Application & {
 				run: {
-					id:                   runID, image: applicationImage, recordsPerSubscription: pubsubRecords, entryPoint: pubsubEntryPoint
+					id:                   runID, image: applicationImage, recordsPerSubscription: pubsubRecords
 					restoreDeduplication: pubsubRestoreDeduplication
-					// An unknown kind takes this branch, whose index refuses it.
-					if pubsubAdaptiveKinds[pubsubTrial] == _|_ {
-						// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the upgrade phase.
-						parallelism: faultKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
-						phase: [if recovery && faultKinds[pubsubTrial].rescale != null {"upgrade"}, "initial"][0]
-					}
-					if pubsubAdaptiveKinds[pubsubTrial] != _|_ {
-						// Both manifests run the same job. A reactive kind's recovery manifest
-						// changes only the TaskManagers, and the adaptive kind's only the job
-						// vertex's parallelism override; the Operator applies either in place.
-						if pubsubAdaptiveKinds[pubsubTrial].scheduler == "reactive" {
-							reactive:     true
-							taskManagers: pubsubAdaptiveKinds[pubsubTrial][[if recovery {"recovery"}, "initial"][0]]
-						}
-						if pubsubAdaptiveKinds[pubsubTrial].scheduler == "adaptive" {
-							adaptive: true
-							if recovery {
-								parallelismOverride: pubsubAdaptiveKinds[pubsubTrial].recovery
-							}
-						}
-
-						// Each of these kinds shows restore deduplication suppressing its case, so
-						// it runs only with the setting on, and only the DataStream entry point
-						// chains the holding observer to the source; a delivery saying
-						// otherwise fails here.
-						restoreDeduplication:      true
-						entryPoint:                "datastream"
-						parallelism:               pubsubAdaptiveKinds[pubsubTrial].initial
-						replayDelayMillis:         pubsubAdaptiveReplayDelayMillis
-						maxOutstandingMessages:    pubsubAdaptiveMaxOutstanding
-						holdAfterCheckpointMillis: pubsubAdaptiveKinds[pubsubTrial].holdMillis
-					}
+					recordDelayMillis:    pubsubRecordDelayMillis
+					// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the
+					// upgrade phase. The sequence's patches its rescales from the upgrade (ADR-0204), so
+					// its recovery manifest is the upgrade at two.
+					parallelism: sequenceKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
+					phase: [if recovery && (pubsubTrial == "sequence" || sequenceKinds[pubsubTrial].rescale != null) {"upgrade"}, "initial"][0]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

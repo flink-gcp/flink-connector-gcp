@@ -34,8 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PubSubRecoveryReportTest {
-    final RecoveryOptions options =
-            new RecoveryOptions("oracle", 1, 1, "initial", false, "datastream");
+    final RecoveryOptions options = new RecoveryOptions("oracle", 1, 1, "initial", false);
 
     String observation(int input, String message) {
         return RecoveryPayload.observation(
@@ -95,8 +94,7 @@ class PubSubRecoveryReportTest {
     void decidesEachSharedCaseAsThePythonPortDoes(OracleCase oracleCase) {
         PubSubRecoveryReport report =
                 new PubSubRecoveryReport(
-                        new RecoveryOptions(
-                                "oracle", oracleCase.records(), 1, "initial", false, "datastream"));
+                        new RecoveryOptions("oracle", oracleCase.records(), 1, "initial", false));
         Runnable decide =
                 () -> {
                     for (String[] accept : oracleCase.accepts()) {

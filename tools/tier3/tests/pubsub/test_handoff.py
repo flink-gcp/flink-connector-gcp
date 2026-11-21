@@ -21,7 +21,7 @@ import pytest
 import requests
 from flink_tier3.common import Failure, TransportError
 from flink_tier3.model import Phase
-from flink_tier3.pubsub.handoff import PubSubHandoff
+from flink_tier3.pubsub.handoff import AnsweredTransient, PubSubHandoff
 from flink_tier3.pubsub.lifecycle import PubSubLifecycle, require_pubsub_clean
 from flink_tier3.records import Records
 
@@ -635,3 +635,71 @@ def test_local_stop_or_deadline_refuses_preparation_without_call_marker(setup, c
         runner.prepare()
     assert not http.resources.calls
     assert actors(env)["runner"]["inflight"] is None
+
+
+@pytest.mark.parametrize("status", [408, 429])
+def test_a_pull_refused_with_a_settled_answer_clears_its_marker_and_goes_on(
+    setup, status
+):
+    """The session counts the answer settled, and only the intent was saved."""
+    make, env, http, _, _ = setup
+    http.messages.responses.append(Response({}, status=status))
+    with pytest.raises(AnsweredTransient):
+        make("supervisor").collect("one", retry_answered=True)
+    assert actors(env)["supervisor"]["inflight"] is None
+    assert not env.refresh().stop_requested
+    # The next pull goes ahead under another batch.
+    http.messages.responses.append(Response({}))
+    assert make("supervisor").collect("two", retry_answered=True)["count"] == 0
+
+
+@pytest.mark.parametrize(
+    "responses",
+    [
+        # Refused for good, not transiently.
+        [Response({}, status=403)],
+        # A 5xx answer may still complete at the service.
+        [Response({}, status=503)],
+        # No answer: the request may still be in flight.
+        [requests.Timeout()],
+        # The pull was answered and its observations saved; only the
+        # acknowledgement failed, which leaves its outcome unknown.
+        [Response({"receivedMessages": [output()]}), Response({}, status=503)],
+    ],
+    ids=["refused", "5xx", "unanswered", "acknowledgement"],
+)
+def test_any_other_failed_collection_still_stops_the_run(setup, responses):
+    make, env, http, _, _ = setup
+    http.messages.responses.extend(responses)
+    with pytest.raises(Failure) as raised:
+        make("supervisor").collect("one", retry_answered=True)
+    assert not isinstance(raised.value, AnsweredTransient)
+    assert env.refresh().stop_requested
+
+
+def test_a_transient_refusal_after_an_evidence_failure_still_stops_the_run(setup):
+    """Evidence lost while the pull was out, by this actor or the other."""
+    make, env, http, _, _ = setup
+    supervisor = make("supervisor")
+    original = http.messages.request
+
+    def refused(*args, **kwargs):
+        supervisor.env.evidence_failure = {"operation": "elsewhere"}
+        return original(*args, **kwargs)
+
+    http.messages.request = refused
+    http.messages.responses.append(Response({}, status=429))
+    with pytest.raises(Failure) as raised:
+        supervisor.collect("one", retry_answered=True)
+    assert not isinstance(raised.value, AnsweredTransient)
+    assert actors(env)["supervisor"]["inflight"] is not None
+
+
+def test_without_retry_a_transient_refusal_stops_the_run(setup):
+    """The single-fault exercise keeps its earlier rule."""
+    make, env, http, _, _ = setup
+    http.messages.responses.append(Response({}, status=429))
+    with pytest.raises(Failure) as raised:
+        make("supervisor").collect("one")
+    assert not isinstance(raised.value, AnsweredTransient)
+    assert env.refresh().stop_requested
