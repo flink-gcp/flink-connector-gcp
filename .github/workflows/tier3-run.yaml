@@ -57,10 +57,17 @@ on:
           - 'fl-10-uploader-rescale-in'
           - 'alo-10-sequence'
       pubsub_trial:
-        description: 'Pub/Sub only: reviewed trial file name under kubernetes/lifecycle/pubsub-trials, without .toml: reactive-scale-out, reactive-tm-kill or adaptive-scale-in, or a shared kind (jm-replacement, tm-replacement, rescale-out or rescale-in)'
+        description: 'Pub/Sub only: the trial kind, either sequence, which injects every fault in one run (ADR-0204), or a single fault, which names the Pod deleted or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
-        type: string
-        default: ''
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'jm-replacement'
+          - 'tm-replacement'
+          - 'rescale-out'
+          - 'rescale-in'
+          - 'sequence'
       cloudtasks_trial:
         description: 'Cloud Tasks only: the trial kind, which names the Pod deleted after the savepoint upgrade or the rescale the upgrade makes (jm-replacement, tm-replacement, rescale-out or rescale-in)'
         required: false
@@ -130,7 +137,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # The window plus room for dispatch, cleanup and the empty-plan proof.
-    timeout-minutes: ${{ (inputs.scenario == 'bigquery-recovery' || inputs.scenario == 'cloudtasks-recovery' || inputs.scenario == 'bigtable-recovery' || inputs.scenario == 'spanner-recovery' || inputs.scenario == 'firestore-recovery') && 120 || 85 }}
+    timeout-minutes: ${{ (inputs.scenario == 'bigquery-recovery' || inputs.scenario == 'pubsub-recovery' || inputs.scenario == 'cloudtasks-recovery' || inputs.scenario == 'bigtable-recovery' || inputs.scenario == 'spanner-recovery' || inputs.scenario == 'firestore-recovery') && 120 || 85 }}
     permissions:
       contents: read
       actions: read

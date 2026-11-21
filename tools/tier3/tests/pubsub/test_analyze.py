@@ -30,7 +30,6 @@ from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.pubsub import analyze as pubsub_analyze
 from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
 from flink_tier3.pubsub.output import parse
-from flink_tier3.pubsub.verdict import ADAPTIVE
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
@@ -219,20 +218,6 @@ def test_each_trial_s_exported_evidence_recomputes_to_its_verdict(exported):
     assert [item["verdict"] for item in report["pubsub"]] == [USABLE]
     assert "## Deployed Pub/Sub runs" in analyze.render_markdown(report)
     assert "pubsub runs: usable 1" in analyze.summary_line(report, run_dir)
-
-
-@pytest.mark.parametrize("trial", list(ADAPTIVE), indirect=True)
-def test_an_adaptive_trial_recomputes_its_verdict(admitting, monkeypatch, tmp_path):
-    world = World(admitting, monkeypatch, lose_notification=True)
-    control = world.run()
-    assert control.recovery["stage"] == "complete", control.reason
-    run_dir = export(world, control, tmp_path / "evidence")
-    assessed = assess(run_dir)
-    assert assessed["problems"] == []
-    assert assessed["verdict"] == assessed["stored"] == USABLE, assessed["reasons"]
-    assert assessed["oracle"] == control.recovery["oracle"]
-    # The restored ledger acknowledged what the restored checkpoint covered.
-    assert assessed["oracle"]["covered_redeliveries"] == 0
 
 
 @pytest.mark.parametrize("trial", ["jm-replacement", "tm-replacement"], indirect=True)
@@ -709,7 +694,7 @@ def test_the_section_states_what_the_verdict_does_not_establish():
         ]
     )
     assert (
-        "| ps-1 | usable | usable | 4 | 60 | 0 / 10 / 0 / 1 | 3 | 0 | - | - |"
+        "| ps-1 | usable | usable | 4 | 60 | 0 / 10 / 0 / 1 | 3 | 0 | - | - | - |"
         in rendered
     )
     assert "| ps-2 | inconclusive | - | 4 | - | - | - | 0 |" in rendered

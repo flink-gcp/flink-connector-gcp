@@ -402,11 +402,7 @@ def test_renderer_drift_does_not_produce_bound_proposal(
         plan.prepare(**inputs)
 
 
-def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
-    tmp_path, renderer, capsys
-):
-    path = tmp_path / "trial.json"
-    path.write_text("{}")
+def test_cli_emits_proposal_and_rejects_cross_scenario_flags(renderer, capsys):
     args = [
         "--scenario",
         "bigquery-recovery",
@@ -431,8 +427,8 @@ def test_cli_emits_proposal_and_rejects_cross_scenario_flags(
     assert json.loads(capsys.readouterr().out)["proposal"]["approved"] is False
     for option in (
         ["--expression", "application"],
-        # A trial is named; the file form belongs to Pub/Sub proposals.
-        ["--trial-file", str(path)],
+        # The Pub/Sub trial belongs to Pub/Sub proposals.
+        ["--pubsub-trial", "sequence"],
     ):
         with pytest.raises(SystemExit) as error:
             command.main(args + option)
@@ -792,8 +788,8 @@ PROPOSAL = [
         ),
         (
             "pubsub-recovery",
-            [*PROPOSAL, "--trial-file", "x.json", "--bigquery-trial", "eo-10"],
-            "pubsub-recovery requires --trial-file, --started-at",
+            [*PROPOSAL, "--pubsub-trial", "sequence", "--bigquery-trial", "eo-10"],
+            "pubsub-recovery requires --pubsub-trial, --started-at",
         ),
     ],
 )

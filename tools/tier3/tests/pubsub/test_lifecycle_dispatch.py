@@ -18,19 +18,15 @@ import copy
 import json
 import signal
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from flink_tier3 import lifecycle as cli
-from flink_tier3 import repository
 from flink_tier3.common import Failure, digest
 from flink_tier3.model import APPROVAL_VERSION, validate_approval
 from flink_tier3.policy import CLEANUP_SECONDS, MIB, PUBSUB, SMOKE, WINDOWS
-from flink_tier3.pubsub.verdict import ADAPTIVE
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
-from .test_plan import FIXTURE_TRIALS
 from .test_plan import renderer as renderer  # noqa: PLC0414
 from .test_plan import trial as trial  # noqa: PLC0414
 
@@ -38,13 +34,6 @@ DIGEST = "sha256:" + "d" * 64
 SHA = "e" * 40
 NOW = cli.rt.timestamp("2026-09-21T00:00:00Z")
 WINDOW = WINDOWS["pubsub-recovery"]
-
-
-@pytest.fixture
-def reviewed(monkeypatch):
-    """Resolve trial names against the tests' fixture directory."""
-    monkeypatch.setattr(repository, "ROOT", FIXTURE_TRIALS.parent)
-    monkeypatch.setattr(cli, "PUBSUB_TRIALS", Path(FIXTURE_TRIALS.name))
 
 
 @pytest.fixture
@@ -67,7 +56,7 @@ def dispatching(monkeypatch):
 def args(tmp_path, **overrides):
     value = {
         "scenario": "pubsub-recovery",
-        "pubsub_trial": "example-wiring",
+        "pubsub_trial": "sequence",
         "application_digest": DIGEST,
         "run_id": "ps-1429-0001",
         "kubeconfig": tmp_path / "kubeconfig",
@@ -77,34 +66,27 @@ def args(tmp_path, **overrides):
     return SimpleNamespace(**value)
 
 
-def test_the_trial_resolves_from_its_reviewed_file_and_the_live_digest(
-    reviewed, trial, tmp_path
-):
-    resolved, image = cli.pubsub_inputs(args(tmp_path))
-    assert resolved == trial
+@pytest.mark.parametrize("kind", cli.pubsub_plan.TRIALS)
+def test_the_trial_resolves_from_its_kind_and_the_live_digest(kind, tmp_path):
+    resolved, image = cli.pubsub_inputs(args(tmp_path, pubsub_trial=kind))
+    assert resolved == cli.pubsub_plan.trial(kind)
     assert image == cli.rt.GAR + "pubsub-recovery@" + DIGEST
-
-
-def test_the_tests_example_trial_is_not_dispatchable(tmp_path):
-    """Only reviewed files resolve, and the example is not one of them."""
-    with pytest.raises(Failure, match="Unreadable Pub/Sub trial file"):
-        cli.pubsub_inputs(args(tmp_path))
 
 
 @pytest.mark.parametrize(
     "change, match",
     [
-        ({"pubsub_trial": None}, "reviewed --pubsub-trial"),
-        ({"pubsub_trial": ""}, "reviewed --pubsub-trial"),
-        ({"pubsub_trial": "../sessions/example-wiring"}, "reviewed --pubsub-trial"),
-        ({"pubsub_trial": "example-wiring.toml"}, "reviewed --pubsub-trial"),
-        ({"pubsub_trial": "Example-Wiring"}, "reviewed --pubsub-trial"),
-        ({"pubsub_trial": "absent"}, "Unreadable Pub/Sub trial file"),
+        ({"pubsub_trial": None}, "known --pubsub-trial"),
+        ({"pubsub_trial": ""}, "known --pubsub-trial"),
+        ({"pubsub_trial": "none"}, "known --pubsub-trial"),
+        # The reviewed files' names, and the kinds #2240 removed, name nothing.
+        ({"pubsub_trial": "sequence.toml"}, "known --pubsub-trial"),
+        ({"pubsub_trial": "reactive-tm-kill"}, "known --pubsub-trial"),
         ({"application_digest": None}, "sha256 --application-digest"),
         ({"application_digest": "latest"}, "sha256 --application-digest"),
     ],
 )
-def test_a_trial_that_does_not_resolve_is_refused(reviewed, tmp_path, change, match):
+def test_a_trial_that_does_not_resolve_is_refused(tmp_path, change, match):
     with pytest.raises(Failure, match=match):
         cli.pubsub_inputs(args(tmp_path, **change))
 
@@ -113,7 +95,7 @@ def test_the_window_starts_at_admission_and_lasts_the_scenarios_policy(
     monkeypatch,
 ):
     monkeypatch.setattr(cli.time, "time", lambda: NOW + 0.7)
-    assert cli.window(WINDOW) == (NOW, NOW + 3600)
+    assert cli.window(WINDOW) == (NOW, NOW + 5400)
 
 
 @pytest.mark.parametrize(
@@ -122,13 +104,13 @@ def test_the_window_starts_at_admission_and_lasts_the_scenarios_policy(
         ({}, {"GITHUB_REF": "refs/heads/feature"}, "must run from main"),
         ({"rig_sha": "main"}, {}, "exact rig commit"),
         ({}, {"GITHUB_SHA": ""}, "exact rig commit"),
-        ({"pubsub_trial": "absent"}, {}, "Unreadable Pub/Sub trial file"),
+        ({"pubsub_trial": "absent"}, {}, "known --pubsub-trial"),
         ({"application_digest": "latest"}, {}, "sha256 --application-digest"),
         ({"run_id": "Not A Run"}, {}, "Invalid run ID"),
     ],
 )
 def test_a_dispatch_is_refused_before_it_touches_the_cluster_or_the_store(
-    env, reviewed, dispatching, monkeypatch, tmp_path, change, env_change, match
+    env, dispatching, monkeypatch, tmp_path, change, env_change, match
 ):
     _, store, *_ = env
     for key, value in env_change.items():
@@ -144,7 +126,7 @@ def test_a_dispatch_is_refused_before_it_touches_the_cluster_or_the_store(
 
 
 def test_a_reused_run_id_is_refused_before_it_touches_the_cluster(
-    env, reviewed, dispatching, tmp_path
+    env, dispatching, tmp_path
 ):
     _, store, *_ = env
     store.write("runs/ps-1429-0001/approval.json", {"old": True})
@@ -156,7 +138,7 @@ def test_a_reused_run_id_is_refused_before_it_touches_the_cluster(
 
 
 @pytest.fixture
-def cluster(env, reviewed, renderer, dispatching, monkeypatch, tmp_path):
+def cluster(env, renderer, dispatching, monkeypatch, tmp_path):
     """Everything outside the rig faked at its boundary, the rig itself real."""
     kube, store, reference, _ = env
     # The workflow sets this for the step; `idle=true` in it releases the lock.
@@ -301,7 +283,7 @@ def install(monkeypatch, fail=None, enter=None):
 
 
 def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
-    cluster, trial, tmp_path, monkeypatch
+    cluster, tmp_path, monkeypatch
 ):
     seen = install(monkeypatch)
     cli.start(args(tmp_path), cluster.store)
@@ -325,7 +307,7 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
     assert approval["started_at"] == cli.rt.utc(NOW)
     assert approval["expires_at"] == cli.rt.utc(NOW + WINDOW)
     assert approval["cleanup_at"] == cli.rt.utc(NOW + WINDOW - CLEANUP_SECONDS)
-    assert approval["pubsub_trial"] == trial
+    assert approval["pubsub_trial"] == cli.pubsub_plan.trial("sequence")
     assert approval["lock_owner"]["run_id"] == "ps-1429-0001"
     assert approval["actor"] == "octocat"
     assert set(approval["namespaces"]) == {PUBSUB, cli.rt.SYSTEM}
@@ -455,7 +437,7 @@ def test_the_approval_pins_the_manifests_the_proposal_rendered(
     [(approval, _)] = cluster.bound
     [rendered] = cluster.rendered
     initial, recovery = rendered["application"], rendered["recovery_application"]
-    # `example-wiring` rescales out, so the two manifests differ.
+    # The sequence's recovery manifest is its upgrade phase, so the two differ.
     assert digest(initial) != digest(recovery)
     assert approval["application_sha256"] == digest(initial)
     assert approval["upgrade_application_sha256"] == digest(recovery)
@@ -491,21 +473,3 @@ def test_the_approval_holds_a_deep_copy_of_the_trial(trial):
     trial["records_per_subscription"] = 2
     assert approval["pubsub_trial"] == before
     assert approval["upgrade_application_sha256"] == "4" * 64
-
-
-def test_each_reviewed_trial_names_its_kind_and_plans_its_input():
-    checkout = Path(__file__).resolve().parents[4]
-    reviewed = sorted((checkout / cli.PUBSUB_TRIALS).glob("*.toml"))
-    trials = {path.stem: cli.pubsub_plan.load_reviewed_trial(path) for path in reviewed}
-    # #1361's four, and each reactive kind of #2054, named by its kind.
-    assert set(trials) == set(cli.pubsub_plan.TRIALS)
-    for name, reviewed_trial in trials.items():
-        assert name == reviewed_trial["trial"]
-        assert reviewed_trial["entry_point"] == "datastream"
-        if reviewed_trial["trial"] in ADAPTIVE:
-            assert reviewed_trial["records_per_subscription"] == 10000
-            assert reviewed_trial["restore_deduplication"] is True
-        else:
-            assert reviewed_trial["records_per_subscription"] == 1000
-            assert reviewed_trial["restore_deduplication"] is False
-        cli.pubsub_plan.input_plan("ps-1361-0001", reviewed_trial)

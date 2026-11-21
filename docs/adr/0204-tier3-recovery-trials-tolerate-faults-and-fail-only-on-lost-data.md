@@ -18,7 +18,7 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-11-12
-- Issues: [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143), [#2144](https://github.com/flink-gcp/flink-connector-gcp/issues/2144), [#2145](https://github.com/flink-gcp/flink-connector-gcp/issues/2145), [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146), [#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150), [#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153), [#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)
+- Issues: [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143), [#2144](https://github.com/flink-gcp/flink-connector-gcp/issues/2144), [#2145](https://github.com/flink-gcp/flink-connector-gcp/issues/2145), [#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146), [#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150), [#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151), [#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153), [#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)
 - Modules: tools/tier3, kubernetes
 - Evidence: [Firestore fault sequence findings](evidence/0204-firestore-fault-sequence-findings-2147.md), [Spanner fault sequence findings](evidence/0204-spanner-fault-sequence-findings-2154.md), [Bigtable fault sequence findings](evidence/0204-bigtable-fault-sequence-findings-2153.md), [BigQuery fault sequence findings](evidence/0204-bigquery-fault-sequence-findings-2150.md)
 - Partially supersedes: [ADR-0165](0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md)'s rules for ending an attempt, its measurement windows and verdicts, one fault per trial, its input sizes, and spend approval from an estimate
@@ -61,6 +61,11 @@ Nothing else decides the verdict: the number of interruptions, restarts, recover
 
 The job has **completed** when it has consumed all of its input and committed it: a bounded job reaches `FINISHED`, and a streaming source stops when its input ends, the job finishes, and a checkpoint or final commit has completed.
 Completion is read from the job, never from the destinations, so missing data is a failure and not an unfinished run.
+
+A source that cannot end, as the Pub/Sub source cannot, never lets its job finish, so its completion is read from the job another way ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)).
+Once the job runs again after the last fault, it has completed when every expected record is in its destination, or when the service's longest acknowledgement deadline has passed since the later of the job's latest restore and its latest progress, and a checkpoint triggered after that has completed.
+The input is through by then, and every lease the stopped attempts held has lapsed, so its message has been delivered again or is lost: a redelivery the job processes logs progress, which moves the wait on.
+The destination only ends the wait early when nothing is missing, so missing data is still a failure and not an unfinished run.
 
 Exactly-once paths run as their own scenario ([#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)), with the same faults and a different sink mode and verdict.
 They are BigQuery's `STORAGE_API_EXACTLY_ONCE` and `FILE_LOADS` write methods and the Cloud Tasks sink's `EXACTLY_ONCE` mode.
@@ -111,8 +116,8 @@ Spend is no longer estimated or approved per dispatch.
 Attempts are no longer spent on events the trials are meant to survive, and one run covers every fault kind.
 Tier-3 no longer reports how fast a connector recovers or what its metrics did, and a regression that only slows recovery or adds restarts goes unnoticed by its verdict.
 The restarts a run records still show where a connector failed and recovered, as the Cloud Tasks committer defects did ([#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794), [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796)), and the findings report them.
-Firestore's `sequence` trial is the first scenario on these rules ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)), Spanner's the second ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)), Bigtable's the third ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)) and BigQuery's `alo-10-sequence` trial the fourth ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)); each other scenario keeps ADR-0165's rules until its own issue moves it, BigQuery's exactly-once paths until [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148), and the single-fault trials, campaigns, estimates and windows are removed once none uses them.
-Until then every Firestore, Spanner, Bigtable and BigQuery proposal, the `sequence` ones included, still carries the scenario's estimate, which nothing approves.
+Firestore's `sequence` trial is the first scenario on these rules ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)), Spanner's the second ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)), Bigtable's the third ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)) BigQuery's `alo-10-sequence` trial the fourth ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)) and Pub/Sub's `sequence` trial the fifth ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)); each other scenario keeps ADR-0165's rules until its own issue moves it, BigQuery's exactly-once paths until [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148), and the single-fault trials, campaigns, estimates and windows are removed once none uses them.
+Until then every Firestore, Spanner, Bigtable, BigQuery and Pub/Sub proposal, the `sequence` ones included, still carries the scenario's estimate, which nothing approves.
 Past evidence keeps the interpretation of the revision that produced it.
 
 ## Alternatives declined

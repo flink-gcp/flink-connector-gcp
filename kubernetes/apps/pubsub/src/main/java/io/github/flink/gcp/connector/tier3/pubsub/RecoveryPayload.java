@@ -51,7 +51,7 @@ final class RecoveryPayload {
 
     /**
      * Tags one delivered input with its service message ID, rejecting input delivered through the
-     * wrong subscription. Both entry points apply this one check.
+     * wrong subscription.
      */
     static String tag(
             RecoveryOptions options, ByteString data, String messageId, String subscriptionPath)

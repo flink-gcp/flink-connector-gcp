@@ -669,6 +669,7 @@ The source table is converted to a DataStream so that the same input check and o
 A SQL-only pipeline from a persisted compiled plan was declined, because the observer's union-state guard and its restored-state observation have no SQL equivalent.
 The planner's default UID format numbers operators from a JVM-wide counter, so the entry point sets `table.exec.uid.generation: ALWAYS` with a fixed UID format for each of its two translations.
 A unit test pins the resulting UIDs across repeated translations and both parallelisms.
+[#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) removed the Table entry point, which no trial had run, once trials were chosen by kind and none could select it.
 
 The manual image workflow verifies and packages the relay as `pubsub-recovery` on the fixed Flink 2.2.1 AMD64 base, independently of the Cloud Tasks runtime selection.
 Its Docker context admits only the Dockerfile and packaged JARs; the application CI lane builds the same Dockerfile from the public base without publishing.
@@ -823,6 +824,7 @@ Version 5 controllers validate the serialized trial; traffic construction must m
 Retain the earlier caller-owned low-level contract for internal fixtures without version 5, without accepting them as serialized approvals.
 
 Require the proposal's integral one-hour window, fifteen-minute cleanup reserve, fixed shared state/log/evidence limits, exact application/control namespace identities and digest-pinned runtime image roles.
+Refined under [#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240): the Pub/Sub proposal's and approval's window is 90 minutes, as the other recovery scenarios' is, so that a fault sequence keeps [ADR-0204](0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md)'s hour from admission to its verdict ahead of the cleanup reserve; the one-hour window above and the cost reasoning that cites it describe the trials before that change.
 Use seven shared Pod slots with a four-Pod application quota and three-Pod control quota so a terminating Flink or Operator Pod does not consume its own replacement's slot.
 The per-namespace quotas carry the matching resource sums and restore the recorded idle values.
 Preserve earlier scenarios' ceilings and inventory scopes.
@@ -851,7 +853,7 @@ The [internal approval runbook](../../kubernetes/apps/pubsub/README.md#internal-
 Refined under [#1429](https://github.com/flink-gcp/flink-connector-gcp/issues/1429): the run workflow and the lifecycle CLI accept `pubsub-recovery` and build the version 5 approval, and admission is still refused.
 A dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`, containing the offline schema as TOML beside its licence header, and the published application digest.
 Refined under [#1655](https://github.com/flink-gcp/flink-connector-gcp/issues/1655), the lifecycle delivery keeps shared resources in `delivery.cue` and each scenario in a sibling CUE file in the same package.
-The [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials) live in the lifecycle runbook; the directory is created with its first reviewed trial file.
+The reviewed-trial instructions lived in the lifecycle runbook, and the directory held one file per trial, until [#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) removed both: a dispatch now names the trial kind as `pubsub_trial`, which the plan turns into the trial, as the other scenarios name theirs.
 Its phrase carries the policy's Pod count and window and the trial's own record and total-request ceilings, so a phrase typed for one trial does not approve another trial with different numbers.
 The window starts at admission on the whole second and lasts exactly the approval's hour; the typed expiry may lie at most ten minutes beyond it, as for BigQuery.
 Dispatch assembles the approval from the proposal it rendered and verified, mapping the proposal's recovery-application digest to the approval's `upgrade_application_sha256`, and prepares the approval-bound bundle, which re-renders from the approval alone.
@@ -968,6 +970,7 @@ A call whose begin write landed with its response lost now clears that marker: t
 The preparation's creation intent and a cohort's start mark share that shape and strand nothing: preparation settles its marker through the session's settled-write check, and a started but unpublished cohort only fails the run, whose cleanup it does not block.
 Refined under [#1725](https://github.com/flink-gcp/flink-connector-gcp/issues/1725): the guard's approval check, the actors' manifest and trial-job checks and reclamation are removed; the supervisor entrypoint still checks its mounted manifests' digests, as the [lifecycle core section](#lifecycle-core-cut-to-cleanup-and-result-protection) records.
 Declined: removing the call markers, because only a marker tells cleanup that a request may still be in flight, and dropping it would need a redesign of cleanup's safety; and removing the two trial loaders the issue counted as unused, because dispatch reads a reviewed trial file through one and the offline renderer a JSON proposal through the other.
+Both loaders went under [#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240), once dispatch and the offline renderer named the trial by its kind.
 
 ### Pub/Sub lifecycle IAM preparation
 
@@ -1759,6 +1762,7 @@ A checkpoint-triggered scale-in needs the AdaptiveScheduler without reactive mod
 
 The three kinds each reached `usable` on their first attempt on 2026-11-09 under [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127), as the [restore deduplication trial findings](evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) record, and every fault landed inside its checkpoint's hold.
 Operator 1.16.1 applied the scale-in's override in place, with no savepoint and the same JobManager, so the risk that it falls back to an upgrade did not occur.
+[#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) removed the three kinds, their manifests and the relay's hold when Pub/Sub moved to the fault sequence of [ADR-0204](0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md), as [ADR-0198](0198-pubsub-restore-deduplication-records-message-ids-not-ack-ids.md) records.
 
 ### Cloud Tasks workload names
 

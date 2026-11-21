@@ -54,7 +54,7 @@ ephemeral-storage = "0.001"
 [windows]
 smoke = 3600
 bigquery-recovery = 5400
-pubsub-recovery = 3600
+pubsub-recovery = 5400
 cloudtasks-recovery = 5400
 bigtable-recovery = 5400
 spanner-recovery = 5400

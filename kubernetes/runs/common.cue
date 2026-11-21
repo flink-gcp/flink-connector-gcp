@@ -81,8 +81,7 @@ delivery: resources: [string]: {
 			if run.namespace == "tier3-pubsub" {
 				flinkVersion:   "v2_2"
 				serviceAccount: "pubsub"
-				// Three for the AdaptiveScheduler trials, whose third subtask shares a subscription (#2055).
-				job: parallelism: 1 | 2 | 3
+				job: parallelism: 1 | 2
 			}
 			if run.namespace == "tier3-bigquery" {
 				flinkVersion:   "v2_2"

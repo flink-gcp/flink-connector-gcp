@@ -242,3 +242,33 @@ def reconcile(lines, run_id, records):
         "missing_inputs": 2 * records - len(report.logical_inputs),
         **report.counters(),
     }
+
+
+def published_ids(receipts):
+    """Each logical input's published IDs, from its publication receipts.
+
+    ``receipts`` yields an input index, the interval's first sequence and the
+    receipt's ``messageIds``, which the publish API returns in request order,
+    so the receipt alone maps each ID to its input.
+    """
+    published = {}
+    for index, start, ids in receipts:
+        for offset, message_id in enumerate(ids):
+            published.setdefault((index, start + offset), set()).add(message_id)
+    return published
+
+
+def input_ids(observations, published):
+    """How many observations name an unpublished input ID, and how many cannot be checked.
+
+    An input published twice holds both IDs, and a redelivery of either is a
+    redelivery.
+    """
+    unpublished = unreceipted = 0
+    for item in observations:
+        ids = published.get((item["input_index"], item["sequence"]))
+        if ids is None:
+            unreceipted += 1
+        elif item["input_message_id"] not in ids:
+            unpublished += 1
+    return {"unpublished": unpublished, "unreceipted": unreceipted}

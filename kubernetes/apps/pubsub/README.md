@@ -1,10 +1,11 @@
 # Pub/Sub Tier-3 recovery application
 
-This internal Flink 2.2.1 / Java 17 application prepares the DataStream and Table entry points of [issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
+This internal Flink 2.2.1 / Java 17 application is the DataStream relay of [issue #1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361).
 It relays two pre-created subscriptions through the production Pub/Sub source and publisher sink into a pre-created output topic.
-The `--entry-point` argument selects whether the relay reaches them through the DataStream API or through the Table connector.
+Its Table entry point, which no trial ever ran, was removed with the reviewed trial files ([#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240)).
 It is an unbounded streaming job over a bounded logical input domain: receiving every expected ID does not stop the job, Pods or Operator.
 An independently supervised lifecycle must bound execution and perform cleanup before deployment is admitted.
+Its `sequence` kind injects every fault in one run under ADR-0204 ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)); the four single-fault kinds keep ADR-0165's rules until the final cleanup of [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143) removes them.
 
 ## Build and local validation
 
@@ -15,7 +16,6 @@ mise x -- just tier3-pubsub-verify
 The opt-in `tier3-pubsub` Maven profile keeps the application outside published connector artifacts.
 The build produces `target/pubsub-recovery.jar` and copies runtime dependencies with their original licenses/notices into `target/image-lib/`.
 The Dockerfile adds these files to `/opt/flink/usrlib/` over the reviewed Flink image and enables its bundled GCS filesystem plugin.
-The Table entry point uses the Table API, planner loader and Table runtime in the image's `lib/` rather than packaging its own, and the Dockerfile refuses a base image without them.
 The entry point is `io.github.flink.gcp.connector.tier3.pubsub.PubSubRecoveryJob`.
 The [image publication workflow](../../../.github/workflows/tier3-images.yaml) packages it as `pubsub-recovery` on the fixed Flink 2.2.1 / Java 17 AMD64 base.
 The application CI lane builds the Dockerfile without publishing; its context admits only the Dockerfile, application JAR and packaged runtime dependency JARs.
@@ -23,19 +23,77 @@ The [first publication](https://github.com/flink-gcp/flink-connector-gcp/actions
 The reusable deployment definition below consumes a supplied digest; it does not select or admit an active run.
 
 Unit tests cover argument and input bounds, serialization, missing/foreign restored state, contradictory evidence, missing IDs and duplicate classification.
-They also pin each entry point's operator UIDs, the Table ones across repeated translations and both parallelisms.
-MiniCluster tests run each entry point with production source/sink RPCs against the Pub/Sub emulator, replace TaskManagers after a completed checkpoint and restore savepoints at parallelism 1→2 and 2→1.
-They also refuse a savepoint of one entry point in the other and check that neither sink creates a missing output topic.
+They also pin the relay's operator UIDs.
+MiniCluster tests run the relay with production source/sink RPCs against the Pub/Sub emulator, replace TaskManagers after a completed checkpoint and restore savepoints at parallelism 1→2 and 2→1.
+They also check that the sink never creates a missing output topic.
 They publish new input to both subscriptions after the disruption and require output from restored attempts.
 These are local wiring and state-continuity checks; they do not measure real-service redelivery, ACK deadlines, lease expiry, ordering, GCS access, GKE scheduling or Operator reconciliation.
+
+## Run identity and service resources
+
+The fixed project is `flink-gcp`.
+Input index `i` is 0 or 1; its topic and subscription both have ID `t3-<run-id>-in-<i>`.
+The output topic and independent observer subscription both have ID `t3-<run-id>-out`.
+All three subscriptions must exist before any corresponding publication, including the output observer before starting the relay.
+The job uses ADC, provides no key-file option, never creates a subscription and sets the sink to `CREATE_NEVER`.
+The emulator endpoint is a package-private test seam, absent from the deployed CLI.
+
+## Payload and restoration
+
+Each UTF-8 input payload is `v1|<run-id>|<input-index>|<sequence>` with canonical decimal numbers and sequence in `[0, records-per-subscription)`.
+The relay applies one input check, which rejects foreign runs, wrong subscriptions, invalid UTF-8, payloads over 128 bytes and absent service message IDs.
+It does not discard or deduplicate replayed input.
+The logical count is not a cap on service deliveries, retries, bytes billed, output publications or elapsed time.
+Those require separately approved execution ceilings and an independent stop path.
+
+The source, observer and sink have fixed UIDs `pubsub-input-v1`, `pubsub-observer-v1` and `pubsub-output-v1`.
+The `main` method fixes maximum parallelism at 128 and enables checkpoints every 120 seconds with at most one in flight; the CUE configuration sets the same interval and tolerates two consecutive failed checkpoints before the job restarts.
+The interval leaves the [recovery exercise](#recovery-exercise) time to publish, process and observe a cohort between two checkpoints, because the supervisor and the runner each act once per 15-second poll.
+
+The observer keeps version/project/run ID/input-domain identity in union operator state, accepting rescaling but refusing missing or incompatible restored identity.
+Only phase, parallelism and the restoration requirement may change between phases of the same run.
+The source's enumerator owns subscription reassignment; its readers checkpoint neither payloads nor split ownership, so unacknowledged delivery is recovered through the service.
+The publisher flushes on checkpoints and remains at-least-once.
+
+Each output payload contains thirteen pipe-delimited fields:
+`v1|<run-id>|<input-index>|<sequence>|<base64url-input-message-id>|<attempt-uuid>|<observation-uuid>|<phase>|<restored>|<origin>|<epoch>|<subtask>|<attempt-number>`.
+`origin` is the checkpoint the attempt restored, or 0 when it restored nothing, and `epoch` is the latest checkpoint whose barrier the attempt had passed when it processed the input, or `origin` before the first.
+Checkpoint barriers are aligned, so an input whose epoch is below a checkpoint's id reached the observer ahead of that checkpoint's barrier, which means the source emitted it before the barrier and the checkpoint covers it.
+`subtask` and `attempt-number` are the subtask's index and Flink's attempt number for it, which grows across the restarts one JobManager makes; ordered by origin and then attempt number, the same subtask's next attempt is the restart that ended an attempt's run, and an attempt a new JobManager numbers from zero again still sorts after the old ones, because its origin is higher.
+An earlier processing counts as covered for a later restored attempt when its attempt's origin is below the later attempt's and its epoch is below the end of its own run, the next attempt's origin: an input processed after the barrier of a checkpoint that a later run restored was covered by no checkpoint the later attempt descends from, and two restores of one checkpoint are two runs.
+A run also ends at the next origin above its own, because a whole-job restart, such as a JobManager failover's, restarts every subtask; that bounds a subtask a scale-in removed and a later restore brought back, whose next attempt comes several restores later.
+Neither bound sees a restart that restores the same checkpoint again and removes a subtask: the removed subtask's run then reads as lasting until the next restore that brings it back, so an input it was processing can be counted as covered although no checkpoint covered it.
+Nothing a task can read names the job-wide run, so the count is an upper bound when the job restored one checkpoint twice.
+A region failover that leaves some subtasks running reads their runs as ending at it, so the count can miss coverage there, and an attempt that wrote no output is unseen, so the run it ended reads as longer.
+Base64url encoding is UTF-8 without padding.
+The attempt UUID is generated during each observer initialization; the observation UUID is new for every processing call, including repeated input.
+Neither is a deterministic deduplication key for the logical input.
+The app logs `pubsub-attempt`, `pubsub-snapshot` and `pubsub-checkpoint-complete` with run, phase and attempt identity; checkpoint events also name the checkpoint ID.
+It also logs `pubsub-progress` with the attempt's restored checkpoint and how many inputs it has processed, at its first input and then at least every ten seconds while it processes, which the [fault sequence](#fault-sequence) reads as the job's progress.
+A snapshot is not completion, and the observer's completion callback does not prove that the Pub/Sub service has accepted an ACK.
+Abrupt failure can lose logs, so the deployed lifecycle must export observations outside the task JVM and correlate them with Flink checkpoint history, faults and service ACK/lease observations.
+
+## Arguments
+
+| Argument | Contract |
+| --- | --- |
+| `--run-id` | Required Tier-3 label of at most 40 lowercase letters/digits/hyphens, beginning and ending with a letter or digit |
+| `--records-per-subscription` | Logical sequence domain per input, 1–10,000; defaults to 1,000 |
+| `--parallelism` | 1 or 2; defaults to 1 |
+| `--phase` | `initial` by default, or `upgrade` |
+| `--require-restored` | `false` by default; `upgrade` requires `true` |
+| `--restore-deduplication` | `false` by default, or `true`; sets the source's restore deduplication |
+| `--record-delay-millis` | 0 to 1,000; defaults to 0. The observer waits this long before each input, which paces what the subscriptions already hold: the `sequence` kind sets 100, ten inputs a second per subtask |
+
+Arguments use `--name=value`; unknown or repeated arguments fail.
 
 ## Deployment definition
 
 [`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the relay on Flink 2.2.1 / Java 17.
-A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription`, `parallelism` and `entryPoint` inputs.
-The lifecycle delivery also supplies `restoreDeduplication`, `replayDelayMillis`, `maxOutstandingMessages` and `holdAfterCheckpointMillis`, and for a [restore-deduplication trial](#restore-deduplication-trials) `reactive` and `taskManagers`, or `adaptive` and `parallelismOverride`.
-The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade, parallelism 1/2 and entry-point combination, and the lifecycle tests render each restore-deduplication kind.
-The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs one of the seven [reviewed trials](../../lifecycle/README.md#reviewed-pubsub-trials) through the runner's [admission](#admission-and-effective-access) and the supervisor's [recovery exercise](#recovery-exercise).
+A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription` and `parallelism` inputs.
+The lifecycle delivery also supplies `restoreDeduplication` and `recordDelayMillis`; the source runs at the connector's default flow control.
+The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade and parallelism 1/2 combination, and the lifecycle tests render the `sequence` kind.
+The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs the kind it names through the runner's [admission](#admission-and-effective-access) and the supervisor's [fault sequence](#fault-sequence) or single-fault [recovery exercise](#recovery-exercise).
 
 The first verified image reference is:
 
@@ -59,37 +117,57 @@ Savepoint upgrades preserve state and refuse unclaimed state.
 The definition disables last-state fallback, so an unavailable savepoint cannot be replaced by last-state recovery, and sets `kubernetes.operator.snapshot.resource.enabled=false`, so the Operator reports the upgrade savepoint in the application's status rather than in a separate FlinkStateSnapshot, which is where the recovery exercise reads it, as the BigQuery application does.
 The rendered job arguments use the application's `--name=value` syntax, match Flink parallelism and require restored identity in the `upgrade` phase.
 That phase does not locate a savepoint or prove a checkpoint boundary: the supervisor's [recovery exercise](#recovery-exercise) selects and checks the recovery state and observes the restoration.
-The logical input domain and restart count do not bound elapsed execution or billable service operations.
+The restart strategy is unbounded, so a run waits out any number of restarts (ADR-0204).
+The logical input domain does not bound elapsed execution or billable service operations.
 
 Before deployment, integrate the owned-resource operations described below with scoped service grants, independent stop/cleanup supervision, concrete execution limits and external fault/evidence collection.
-The deployed recovery trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran on the DataStream entry point, one of each kind, and lost no message; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the verdicts, every attempt and what they leave unobserved; the replacement reruns of [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720) observed the redelivery those trials did not, as their [findings](../../../docs/adr/evidence/0165-pubsub-redelivery-findings-1720.md) record.
-The [restore-deduplication trials](#restore-deduplication-trials) of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127) each restored a checkpoint whose completion notification had not run, and the source suppressed as many redeliveries as its ledger held message ids, as their [findings](../../../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) record.
-The Table entry point has no deployed trial.
+The deployed recovery trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran one of each kind and lost no message; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the verdicts, every attempt and what they leave unobserved; the replacement reruns of [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720) observed the redelivery those trials did not, as their [findings](../../../docs/adr/evidence/0165-pubsub-redelivery-findings-1720.md) record.
+The removed [restore-deduplication trials](#restore-deduplication-trials) of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127) each restored a checkpoint whose completion notification had not run, and the source suppressed as many redeliveries as its ledger held message ids, as their [findings](../../../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md) record.
 The offline manifest check is `mise x -- just tier3-check`; it does not create resources or establish service settings.
 
-## Offline trial proposal
+## Recovery trial
 
-Render one unapproved trial with the existing application and lifecycle delivery packages:
+A trial is dispatched by kind, the run's resources are prepared, admitted and cleaned up by the runner and the supervisor, the exercise injects the faults while the relay's input and output flow, and its verdict is recomputed offline from the evidence.
+
+### Approval dispatch
+
+The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery`, builds its approval and runs the trial.
+The scenario takes two inputs beyond the common ones.
+
+| Input | Contract |
+| --- | --- |
+| `pubsub_trial` | The trial kind: `sequence`, or a single fault, `jm-replacement`, `tm-replacement`, `rescale-out` or `rescale-in`; `none`, the default, is refused |
+| `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
+
+The CLI takes the kind as `--pubsub-trial`, checks it against the plan's kinds, which the workflow's choices mirror and a test holds to them, and builds the [trial](#offline-trial-proposal) the kind fixes; the offline renderer takes the same flag.
+A `rig_sha` that predates [#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) reads the flag as the name of a reviewed trial file: it refuses `sequence` while it resolves the trial, before the lock or any resource, and runs a single-fault kind from the file of that name, which held the same trial.
+Dispatching is the approval: the owner approves a single-fault trial's estimate before dispatching it, and a `sequence` proposal still carries its estimate, which nothing approves (ADR-0204).
+
+The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget; the last 15 minutes are cleanup's, which leaves a `sequence` run its full hour from admission to its verdict (ADR-0204), as in the other scenarios.
+
+The checks that need neither the cluster nor the lock run first: the trial kind and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
+Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and verifies the proposal, takes live image receipts, assembles and validates the approval and binds the rendered delivery with the approval embedded.
+The proposal names its second manifest the recovery application; the approval pins that manifest as `upgrade_application_sha256`, the name every service scenario shares, and takes the supervisor image from the proposal's `images`, as a BigQuery approval does.
+
+Dispatch also confirms that it may create Pods in `tier3-pubsub`, which admission's access probe needs.
+It then acquires the environment lock, rechecks the idle foundation, stores the approval, both manifests and the image receipts as the run's documents, writes the control record and builds the runner through `pubsub_actors.runner()`, as a BigQuery dispatch does.
+The runner starts the run with the bound ConfigMap, supervisor Job, application and access probe, and settles it; a runner that cannot be built leaves the lock to a plain runner's settlement.
+The workflow job's limit is 120 minutes, as for the other recovery scenarios, because the window is 90 minutes.
+Enabling the scenario does not approve a run.
+
+#### Offline trial proposal
+
+Render one unapproved trial of a kind with the existing application and lifecycle delivery packages:
 
 ```bash
-cat > /tmp/pubsub-trial.json <<'JSON'
-{
-  "version": 6,
-  "trial": "rescale-out",
-  "entry_point": "datastream",
-  "records_per_subscription": 1000,
-  "restore_deduplication": false
-}
-JSON
-
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
   --scenario pubsub-recovery \
   --run-id proposal-1361 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:00:00Z \
-  --active-seconds 3420 \
+  --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:30:00Z \
+  --active-seconds 5220 \
   --revision bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
   --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/pubsub-recovery@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
-  --trial-file /tmp/pubsub-trial.json > /tmp/pubsub-proposal.json
+  --pubsub-trial sequence > /tmp/pubsub-proposal.json
 ```
 
 Run from the repository root, or set the CLI's global `--repository` argument before `render`.
@@ -105,66 +183,63 @@ It does not prove that the installed package, checkout or application image came
 | `tm-replacement` | 2 → 2 | Replace an active TM after an externally observed completed checkpoint |
 | `rescale-out` | 1 → 2 | Stop with a savepoint and restore the upgrade phase |
 | `rescale-in` | 2 → 1 | Stop with a savepoint and restore the upgrade phase |
-| `reactive-scale-out` | 2 → 3 TaskManagers | Patch the replica count of a [reactive](#restore-deduplication-trials) deployment |
-| `reactive-tm-kill` | 3 → 3 TaskManagers | Delete a TaskManager Pod of a reactive deployment, without a grace period, inside a completed checkpoint's hold |
-| `adaptive-scale-in` | 3 → 2 | Patch the parallelism override of a native deployment under the AdaptiveScheduler |
+| `sequence` | 2 → 2, patched to 1 and back | Every fault of ADR-0204 in turn, as the [fault sequence](#fault-sequence) describes |
 
 JM/TM proposals keep both manifests identical: recovery is performed by the existing deployment, with no upgrade submission.
 For rescaling, `recovery_application` is also stored under the shared delivery key `upgrade-application.json` and requires restored state.
-Each plan covers one trial and two input subscriptions with 3–10,000 logical records per subscription.
+The sequence's recovery manifest is its savepoint upgrade at two, which requires restored state too; the exercise patches its rescales from it.
+The kind fixes the rest of the trial, which the plan derives in `pubsub_plan.trial`: a single-fault kind reads 1,000 records per subscription with restore deduplication off, as [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran them, and `sequence` 4,800 with it on, at 100 ms per input.
+Each plan covers two input subscriptions.
 Each subscription's domain splits into three disjoint, nonempty cohorts at `floor(records / 3)` and `floor(2 * records / 3)`, published in this order:
 
 | Cohort | Published |
 | --- | --- |
 | `before_checkpoint` | At admission, before the application exists |
-| `after_checkpoint` | When the supervisor asks, after a retained completed checkpoint; a replacement trial's replay population |
-| `after_recovery` | When the supervisor asks, after observed recovery |
+| `after_checkpoint` | When the supervisor asks: in a single-fault trial after a retained completed checkpoint, a replacement trial's replay population; in the sequence as soon as `before_checkpoint` is out |
+| `after_recovery` | When the supervisor asks: in a single-fault trial after observed recovery; in the sequence as soon as `after_checkpoint` is out |
 
 Each range is published in ascending batches of at most 1,000, the publish API's per-request maximum, without crossing the range boundary: the first by admission, the others through the [cohort requests](#cohort-requests) below.
 The output records exact logical messages, payload bytes and required publication calls.
-A cohort range alone does not prove that its messages were processed but not checkpoint-confirmed: the [recovery exercise](#recovery-exercise) times the cohort and proves the boundary.
+A cohort range alone does not prove that its messages were processed but not checkpoint-confirmed: the single-fault [recovery exercise](#recovery-exercise) times the cohort and proves the boundary.
 
-The input file requires exactly the five fields shown in the example and rejects duplicate JSON keys, unknown fields and inputs larger than 8 KiB.
-`entry_point` is `datastream` or `table` and applies to both manifests, so a trial never changes the entry point between phases.
+The trial, which the approval keeps as `pubsub_trial`, has exactly four fields: `version` 7, `trial`, `records_per_subscription` and `restore_deduplication`.
+Version 7 removed `entry_point`, with the Table entry point.
 `restore_deduplication` sets the source's `restoreDeduplication` ([#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049)) in both manifests; version 6 added it.
 Version 5 removed version 4's `traffic_limits`: no runtime ceiling meters the trial's messages, calls, requests or evidence bytes.
 Those requests are nearly free, and the trial's cost is bounded by its input domain, its window and its Pod quota, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records.
 
-The proposal fixes a one-hour window with the last 15 minutes reserved for cleanup and a 3,420-second supervisor Job deadline.
+The proposal fixes a 90-minute window with the last 15 minutes reserved for cleanup and a 5,220-second supervisor Job deadline.
 Admission's temporary quotas hold seven Pods: three steady Flink Pods plus one Flink replacement allowance in `tier3-pubsub`, and the Operator, supervisor and one Operator replacement allowance in `tier3-system`; PVCs are zero.
-A restore-deduplication trial runs up to three TaskManagers, so its `tier3-pubsub` quota holds five Pods and the total is eight.
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal, which is what the allowances are for.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-The proposal's `cost` is a planning estimate, USD 1.987 for every other trial and USD 2.128 for a restore-deduplication one; the owner approves it before a dispatch, and nothing at run time compares spend against it.
-It charges every Pod slot for the whole hour at the conservative CPU, memory and ephemeral-storage rates, the four or five application slots at the Flink shape and the three control slots at the Operator's, with no Spot or commitment discount, and adds a USD 1.00 reserve.
+The proposal's `cost` is a planning estimate, USD 2.4805 for every trial; the owner approves a single-fault trial's before its dispatch, nothing approves the `sequence`'s (ADR-0204), and nothing at run time compares spend against either.
+It charges every Pod slot for the whole window at the conservative CPU, memory and ephemeral-storage rates, the four application slots at the Flink shape and the three control slots at the Operator's, with no Spot or commitment discount, and adds a USD 1.00 reserve.
 The reserve covers what the input domain and the window bound, each a fraction of it at the largest domain of 10,000 records per subscription and at the [recovery exercise](#recovery-exercise)'s pulls, at most five batches of 100 per 15-second poll until cleanup: Pub/Sub throughput at USD 40 per TiB with a 1 KB minimum per request, Cloud Storage operations at USD 0.005 per 1,000 and storage, Cloud Logging ingestion, and the logs and evidence leaving Google Cloud at USD 0.12 per GiB.
 The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
 A runnable approval also needs live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 A passed deadline, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
-The [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoint and decides the trial's [verdict](#verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence.
+The [fault sequence](#fault-sequence) or the single-fault [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoints and decides the trial's [verdict](#sequence-verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence.
 
-## Run identity and service resources
+#### Internal approval contract
 
-| Argument | Contract |
-| --- | --- |
-| `--run-id` | Required Tier-3 label of at most 40 lowercase letters/digits/hyphens, beginning and ending with a letter or digit |
-| `--records-per-subscription` | Logical sequence domain per input, 1–10,000; defaults to 1,000 |
-| `--parallelism` | 1 to 3; defaults to 1 |
-| `--phase` | `initial` by default, or `upgrade` |
-| `--require-restored` | `false` by default; `upgrade` requires `true` |
-| `--entry-point` | `datastream` by default, or `table`; fixed for every phase of a run |
-| `--restore-deduplication` | `false` by default, or `true`; sets the source's restore deduplication |
-| `--replay-delay-millis` | 0 to 1,000; defaults to 0. The observer sleeps this long for each input of the replay cohort, the middle third of each input's domain |
-| `--max-outstanding-messages` | 1 to 100,000; the source's flow-control element limit. Without it the connector's default applies |
-| `--hold-after-checkpoint-millis` | 0 to 600,000; defaults to 0. After each snapshot of an attempt that restored nothing, the observer holds the first replay-cohort input this long; see [Restore-deduplication trials](#restore-deduplication-trials) |
+[Dispatch](#approval-dispatch) builds a `pubsub-recovery` approval and validates it once, before it takes the lock.
+Its `pubsub_trial` is the trial its kind names, in the [offline proposal schema](#offline-trial-proposal), version 7, from which the input plan derives the trial's input domain.
+The approval pins the run/nonce, the rig commit, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
+It requires an integral 90-minute window with fifteen minutes reserved for cleanup.
+Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
+These checks do not verify live provenance or establish a recovery verdict.
 
-Arguments use `--name=value`; unknown or repeated arguments fail.
-The fixed project is `flink-gcp`.
-Input index `i` is 0 or 1; its topic and subscription both have ID `t3-<run-id>-in-<i>`.
-The output topic and independent observer subscription both have ID `t3-<run-id>-out`.
-All three subscriptions must exist before any corresponding publication, including the output observer before starting the relay.
-The job uses ADC, provides no key-file option, never creates a subscription and sets the sink to `CREATE_NEVER` (`'sink.create-disposition' = 'create-never'` on the Table entry point).
-The emulator endpoint is a package-private test seam, absent from the deployed CLI.
+Admission's temporary quotas admit four equal Flink shapes in `tier3-pubsub` and three control shapes in `tier3-system`, and no PVCs.
+The fourth application slot covers a replacement while its predecessor terminates; the third control slot covers an Operator replacement.
+The rig counts neither Pods nor state bytes beside those quotas; cleanup lists at most 10,000 state objects and restores the recorded idle quotas.
+Message evidence has no separate cap; its size follows from the input domain and the exercise's pulls.
+
+`Approval.pubsub_plan` and `PubSubLifecycle` derive service names and grants from the approval's identity.
+Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, and derives success only from the exercise's `usable` [verdict](#verdict).
+A finalization retry keeps the original receipt.
+
+The [proposal's estimate](#offline-trial-proposal) is what the owner approves before a single-fault trial's dispatch.
+The runner admits the trial and the supervisor joins it, as [admission](#admission-and-effective-access) describes, the supervisor runs the [fault sequence](#fault-sequence) or the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.
 
 ### Owned resource operations
 
@@ -394,255 +469,7 @@ When admission fails after resources exist, for example through settings or poli
 Ownership drift, a replaced manifest or a resource whose labels or live topic binding no longer match, stops the run without completing deletion and keeps the lock, because cleanup cannot prove the resources are this run's.
 A write without a definite answer in a handoff call keeps its marker and the lock, as the [handoff](#actor-ownership-and-cleanup-handoff) describes.
 
-## Recovery exercise
-
-[`PubSubExercise`](../../../tools/tier3/src/flink_tier3/pubsub/exercise.py) is the supervisor's exercise for a `pubsub-recovery` run; it runs in the supervisor's shared poll loop, which audits the namespace, reads the Pods' logs and the job's checkpoint history through its REST Service every 15 seconds, and it drives one approved trial.
-On each poll it first pulls the output subscription through the [output collector](#output-collector), at most five batches and at least one, and once a minute records a `pubsub-measurement` sample.
-A sample holds each job vertex's backpressure and its Pub/Sub connector metrics, aggregated over subtasks, and a backlog derived from the supervisor's own requests and observations; the [verdict](#verdict) lists which metrics it reads.
-A connector metric's id carries its operator's name, which differs between the entry points, so each sample lists a vertex's metrics and asks for the ones it recognizes; a read that fails with an API or transport error, answers more than its read ceiling or answers no JSON, or a listing that names none of them, is recorded as unavailable, and the trial goes on.
-`pendingAcks` is what the source holds leased, received or emitted and not yet acknowledged, which is the population a fault returns to the service.
-The `backlog` counts the requested cohorts' inputs not yet seen on the output subscription, from the supervisor's request rather than the publication, so it includes the runner's publication delay, and it reads no service metric.
-Its first stage starts when the loop sees the application admitted, and it expects the JobManager and as many TaskManagers as the application's `taskManager.replicas`.
-Each stage below is recorded before its operation, as `recovery-<stage>` evidence and in the run control's `recovery` record, together with the outcomes gathered so far.
-
-| Stage | Waits for | Then | Deadline from its start |
-| --- | --- | --- | --- |
-| `baseline` | `before_checkpoint` observed on both inputs | On the next poll, notes the highest checkpoint id the job has reported | 900 s from admission |
-| `checkpoint` | A completed checkpoint with a higher id, under the run's state prefix | Retains it and requests `after_checkpoint` | 300 s |
-| `boundary` | `after_checkpoint` published and observed on both inputs | Injects the trial's fault | 180 s |
-| `recovering` | The restoration, restored attempts, and the displaced population redelivered | Requests `after_recovery` | 600 s |
-| `after` | `after_recovery` observed on both inputs by the attempts serving after the fault, then another completed checkpoint with a higher id | Records `complete` | 600 s |
-
-Each deadline is also capped at `cleanup_at`, and a cohort's request leaves the runner 90 seconds to start publishing it; a passed deadline stops the trial and cleanup follows.
-A stage replaces its deadline only while the outgoing one still holds, checked again at the transition and after the poll's pulls and readings, which can take their own transport timeouts, so an expired stage is never carried into the next one's deadline.
-Checkpoint ids grow with their trigger, so a checkpoint whose id exceeds every id the job reported on the poll after a cohort was fully observed was triggered after that observation, on no clock but the job's own; the history is read before a poll's pulls, which is why the next poll's is taken.
-Flink 2.2.1's REST API caches checkpoint statistics for `web.refresh-interval`, three seconds by default, and the mark is read at least one 15-second poll after the observing pull; a checkpoint triggered after an output observation covers the observed messages, because the source emitted them before its barrier.
-The retained checkpoint was seen completed before the supervisor wrote the replay cohort's request, and the runner [starts a cohort](#cohort-requests) only after reading that request, so no checkpoint completed by then can cover the replay cohort.
-
-| `trial` | Fault | Displaced attempts | Expected replay |
-| --- | --- | --- | --- |
-| `jm-replacement` | Deletes the JobManager Pod | Every attempt before the fault | The replay cohort's observations |
-| `tm-replacement` | Deletes the TaskManager whose attempts processed most of the replay cohort | The attempts that Pod announced | The replay cohort's observations by those attempts |
-| `rescale-out`, `rescale-in` | Patches the job arguments, job parallelism and TaskManager replicas to the recovery manifest's, a savepoint upgrade | Every attempt before the fault | None: the savepoint completes, and acknowledges what it covers, before the job stops |
-| `reactive-scale-out` | Patches the TaskManager replicas to the recovery manifest's, as soon as the replay cohort is published | Every attempt before the fault | None counted: see [Restore-deduplication trials](#restore-deduplication-trials) |
-| `adaptive-scale-in` | Adds the recovery manifest's parallelism override, as soon as the replay cohort is published | Every attempt before the fault | None counted |
-| `reactive-tm-kill` | Deletes the TaskManager whose attempts processed most of the replay cohort without a grace period, inside the hold of a checkpoint triggered after replay-cohort output was seen | Every attempt before the fault | None counted |
-
-Each attempt is mapped to its Pod through the `pubsub-attempt` line the application logs when it initializes; an attempt announced by two Pods, or by another run, stops the trial.
-A TaskManager's loss may restart only the failover region on that Pod: in the DataStream topology each subtask's source, observer and sink form one region, so the other TaskManager's attempt keeps running without restoring anything, and its part of the replay cohort is acknowledged by the next checkpoint instead of redelivered.
-The expected replay population is therefore the cohort's observations by the displaced attempts; a wider restart redelivers more, which the recovery outcome counts as `extra_replay` rather than as a failure.
-
-Recovery is proven by the job's restoration after the fault, read from its checkpoint history, and by restored attempts announcing themselves in the logs; output is not required yet, because after a savepoint nothing is expected again and the last cohort is only requested once recovery is proven.
-A replacement must restore a checkpoint under the run's state prefix no older than the retained one, with a new JobManager or with the deleted TaskManager gone.
-A rescale must restore the savepoint its upgrade took, under the run's savepoint prefix, once the Operator reports the new generation deployed and the application matches the recovery manifest.
-When a replacement restores exactly the retained checkpoint, no checkpoint completed between the replay cohort's processing and the fault, the boundary held, and every expected observation must reappear from a new attempt within the stage's deadline; otherwise the trial stops.
-When it restores a later one, the boundary was lost, and the outcome records the replay as `unobserved` without requiring it.
-
-The `recovery` outcome records the restored checkpoint, whether the boundary held, the expected, replayed and extra replay counts, whether each replayed observation kept its input message ID, the first output by a restored attempt seen by the time recovery is proven, which a rescale rarely has and the restored attempts.
-The `fault` outcome records the retained checkpoint, the latest completed checkpoint when the fault was decided, the replay cohort's publication marks, the deleted Pod or the upgraded generation, and the attempts before the fault and those it displaced.
-The redelivery's timing is read from these marks and from the output observations; shutdown is the last output observed before the fault.
-
-An eviction, preemption, node shutdown or container restart at any stage, a Pod replacement outside `recovering`, or a job restart the trial did not plan, read from the restores the job's checkpoint statistics count ([ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts)), stops the trial as inconclusive, as in the other recovery exercises, so a Spot TaskManager reclaimed mid-trial ends it.
-The supervisor records the exercise's completion as its own success; the final receipt reports success only when the exercise's [verdict](#verdict) is `usable`.
-Synthetic tests run each trial through the supervisor's loop over a simulated relay, Operator and service, including a lost boundary, a population that never returns, a replay under new input message IDs, foreign output, connector metrics that never appear, a checkpoint outside the run's state, an unplanned replacement and a wrong savepoint; they do not establish real-service redelivery, failover scope or timing.
-
-### Restore-deduplication trials
-
-These kinds test the source's restore deduplication ([#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049)) in the case it exists for ([#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054)): a restore of a checkpoint whose completion notification never ran, so that Pub/Sub redelivers what the checkpoint already covers.
-Each kind produces that case on purpose and runs only with the setting on, so a `usable` trial shows the ledger suppressing what the case redelivers; a trial with the setting off would show only the duplicate, and the delivery refuses it.
-The savepoint rescales above never lose that notification, so they cannot reach this case.
-All three run under Flink's AdaptiveScheduler, which restarts the whole job from its latest checkpoint for every rescale and failure.
-
-The two reactive kinds run in the Operator's standalone mode with `scheduler-mode: reactive`.
-Both manifests run the same job, and the recovery manifest differs only in `taskManager.replicas`, which the Operator applies to the TaskManager Deployment in place.
-The scheduler takes the job's parallelism from the TaskManagers, so a scale to three makes two subtasks read subscription 0, as the [split plan](../../../docs/content/docs/connectors/datastream/pubsub.md#subscriptions-splits-and-parallelism) assigns it.
-It waits 120 seconds for TaskManagers before it starts the job, so that one registering after the first checkpoint does not restart it before the fault.
-In standalone application mode, the Operator's `UserLibMountDecorator`, unchanged from 1.15.0 to 1.16.1, mounts an empty volume over `/opt/flink/usrlib` whenever `pipeline.classpaths` is set, which hides the relay's JAR and dependencies there, and the JobManager then fails to load its entry class and restarts; the first deployed run, `ps2056-rso-off-a1`, stopped on that restart.
-The decorator leaves alone a JobManager that already mounts a path under `/opt/flink/usrlib`, so the reactive JobManager template mounts an empty volume at `/opt/flink/usrlib/.operator-guard`.
-
-The adaptive kind runs in native mode with `jobmanager.scheduler: adaptive` and without reactive mode, because reactive mode refuses the resource-requirements change that a scale-in, as an autoscaler makes it, goes through.
-Its recovery manifest differs from the initial one only in `pipeline.jobvertex-parallelism-overrides`, which bounds the job's one vertex at two.
-The Operator treats that option as a scale in native mode and applies it in place through `PUT /jobs/:jobid/resource-requirements`; on an error it falls back to an ordinary upgrade, which replaces the JobManager or restores a savepoint and so stops the trial.
-The override names the vertex by an id Flink derives from the source's uid, which the relay pins in `PubSubRecoveryJob.DATASTREAM_VERTEX_ID`; a relay test holds the pin to the job graph, and a manifest test holds the rendered override to the pin.
-Both of its manifests name three TaskManager replicas: the resource manager releases the TaskManager the scale-in leaves idle once its idle timeout passes, and recovery is proven only once that Pod is gone.
-Like the reactive kinds, it waits 120 seconds for TaskManagers before it starts the job, so that one registering late does not rescale it, and restore it, before the fault.
-
-The completion notification reaches the source reader as a mail on the task thread, which runs only between records, and on the DataStream entry point the observer is chained to the source.
-After each snapshot of an attempt that restored nothing, the observer holds the first replay-cohort input for the kind's hold, so that checkpoint's notification stays queued behind it for that long, and logs `event=pubsub-hold` with the checkpoint id.
-No hold happens when no replay-cohort input follows the snapshot, and a notification that runs before one does disarms the hold, so a logged hold means the notification was still queued when the hold began; the verdict credits a checkpoint only when at least one attempt logged a hold after it.
-A restart or a TaskManager loss inside the hold therefore always finds the notification unrun: the cancellation drops a queued mail, and a restored task never receives the notification of the checkpoint it restored.
-The hold makes the race deterministic; without it, the cancellation reached the TaskManager about 30 ms after the completion in the deployed runs of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056), so with a 100 ms delay per record a subtask's notification could run first in roughly three tries of ten, an estimate from that gap.
-
-The observer also sleeps 100 ms for each replay-cohort input, and the source's flow-control limit is 100,000 messages, so the cohort keeps flowing for minutes, with inputs buffered behind the one in progress, and every checkpoint taken meanwhile covers some of it unacknowledged.
-The limit matters because the source acknowledges only at checkpoint completion, so the SDK's default of 1,000 would leave the thread idle for most of a 120-second interval.
-The other cohorts carry no delay and no hold.
-
-- **`reactive-scale-out`**: the exercise patches the replica count as soon as the replay cohort is published.
-  Autopilot provisions the new TaskManager's node, the scheduler waits for the new resources to settle, and it restarts the job when its next checkpoint completes, within milliseconds and inside that checkpoint's 30-second hold.
-- **`adaptive-scale-in`**: the exercise adds the parallelism override as soon as the replay cohort is published, and the scheduler rescales when its next checkpoint completes, inside that checkpoint's 30-second hold, as for the scale-out.
-- **`reactive-tm-kill`**: the exercise waits for replay-cohort output and marks the checkpoints the job has reported, so that a checkpoint completing above the mark was triggered after some of the cohort was processed.
-  While at least 30 seconds of that checkpoint's 90-second hold remain, it deletes the TaskManager whose attempts processed most of the cohort without a grace period; a completion seen later is passed over for the next one, at most three times, after which the trial stops, because the cohort drains and a checkpoint taken after that has nothing to hold.
-  The 30 seconds also absorb the difference between the supervisor's clock, which times the deletion, and the JobManager's, which times the trigger.
-  The kubelet's shortest termination still signals the container, so whether the dying reader nacks its leases, and Pub/Sub redelivers at once, or leaves them to lapse is not controlled; either way that checkpoint's notification is lost.
-
-Recovery is proven by a restore of a checkpoint under the run's state prefix after the fault, with the same JobManager, and by every job vertex running at the kind's recovery TaskManagers.
-A rescale also needs the Operator to report the new generation deployed with the recovery manifest, the adaptive scale-in also needs the idle TaskManager gone, and a kill needs the deleted Pod gone.
-A kill can restart the job twice, once down to two TaskManagers and once back to three when the Deployment's replacement registers, so the stage waits for every vertex to run at three; in both evictions of [#2056](https://github.com/flink-gcp/flink-connector-gcp/issues/2056) and in the kill of [#2127](https://github.com/flink-gcp/flink-connector-gcp/issues/2127) the replacement registered within the restart's 120-second resource stabilization, and the job restored once.
-While the trial recovers, every restore the job counts is accepted and recorded as `restores`; one after recovery still stops the trial.
-
-The case is the first restore after the fault, which the `recovery` outcome records as `first_restored`; a kill restores again when the replacement TaskManager registers after the scheduler's resource stabilization.
-The outcome's `hold` records the checkpoint the case needs, when it was triggered, the hold, the event that must fall inside it, and how many relay attempts logged a hold after that checkpoint: for a kill, the event is the deletion, inside the hold of the checkpoint it waited for, and for a rescale, the first restore, of the checkpoint whose completion triggered it, read from the job's checkpoint history.
-The hold is counted from the checkpoint's trigger, which precedes every subtask's snapshot, so the bound errs short.
-The `after` outcome's `deduplication` holds the source's `ledgerEntriesExpired` and `ledgerEntries`, summed over its subtasks when the trial completes, and as `redeliveriesSuppressed` the highest suppressed count, summed over subtasks, that any reading after the fault's first restore returned, with `suppressed_samples` readings behind it.
-The counter is per reader and starts at zero with every attempt, so the exercise reads it on every poll after that restore; a kill that restores twice would otherwise lose what the first restored attempts suppressed.
-It keeps the highest reading rather than a sum: Flink answers metrics from a store that may still hold an earlier attempt's value, which a sum would count twice and a maximum only repeats, and the attempts before the fault restored no ledger, so their counter stays at zero.
-The verdict asks only whether any restored attempt suppressed a redelivery, which the maximum answers; an attempt that ends between two polls can go unread, which errs towards `inconclusive`.
-A rescale's event is its restore rather than its cancellation, which the job's checkpoint statistics do not time; the deployed restores came about half a second after the completion, far inside the 30-second hold, and a slower one errs towards `inconclusive` too.
-What the restart displaces is redelivered, and the oracle's completeness check counts it; what the restored checkpoint had covered and the ledger missed is the oracle's `covered_redeliveries`.
-
-### Verdict
-
-When the last stage completes, the exercise decides the trial's verdict over the `complete` record it is about to write, so the verdict reaches the `recovery-complete` evidence as well as the run control the final receipt reads.
-The record adds the output oracle's account of every collected line, the observation coverage per window and the Pod each attempt was announced by.
-[`pubsub.verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
-
-| Condition | Reason when it fails |
-| --- | --- |
-| The stage is `complete`, with the `checkpoint`, `fault`, `recovery` and `after` outcomes | `recovery-incomplete`, `missing-<outcome>` |
-| The [oracle](#offline-output-reconciliation) accepted every collected line | `oracle-missing`, `oracle-rejected` |
-| The oracle found every logical input of both subscriptions | `oracle-incomplete` |
-| A replacement restored the retained checkpoint and saw its whole expected replay, which is not empty, from new attempts | `replay-unobserved`, `replay-empty`, `replay-incomplete` |
-| Each replayed observation came under an input message ID the input was processed under before the fault, asked when recovery is proven and again over everything collected by the end | `replay-ids-not-preserved` |
-| A rescale's recovery outcome expects no replay | `replay-unexpected` |
-| A rescale saw no replay-cohort output from the attempts it started, by the end | `replay-after-savepoint` |
-| A restore-deduplication trial's recovery ran at the kind's recovery parallelism, as the exercise read every vertex's | `rescale-unproven` |
-| A restore-deduplication trial's first restore after the fault was of the checkpoint its case names, at least one relay attempt logged a hold after that checkpoint, and the fault fell inside the hold | `case-unproduced` |
-| A restore-deduplication trial's restored ledger suppressed at least one redelivery | `suppression-unobserved` |
-| The fault names one of the seven kinds | `unknown-trial` |
-| Each family below was read in a sample before the fault and in one after recovery | `unsampled-<window>`, `unobserved-<family>-in-<window>` |
-
-A lost boundary completes the trial, and its verdict is `inconclusive` with `replay-unobserved`: the job restored a checkpoint that already covered the replay cohort, so the trial exercised no redelivery, which is the claim a replacement exists to carry.
-A replay under new input message IDs came from a duplicate publication, not from the service redelivering what the source held leased.
-The `after` outcome's `replay_by_new_attempts` counts every replay-cohort input the fault's new attempts had processed by the end, redelivered or republished alike, where recovery counted only the expected ones at its first chance.
-A rescale expects none, because its savepoint acknowledges what it covers; whether the service redelivers some of it anyway, when not every acknowledgement reached it, is unmeasured, so a rescale that saw any is `inconclusive` with `replay-after-savepoint`; the deployed campaign ([#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435)) saw none in one rescale of each direction, as its [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md#redelivery-after-a-savepoint) record, and the rule stays.
-That count stops at completion, which can come before the old subscriber's extended leases expire, so a rescale found `usable` saw no such output by then, not none at all.
-An input published twice may have been processed under both of its IDs before the fault, and a redelivery under either is a redelivery.
-
-The `before` window takes the samples of `baseline`, `checkpoint` and `boundary`, because the first of them can end within a poll of the job starting, before its operators register anything; the `after` window takes those of `after`, and samples taken while recovering count toward neither.
-A family counts as read only where a sample's answer returned it, a vertex's backpressure level or a finite number for a connector metric, not where it was listed or requested.
-Every earlier transition also carries the coverage so far, so a trial that stops before completing still records what it read.
-
-| Family | Read from |
-| --- | --- |
-| `backpressure` | A vertex's backpressure level |
-| `source` | The source reader's `messagesReceived`, `messagesAcked`, `messagesNacked`, `pendingAcks`, `pendingCheckpoints`, `bufferedMessages`, `fetcherBufferedMessages`, `subscriberShutdownsAbandoned` and `subscriberFailuresUnreported` |
-| `sink` | The sink writer's `inFlightMessages`, `inFlightBytes`, `activePublishers` and `publisherShutdownsAbandoned` |
-
-The samples also carry the source's restore-deduplication readings, `redeliveriesSuppressed`, `ledgerEntriesExpired` and `ledgerEntries`, when it registers them, which it does only with the setting on; they belong to no family, so their absence leaves no window unread.
-
-The oracle's duplicate counters are reported in the record beside the verdict and decide nothing.
-At-least-once delivery owes them, and neither unique Pub/Sub message IDs nor a deduplicated count can establish exactly-once output, so their absence would prove nothing either.
-A `usable` verdict says nothing about ordering across the replay: the oracle is a completeness check over a set of identities.
-
-### Offline recomputation
-
-`flink-tier3 analyze --evidence <directory>` reads a downloaded run directory, as `gcloud storage cp --recursive` leaves `runs/<run-id>/`, and recomputes a `pubsub-recovery` run's verdict beside the BigQuery section; it contacts no service.
-[`pubsub.analyze`](../../../tools/tier3/src/flink_tier3/pubsub/analyze.py) rebuilds from the evidence alone:
-
-- the output oracle, from every batch in batch order, each appended once, with its lines derived again from the saved pull response by the function the collector used, so the batch's `observations.json` is not read;
-- the input identities, from the runner's publication receipts, which bind the returned IDs to request order within the interval their path names, so each output's input message ID is checked against what was published for its input and sequence;
-- the observation coverage, from the `pubsub-measurement` events;
-- `replay_by_new_attempts`, from the observations and the record's fault, through the same predicate the exercise uses.
-
-Whether the boundary held and which observations were collected before the fault are read from the `recovery-complete` record, because rebuilding them would re-run the exercise offline over the exported Pod logs and checkpoint statistics.
-The verdict is recomputed with the rebuilt values, and the report places it beside the verdict the run stored, through steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
-
-| Problem | Meaning |
-| --- | --- |
-| `verdict-differs-from-the-record` | The stored verdict or its reasons are not the recomputed ones |
-| `unpublished-input-ids` | An output names its input under an ID no publication receipt of that input holds; the verdict is still recomputed |
-| `approval-without-pubsub-trial`, `missing-result.json`, `malformed-evidence`, `malformed-message-evidence`, `missing-recovery-complete` | The evidence the verdict is decided from cannot be read; the run has no verdict |
-| `missing-samples`, `missing-output-batches`, `missing-output-lines`, `missing-input-receipts` | A partial download; the run has no verdict |
-
-A partial download is found by fewer samples in a window than the record counted there, by a gap in a collector's batch counter, by fewer exported lines than the completed record counted, or by an output of a completed run whose input has no publication receipt.
-An oracle rebuilt from it would lower the verdict for what the export lost, so the run gets none; fetch the evidence again.
-The analysis does not classify a disagreement as an edited record or as an inconsistent export, as for BigQuery ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
-An unreadable `supervisor/` or `result.json` document stops the analyzer for the whole directory, as for the other sections.
-The section reports the oracle's duplicate counters, and the runner's receipts beyond one per input as extra publications, apart from the verdict, and states that a usable verdict establishes neither ordering across the replay nor exactly-once output.
-Tests export the evidence a simulated run writes through the real supervisor, collector and message helpers and recompute each trial, a lost boundary, an interrupted run and a redelivery after a rescale from it; edited copies show which edits the recomputation reads and which it does not.
-
-## Input publication and output collection
-
-[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub/messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) and the runner's [cohort requests](#cohort-requests) publish through them, and the supervisor's [output collector](#output-collector) pulls through them.
-Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
-The role parameter checks routing only; the caller must bind the plan and input domain to current approval.
-The guard runs before every operation; the caller verifies prepared resources and effective access, the active run, exclusive actor authority and stop conditions before each call.
-A storage `PUT` callback denotes a create-only logical upload (GCS HTTP `POST`).
-The guard receives phase `publish` for input intent, publication and response storage, `collect` for output intent, pull and response/observation storage, and `acknowledge` for the ACK request and receipt.
-Method `PUT` always denotes storage, while `POST` always denotes a Pub/Sub data request in this helper.
-The [actor handoff](#actor-ownership-and-cleanup-handoff) composes these helpers with prepared run control; the helpers alone neither hand off actors nor implement the cleanup quiescence barrier.
-
-The runner calls `publish(input_index, start, count)` for one interval of at most 1,000 logical inputs on one of the two planned input topics.
-It stores the exact request and run/nonce/domain binding in `runs/<run-id>/pubsub/messages/<nonce>/input/<index>/<start>-<count>/intent.json` with generation-match zero before publishing.
-An existing intent refuses that interval, including after a restart, a lost intent-write response or an ambiguous publication response.
-A successful service response is saved as `response.json` before returning its IDs; the [publish API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/publish) binds returned IDs to request order.
-The helper rejects missing, empty or repeated IDs within the batch.
-A missing receipt means the outcome is unknown, not that the service accepted no messages.
-The caller must freeze disjoint phase cohorts, because overlapping intervals would publish duplicate logical inputs; the [cohort ranges](#offline-trial-proposal) are disjoint by construction.
-
-The supervisor calls `collect(batch_id, max_messages=100)` for one pull from the planned output subscription.
-The pull sets `returnImmediately`, so an idle subscription answers at once: the service may otherwise hold the request until messages arrive, past the 20-second transport timeout, and a pull without a definite answer would keep the call's marker and the lock.
-The service may then answer empty even while messages wait, which costs a poll's delay and nothing else.
-It creates an intent before the pull and saves the decoded response before interpreting its received-message envelopes.
-It then writes `observations.json`, containing every output message ID and full payload as the offline oracle's unpadded base64url TSV, before sending any acknowledgement.
-Append each batch's `tsv` value once when assembling the oracle input; preserve repeated lines and repeated deliveries across different batches.
-It decodes both standard and URL-safe Base64, with or without padding, following the [ProtoJSON bytes format](https://protobuf.dev/programming-guides/json/#representation-of-each-type), and emits canonical unpadded base64url in the TSV.
-The collector preserves foreign, empty and binary payloads for the oracle to reject; it does not validate relay semantics, filter logical identities or deduplicate messages.
-Malformed envelopes, invalid encoding or exceeded local limits retain the response and stop without acknowledgement.
-Malformed JSON, transport failure or a response over the transport cap leaves the intent but may have no response receipt.
-
-An evidence-write failure, including a committed write with a lost response, prevents the following acknowledgement.
-An ambiguous ACK retains the observations; another pull requires a new batch ID and may record the same output again.
-A successful ACK response is followed by a create-only `acknowledged.json` receipt; its absence leaves ACK outcome unknown.
-The [acknowledge API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) permits expired IDs and repeated acknowledgements, so this receipt records a successful API response without promising no redelivery.
-An [empty pull](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull) is saved without sending ACKs and is not evidence of a drained subscription.
-No API operation or evidence upload is retried by the helper, and no existing evidence is overwritten or removed.
-The caller must preserve intents and evidence through assessment and must not reuse a run's batch paths after deleting them.
-
-A publication admits at most 1,000 messages and a collection at most 100, each with a streamed response of 1 MiB, an output payload of 4096 decoded bytes, a message ID of 1024 UTF-8 bytes and an ACK ID of 4096 UTF-8 bytes.
-These are local collection limits, not Pub/Sub service limits; decoded response JSON and serialized GCS evidence can be larger than the wire representation.
-Each publication makes two logical GCS writes and one Pub/Sub request, and each nonempty collection four logical GCS writes and two Pub/Sub requests (an empty collection three writes and one request).
-The shared 20-second HTTP timeout applies to transport waits, not total trial elapsed time; the response byte cap does not bound service billing or an integrated trial's storage and request counts.
-Before cleanup, the caller must stop and fence both actors and prove their in-flight requests quiescent, even if a helper has returned a timeout.
-Synthetic tests establish request/evidence ordering and refusal behavior; they do not establish effective IAM access, service ACK behavior or deployed recovery acceptance.
-
-### Cohort requests
-
-Only the runner holds the publisher grant on the input topics, so the [cohorts](#offline-trial-proposal) after the first are published by the runner at the supervisor's request, through [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub/handoff.py).
-The run control's Pub/Sub portion keeps one entry per cohort under `cohorts`, with its deadline and the times it was requested, started and published.
-
-- **`request_cohort(name, deadline=…)`**: the supervisor asks for `after_checkpoint` or `after_recovery`, only once the cohort before it is published, while the run is `RUNNING` and its message traffic is admitted, which lasts until `cleanup_at` rather than the 900-second admission window, and with a deadline after now and no later than `cleanup_at`. Repeating a recorded request with the same deadline changes nothing, even after that deadline or a stop, so a retry after a lost response confirms it; another deadline is refused.
-- **`serve()`**: the runner publishes the first requested cohort that has not started, and returns its name, or `None` when nothing waits. `Runner.settle()` calls it on each poll.
-- **`publish_cohort(name, deadline=…)`**: the runner publishes one cohort to both input topics in batches of at most 1,000. Admission calls it for `before_checkpoint` with the admission deadline; `serve()` calls it for a requested cohort, which takes no deadline argument and uses the recorded one.
-
-A cohort's start is recorded before its first publication request, so `started_at` precedes every message of the cohort, and a cohort that started is never started again.
-A batch that fails stops the run through the handoff's usual failure path, leaving the cohort started but unpublished.
-The start is refused, and nothing recorded, once less than the guard's 20-second request budget is left before the deadline, because the guard would refuse every batch after it; each batch's own request keeps that budget too.
-The request and the two marks are one control update each, and each batch is a `publish` call with its own markers.
-The start and end marks are read from the runner's clock and the request time from the supervisor's, so an ordering across the two holds only up to the skew between those hosts.
-
-### Output collector
-
-[`OutputCollector`](../../../tools/tier3/src/flink_tier3/pubsub/output.py) pulls the output subscription through the supervisor's handoff, so every pull is a marked call and leaves the evidence `collect` writes.
-`pull()` takes one batch of up to 100 under the next batch ID: `out-`, eight random hexadecimal digits fixed for the collector, and a counter, so that two collectors name the same create-only evidence only if those digits collide.
-`drain(max_pulls)` repeats it until a batch comes back empty or the pulls are spent; an empty batch ends the round without proving the subscription empty.
-A short batch does not end it, because an immediate pull returns what the service has ready at once rather than the backlog; the exercise drains at most 20 pulls a poll, so that at the batch sizes measured so far one poll can collect the replay cohort's output before the next checkpoint, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records under [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720).
-Each collected line whose payload is this run's relay output, with the thirteen fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase, whether the attempt restored state, its origin and epoch, and its subtask and attempt number, with the output message ID, batch and collection time.
-Any other line, including another run's, is kept apart by batch and stays in the evidence, and the [verdict](#verdict)'s oracle refuses it.
-Every collected line is also kept in collection order, repeats included, as the oracle's input for the [verdict](#verdict).
-The observations live in the supervisor's process for the exercise.
-
-## Actor ownership and cleanup handoff
+### Actor ownership and cleanup handoff
 
 [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub/handoff.py) wraps the resource controller and the message helpers in a durable actor protocol.
 The original runner constructs it from its `PubSubLifecycle` and a fresh 32-character lowercase hexadecimal process token, then calls `initialize()` before resource preparation.
@@ -698,7 +525,7 @@ The complete handoff and retained invocation markers survive into the final resu
 Synthetic tests exercise concurrent claims, stop/release races, lost acknowledgements, partial preparation, conservative failure handling and receipt preservation.
 The deployed trials of [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran through these actors and this cleanup; their [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md) record the outcome.
 
-## Shared settlement integration
+#### Shared settlement integration
 
 The internal caller may attach its original runner handoff with `Runner(env, pubsub=handoff)` and its supervisor handoff with `Supervisor(env, pubsub=handoff, quiesce=barrier)`; in production, [`pubsub_actors`](#actor-construction-and-the-request-guard) makes both attachments and builds the barrier from the run.
 Each handoff must belong to that exact actor environment; a supervisor attachment requires the external barrier, and a lifecycle cannot attach both BigQuery and Pub/Sub handoffs.
@@ -727,48 +554,253 @@ Cleanup routes Pub/Sub resources to `tier3-pubsub` and temporary state to `flink
 The production attachments are built by [`pubsub_actors`](#actor-construction-and-the-request-guard), and [admission](#admission-and-effective-access) uses them.
 A successful synthetic cleanup is not a recovery verdict; the [verdict](#verdict) is.
 
-## Payload and restoration
+### Input publication and output collection
 
-Each UTF-8 input payload is `v1|<run-id>|<input-index>|<sequence>` with canonical decimal numbers and sequence in `[0, records-per-subscription)`.
-Both entry points apply one input check, which rejects foreign runs, wrong subscriptions, invalid UTF-8, payloads over 128 bytes and absent service message IDs.
-It does not discard or deduplicate replayed input.
-The logical count is not a cap on service deliveries, retries, bytes billed, output publications or elapsed time.
-Those require separately approved execution ceilings and an independent stop path.
+[`Messages`](../../../tools/tier3/src/flink_tier3/pubsub/messages.py) supplies internal data helpers; [admission](#admission-and-effective-access) and the runner's [cohort requests](#cohort-requests) publish through them, and the supervisor's [output collector](#output-collector) pulls through them.
+Construct it with the existing `ResourcePlan`, the frozen `records_per_subscription` domain, the actor's role, the shared authorized HTTP session/GCS adapter and a mandatory `before_operation(phase, method, name)` guard.
+The role parameter checks routing only; the caller must bind the plan and input domain to current approval.
+The guard runs before every operation; the caller verifies prepared resources and effective access, the active run, exclusive actor authority and stop conditions before each call.
+A storage `PUT` callback denotes a create-only logical upload (GCS HTTP `POST`).
+The guard receives phase `publish` for input intent, publication and response storage, `collect` for output intent, pull and response/observation storage, and `acknowledge` for the ACK request and receipt.
+Method `PUT` always denotes storage, while `POST` always denotes a Pub/Sub data request in this helper.
+The [actor handoff](#actor-ownership-and-cleanup-handoff) composes these helpers with prepared run control; the helpers alone neither hand off actors nor implement the cleanup quiescence barrier.
 
-On the DataStream entry point, the source, observer and sink have fixed UIDs `pubsub-input-v1`, `pubsub-observer-v1` and `pubsub-output-v1`.
-The `main` method fixes maximum parallelism at 128 and enables checkpoints every 120 seconds with at most one in flight; the CUE configuration sets the same interval and tolerates two consecutive failed checkpoints before the job restarts.
-The interval leaves the [recovery exercise](#recovery-exercise) time to publish, process and observe a cohort between two checkpoints, because the supervisor and the runner each act once per 15-second poll.
+The runner calls `publish(input_index, start, count)` for one interval of at most 1,000 logical inputs on one of the two planned input topics.
+It stores the exact request and run/nonce/domain binding in `runs/<run-id>/pubsub/messages/<nonce>/input/<index>/<start>-<count>/intent.json` with generation-match zero before publishing.
+An existing intent refuses that interval, including after a restart, a lost intent-write response or an ambiguous publication response.
+A successful service response is saved as `response.json` before returning its IDs; the [publish API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.topics/publish) binds returned IDs to request order.
+The helper rejects missing, empty or repeated IDs within the batch.
+A missing receipt means the outcome is unknown, not that the service accepted no messages.
+The caller must freeze disjoint phase cohorts, because overlapping intervals would publish duplicate logical inputs; the [cohort ranges](#offline-trial-proposal) are disjoint by construction.
 
-The Table entry point reads both subscriptions through one `pubsub` table with the `raw` format and the `message-id` and `subscription` metadata columns.
-It converts that table to a DataStream for the input check (`pubsub-table-tagger-v1`) and the observer (`pubsub-table-observer-v1`), then writes the observations through the Table sink into a single `STRING` column, so both entry points publish the same payload bytes.
-Outside a persisted compiled plan, the planner assigns explicit UIDs to its own operators only under `table.exec.uid.generation: ALWAYS`, and its default UID format numbers them from a JVM-wide counter, which differs between translations.
-The entry point therefore sets `ALWAYS` with a fixed format for each of its two translations, `pubsub-table-input-v1-<type>-<transformation>` and `pubsub-table-output-v1-<type>-<transformation>`.
-A repeated UID within one translation fails job graph generation with a hash collision rather than sharing state.
+The supervisor calls `collect(batch_id, max_messages=100)` for one pull from the planned output subscription.
+The pull sets `returnImmediately`, so an idle subscription answers at once: the service may otherwise hold the request until messages arrive, past the 20-second transport timeout, and a pull without a definite answer would keep the call's marker and the lock.
+The service may then answer empty even while messages wait, which costs a poll's delay and nothing else.
+It creates an intent before the pull and saves the decoded response before interpreting its received-message envelopes.
+It then writes `observations.json`, containing every output message ID and full payload as the offline oracle's unpadded base64url TSV, before sending any acknowledgement.
+Append each batch's `tsv` value once when assembling the oracle input; preserve repeated lines and repeated deliveries across different batches.
+It decodes both standard and URL-safe Base64, with or without padding, following the [ProtoJSON bytes format](https://protobuf.dev/programming-guides/json/#representation-of-each-type), and emits canonical unpadded base64url in the TSV.
+The collector preserves foreign, empty and binary payloads for the oracle to reject; it does not validate relay semantics, filter logical identities or deduplicate messages.
+Malformed envelopes, invalid encoding or exceeded local limits retain the response and stop without acknowledgement.
+Malformed JSON, transport failure or a response over the transport cap leaves the intent but may have no response receipt.
 
-The observer keeps version/project/run ID/input-domain identity in union operator state, accepting rescaling but refusing missing or incompatible restored identity.
-The two entry points share no operator UID, so with `allowNonRestoredState: false` a savepoint written by one entry point does not restore the other: Flink refuses its unclaimed state before either observer runs.
-Only phase, parallelism and the restoration requirement may change between phases of the same run.
-The source's enumerator owns subscription reassignment; its readers checkpoint neither payloads nor split ownership, so unacknowledged delivery is recovered through the service.
-The publisher flushes on checkpoints and remains at-least-once.
+An evidence-write failure, including a committed write with a lost response, prevents the following acknowledgement.
+An ambiguous ACK retains the observations; another pull requires a new batch ID and may record the same output again.
+A successful ACK response is followed by a create-only `acknowledged.json` receipt; its absence leaves ACK outcome unknown.
+The [acknowledge API](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/acknowledge) permits expired IDs and repeated acknowledgements, so this receipt records a successful API response without promising no redelivery.
+An [empty pull](https://docs.cloud.google.com/pubsub/docs/reference/rest/v1/projects.subscriptions/pull) is saved without sending ACKs and is not evidence of a drained subscription.
+No API operation or evidence upload is retried by the helper, and no existing evidence is overwritten or removed.
+The caller must preserve intents and evidence through assessment and must not reuse a run's batch paths after deleting them.
 
-Each output payload contains thirteen pipe-delimited fields:
-`v1|<run-id>|<input-index>|<sequence>|<base64url-input-message-id>|<attempt-uuid>|<observation-uuid>|<phase>|<restored>|<origin>|<epoch>|<subtask>|<attempt-number>`.
-`origin` is the checkpoint the attempt restored, or 0 when it restored nothing, and `epoch` is the latest checkpoint whose barrier the attempt had passed when it processed the input, or `origin` before the first.
-Checkpoint barriers are aligned, so an input whose epoch is below a checkpoint's id reached the observer ahead of that checkpoint's barrier, which means the source emitted it before the barrier and the checkpoint covers it.
-`subtask` and `attempt-number` are the subtask's index and Flink's attempt number for it, which grows across the restarts one JobManager makes, the reactive scheduler's included; ordered by origin and then attempt number, the same subtask's next attempt is the restart that ended an attempt's run, and an attempt a new JobManager numbers from zero again still sorts after the old ones, because its origin is higher.
-An earlier processing counts as covered for a later restored attempt when its attempt's origin is below the later attempt's and its epoch is below the end of its own run, the next attempt's origin: an input processed after the barrier of a checkpoint that a later run restored was covered by no checkpoint the later attempt descends from, and two restores of one checkpoint are two runs.
-A run also ends at the next origin above its own, because a reactive restart restarts every subtask; that bounds a subtask a scale-in removed and a later restore brought back, whose next attempt comes several restores later.
-Neither bound sees a restart that restores the same checkpoint again and removes a subtask: the removed subtask's run then reads as lasting until the next restore that brings it back, so an input it was processing can be counted as covered although no checkpoint covered it.
-Nothing a task can read names the job-wide run, so the count is an upper bound when the job restored one checkpoint twice; the source's `redeliveriesSuppressed` metric, which the exercise samples with `ledgerEntriesExpired` and `ledgerEntries` when the source registers them, is the cross-check for a run with restore deduplication on.
-A region failover that leaves some subtasks running reads their runs as ending at it, so the count can miss coverage there, and an attempt that wrote no output is unseen, so the run it ended reads as longer.
-Base64url encoding is UTF-8 without padding.
-The attempt UUID is generated during each observer initialization; the observation UUID is new for every processing call, including repeated input.
-Neither is a deterministic deduplication key for the logical input.
-The app logs `pubsub-attempt`, `pubsub-snapshot` and `pubsub-checkpoint-complete` with run, phase and attempt identity; checkpoint events also name the checkpoint ID.
-A snapshot is not completion, and the observer's completion callback does not prove that the Pub/Sub service has accepted an ACK.
-Abrupt failure can lose logs, so the deployed lifecycle must export observations outside the task JVM and correlate them with Flink checkpoint history, faults and service ACK/lease observations.
+A publication admits at most 1,000 messages and a collection at most 100, each with a streamed response of 1 MiB, an output payload of 4096 decoded bytes, a message ID of 1024 UTF-8 bytes and an ACK ID of 4096 UTF-8 bytes.
+These are local collection limits, not Pub/Sub service limits; decoded response JSON and serialized GCS evidence can be larger than the wire representation.
+Each publication makes two logical GCS writes and one Pub/Sub request, and each nonempty collection four logical GCS writes and two Pub/Sub requests (an empty collection three writes and one request).
+The shared 20-second HTTP timeout applies to transport waits, not total trial elapsed time; the response byte cap does not bound service billing or an integrated trial's storage and request counts.
+Before cleanup, the caller must stop and fence both actors and prove their in-flight requests quiescent, even if a helper has returned a timeout.
+Synthetic tests establish request/evidence ordering and refusal behavior; they do not establish effective IAM access, service ACK behavior or deployed recovery acceptance.
 
-## Offline output reconciliation
+#### Cohort requests
+
+Only the runner holds the publisher grant on the input topics, so the [cohorts](#offline-trial-proposal) after the first are published by the runner at the supervisor's request, through [`PubSubHandoff`](../../../tools/tier3/src/flink_tier3/pubsub/handoff.py).
+The run control's Pub/Sub portion keeps one entry per cohort under `cohorts`, with its deadline and the times it was requested, started and published.
+
+- **`request_cohort(name, deadline=…)`**: the supervisor asks for `after_checkpoint` or `after_recovery`, only once the cohort before it is published, while the run is `RUNNING` and its message traffic is admitted, which lasts until `cleanup_at` rather than the 900-second admission window, and with a deadline after now and no later than `cleanup_at`. Repeating a recorded request with the same deadline changes nothing, even after that deadline or a stop, so a retry after a lost response confirms it; another deadline is refused.
+- **`serve()`**: the runner publishes the first requested cohort that has not started, and returns its name, or `None` when nothing waits. `Runner.settle()` calls it on each poll.
+- **`publish_cohort(name, deadline=…)`**: the runner publishes one cohort to both input topics in batches of at most 1,000. Admission calls it for `before_checkpoint` with the admission deadline; `serve()` calls it for a requested cohort, which takes no deadline argument and uses the recorded one.
+
+A cohort's start is recorded before its first publication request, so `started_at` precedes every message of the cohort, and a cohort that started is never started again.
+A batch that fails stops the run through the handoff's usual failure path, leaving the cohort started but unpublished.
+The start is refused, and nothing recorded, once less than the guard's 20-second request budget is left before the deadline, because the guard would refuse every batch after it; each batch's own request keeps that budget too.
+The request and the two marks are one control update each, and each batch is a `publish` call with its own markers.
+The start and end marks are read from the runner's clock and the request time from the supervisor's, so an ordering across the two holds only up to the skew between those hosts.
+
+#### Output collector
+
+[`OutputCollector`](../../../tools/tier3/src/flink_tier3/pubsub/output.py) pulls the output subscription through the supervisor's handoff, so every pull is a marked call and leaves the evidence `collect` writes.
+`pull()` takes one batch of up to 100 under the next batch ID: `out-`, eight random hexadecimal digits fixed for the collector, and a counter, so that two collectors name the same create-only evidence only if those digits collide.
+`drain(max_pulls)` repeats it until a batch comes back empty or the pulls are spent; an empty batch ends the round without proving the subscription empty.
+A short batch does not end it, because an immediate pull returns what the service has ready at once rather than the backlog; the exercise drains at most 20 pulls a poll, so that at the batch sizes measured so far one poll can collect the replay cohort's output before the next checkpoint, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records under [#1720](https://github.com/flink-gcp/flink-connector-gcp/issues/1720).
+Each collected line whose payload is this run's relay output, with the thirteen fields of [the payload](#payload-and-restoration) in canonical form, becomes an observation: input index and sequence, input message ID, attempt, observation ID, phase, whether the attempt restored state, its origin and epoch, and its subtask and attempt number, with the output message ID, batch and collection time.
+Any other line, including another run's, is kept apart by batch and stays in the evidence, and the [verdict](#verdict)'s oracle refuses it.
+Every collected line is also kept in collection order, repeats included, as the oracle's input for the [verdict](#verdict).
+The observations live in the supervisor's process for the exercise.
+
+### Fault sequence
+
+[`PubSubSequenceExercise`](../../../tools/tier3/src/flink_tier3/pubsub/exercise.py) runs the `sequence` kind under ADR-0204: the shared fault sequence of [`flink_tier3/exercise.py`](../../../tools/tier3/src/flink_tier3/exercise.py), with the relay's input, progress and completion.
+
+Admission publishes `before_checkpoint`, and on each poll the exercise asks the runner for the next [cohort](#cohort-requests) once the one before it is out, so the subscriptions hold the whole input within a few polls of the job starting.
+The relay reads it at 100 ms per input per subtask, ten inputs a second per subscription at parallelism two and five at one.
+The input is 4,800 records per subscription, 480 seconds of input at parallelism two, so it outlasts the faults.
+The earlier sequence runs began their input 477 to 677 seconds into the window, the faults delayed it by 245 to 292 seconds, and it had advanced by 100 to 134 seconds when the last fault came, which puts the verdict at about 20.5 to 25.6 minutes.
+
+On each poll the exercise first pulls the output subscription, at most 20 batches, through the [output collector](#output-collector).
+The relay logs `event=pubsub-progress` with its attempt, whether it restored, the checkpoint it restored and how many inputs it processed, at its first input and then at least every ten seconds while it processes.
+These lines are the job's progress: the job runs again after a fault once an attempt the fault's restore started logs one, with the other conditions ADR-0204 names.
+A TaskManager's loss restores only the failover region on that Pod, so a line from the attempt on the other TaskManager, which never stopped, does not count.
+Once the job runs with input flowing and a checkpoint has completed after its first progress, the exercise injects the five faults in turn: the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager whose attempt logged the latest progress, and a rescale to one and back to two.
+Each savepoint fault patches the approved upgrade manifest, changing only `--parallelism=`, `job.parallelism` and the TaskManager replicas.
+Everything else is waited out and recorded.
+
+The source does not end, so the job never finishes, and ADR-0204 reads its completion another way.
+After the last fault the job runs again, and then either every record of both subscriptions is on the output subscription, or 600 seconds, Pub/Sub's longest acknowledgement deadline, have passed since the later of the job's latest restore and its latest progress line, and a checkpoint triggered after them has completed.
+By then the paced input is through, and every lease the stopped attempts held has lapsed, since the client library caps each extension at 600 seconds; a redelivery the relay processes logs progress and moves the wait on, so a record still missing is lost.
+The record names which completion it reached as `completion`, `all-observed` or `redelivery-horizon`.
+The output ends the wait early only when nothing is missing, so it never turns a loss into an unfinished run; a loss is expected to reach its verdict 31 to 38 minutes into the window, under the one-hour limit.
+The run stops unconfirmed, and can run again as it is, when the job could not be seen running again after a fault because the input was through: every record is on the output before the last fault has been injected and waited out, or the job runs again after a fault in every other respect but logs no progress for 600 seconds after its restore, having nothing left to process.
+
+A pull that the service refuses with 408 or 429 leaves no request in flight, as the session counts it, and saved nothing but its intent, so the handoff clears its marker and the next poll pulls again; a `pubsub-pull-retried` event names its batch, and the record lists it under `retried_pulls`.
+What the service had leased to it comes back as a duplicate, and a refusal in the round before the verdict defers the verdict to the next poll.
+A 5xx answer may still complete at the service, which the session records as unsettled for good, so it stops the run as for the single-fault trials, and so does a pull without an answer, an evidence write that failed, or an acknowledgement that failed after its pull was saved.
+
+### Recovery exercise
+
+[`PubSubExercise`](../../../tools/tier3/src/flink_tier3/pubsub/exercise.py) is the supervisor's exercise for a single-fault `pubsub-recovery` trial, whose kind names one fault; the `sequence` kind runs the [fault sequence](#fault-sequence) instead.
+It it runs in the supervisor's shared poll loop, which audits the namespace, reads the Pods' logs and the job's checkpoint history through its REST Service every 15 seconds, and it drives one approved trial.
+On each poll it first pulls the output subscription through the [output collector](#output-collector), at most five batches and at least one, and once a minute records a `pubsub-measurement` sample.
+A sample holds each job vertex's backpressure and its Pub/Sub connector metrics, aggregated over subtasks, and a backlog derived from the supervisor's own requests and observations; the [verdict](#verdict) lists which metrics it reads.
+A connector metric's id carries its operator's name, which differs with operator chaining, so each sample lists a vertex's metrics and asks for the ones it recognizes; a read that fails with an API or transport error, answers more than its read ceiling or answers no JSON, or a listing that names none of them, is recorded as unavailable, and the trial goes on.
+`pendingAcks` is what the source holds leased, received or emitted and not yet acknowledged, which is the population a fault returns to the service.
+The `backlog` counts the requested cohorts' inputs not yet seen on the output subscription, from the supervisor's request rather than the publication, so it includes the runner's publication delay, and it reads no service metric.
+Its first stage starts when the loop sees the application admitted, and it expects the JobManager and as many TaskManagers as the application's `taskManager.replicas`.
+Each stage below is recorded before its operation, as `recovery-<stage>` evidence and in the run control's `recovery` record, together with the outcomes gathered so far.
+
+| Stage | Waits for | Then | Deadline from its start |
+| --- | --- | --- | --- |
+| `baseline` | `before_checkpoint` observed on both inputs | On the next poll, notes the highest checkpoint id the job has reported | 900 s from admission |
+| `checkpoint` | A completed checkpoint with a higher id, under the run's state prefix | Retains it and requests `after_checkpoint` | 300 s |
+| `boundary` | `after_checkpoint` published and observed on both inputs | Injects the trial's fault | 180 s |
+| `recovering` | The restoration, restored attempts, and the displaced population redelivered | Requests `after_recovery` | 600 s |
+| `after` | `after_recovery` observed on both inputs by the attempts serving after the fault, then another completed checkpoint with a higher id | Records `complete` | 600 s |
+
+Each deadline is also capped at `cleanup_at`, and a cohort's request leaves the runner 90 seconds to start publishing it; a passed deadline stops the trial and cleanup follows.
+A stage replaces its deadline only while the outgoing one still holds, checked again at the transition and after the poll's pulls and readings, which can take their own transport timeouts, so an expired stage is never carried into the next one's deadline.
+Checkpoint ids grow with their trigger, so a checkpoint whose id exceeds every id the job reported on the poll after a cohort was fully observed was triggered after that observation, on no clock but the job's own; the history is read before a poll's pulls, which is why the next poll's is taken.
+Flink 2.2.1's REST API caches checkpoint statistics for `web.refresh-interval`, three seconds by default, and the mark is read at least one 15-second poll after the observing pull; a checkpoint triggered after an output observation covers the observed messages, because the source emitted them before its barrier.
+The retained checkpoint was seen completed before the supervisor wrote the replay cohort's request, and the runner [starts a cohort](#cohort-requests) only after reading that request, so no checkpoint completed by then can cover the replay cohort.
+
+| `trial` | Fault | Displaced attempts | Expected replay |
+| --- | --- | --- | --- |
+| `jm-replacement` | Deletes the JobManager Pod | Every attempt before the fault | The replay cohort's observations |
+| `tm-replacement` | Deletes the TaskManager whose attempts processed most of the replay cohort | The attempts that Pod announced | The replay cohort's observations by those attempts |
+| `rescale-out`, `rescale-in` | Patches the job arguments, job parallelism and TaskManager replicas to the recovery manifest's, a savepoint upgrade | Every attempt before the fault | None: the savepoint completes, and acknowledges what it covers, before the job stops |
+
+Each attempt is mapped to its Pod through the `pubsub-attempt` line the application logs when it initializes; an attempt announced by two Pods, or by another run, stops the trial.
+A TaskManager's loss may restart only the failover region on that Pod: in the DataStream topology each subtask's source, observer and sink form one region, so the other TaskManager's attempt keeps running without restoring anything, and its part of the replay cohort is acknowledged by the next checkpoint instead of redelivered.
+The expected replay population is therefore the cohort's observations by the displaced attempts; a wider restart redelivers more, which the recovery outcome counts as `extra_replay` rather than as a failure.
+
+Recovery is proven by the job's restoration after the fault, read from its checkpoint history, and by restored attempts announcing themselves in the logs; output is not required yet, because after a savepoint nothing is expected again and the last cohort is only requested once recovery is proven.
+A replacement must restore a checkpoint under the run's state prefix no older than the retained one, with a new JobManager or with the deleted TaskManager gone.
+A rescale must restore the savepoint its upgrade took, under the run's savepoint prefix, once the Operator reports the new generation deployed and the application matches the recovery manifest.
+When a replacement restores exactly the retained checkpoint, no checkpoint completed between the replay cohort's processing and the fault, the boundary held, and every expected observation must reappear from a new attempt within the stage's deadline; otherwise the trial stops.
+When it restores a later one, the boundary was lost, and the outcome records the replay as `unobserved` without requiring it.
+
+The `recovery` outcome records the restored checkpoint, whether the boundary held, the expected, replayed and extra replay counts, whether each replayed observation kept its input message ID, the first output by a restored attempt seen by the time recovery is proven, which a rescale rarely has and the restored attempts.
+The `fault` outcome records the retained checkpoint, the latest completed checkpoint when the fault was decided, the replay cohort's publication marks, the deleted Pod or the upgraded generation, and the attempts before the fault and those it displaced.
+The redelivery's timing is read from these marks and from the output observations; shutdown is the last output observed before the fault.
+
+An eviction, preemption, node shutdown or container restart at any stage, a Pod replacement outside `recovering`, or a job restart the trial did not plan, read from the restores the job's checkpoint statistics count ([ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts)), stops the trial as inconclusive, as in the other recovery exercises, so a Spot TaskManager reclaimed mid-trial ends it.
+The supervisor records the exercise's completion as its own success; the final receipt reports success only when the exercise's [verdict](#verdict) is `usable`.
+Synthetic tests run each trial through the supervisor's loop over a simulated relay, Operator and service, including a lost boundary, a population that never returns, a replay under new input message IDs, foreign output, connector metrics that never appear, a checkpoint outside the run's state, an unplanned replacement and a wrong savepoint; they do not establish real-service redelivery, failover scope or timing.
+
+### Restore-deduplication trials
+
+The three AdaptiveScheduler kinds of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054), `reactive-scale-out`, `reactive-tm-kill` and `adaptive-scale-in`, produced on purpose the case that restore deduplication exists for: a restore of a checkpoint whose completion notification never ran.
+Their findings, of [#2056](../../../docs/adr/evidence/0198-pubsub-reactive-restore-deduplication-findings-2056.md) and [#2127](../../../docs/adr/evidence/0198-pubsub-restore-deduplication-trial-findings-2127.md), record the source suppressing what that case redelivers.
+[#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) removed them, with their reactive and adaptive manifests and the relay's checkpoint hold.
+They could not join the fault sequence, which runs in native mode and rescales through savepoint upgrades, and proving that their case happened is the per-fault proof ADR-0204 declined.
+`PubSubSourceRestoreDeduplicationITCase` keeps the case on the emulator, and the `sequence` kind runs with restore deduplication on, so every sequence run checks that the ledger suppresses nothing that the restored checkpoint did not cover.
+Their evidence keeps the interpretation of the revision that produced it.
+
+### Sequence verdict
+
+[`pubsub.sequence_verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) decides a `sequence` run from the record its completion writes.
+The run is `usable` when it completed, the [oracle](#offline-output-reconciliation) accepted every collected line and found every logical input of both subscriptions, and every output names its input under an ID the runner's publication receipt for that input holds.
+
+| Condition | Reason when it fails |
+| --- | --- |
+| The stage is `complete` | `recovery-incomplete` |
+| The oracle accepted every collected line | `oracle-missing`, `oracle-rejected` |
+| The oracle found every logical input of both subscriptions | `oracle-incomplete` |
+| The record carries the receipt check | `inputs-missing` |
+| Every output's input message ID is one that its input's receipt holds | `input-ids-unpublished` |
+| Every output's input has a receipt | `input-receipts-missing` |
+
+The relay copies each input's message ID into its output, and the publish API binds the IDs it returns to request order, so each receipt names its inputs' IDs and an output under another ID carries a wrong value.
+The exercise reads every publication's `response.json` from the evidence bucket when the run completes.
+A line of another run, or a malformed one, is the oracle's refusal, so a record outside the expected set fails the run as well.
+The oracle's duplicate counters are reported beside the verdict; restores, interruptions, timings and metrics decide nothing, and no window is sampled.
+
+### Verdict
+
+When the last stage of a single-fault trial completes, the exercise decides the trial's verdict over the `complete` record it is about to write, so the verdict reaches the `recovery-complete` evidence as well as the run control the final receipt reads.
+The record adds the output oracle's account of every collected line, the observation coverage per window and the Pod each attempt was announced by.
+[`pubsub.verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) returns `usable` with no reasons only when all of the following hold, and `inconclusive` with a reason for each shortfall otherwise.
+
+| Condition | Reason when it fails |
+| --- | --- |
+| The stage is `complete`, with the `checkpoint`, `fault`, `recovery` and `after` outcomes | `recovery-incomplete`, `missing-<outcome>` |
+| The [oracle](#offline-output-reconciliation) accepted every collected line | `oracle-missing`, `oracle-rejected` |
+| The oracle found every logical input of both subscriptions | `oracle-incomplete` |
+| A replacement restored the retained checkpoint and saw its whole expected replay, which is not empty, from new attempts | `replay-unobserved`, `replay-empty`, `replay-incomplete` |
+| Each replayed observation came under an input message ID the input was processed under before the fault, asked when recovery is proven and again over everything collected by the end | `replay-ids-not-preserved` |
+| A rescale's recovery outcome expects no replay | `replay-unexpected` |
+| A rescale saw no replay-cohort output from the attempts it started, by the end | `replay-after-savepoint` |
+| The fault names one of the four kinds | `unknown-trial` |
+| Each family below was read in a sample before the fault and in one after recovery | `unsampled-<window>`, `unobserved-<family>-in-<window>` |
+
+A lost boundary completes the trial, and its verdict is `inconclusive` with `replay-unobserved`: the job restored a checkpoint that already covered the replay cohort, so the trial exercised no redelivery, which is the claim a replacement exists to carry.
+A replay under new input message IDs came from a duplicate publication, not from the service redelivering what the source held leased.
+The `after` outcome's `replay_by_new_attempts` counts every replay-cohort input the fault's new attempts had processed by the end, redelivered or republished alike, where recovery counted only the expected ones at its first chance.
+A rescale expects none, because its savepoint acknowledges what it covers; whether the service redelivers some of it anyway, when not every acknowledgement reached it, is unmeasured, so a rescale that saw any is `inconclusive` with `replay-after-savepoint`; the deployed campaign ([#1435](https://github.com/flink-gcp/flink-connector-gcp/issues/1435)) saw none in one rescale of each direction, as its [findings](../../../docs/adr/evidence/0165-pubsub-trial-findings-1361.md#redelivery-after-a-savepoint) record, and the rule stays.
+That count stops at completion, which can come before the old subscriber's extended leases expire, so a rescale found `usable` saw no such output by then, not none at all.
+An input published twice may have been processed under both of its IDs before the fault, and a redelivery under either is a redelivery.
+
+The `before` window takes the samples of `baseline`, `checkpoint` and `boundary`, because the first of them can end within a poll of the job starting, before its operators register anything; the `after` window takes those of `after`, and samples taken while recovering count toward neither.
+A family counts as read only where a sample's answer returned it, a vertex's backpressure level or a finite number for a connector metric, not where it was listed or requested.
+Every earlier transition also carries the coverage so far, so a trial that stops before completing still records what it read.
+
+| Family | Read from |
+| --- | --- |
+| `backpressure` | A vertex's backpressure level |
+| `source` | The source reader's `messagesReceived`, `messagesAcked`, `messagesNacked`, `pendingAcks`, `pendingCheckpoints`, `bufferedMessages`, `fetcherBufferedMessages`, `subscriberShutdownsAbandoned` and `subscriberFailuresUnreported` |
+| `sink` | The sink writer's `inFlightMessages`, `inFlightBytes`, `activePublishers` and `publisherShutdownsAbandoned` |
+
+The oracle's duplicate counters are reported in the record beside the verdict and decide nothing.
+At-least-once delivery owes them, and neither unique Pub/Sub message IDs nor a deduplicated count can establish exactly-once output, so their absence would prove nothing either.
+A `usable` verdict says nothing about ordering across the replay: the oracle is a completeness check over a set of identities.
+
+### Offline recomputation
+
+`flink-tier3 analyze --evidence <directory>` reads a downloaded run directory, as `gcloud storage cp --recursive` leaves `runs/<run-id>/`, and recomputes a `pubsub-recovery` run's verdict beside the BigQuery section; it contacts no service.
+[`pubsub.analyze`](../../../tools/tier3/src/flink_tier3/pubsub/analyze.py) rebuilds from the evidence alone:
+
+- the output oracle, from every batch in batch order, each appended once, with its lines derived again from the saved pull response by the function the collector used, so the batch's `observations.json` is not read;
+- the input identities, from the runner's publication receipts, which bind the returned IDs to request order within the interval their path names, so each output's input message ID is checked against what was published for its input and sequence;
+- the observation coverage, from the `pubsub-measurement` events;
+- `replay_by_new_attempts`, from the observations and the record's fault, through the same predicate the exercise uses.
+
+A `sequence` run's verdict is recomputed from the rebuilt oracle and from the receipts' check of every exported output, through [`sequence_verdict`](#sequence-verdict); it reads no samples and no replay cohort.
+A batch that a `pubsub-pull-retried` event names holds an intent and no observations, so it is not counted as lost, even in a run that stopped before its record listed it, and the report lists the faults the run injected.
+
+Whether the boundary held and which observations were collected before the fault are read from the `recovery-complete` record, because rebuilding them would re-run the exercise offline over the exported Pod logs and checkpoint statistics.
+The verdict is recomputed with the rebuilt values, and the report places it beside the verdict the run stored, through steps the two sections [share](../../../tools/tier3/src/flink_tier3/recovery_analysis.py).
+
+| Problem | Meaning |
+| --- | --- |
+| `verdict-differs-from-the-record` | The stored verdict or its reasons are not the recomputed ones |
+| `unpublished-input-ids` | An output names its input under an ID no publication receipt of that input holds; the verdict is still recomputed |
+| `approval-without-pubsub-trial`, `missing-result.json`, `malformed-evidence`, `malformed-message-evidence`, `missing-recovery-complete` | The evidence the verdict is decided from cannot be read; the run has no verdict |
+| `missing-samples`, `missing-output-batches`, `missing-output-lines`, `missing-input-receipts` | A partial download; the run has no verdict |
+
+A partial download is found by fewer samples in a window than the record counted there, by a gap in a collector's batch counter, by fewer exported lines than the completed record counted, or by an output of a completed run whose input has no publication receipt.
+An oracle rebuilt from it would lower the verdict for what the export lost, so the run gets none; fetch the evidence again.
+The analysis does not classify a disagreement as an edited record or as an inconsistent export, as for BigQuery ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
+An unreadable `supervisor/` or `result.json` document stops the analyzer for the whole directory, as for the other sections.
+The section reports the oracle's duplicate counters, and the runner's receipts beyond one per input as extra publications, apart from the verdict, and states that a usable verdict establishes neither ordering across the replay nor exactly-once output.
+Tests export the evidence a simulated run writes through the real supervisor, collector and message helpers and recompute each trial, a lost boundary, an interrupted run and a redelivery after a rescale from it; edited copies show which edits the recomputation reads and which it does not.
+
+### Offline output reconciliation
 
 An independent output subscriber must record every observed output service message ID and its full payload before acknowledgement.
 The offline tool reads one record per UTF-8 line: base64url output message ID, a tab, then base64url payload, both without padding.
@@ -782,7 +814,6 @@ java -cp 'target/pubsub-recovery.jar:target/image-lib/*' \
 
 The tool rejects files over 64 MiB, more than 200,000 observations, oversized records, conflicting identity reuse, foreign runs and missing logical input IDs.
 Its counts describe the supplied evidence, not a complete service inventory or future deliveries after collection stops.
-It reconciles either entry point's output, since both write the same payload.
 
 | Counter | Counted population |
 | --- | --- |
@@ -801,52 +832,4 @@ The port returns the same six counters, and both test suites decide the cases in
 Those cases pin the report's own rejection messages; where the JDK writes the message instead, as for an unparseable number, UUID or Base64 field, the port words it differently, and the cases require only that both refuse.
 The Java tool's 64 MiB file bound and each side's line-reader checks are outside the shared cases.
 Instead of refusing a run with missing inputs, the port reports how many are missing, so that the verdict can tell a refused line from an incomplete set.
-The [offline recomputation](#offline-recomputation) uses the same port over the exported batches; deployed trials of either entry point remain on the parent issue.
-
-### Internal approval contract
-
-[Dispatch](#approval-dispatch) builds a `pubsub-recovery` approval and validates it once, before it takes the lock.
-Its `pubsub_trial` is the reviewed trial file's, in the [offline proposal schema](#offline-trial-proposal), version 5, from which the input plan derives the trial's input domain.
-The approval pins the run/nonce, the rig commit, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
-It requires an integral one-hour window with fifteen minutes reserved for cleanup.
-Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
-These checks do not verify live provenance or establish a recovery verdict.
-
-Admission's temporary quotas admit four equal Flink shapes in `tier3-pubsub` and three control shapes in `tier3-system`, and no PVCs.
-The fourth application slot covers a replacement while its predecessor terminates; the third control slot covers an Operator replacement.
-The rig counts neither Pods nor state bytes beside those quotas; cleanup lists at most 10,000 state objects and restores the recorded idle quotas.
-Message evidence has no separate cap; its size follows from the input domain and the exercise's pulls.
-
-`Approval.pubsub_plan` and `PubSubLifecycle` derive service names and grants from the approval's identity.
-Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, and derives success only from the exercise's `usable` [verdict](#verdict).
-A finalization retry keeps the original receipt.
-
-The [proposal's estimate](#offline-trial-proposal) is what the owner approves before dispatch.
-The runner admits the trial and the supervisor joins it, as [admission](#admission-and-effective-access) describes, the supervisor runs the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.
-
-## Approval dispatch
-
-The [run workflow](../../../.github/workflows/tier3-run.yaml) accepts `pubsub-recovery`, builds its approval and runs the trial.
-The scenario takes two inputs beyond the common ones.
-
-| Input | Contract |
-| --- | --- |
-| `pubsub_trial` | A reviewed trial file under [`kubernetes/lifecycle/pubsub-trials/`](../../lifecycle/README.md#reviewed-pubsub-trials), named without `.toml`; an empty name is refused |
-| `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
-
-A reviewed trial file holds the [offline proposal schema](#offline-trial-proposal) as TOML beside its licence header, so the file the dispatch names is the one reviewed at the dispatched commit, which the workflow checks out fresh.
-The offline renderer keeps its JSON `--trial-file` input for proposals that nobody has approved.
-The owner approves the trial's estimate before dispatching it; dispatching is the approval.
-The reviewed trials are the four the campaign [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) runs and the three restore-deduplication ones of [#2054](https://github.com/flink-gcp/flink-connector-gcp/issues/2054); the example the tests use lives under `tools/tier3/tests/fixtures/`, where no dispatch can name it.
-
-The window starts when dispatch admits the run, on the whole second, and lasts exactly one hour, so queueing before the job starts costs the run none of its startup budget.
-
-The checks that need neither the cluster nor the lock run first: the trial file and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
-Dispatch then snapshots the idle foundation for `tier3-pubsub`, renders and verifies the proposal, takes live image receipts, assembles and validates the approval and binds the rendered delivery with the approval embedded.
-The proposal names its second manifest the recovery application; the approval pins that manifest as `upgrade_application_sha256`, the name every service scenario shares, and takes the supervisor image from the proposal's `images`, as a BigQuery approval does.
-
-Dispatch also confirms that it may create Pods in `tier3-pubsub`, which admission's access probe needs.
-It then acquires the environment lock, rechecks the idle foundation, stores the approval, both manifests and the image receipts as the run's documents, writes the control record and builds the runner through `pubsub_actors.runner()`, as a BigQuery dispatch does.
-The runner starts the run with the bound ConfigMap, supervisor Job, application and access probe, and settles it; a runner that cannot be built leaves the lock to a plain runner's settlement.
-The workflow job keeps the default 85-minute limit, because the window is one hour, as for smoke.
-Enabling the scenario does not approve a run.
+The [offline recomputation](#offline-recomputation) uses the same port over the exported batches.

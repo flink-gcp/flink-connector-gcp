@@ -496,7 +496,7 @@ class Kubernetes:
             before_repeat,
         )
 
-    def delete(self, obj, force=False):
+    def delete(self, obj):
         """Delete `obj` if it still has its uid; False when it was already gone."""
         meta = obj["metadata"]
         path = self.path(obj["kind"], meta["namespace"], meta["name"])
@@ -506,8 +506,6 @@ class Kubernetes:
             "preconditions": {"uid": meta["uid"]},
             "propagationPolicy": "Background",
         }
-        if force:
-            options["gracePeriodSeconds"] = 0
         try:
             self.send(
                 self.caller("DELETE", path, options),

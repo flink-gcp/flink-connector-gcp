@@ -646,10 +646,7 @@ see `kubernetes/lifecycle/README.md` for the complete offline command. Read a sc
 `kubernetes/apps/<connector>/README.md`, before changing its resources, oracles, fault kinds,
 sizes or timings; the Firestore seed and pace are sized against the service's
 one-hour read-time bound.
-The `pubsub-recovery` dispatch names a reviewed trial file under `kubernetes/lifecycle/pubsub-trials/`; read the [reviewed-trial instructions](../../kubernetes/lifecycle/README.md#reviewed-pubsub-trials)
-and `kubernetes/apps/pubsub/README.md` before adding one. Keep it TOML so it carries the licence
-header apache-rat requires. A file there is runnable
-once admission opens, so test trials belong under `tools/tier3/tests/fixtures/`. `just tier3-analyze <dir>` analyzes a downloaded evidence directory
+`just tier3-analyze <dir>` analyzes a downloaded evidence directory
 offline; it never contacts a cluster or a bucket.
 The separate `just tier3-auth`, `just tier3-access` and `just tier3-bootstrap` commands send
 Kubernetes requests only to the existing Tier-3 DNS endpoint using an explicitly supplied

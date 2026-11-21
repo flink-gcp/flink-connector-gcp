@@ -22,7 +22,22 @@ import uuid
 from ..common import Failure
 from ..model import Phase
 from ..policy import HTTP_TIMEOUT
-from .messages import COHORTS, MAX_BATCH, PUBLISH_BATCH, Messages, cohort_ranges
+from .messages import (
+    COHORTS,
+    MAX_BATCH,
+    Messages,
+    PullRefused,
+    cohort_publications,
+    cohort_ranges,
+)
+
+# The transient answers below 500, which `PubSubSession` counts as settled: the
+# service refused the request, so nothing of it is still in flight.
+SETTLED_REFUSALS = (408, 429)
+
+
+class AnsweredTransient(Failure):
+    """A pull the service refused with a settled transient answer, safe to try again."""
 
 
 def _token(value):
@@ -186,7 +201,17 @@ class PubSubHandoff:
 
         self.controller._change(join)
 
-    def _call(self, operation, callback):
+    def _call(self, operation, callback, *, retry_answered=False):
+        """Run one marked service call.
+
+        With ``retry_answered``, a pull the service refused with 408 or 429
+        clears its marker and leaves the run going, for the caller to try
+        again: the session counts such an answer as settled, and nothing but
+        the intent was saved. A 5xx answer may still complete at the service,
+        which the session records as unsettled for good, so it stops the run
+        as before, and so does a call without an answer, an evidence write
+        that failed, or an acknowledgement that fails after a saved pull.
+        """
         marker = {"id": uuid.uuid4().hex, "operation": operation}
 
         def begin(record):
@@ -208,7 +233,15 @@ class PubSubHandoff:
             raise
         try:
             result = callback()
-        except (Failure, ValueError, OSError):
+        except (Failure, ValueError, OSError) as error:
+            if (
+                retry_answered
+                and isinstance(error, PullRefused)
+                and error.status in SETTLED_REFUSALS
+                and not self.env.evidence_failed
+            ):
+                self._finish(marker)
+                raise AnsweredTransient(str(error)) from error
             # Even a transport timeout can leave service work in flight, so
             # the marker stays unless the session saw every write answered;
             # an unsettled call keeps the lock for manual investigation.
@@ -324,12 +357,14 @@ class PubSubHandoff:
                 "publish", lambda: self._messages().publish(input_index, start, count)
             )
 
-    def collect(self, batch_id, *, max_messages=MAX_BATCH):
+    def collect(self, batch_id, *, max_messages=MAX_BATCH, retry_answered=False):
+        """Pull one batch; see `_call` for ``retry_answered``."""
         self._role("supervisor")
         with self.controller.until(self.env.schedule.cleanup_at):
             return self._call(
                 "collect",
                 lambda: self._messages().collect(batch_id, max_messages=max_messages),
+                retry_answered=retry_answered,
             )
 
     def request_cohort(self, name, *, deadline):
@@ -437,14 +472,10 @@ class PubSubHandoff:
                 current["published_at"] = self.env.clock()
 
         self.controller._change(begin)
-        end = cohort["start"] + cohort["count"]
-        for index in range(2):
-            for start in range(cohort["start"], end, PUBLISH_BATCH):
-                if check is not None:
-                    check()
-                self.publish(
-                    index, start, min(PUBLISH_BATCH, end - start), deadline=until
-                )
+        for index, start, count in cohort_publications(cohort):
+            if check is not None:
+                check()
+            self.publish(index, start, count, deadline=until)
         self.controller._change(finish)
 
     def serve(self):

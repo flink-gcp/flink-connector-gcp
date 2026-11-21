@@ -147,8 +147,7 @@ class World:
         self.app["metadata"].update(generation=2, resourceVersion="2")
         return copy.deepcopy(self.app)
 
-    def delete(self, pod, force=False):
-        assert not force
+    def delete(self, pod):
         self.deleted.append(pod["metadata"]["name"])
         return True
 
@@ -418,7 +417,7 @@ def test_a_taskmanager_replacement_must_restore_a_retained_checkpoint(world, cha
 def test_a_lost_taskmanager_delete_response_must_show_it_going(world):
     world.baseline()
 
-    def lost(pod, force=False):
+    def lost(pod):
         raise ApiError(503, "DELETE", pod["metadata"]["name"])
 
     world.env.kube.delete = lost

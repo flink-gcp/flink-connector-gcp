@@ -271,8 +271,7 @@ class Kube:
                 raise AssertionError(change)
         return self.put(current)
 
-    def delete(self, value, force=False):
-        assert not force, "API disappearance is not process termination"
+    def delete(self, value):
         key = value["kind"], value["metadata"]["namespace"], value["metadata"]["name"]
         if self.replace_before_delete:
             self.data[key]["metadata"]["uid"] = "replacement"
@@ -3300,6 +3299,7 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     # timeout shorter than a window kills the job mid-run.
     match = re.fullmatch(
         r"\$\{\{ \(inputs\.scenario == 'bigquery-recovery' \|\| "
+        r"inputs\.scenario == 'pubsub-recovery' \|\| "
         r"inputs\.scenario == 'cloudtasks-recovery' \|\| "
         r"inputs\.scenario == 'bigtable-recovery' \|\| "
         r"inputs\.scenario == 'spanner-recovery' \|\| "
@@ -3311,6 +3311,7 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     assert schedule.serial_budget <= smoke_minutes * 60
     for scenario in (
         "bigquery-recovery",
+        "pubsub-recovery",
         "cloudtasks-recovery",
         "bigtable-recovery",
         "spanner-recovery",
@@ -3318,9 +3319,6 @@ def test_schedule_serial_wait_budget_fits_workflow_timeout(env):
     ):
         trial = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS[scenario])
         assert trial.serial_budget <= trial_minutes * 60
-    # Pub/Sub takes the default timeout: its window is the smoke run's hour.
-    pubsub = rt.Schedule.for_window(env[3](), env[3]() + rt.WINDOWS["pubsub-recovery"])
-    assert pubsub.serial_budget <= smoke_minutes * 60
     assert schedule.cleanup_at == schedule.expires_at - 900
     assert schedule.active_seconds(env[3]()) == 3420
     late = schedule.cleanup_window(schedule.expires_at + 60)
@@ -3352,7 +3350,9 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     assert inputs["spanner_trial"]["default"] == "none"
     assert inputs["firestore_trial"]["options"] == ["none", *firestore_trial.KINDS]
     assert inputs["firestore_trial"]["default"] == "none"
-    # The descriptions list the shared kinds, which name the Pub/Sub files too.
+    assert inputs["pubsub_trial"]["options"] == ["none", *cli.pubsub_plan.TRIALS]
+    assert inputs["pubsub_trial"]["default"] == "none"
+    # The descriptions list the shared kinds.
     *first, last = FAULTS
     kinds = "(" + ", ".join(first) + " or " + last + ")"
     for name in (
@@ -3379,11 +3379,6 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "campaign",
         "repeats",
     }
-    assert (
-        f"under {cli.PUBSUB_TRIALS}, without .toml"
-        in (inputs["pubsub_trial"]["description"])
-    )
-    assert inputs["pubsub_trial"]["default"] == ""
 
 
 def test_a_record_written_before_a_field_removal_is_still_read():
@@ -3826,7 +3821,7 @@ def test_reviewed_policy_preserves_the_fixed_windows_and_shapes():
     assert rt.WINDOWS == {
         "smoke": 3600,
         "bigquery-recovery": 5400,
-        "pubsub-recovery": 3600,
+        "pubsub-recovery": 5400,
         "cloudtasks-recovery": 5400,
         "bigtable-recovery": 5400,
         "spanner-recovery": 5400,
@@ -4188,7 +4183,7 @@ WORKFLOW_INPUTS = {
     ],
     "pubsub-recovery": [
         "--pubsub-trial",
-        "example-wiring",
+        "sequence",
         "--application-digest",
         "sha256:" + "d" * 64,
     ],

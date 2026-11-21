@@ -34,53 +34,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RecoveryContractTest {
-    final RecoveryOptions options =
-            new RecoveryOptions("run-1", 2, 1, "initial", false, "datastream");
+    final RecoveryOptions options = new RecoveryOptions("run-1", 2, 1, "initial", false);
 
     @ParameterizedTest
     @ValueSource(
             strings = {
                 "--unknown=a",
-                "--parallelism=4",
+                "--parallelism=3",
                 "--parallelism=0",
                 "--restore-deduplication=yes",
-                "--replay-delay-millis=-1",
-                "--replay-delay-millis=1001",
-                "--max-outstanding-messages=0",
-                "--max-outstanding-messages=100001",
-                "--hold-after-checkpoint-millis=-1",
-                "--hold-after-checkpoint-millis=600001",
+                "--record-delay-millis=-1",
+                "--record-delay-millis=1001",
+                "--max-outstanding-messages=1000",
+                "--hold-after-checkpoint-millis=0",
                 "--records-per-subscription=0",
                 "--records-per-subscription=10001",
                 "--phase=upgrade",
                 "--require-restored=yes",
                 "--run-id=x",
                 "--phase=wrong",
-                "--entry-point=sql",
-                "--entry-point=Table"
+                "--entry-point=datastream"
             })
     void rejectsInvalidOrRepeatedArguments(String arg) {
         assertThatThrownBy(() -> RecoveryOptions.parse(new String[] {"--run-id=run-1", arg}))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
-    @Test
-    void entryPointDefaultsToDataStream() {
-        assertThat(RecoveryOptions.parse(new String[] {"--run-id=run-1"}).entryPoint)
-                .isEqualTo("datastream");
-        assertThat(
-                        RecoveryOptions.parse(
-                                        new String[] {"--run-id=run-1", "--entry-point=table"})
-                                .entryPoint)
-                .isEqualTo("table");
-        assertThatThrownBy(
-                        () ->
-                                RecoveryOptions.parse(
-                                        new String[] {
-                                            "--run-id=run-1",
-                                            "--entry-point=table",
-                                            "--entry-point=table"
-                                        }))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -89,8 +65,7 @@ class RecoveryContractTest {
         RecoveryOptions copy = InstantiationUtil.clone(options);
         assertThat(copy.input(0)).isEqualTo("t3-run-1-in-0");
         assertThat(copy.output()).isEqualTo("t3-run-1-out");
-        RecoveryOptions restored =
-                new RecoveryOptions("run-1", 2, 2, "upgrade", true, "datastream");
+        RecoveryOptions restored = new RecoveryOptions("run-1", 2, 2, "upgrade", true);
         RecoveryObserver.verifyIdentity(restored, true, List.of(copy.identity(), copy.identity()));
         assertThatThrownBy(() -> RecoveryObserver.verifyIdentity(restored, false, List.of()))
                 .hasMessageContaining("requires checkpoint");
@@ -104,8 +79,7 @@ class RecoveryContractTest {
         assertThatThrownBy(
                         () ->
                                 RecoveryObserver.verifyIdentity(
-                                        new RecoveryOptions(
-                                                "run-1", 3, 1, "initial", false, "datastream"),
+                                        new RecoveryOptions("run-1", 3, 1, "initial", false),
                                         true,
                                         List.of(copy.identity())))
                 .hasMessageContaining("another run");
@@ -210,95 +184,38 @@ class RecoveryContractTest {
     }
 
     @Test
-    void theReplayCohortIsTheMiddleThirdOfEachInput() {
-        RecoveryOptions ten = new RecoveryOptions("run-1", 10, 1, "initial", false, "datastream");
-        String tagged = "|" + RecoveryPayload.encode("m");
-        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 1, 2) + tagged)).isFalse();
-        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 1, 3) + tagged)).isTrue();
-        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 0, 5) + tagged)).isTrue();
-        assertThat(ten.inReplayCohort(RecoveryPayload.input(ten, 0, 6) + tagged)).isFalse();
-    }
-
-    @Test
-    void parsesTheDeduplicationTrialArguments() {
+    void parsesTheSequenceArguments() {
         RecoveryOptions parsed =
                 RecoveryOptions.parse(
                         new String[] {
                             "--run-id=run-1",
-                            "--parallelism=3",
+                            "--parallelism=2",
                             "--restore-deduplication=true",
-                            "--replay-delay-millis=20",
-                            "--max-outstanding-messages=100000",
-                            "--hold-after-checkpoint-millis=15000"
+                            "--record-delay-millis=100"
                         });
-        assertThat(parsed.parallelism).isEqualTo(3);
+        assertThat(parsed.parallelism).isEqualTo(2);
         assertThat(parsed.restoreDeduplication).isTrue();
-        assertThat(parsed.replayDelayMillis).isEqualTo(20);
-        assertThat(parsed.maxOutstandingMessages).isEqualTo(100000);
-        assertThat(parsed.holdAfterCheckpointMillis).isEqualTo(15000);
+        assertThat(parsed.recordDelayMillis).isEqualTo(100);
         RecoveryOptions defaults = RecoveryOptions.parse(new String[] {"--run-id=run-1"});
         assertThat(defaults.restoreDeduplication).isFalse();
-        assertThat(defaults.replayDelayMillis).isZero();
-        assertThat(defaults.maxOutstandingMessages).isEqualTo(1000);
-        assertThat(defaults.holdAfterCheckpointMillis).isZero();
+        assertThat(defaults.recordDelayMillis).isZero();
     }
 
     @Test
-    void holdsOnlyTheFirstReplayRecordAfterEachSnapshot() {
-        RecoveryOptions held =
-                RecoveryOptions.parse(
-                        new String[] {
-                            "--run-id=run-1",
-                            "--records-per-subscription=9",
-                            "--hold-after-checkpoint-millis=15000"
-                        });
-        String tagged = "|" + RecoveryPayload.encode("message");
-        String before = RecoveryPayload.input(held, 0, 2) + tagged;
-        String replay = RecoveryPayload.input(held, 0, 3) + tagged;
-        String nextReplay = RecoveryPayload.input(held, 1, 4) + tagged;
-        RecoveryObserver observer = new RecoveryObserver(held);
-
-        // Nothing is held before a snapshot.
-        assertThat(observer.holdFor(replay)).isZero();
-        observer.checkpointTaken(1);
-        // A record outside the replay cohort neither holds nor uses up the hold.
-        assertThat(observer.holdFor(before)).isZero();
-        assertThat(observer.holdFor(replay)).isEqualTo(15000);
-        assertThat(observer.holdFor(nextReplay)).isZero();
-        // A notification that runs before any replay record disarms the hold, so no hold is
-        // logged for a checkpoint whose notification already ran.
-        observer.checkpointTaken(2);
-        observer.notifyCheckpointComplete(2);
-        assertThat(observer.holdFor(nextReplay)).isZero();
-        // An earlier checkpoint's notification leaves a later snapshot's hold armed.
-        observer.checkpointTaken(3);
-        observer.notifyCheckpointComplete(2);
-        assertThat(observer.holdFor(nextReplay)).isEqualTo(15000);
-        // The next snapshot arms it again.
-        observer.checkpointTaken(4);
-        assertThat(observer.holdFor(nextReplay)).isEqualTo(15000);
+    void theProgressLineIsTheOneTheFaultSequenceParses() {
+        // tools/tier3/tests/pubsub/test_sequence.py pins the same example against the parser.
+        RecoveryOptions upgraded = new RecoveryOptions("run-1", 2, 2, "upgrade", true);
+        assertThat(RecoveryObserver.progressLine(upgraded, "a1", true, 7, 100))
+                .isEqualTo(
+                        "event=pubsub-progress run_id=run-1 phase=upgrade attempt=a1"
+                                + " restored=true origin=7 processed=100");
     }
 
     @Test
-    void holdsNothingWithoutAHoldOrAfterARestore() {
-        String tagged = "|" + RecoveryPayload.encode("message");
-        RecoveryOptions unheld =
-                RecoveryOptions.parse(
-                        new String[] {"--run-id=run-1", "--records-per-subscription=9"});
-        RecoveryObserver plain = new RecoveryObserver(unheld);
-        plain.checkpointTaken(1);
-        assertThat(plain.holdFor(RecoveryPayload.input(unheld, 0, 3) + tagged)).isZero();
-
-        RecoveryOptions held =
-                RecoveryOptions.parse(
-                        new String[] {
-                            "--run-id=run-1",
-                            "--records-per-subscription=9",
-                            "--hold-after-checkpoint-millis=15000"
-                        });
-        RecoveryObserver restored = new RecoveryObserver(held);
-        restored.markRestored();
-        restored.checkpointTaken(5);
-        assertThat(restored.holdFor(RecoveryPayload.input(held, 0, 3) + tagged)).isZero();
+    void anAttemptLogsItsFirstRecordAndThenAtMostEveryInterval() {
+        long interval = RecoveryObserver.PROGRESS_MILLIS;
+        assertThat(RecoveryObserver.logsProgress(1, 0, 0)).isTrue();
+        assertThat(RecoveryObserver.logsProgress(2, interval - 1, 0)).isFalse();
+        assertThat(RecoveryObserver.logsProgress(3, interval, 0)).isTrue();
     }
 }

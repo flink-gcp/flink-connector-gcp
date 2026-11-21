@@ -27,20 +27,12 @@ import io.github.flink.gcp.connector.pubsub.sink.PubSubSink;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.pubsub.sink.serializer.PubSubSerializationSchema;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSource;
-import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
-/** Internal DataStream or Table relay for independently supervised Pub/Sub recovery trials. */
+/** Internal DataStream relay for independently supervised Pub/Sub recovery trials. */
 @Internal
 public final class PubSubRecoveryJob {
     private PubSubRecoveryJob() {}
-
-    /**
-     * The id of the DataStream entry point's one job vertex, which chains the source, the observer
-     * and the sink. Flink derives it from the source's uid, so it is the same at every parallelism
-     * and in every run; a parallelism override names a vertex by it.
-     */
-    static final String DATASTREAM_VERTEX_ID = "1fc1e910bda7a08a74f8b1a434d3e9b9";
 
     /** Runs the relay against pre-created resources using workload ADC. */
     public static void main(String[] args) throws Exception {
@@ -59,10 +51,6 @@ public final class PubSubRecoveryJob {
     }
 
     static void attach(StreamExecutionEnvironment env, RecoveryOptions options, String emulator) {
-        if (options.entryPoint.equals("table")) {
-            RecoveryTableRelay.attach(env, options, emulator);
-            return;
-        }
         var source =
                 PubSubSource.<String>builder()
                         .subscriptions(
@@ -71,12 +59,7 @@ public final class PubSubRecoveryJob {
                                 SubscriptionDestination.of(
                                         RecoveryOptions.PROJECT, options.input(1)))
                         .deserializer(new RecoveryDeserializer(options))
-                        .restoreDeduplication(options.restoreDeduplication)
-                        .subscriberOptions(
-                                PubSubSubscriberOptions.builder()
-                                        .flowControlMaxOutstandingElementCount(
-                                                options.maxOutstandingMessages)
-                                        .build());
+                        .restoreDeduplication(options.restoreDeduplication);
         var sink =
                 PubSubSink.<String>builder()
                         .topic(TopicDestination.of(RecoveryOptions.PROJECT, options.output()))

@@ -42,26 +42,14 @@ FAMILIES = {
     "source": frozenset(SOURCE_METRICS),
     "sink": frozenset(SINK_METRICS),
 }
-# The source's restore-deduplication readings (#2049), sampled when listed.
-# The source registers them only with the setting on, so they belong to no
-# family whose absence would leave a trial with it off inconclusive.
-DEDUPLICATION_METRICS = (
-    "redeliveriesSuppressed",
-    "ledgerEntriesExpired",
-    "ledgerEntries",
-)
-WANTED = (
-    frozenset(SOURCE_METRICS)
-    | frozenset(SINK_METRICS)
-    | frozenset(DEDUPLICATION_METRICS)
-)
+WANTED = frozenset(SOURCE_METRICS) | frozenset(SINK_METRICS)
 
 
 def connector_metrics(rest, vertex):
     """One vertex's Pub/Sub connector metrics, aggregated over its subtasks.
 
-    A connector metric's id carries its operator's name, which differs between
-    the entry points and with operator chaining, so the ids are listed and
+    A connector metric's id carries its operator's name, which differs with
+    operator chaining, so the ids are listed and
     then asked for on every sample: a listing taken before the operators open
     holds none of them, and one taken on a restarted job may hold others.
     """

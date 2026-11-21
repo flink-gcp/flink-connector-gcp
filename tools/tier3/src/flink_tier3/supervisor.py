@@ -29,7 +29,7 @@ from .firestore.exercise import FirestoreExercise, firestore_exercise
 from .metrics import CHECKPOINTS_EVENT
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
-from .pubsub.exercise import PubSubExercise
+from .pubsub.exercise import pubsub_exercise
 from .pubsub.guard import PubSubGuard, admission_deadline
 from .pubsub.handoff import runner_released
 from .resource import RESOURCE_SCENARIOS
@@ -71,7 +71,7 @@ class Supervisor:
         self.exercise = (
             bigquery_exercise(env, upgrade, self.connector_jobs)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
-            else PubSubExercise(env, upgrade, pubsub)
+            else pubsub_exercise(env, upgrade, pubsub)
             if env.approval.scenario == "pubsub-recovery"
             and upgrade is not None
             and pubsub is not None

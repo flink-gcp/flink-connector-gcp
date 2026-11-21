@@ -107,10 +107,10 @@ class SequenceWorld(World):
         self.app["metadata"]["generation"] += 1
         return copy.deepcopy(self.app)
 
-    def delete(self, pod, force=False):
+    def delete(self, pod):
         if pod["metadata"]["name"] in self.gone:
             return False
-        return super().delete(pod, force)
+        return super().delete(pod)
 
     def deploy(self):
         """The Operator reconciles the last patch."""
@@ -516,7 +516,7 @@ def test_a_deletion_whose_answer_was_lost_is_sent_again_while_the_pod_runs(
     world.deleted.clear()
     delete, get = world.env.kube.delete, world.env.kube.get
 
-    def lost(pod, force=False):
+    def lost(pod):
         monkeypatch.setattr(world.env.kube, "delete", delete)
         raise TransportError("DELETE: reset")
 
