@@ -344,6 +344,19 @@ def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
             "fault": "sequence",
             "records": 5760,
         },
+        "eo-10-sequence": {
+            "mode": "EO",
+            "destinations": 10,
+            "fault": "sequence",
+            "records": 368640,
+        },
+        "fl-10-uploader-sequence": {
+            "mode": "FILE_LOADS",
+            "destinations": 10,
+            "fault": "sequence",
+            "uploader": True,
+            "records": 368640,
+        },
     }
     with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50, fl-10, "):
         plan.trial("none")
@@ -736,36 +749,59 @@ def test_the_input_outlasts_every_window_and_both_recoveries(mode):
 @pytest.mark.parametrize(
     "value",
     [
-        # The sequence only at its cell and with its own input.
+        # The sequence only at its cells and with its mode's input.
         {"mode": "ALO", "destinations": 10, "fault": "sequence"},
         {"mode": "ALO", "destinations": 10, "fault": "sequence", "records": 5761},
         {"mode": "EO", "destinations": 10, "fault": "sequence", "records": 5760},
         {"mode": "ALO", "destinations": 50, "fault": "sequence", "records": 5760},
         {"mode": "ALO", "destinations": 10, "records": 5760},
+        {"mode": "EO", "destinations": 50, "fault": "sequence", "records": 368640},
+        {"mode": "EO", "destinations": 10, "records": 368640},
+        # FILE_LOADS runs it with the uploader on, as the connector does.
+        {
+            "mode": "FILE_LOADS",
+            "destinations": 10,
+            "fault": "sequence",
+            "records": 368640,
+        },
     ],
 )
 def test_the_sequence_is_refused_outside_its_cell(value):
-    with pytest.raises(ValueError, match="or be alo-10-sequence"):
+    with pytest.raises(
+        ValueError,
+        match="or be alo-10-sequence or eo-10-sequence or fl-10-uploader-sequence",
+    ):
         plan.validate_trial(value)
 
 
-def test_the_sequence_proposes_its_input_at_the_default_sizes(inputs, renderer):
-    """Six minutes of 64 KiB rows, started and upgraded at two writers."""
-    inputs["trial"] = plan.trial("alo-10-sequence")
+@pytest.mark.parametrize(
+    "name,records",
+    [
+        # Six minutes at 1 MiB/s: 64 KiB rows, or 1 KiB rows.
+        ("alo-10-sequence", 5760),
+        ("eo-10-sequence", 368640),
+        ("fl-10-uploader-sequence", 368640),
+    ],
+)
+def test_the_sequence_proposes_its_input_at_the_default_sizes(
+    inputs, renderer, name, records
+):
+    """Six minutes of the mode's rows, started and upgraded at two writers."""
+    inputs["trial"] = plan.trial(name)
     bundle = plan.prepare(**inputs)
     options = renderer[0][4]
     assert (options["bigquery_fault"], options["bigquery_records"]) == (
         "sequence",
-        5760,
+        records,
     )
     resources = bundle["proposal"]["resources"]["trial"]
-    assert (resources["fault"], resources["records"]) == ("sequence", 5760)
+    assert (resources["fault"], resources["records"]) == ("sequence", records)
     assert bundle["proposal"]["limits"]["input_bytes"] == 360 * 1024**2
     for application in ("application", "upgrade_application"):
         spec = bundle[application]["spec"]
         assert spec["job"]["parallelism"] == spec["taskManager"]["replicas"] == 2
         args = spec["job"]["args"]
-        assert args[args.index("--records") + 1] == "5760"
+        assert args[args.index("--records") + 1] == str(records)
 
 
 PROPOSAL = [

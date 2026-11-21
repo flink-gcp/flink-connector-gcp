@@ -131,21 +131,28 @@ The [production dispatch](#production-dispatch) path must bind the exact rendere
 
 ## Fault sequence
 
-The `alo-10-sequence` trial runs the at-least-once path under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)); the trials and the execution the sections after this one describe still follow ADR-0165.
-Every other trial, `alo-10` and `alo-50` included, keeps ADR-0165's rules until the single-fault trials are removed; the exactly-once paths move to ADR-0204 with the exactly-once scenario of [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148).
+Three trials run a delivery method under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md), each at ten destinations: `alo-10-sequence` the at-least-once path ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)), and `eo-10-sequence` and `fl-10-uploader-sequence` the exactly-once paths ([#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)), FILE_LOADS with the background staging uploader on, as the connector runs it by default.
+Every other trial, and the execution the sections after this one describe, still follows ADR-0165 until the single-fault trials are removed.
 Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two writers to one and back; the rescales are the approved upgrade with only its parallelism, its TaskManager count and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
-No window samples the job.
+No window samples the job, and no fault waits for a commit: each lands wherever the commits happen to be, for the reasons ADR-0204 gives.
 
-The input is 5,760 rows of 64 KiB at 1 MiB/s, 16 rows a second for six minutes, to ten destinations.
+Each delivery method runs alone, because the application writes through one `--mode`, and a job holding both exactly-once sinks would force FILE_LOADS's checkpoint interval on the EO sink and share TaskManagers the namespace's three-Pod quota cannot add to.
+Whether both would fit one TaskManager's 644 MiB heap is not measured: in separate jobs the whole TaskManager peaked at 520 to 576 MiB with the uploader on in the [#2034 trials](../../../docs/adr/evidence/0195-fileloads-uploader-recovery-2034.md) and at about 230 MiB in the EO [#1779 trials](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#observations).
+
+The input is six minutes at 1 MiB/s to ten destinations: 5,760 rows of 64 KiB for ALO, 16 a second, and 368,640 rows of 1 KiB for EO and FILE_LOADS, 1,024 a second.
 The job finishes with its input, so the input only has to outlast the faults.
 The first [Spanner](../spanner/README.md#fault-sequence), [Firestore](../firestore/README.md#fault-sequence) and [Bigtable](../bigtable/README.md#fault-sequence) `sequence` runs had consumed 106 to 134 seconds of their input when their jobs ran again after the last fault, because the input pauses while the job is down and a deleted Pod's restore goes back to the last checkpoint.
 Six minutes therefore leaves about four after the faults, room for at least two interruptions as long as the slowest of those faults, 87 seconds.
-Those runs' inputs began 477 to 677 seconds into the window and finished 245 to 292 seconds later than their length; a BigQuery run whose input begins as late reaches its verdict about 18 to 23 minutes into its window.
+A FILE_LOADS run checkpoints every 120 seconds rather than 30, so its first fault may wait up to about 90 seconds longer for the completed checkpoint after the initial input, which still leaves more than two minutes of input after the faults while its checkpoints complete on time.
+Those runs' inputs began 477 to 677 seconds into the window and finished 245 to 292 seconds later than their length; a BigQuery run whose input begins as late reaches its verdict about 18 to 23 minutes into its window in ALO or EO mode, whose final checkpoint follows its input within 30 seconds.
+A FILE_LOADS run may take until about 28 minutes, because of that interval: each restore replays the input since the latest completed checkpoint, about one interval at most if each checkpoint completes within seconds, which the estimate assumes from the [#1313 trial](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md#observations), whose writer subtasks took 1.5 to 3.3 seconds a checkpoint, the final checkpoint can come up to one interval after the input, and its commit then runs one load job per destination, a commit taking 5.3 to 11.5 seconds in the [#1313 trial](../../../docs/adr/evidence/0165-bigquery-fileloads-findings-1313.md#observations).
+These figures assume checkpoints that complete on time; the job tolerates two failed checkpoints in a row, and each one that fails lengthens the replay a later restore makes and can delay the final commit by another interval.
 The first `alo-10-sequence` run, `bq2150-seq-a1`, began its input 518 seconds into the window, finished it 269 seconds later than its length, and reached `usable` 20.0 minutes into its window, as its [findings](../../../docs/adr/evidence/0204-bigquery-fault-sequence-findings-2150.md) record.
 
-When the job has finished after the last fault, with its whole input processed, one query reads the ten tables with the [offline query oracle](#offline-query-oracle), and its report is the verdict: `usable` when every input sequence is in its table with its expected payload and no row is invalid, with duplicates reported.
-A missing or invalid row makes the run `inconclusive` with `oracle-not-passed` rather than stopping it, and the query is not repeated until it passes, because the finished job, not the tables, says the input was committed; the read ends at the latest a minute before the run's one-hour limit, and a job that finishes later than that stops the run at its time limit.
+When the job has finished after the last fault, with its whole input processed, one query reads the ten tables with the [offline query oracle](#offline-query-oracle), and its report is the verdict: `usable` when every input sequence is in its table with its expected payload and no row is invalid, with duplicates reported in ALO mode and failing the run in EO and FILE_LOADS modes.
+A missing, invalid or, in an exactly-once mode, duplicated row makes the run `inconclusive` with `oracle-not-passed` rather than stopping it, and the query is not repeated until it passes, because the finished job, not the tables, says the input was committed; the read ends at the latest a minute before the run's one-hour limit, and a job that finishes later than that stops the run at its time limit.
+Before its query, a FILE_LOADS run lists the [connector-issued jobs](#connector-issued-jobs) and stops if one is not `DONE`, for the reason the [internal recovery execution](#internal-recovery-execution) gives; a listing that failed without an answer, such as a transport error, is repeated until the read window closes.
 An archived report that differs from the rows it came with still stops the run.
 `just tier3-analyze` decides a `sequence` run by its query alone and lists its faults; its proposal still carries the estimate below, which nothing approves.
 
@@ -156,7 +163,7 @@ A proposal is not an approval: dispatch admits this scenario only through the [p
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
-Name the trial with `--bigquery-trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one delivery method at one destination count, or the [fault sequence](#fault-sequence) `alo-10-sequence`.
+Name the trial with `--bigquery-trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one delivery method at one destination count, or one of the [fault sequences](#fault-sequence) `alo-10-sequence`, `eo-10-sequence` and `fl-10-uploader-sequence`.
 `fl-10` is the FILE_LOADS trial at 10 destinations with the sink inputs at the connector's defaults except the background staging uploader, which it keeps off: it asks whether finalization survives the two recoveries, not how it scales.
 `fl-10-uploader` is the same trial with the background staging uploader on at its default of two in-flight upload operations ([#2030](https://github.com/flink-gcp/flink-connector-gcp/issues/2030)); its runs across these recoveries are what turned the connector's default on, as ADR-0195 records, and `fl-10` stays the task-thread comparison.
 These run a savepoint upgrade and a JobManager failover, with the writers at parallelism two in both phases.
@@ -174,7 +181,7 @@ That quota has no slot for a replacement, so a TaskManager replacement's new Pod
 Every trial now renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
 Likewise an image built before [#2226](https://github.com/flink-gcp/flink-connector-gcp/issues/2226) pads its rows with pseudorandom bytes, which the [query oracle](#offline-query-oracle) now counts as invalid, so every trial needs an image published after that change too.
 One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
-The record count is fixed to the mode's 30-minute-equivalent input above, except for the fault sequence's six minutes.
+The record count is fixed to the mode's 30-minute-equivalent input above, except for the fault sequences' six minutes.
 Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
 Every visibility retry that submits a new job must consume another slot.
 
@@ -604,7 +611,7 @@ The `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector
 
 | Input | Contract |
 | --- | --- |
-| `bigquery_trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one of the `eo-10`, `fl-10` and `fl-10-uploader` fault trials above, or the fault sequence `alo-10-sequence`; the default `none` is refused |
+| `bigquery_trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one of the `eo-10`, `fl-10` and `fl-10-uploader` fault trials above, or one of the fault sequences `alo-10-sequence`, `eo-10-sequence` and `fl-10-uploader-sequence`; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 
 For a single-fault trial the owner approves the run's estimate before dispatching it, and dispatching is the approval; a [fault sequence](#fault-sequence) carries an estimate that nothing approves, as ADR-0204 decides.

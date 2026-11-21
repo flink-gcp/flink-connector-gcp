@@ -1209,12 +1209,13 @@ class FiniteInputExercise(RecoveryExercise):
         self.deadline = self.env.schedule.cleanup_at
         return until
 
-    def retried(self, call, until, closed=None):
+    def retried(self, call, until, closed=None, said_nothing=transient):
         """One oracle read, repeated while it fails without saying anything.
 
-        Before `until`, a non-transient failure says something about the read
-        and is raised. Once it has passed, any failure is raised, as `closed`
-        when the caller names the window's closing apart.
+        Before `until`, a failure that `said_nothing` does not excuse says
+        something about the read and is raised. Once it has passed, any
+        failure is raised, as `closed` when the caller names the window's
+        closing apart.
         """
         while True:
             try:
@@ -1224,7 +1225,7 @@ class FiniteInputExercise(RecoveryExercise):
                     if closed is None:
                         raise
                     raise closed(str(error)) from error
-                if not transient(error):
+                if not said_nothing(error):
                     raise
             self.env.sleep(RETRY_SECONDS)
 

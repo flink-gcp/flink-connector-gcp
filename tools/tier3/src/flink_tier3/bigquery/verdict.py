@@ -127,7 +127,8 @@ def sequence_verdict(recovery):
     """A fault-sequence run's verdict: its data alone (ADR-0204).
 
     `usable` says the run completed and the query oracle passed: every input
-    sequence in its table and no invalid row, duplicates being reported.
+    sequence in its table and no invalid row, duplicates being reported in
+    ALO mode and failing the oracle in EO and FILE_LOADS modes.
     Interruptions, restarts, timings and metrics decide nothing.
     """
     record = recovery if isinstance(recovery, dict) else {}
