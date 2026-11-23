@@ -66,7 +66,7 @@ The [actor factories](../kubernetes/apps/bigquery/README.md#internal-actors) bin
 The render-only [BigQuery execution proposal](../kubernetes/apps/bigquery/README.md#offline-execution-proposal) binds the resource plan and both application phases to a reviewable supervisor bundle without creating an approval.
 The checkout-dependent [BigQuery approval bundle](../kubernetes/apps/bigquery/README.md#approval-bound-delivery) prepares and verifies delivery against a separately supplied approval without admitting execution.
 
-The internal [BigQuery recovery exercise](../kubernetes/apps/bigquery/README.md#internal-recovery-execution) coordinates table provisioning, state-preserving recovery and bounded final queries.
+The BigQuery [fault sequence](../kubernetes/apps/bigquery/README.md#fault-sequence) runs after table provisioning and reads the tables with one bounded query.
 
 The [lifecycle runbook](../kubernetes/lifecycle/README.md) defines execution approval and cleanup.
 Third-party dependencies are installed in the pinned image, while the reviewed package source the supervisor entrypoint can import is projected through an immutable ConfigMap.

@@ -19,15 +19,9 @@ from __future__ import annotations
 from ..common import Failure, timestamp, utc
 from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import BIGTABLE, BIGTABLE_OBSERVATIONS, BIGTABLE_STATE, POLL
-from .observe import observation, vertices
 from .oracle import AtLeastOnce, ExactlyOnce, Relay
-from .trial import (
-    AT_LEAST_ONCE_TABLE,
-    EXACTLY_ONCE_TABLE,
-    RELAY_TABLE,
-    SEQUENCE_KIND,
-)
-from .verdict import MEASUREMENT_EVENT, sequence_verdict, summarize, verdict
+from .trial import AT_LEAST_ONCE_TABLE, EXACTLY_ONCE_TABLE, RELAY_TABLE
+from .verdict import sequence_verdict
 
 # The stage between the finished application and the read tables.
 ORACLE_STAGE = "tables"
@@ -39,13 +33,13 @@ COMMIT_SECONDS = 120
 
 
 class BigtableExercise(FiniteInputExercise):
-    """Recover the finite input, then read all three tables against it.
+    """Run the finite input through the faults, then read all three tables against it.
 
-    The caller supplies the supervisor's instance controller. The approved
-    trial names the fault, as it does for Cloud Tasks; the job finishes once
-    the change-stream source reaches its end, after the input. The verdict is
-    decided from the recoveries, the families each window read and the three
-    oracle reports, and written with the transition that completes the run.
+    The caller supplies the supervisor's instance controller. The job
+    finishes once the change-stream source reaches its end, after the input.
+    The verdict is decided from the three oracle reports, by the `verdict`
+    the fault sequence names, and written with the transition that completes
+    the run.
     """
 
     namespace = BIGTABLE
@@ -54,11 +48,6 @@ class BigtableExercise(FiniteInputExercise):
     service = "Bigtable"
     oracle_stage = ORACLE_STAGE
     progress_event = "bigtable-progress"
-    measurement_event = MEASUREMENT_EVENT
-    baseline_event = "bigtable-baseline-window"
-    # The input with both sinks, and the Change Streams relay: two disconnected
-    # pipelines, each of which a lost TaskManager restarts.
-    failover_regions = 2
 
     def __init__(self, env, upgrade, instance):
         if env.approval.scenario != "bigtable-recovery":
@@ -69,16 +58,6 @@ class BigtableExercise(FiniteInputExercise):
         self.instance = instance
         super().__init__(env, upgrade, trial)
 
-    def discover(self, rest, known):
-        return vertices(rest, known)
-
-    def read(self, rest, state):
-        return observation(rest, state)
-
-    summarize = staticmethod(summarize)
-    # The verdict the oracles' record is judged by.
-    verdict = staticmethod(verdict)
-
     def verify_tables(self):
         """Read every table once and judge each component on its own table.
 
@@ -87,7 +66,7 @@ class BigtableExercise(FiniteInputExercise):
         stops at this stage.
         """
         if self.stage != ORACLE_STAGE:
-            raise Failure("Bigtable oracles require both recoveries and the input")
+            raise Failure("Bigtable oracles require the fault sequence and the input")
         until = self.oracle_window()
         api = self.instance.listing(until)
         checks = {
@@ -126,30 +105,15 @@ class BigtableExercise(FiniteInputExercise):
         }
         self.complete(self.verdict)
 
-    def input_finished_at(self):
-        """When the upgraded job first showed its whole input processed."""
-        return min(
-            sample["at"]
-            for sample in self.fresh_progress("upgrade")
-            if sample["processed"] == self.records
-        )
-
 
 class BigtableSequenceExercise(FaultSequence, BigtableExercise):
     """The Bigtable trial as one fault sequence, judged by its data (ADR-0204).
 
-    The oracles are the same three, `eo` judged exactly once; no window
-    samples the job. The relay is judged when the input's latest progress
-    line came the commit margin before the change stream's end and no restore
-    followed that line.
+    The oracles are the same three, `eo` judged exactly once. The relay is
+    judged when the input's latest progress line came the commit margin
+    before the change stream's end and no restore followed that line.
     """
 
+    # The verdict the oracles' record is judged by.
     verdict = staticmethod(sequence_verdict)
     reads_final_restore = True
-
-
-def bigtable_exercise(env, upgrade, instance):
-    """The exercise the approved Bigtable trial names."""
-    if env.approval.bigtable_plan.kind == SEQUENCE_KIND:
-        return BigtableSequenceExercise(env, upgrade, instance)
-    return BigtableExercise(env, upgrade, instance)

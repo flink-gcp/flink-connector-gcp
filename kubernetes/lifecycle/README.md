@@ -70,14 +70,14 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `runner.py` | External admission, settlement and finalization |
 | `supervisor.py` | Progress/checkpoint observation and supervision |
 | `cleanup.py` | Ownership-aware cleanup and idle verification |
-| `exercise.py` | The recovery exercise every scenario builds on: recorded operation intents, the owned savepoint upgrade and rescales, Pod deletion and scheduling evidence, with the measurement windows of the scenarios still under ADR-0165 and the fault sequence of [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) |
-| `metrics.py` | Flink metric primitives and the observation coverage built from them |
+| `exercise.py` | The fault sequence of [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) that every scenario runs: recorded operation intents, the owned savepoint upgrade and rescales, Pod deletion, scheduling evidence and the finite-input exercise the five finite-input scenarios build on |
+| `metrics.py` | The job's REST API, read through its Service, and the event that carries each poll's checkpoint statistics |
 | `resource.py`, `actors.py`, `rest.py` | What the scenarios whose runner creates one service resource share: its lifecycle from intent to deletion, the actors that own it, and deadline-bounded REST calls |
 | `quiesce.py` | The writer listings and retrying poll that the quiescence barriers share |
-| `analyze.py`, `runs.py`, `recovery_analysis.py` | Downloaded run directories and the offline analysis of deployed recovery runs |
+| `analyze.py`, `runs.py`, `recovery_analysis.py` | Downloaded run directories, the offline analysis of deployed recovery runs, and the steps every scenario's analysis shares |
 | `bootstrap.py`, `chart.py`, `schemas.py` | The idle bootstrap and Operator roots, the checksum-pinned Operator chart, and the generated CRD packages |
 | `common.py`, `repository.py` | Shared helpers, and the repository checkout the checkout commands read |
-| `<connector>/` | One connector's scenario: its trial, plan, the lifecycle of the resources it creates, exercise, observation, oracles, verdict and analysis |
+| `<connector>/` | One connector's scenario: its trial, plan, the lifecycle of the resources it creates, exercise, oracles, verdict and analysis |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.
@@ -93,7 +93,7 @@ Only a dispatch on `main` can assume the runner identity and admit work, and the
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run ends 60 minutes after admission, and a BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.
 The last 15 minutes of each window are reserved for cleanup.
-A run under ADR-0204 also stops as abnormal one hour after admission if it has no verdict by then.
+A recovery trial also stops as abnormal one hour after admission if it has no verdict by then, as ADR-0204 decides.
 
 Dispatch does not check the node count. On a one-node cluster, kube-dns may preempt the supervisor within seconds as the cluster scales up, as it did to the BigQuery pilot `bq1312-alo-10-a2`; in every observed case that happened about 30 seconds after the supervisor started, before application admission, and an immediate redispatch found the cluster scaled up.
 The Job replaces no Pod: a preempted supervisor ends the Job, the runner settles the run, and the owner redispatches it under a new run ID.
@@ -221,8 +221,8 @@ A failed check is raised chained to the latest failure after which the mutation 
 A delete reruns no check: each removes a run-owned object that cleanup removes after a stop as well, whether in cleanup itself, the runner's teardown, the Pub/Sub access probe or the exercise's planned Pod deletion, so a late repeat does nothing cleanup would not.
 When the schedule is spent, or a later answer is neither repeated nor settled, the adapter raises the latest failure that left the outcome unknown, chained to that answer, so the lifecycle's own checks of an unanswered Pod delete or upgrade patch still apply.
 A dry-run create persists nothing to read back, so it is repeated only on 429, and the supervisor's identity review is repeated as a read.
-A Flink REST call through the API server's proxy is not repeated; it is the job's answer, which the recovery windows classify themselves.
-A `sequence` run, which has no windows, instead waits out a checkpoint-statistics read that failed in transport, or was answered 404, 408, 429, 500, 502, 503 or 504, and reads again at the next poll; any other failure stops the run.
+A Flink REST call through the API server's proxy is not repeated; it is the job's answer.
+A recovery trial waits out a checkpoint-statistics read that failed in transport, or was answered 404, 408, 429, 500, 502, 503 or 504, and reads again at the next poll; any other failure stops the run.
 Spanner's and Bigtable's runs, whose relay verdict reads the latest restore, complete only on a poll whose read answered, and Pub/Sub's declares its job idle after a restore only on one.
 The second exception is a GCS read, whether a metadata read, a download or a listing, answered 408, 429, 500, 502, 503 or 504, or left without an answer by a refused, reset or timed-out connection or a token refresh that failed in transport, which the adapter repeats up to three times after the same delays: a single timed-out control-record read ended trial `ct1799-rescale-out-a1` during its JobManager failover. Once a request has spent a full 20-second timeout only its first failure is retried, so a read that timed out is repeated at most once.
 A generation replaced between a GCS metadata read and its download restarts the complete read after a random wait, as a lost conditional-update race does, and the twentieth conflicting attempt gives up; only an initial metadata 404 means the object is absent.
@@ -353,9 +353,13 @@ An unsuccessful run can still have an idle result: check both `success` and `idl
 After the run, download the complete prefix to a private local evidence directory before its 30-day expiry, for example with `gcloud storage cp --recursive gs://flink-gcp-tier3-evidence/runs/RUN_ID LOCAL_EVIDENCE_DIRECTORY`.
 Retain the approval, manifests, digests, phase observations, final receipt and plan output together, record file hashes locally, and publish only a reviewed summary of the measured result.
 `just tier3-analyze LOCAL_EVIDENCE_DIRECTORY` writes `report.json` and `report.md` into an `analysis` directory beside the run, without contacting any service.
-It reports a deployed recovery run's verdict, recomputed from its exported evidence rather than read from its receipt, with the reasons behind it and the verdict the run stored beside it; a stored verdict other than the recomputed one is named as a problem, an evidence set without what the verdict is decided from has no verdict, and a run that simply did not complete is inconclusive.
+It reports a deployed recovery run's verdict, recomputed from its exported evidence rather than read from its receipt, with the reasons behind it, the faults the run injected and the verdict the run stored beside it; a stored verdict other than the recomputed one is named as a problem, an evidence set without what the verdict is decided from has no verdict, and a run that simply did not complete is inconclusive.
+A single-fault run of [ADR-0165](../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) whose trial names the single-fault kind it ran has no verdict in the report, which gives the verdict it stored and the problem `single-fault-trial`; it is analysed at the revision its approval's `sha` names.
+A trial names one when it names `jm-replacement`, `tm-replacement`, `rescale-out` or `rescale-in`, or for Pub/Sub also one of its reactive and adaptive scheduler kinds.
+A BigQuery receipt's trial names a fault rather than a kind: it names one when it names `tm-replacement`, `rescale-out` or `rescale-in`, or no fault, as the first trials and every JobManager replacement did.
+Any other trial is malformed, and the run has no verdict; another scenario's trial that names no kind, as the first Cloud Tasks run's does, is one.
 The analyzer's rules are part of the commit the approval's `sha` names, so the approval still pins the analysis code that will judge the run; the analyzer runs offline from a checkout rather than in the Pod, so it is not part of the delivered set.
-Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery timing are properties only deployed runs can show.
+Synthetic validation establishes the control logic; WIF/KSA permissions, Autopilot mutation, Spot survival and recovery itself are properties only deployed runs can show.
 
 To render a synthetic lifecycle bundle without cloud access, run from the repository root:
 

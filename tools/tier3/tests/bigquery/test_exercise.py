@@ -21,15 +21,10 @@ import pytest
 import requests
 from flink_tier3 import analyze
 from flink_tier3.bigquery import plan
-from flink_tier3.bigquery.exercise import (
-    BigQueryExercise,
-    BigQuerySequenceExercise,
-    require_handoff,
-)
+from flink_tier3.bigquery.exercise import BigQuerySequenceExercise, require_handoff
 from flink_tier3.bigquery.handoff import BigQueryHandoff
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
 from flink_tier3.bigquery.oracle import assess
-from flink_tier3.bigquery.verdict import MEASUREMENT_EVENT
 from flink_tier3.common import (
     INCONCLUSIVE,
     Failure,
@@ -39,7 +34,7 @@ from flink_tier3.common import (
 from flink_tier3.environment import Environment
 from flink_tier3.exercise import RECORD_SECONDS, TIME_LIMIT_SECONDS
 from flink_tier3.model import Phase
-from flink_tier3.policy import BIGQUERY, BIGQUERY_OBSERVATIONS, BIGQUERY_STATE, MIB
+from flink_tier3.policy import BIGQUERY, BIGQUERY_STATE, MIB
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import Supervisor
 
@@ -96,7 +91,7 @@ class QueryResources(Resources):
 
 
 class World:
-    def __init__(self, prepared, monkeypatch, fault=None, withheld=None):
+    def __init__(self, prepared, monkeypatch, fault=None):
         self.runner_env, initial, upgrade, _ = prepared
         self.kube, self.store, self.clock = (
             self.runner_env.kube,
@@ -108,11 +103,8 @@ class World:
         self.start = self.clock()
         self.changed = self.start
         self.fault = fault
-        self.withheld = withheld
         self.phase = "initial"
         self.upgrade_at = None
-        self.failover_at = None
-        self.calls = []
         self.query_calls = []
         self.history = {}
         self.cp, self.restore = {}, {}
@@ -129,13 +121,6 @@ class World:
         self.supervisor = Supervisor(
             self.env, upgrade, bigquery=self.observer, quiesce=self.quiesce
         )
-        listing = self.supervisor.exercise.connector_jobs
-
-        def recorded(*, deadline):
-            self.listings.append((self.clock(), deadline))
-            return listing(deadline=deadline)
-
-        self.supervisor.exercise.connector_jobs = recorded
         job = self.kube.put(obj("Job", "supervisor", rt.SYSTEM))
         self.env.remember("supervisor", job)
         self.supervisor_pod = supervisor_pod(
@@ -171,11 +156,6 @@ class World:
         monkeypatch.setattr(self.kube, "logs", self.logs)
         monkeypatch.setattr(self.resources, "results", self.results)
         self.connector_listings = []
-        # Listings the failover took while waiting, and after its delete,
-        # with the clock and the deadline each one was asked under.
-        self.armed_listings, self.relisted = 0, False
-        self.listings = []
-        self.listing_error = None
         monkeypatch.setattr(
             self.resources, "unfinished_connector_jobs", self.connector_jobs
         )
@@ -188,19 +168,6 @@ class World:
         name = f"tm-{self.taskmanagers}"
         self.pod(name, "taskmanager")
         return name
-
-    def subtasks(self, app):
-        """The subtasks Flink 2.2.1 checkpoints for the application's graph.
-
-        The writers' parallelism is the `--parallelism` argument, not the
-        manifest's. The source and input identity are one vertex of one
-        subtask; the EO committer is chained to its writer, while the
-        FILE_LOADS committer is a vertex of its own at the writers'
-        parallelism.
-        """
-        args = app["spec"]["job"]["args"]
-        writers = int(args[args.index("--parallelism") + 1])
-        return 1 + writers * (2 if self.plan.trial.mode == "FILE_LOADS" else 1)
 
     def running_taskmanagers(self):
         return sorted(
@@ -236,14 +203,11 @@ class World:
             return self.original_patch(
                 app, changes, subresource, before_repeat=before_repeat
             )
-        self.calls.append(("upgrade", self.clock()))
         current = self.app()
         assert app["metadata"]["uid"] == current["metadata"]["uid"]
         assert (
             app["metadata"]["resourceVersion"] == current["metadata"]["resourceVersion"]
         )
-        if self.fault == "upgrade-conflict":
-            raise rt.ApiError(409, "PATCH", "app")
         # The arguments, and a rescale's parallelism and TaskManager count.
         for change in changes:
             _, _, parent, field = change["path"].split("/")
@@ -260,83 +224,12 @@ class World:
     def delete(self, value):
         component = value["metadata"].get("labels", {}).get("component")
         if value["kind"] == "Pod" and component in ("jobmanager", "taskmanager"):
-            self.calls.append(("failover", self.clock()))
             self.phase, self.changed = "failover", self.clock()
-            self.failover_at = self.clock()
             self.failover_kind = component
             self.deleted = value["metadata"]["name"]
         return self.original_delete(value)
 
     def request(self, method, path, *args, **kwargs):
-        # The measurement collector reads the job plan, the sink's metric ids
-        # and the TaskManagers; the real service answers all three through the
-        # same proxy, so the double does too.
-        file_loads = self.plan.trial.mode == "FILE_LOADS"
-        if "/proxy/jobs/" in path and "/" not in path.split("/proxy/jobs/")[1]:
-            if file_loads:
-                # The plan Flink 2.2.1 builds for the application's FILE_LOADS
-                # sink: the committer is a vertex of its own.
-                return {
-                    "vertices": [
-                        {"id": "source-vertex", "name": "Source: datagen"},
-                        {
-                            "id": "sink-vertex",
-                            "name": "BigQuery FILE_LOADS: Writer -> "
-                            "BigQuery FILE_LOADS: Stamp checkpoint ids",
-                        },
-                        {
-                            "id": "committer-vertex",
-                            "name": "BigQuery FILE_LOADS: Committer",
-                        },
-                    ]
-                }
-            return {
-                "vertices": [
-                    {"id": "source-vertex", "name": "Source: datagen"},
-                    {"id": "sink-vertex", "name": "Sink: bigquery"},
-                ]
-            }
-        if path.endswith("/vertices/committer-vertex/subtasks/metrics"):
-            return [
-                {"id": "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted"},
-                {"id": "BigQuery_FILE_LOADS__Committer.lastCommitDurationMillis"},
-            ]
-        if "/checkpoints/details/" in path and "/subtasks/" in path:
-            return {
-                "subtasks": [
-                    {
-                        "index": index,
-                        "status": "completed",
-                        "checkpoint": {"sync": 2, "async": 30},
-                        "start_delay": 1,
-                        "end_to_end_duration": 40,
-                    }
-                    for index in range(2)
-                ]
-            }
-        if path.endswith("/subtasks/metrics"):
-            return [
-                {"id": "Sink__Writer.openDestinations"},
-                {"id": "busyTimeMsPerSecond"},
-                {"id": "inPoolUsage"},
-            ]
-        if "/subtasks/metrics?" in path:
-            # The service answers with an entry per requested id it holds, so
-            # the double echoes the query rather than a fixed single metric:
-            # the verdict credits a family from what came back, not from what
-            # discovery listed. `withheld` is the id the job stopped
-            # publishing after discovery listed it, which the real service
-            # answers by simply leaving out.
-            requested = path.split("?get=")[1].split("&")[0]
-            return [
-                {"id": name, "sum": "7"}
-                for name in requested.split(",")
-                if name != self.withheld
-            ]
-        if path.endswith("/taskmanagers"):
-            return {"taskmanagers": [{"id": "tm-0"}]}
-        if "/taskmanagers/" in path and "/metrics?" in path:
-            return [{"id": "Status.JVM.Memory.Direct.MemoryUsed", "value": "1024"}]
         if not path.endswith("/checkpoints"):
             return self.original_request(method, path, *args, **kwargs)
         assert BIGQUERY in path and rt.SMOKE not in path
@@ -426,31 +319,24 @@ class World:
                 "external_path": path
                 + ("savepoints/sp" if self.phase == "upgrade" else "checkpoints/cp"),
             }
-            if self.fault == "wrong-state":
-                self.restore["external_path"] = self.restore["external_path"].replace(
-                    BIGQUERY_STATE, rt.STATE
-                )
         if self.phase != "initial" and elapsed < 30:
             self.kube.put(app)
             return
-        end = 1100 if self.fault == "early-finish" else 1800
+        end = 1800
         processed = min(
             self.plan.trial.records,
             int((now - self.start) / end * self.plan.trial.records),
         )
         if processed == self.plan.trial.records:
             app["status"]["jobStatus"]["state"] = "FINISHED"
-        if self.fault != "no-progress":
-            lineage = "11111111-1111-4111-8111-111111111111"
-            if self.fault == "fresh-lineage" and self.phase != "initial":
-                lineage = "22222222-2222-4222-8222-222222222222"
-            phase = "initial" if self.phase == "initial" else "upgrade"
-            line = (
-                f"{rt.utc(now)} event=bigquery-progress run_id={self.approval.run_id} "
-                f"phase={phase} lineage={lineage} restored={str(self.phase != 'initial').lower()} "
-                f"processed={processed} sequence={processed - 1}\n"
-            )
-            self.history.setdefault(self.reporting + "-uid", []).append((now, line))
+        lineage = "11111111-1111-4111-8111-111111111111"
+        phase = "initial" if self.phase == "initial" else "upgrade"
+        line = (
+            f"{rt.utc(now)} event=bigquery-progress run_id={self.approval.run_id} "
+            f"phase={phase} lineage={lineage} restored={str(self.phase != 'initial').lower()} "
+            f"processed={processed} sequence={processed - 1}\n"
+        )
+        self.history.setdefault(self.reporting + "-uid", []).append((now, line))
         if elapsed >= 45:
             self.cp = {
                 "id": 1 if self.phase == "initial" else 43,
@@ -458,46 +344,13 @@ class World:
                 "is_savepoint": False,
                 "trigger_timestamp": (now - 1) * 1000,
                 "latest_ack_timestamp": int(now * 1000),
-                "num_subtasks": self.subtasks(app),
                 "external_path": f"gs://{BIGQUERY_STATE}/runs/{self.approval.run_id}/checkpoints/cp",
-            }
-        if self.fault in ("restart", "shutdown", "evicted") and now - self.start > 300:
-            pod = self.kube.get("Pod", BIGQUERY, "tm-1")
-            pod["status"]["containerStatuses"][0]["restartCount"] = 1
-            # A node shutdown is the platform's, whatever else the Pod shows;
-            # a disruption alone may be an eviction under the Pod's own limits.
-            disruption = {"type": "DisruptionTarget", "status": "True"}
-            if self.fault == "shutdown":
-                # As the kubelet's graceful node shutdown leaves the Pod.
-                pod["status"]["reason"] = "Terminated"
-                disruption["reason"] = "TerminationByKubelet"
-            if self.fault == "evicted":
-                pod["status"]["reason"] = "Evicted"
-                disruption["reason"] = "TerminationByKubelet"
-            if self.fault != "restart":
-                pod["status"].setdefault("conditions", []).append(disruption)
-            self.kube.put(pod)
-        if self.fault == "job-restart" and now - self.start > 300 and not self.restore:
-            # The job restarts from its checkpoint on the same Pods, which
-            # leaves nothing in Kubernetes to see.
-            self.restores += 1
-            self.restore = {
-                "id": self.cp["id"],
-                "is_savepoint": False,
-                "restore_timestamp": int(now * 1000),
-                "external_path": self.cp["external_path"],
             }
         self.kube.put(app)
 
     def results(self, slot):
         self.query_calls.append((slot, self.clock()))
-        data = rows(
-            self.plan.trial,
-            missing=self.fault == "invisible"
-            or (self.fault in ("late-visibility", "load-between-reads") and slot == 0),
-            duplicate=self.fault == "duplicates",
-            invalid=self.fault == "invalid",
-        )
+        data = rows(self.plan.trial)
         # The real adapter returns the job it read, and refuses one whose
         # billing statistics are absent, so the double carries them too.
         return {
@@ -508,13 +361,6 @@ class World:
             "rows": data,
             "report": assess(self.plan.trial, data),
         }
-
-    def measurements(self):
-        return [
-            value
-            for value in self.evidence().values()
-            if isinstance(value, dict) and value.get("event") == MEASUREMENT_EVENT
-        ]
 
     def evidence(self):
         return {
@@ -562,62 +408,13 @@ class World:
         return self.fault != "barrier" and self.app() is None
 
     def connector_jobs(self, since):
-        """A load the committer left: before the oracle, or after the Pods.
+        """The run's connector jobs not DONE: `load-after-finished` leaves one.
 
-        `load-outlives` is a load still RUNNING when the workload is gone,
-        which cleanup must wait out; `load-after-finished` is one still
-        running when the oracle reads, which it must refuse.
+        A load still running when the oracle reads, which it must refuse.
         """
         assert since == self.start
-        if (
-            self.phase == "upgrade"
-            and self.failover_at is None
-            and not self.env.refresh().stop_requested
-        ):
-            # The failover's wait, each listing taking 0.4 s: nothing, then a
-            # load still PENDING beside a running copy, neither of which is a
-            # load in flight, then a commit's load runs.
-            self.clock.sleep(0.4)
-            self.armed_listings += 1
-            if self.fault == "listing-error" and self.armed_listings == 1:
-                raise self.listing_error()
-            if self.fault == "listing-refused" and self.armed_listings == 1:
-                raise Failure("A listed BigQuery job has no readable id")
-            if self.fault == "stop-while-waiting" and self.armed_listings == 2:
-                self.env.records.request_stop()
-            if self.armed_listings == 2:
-                return [
-                    {**LOAD, "state": "PENDING"},
-                    {**LOAD, "id": LOAD["id"] + "-copy", "kind": "copy"},
-                ]
-            return (
-                [dict(LOAD)]
-                if self.armed_listings > 2
-                and self.fault not in ("no-load-in-flight", "stop-while-waiting")
-                else []
-            )
-        if self.failover_at is not None and not self.relisted:
-            # The relisting just after the delete: the load is still running
-            # unless it finished in between, and another may have started.
-            self.clock.sleep(0.4)
-            self.relisted = True
-            if self.fault == "listing-error":
-                raise self.listing_error()
-            if self.fault == "load-finished-before-delete":
-                return []
-            if self.fault == "another-load-after-delete":
-                return [dict(LOAD), {**LOAD, "id": LOAD["id"][:-1] + "1"}]
-            return [dict(LOAD)]
         self.connector_listings.append(self.app() is None)
-        if self.fault == "load-outlives" and self.app() is None:
-            pending = self.connector_listings.count(True) <= 2
-        elif self.fault == "load-after-finished":
-            pending = self.app() is not None
-        elif self.fault == "load-between-reads":
-            # Absent before the first read, running before the second.
-            pending = self.app() is not None and len(self.query_calls) == 1
-        else:
-            pending = False
+        pending = self.fault == "load-after-finished" and self.app() is not None
         return [dict(LOAD)] if pending else []
 
     def run(self):
@@ -735,20 +532,6 @@ def test_runner_refuses_binding_drift_before_mutation(prepared, fault):
     assert environment.store.data == before
 
 
-def test_input_may_start_after_the_admission_budget(prepared):
-    """A cold cluster provisions Pods past admission's budget; input may follow."""
-    environment, _, upgrade, _ = prepared
-    environment.records.set_phase(Phase.READY)
-    environment.records.set_phase(Phase.RUNNING)
-    exercise = BigQueryExercise(environment, upgrade, None)
-    started = environment.schedule.started
-    environment.clock.now = started + BIGQUERY_OBSERVATIONS["startup_seconds"]
-    exercise.check_open()
-    environment.clock.now = started + BIGQUERY_OBSERVATIONS["input_seconds"]
-    with pytest.raises(Failure, match="deadline expired: baseline"):
-        exercise.check_open()
-
-
 def test_handoff_requires_same_environment(prepared):
     environment, application, *_ = prepared
     actor = handoff(
@@ -759,49 +542,10 @@ def test_handoff_requires_same_environment(prepared):
         require_handoff(environment, actor)
 
 
-@pytest.mark.parametrize(
-    "fault", ["missing-rows", "forged-report", "late", "stop", "slots"]
-)
-def test_visibility_rejects_unusable_results_and_cancellation(prepared, fault):
-    environment, _, upgrade, _ = prepared
-    environment.records.set_phase(Phase.READY)
-    environment.records.set_phase(Phase.RUNNING)
-    exercise = BigQueryExercise(environment, upgrade, None)
-    exercise.stage = "visibility"
-    observations = []
-
-    class Queries:
-        def query(self, name, *, deadline):
-            observations.append((name, deadline))
-            data = rows(exercise.trial, missing=fault == "slots")
-            result = {"rows": data, "report": assess(exercise.trial, data)}
-            if fault == "missing-rows":
-                return {}
-            if fault == "forged-report":
-                result["report"]["verdict"] = "fail"
-            if fault == "late":
-                environment.clock.now = deadline
-            if fault == "stop":
-                environment.records.request_stop()
-            return result
-
-    with pytest.raises(Failure):
-        exercise.verify_rows(Queries())
-    assert exercise.stage == "visibility"
-    assert "query" not in exercise.outcomes
-    assert len({deadline for _, deadline in observations}) == 1
-
-
-def test_visibility_refuses_before_recovery_and_input_completion(prepared):
-    environment, _, upgrade, _ = prepared
-    with pytest.raises(Failure, match="both recoveries"):
-        BigQueryExercise(environment, upgrade, None).verify_rows(None)
-
-
 @pytest.mark.parametrize("fault", ["future", "invalid-lineage"])
 def test_invalid_progress_is_not_recovery_evidence(prepared, fault):
     environment, _, upgrade, _ = prepared
-    exercise = BigQueryExercise(environment, upgrade, None)
+    exercise = BigQuerySequenceExercise(environment, upgrade)
     at = environment.clock() + (1 if fault == "future" else 0)
     lineage = (
         "bad" if fault == "invalid-lineage" else "11111111-1111-4111-8111-111111111111"
@@ -1048,7 +792,6 @@ SEQUENCE_TRIALS = [plan.trial(name) for name in plan.TRIALS]
 def test_the_sequence_trial_builds_the_sequence_exercise(prepared, trial):
     value = supervised(prepared)
     assert isinstance(value, BigQuerySequenceExercise)
-    assert value.measurement_event is None
     assert value.records == trial["records"]
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 

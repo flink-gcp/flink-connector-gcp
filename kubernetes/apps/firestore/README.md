@@ -53,7 +53,7 @@ The input runs at parallelism one; every other vertex runs at `--parallelism`, o
 - **Batch copies from `seed` into `batch_out`:** each source reads its database's `seed` at one read time, and each record it delivers is written with a delivery name, `<phase>:<uuid>:<n>`: the phase, a UUID drawn when the task instance opens, and the delivery's position in that instance.
   - A key's copies count its deliveries. Both sources resume a split after the last record they emitted before the restored checkpoint, so a restore adds a copy only for what was emitted after that checkpoint.
   - Each read asks for four splits, more than the largest trial parallelism, so a rescale has splits to move. Both counts are upper bounds that the service answers below for a small seed.
-  - A pace holds each reading subtask to `--seed-records-per-second`, so the reads' splits stay unfinished through both recoveries of a trial. The copy's total rate is the pace times the subtasks holding splits, which a rescale changes, and a record late after a stall is not followed by a burst.
+  - A pace holds each reading subtask to `--seed-records-per-second`, so the reads' splits stay unfinished through a trial's faults. The copy's total rate is the pace times the subtasks holding splits, which a rescale changes, and a record late after a stall is not followed by a burst.
   - The pace's bound, 200, stays below what the copy sinks' ramp-up throttles pass from their first write, which a restore starts again: 500 operations per second for the whole Datastore-mode sink and 500 for each Native-mode subtask. So the pace, not a throttle, sets each read's length.
   - The pace is chained into the source's task, so no network buffer of read-ahead records stands between a checkpoint barrier and the source, and a barrier waits at most one pause.
 
@@ -92,14 +92,14 @@ The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`fires
 
 ## Recovery trial
 
-The `firestore-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-firestore` against two databases it creates for the run, measures the job before and after each recovery, and judges each of the four components on its own collection or kind.
+The `firestore-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-firestore` against two databases it creates for the run, injects every fault kind in one run, and judges each of the four components on its own collection or kind.
 It is the trial set of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#firestore-recovery-trial) records its design ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
-It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
+It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle and finite-input exercise it shares; this section names what differs.
 The [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixed its deployed single-fault runs, which stopped when the owner paused them for the rework of [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143); the [findings](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) list every attempt.
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165, whose exercise the rest of this section still describes.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165.
 Once a completed checkpoint follows the initial input and both late seeds are written, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again, which includes progress logged after a restore that followed the fault.
 It records each fault as `recovery-<kind>` and its return as `recovery-recovered-<kind>`, and records the rest without judging it: an interruption as `unplanned-recovery`, a restore as `job-restore`, a patch that conflicted with the Operator's own write or whose answer was lost unapplied as `patch-conflict` or `patch-unconfirmed`, sent again, a Pod gone or not deleted as `fault-target-gone`, injected again, and a job restarted before its first checkpoint, which reads its input again under a new lineage, as `fresh-start`; REST and API failures are waited out, and the job's restart strategy is unbounded.
@@ -143,7 +143,7 @@ It creates the Native-mode database with the Firestore Admin API's `databases.cr
 It then reads each database until it exists, rather than polling the create's long-running operation, which neither role may read, and emits `firestore-databases-read-back`.
 A database reports no state while it is created, so existing is what admission waits for.
 
-The runner then writes the two seeds together, 108,000 records each in 216 commits of 500 writes, the most one commit takes, one commit to each database at a time, side by side, with admission checked before every pair: through the Firestore API's `documents:commit` in Native mode and the Datastore API's non-transactional `commit`, which names the database, in Datastore mode.
+The runner then writes the two seeds together, the sequence's 6,000 records each in 12 commits of 500 writes, the most one commit takes, one commit to each database at a time, side by side, with admission checked before every pair: through the Firestore API's `documents:commit` in Native mode and the Datastore API's non-transactional `commit`, which names the database, in Datastore mode.
 Every Datastore API call also sends the `x-goog-request-params` routing header naming the database, without which the service refuses it with 400 "Missing routing header" ([#2130](https://github.com/flink-gcp/flink-connector-gcp/issues/2130)).
 Each write sets fixed values without a precondition, so a commit that failed transiently, or aborted and was answered 409, is sent again, while its partner waits, until the startup deadline.
 The receipt records each database's readback and the seed size the service accepted.
@@ -168,30 +168,22 @@ The control record still holds the marker or the unconfirmed deletion, so releas
 
 ### Exercise and oracles
 
-The supervisor runs the shared recovery exercise on the application's `firestore-progress` lines, with the faults and the three measurement windows of the Spanner trial.
-A reading is a `firestore-measurement` evidence event; the exercise finds the five vertices by the names [the graph](#graph-and-what-each-collection-records) chains them under, because three of them are sources.
-Its families are each of the four component vertices' task, network and connector metrics and its subtasks' shares of the latest completed checkpoint, and each TaskManager's memory metrics.
-The connector family is each mode's writer metrics, which the input sink and the batch copy both register, and for a copy also its reader's `documentsRead` or `entitiesRead`; the enumerators register on the JobManager, which no vertex reading reaches.
-A lost TaskManager restarts the input's failover region and the two copy subtasks it held, which share no edge with any other, so the exercise accepts up to three restores for it.
+The supervisor runs the shared [fault sequence](#fault-sequence) on the application's `firestore-progress` lines.
 
-Unlike the other scenarios, the Firestore exercise waits out the platform's interruption of a workload Pod once both recoveries are proved and the `finishing` window has closed, plus one 60-second measurement interval ([#2140](https://github.com/flink-gcp/flink-connector-gcp/issues/2140)).
-The interruption, and the replacement, eviction, container restart and restore that follow it, are each emitted once as `unplanned-recovery` and kept in `outcomes.unplanned`, the REST endpoint's absence is tolerated meanwhile, and the run goes on to the job's end and the oracles before the cleanup start; the analysis lists the causes in its `unplanned` column.
-A restart with no platform interruption before it, and any interruption before that point, still stops the run as inconclusive.
-
-Before the upgrade, once a query of one document or entity in a database's `batch_out` returns one, the supervisor writes the 16 late seed records, numbered 108,000 to 108,015, into that database's `seed` in one commit.
+Before the first fault, once a query of one document or entity in a database's `batch_out` returns one, the supervisor writes the 16 late seed records, numbered 6,000 to 6,015, into that database's `seed` in one commit.
 A copy exists only after the batch read planned its read time, so the late records are committed after that time.
-The record keeps `late_seed`, each mode's commit time (in Datastore mode, whose non-transactional commit answers none, the latest update time of its writes) and record count, and the upgrade begins only once both are written; a call that fails transiently, or a commit that aborts and is answered 409, emits `firestore-late-seed-pending` and is repeated at the next poll.
+The record keeps `late_seed`, each mode's commit time (in Datastore mode, whose non-transactional commit answers none, the latest update time of its writes) and record count, and the first fault waits until both are written; a call that fails transiently, or a commit that aborts and is answered 409, emits `firestore-late-seed-pending` and is repeated at the next poll.
 The exercise also keeps the plan each batch read's enumerator logs on the JobManager, `Planned <n> split(s) for … of projects/flink-gcp/databases/<database> at read time <t> and parallelism <p>.`, its warning form for fewer splits than the parallelism, which a semicolon ends there, or its one-split form, for the batch report.
 
-When the upgraded application reaches `FINISHED` with the whole input processed, the supervisor reads each database's `input`, `seed` and `batch_out` in key order, in pages of up to 2,000.
+When the application has finished after the last fault, with the whole input processed, the supervisor reads each database's `input`, `seed` and `batch_out` in key order, in pages of up to 2,000.
 A Native-mode page resumes after the last document's name and a Datastore-mode page at the batch's end cursor.
 A database's first page is read now and returns its read time, at which every later page of that database is read.
-A transiently failing query is repeated every 5 seconds until the read window closes, 1,200 seconds after the application finishes or a minute before the cleanup start, whichever is first; any other failure ends the run without a verdict.
+A transiently failing query is repeated every 5 seconds until the read window closes, 1,200 seconds after the application finishes or a minute before the run's one-hour limit, whichever is first; any other failure ends the run without a verdict.
 Each oracle reports counts and the first 20 keys of each kind of deviation, for each mode on its own:
 
 - **Sink, `input`:** every input key holds its sequence and no other key is there.
   It reads only the final state: neither database has a change feed in this graph, so how often the sink executed a write is not observable, and the analysis says so instead of counting executions.
-- **Batch read, `batch_out`:** `seed` holds the 108,000 seed records and the 16 late ones, each with its own value, every seed key was copied with one value, its own, and no foreign or late key was copied.
+- **Batch read, `batch_out`:** `seed` holds the 6,000 seed records and the 16 late ones, each with its own value, every seed key was copied with one value, its own, and no foreign or late key was copied.
   It reports the replayed keys and extra copies, which only records emitted after a restored checkpoint produce and which are not failed, the copies of each phase, the plan's split count and read time, whether the late commit came after that read time, and the read's span: from the plan's read time, or the first copy without one, to the last copy's update time.
   The span is reported, not judged: a read that outlived the service's read-time bound fails its job, which ends the run as a failed application.
 
@@ -199,5 +191,8 @@ In Datastore mode a kind query also returns entities of the kind under an ancest
 
 ### Verdict and analysis
 
-The verdict and its recomputation are the [Spanner trial's](../spanner/README.md#verdict-and-analysis), over four oracles and without a watermark: the run is `usable` when both recoveries are proved, all four oracles pass and each of the three windows read every family.
-The supervisor exports no documents, and the databases' deletion removes them, so `just tier3-analyze <dir>` reads the oracle reports from the record.
+The run is `usable` when it completed and all four oracles passed; anything short of that is `inconclusive`, with `recovery-incomplete` or `<component>-oracle-not-passed`, for `native_sink`, `datastore_sink`, `native_batch` or `datastore_batch`, as its reasons.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
+
+The supervisor exports no documents, and the databases' deletion removes them, so `just tier3-analyze <dir>` reads the oracle reports from the record, as for the [Spanner trial](../spanner/README.md#verdict-and-analysis), and lists the faults the run injected.
+Its `unplanned` column names each interruption the run recorded and carried on through, which decides nothing, and a single-fault run is reported without a verdict and as `single-fault-trial`.

@@ -53,7 +53,7 @@ The input runs at parallelism one; every other vertex runs at `--parallelism`, o
   - A change whose keys are not one input key is relayed under its raw keys, which match no input key, for the oracle to report.
 - **Batch copy from `seed` into `batch_out`:** the batch read reads `seed` at one snapshot, and each row it delivers is written with a delivery name of the same shape.
   - A key's rows count its deliveries, so a partition the source reads again after a restore adds a row for each of its seed rows.
-  - A pace holds each reading subtask to `--seed-rows-per-second`, so the read's partitions stay unfinished through both recoveries of a trial. The copy's total rate is that times the subtasks holding partitions, which a rescale changes, and a row late after a stall is not followed by a burst.
+  - A pace holds each reading subtask to `--seed-rows-per-second`, so the read's partitions stay unfinished through a trial's faults. The copy's total rate is that times the subtasks holding partitions, which a rescale changes, and a row late after a stall is not followed by a burst.
   - The pace is chained into the source's task, so no network buffer of read-ahead rows stands between a checkpoint barrier and the source, and a barrier waits at most one pause.
   - Each partition's read is one streaming read, which the pinned client (google-cloud-spanner 6.124.0) ends after an hour without retrying, so the rig sizes the seed and the pace to read every partition within that.
 
@@ -110,18 +110,18 @@ It names the instance `sp1360-<run-id>`, which a run ID of the full 40 character
 The deployment runs as the `tier3-spanner/spanner` KSA, which selects the `tier3-spanner` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-spanner.tf) limit it to the `sp1360-` instances.
 Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-spanner/runs/<run-id>/`, deleted one day after creation, and two consecutive failed checkpoints are tolerated before the job restarts.
 One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
-Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
+Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status.
 The `tier3-spanner` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#spanner-recovery-foundation) ([#1875](https://github.com/flink-gcp/flink-connector-gcp/issues/1875)), and the shared preflight and the Operator's watch set include it ([#1876](https://github.com/flink-gcp/flink-connector-gcp/issues/1876)); the [recovery trial](#recovery-trial) below creates the instance and its database, seeds it and judges the trial.
 
 ## Recovery trial
 
-The `spanner-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-spanner` against an instance it creates for the run, measures the job before and after each recovery, and judges each of the three components on its own table.
+The `spanner-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-spanner` against an instance it creates for the run, injects every fault kind in one run, and judges each of the three components on its own table.
 It is the trial set of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-trial) records its design ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
-It follows the [Bigtable recovery trial](../bigtable/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
+It follows the [Bigtable recovery trial](../bigtable/README.md#recovery-trial), whose resource lifecycle and finite-input exercise it shares; this section names what differs.
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165, whose exercise the rest of this section still describes.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165.
 Once a completed checkpoint follows the initial input and the late seed rows are written, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 
@@ -177,7 +177,7 @@ It creates the `recovery` database with one `CreateDatabase` call, whose extra s
 The readback compares the names of the tables and the change stream and the retention; a database that differs emits `spanner-database-deviation` and fails admission, and cleanup deletes the instance.
 A database create that failed transiently, timed out or answered 409 is read back, and repeated while the database is absent, until the startup deadline, as a Bigtable table create is.
 
-The runner then writes the seed on one multiplexed session, 120,000 rows in 12 single-use commits of 10,000 rows, each 20,000 of the 80,000 mutations a commit takes.
+The runner then writes the seed on one multiplexed session, the sequence's 3,600 rows in one single-use commit, 7,200 of the 80,000 mutations a commit takes; a seed of more than 10,000 rows goes in commits of 10,000 rows.
 Each commit is an `insertOrUpdate` of fixed values, so one that failed transiently, or aborted and was answered 409, is repeated until the startup deadline.
 It splits `seed` at `4`, `8` and `c`, one split point per request and 65 seconds apart: at 100 processing units the service adds one split point a minute and refuses a request over that whole with 429, which the runner retries until the startup deadline.
 [#1877's measurement](https://github.com/flink-gcp/flink-connector-gcp/issues/1877#issuecomment-6472333184) planned the seed's batch read as one partition without them and seven at once with them.
@@ -207,39 +207,33 @@ The control record still holds the marker or the unconfirmed deletion, so releas
 
 ### Exercise and oracles
 
-The supervisor runs the shared recovery exercise on the application's `spanner-progress` lines, with the faults and the three measurement windows of the Bigtable trial.
-A reading is a `spanner-measurement` evidence event; the exercise finds the four vertices by the names [the graph](#graph-and-what-each-table-records) chains them under, because three of them are sources.
-Its families are each component vertex's task, network and connector metrics and its subtasks' shares of the latest completed checkpoint, and each TaskManager's memory metrics, as for the Bigtable trial.
-The change-stream vertex's connector family also takes Flink's `currentOutputWatermark`, which every operator of its chain registers; the source operator's is the source's watermark.
-The Change Streams coordinator's `changeStreamPartitionsDiscovered` is read from the vertex's JobManager operator metrics for the report only; a failed read is recorded as a named absence.
-A lost TaskManager restarts the input's failover region and the relay and copy subtasks it held, which share no edge with any other, so the exercise accepts up to three restores for it.
+The supervisor runs the shared [fault sequence](#fault-sequence) on the application's `spanner-progress` lines.
 
-Before the baseline window opens, once a strong single-use query `SELECT 1 FROM batch_out LIMIT 1` returns a row, the supervisor writes the 16 late seed rows, numbered 120,000 to 120,015, in one single-use `insertOrUpdate` commit on its own multiplexed session.
+Before the first fault, once a strong single-use query `SELECT 1 FROM batch_out LIMIT 1` returns a row, the supervisor writes the 16 late seed rows, numbered 3,600 to 3,615, in one single-use `insertOrUpdate` commit on its own multiplexed session.
 A copied row exists only after the batch read planned its snapshot, so the late rows are committed after the snapshot the copy reads.
-The record keeps `late_seed`, the commit timestamp and the row count, and the baseline window opens and the upgrade begins only after that record is written; a call that fails transiently, or a commit that aborts and is answered 409, emits `spanner-late-seed-pending` and is repeated at the next poll.
+The record keeps `late_seed`, the commit timestamp and the row count, and the first fault waits until that record is written; a call that fails transiently, or a commit that aborts and is answered 409, emits `spanner-late-seed-pending` and is repeated at the next poll.
 The exercise also keeps the plan the batch read's enumerator logs on the JobManager, `Spanner planned <n> partition(s) for the … at read timestamp <t> and parallelism <p>.`, or its one-partition form, for the batch report.
 
-When the upgraded application reaches `FINISHED`, after the change stream's end, with the whole input processed, the supervisor reads `input`, `relay`, `seed` and `batch_out` with single-use queries in key order, in pages of up to 5,000 rows.
+When the application has finished after the last fault and after the change stream's end, with the whole input processed, the supervisor reads `input`, `relay`, `seed` and `batch_out` with single-use queries in key order, in pages of up to 5,000 rows.
 The first page is read strongly and returns its read timestamp, at which every later page is read, so the four tables are read at one snapshot; a page of `relay` or `batch_out` resumes after both columns of its key, and a page shorter than 5,000 rows ends its table.
-A transiently failing query is repeated every 5 seconds until the read window closes, 600 seconds after the application finishes or a minute before the cleanup start, whichever is first; any other failure ends the run without a verdict.
+A transiently failing query is repeated every 5 seconds until the read window closes, 600 seconds after the application finishes or a minute before the run's one-hour limit, whichever is first; any other failure ends the run without a verdict.
 Each oracle reports counts and the first 20 keys of each kind of deviation:
 
 - **Sink, `input`:** every input key holds its sequence and no other key is there.
   It reports each key's executions, counted as the key's distinct commit times in `relay`, a lower bound only through a commit the relay missed, as [Graph and what each table records](#graph-and-what-each-table-records) describes.
-- **Change Streams, `relay`:** every input key was delivered at least once, no delivered key lies outside the input, no key's last relayed commit is later than the change stream's end, and the source's watermark advanced after each recovery.
-  The watermark is the least of its subtasks' `currentOutputWatermark`, and each window keeps its greatest reading: the baseline's must be above Flink's `Long.MIN_VALUE`, the upgraded window's above the baseline's and the finishing window's above the upgraded one's.
-  The oracle is judged only when the input's last progress line came at least 120 seconds before the change stream's end and every window read the watermark; otherwise it is unjudged, never passed.
+- **Change Streams, `relay`:** every input key was delivered at least once, no delivered key lies outside the input, and no key's last relayed commit is later than the change stream's end.
+  The oracle is judged only when the input's latest progress line came at least 120 seconds before the change stream's end and no restore followed that line, as the [fault sequence](#fault-sequence) describes; otherwise it is unjudged, never passed.
   It judges keys, not commits, so a lost second commit of a key whose other commit was relayed is not detected.
-  It reports replays, deliveries beyond a key's commits, the deliveries of each phase, and the coordinator's greatest discovered partition count in each window.
-- **Batch read, `batch_out`:** `seed` holds the 120,000 seed rows and the 16 late ones, each with its own value, every seed key was copied with one value, its own, and no foreign or late key was copied.
-  It reports the replayed keys and extra deliveries, the replays by the key's first character, which the split points divide the table by, the greatest `partitionsReread` in each window, the plan's partition count and read timestamp, and whether the late commit came after that read timestamp.
+  It reports replays, deliveries beyond a key's commits, and the deliveries of each phase.
+- **Batch read, `batch_out`:** `seed` holds the 3,600 seed rows and the 16 late ones, each with its own value, every seed key was copied with one value, its own, and no foreign or late key was copied.
+  It reports the replayed keys and extra deliveries, the replays by the key's first character, which the split points divide the table by, the plan's partition count and read timestamp, and whether the late commit came after that read timestamp.
 
 ### Verdict and analysis
 
-The run is `usable` when both recoveries are proved, all three oracles pass, the Change Streams one having been judged, and each of the three windows read every family; anything short of that is `inconclusive`.
-The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
+The run is `usable` when it completed and all three oracles passed, the Change Streams one having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `change_stream-oracle-unjudged` or `<component>-oracle-not-passed`, for `sink`, `change_stream` or `batch`, as its reasons.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
 
-`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory, with the coverage and each window's greatest watermark rebuilt from the exported readings and the recoveries' timing, as for the Bigtable trial.
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory and lists the faults the run injected, and it reports a single-fault run without a verdict and as `single-fault-trial`, as for the Bigtable trial.
 It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
 
 The four trials of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) are preregistered in the [Spanner recovery trial preregistration](../../../docs/adr/evidence/0165-spanner-recovery-preregistration-1878.md), and each kind reached `usable`, as their [findings](../../../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) record.

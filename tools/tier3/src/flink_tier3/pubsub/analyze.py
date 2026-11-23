@@ -16,14 +16,10 @@
 
 The supervisor decided the verdict and the receipt carries it; this decides it
 again from what the evidence can show on its own, the way the BigQuery
-section does. The output oracle is rebuilt from every saved pull response, the
-input identities from the runner's publication receipts, the observation
-coverage from the measurement events, and the replay cohort's output from the
-attempts the fault started from the observations themselves. Whether the
-boundary held and which observations were collected before the fault are read
-from the record; rebuilding them outright would re-run the exercise offline.
-A fault-sequence run (ADR-0204) is decided by the rebuilt oracle and the
-receipts' check of every output alone, and lists the faults it injected.
+section does. The output oracle is rebuilt from every saved pull response and
+the input identities from the runner's publication receipts. A fault-sequence
+run (ADR-0204) is decided by the rebuilt oracle and the receipts' check of
+every output alone, and lists the faults it injected.
 
 It imports nothing from ``analyze``, which calls it.
 """
@@ -34,27 +30,24 @@ import re
 from ..common import Failure
 from ..exercise import SEQUENCE_KIND
 from ..recovery_analysis import (
-    measurements,
-    missing_samples,
-    rebuild,
+    PUBSUB_SINGLE_FAULT_KINDS,
+    SINGLE_FAULT,
+    SINGLE_FAULT_NOTE,
+    malformed_records,
+    recovery_record,
     unreadable,
     verdict_problems,
 )
-from .messages import COHORTS, cohort_ranges, output_line
+from .messages import output_line
 from .oracle import COUNTERS, input_ids, published_ids, reconcile
 from .output import RETRIED_EVENT, parse
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
-    MEASUREMENT_EVENT,
     sequence_verdict,
-    started_by_fault,
-    summarize,
-    verdict,
 )
 
 SCENARIO = "pubsub-recovery"
-REPLAY = COHORTS[1]
 # The domain `cohort_ranges` accepts, so an unreadable approval leaves one run
 # without a verdict rather than aborting the directory's analysis.
 MIN_RECORDS, MAX_RECORDS = 3, 10000
@@ -135,10 +128,10 @@ def _derived(received):
     return lines
 
 
-def _sequence(approval):
-    """Whether the approved trial is the fault sequence (ADR-0204)."""
+def _kind(approval):
+    """The approved trial's kind, or None when the approval holds no trial."""
     trial = approval.get("pubsub_trial")
-    return isinstance(trial, dict) and trial.get("trial") == SEQUENCE_KIND
+    return trial.get("trial") if isinstance(trial, dict) else None
 
 
 def _retried(run, record):
@@ -196,31 +189,6 @@ def _observations(lines, run_id, records):
     return [item for line in lines if (item := parse(line, run_id, records))]
 
 
-def _replayed(outcomes, observations, records):
-    """The outcomes with the replay cohort's output from new attempts rebuilt.
-
-    A rescale's verdict reads this count, so it is taken from the observations
-    rather than the record. A fault the record does not describe leaves the
-    outcomes as they are, and the verdict then refuses them itself.
-    """
-    fault, after = outcomes.get("fault"), outcomes.get("after")
-    if not isinstance(fault, dict) or not isinstance(after, dict):
-        return outcomes
-    before = fault.get("before")
-    if not isinstance(before, list) or not all(isinstance(a, str) for a in before):
-        return outcomes
-    cohort = cohort_ranges(records)[REPLAY]
-    seen = {
-        (item["input_index"], item["sequence"])
-        for item in observations
-        if cohort["start"] <= item["sequence"] < cohort["start"] + cohort["count"]
-        and started_by_fault(
-            item["attempt"], item["restored"], item["phase"], before, fault.get("kind")
-        )
-    }
-    return {**outcomes, "after": {**after, "replay_by_new_attempts": len(seen)}}
-
-
 def _missing(record, lines, complete):
     """How many collected lines the export is short of the record's own count."""
     observed = record.get("observed") if complete else None
@@ -234,9 +202,9 @@ def _missing(record, lines, complete):
     return max(0, sum(counted) - len(lines))
 
 
-def _unreadable(run, record, problems, samples):
+def _unreadable(run, record, problems):
     return {
-        **unreadable(run, record, problems, samples),
+        **unreadable(run, record, problems),
         "oracle": None,
         "extra_publications": None,
         "faults": None,
@@ -249,43 +217,41 @@ def assess(run):
     A run whose evidence lacks what the verdict is decided from has no
     verdict: a partial download would otherwise lower it for what is only
     missing from the export. A run that never completed exported its account
-    of itself, which says so, and is `inconclusive`.
+    of itself, which says so, and is `inconclusive`. A run of a single-fault
+    kind has no verdict here.
     """
     approval = run.approval if isinstance(run.approval, dict) else {}
     identity = _identity(approval)
-    readings, malformed = measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
-    samples = len(readings)
+    malformed = malformed_records(run, COMPLETE_EVENT)
     result = run.result if isinstance(run.result, dict) else None
-    if identity is None:
-        return _unreadable(run, None, ["approval-without-pubsub-trial"], samples)
+    kind = _kind(approval)
+    if kind in PUBSUB_SINGLE_FAULT_KINDS:
+        record = recovery_record(run, COMPLETE_EVENT)
+        return _unreadable(run, record, [SINGLE_FAULT])
+    if identity is None or kind != SEQUENCE_KIND:
+        return _unreadable(run, None, ["approval-without-pubsub-trial"])
     if result is None:
-        return _unreadable(run, None, ["missing-result.json"], samples)
+        return _unreadable(run, None, ["missing-result.json"])
     completions = run.events_of(COMPLETE_EVENT)
     complete = bool(completions)
     record = completions[-1]["payload"] if complete else result.get("recovery")
     if malformed:
-        return _unreadable(run, record, [f"malformed-evidence:{malformed}"], samples)
+        return _unreadable(run, record, [f"malformed-evidence:{malformed}"])
     if not isinstance(record, dict):
-        return _unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
+        return _unreadable(run, None, ["missing-" + COMPLETE_EVENT])
     if not complete and record.get("stage") == COMPLETE_STAGE:
-        return _unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
+        return _unreadable(run, record, ["missing-" + COMPLETE_EVENT])
     records, nonce = identity
     directory = run.directory / "pubsub" / "messages" / nonce
     published, bad_inputs = _published(directory, records)
-    sequence = _sequence(approval)
     lines, bad_batches, lost = _collected(directory, _retried(run, record))
     if bad_inputs or bad_batches:
         return _unreadable(
             run,
             record,
             [f"malformed-message-evidence:{bad_inputs + bad_batches}"],
-            samples,
         )
     problems = []
-    # A sequence run samples nothing; its verdict is the output's alone.
-    coverage = None if sequence else rebuild(readings, summarize)
-    if not sequence and (missing := missing_samples(record.get("coverage"), coverage)):
-        problems.append(f"missing-samples:{missing}")
     if lost:
         problems.append(f"missing-output-batches:{lost}")
     # A batch lost from the end leaves no gap in a counter; the record's own
@@ -301,7 +267,7 @@ def assess(run):
     if complete and unreceipted:
         problems.append(f"missing-input-receipts:{len(unreceipted)}")
     if problems:
-        return _unreadable(run, record, problems, samples)
+        return _unreadable(run, record, problems)
     # The publication receipts bind each returned ID to its input, so an
     # output naming an input under an ID no receipt holds was not published by
     # this run.
@@ -309,29 +275,9 @@ def assess(run):
     # lost, which is an unknown outcome rather than an unpublished input.
     inputs = input_ids(observations, published)
     oracle = reconcile(lines, run.run_id, records)
-    if sequence:
-        # The verdict itself checks every output's input ID against the
-        # receipts, as the supervisor did.
-        decided = sequence_verdict(
-            {
-                **record,
-                "oracle": oracle,
-                "inputs": inputs,
-            }
-        )
-    else:
-        if inputs["unpublished"]:
-            problems.append(f"unpublished-input-ids:{inputs['unpublished']}")
-        outcomes = record.get("outcomes")
-        outcomes = outcomes if isinstance(outcomes, dict) else {}
-        decided = verdict(
-            {
-                **record,
-                "outcomes": _replayed(outcomes, observations, records),
-                "coverage": coverage,
-                "oracle": oracle,
-            }
-        )
+    # The verdict itself checks every output's input ID against the receipts,
+    # as the supervisor did.
+    decided = sequence_verdict({**record, "oracle": oracle, "inputs": inputs})
     problems.extend(verdict_problems(record, decided, complete))
     return {
         "run_id": run.run_id,
@@ -339,10 +285,9 @@ def assess(run):
         "stored": record.get("verdict"),
         "reasons": decided["reasons"],
         "problems": sorted(problems),
-        "samples": samples,
         "oracle": oracle,
         "extra_publications": sum(len(ids) - 1 for ids in published.values()),
-        "faults": _faults(record) if sequence else None,
+        "faults": _faults(record),
     }
 
 
@@ -377,28 +322,26 @@ def render(assessments):
         "## Deployed Pub/Sub runs",
         "",
         (
-            "A verdict recomputed from the exported evidence: the output oracle, "
-            "the input identities, the coverage and the replay cohort's output "
-            "from new attempts are rebuilt; whether the boundary held and which "
-            "observations preceded the fault are read from the record."
+            "A verdict recomputed from the exported evidence: the output oracle "
+            "and the input identities are rebuilt; the faults are read from the "
+            "record."
         ),
         "",
         (
-            "| run | verdict | stored | samples | logical inputs | duplicates | "
+            "| run | verdict | stored | logical inputs | duplicates | "
             "covered redeliveries | extra publications | faults | reasons | problems |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in assessments:
         oracle = item["oracle"] if isinstance(item["oracle"], dict) else {}
         extra = item["extra_publications"]
         lines.append(
-            "| {run} | {verdict} | {stored} | {samples} | {inputs} | {duplicates} | "
+            "| {run} | {verdict} | {stored} | {inputs} | {duplicates} | "
             "{covered} | {extra} | {faults} | {reasons} | {problems} |".format(
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
-                samples=item["samples"],
                 inputs=oracle.get("logical_inputs", "-"),
                 duplicates=_counters(oracle),
                 covered=(
@@ -430,16 +373,16 @@ def render(assessments):
                 "reported apart from the verdict and decide nothing."
             ),
             (
-                "A usable verdict establishes completeness and the trial's recovery, "
-                "not ordering across the replay and not exactly-once output: unique "
-                "message IDs and a deduplicated count cannot show either."
+                "A usable verdict establishes completeness through the faults "
+                "listed, not ordering and not exactly-once output: unique message "
+                "IDs and a deduplicated count cannot show either."
             ),
             (
-                "A `sequence` run (ADR-0204) is judged by its output alone, "
-                "through the faults listed: the oracle, and every output's input "
-                "message ID against the publication receipts. It samples nothing "
-                "and has no replay cohort."
+                "A `sequence` run (ADR-0204) is judged by its output alone: the "
+                "oracle, and every output's input message ID against the "
+                "publication receipts."
             ),
+            SINGLE_FAULT_NOTE,
             (
                 f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which "
                 "is inconclusive rather than an evidence problem."

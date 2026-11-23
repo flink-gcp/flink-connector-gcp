@@ -542,7 +542,7 @@ class Runner:
                     or (
                         self.env.approval.scenario in SERVICE_TRIALS
                         # The exercise decided this when it completed, from the
-                        # recoveries, the oracle and the observation coverage.
+                        # data its oracles read alone (ADR-0204).
                         # A completed recovery alone is not the claim here.
                         # `recovery` is durable JSON that nothing types on the
                         # way in, so a malformed record must read as not-usable

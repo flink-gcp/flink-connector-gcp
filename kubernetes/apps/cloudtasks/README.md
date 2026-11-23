@@ -33,7 +33,7 @@ An identity operator, also one subtask, checks that each sequence is the next on
 A restored state must carry the same run, queue, record count and rate, so state from another trial or configuration fails the job; `--require-restored true` refuses a fresh start.
 The sink's parallelism is not part of that identity, so a savepoint taken at one parallelism restores at the other.
 Sequence `s` goes to sink subtask `s mod p` at sink parallelism `p`, and the sink keeps maximum parallelism 128 at either.
-The job is two vertices, the source chained to the identity operator and the sink's writer chained to its committer, which is what the rig's measurements read; `RecoveryJobITCase` holds that shape.
+The job is two vertices, the source chained to the identity operator and the sink's writer chained to its committer; `RecoveryJobITCase` holds that shape.
 The source, identity and sink UIDs are `ct1362-source-v1`, `ct1362-input-v1` and `ct1362-sink-v1`.
 Checkpoints run every 30 seconds, one at a time, and two consecutive failed checkpoints are tolerated before the job restarts.
 
@@ -74,7 +74,7 @@ Arguments use `--name value` pairs; missing values, duplicate options and unknow
 
 ## Recovery trial
 
-The `cloudtasks-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-cloudtasks`, measures it before and after each recovery, and judges whether every input record became exactly one task.
+The `cloudtasks-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-cloudtasks`, injects every fault kind in one run, and judges whether every input record became exactly one task.
 It is the trial of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-recovery-trial) records its design; [#1777](https://github.com/flink-gcp/flink-connector-gcp/issues/1777) added the fault kinds and the measurements, as its [section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-fault-kinds-and-measurement-windows) records.
 Its grants and its CUE delivery are described in the [OpenTofu runbook](../../../opentofu/README.md#cloud-tasks-cluster-resources) and the [lifecycle runbook](../../lifecycle/README.md).
 The one [preregistered](https://github.com/flink-gcp/flink-connector-gcp/issues/1362#issuecomment-6127161854) trial reached `usable` on its first attempt, `ct-1362-a1`, on 2026-10-12, as its [findings](../../../docs/adr/evidence/0165-cloudtasks-recovery-findings-1362.md) record.
@@ -84,7 +84,7 @@ The rerun, [preregistered](../../../docs/adr/evidence/0165-cloudtasks-rescale-ou
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152)), and it is the only kind dispatched; the single-fault kinds above ran under ADR-0165, whose exercise the rest of this section still describes.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152)), and it is the only kind dispatched; the single-fault kinds above ran under ADR-0165.
 Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale of the sink from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism, its TaskManager count and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 A restore can make the sink create some tasks again; the service refuses a name it already holds, and the connector counts that as success, which is how a replay still leaves one task per record, as the listing checks.
@@ -94,7 +94,7 @@ The job consumes little of it before it runs again after the last fault, because
 The first Firestore, Spanner, Bigtable and BigQuery `sequence` runs began their input 477 to 677 seconds into the window and finished it 245 to 292 seconds later than its length, so a run should finish its input about 18 to 22 minutes into its window and reach its verdict a minute or so later, after the job's final commit and a listing of the 3,600 tasks.
 The first `sequence` run, `ct2152-seq-a1`, began its input 541 seconds into the window, finished it 298 seconds later than its length, and reached `usable` 20.3 minutes into its window, as its [findings](../../../docs/adr/evidence/0204-cloudtasks-fault-sequence-findings-2152.md) record.
 
-When the job has finished after the last fault, with its whole input processed, the [oracle](#exercise-and-oracle) lists the queue as it does for the other kinds, and `usable` means the queue read back paused and the oracle passed: every sequence listed once as its own task with its own body, nothing else listed and nothing dispatched.
+When the job has finished after the last fault, with its whole input processed, the [oracle](#exercise-and-oracle) lists the queue, and `usable` means the queue read back paused and the oracle passed: every sequence listed once as its own task with its own body, nothing else listed and nothing dispatched.
 That is the exactly-once rule of ADR-0204, so the sink's `EXACTLY_ONCE` mode is judged in this scenario, and ADR-0204 records why no fault is aimed at its commits ([Alternatives declined](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md#alternatives-declined), [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)).
 The run records each restore it observes with the job's restore count, which counts restores between two polls too, so the findings can report the restarts a committer defect causes, as [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794) and [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796) surfaced, beside a passing end state.
 `just tier3-analyze` decides a `sequence` run by its listing and lists its faults.
@@ -148,41 +148,24 @@ It waits for the runner's release and for the namespace to hold no Pod, deletes 
 
 ### Exercise and oracle
 
-The supervisor runs the shared recovery exercise on the application's `cloudtasks-progress` lines, with the faults the trial's kind names: one savepoint upgrade, a rescale for `rescale-out` and `rescale-in`, while the initial input still flows, then one Pod deletion while the upgraded input flows.
-Each recovery is proved by a restored savepoint or checkpoint, advanced input and a new completed checkpoint; a rescale also by its checkpoints' subtask count moving as approved, and a TaskManager replacement also by the deleted Pod being gone under the same JobManager.
-The input lineage must stay the one the first progress line reported.
-A Pod interruption at any stage, a Pod replacement outside a recovery, and a job restart the exercise did not plan, read from the restores the job's checkpoint statistics count, each stop the run as inconclusive, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts) records.
-
-The exercise holds three measurement windows and reads the job's REST service once a minute throughout:
-
-| Window | Opens | Closes |
-| --- | --- | --- |
-| `baseline` | One minute after the first poll that sees the initial input flowing on the whole set of Pods, a warm-up the window does not count | When the upgrade begins, at the first checkpoint triggered five minutes or more after the window opened |
-| `upgraded` | The upgrade's proof | When the deletion begins, five minutes or more later; the failover must not restore behind the latest checkpoint triggered since the window opened |
-| `finishing` | The failover's proof | Five minutes later; input that finishes sooner fails the run |
-
-A reading is a `cloudtasks-measurement` evidence event carrying the stage it was taken in and its window, or none: a reading during startup, a recovery or the rest of the input counts toward no window.
-Its families are the ones the BigQuery trials read: the sink vertex's task, network and connector metrics, each TaskManager's memory metrics, and each sink subtask's share of the latest completed checkpoint.
-The connector family is the staged writer's and committer's metrics, among them `tasksDeduplicated`, which counts the creates the service refused as existing since the task last started, so a reading after a recovery counts what its replay found existing, and the expired-envelope counters.
-The committer's `currentCommit` replay-budget gauges hold a value only during a commit, and the commit that replays a restored checkpoint runs once, while its task initializes, so a reading catches it only by chance and more often catches an ordinary checkpoint's commit; what a recovery spends of the budget is bounded instead from Flink's timestamps, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#cloud-tasks-fault-kinds-and-measurement-windows) records.
-
-When the upgraded application reaches `FINISHED` with the whole input processed, the supervisor reads the queue back and lists its tasks in the full view, page by page.
+The supervisor runs the shared [fault sequence](#fault-sequence) on the application's `cloudtasks-progress` lines.
+When the job has finished with its whole input after the last fault, the supervisor reads the queue back and lists its tasks in the full view, page by page.
 It exports every page as a `cloudtasks-task-page` evidence event, holding the listed task ids, any name outside the run's queue, the ids of any task with a dispatch attempt and the ids of any task whose body is not the key its id is the SHA-256 of.
 The oracle maps each id back to its sequence through the SHA-256 of `<run-id>/<sequence>` and passes only when every sequence is listed once with that key as its body, nothing else is listed and nothing was dispatched; the body is the record's value, so a task carrying another record's body fails the trial ([#2250](https://github.com/flink-gcp/flink-connector-gcp/issues/2250)).
-A failing listing is repeated 15 seconds later while another attempt as long as the last still fits the listing window, which closes 600 seconds after the application finishes or a minute before the cleanup start, whichever is first; each attempt exports its own pages, and a transiently failing call is retried every 5 seconds.
+A failing listing is repeated 15 seconds later while another attempt as long as the last still fits the listing window, which closes 600 seconds after the application finishes or a minute before the run's one-hour limit, whichever is first; each attempt exports its own pages, and a transiently failing call is retried every 5 seconds.
 A queue or task-listing call still failing when the window closes, however it fails, leaves the last whole attempt in place, so a listing still failing then is the trial's finding and is recorded, not raised.
 A non-transient error from such a call before then, any failure of the run's own state reads, which precede each attempt and recur once a poll, and a window that closes on the first attempt end the run without a verdict.
 
 ### Verdict and analysis
 
-The run is `usable` when both recoveries are proved, the queue read back `PAUSED` before the listing, the oracle passed, and each of the three windows read every family; anything short of that is `inconclusive`.
-A family counts as read only where a reading returned one of its metrics, not where a request named it.
-The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
+The run is `usable` when it completed, the queue read back `PAUSED` before the listing and the oracle passed; anything short of that is `inconclusive`, with `recovery-incomplete`, `queue-not-paused` or `oracle-not-passed` as its reasons.
+Interruptions, restarts, timings and metrics decide nothing.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
 
-`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory: it rebuilds the oracle report from the pages of the attempt the record names and the coverage from the exported readings, reports a page or reading missing from the export, or a completed record without a listing, as a problem that leaves the run without a verdict, and reports a stored report or verdict that the evidence does not reproduce.
-A page carries the ids of tasks whose body the supervisor found wrong, not the bodies, so the analyzer re-counts that check rather than running it again.
-A completed run whose pages predate the wrong-body ids, as every completed run before the fault sequence's do, `ct-1362-a1` included, has no verdict under these rules; archived evidence is read with the revision that produced it.
-It also reports each recovery's timing, from the supervisor's record of its stage to Flink's restore and to the proving checkpoint's acknowledgement, as the BigQuery section does, and when the committer's replay of the restored snapshot began, after Flink's restore and before the restored job's first checkpoint, both read from the exported `checkpoints` polls.
-It measures that window from the snapshot's last acknowledgement, which precedes its completion by however long Flink takes to finalize it, so the figures can only overstate what the recovery spent.
-That is what the recovery spent of each restored envelope's replay budget; a recovery whose snapshot or next checkpoint no exported poll saw is reported unreadable.
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory and lists the faults the run injected: it rebuilds the oracle report from the pages of the attempt the record names, reports a page missing from the export, or a completed record without a listing, as a problem that leaves the run without a verdict, and reports a stored report or verdict that the evidence does not reproduce.
+A page carries the ids of tasks whose body the supervisor found wrong, not the bodies, so the analyzer re-counts that check rather than running it again, and a page without those ids is malformed.
+A run that did not complete is `inconclusive` by its own record.
+A single-fault run, such as the trials of [#1778](https://github.com/flink-gcp/flink-connector-gcp/issues/1778) and [#1799](https://github.com/flink-gcp/flink-connector-gcp/issues/1799), is reported without a verdict, beside the verdict it stored and the problem `single-fault-trial`.
+The first run, `ct-1362-a1` of [#1362](https://github.com/flink-gcp/flink-connector-gcp/issues/1362), has an approval whose trial names no kind, so it is reported as `approval-without-cloudtasks-trial`, without a verdict and without the one it stored.
+Either is analysed at the revision its approval's `sha` names.
 A usable verdict makes no claim about a handler, since a paused queue dispatches nothing.

@@ -85,7 +85,7 @@ Progress lines use the `bigtable-progress` event in the shape the shared recover
 
 The run, instance, input and change-stream end form the trial identity that the restored input state must match; the phase and parallelism may change in an upgrade.
 The check runs only while the input is active: once the input has finished, Flink restores its vertex as finished without initializing its state, so a later restore is not checked.
-The trials' recoveries all complete while the input runs, because the shared exercise fails a run whose input finishes before its post-recovery window.
+The faults all land while the input runs, because the fault sequence ends a run without a verdict when its input finishes before the job runs again after the last fault.
 
 ## Deployment definition
 
@@ -96,18 +96,18 @@ It names the instance `bt1316-<run-id>`, so the run ID has at most 26 characters
 The deployment runs as the `tier3-bigtable/bigtable` KSA, which selects the `tier3-bigtable` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-bigtable.tf) limit it to the `bt1316-` instances.
 Checkpoints, savepoints and Kubernetes HA data sit beneath `gs://flink-gcp-tier3-bigtable/runs/<run-id>/`, deleted one day after creation, and two consecutive failed checkpoints are tolerated before the job restarts.
 One JobManager on normal capacity and one or two single-slot Spot TaskManagers each request and limit 1 CPU, 2 GiB memory and 1 GiB ephemeral storage, as the other recovery applications do.
-Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status, where the shared recovery exercise reads it.
+Savepoint upgrades disable last-state fallback, and the Operator reports the upgrade savepoint in the application's status.
 The `tier3-bigtable` namespace, its KSA and RBAC are in the [bootstrap root](../../../opentofu/tier3-bootstrap/README.md#bigtable-recovery-foundation) ([#1860](https://github.com/flink-gcp/flink-connector-gcp/issues/1860)), and the [recovery trial](#recovery-trial) below creates the instance and judges the trial.
 
 ## Recovery trial
 
-The `bigtable-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-bigtable` against an instance it creates for the run, measures the job before and after each recovery, and judges each of the three components on its own table.
+The `bigtable-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-bigtable` against an instance it creates for the run, injects every fault kind in one run, and judges each of the three components on its own table.
 It is the trial set of [#1316](https://github.com/flink-gcp/flink-connector-gcp/issues/1316) and [#1317](https://github.com/flink-gcp/flink-connector-gcp/issues/1317), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-trial) records its design ([#1854](https://github.com/flink-gcp/flink-connector-gcp/issues/1854)).
-It follows the [Cloud Tasks recovery trial](../cloudtasks/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
+It follows the [Cloud Tasks recovery trial](../cloudtasks/README.md#recovery-trial), whose resource lifecycle and finite-input exercise it shares; this section names what differs.
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165, whose exercise the rest of this section still describes.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165.
 Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 
@@ -120,7 +120,7 @@ A run should reach its verdict about 31 minutes into its window.
 The first `sequence` run, `bt2153-seq-a1`, began its input 516 seconds into the window, finished it 292 seconds later than its length with 632 seconds to spare beyond the commit margin, and reached `usable` 31.3 minutes into its window, as its [findings](../../../docs/adr/evidence/0204-bigtable-fault-sequence-findings-2153.md) record.
 A partition still being reconciled holds the job past the end, and nothing bounds how long, as [the graph](#graph-and-what-each-table-records) describes; a hold that outlasts the run's hour stops it at its time limit.
 
-When the job has finished after the last fault, with its whole input processed, the three oracles below read the tables, and `usable` means all three pass; `eo` is judged exactly once, as for the other kinds.
+When the job has finished after the last fault, with its whole input processed, the three oracles below read the tables, and `usable` means all three pass; `eo` is judged exactly once.
 The Change Streams relay reads `eo`, so the exactly-once path runs in this scenario rather than in [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)'s.
 The relay is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end; a restore after the input finished can replay it and commit rows whose staged commit it discarded only then, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
@@ -174,27 +174,23 @@ Shared cleanup then removes the run's state under `runs/<run-id>/` and `.inprogr
 
 ### Exercise and oracles
 
-The supervisor runs the shared recovery exercise on the application's `bigtable-progress` lines, with the faults and the three measurement windows of the Cloud Tasks trial.
-A reading is a `bigtable-measurement` evidence event; the exercise finds the four vertices by the names [the graph](#graph-and-what-each-table-records) chains them under, because two of them are sources.
-Its families are each component vertex's task, network and connector metrics and its subtasks' shares of the latest completed checkpoint, and each TaskManager's memory metrics, which describe the job, since the components share TaskManagers.
-The source's enumerator metrics register on the JobManager, which no vertex reading reaches.
-
-When the upgraded application reaches `FINISHED`, after the change stream's end, with the whole input processed, the supervisor reads `eo`, `alo` and `relay` in pages of up to 5,000 rows, each resuming after the last row key as the service sent it, until a page comes back empty.
-A transiently failing read, including a stream that ends with an error after it began, is repeated every 5 seconds until the read window closes, 600 seconds after the application finishes or a minute before the cleanup start, whichever is first; any other failure ends the run without a verdict.
+The supervisor runs the shared [fault sequence](#fault-sequence) on the application's `bigtable-progress` lines.
+When the application has finished after the last fault and after the change stream's end, with the whole input processed, the supervisor reads `eo`, `alo` and `relay` in pages of up to 5,000 rows, each resuming after the last row key as the service sent it, until a page comes back empty.
+A transiently failing read, including a stream that ends with an error after it began, is repeated every 5 seconds until the read window closes, 600 seconds after the application finishes or a minute before the run's one-hour limit, whichever is first; any other failure ends the run without a verdict.
 Each oracle reports counts and the first 20 row keys of each kind of deviation:
 
 - **`eo`:** every input row is present, its `agg:count` SUM is 1, it has exactly one marker, and no row or family lies outside the input.
 - **`alo`:** every input row is present with a SUM of at least 1; contributions beyond one are counted and reported, not failed.
 - **`relay`:** every row `eo` applied was relayed at least once and no row lies outside the input; deliveries beyond one are counted and reported, not failed, and a relayed row that `eo` did not apply fails it.
 
-The relay is judged only when the input's first progress line showing it whole came at least 120 seconds before the change stream's end, the time its staged commit can take, because a change committed after the end is not relayed.
+The relay is judged only when the input's latest progress line came at least 120 seconds before the change stream's end and no restore followed that line, as the [fault sequence](#fault-sequence) describes.
 
 ### Verdict and analysis
 
-The run is `usable` when both recoveries are proved, all three oracles pass, the relay's having been judged, and each of the three windows read every family; anything short of that is `inconclusive`.
-The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` is that verdict.
+The run is `usable` when it completed and all three oracles passed, the relay's having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `relay-oracle-unjudged` or `<component>-oracle-not-passed`, for `eo`, `alo` or `relay`, as its reasons.
+The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
 
-`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory, with the coverage rebuilt from the exported readings and the recoveries' timing, as the Cloud Tasks section does.
+`just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory and lists the faults the run injected, and it reports a single-fault run as the [Cloud Tasks section](../cloudtasks/README.md#verdict-and-analysis) does, without a verdict and as `single-fault-trial`.
 It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
 
 The four trials of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855) are preregistered in the [Bigtable recovery trial preregistration](../../../docs/adr/evidence/0165-bigtable-recovery-preregistration-1855.md), and each kind reached `usable`, as their [findings](../../../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) record.

@@ -18,16 +18,8 @@ from __future__ import annotations
 from ..common import Failure, utc
 from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE, POLL
-from .observe import observation, vertices
 from .oracle import assess, page
-from .trial import SEQUENCE_KIND
-from .verdict import (
-    MEASUREMENT_EVENT,
-    PAGE_EVENT,
-    sequence_verdict,
-    summarize,
-    verdict,
-)
+from .verdict import PAGE_EVENT, sequence_verdict
 
 # The stage between the finished application and the passing listing.
 LISTING_STAGE = "listing"
@@ -38,15 +30,12 @@ class WindowClosed(Failure):
 
 
 class CloudTasksExercise(FiniteInputExercise):
-    """Recover the finite input, then list the paused queue against it.
+    """Run the finite input through the faults, then list the paused queue against it.
 
-    The caller supplies the supervisor's queue controller. The approved trial
-    names the fault: the upgrade may rescale the sink, and the failover may
-    delete a TaskManager rather than the JobManager. The exercise samples the
-    job once a measurement interval, holds a baseline, a window after the
-    upgrade and one after the failover, and decides the verdict from the
-    recoveries it proved, the families each window read and the listing it
-    exported, and writes it with the transition that completes the run.
+    The caller supplies the supervisor's queue controller. The verdict is
+    decided from the listing the exercise exported, by the `verdict` the
+    fault sequence names, and written with the transition that completes the
+    run.
     """
 
     namespace = CLOUDTASKS
@@ -55,8 +44,6 @@ class CloudTasksExercise(FiniteInputExercise):
     service = "Cloud Tasks"
     oracle_stage = LISTING_STAGE
     progress_event = "cloudtasks-progress"
-    measurement_event = MEASUREMENT_EVENT
-    baseline_event = "cloudtasks-baseline-window"
 
     def __init__(self, env, upgrade, queue):
         if env.approval.scenario != "cloudtasks-recovery":
@@ -66,16 +53,6 @@ class CloudTasksExercise(FiniteInputExercise):
             raise Failure("Cloud Tasks exercise requires the run's queue controller")
         self.queue = queue
         super().__init__(env, upgrade, trial)
-
-    def discover(self, rest, known):
-        return vertices(rest, known)
-
-    def read(self, rest, state):
-        return observation(rest, state)
-
-    summarize = staticmethod(summarize)
-    # The verdict the listing's record is judged by.
-    verdict = staticmethod(verdict)
 
     def verify_tasks(self):
         """List the paused queue until the oracle passes or the window closes.
@@ -88,7 +65,9 @@ class CloudTasksExercise(FiniteInputExercise):
         the trial's finding rather than lost to the deadline.
         """
         if self.stage != LISTING_STAGE:
-            raise Failure("Cloud Tasks listing requires both recoveries and the input")
+            raise Failure(
+                "Cloud Tasks listing requires the fault sequence and the input"
+            )
         until = self.oracle_window()
         listing, attempt = None, 0
         while True:
@@ -156,14 +135,8 @@ class CloudTasksSequenceExercise(FaultSequence, CloudTasksExercise):
     """The Cloud Tasks trial as one fault sequence, judged by its data (ADR-0204).
 
     The listing and its oracle are the same, so the exactly-once sink is
-    judged by the exactly-once rule; no window samples the job.
+    judged by the exactly-once rule.
     """
 
+    # The verdict the listing's record is judged by.
     verdict = staticmethod(sequence_verdict)
-
-
-def cloudtasks_exercise(env, upgrade, queue):
-    """The exercise the approved Cloud Tasks trial names."""
-    if env.approval.cloudtasks_plan.kind == SEQUENCE_KIND:
-        return CloudTasksSequenceExercise(env, upgrade, queue)
-    return CloudTasksExercise(env, upgrade, queue)

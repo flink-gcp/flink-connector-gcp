@@ -16,7 +16,7 @@
 import hashlib
 from dataclasses import dataclass
 
-from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND, rendered_parallelism
+from ..exercise import SEQUENCE_KIND, rendered_parallelism
 from ..policy import PROJECT, REGION, RUN_ID
 
 # The application's bounds (kubernetes/apps/cloudtasks RecoveryOptions) and the
@@ -63,16 +63,6 @@ class Trial:
             )
         if self.kind not in KINDS:
             raise ValueError("Unknown Cloud Tasks trial kind")
-
-    @property
-    def failover(self):
-        """The exercise base's failover, which the sequence leaves unused."""
-        return FAULTS[DEFAULT_FAULT].failover
-
-    @property
-    def rescale(self):
-        """The exercise base's rescale, which the sequence leaves unused."""
-        return FAULTS[DEFAULT_FAULT].rescale
 
     def parallelism(self, phase):
         """The sink's subtasks in one phase, and the TaskManagers running them."""

@@ -21,24 +21,9 @@ import re
 from ..common import Failure, retryable_commit, timestamp, utc
 from ..exercise import FaultSequence, FiniteInputExercise
 from ..policy import POLL, SPANNER, SPANNER_OBSERVATIONS, SPANNER_STATE
-from .observe import observation, vertices
 from .oracle import BatchCopy, ChangeStream, Seed, Sink, micros
-from .trial import (
-    BATCH_TABLE,
-    INPUT_TABLE,
-    LATE_ROWS,
-    RELAY_TABLE,
-    SEED_TABLE,
-    SEQUENCE_KIND,
-)
-from .verdict import (
-    MEASUREMENT_EVENT,
-    maxima,
-    sequence_verdict,
-    summarize,
-    verdict,
-    watermark_advanced,
-)
+from .trial import BATCH_TABLE, INPUT_TABLE, LATE_ROWS, RELAY_TABLE, SEED_TABLE
+from .verdict import sequence_verdict
 
 # The stage between the finished application and the read tables.
 ORACLE_STAGE = "tables"
@@ -59,15 +44,13 @@ PLANNED = re.compile(
 
 
 class SpannerExercise(FiniteInputExercise):
-    """Recover the finite input, then read the four tables against it.
+    """Run the finite input through the faults, then read the four tables against it.
 
-    The caller supplies the supervisor's instance controller. The approved
-    trial names the fault; the job finishes once the change-stream source
-    reaches its end and the batch copy is done, after the input. Before the
-    upgrade the supervisor writes the late seed rows, once a copied row shows
-    the batch read planned. The verdict is decided from the recoveries, the
-    families each window read, the source's watermark and the three oracle
-    reports, and written with the transition that completes the run.
+    The caller supplies the supervisor's instance controller. The job
+    finishes once the change-stream source reaches its end and the batch copy
+    is done, after the input. The verdict is decided from the three oracle
+    reports, by the `verdict` the fault sequence names, and written with the
+    transition that completes the run.
     """
 
     namespace = SPANNER
@@ -76,12 +59,6 @@ class SpannerExercise(FiniteInputExercise):
     service = "Spanner"
     oracle_stage = ORACLE_STAGE
     progress_event = "spanner-progress"
-    measurement_event = MEASUREMENT_EVENT
-    baseline_event = "spanner-baseline-window"
-    # The input with its sink, each relay subtask and each copy subtask: a lost
-    # TaskManager restarts the input's region and its own relay and copy
-    # subtasks, which share no edge with any other.
-    failover_regions = 3
 
     def __init__(self, env, upgrade, instance):
         if env.approval.scenario != "spanner-recovery":
@@ -96,16 +73,6 @@ class SpannerExercise(FiniteInputExercise):
         # time: overlapping log reads return a line more than once.
         self.plan_lines = set()
         super().__init__(env, upgrade, trial)
-
-    def discover(self, rest, known):
-        return vertices(rest, known)
-
-    def read(self, rest, state):
-        return observation(rest, state)
-
-    summarize = staticmethod(summarize)
-    # The verdict the oracles' record is judged by.
-    verdict = staticmethod(verdict)
 
     def progress(self, pod, text):
         """Read the input's progress, and the batch read's plan from the JobManager.
@@ -137,11 +104,6 @@ class SpannerExercise(FiniteInputExercise):
             self.session = api.session()
         return api
 
-    def begin_upgrade(self, app, cp, progress, pods):
-        """Write the late seed rows first; the upgrade waits for their record."""
-        if self.late_seed_written():
-            super().begin_upgrade(app, cp, progress, pods)
-
     def late_seed_written(self):
         """Write the late seed rows unless written; whether they are."""
         if "late_seed" not in self.outcomes:
@@ -156,7 +118,7 @@ class SpannerExercise(FiniteInputExercise):
         commit is an insert-or-update of fixed values, so one repeated after a
         response that never arrived, or after the commit aborted with 409,
         writes nothing new. A call that fails so is left to the next poll; the
-        record holds the commit before the upgrade may begin.
+        record holds the commit before the first fault may land.
         """
         try:
             api = self._api(self.deadline)
@@ -184,7 +146,7 @@ class SpannerExercise(FiniteInputExercise):
         stops at this stage.
         """
         if self.stage != ORACLE_STAGE:
-            raise Failure("Spanner oracles require both recoveries and the input")
+            raise Failure("Spanner oracles require the fault sequence and the input")
         until = self.oracle_window()
         api = self.retried(lambda: self._api(until), until)
         checks = {
@@ -223,14 +185,6 @@ class SpannerExercise(FiniteInputExercise):
             or {"unavailable": "no plan line read from the JobManager"},
             late_after_plan=self.late_after_plan(),
         )
-        # Only a run that samples the job has window readings to report.
-        if self.measurement_event:
-            stream.update(
-                watermark=maxima(self.coverage, "watermark"),
-                watermark_advanced=watermark_advanced(self.coverage),
-                partitions_discovered=maxima(self.coverage, "partitions_discovered"),
-            )
-            batch.update(partitions_reread=maxima(self.coverage, "partitions_reread"))
         self.outcomes["oracles"] = {
             "read_timestamp": snapshot,
             "input_finished_at": utc(finished),
@@ -241,14 +195,6 @@ class SpannerExercise(FiniteInputExercise):
             "batch": batch,
         }
         self.complete(self.verdict)
-
-    def input_finished_at(self):
-        """When the upgraded job first showed its whole input processed."""
-        return min(
-            sample["at"]
-            for sample in self.fresh_progress("upgrade")
-            if sample["processed"] == self.records
-        )
 
     def late_after_plan(self):
         """Whether the late commit followed the plan's read timestamp, or None unread."""
@@ -264,24 +210,15 @@ class SpannerExercise(FiniteInputExercise):
 class SpannerSequenceExercise(FaultSequence, SpannerExercise):
     """The Spanner trial as one fault sequence, judged by its data (ADR-0204).
 
-    The late seed rows are written before the first fault, as before the
-    upgrade of a single-fault trial, and the oracles are the same three. No
-    window samples the job, so the reports carry no watermark or partition
-    readings, and the relay is judged when the input's latest progress line
-    came the commit margin before the change stream's end and no restore
-    followed that line.
+    The late seed rows are written before the first fault. The relay is
+    judged when the input's latest progress line came the commit margin
+    before the change stream's end and no restore followed that line.
     """
 
+    # The verdict the oracles' record is judged by.
     verdict = staticmethod(sequence_verdict)
     reads_final_restore = True
 
     def ready_for_sequence(self):
         """The first fault waits for the late seed rows."""
         return self.late_seed_written()
-
-
-def spanner_exercise(env, upgrade, instance):
-    """The exercise the approved Spanner trial names."""
-    if env.approval.spanner_plan.kind == SEQUENCE_KIND:
-        return SpannerSequenceExercise(env, upgrade, instance)
-    return SpannerExercise(env, upgrade, instance)

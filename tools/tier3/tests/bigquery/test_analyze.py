@@ -1,4 +1,3 @@
-#
 # Copyright 2026 The flink-gcp authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,73 +23,42 @@ import json
 import pytest
 from flink_tier3 import analyze
 from flink_tier3.bigquery.analyze import SCENARIO, render
-from flink_tier3.bigquery.verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    FILE_LOADS_OBSERVED,
-    MEASUREMENT_EVENT,
-    OBSERVED,
-    SAMPLED_STAGES,
-)
+from flink_tier3.bigquery.verdict import COMPLETE_EVENT, COMPLETE_STAGE
 from flink_tier3.common import INCONCLUSIVE, USABLE
-from flink_tier3.recovery_analysis import counts
+from flink_tier3.recovery_analysis import (
+    SINGLE_FAULT,
+    SINGLE_FAULT_NOTE,
+    counts,
+)
 
+# The faults the single-fault trials' receipts named, written out so that
+# dropping one from the analyzer's list fails a test here rather than
+# shrinking it. A JobManager replacement named none.
+ARCHIVED_FAULTS = ("tm-replacement", "rescale-out", "rescale-in")
 RUN = "bq-1423-0001"
-ATTEMPTS = 3
-WINDOW = {"attempts": ATTEMPTS, "observed": sorted(OBSERVED)}
-SAMPLES = ATTEMPTS * len(SAMPLED_STAGES)
-# One returned id per sink family, and a TaskManager that published a memory
-# metric: the reading a healthy poll emits.
-FULL = {
-    "sink": [
-        {"id": "busyTimeMsPerSecond"},
-        {"id": "inPoolUsage"},
-        {"id": "Sink__Writer.openDestinations"},
-    ],
-    "taskmanagers": [
-        {"id": "tm-0", "metrics": [{"id": "Status.JVM.Memory.Direct.MemoryUsed"}]}
-    ],
+SEQUENCE_TRIAL = {
+    "mode": "ALO",
+    "destinations": 10,
+    "fault": "sequence",
+    "records": 5760,
 }
-# What the same poll emits when the job exposed nothing.
-BLIND = {"sink": {"unavailable": "503"}, "taskmanagers": {"unavailable": "503"}}
+FAULTS = ["upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out"]
 
 
-def record(**overrides):
+def record(report_verdict="pass", **overrides):
+    """A fault-sequence run's record: its faults and its query."""
     value = {
         "stage": COMPLETE_STAGE,
         "at": "2026-09-22T00:00:00Z",
         "outcomes": {
-            "upgrade": {"checkpoint": {"id": 1}},
-            "failover": {"checkpoint": {"id": 2}},
-            "query": {"report": {"verdict": "pass"}},
+            "faults": [{"kind": kind, "at": "2026-09-22T00:00:00Z"} for kind in FAULTS],
+            "query": {"report": {"verdict": report_verdict}},
         },
-        "coverage": {stage: dict(WINDOW) for stage in SAMPLED_STAGES},
-        "verdict": USABLE,
-        "reasons": [],
+        "verdict": USABLE if report_verdict == "pass" else INCONCLUSIVE,
+        "reasons": [] if report_verdict == "pass" else ["oracle-not-passed"],
     }
     value.update(overrides)
     return value
-
-
-def samples_of(recovery, reading=None):
-    """One measurement event per attempt the record accounts for, by stage.
-
-    Each carries the reading the supervisor emitted beside the record, because
-    that is what the analyzer folds: an event shaped only as `{"stage": ...}`
-    would prove the counts agree and nothing about what was observed.
-    """
-    return [
-        (
-            MEASUREMENT_EVENT,
-            {
-                "stage": stage,
-                **(FULL if reading is None else reading),
-                "window": stage,
-            },
-        )
-        for stage, window in (recovery or {}).get("coverage", {}).items()
-        for _ in range(window["attempts"])
-    ]
 
 
 def write_run(root, recovery=None, receipt=None, events=None, run_id=RUN):
@@ -100,7 +68,7 @@ def write_run(root, recovery=None, receipt=None, events=None, run_id=RUN):
     (run_dir / "approval.json").write_text(
         json.dumps({"run_id": run_id, "scenario": SCENARIO, "flink_version": "2.2.1"})
     )
-    entries = list(events if events is not None else samples_of(recovery))
+    entries = list(events or ())
     if recovery is not None:
         entries.insert(0, (COMPLETE_EVENT, recovery))
     for index, (event, payload) in enumerate(entries):
@@ -124,6 +92,7 @@ def receipt_for(recovery, **overrides):
         "idle": True,
         "success": recovery.get("verdict") == USABLE,
         "recovery": recovery,
+        "bigquery_trial": SEQUENCE_TRIAL,
     }
     value.update(overrides)
     return value
@@ -138,110 +107,138 @@ def assessed(root, expected=1):
 DIFFERS = "verdict-differs-from-the-record"
 
 
-def test_a_complete_run_is_usable_and_its_verdict_is_recomputed(tmp_path):
-    value = record()
+@pytest.mark.parametrize(
+    "report_verdict,verdict,reasons",
+    [("pass", USABLE, []), ("fail", INCONCLUSIVE, ["oracle-not-passed"])],
+)
+def test_a_sequence_run_is_decided_by_its_query_and_lists_its_faults(
+    tmp_path, report_verdict, verdict, reasons
+):
+    """The query's report decides, and the faults are listed beside it."""
+    value = record(report_verdict)
     write_run(tmp_path, value, receipt_for(value))
     report, item = assessed(tmp_path)
     assert item == {
         "run_id": RUN,
-        "verdict": USABLE,
-        "stored": USABLE,
-        "reasons": [],
+        "verdict": verdict,
+        "stored": verdict,
+        "reasons": reasons,
         "problems": [],
-        "samples": SAMPLES,
-        # The fixture's proofs hold no timestamps and it exports no stage
-        # records, so both proved recoveries are untimed.
-        "recoveries": {"upgrade": None, "failover": None},
+        "faults": value["outcomes"]["faults"],
     }
+    section = render(report["bigquery"])
+    assert f"| {RUN} | {verdict} | {verdict} | {', '.join(FAULTS)} |" in section
+    assert "A `sequence` run (ADR-0204) is judged by its query oracle alone" in (
+        section
+    )
     assert "Deployed BigQuery runs" in analyze.render_markdown(report)
 
 
-def test_an_incomplete_observation_is_inconclusive_with_its_reasons(tmp_path):
-    reasons = [f"unobserved-{name}-in-finishing" for name in OBSERVED]
-    coverage = {
-        "baseline": dict(WINDOW),
-        "upgraded": dict(WINDOW),
-        "finishing": {"attempts": ATTEMPTS, "observed": []},
-    }
-    value = record(coverage=coverage, verdict=INCONCLUSIVE, reasons=reasons)
-    # The readings say the same thing the record does: the finishing window
-    # asked three times and the job exposed nothing.
-    events = [
-        *samples_of({"coverage": {"baseline": dict(WINDOW), "upgraded": dict(WINDOW)}}),
-        *samples_of({"coverage": {"finishing": dict(WINDOW)}}, reading=BLIND),
-    ]
-    write_run(tmp_path, value, receipt_for(value), events=events)
+def test_a_sequence_run_stopped_before_its_query_is_incomplete(tmp_path):
+    """A record the run left mid-sequence is judged by its own stage."""
+    value = record(stage="taskmanager", verdict=None, reasons=[])
+    del value["outcomes"]["query"]
+    write_run(tmp_path, value, receipt_for(value))
     _, item = assessed(tmp_path)
     assert item["verdict"] == INCONCLUSIVE
-    assert item["problems"] == []
-    assert item["reasons"] == reasons
+    assert item["reasons"] == ["recovery-incomplete", "oracle-not-passed"]
+    assert item["stored"] is None
 
 
-def test_a_file_loads_run_is_held_to_the_families_its_trial_requires(tmp_path):
-    """The receipt's trial decides the families, as the exercise's mode did."""
-    trial = {"mode": "FILE_LOADS", "destinations": 10}
-    # Read with the Storage Write families only, the run is short of two.
-    value = record()
+@pytest.mark.parametrize(
+    "trial",
+    [
+        # Archived single-fault trials, which no plan offers any more: the
+        # first ones named no fault at all, and the very first carried the
+        # version-1 schema's other fields too.
+        {"mode": "ALO", "destinations": 10},
+        {
+            "version": 1,
+            "mode": "EO",
+            "destinations": 10,
+            "repetition": 1,
+            "query_slots": 12,
+            "maximum_bytes_billed": 4294967296,
+            "query_timeout_ms": 60000,
+            "additional_cost_usd": "0",
+        },
+        *(
+            {"mode": "EO", "destinations": 10, "fault": kind}
+            for kind in ARCHIVED_FAULTS
+        ),
+    ],
+)
+def test_a_single_fault_run_has_no_verdict_here(tmp_path, trial):
+    """It is judged at the revision that produced it, not by the sequence's rule."""
+    value = record(verdict=USABLE)
     write_run(tmp_path, value, receipt_for(value, bigquery_trial=trial))
-    _, item = assessed(tmp_path)
-    assert item["verdict"] == INCONCLUSIVE
-    assert item["reasons"] == [
-        f"unobserved-{name}-in-{stage}"
-        for stage in SAMPLED_STAGES
-        for name in FILE_LOADS_OBSERVED
-    ]
-    # The stored usable verdict is not the one the readings recompute to.
-    assert item["problems"] == [DIFFERS]
-    subtask = {
-        "index": 0,
-        "end_to_end_duration": 3,
-        "checkpoint": {"sync": 1, "async": 2},
-    }
-    reading = {
-        **FULL,
-        "committer": [{"id": "BigQuery_FILE_LOADS__Committer.loadJobsSubmitted"}],
-        "checkpoints": {"vertices": {"sink": [subtask], "committer": [subtask]}},
-    }
-    window = {
-        "attempts": ATTEMPTS,
-        "observed": sorted(OBSERVED + FILE_LOADS_OBSERVED),
-    }
-    value = record(coverage={stage: dict(window) for stage in SAMPLED_STAGES})
-    write_run(
-        tmp_path,
-        value,
-        receipt_for(value, bigquery_trial=trial),
-        events=samples_of(value, reading),
-        run_id=RUN + "-fl",
+    report, item = assessed(tmp_path)
+    assert (item["verdict"], item["stored"], item["problems"]) == (
+        None,
+        USABLE,
+        [SINGLE_FAULT],
     )
-    report = analyze.analyze(tmp_path)
-    (item,) = [run for run in report["bigquery"] if run["run_id"] == RUN + "-fl"]
-    assert (item["verdict"], item["reasons"], item["problems"]) == (USABLE, [], [])
+    section = render(report["bigquery"])
+    assert f"| {RUN} | - | usable | {', '.join(FAULTS)} | - | {SINGLE_FAULT} |" in (
+        section
+    )
+    assert SINGLE_FAULT_NOTE in section
 
 
-def test_the_verdict_is_decided_over_the_readings_not_the_record_s_coverage(
-    tmp_path,
-):
-    """A run whose sink was down for the whole trial read nothing.
-
-    Its record claims every family in both windows; the readings beside it
-    returned none, and they decide.
-    """
+@pytest.mark.parametrize(
+    "trial",
+    [
+        None,
+        "sequence",
+        {"mode": "ALO", "destinations": 10, "fault": None},
+        {"mode": "ALO", "destinations": 10, "fault": "sequnce"},
+        {"mode": "ALO", "destinations": 10, "fault": ""},
+        {"mode": "ALO", "destinations": 10, "fault": ["tm-replacement"]},
+        # A JobManager replacement named no fault, so a receipt naming it was
+        # never written.
+        {"mode": "EO", "destinations": 10, "fault": "jm-replacement"},
+        # A trial without its delivery method or destination count is no
+        # trial an earlier revision wrote, with or without a fault.
+        {},
+        {"destinations": 10},
+        {"mode": "ALO", "fault": "tm-replacement"},
+        # A sequence trial that lost its fault still names its record count,
+        # which no single-fault trial named.
+        {"mode": "ALO", "destinations": 10, "records": 5760},
+        {"mode": "STORAGE_WRITE", "destinations": 10},
+    ],
+)
+def test_a_receipt_without_a_readable_trial_is_not_a_single_fault_run(tmp_path, trial):
+    """Only an archived trial's own shape is one; anything else is malformed."""
     value = record()
-    write_run(
-        tmp_path, value, receipt_for(value), events=samples_of(value, reading=BLIND)
-    )
+    receipt = receipt_for(value, bigquery_trial=trial)
+    if trial is None:
+        del receipt["bigquery_trial"]
+    write_run(tmp_path, value, receipt)
     _, item = assessed(tmp_path)
-    assert item["verdict"] == INCONCLUSIVE
-    assert item["stored"] == USABLE
-    assert item["problems"] == [DIFFERS]
-    assert item["samples"] == SAMPLES
+    assert (item["verdict"], item["stored"], item["problems"]) == (
+        None,
+        None,
+        ["receipt-without-bigquery-trial"],
+    )
+
+
+def test_a_single_fault_run_without_a_readable_record_stores_nothing(tmp_path):
+    receipt = receipt_for(record(), bigquery_trial={"mode": "ALO", "destinations": 10})
+    receipt["recovery"] = "malformed"
+    write_run(tmp_path, None, receipt, events=[])
+    _, item = assessed(tmp_path)
+    assert (item["verdict"], item["stored"], item["problems"]) == (
+        None,
+        None,
+        [SINGLE_FAULT],
+    )
 
 
 def test_a_completed_record_without_its_completion_evidence_has_no_verdict(tmp_path):
     """An absent object: only the record it should have accompanied names it."""
     value = record()
-    write_run(tmp_path, None, receipt_for(value), events=samples_of(value))
+    write_run(tmp_path, None, receipt_for(value), events=[])
     _, item = assessed(tmp_path)
     assert item["problems"] == ["missing-" + COMPLETE_EVENT]
     assert item["verdict"] is None
@@ -249,19 +246,15 @@ def test_a_completed_record_without_its_completion_evidence_has_no_verdict(tmp_p
 
 
 def test_a_run_that_never_completed_is_inconclusive_not_an_evidence_problem(tmp_path):
-    """The archetypal case: both recoveries proved, then the query slots ran out."""
-    aborted = record(stage="visibility")
-    del aborted["verdict"], aborted["reasons"]
-    # The record was written at the run's last transition; the samples after
-    # it are readings the record does not account for.
-    events = [*samples_of(aborted), *samples_of(aborted)[:2]]
-    write_run(tmp_path, None, receipt_for(aborted), events=events)
+    """The archetypal case: the job never finished, so no query ran."""
+    aborted = record(stage="rescale-out")
+    del aborted["verdict"], aborted["reasons"], aborted["outcomes"]["query"]
+    write_run(tmp_path, None, receipt_for(aborted), events=[])
     _, item = assessed(tmp_path)
     assert item["verdict"] == INCONCLUSIVE
     assert item["stored"] is None
-    assert item["reasons"] == ["recovery-incomplete"]
+    assert item["reasons"] == ["recovery-incomplete", "oracle-not-passed"]
     assert item["problems"] == []
-    assert item["samples"] == SAMPLES + 2
 
 
 @pytest.mark.parametrize(
@@ -281,15 +274,14 @@ def test_an_evidence_set_missing_the_run_s_own_account_has_no_verdict(
         tmp_path,
         value if missing == "result.json" else None,
         None if missing == "result.json" else receipt,
-        events=samples_of(value),
+        events=[],
     )
     _, item = assessed(tmp_path)
     assert item["verdict"] is None
     assert item["problems"] == [problem]
-    assert item["samples"] == SAMPLES
 
 
-@pytest.mark.parametrize("reasons", [5, "unobserved-task-in-baseline", {}])
+@pytest.mark.parametrize("reasons", [5, "oracle-not-passed", {}])
 def test_a_reasons_field_that_is_not_a_list_differs_rather_than_raising(
     tmp_path, reasons
 ):
@@ -316,46 +308,20 @@ def test_only_the_recomputed_verdict_matches_the_record(tmp_path, stored, proble
     )
 
 
-@pytest.mark.parametrize("event", [MEASUREMENT_EVENT, COMPLETE_EVENT])
 @pytest.mark.parametrize("name", ["00001.json", "99999.json"])
-def test_an_unreadable_record_is_an_incomplete_export(tmp_path, event, name):
-    """Whatever that record held is missing from the rebuilt coverage.
-
-    The verdict recomputed without it would be lowered by the download, not by
-    the run, so there is none; fetch the evidence again.
-    """
+def test_an_unreadable_record_is_an_incomplete_export(tmp_path, name):
+    """A record nothing can read is a download to fetch again, not a verdict."""
     value = record()
-    write_run(tmp_path, value, receipt_for(value), events=samples_of(value))
+    write_run(tmp_path, value, receipt_for(value))
     (tmp_path / RUN / "supervisor" / name).write_text(
         json.dumps(
-            {"event": event, "at": "2026-09-22T00:01:00Z", "payload": "baseline"}
+            {
+                "event": COMPLETE_EVENT,
+                "at": "2026-09-22T00:01:00Z",
+                "payload": "baseline",
+            }
         )
     )
-    _, item = assessed(tmp_path)
-    assert item["problems"] == ["malformed-evidence:1"]
-    assert (item["verdict"], item["stored"]) == (None, USABLE)
-
-
-@pytest.mark.parametrize("lost", [1, ATTEMPTS])
-def test_samples_the_record_counted_but_the_export_lacks_leave_no_verdict(
-    tmp_path, lost
-):
-    """Fewer finishing samples would lower or keep the verdict by chance alone."""
-    value = record()
-    events = samples_of(value)
-    finishing = [i for i, (_, p) in enumerate(events) if p["stage"] == "finishing"]
-    for index in reversed(finishing[:lost]):
-        del events[index]
-    write_run(tmp_path, value, receipt_for(value), events=events)
-    _, item = assessed(tmp_path)
-    assert (item["verdict"], item["problems"]) == (None, [f"missing-samples:{lost}"])
-
-
-def test_a_reading_the_fold_cannot_place_is_an_incomplete_export_too(tmp_path):
-    """An object, but with no window to fold into: lost the same way."""
-    value = record()
-    events = [*samples_of(value), (MEASUREMENT_EVENT, dict(FULL))]
-    write_run(tmp_path, value, receipt_for(value), events=events)
     _, item = assessed(tmp_path)
     assert item["problems"] == ["malformed-evidence:1"]
     assert (item["verdict"], item["stored"]) == (None, USABLE)
@@ -380,7 +346,7 @@ def test_the_later_of_two_completion_records_is_the_one_read(tmp_path):
         tmp_path,
         None,
         receipt_for(second),
-        events=[(COMPLETE_EVENT, first), (COMPLETE_EVENT, second), *samples_of(second)],
+        events=[(COMPLETE_EVENT, first), (COMPLETE_EVENT, second)],
     )
     _, item = assessed(tmp_path)
     assert (item["verdict"], item["stored"], item["problems"]) == (USABLE, USABLE, [])
@@ -405,12 +371,10 @@ def test_the_rendered_section_names_each_column_of_each_run(tmp_path):
     write_run(tmp_path, good, None, run_id="bq-0002")
     report, _ = assessed(tmp_path, expected=2)
     section = render(report["bigquery"])
-    assert (
-        "| run | verdict | stored | samples | faults | reasons | problems |" in section
-    )
-    assert f"| bq-0001 | usable | usable | {SAMPLES} | - | - | - |" in section
-    assert f"| bq-0002 | - | - | {SAMPLES} | - | - | missing-result.json |" in section
-    assert "`baseline`, `upgraded` and `finishing` windows" in section
+    assert "| run | verdict | stored | faults | reasons | problems |" in section
+    faults = ", ".join(FAULTS)
+    assert f"| bq-0001 | usable | usable | {faults} | - | - |" in section
+    assert f"| bq-0002 | - | - | {faults} | - | missing-result.json |" in section
     assert f"not `{COMPLETE_STAGE}`" in section
 
 
@@ -427,142 +391,3 @@ def test_a_directory_without_a_bigquery_run_reports_no_section(tmp_path):
     rendered = analyze.render_markdown(report)
     assert "Deployed BigQuery runs" not in rendered
     assert "bigquery runs" not in analyze.summary_line(report, tmp_path)
-
-
-def test_a_run_that_did_not_complete_still_times_what_it_proved(tmp_path):
-    """Without a completion record, the receipt's record is the one timed."""
-    proof = {
-        "restored": {
-            "id": 3,
-            "is_savepoint": True,
-            "restore_timestamp": 1_000_000_050_000,
-        },
-        "checkpoint": {"id": 4, "latest_ack_timestamp": 1_000_000_090_000},
-    }
-    value = record(
-        stage="failover", outcomes={"upgrade": proof}, coverage={}, verdict=None
-    )
-    start = ("recovery-upgrade", {"stage": "upgrade", "at": "2001-09-09T01:46:40Z"})
-    write_run(tmp_path, None, receipt_for(value), events=[start])
-    _, item = assessed(tmp_path)
-    assert item["verdict"] == INCONCLUSIVE
-    assert item["recoveries"] == {
-        "upgrade": {
-            "fault": "savepoint-upgrade",
-            "began_at": "2001-09-09T01:46:40Z",
-            "restored_from": "savepoint",
-            "restored_id": 3,
-            "restored_ms": 50_000,
-            "checkpoint_id": 4,
-            "checkpoint_ms": 90_000,
-        }
-    }
-
-
-def test_evidence_from_before_readings_named_their_window_is_inconclusive(tmp_path):
-    """A run of the two-window rules recomputes, without a problem of its own.
-
-    Its readings carry no window and count toward their stage, as they did
-    when it ran, so the coverage its record holds is rebuilt in full; only the
-    window after the upgrade, which it never had, is missing.
-    """
-    old = {"baseline": dict(WINDOW), "finishing": dict(WINDOW)}
-    value = record(coverage=old)
-    events = [
-        (MEASUREMENT_EVENT, {"stage": stage, **FULL})
-        for stage in old
-        for _ in range(ATTEMPTS)
-    ]
-    write_run(tmp_path, value, receipt_for(value), events=events)
-    _, item = assessed(tmp_path)
-    assert item["verdict"] == INCONCLUSIVE
-    assert item["stored"] == USABLE
-    assert item["reasons"] == [
-        "unsampled-upgraded",
-        *(f"unobserved-{name}-in-upgraded" for name in OBSERVED),
-    ]
-    # The rules changed under it; the export is whole.
-    assert item["problems"] == ["verdict-differs-from-the-record"]
-    assert item["samples"] == 2 * ATTEMPTS
-
-
-SEQUENCE_TRIAL = {
-    "mode": "ALO",
-    "destinations": 10,
-    "fault": "sequence",
-    "records": 5760,
-}
-FAULTS = ["upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out"]
-
-
-def sequence_record(report_verdict="pass", **overrides):
-    """A fault-sequence run's record: faults and a query, no proofs or coverage."""
-    value = {
-        "stage": COMPLETE_STAGE,
-        "at": "2026-09-22T00:00:00Z",
-        "outcomes": {
-            "faults": [{"kind": kind, "at": "2026-09-22T00:00:00Z"} for kind in FAULTS],
-            "query": {"report": {"verdict": report_verdict}},
-        },
-        "coverage": {},
-        "verdict": USABLE if report_verdict == "pass" else INCONCLUSIVE,
-        "reasons": [] if report_verdict == "pass" else ["oracle-not-passed"],
-    }
-    value.update(overrides)
-    return value
-
-
-@pytest.mark.parametrize(
-    "report_verdict,verdict,reasons",
-    [("pass", USABLE, []), ("fail", INCONCLUSIVE, ["oracle-not-passed"])],
-)
-def test_a_sequence_run_is_decided_by_its_query_and_lists_its_faults(
-    tmp_path, report_verdict, verdict, reasons
-):
-    """No window was sampled, so no coverage is asked of it."""
-    value = sequence_record(report_verdict)
-    write_run(tmp_path, value, receipt_for(value, bigquery_trial=SEQUENCE_TRIAL))
-    report, item = assessed(tmp_path)
-    assert item == {
-        "run_id": RUN,
-        "verdict": verdict,
-        "stored": verdict,
-        "reasons": reasons,
-        "problems": [],
-        "samples": 0,
-        "faults": value["outcomes"]["faults"],
-        "recoveries": [],
-    }
-    section = render(report["bigquery"])
-    assert f"| {RUN} | {verdict} | {verdict} | 0 | {', '.join(FAULTS)} |" in section
-    assert "A `sequence` run (ADR-0204) is judged by its query oracle alone" in (
-        section
-    )
-
-
-@pytest.mark.parametrize(
-    "trial",
-    [
-        # Archived single-fault trials, which no plan offers any more.
-        {"mode": "ALO", "destinations": 10},
-        {"mode": "EO", "destinations": 10, "fault": "tm-replacement"},
-    ],
-)
-def test_the_same_record_without_the_sequence_trial_asks_for_coverage(tmp_path, trial):
-    """The trial in the receipt, not the record's shape, picks the rule."""
-    value = sequence_record()
-    write_run(tmp_path, value, receipt_for(value, bigquery_trial=trial))
-    _, item = assessed(tmp_path)
-    assert item["verdict"] == INCONCLUSIVE
-    assert "missing-upgrade" in item["reasons"]
-
-
-def test_a_sequence_run_stopped_before_its_query_is_incomplete(tmp_path):
-    """A record the run left mid-sequence is judged by its own stage."""
-    value = sequence_record(stage="taskmanager", verdict=None, reasons=[])
-    del value["outcomes"]["query"]
-    write_run(tmp_path, value, receipt_for(value, bigquery_trial=SEQUENCE_TRIAL))
-    _, item = assessed(tmp_path)
-    assert item["verdict"] == INCONCLUSIVE
-    assert item["reasons"] == ["recovery-incomplete", "oracle-not-passed"]
-    assert item["stored"] is None

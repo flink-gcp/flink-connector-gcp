@@ -30,16 +30,35 @@ from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.pubsub import analyze as pubsub_analyze
 from flink_tier3.pubsub import plan
 from flink_tier3.pubsub.output import parse
+from flink_tier3.pubsub.verdict import COMPLETE_EVENT
+from flink_tier3.recovery_analysis import (
+    SINGLE_FAULT,
+    SINGLE_FAULT_NOTE,
+)
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
+from .relay import World, receipt
 from .test_actors import approval as approval  # noqa: PLC0414
 from .test_actors import prepared as prepared  # noqa: PLC0414
 from .test_admission import admitting as admitting  # noqa: PLC0414
-from .test_exercise import World, receipt
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 
+# The kinds the single-fault trials named, the reactive and adaptive scheduler
+# kinds among them, written out so that dropping one from the analyzer's list
+# fails a test here rather than shrinking it.
+ARCHIVED_KINDS = (
+    "jm-replacement",
+    "tm-replacement",
+    "rescale-out",
+    "rescale-in",
+    "reactive-scale-out",
+    "reactive-scale-in",
+    "reactive-tm-eviction",
+    "reactive-tm-kill",
+    "adaptive-scale-in",
+)
 # The input per subscription, as small as the sequence's cohorts allow.
 RECORDS = 60
 
@@ -284,6 +303,37 @@ def test_a_missing_input_receipt_leaves_no_verdict(exported, target):
     assert [p.split(":")[0] for p in assessed["problems"]] == ["missing-input-receipts"]
 
 
+@pytest.mark.parametrize("kind", ARCHIVED_KINDS)
+def test_a_single_fault_run_has_no_verdict_here(exported, kind):
+    """Its approval names a kind no trial runs any more; its record is still read."""
+    run_dir, control = exported
+    approval = json.loads((run_dir / "approval.json").read_text())
+    approval["pubsub_trial"]["trial"] = kind
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    assessed = assess(run_dir)
+    assert (assessed["verdict"], assessed["stored"], assessed["problems"]) == (
+        None,
+        control.recovery["verdict"],
+        [SINGLE_FAULT],
+    )
+    rendered = pubsub_analyze.render([assessed])
+    assert f"| {SINGLE_FAULT} |" in rendered
+    assert SINGLE_FAULT_NOTE in rendered
+
+
+@pytest.mark.parametrize("kind", [None, 3, [], "", "sequnce"])
+def test_an_approval_whose_trial_names_no_known_kind_is_no_trial(exported, kind):
+    """A kind no trial had is malformed, not an archived single fault."""
+    run_dir, _ = exported
+    approval = json.loads((run_dir / "approval.json").read_text())
+    if kind is None:
+        del approval["pubsub_trial"]["trial"]
+    else:
+        approval["pubsub_trial"]["trial"] = kind
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    assert assess(run_dir)["problems"] == ["approval-without-pubsub-trial"]
+
+
 def test_unreadable_documents_and_approvals_leave_no_verdict(exported):
     run_dir, _ = exported
     assert assess(run_dir)["verdict"] == USABLE
@@ -294,10 +344,9 @@ def test_unreadable_documents_and_approvals_leave_no_verdict(exported):
     assert assess(run_dir)["stored"] is None
     approval["pubsub_trial"]["records_per_subscription"] = RECORDS
     (run_dir / "approval.json").write_text(json.dumps(approval))
-    # A sequence run samples nothing, so a malformed sample is one that
-    # should not be there at all.
-    path = run_dir / "supervisor" / "zz-measurement.json"
-    path.write_text(json.dumps({"event": "pubsub-measurement", "payload": "lost"}))
+    # A completed record nothing can read is a download to fetch again.
+    path = run_dir / "supervisor" / "zz-complete.json"
+    path.write_text(json.dumps({"event": COMPLETE_EVENT, "payload": "lost"}))
     assessed = assess(run_dir)
     assert (assessed["stored"], assessed["problems"]) == (
         USABLE,
@@ -476,7 +525,6 @@ def test_the_section_states_what_the_verdict_does_not_establish():
                 "stored": USABLE,
                 "reasons": [],
                 "problems": [],
-                "samples": 4,
                 "oracle": {
                     "rejected": None,
                     "logical_inputs": 60,
@@ -494,18 +542,17 @@ def test_the_section_states_what_the_verdict_does_not_establish():
                 "stored": None,
                 "reasons": ["oracle-rejected"],
                 "problems": [],
-                "samples": 4,
                 "oracle": {"rejected": "Invalid output observation", "lines": 3},
                 "extra_publications": 0,
             },
         ]
     )
     assert (
-        "| ps-1 | usable | usable | 4 | 60 | 0 / 10 / 0 / 1 | 3 | 0 | - | - | - |"
+        "| ps-1 | usable | usable | 60 | 0 / 10 / 0 / 1 | 3 | 0 | - | - | - |"
         in rendered
     )
-    assert "| ps-2 | inconclusive | - | 4 | - | - | - | 0 |" in rendered
-    assert "not ordering across the replay and not exactly-once output" in rendered
+    assert "| ps-2 | inconclusive | - | - | - | - | 0 |" in rendered
+    assert "not ordering and not exactly-once output" in rendered
     assert "decide nothing" in rendered
     assert "read from the record" in rendered
     assert pubsub_analyze.render([]) == ""

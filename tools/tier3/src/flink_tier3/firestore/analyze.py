@@ -14,10 +14,9 @@
 # limitations under the License.
 """Recompute a deployed Firestore run's verdict from its exported evidence.
 
-The coverage is rebuilt from the measurements the run exported, and the
-recoveries and the four oracle reports are read from its record, so a reader
-holding only the downloaded evidence directory can check the stored verdict
-against them. The oracle reports are not rebuilt: the supervisor read the
+The four oracle reports are read from the run's record, so a reader holding
+only the downloaded evidence directory can check the stored verdict against
+them. The oracle reports are not rebuilt: the supervisor read the
 collections, which the databases' deletion removed, and exported only the
 reports.
 
@@ -27,33 +26,29 @@ which the exercise writes from, so a rename cannot reach only one side.
 
 from ..common import UNPLANNED_EVENT
 from ..recovery_analysis import (
-    measurements,
-    missing_samples,
-    rebuild,
+    SINGLE_FAULT_NOTE,
+    malformed_records,
+    names_single_fault,
     recovery_record,
-    recovery_timings,
-    render_timings,
+    single_fault,
     unreadable,
     verdict_problems,
 )
-from .observe import COMPONENTS
-from .trial import SEQUENCE_KIND, Trial
+from .trial import Trial
 from .verdict import (
     COMPLETE_EVENT,
     COMPLETE_STAGE,
-    MEASUREMENT_EVENT,
-    SAMPLED_STAGES,
+    COMPONENTS,
     sequence_verdict,
-    summarize,
-    verdict,
 )
 
 SCENARIO = "firestore-recovery"
+FIELD = "firestore_trial"
 
 
 def _trial(run):
     approval = run.approval if isinstance(run.approval, dict) else {}
-    value = approval.get("firestore_trial")
+    value = approval.get(FIELD)
     if not isinstance(value, dict):
         return None
     try:
@@ -63,53 +58,31 @@ def _trial(run):
 
 
 def assess(run):
-    """One Firestore run's verdict, beside its recoveries' timing.
-
-    A fault-sequence run (ADR-0204) lists the faults it injected instead,
-    and has no recovery proofs to time.
-    """
+    """One Firestore run's verdict, beside the faults it injected (ADR-0204)."""
     record = recovery_record(run, COMPLETE_EVENT)
-    if _sequence(run):
-        outcomes = record.get("outcomes") if isinstance(record, dict) else None
-        faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-        return {
-            **_verdict(run),
-            "faults": faults if isinstance(faults, list) else [],
-            "recoveries": [],
-        }
-    return {**_verdict(run), "recoveries": recovery_timings(run, record)}
-
-
-def _sequence(run):
-    trial = _trial(run)
-    return trial is not None and trial.kind == SEQUENCE_KIND
+    outcomes = record.get("outcomes") if isinstance(record, dict) else None
+    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
+    return {**_verdict(run), "faults": faults if isinstance(faults, list) else []}
 
 
 def _verdict(run):
-    readings, malformed = measurements(run, MEASUREMENT_EVENT, COMPLETE_EVENT)
-    samples = len(readings)
+    malformed = malformed_records(run, COMPLETE_EVENT)
+    if names_single_fault(run, FIELD):
+        return single_fault(run, recovery_record(run, COMPLETE_EVENT))
     if _trial(run) is None:
-        return unreadable(run, None, ["approval-without-firestore-trial"], samples)
+        return unreadable(run, None, ["approval-without-firestore-trial"])
     if not isinstance(run.result, dict):
-        return unreadable(run, None, ["missing-result.json"], samples)
+        return unreadable(run, None, ["missing-result.json"])
     if malformed:
-        return unreadable(run, None, [f"malformed-evidence:{malformed}"], samples)
+        return unreadable(run, None, [f"malformed-evidence:{malformed}"])
     complete = bool(run.events_of(COMPLETE_EVENT))
     record = recovery_record(run, COMPLETE_EVENT)
     if not isinstance(record, dict):
-        return unreadable(run, None, ["missing-" + COMPLETE_EVENT], samples)
+        return unreadable(run, None, ["missing-" + COMPLETE_EVENT])
     if not complete and record.get("stage") == COMPLETE_STAGE:
-        return unreadable(run, record, ["missing-" + COMPLETE_EVENT], samples)
-    if _sequence(run):
-        # Decided by the data alone; nothing was sampled.
-        decided = sequence_verdict(record)
-    else:
-        # Decide over the coverage the readings support, never the coverage
-        # the record claims.
-        coverage = rebuild(readings, summarize)
-        if missing := missing_samples(record.get("coverage"), coverage):
-            return unreadable(run, record, [f"missing-samples:{missing}"], samples)
-        decided = verdict({**record, "coverage": coverage})
+        return unreadable(run, record, ["missing-" + COMPLETE_EVENT])
+    # Decided by the data alone.
+    decided = sequence_verdict(record)
     outcomes = record.get("outcomes")
     oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
     return {
@@ -120,7 +93,6 @@ def _verdict(run):
         "problems": sorted(verdict_problems(record, decided, complete)),
         "oracles": oracles if isinstance(oracles, dict) else None,
         "unplanned": _unplanned(run, outcomes),
-        "samples": samples,
     }
 
 
@@ -151,6 +123,16 @@ def _figure(oracles, component, key):
     return "-" if value is None or isinstance(value, (dict, list)) else value
 
 
+def _faults(item):
+    """A sequence run's injected faults in order, or `-` for a single-fault run."""
+    kinds = [
+        fault.get("kind")
+        for fault in item.get("faults") or []
+        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
+    ]
+    return ", ".join(kinds) or "-"
+
+
 def render(assessments):
     """The report's Firestore section, or nothing when it holds no such run."""
     if not assessments:
@@ -160,15 +142,15 @@ def render(assessments):
         "## Deployed Firestore runs",
         "",
         (
-            "A verdict recomputed from the exported evidence: the coverage is "
-            "rebuilt from the run's measurements; the recoveries and the oracle "
-            "reports are read from the record."
+            "A verdict recomputed from the exported evidence: the oracle reports "
+            "are read from the record."
         ),
         "",
         (
-            "| run | verdict | stored | samples | native sink | datastore sink | "
+            "| run | verdict | stored | native sink | datastore sink | "
             "native batch | native extra | native read s | datastore batch | "
-            "datastore extra | datastore read s | unplanned | reasons | problems |"
+            "datastore extra | datastore read s | unplanned | faults | reasons | "
+            "problems |"
         ),
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
@@ -183,32 +165,27 @@ def render(assessments):
         )
         lines.append(
             f"| {item['run_id']} | {item['verdict'] or '-'} | {item['stored'] or '-'} "
-            f"| {item['samples']} | {verdicts['native_sink']} | "
+            f"| {verdicts['native_sink']} | "
             f"{verdicts['datastore_sink']} | {batches} | "
-            f"{', '.join(item.get('unplanned') or []) or '-'} | "
+            f"{', '.join(item.get('unplanned') or []) or '-'} | {_faults(item)} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
         )
     lines.extend(
         [
             "",
             (
-                "A usable verdict establishes that through both recoveries, in "
-                "each database, every input record's key holds its sequence in "
-                "`input` and every seed record was copied with its value and no "
-                "late record; extra copies are reported, not failed, and the "
-                "sinks' executions are not observable."
+                "A usable `sequence` verdict (ADR-0204) establishes that through "
+                "the faults listed, in each database, every input record's key "
+                "holds its sequence in `input` and every seed record was copied "
+                "with its value and no late record; extra copies are reported, not "
+                "failed, and the sinks' executions are not observable. The run is "
+                "judged by its data alone."
             ),
             (
-                "`unplanned` names each interruption after the last window that "
-                "the run carried on through, which the same oracles checked."
+                "`unplanned` names each interruption the run recorded and carried "
+                "on through, which decides nothing."
             ),
-            (
-                "Each family is required in the "
-                + ", ".join(f"`{stage}`" for stage in SAMPLED_STAGES[:-1])
-                + f" and `{SAMPLED_STAGES[-1]}` windows, and counts as observed "
-                + "only where a reading returned it."
-            ),
+            SINGLE_FAULT_NOTE,
         ]
     )
-    lines.extend(render_timings(assessments))
     return "\n".join(lines) + "\n"

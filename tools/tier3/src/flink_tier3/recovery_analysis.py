@@ -16,77 +16,51 @@
 
 Each section rebuilds what its own evidence can show and decides its own
 verdict; these are the steps that read the same exported shapes and apply the
-same rules to them, kept once so the sections cannot drift. The BigQuery and
-Pub/Sub sections share the verdict steps. The timing of each recovery is read
-from the record of the shared ``RecoveryExercise`` as the BigQuery and Cloud
-Tasks scenarios run it; the Pub/Sub exercise records its one fault in a shape
-of its own, which this reading does not cover.
+same rules to them, kept once so the sections cannot drift.
 """
 
-from .common import Failure, timestamp
-from .exercise import REPLACEMENT_KINDS, RESCALE_KINDS
+# The problem a run of a single-fault kind is reported with. Every trial now
+# runs the fault sequence (ADR-0204), so such a run is evidence archived from
+# an earlier revision, which only that revision's rules can judge.
+SINGLE_FAULT = "single-fault-trial"
+# The sentence each section's prose says that with.
+SINGLE_FAULT_NOTE = (
+    f"A single-fault run (ADR-0165) has no verdict here and is reported as "
+    f"`{SINGLE_FAULT}`; it is analysed at the revision its approval's `sha` names."
+)
+# The kinds a single-fault trial named before the fault sequence replaced them.
+# Any other kind is a malformed trial, not an archived run.
+SINGLE_FAULT_KINDS = ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in")
+# Pub/Sub's, which add the kinds its restore-deduplication trials named under
+# the reactive and adaptive schedulers.
+PUBSUB_SINGLE_FAULT_KINDS = (
+    *SINGLE_FAULT_KINDS,
+    "reactive-scale-out",
+    "reactive-scale-in",
+    "reactive-tm-eviction",
+    "reactive-tm-kill",
+    "adaptive-scale-in",
+)
+# The faults a BigQuery single-fault trial's receipt named. Its trials named a
+# fault rather than a kind, and a JobManager replacement, the default, named
+# none, so `jm-replacement` never appeared.
+BIGQUERY_SINGLE_FAULTS = ("tm-replacement", "rescale-out", "rescale-in")
 
-# The recoveries the shared exercise proves, in the order it runs them, and
-# the fault each one is when its proof names no other. A rescale's proof
-# carries its direction, and a TaskManager replacement's the Pod it replaced;
-# every name but ``savepoint-upgrade`` is a shared fault kind.
-RECOVERIES = {
-    "upgrade": "savepoint-upgrade",
-    "failover": REPLACEMENT_KINDS["jobmanager"],
-}
-# Epoch milliseconds a JSON reader can still divide: 2**53 is in the year
-# 287,396, and a larger integer can overflow the report's seconds.
-LATEST_MILLISECONDS = 2**53
 
+def malformed_records(run, complete_event):
+    """How many of the run's completed records are not objects.
 
-def measurements(run, measurement_event, complete_event):
-    """Every sample the run emitted, and how many of its records are unreadable.
-
-    A payload that is not an object, or a sample whose stage is not a string,
-    is lost to the fold; it is counted here, because the rebuilt coverage would
-    otherwise lower the verdict for what is only a truncated download.
+    Such a record is counted rather than skipped, so that a truncated download
+    is reported as one rather than read.
     """
-    readings = run.events_of(measurement_event)
-    malformed = sum(
+    return sum(
         1
         for entry in run.events
-        if entry["event"] in (measurement_event, complete_event)
-        and not isinstance(entry["payload"], dict)
-    ) + sum(
-        1 for entry in readings if not isinstance(entry["payload"].get("stage"), str)
+        if entry["event"] == complete_event and not isinstance(entry["payload"], dict)
     )
-    return readings, malformed
 
 
-def rebuild(readings, summarize):
-    """Coverage folded from the readings themselves, in any order."""
-    coverage = {}
-    for entry in readings:
-        stage = entry["payload"].get("stage")
-        if isinstance(stage, str):
-            coverage = summarize(coverage, stage, entry["payload"])
-    return coverage
-
-
-def missing_samples(claimed, rebuilt):
-    """How many samples the record counted that the export does not hold.
-
-    Each window's attempt count in the record is what the run had read by
-    then; fewer readings in the export are a partial download, which would
-    lower the rebuilt coverage. A count the record does not carry is not
-    compared.
-    """
-    claimed = claimed if isinstance(claimed, dict) else {}
-    missing = 0
-    for window, entry in claimed.items():
-        attempts = entry.get("attempts") if isinstance(entry, dict) else None
-        if type(attempts) is int:
-            against = rebuilt.get(window, {}).get("attempts", 0)
-            missing += max(0, attempts - against)
-    return missing
-
-
-def unreadable(run, record, problems, samples):
+def unreadable(run, record, problems):
     """A run whose evidence decides no verdict, and the verdict it stored."""
     return {
         "run_id": run.run_id,
@@ -94,8 +68,24 @@ def unreadable(run, record, problems, samples):
         "stored": record.get("verdict") if isinstance(record, dict) else None,
         "reasons": [],
         "problems": sorted(problems),
-        "samples": samples,
     }
+
+
+def single_fault(run, record):
+    """A run of a single-fault kind: no verdict, and the one it stored."""
+    return unreadable(run, record, [SINGLE_FAULT])
+
+
+def names_single_fault(run, field):
+    """Whether the approval's trial under `field` names a single-fault kind.
+
+    The trial refuses such a kind, so this tells an archived single-fault run
+    apart from a trial that is missing or malformed, which a kind-less trial
+    of the first runs also is.
+    """
+    approval = run.approval if isinstance(run.approval, dict) else {}
+    trial = approval.get(field)
+    return isinstance(trial, dict) and trial.get("kind") in SINGLE_FAULT_KINDS
 
 
 def verdict_problems(record, decided, complete):
@@ -131,121 +121,3 @@ def recovery_record(run, complete_event):
     if completions:
         return completions[-1]["payload"]
     return run.result.get("recovery") if isinstance(run.result, dict) else None
-
-
-def milliseconds(value):
-    """A Flink REST timestamp, or None when the export does not hold one."""
-    if type(value) is int and 0 < value < LATEST_MILLISECONDS:
-        return value
-    return None
-
-
-def _fault(name, proof):
-    """The fault the proof names, or None when it names one unreadably."""
-    if name == "failover":
-        return (
-            REPLACEMENT_KINDS["taskmanager"]
-            if "replaced" in proof
-            else RECOVERIES[name]
-        )
-    if "rescale" not in proof:
-        return RECOVERIES[name]
-    rescale = proof["rescale"]
-    direction = rescale.get("direction") if isinstance(rescale, dict) else None
-    # A list or an object would not even be a key to look up.
-    return RESCALE_KINDS.get(direction) if isinstance(direction, str) else None
-
-
-def _timing(began, proof):
-    restored = proof.get("restored")
-    checkpoint = proof.get("checkpoint")
-    if not isinstance(restored, dict) or not isinstance(checkpoint, dict):
-        return None
-    restored_at = milliseconds(restored.get("restore_timestamp"))
-    acknowledged = milliseconds(checkpoint.get("latest_ack_timestamp"))
-    if (
-        restored_at is None
-        or acknowledged is None
-        or type(restored.get("id")) is not int
-        or type(checkpoint.get("id")) is not int
-        or type(restored.get("is_savepoint")) is not bool
-    ):
-        return None
-    try:
-        start = round(timestamp(began) * 1000)
-    except Failure:
-        return None
-    return {
-        "began_at": began,
-        "restored_from": "savepoint" if restored["is_savepoint"] else "checkpoint",
-        "restored_id": restored["id"],
-        "restored_ms": restored_at - start,
-        "checkpoint_id": checkpoint["id"],
-        "checkpoint_ms": acknowledged - start,
-    }
-
-
-def recovery_timings(run, record):
-    """How long each recovery the record proved took, by Flink's own account.
-
-    Each is timed from the run's ``recovery-<name>`` stage record to the
-    proof's ``restore_timestamp`` and to the last acknowledgement of the
-    checkpoint that proved it, in milliseconds; ADR-0165 records what each
-    figure bounds. A recovery the record did not prove is absent, and one whose
-    fault, proof or single start the export does not hold readably maps to None.
-    """
-    outcomes = record.get("outcomes") if isinstance(record, dict) else None
-    outcomes = outcomes if isinstance(outcomes, dict) else {}
-    timings = {}
-    for name in RECOVERIES:
-        proof = outcomes.get(name)
-        if not isinstance(proof, dict):
-            continue
-        starts = [
-            entry["payload"].get("at") for entry in run.events_of("recovery-" + name)
-        ]
-        fault = _fault(name, proof)
-        timing = _timing(starts[0], proof) if len(starts) == 1 else None
-        timings[name] = (
-            None if fault is None or timing is None else {"fault": fault, **timing}
-        )
-    return timings
-
-
-def render_timings(assessments):
-    """A report table of each run's recovery timings, or nothing without one."""
-    rows = [
-        (item["run_id"], name, timing)
-        for item in assessments
-        for name, timing in (item.get("recoveries") or {}).items()
-    ]
-    if not rows:
-        return []
-    lines = [
-        "",
-        (
-            "Each recovery is timed from the supervisor's record of its stage, "
-            "just before the upgrade patch or the Pod deletion. `restored after` "
-            "is Flink's restore of the checkpointed state, which precedes the "
-            "tasks' deployment; `acknowledged after` is the last acknowledgement "
-            "of the checkpoint that proved the restored job, which follows its "
-            "first input past the fault."
-        ),
-        "",
-        (
-            "| run | recovery | fault | began | restored from | restored after "
-            "| proving checkpoint | acknowledged after |"
-        ),
-        "| --- | --- | --- | --- | --- | ---: | --- | ---: |",
-    ]
-    for run_id, name, timing in rows:
-        if timing is None:
-            lines.append(f"| {run_id} | {name} | unreadable | - | - | - | - | - |")
-            continue
-        lines.append(
-            f"| {run_id} | {name} | {timing['fault']} | {timing['began_at']} | "
-            f"{timing['restored_from']} {timing['restored_id']} | "
-            f"{timing['restored_ms'] / 1000:.1f} s | chk-{timing['checkpoint_id']} | "
-            f"{timing['checkpoint_ms'] / 1000:.1f} s |"
-        )
-    return lines

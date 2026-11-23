@@ -201,16 +201,17 @@ class PubSubHandoff:
 
         self.controller._change(join)
 
-    def _call(self, operation, callback, *, retry_answered=False):
+    def _call(self, operation, callback):
         """Run one marked service call.
 
-        With ``retry_answered``, a pull the service refused with 408 or 429
-        clears its marker and leaves the run going, for the caller to try
-        again: the session counts such an answer as settled, and nothing but
-        the intent was saved. A 5xx answer may still complete at the service,
-        which the session records as unsettled for good, so it stops the run
-        as before, and so does a call without an answer, an evidence write
-        that failed, or an acknowledgement that fails after a saved pull.
+        A pull the service refused with 408 or 429, which `Messages.collect`
+        alone raises as `PullRefused`, clears its marker and leaves the run
+        going, for the caller to try again: the session counts such an answer
+        as settled, and nothing but the intent was saved. A 5xx answer may
+        still complete at the service, which the session records as unsettled
+        for good, so it stops the run, and so does any other failure: a call
+        without an answer, an evidence write that failed, or an
+        acknowledgement that fails after a saved pull.
         """
         marker = {"id": uuid.uuid4().hex, "operation": operation}
 
@@ -235,8 +236,7 @@ class PubSubHandoff:
             result = callback()
         except (Failure, ValueError, OSError) as error:
             if (
-                retry_answered
-                and isinstance(error, PullRefused)
+                isinstance(error, PullRefused)
                 and error.status in SETTLED_REFUSALS
                 and not self.env.evidence_failed
             ):
@@ -357,14 +357,13 @@ class PubSubHandoff:
                 "publish", lambda: self._messages().publish(input_index, start, count)
             )
 
-    def collect(self, batch_id, *, max_messages=MAX_BATCH, retry_answered=False):
-        """Pull one batch; see `_call` for ``retry_answered``."""
+    def collect(self, batch_id, *, max_messages=MAX_BATCH):
+        """Pull one batch; a refusal that settled is retried, as `_call` says."""
         self._role("supervisor")
         with self.controller.until(self.env.schedule.cleanup_at):
             return self._call(
                 "collect",
                 lambda: self._messages().collect(batch_id, max_messages=max_messages),
-                retry_answered=retry_answered,
             )
 
     def request_cohort(self, name, *, deadline):

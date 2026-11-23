@@ -27,7 +27,7 @@ import requests
 import urllib3
 import yaml
 from flink_tier3 import lifecycle as cli
-from flink_tier3 import metrics, repository
+from flink_tier3 import repository
 from flink_tier3.common import (
     ConnectionDropped,
     ReadCeilingExceeded,
@@ -2581,22 +2581,22 @@ def test_kubernetes_sdk_preserves_delete_and_patch_preconditions():
 
 
 @pytest.mark.parametrize(
-    "body",
+    "body,error",
     [
-        b"{" + b'"x": 1, ' * 8 + b'"y": 2}',
-        b"<html>\xe9chec</html>",
-        b"<html>proxy error</html>",
-        b"[" * 100000 + b"]" * 100000,
+        (b"{" + b'"x": 1, ' * 8 + b'"y": 2}', ReadCeilingExceeded),
+        (b"<html>\xe9chec</html>", UnicodeDecodeError),
+        (b"<html>proxy error</html>", json.JSONDecodeError),
+        (b"[" * 100000 + b"]" * 100000, RecursionError),
     ],
     ids=["over-ceiling", "not-utf8", "not-json", "too-deep"],
 )
-def test_a_metric_read_the_transport_cannot_answer_is_unavailable(body):
+def test_a_rest_answer_the_transport_cannot_read_raises_its_own_error(body, error):
     """Through the SDK transport the run actually uses, not a raised fixture."""
     kube, _ = sdk_kube([(200, body)])
     path = "/api/v1/namespaces/n/services/s:8081/proxy/jobs/j"
     limit = 32 if len(body) > 32 and body.startswith(b"{") else len(body) + 1
-    reading = metrics.sample(lambda: kube.request("GET", path, limit=limit))
-    assert metrics.unavailable(reading), reading
+    with pytest.raises(error):
+        kube.request("GET", path, limit=limit)
 
 
 def test_the_read_ceiling_is_its_own_failure():
