@@ -24,7 +24,6 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.DatabaseNotFoundException;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ResultSet;
-import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.Statement;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.DescriptorProtos.DescriptorProto;
@@ -32,6 +31,7 @@ import com.google.protobuf.DescriptorProtos.EnumDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FileDescriptorSet;
 import com.google.protobuf.InvalidProtocolBufferException;
+import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerObjectName;
 
 import javax.annotation.Nullable;
@@ -43,18 +43,24 @@ import java.util.Map;
 import java.util.function.Function;
 
 /**
- * {@link SpannerCatalogClient} over one {@link Spanner} handle: the instance's database admin
+ * {@link SpannerCatalogClient} over one {@link LeasedSpanner} handle: the instance's database admin
  * client for databases, dialects and proto descriptors, and each database's data client for {@code
  * INFORMATION_SCHEMA}. The handle carries only the project; each call names its database.
+ *
+ * <p>The handle lives as long as the catalog, not one call, unlike the clients a source's
+ * enumerator opens on the JobManager: the SQL Gateway and the SQL Client close a session's catalogs
+ * synchronously before its class loader, so the handle's lease is released, and the event-loop
+ * group stopped, in time (docs/adr/0208). A catalog registered in a program's own {@code
+ * TableEnvironment} is never closed by Flink, and its handle stays open with the process.
  */
 @Internal
 final class SpannerServiceCatalogClient implements SpannerCatalogClient {
 
-    private final Spanner spanner;
+    private final LeasedSpanner spanner;
     private final String project;
     private final String instance;
 
-    SpannerServiceCatalogClient(Spanner spanner, String project, String instance) {
+    SpannerServiceCatalogClient(LeasedSpanner spanner, String project, String instance) {
         this.spanner = spanner;
         this.project = project;
         this.instance = instance;
@@ -185,7 +191,7 @@ final class SpannerServiceCatalogClient implements SpannerCatalogClient {
     }
 
     private DatabaseAdminClient admin() {
-        return spanner.getDatabaseAdminClient();
+        return spanner.spanner().getDatabaseAdminClient();
     }
 
     private DatabaseId id(String database) {
@@ -194,7 +200,10 @@ final class SpannerServiceCatalogClient implements SpannerCatalogClient {
 
     private <T> T query(String database, Statement statement, Function<ResultSet, T> reader) {
         try (ResultSet rows =
-                spanner.getDatabaseClient(id(database)).singleUse().executeQuery(statement)) {
+                spanner.spanner()
+                        .getDatabaseClient(id(database))
+                        .singleUse()
+                        .executeQuery(statement)) {
             return reader.apply(rows);
         }
     }

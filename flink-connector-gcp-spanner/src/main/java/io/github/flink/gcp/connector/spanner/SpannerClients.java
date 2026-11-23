@@ -20,13 +20,15 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.Preconditions;
 
+import com.google.api.core.ApiFunction;
 import com.google.auth.Credentials;
 import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
-import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.grpc.ManagedChannelBuilder;
 
 import javax.annotation.Nullable;
 
@@ -40,9 +42,18 @@ import java.io.IOException;
  * the emulator host reaches for application default credentials, which a workstation has and a
  * build agent does not.
  *
- * <p>Nothing else about the connection is configured. Spanner's own {@code setEmulatorHost}
- * switches the channel to plaintext and the credentials to none in one call, so this connector
- * never goes through the shared plaintext-channel helpers the other connectors need.
+ * <p>Spanner's own {@code setEmulatorHost} switches the channel to plaintext and the credentials to
+ * none in one call, so this connector never goes through the shared plaintext-channel helpers the
+ * other connectors need.
+ *
+ * <p>The one other thing configured about the connection is where its channels run: on {@link
+ * GrpcEventLoops}' group rather than gRPC's own, whose delayed teardown can outlive the job's class
+ * loader (docs/adr/0208). The settings take a channel configurator, and {@code
+ * SpannerOptions.Builder.build()} replaces whatever configurator was set with a plaintext one when
+ * an emulator host is set (6.127.0), the {@code SPANNER_EMULATOR_HOST} environment variable's
+ * included. The builder here therefore composes the group's configurator into every configurator
+ * set on it, {@code build()}'s own among them, which keeps the client in its emulator mode. {@link
+ * #open(String, SpannerOptions)} holds a lease while the handle lives.
  *
  * <p>The same call puts the client in its emulator mode, where it records no client metrics into a
  * provider ({@code SpannerOptions.isEmulatorEnabled()}, 6.124.0), so an emulator job reports its
@@ -144,13 +155,15 @@ public final class SpannerClients {
         Preconditions.checkArgument(
                 emulatorEndpoint == null || credentialsOverride == null,
                 "credentialsOverride cannot be combined with an emulator endpoint");
-        SpannerOptions.Builder settings = SpannerOptions.newBuilder().setProjectId(project);
+        SpannerOptions.Builder settings = new EventLoopOptionsBuilder().setProjectId(project);
         if (emulatorEndpoint != null) {
             settings.setEmulatorHost(emulatorEndpoint.getTarget()).setBuiltInMetricsEnabled(false);
             if (emulatorModeBypassed) {
                 // build() turns the emulator host into the host, a plaintext channel and no
                 // credentials, and a rebuilt copy keeps all three; clearing the emulator host is
-                // what leaves the emulator mode.
+                // what leaves the emulator mode. The copy is a plain builder, but the configurator
+                // it carries is the composed one, and without an emulator host its build() keeps
+                // it.
                 settings = settings.build().toBuilder().setEmulatorHost(null);
             }
         } else if (credentialsOverride != null) {
@@ -178,10 +191,44 @@ public final class SpannerClients {
             @Nullable Credentials credentialsOverride,
             @Nullable ClientMetrics clientMetrics,
             boolean exportClientMetricsToCloudMonitoring) {
+        return settingsBuilder(
+                        database,
+                        emulatorEndpoint,
+                        credentialsOverride,
+                        clientMetrics,
+                        exportClientMetricsToCloudMonitoring)
+                .build();
+    }
+
+    /**
+     * Returns the builder {@link #settings(DatabaseDestination, EmulatorEndpoint, Credentials,
+     * ClientMetrics, boolean)} builds, for a component that sets more on it.
+     *
+     * <p>Set it here rather than on a {@code toBuilder()} copy of built settings: the copy is a
+     * plain builder, whose {@code build()} replaces the channel configurator when an emulator host
+     * is set, and {@link #open(String, SpannerOptions)} refuses settings whose channels would not
+     * run on the connector's event-loop group.
+     *
+     * @param database the database the handle will reach
+     * @param emulatorEndpoint the emulator to reach, or {@code null} for the real service
+     * @param credentialsOverride credentials loaded by the runtime component, or {@code null} for
+     *     ADC
+     * @param clientMetrics the client metrics the client records into, or {@code null} to export
+     *     nothing to Flink
+     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
+     *     Monitoring export
+     * @return the settings builder
+     */
+    public static SpannerOptions.Builder settingsBuilder(
+            DatabaseDestination database,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable Credentials credentialsOverride,
+            @Nullable ClientMetrics clientMetrics,
+            boolean exportClientMetricsToCloudMonitoring) {
         SpannerOptions.Builder settings =
                 builder(database.getProject(), emulatorEndpoint, credentialsOverride);
         applyClientMetrics(settings, clientMetrics, exportClientMetricsToCloudMonitoring);
-        return settings.build();
+        return settings;
     }
 
     /**
@@ -218,10 +265,10 @@ public final class SpannerClients {
      *
      * @param database the database to reach, for the failure message
      * @param settings the settings to open the handle from
-     * @return the handle, which the caller owns and must close
+     * @return the handle with its lease, which the caller owns and must close
      * @throws IOException if the handle cannot be created
      */
-    public static Spanner open(DatabaseDestination database, SpannerOptions settings)
+    public static LeasedSpanner open(DatabaseDestination database, SpannerOptions settings)
             throws IOException {
         return open(String.valueOf(database), settings);
     }
@@ -233,11 +280,11 @@ public final class SpannerClients {
      * @param database the database to reach, for the failure message
      * @param settings the settings to open the handle from, carrying the client metrics
      * @param clientMetrics the client metrics the settings carry, or {@code null}
-     * @return the handle, which the caller owns and closes with {@link #close(Spanner,
-     *     ClientMetrics)}
+     * @return the handle with its lease, which the caller owns and closes with {@link
+     *     #close(LeasedSpanner, ClientMetrics)}
      * @throws IOException if the handle cannot be created
      */
-    public static Spanner open(
+    public static LeasedSpanner open(
             DatabaseDestination database,
             SpannerOptions settings,
             @Nullable ClientMetrics clientMetrics)
@@ -251,14 +298,14 @@ public final class SpannerClients {
     }
 
     /**
-     * Closes a handle, then the client metrics its client recorded into, whatever the handle's
-     * close did. In this order because closed client metrics drop what they are given, so a client
-     * still closing would lose whatever it recorded meanwhile.
+     * Closes a handle and releases its lease, then closes the client metrics its client recorded
+     * into, whatever the handle's close did. In this order because closed client metrics drop what
+     * they are given, so a client still closing would lose whatever it recorded meanwhile.
      *
      * @param spanner the handle to close
      * @param clientMetrics the client metrics to close after it, or {@code null}
      */
-    public static void close(Spanner spanner, @Nullable ClientMetrics clientMetrics) {
+    public static void close(LeasedSpanner spanner, @Nullable ClientMetrics clientMetrics) {
         try {
             spanner.close();
         } finally {
@@ -271,16 +318,80 @@ public final class SpannerClients {
     /**
      * Opens a handle from settings, naming what it reaches in the failure message.
      *
+     * <p>The lease is opened before the handle builds its channels and released if the handle
+     * cannot be created.
+     *
      * @param target what the handle reaches, for the failure message
-     * @param settings the settings to open the handle from
-     * @return the handle, which the caller owns and must close
+     * @param settings the settings to open the handle from, built by this class
+     * @return the handle with its lease, which the caller owns and must close
      * @throws IOException if the handle cannot be created
+     * @throws IllegalArgumentException if the settings' channels would not run on the group, as
+     *     after a {@code toBuilder()} copy rebuilt with an emulator host, or with a channel
+     *     provider set, which the client uses in place of the configurator
      */
-    public static Spanner open(String target, SpannerOptions settings) throws IOException {
+    public static LeasedSpanner open(String target, SpannerOptions settings) throws IOException {
+        Preconditions.checkArgument(
+                settings.getChannelConfigurator() instanceof EventLoopConfigurator
+                        // A transport provider replaces the configurator altogether.
+                        && settings.getChannelProvider() == null,
+                "The Spanner settings for %s do not put their channels on the connector's"
+                        + " event-loop group; build them from SpannerClients' builder, not a"
+                        + " toBuilder() copy, and set no channel provider",
+                target);
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try {
-            return settings.getService();
+            return new LeasedSpanner(settings.getService(), lease);
         } catch (RuntimeException e) {
+            lease.close();
             throw new IOException("Failed to create the Spanner client for " + target + ".", e);
+        } catch (Error e) {
+            lease.close();
+            throw e;
+        }
+    }
+
+    /**
+     * A settings builder that composes {@link GrpcEventLoops#channelConfigurator} into every
+     * channel configurator set on it.
+     *
+     * <p>A subclass rather than a configurator set once, because {@code build()} sets its own
+     * plaintext configurator when an emulator host is set and would otherwise drop the group's. It
+     * relies on {@code build()} going through the overridable setter, which {@code
+     * SpannerClientsTest} holds against the client version in use.
+     */
+    private static final class EventLoopOptionsBuilder extends SpannerOptions.Builder {
+
+        EventLoopOptionsBuilder() {
+            setChannelConfigurator(null);
+        }
+
+        @Override
+        @SuppressWarnings("rawtypes")
+        public SpannerOptions.Builder setChannelConfigurator(
+                @Nullable ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator) {
+            return super.setChannelConfigurator(new EventLoopConfigurator(configurator));
+        }
+    }
+
+    /**
+     * {@link GrpcEventLoops#channelConfigurator} under a type of its own, so that {@link
+     * #open(String, SpannerOptions)} can tell settings built here from settings whose configurator
+     * a later {@code build()} replaced.
+     */
+    @SuppressWarnings("rawtypes")
+    private static final class EventLoopConfigurator
+            implements ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> {
+
+        private final ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> composed;
+
+        EventLoopConfigurator(
+                @Nullable ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> existing) {
+            this.composed = GrpcEventLoops.channelConfigurator(existing);
+        }
+
+        @Override
+        public ManagedChannelBuilder apply(ManagedChannelBuilder builder) {
+            return composed.apply(builder);
         }
     }
 }

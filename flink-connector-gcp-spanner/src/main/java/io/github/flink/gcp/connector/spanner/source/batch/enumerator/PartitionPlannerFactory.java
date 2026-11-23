@@ -31,8 +31,8 @@ import java.io.Serializable;
  * ({@code docs/adr/0128}).
  *
  * <p>An implementation holds only values that may travel in a job graph. It does not open a client:
- * the planner it answers with builds one on first use, so a restore whose checkpoint already
- * records a plan mints a planner and opens nothing.
+ * the planner it answers with builds one for each {@code plan} call, so a restore whose checkpoint
+ * already records a plan mints a planner and opens nothing.
  */
 @Internal
 public interface PartitionPlannerFactory extends Serializable {

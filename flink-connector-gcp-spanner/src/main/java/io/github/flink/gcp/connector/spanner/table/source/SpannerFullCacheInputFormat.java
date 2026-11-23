@@ -28,6 +28,7 @@ import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceConfig;
 import io.github.flink.gcp.connector.spanner.source.batch.enumerator.PartitionPlan;
@@ -48,9 +49,9 @@ import java.util.Iterator;
  *
  * <p>Each load is one batch read. Opening the split begins a batch read-only transaction at the
  * scan's timestamp bound, so every partition of one load reads the same snapshot and the next load
- * reads a newer one. The partitions are read one after another on the loading thread through one
- * reader client, and {@link #close()} releases the transaction's session through the planner, the
- * same order the bounded scan's enumerator and readers follow. A partition that fails fails the
+ * reads a newer one. The planner's client closes when the plan returns, and the partitions are read
+ * one after another on the loading thread through one reader client, which {@link #close()} closes,
+ * the same order the bounded scan's enumerator and readers follow. A partition that fails fails the
  * load: Flink keeps the cache it had and fails the lookups that follow, except a few right after a
  * failed first load, which Flink answers from the empty cache before it records the failure
  * (#2225).
@@ -63,6 +64,14 @@ import java.util.Iterator;
  * this format with no runtime context, so no metric group reaches it (Flink 2.2.1, {@code
  * InputFormatCacheLoader}). The Cloud Monitoring choice still reaches the clients the scan
  * configuration builds.
+ *
+ * <p>Opening, fetching and closing run inside {@link GrpcEventLoops#interruptibleReleases()}, as
+ * BigQuery's load does: Flink stops a load by interrupting it and fails the lookup's close when the
+ * load has not ended 10 s later ({@code CacheLoader.close()}, Flink 1.20.5, 2.2.1 and 2.3.0), so a
+ * release of the connector's last gRPC lease on an interrupted load stops waiting for the
+ * event-loop group once the wait's first second has passed (#2269). The planner releases its
+ * client's lease when the plan returns, the reader client is created by the first fetch, and a
+ * creation that fails releases its lease there.
  */
 @Internal
 final class SpannerFullCacheInputFormat extends GenericInputFormat<RowData> {
@@ -99,6 +108,13 @@ final class SpannerFullCacheInputFormat extends GenericInputFormat<RowData> {
 
     @Override
     public void open(GenericInputSplit split) throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            openLoad(split);
+        }
+    }
+
+    private void openLoad(GenericInputSplit split) throws IOException {
         super.open(split);
         pending = new ArrayDeque<>();
         remaining = Collections.emptyIterator();
@@ -130,6 +146,13 @@ final class SpannerFullCacheInputFormat extends GenericInputFormat<RowData> {
 
     @Override
     public boolean reachedEnd() throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            return fetch();
+        }
+    }
+
+    private boolean fetch() throws IOException {
         while (pending.isEmpty()) {
             Struct row = stream == null ? null : stream.next();
             if (row != null) {
@@ -152,6 +175,13 @@ final class SpannerFullCacheInputFormat extends GenericInputFormat<RowData> {
 
     @Override
     public void close() throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            closeLoad();
+        }
+    }
+
+    private void closeLoad() throws IOException {
         StructStream openStream = stream;
         StructStreamOpener openOpener = opener;
         PartitionPlanner openPlanner = planner;
@@ -162,8 +192,8 @@ final class SpannerFullCacheInputFormat extends GenericInputFormat<RowData> {
         remaining = Collections.emptyIterator();
         pending = new ArrayDeque<>();
         try {
-            // The stream before its client, and the planner last: closing the planner releases
-            // the session every partition of this load reads through.
+            // The stream before its client. The planner closed its own client when the plan
+            // returned; closing it here only refuses a later plan.
             Closers.closeAll(openStream, openOpener, openPlanner);
         } catch (IOException e) {
             throw e;

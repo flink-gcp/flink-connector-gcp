@@ -33,6 +33,7 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 
 import javax.annotation.Nullable;
@@ -66,7 +67,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      * because a reader's split fetchers open reads from their own threads while {@link #close()}
      * runs on the task thread once those fetchers are down.
      */
-    @Nullable private transient volatile Spanner spanner;
+    @Nullable private transient volatile LeasedSpanner spanner;
 
     /**
      * What the reader loaded and handed over, or {@code null} for application default credentials.
@@ -143,7 +144,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
 
     @Override
     public void close() throws IOException {
-        Spanner toClose;
+        LeasedSpanner toClose;
         ClientMetrics metrics;
         synchronized (this) {
             closed = true;
@@ -172,9 +173,9 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      * travel in the job graph.
      */
     private Spanner client() throws IOException {
-        Spanner existing = spanner;
+        LeasedSpanner existing = spanner;
         if (existing != null) {
-            return existing;
+            return existing.spanner();
         }
         synchronized (this) {
             if (closed) {
@@ -186,7 +187,7 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
             if (spanner == null) {
                 spanner = SpannerClients.open(database, settings());
             }
-            return spanner;
+            return spanner.spanner();
         }
     }
 
@@ -218,7 +219,8 @@ public final class BatchClientStructStreamOpener implements StructStreamOpener {
      * One partition's rows, over the client's {@code ResultSet}.
      *
      * <p>The transaction handle is closed with the stream, and {@code cleanup()} is deliberately
-     * not called: it would release the session the whole batch read shares.
+     * not called: it would release the session the whole batch read shares, which nothing releases
+     * (see {@code BatchClientPartitionPlanner}).
      */
     private static final class ResultSetStructStream implements StructStream {
 

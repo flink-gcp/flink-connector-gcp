@@ -22,9 +22,10 @@ limitations under the License.
   [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243),
   [#2262](https://github.com/flink-gcp/flink-connector-gcp/issues/2262),
   [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263),
+  [#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265),
   [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269)
-- Modules: base, bigquery, cloudtasks, pubsub
+- Modules: base, bigquery, cloudtasks, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
 
@@ -62,8 +63,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   releasing thread restores it, and the group finishes on its own threads.
   Flink's full lookup cache stops a load by interrupting it and fails its close if the load has
   not ended 10 s later (`CacheLoader.close()`, Flink 1.20.5, 2.2.1 and 2.3.0), so a wait of up to
-  11 s on the load's thread could outlast that budget; the BigQuery load opens, fetches and closes
-  inside the scope.
+  11 s on the load's thread could outlast that budget; the BigQuery and Spanner loads open, fetch
+  and close inside the scope.
   The first second keeps the guarantee for a shutdown that no busy event loop holds up, which
   took milliseconds when measured (see Evidence).
 - A lease applies the group to a client's settings (`applyTo(ClientSettings.Builder)`) or to a
@@ -213,7 +214,107 @@ releases the group's last lease shuts it down and waits for its threads.**
   enumerator's close ended a waiting `GetSubscription` within 4 s, against the 5 s it took when
   only the client's close ended it.
 
-The Bigtable, Spanner and Firestore connectors move onto the group in #2243.
+**In the Spanner connector (#2265, 2026-11-23), every client holds a lease the same way.**
+
+- `Spanner` is not a gax `BackgroundResource`, and `SpannerOptions` takes a channel configurator
+  rather than a transport provider.
+  `GrpcEventLoops.channelConfigurator(existing)` returns the composed configurator without a
+  lease, because the settings are built before the client is opened; it reaches the group only
+  while a lease is open.
+  `SpannerClients.open` opens the lease before the client builds its channels and returns a
+  `LeasedSpanner`, whose `close()` closes the client and then releases the lease, and which a
+  second caller waits on, since the client refuses a second close.
+  The client waits up to 10 s for each of its four stubs and its watchdog in turn as it closes
+  (google-cloud-spanner 6.127.0), so it takes that bound rather than `LeasedClient`'s.
+- **The settings come from a `SpannerOptions.Builder` subclass that composes the group into every
+  configurator set on it.**
+  `build()` replaces the configurator with a bare plaintext one whenever an emulator host is set,
+  the `SPANNER_EMULATOR_HOST` environment variable's included, and a `toBuilder()` copy keeps the
+  emulator host, so a configurator set once is lost on every emulator build.
+  `build()` sets its replacement through the overridable setter, so the subclass composes into
+  it and the client stays in its emulator mode, which keeps recording no client metrics.
+  `SpannerClientsTest` holds that against the client version in use.
+  A component that sets more on the settings takes the builder from `SpannerClients`; `open`
+  refuses settings whose configurator is not the composed one, which is what a rebuilt
+  `toBuilder()` copy carries, and settings with a channel provider, which the client uses in
+  place of the configurator.
+  With direct access enabled (`GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS`), the DirectPath
+  control-plane channels that gRPC's xDS and ALTS support build themselves are not reached by the
+  configurator, and the ALTS handshaker runs on an event-loop group of its own; read from the
+  libraries, not measured.
+  Nor is the built-in Cloud Monitoring export, on by default with real credentials: its exporter
+  builds a `MetricServiceClient` from settings of its own (`SpannerCloudMonitoringExporter`,
+  6.127.0), held by a provider that is process-wide per class loader and shut down only by a JVM
+  shutdown hook, so its channels run on gRPC's group for as long as the process does.
+  The first client in the client library's class loader that keeps the export on starts it (with
+  a `lib/` deployment that loader is shared by every job), and
+  `client-metrics.export-to-cloud-monitoring = false` (or the builders' counterpart) keeps only
+  that client out of it; the exporter is absent only if every Spanner client in that class loader
+  turns the export off; a catalog can only stay out of it through `SPANNER_DISABLE_BUILTIN_METRICS`,
+  which sets the client library's default and does not stop a client that turns the export on.
+  A standalone reproducer (a client in a child class loader that is then closed, all endpoints on
+  loopback) measured the consequence: with built-in metrics on, the exporter's JVM shutdown hook
+  failed with `NoClassDefFoundError` in the closed loader in 7 of 7 runs, and in none of 7 with
+  them off; reported upstream as
+  [googleapis/google-cloud-java#15145](https://github.com/googleapis/google-cloud-java/issues/15145).
+  Leaving the emulator mode to set the configurator after `build()`, and keeping the emulator arm
+  on gRPC's group, were the alternatives; the first turns the client's metrics on against an
+  emulator and drops the client's check that one is listening, the second leaves the arm every
+  test reaches untested.
+- **The batch planner and the change-stream coordinator, on the JobManager, close their client
+  when their call returns.**
+  The planner opens a client for each `plan` and closes it, with the batch transaction's handle,
+  before `plan` returns; the readers rejoin the snapshot by its id on clients of their own.
+  It no longer calls `cleanup()`, which can only run on an open client and would end every
+  reader's read if it released the session.
+  In 6.127.0 the batch client serves every batch transaction from a multiplexed session, which
+  the client never deletes and which expires on its own, so the call cost nothing;
+  were a later client to stop multiplexing, a session left behind would idle out on the service.
+  The coordinator's enumerator closes its client once initialization, the start position
+  included, has been resolved (at once if it failed), and its own `close()` waits for that
+  release unless the closing thread is interrupted: a `latest` start resolved after the close
+  would skip what was committed meanwhile.
+  The end of a bounded read is never published while the client is open: initialization closes
+  the client before it returns, and if the enumerator's `close()` took the client over first, the
+  closed enumerator publishes nothing.
+  The close's duration, normally milliseconds, then comes out of an `earliest` start's one-minute
+  retention margin, like the readers' own start-up time: a first read that falls outside
+  retention fails, and a region failover replays the same position, as for any expired position.
+  It also lengthens the window, already open during the configuration reads, in which a
+  checkpoint finds the enumerator not yet initialized and fails.
+  Closing it on the worker after initialization returns instead was tried and declined: a bounded
+  restore with nothing left to read can then signal the end before the close, letting the job
+  finish, and Flink release its class loader, while the client is still closing, and a failed
+  close would only be logged.
+- **A JobManager-side `close()` cancels a call in flight through the gRPC `Context` it runs in.**
+  Spanner's synchronous calls expose no `ApiFuture`; gRPC binds each call to the context it is
+  started in and cancels it when that context is cancelled, and the client also checks the
+  context between a streaming read's retry attempts (`ResumableStreamIterator`).
+  The planner and the coordinator's client run their calls in a cancellable context, and `close()`
+  cancels it before it closes the client, since the client's close waits for its channels; the
+  planner's `close()` then waits for the call to end, with no bound of its own beyond the
+  client's shutdown and an interrupt, so its lease is released when it returns whichever thread
+  closed the client.
+  One wait is out of the context's reach: a read through the database client waits for the
+  multiplexed session that client creates in the background when it is built.
+  The coordinator's first read is one, and so is the planner's resolution of a deferred read operation (a Table API scan or FULL cache load that reads through `scan.index`, or whose primary-key filter depends on the key's sort order); the planner
+  builds no database client for any other operation, which includes every DataStream API read.
+  A close while that creation is in flight waits for the client's bounded shutdown; measured
+  against an endpoint that never answers, the read failed about 20 s after the close, and its
+  thread was not stranded.
+- **The catalog keeps one client for as long as it is open**, as `AbstractReadOnlyCatalog` opens
+  it, rather than one per metadata call.
+  The SQL Gateway, and the SQL Client through it, close a session's catalogs synchronously before
+  its class loader: `SessionContext.close()` closes each catalog and only then the session's
+  class loader (Flink 2.2.1 through the catalog manager, 1.20.5 catalog by catalog; read from the
+  source), so the lease is released, and the group stopped, in time.
+  A catalog registered in a program's own `TableEnvironment` is never closed by Flink, so its
+  client and lease stay for as long as the process runs, as its client did before #2265.
+  A client per call would set up channels and a session for every catalog request.
+- The readers, the change-stream query clients, the sink's writer and the lookup function hold
+  their client's lease from open to close on the TaskManager, as before #2265 they held the client.
+
+The Bigtable and Firestore connectors move onto the group in #2243.
 
 ## Evidence
 
@@ -280,6 +381,33 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   open, since its own waits returned at once.
   None of these cases held the group's shutdown up; a task still running on a group thread
   does, which a latch-blocked task in `GrpcEventLoopsTest` reproduces.
+- **Spanner** (#2265), measured 2026-11-23 against a plaintext endpoint that answers the client's
+  emulator check and leaves every data call open, a planner closed while its `CreateSession` was
+  in flight, and the coordinator's client closed while its first query was in flight on a session
+  the endpoint had created, each ended the call at once (each test class, server start included,
+  took under 2 s).
+  With the context's cancellation removed, both calls were still open 20 s after the close.
+  On the same kind of Docker session cluster as Pub/Sub's, with the Spanner emulator and the SQL
+  connector JAR shipped with the job, a SQL job reading a change stream into a blackhole sink was
+  cancelled about 8 s after it started running, and a bounded scan of the same table was left to
+  finish.
+  On 1.4.0, the TaskManager exited with code 239 in 10 of 10 cancellations and the JobManager in 8
+  of them, and the TaskManager in 5 of 5 finished scans, each after `NoClassDefFoundError:
+  .../IntObjectHashMap$2` from a `grpc-default-worker-ELG` thread.
+  With this change, neither process exited with code 239 in 26 cancelled jobs (28 attempted, on
+  fresh clusters of up to nine jobs) or in 10 finished scans: 5 of each on a form that differs
+  from the final code only in its close paths' ordering, waits and error handling, and the rest on
+  an earlier form whose planner kept its call's context and built a database client for every
+  plan; no `grpc-default-worker-ELG` thread appeared, and the
+  JobManager held no gRPC event-loop thread while the job ran.
+  Those clusters failed in another way from the sixth job on: per-job growth of about 27 MB of
+  metaspace and 21 MB of direct memory, the same on 1.4.0 under `LOG`, ended in direct-memory
+  failures in the TaskManager's tasks and a `Metaspace` `OutOfMemoryError` that stopped the
+  JobManager at the ninth job.
+  The threads that grew with them belong to executors the client libraries keep in static fields
+  and never shut down (grpc-gcp 1.20.0's `gcp-mc-bg` pool, Spanner's `multiplexed-session-maintainer`),
+  which are the likely hold on each job's class loader; no heap dump was taken, and
+  [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296) follows it up.
 
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
@@ -354,7 +482,7 @@ writing jobs here were not traced.
 - The group stops whenever its last lease closes, for example when the last destination of a
   default-stream writer is evicted as idle, and the next client starts a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  Until #2243 lands, that is every channel of the Bigtable, Spanner and Firestore connectors.
+  Until #2243 lands, that is every channel of the Bigtable and Firestore connectors.
 - `productionChannelProvider` restates the SDK's pooled-writer transport settings, so a change to
   them in a later google-cloud-bigquerystorage is not picked up by itself.
   `StreamWriterRowAppenderFactoryTest` compares the restated provider with the one the SDK builds,
@@ -372,6 +500,10 @@ writing jobs here were not traced.
   releases the loader.
   Every other connector's JobManager-side client (enumerators, catalogs) needs the same treatment,
   which #2243 covers.
+  A Spanner Change Streams coordinator, or the planner of a batch read whose operation is
+  deferred, closed while its database client creates its first session waits for the client's shutdown (about 20 s measured
+  for the coordinator; the planner's is the same wait, not measured), a longer window for that
+  race than the other connectors' cancelled calls leave.
 - If the SDK's location lookup fails, the short-lived client it opened for it is never shut down
   (google-cloud-bigquerystorage 3.38.0 closes it only on success), so its channels stay on the
   group until the last lease is released and the group closes them.

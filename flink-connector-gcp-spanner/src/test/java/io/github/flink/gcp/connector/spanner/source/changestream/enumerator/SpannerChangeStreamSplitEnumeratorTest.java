@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.spanner.source.changestream.enumerator;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.util.function.ThrowingRunnable;
 
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.source.StartPosition;
@@ -48,8 +49,10 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -114,6 +117,10 @@ class SpannerChangeStreamSplitEnumeratorTest {
                                     .isEqualTo(PartitionLifecycleState.RUNNING);
                         });
         assertThat(context.counter(SpannerMetricNames.SPLITS_ASSIGNED)).isEqualTo(1);
+        // Closed as soon as initialization returned, not with the enumerator: on the JobManager
+        // Flink closes the enumerator without waiting and in practice after it releases the job's
+        // class loader (docs/adr/0208).
+        assertThat(client.closeCalls).isEqualTo(1);
         enumerator.close();
         assertThat(client.closeCalls).isEqualTo(1);
     }
@@ -891,6 +898,113 @@ class SpannerChangeStreamSplitEnumeratorTest {
     }
 
     @Test
+    void aLatestStartIsResolvedBeforeTheClientCloses() throws Exception {
+        // The client closes after initialization, and its close can take seconds; a "latest" start
+        // resolved after it would skip what was committed meanwhile.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        AtomicReference<Instant> closeStarted = new AtomicReference<>();
+        client.duringClose =
+                () -> {
+                    closeStarted.set(Instant.now());
+                    Thread.sleep(200);
+                };
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+
+        enumerator.start();
+        enumerator.handleSplitRequest(0, "localhost");
+        context.runAsyncCalls();
+
+        assertThat(context.assignedSplits(0))
+                .singleElement()
+                .satisfies(
+                        split ->
+                                assertThat(split.getStartTimestamp())
+                                        .as(
+                                                "the latest start, against when the client's close began")
+                                        .isBeforeOrEqualTo(closeStarted.get()));
+        enumerator.close();
+    }
+
+    @Test
+    void theEnumeratorsCloseWaitsForTheClientInitializationIsClosing() throws Exception {
+        // The client's close releases its gRPC lease; the enumerator's close must not return
+        // before it, or Flink can release the job's class loader under it.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        CountDownLatch closeEntered = new CountDownLatch(1);
+        CountDownLatch closeGate = new CountDownLatch(1);
+        client.duringClose =
+                () -> {
+                    closeEntered.countDown();
+                    closeGate.await();
+                };
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        enumerator.start();
+        AtomicReference<Throwable> initializationFailure = new AtomicReference<>();
+        AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+        Thread initializing =
+                new Thread(
+                        () -> initializationFailure.set(catchThrowable(context::runAsyncCalls)),
+                        "init");
+        Thread closing =
+                new Thread(() -> closeFailure.set(catchThrowable(enumerator::close)), "close");
+        try {
+            initializing.start();
+            assertThat(closeEntered.await(10, TimeUnit.SECONDS))
+                    .as(
+                            "initialization reached the client's close; failure: %s",
+                            initializationFailure)
+                    .isTrue();
+
+            closing.start();
+            // The only place the closing thread can park while the gate is shut is the wait for
+            // the client's release.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (closing.getState() != Thread.State.WAITING && closing.isAlive()) {
+                assertThat(System.nanoTime()).as("the close parked in time").isLessThan(deadline);
+                Thread.onSpinWait();
+            }
+            assertThat(closing.isAlive())
+                    .as("the enumerator's close waits for the client's; failure: %s", closeFailure)
+                    .isTrue();
+        } finally {
+            closeGate.countDown();
+            initializing.join(10_000);
+            closing.join(10_000);
+        }
+        assertThat(initializing.isAlive()).as("initialization ended").isFalse();
+        assertThat(closing.isAlive()).as("the enumerator's close ended").isFalse();
+        assertThat(initializationFailure.get()).isNull();
+        assertThat(closeFailure.get()).isNull();
+        assertThat(client.closeCalls).isOne();
+    }
+
+    @Test
+    void aCloseDuringInitializationClosesTheClientOnlyOnce() {
+        // The enumerator's close takes the client while initialization is in flight, and the
+        // release after initialization must then leave it alone: the client's contract does not
+        // promise that a second close is harmless.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        ScriptedClient client = new ScriptedClient();
+        SpannerChangeStreamSplitEnumerator enumerator = enumerator(context, client, null);
+        client.duringInitialize =
+                () -> {
+                    try {
+                        enumerator.close();
+                    } catch (java.io.IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                };
+
+        enumerator.start();
+        catchThrowable(context::runAsyncCalls);
+
+        assertThat(client.initializeCalls).isOne();
+        assertThat(client.closeCalls).isOne();
+    }
+
+    @Test
     void mutablePartitionModeFailsBeforeAnySplitCanBeAssigned() {
         FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
         ScriptedClient client = new ScriptedClient();
@@ -907,6 +1021,7 @@ class SpannerChangeStreamSplitEnumeratorTest {
                 .hasMessageContaining("Failed to initialize");
         assertThat(failure).rootCause().hasMessageContaining("MUTABLE_KEY_RANGE");
         assertThat(context.assignedSplits(0)).isEmpty();
+        assertThat(client.closeCalls).as("the client closes when initialization fails").isOne();
     }
 
     @Test
@@ -1093,6 +1208,55 @@ class SpannerChangeStreamSplitEnumeratorTest {
         assertThat(restoredContext.events()).containsExactly("noMoreSplits:0");
         assertThat(restoredEnumerator.snapshotState(2).isBounded()).isTrue();
         restoredEnumerator.close();
+    }
+
+    @Test
+    void aBoundedRestoreWithNothingToReadEndsOnlyAfterTheClientClosed() throws Exception {
+        // The job can finish, and Flink release its class loader, as soon as the end is signalled;
+        // the coordinator's client must be closed by then.
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> context = context(1);
+        Instant bound = Instant.now().plus(Duration.ofHours(1));
+        SpannerChangeStreamSplitEnumerator enumerator =
+                configured(context, StartPosition.latest(), null, bound, null);
+        enumerator.start();
+        context.runAsyncCalls();
+        enumerator.handleSplitRequest(0, "localhost");
+        ChangeStreamPartitionSplit running = context.assignedSplits(0).get(0);
+        enumerator.handleSourceEvent(
+                0,
+                new PartitionFinishedEvent(
+                        running.splitId(),
+                        running.getCurrentPosition(),
+                        running.getWatermark(),
+                        false));
+        enumerator.handleSplitRequest(0, "localhost");
+        SpannerChangeStreamEnumeratorState finished = enumerator.snapshotState(1);
+        enumerator.close();
+
+        FakeSplitEnumeratorContext<ChangeStreamPartitionSplit> restoredContext = context(1);
+        ScriptedClient client = new ScriptedClient();
+        List<String> eventsAtClose = new java.util.ArrayList<>();
+        client.duringClose = () -> eventsAtClose.addAll(restoredContext.events());
+        SpannerChangeStreamSplitEnumerator restored =
+                new SpannerChangeStreamSplitEnumerator(
+                        restoredContext,
+                        clientMetrics -> client,
+                        StartPosition.latest(),
+                        null,
+                        bound,
+                        2_000,
+                        true,
+                        Duration.ofMinutes(10),
+                        finished,
+                        null);
+        restored.start();
+        restored.handleSplitRequest(0, "localhost");
+        restoredContext.runAsyncCalls();
+
+        assertThat(eventsAtClose).as("events when the client's close began").isEmpty();
+        assertThat(restoredContext.events()).containsExactly("noMoreSplits:0");
+        assertThat(client.closeCalls).isOne();
+        restored.close();
     }
 
     @Test
@@ -2392,10 +2556,13 @@ class SpannerChangeStreamSplitEnumeratorTest {
         private int initializeCalls;
         private int closeCalls;
         private RuntimeException initializationFailure;
+        private Runnable duringInitialize = () -> {};
+        private ThrowingRunnable<Exception> duringClose = () -> {};
 
         @Override
         public Duration initialize() {
             initializeCalls++;
+            duringInitialize.run();
             if (initializationFailure != null) {
                 throw initializationFailure;
             }
@@ -2403,7 +2570,8 @@ class SpannerChangeStreamSplitEnumeratorTest {
         }
 
         @Override
-        public void close() {
+        public void close() throws Exception {
+            duringClose.run();
             closeCalls++;
         }
     }

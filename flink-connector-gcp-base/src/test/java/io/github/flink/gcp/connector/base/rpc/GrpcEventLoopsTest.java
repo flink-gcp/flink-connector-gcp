@@ -26,6 +26,11 @@ import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.netty.shaded.io.netty.channel.EventLoopGroup;
+import io.grpc.netty.shaded.io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.grpc.netty.shaded.io.netty.channel.nio.NioIoHandler;
+import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
+import io.grpc.netty.shaded.io.netty.util.concurrent.DefaultThreadFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -262,6 +267,61 @@ class GrpcEventLoopsTest {
         } finally {
             lease.close();
         }
+    }
+
+    @Test
+    @SuppressWarnings("rawtypes")
+    void aStandaloneConfiguratorAppliesTheExistingOneFirstAndThenTheGroup() throws Exception {
+        List<String> calls = new ArrayList<>();
+        // An existing configurator that sets an event-loop group of its own: applied after the
+        // group's, it would win, and the channel would run on its threads instead.
+        EventLoopGroup foreign =
+                new MultiThreadIoEventLoopGroup(
+                        1,
+                        new DefaultThreadFactory("foreign-elg", true),
+                        NioIoHandler.newFactory());
+        // Built before any lease is open, as a client's settings are.
+        ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
+                GrpcEventLoops.channelConfigurator(
+                        builder -> {
+                            calls.add("existing");
+                            return ((NettyChannelBuilder) builder.usePlaintext())
+                                    .eventLoopGroup(foreign)
+                                    .channelType(NioSocketChannel.class);
+                        });
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+        try (ServerSocket server = new ServerSocket(0)) {
+            ManagedChannel channel =
+                    configurator
+                            .apply(
+                                    NettyChannelBuilder.forAddress(
+                                            "127.0.0.1", server.getLocalPort()))
+                            .build();
+            try {
+                channel.getState(true);
+                assertThat(calls).containsExactly("existing");
+                assertThat(GrpcEventLoopThreads.awaitAlive())
+                        .as("a thread named %s* while the channel connects", prefix())
+                        .isTrue();
+            } finally {
+                channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            lease.close();
+            foreign.shutdownGracefully(0, 5, TimeUnit.SECONDS)
+                    .awaitUninterruptibly(10, TimeUnit.SECONDS);
+        }
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("rawtypes")
+    void aStandaloneConfiguratorWithoutAnExistingOneAcceptsTheBuilderAsItIs() {
+        ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
+                GrpcEventLoops.channelConfigurator(null);
+        NettyChannelBuilder builder = NettyChannelBuilder.forTarget("localhost:1");
+
+        assertThat(configurator.apply(builder)).isSameAs(builder);
     }
 
     @Test

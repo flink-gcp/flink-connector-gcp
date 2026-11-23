@@ -82,8 +82,9 @@ public interface StructStreamOpener extends Serializable, AutoCloseable {
     /**
      * Releases the client the reads were opened on, and then the client metrics it was given.
      *
-     * <p>It does <em>not</em> release the batch read's session: that is the enumerator's, and a
-     * reader releasing it would end every other reader's read.
+     * <p>It does <em>not</em> release the batch read's session: a reader releasing it would end
+     * every other reader's read, and nothing releases it (see {@link
+     * io.github.flink.gcp.connector.spanner.source.batch.enumerator.BatchClientPartitionPlanner}).
      *
      * @throws IOException if the release fails
      */

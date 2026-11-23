@@ -25,13 +25,17 @@ import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.v1.stub.SpannerStubSettings;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
 import io.github.flink.gcp.connector.spanner.ClosedEmulator;
 import io.github.flink.gcp.connector.spanner.ClosingSpanner;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.TestLeasedSpanners;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -48,6 +52,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link DefaultSpannerDatabaseAccessFactory}. */
 class DefaultSpannerDatabaseAccessFactoryTest {
+
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isRunning()).as("a handle left its lease open").isFalse();
+    }
 
     private static final DatabaseDestination DATABASE =
             DatabaseDestination.of("my-project", "my-instance", "my-db");
@@ -203,11 +212,16 @@ class DefaultSpannerDatabaseAccessFactoryTest {
         // channel pool per attempt.
         FakeSpanner spanner = new FakeSpanner(new IllegalStateException("no such database"));
 
-        assertThatThrownBy(() -> factory("localhost:9010").create(spanner))
+        assertThatThrownBy(() -> factory("localhost:9010").create(leased(spanner)))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("no such database");
 
         assertThat(spanner.closes()).isEqualTo(1);
+        assertThat(GrpcEventLoops.isRunning()).as("the handle's lease was released").isFalse();
+    }
+
+    private static LeasedSpanner leased(com.google.cloud.spanner.Spanner spanner) {
+        return TestLeasedSpanners.leased(spanner);
     }
 
     private static DefaultSpannerDatabaseAccessFactory factory(String emulatorEndpoint) {
@@ -255,9 +269,10 @@ class DefaultSpannerDatabaseAccessFactoryTest {
         ClientMetrics metrics = ClientMetricsProbe.create();
         ClosingSpanner spanner = new ClosingSpanner(metrics);
 
-        factoryWith(metrics).create(spanner.spanner()).close();
+        factoryWith(metrics).create(leased(spanner.spanner())).close();
 
         assertThat(spanner.closes()).isOne();
+        assertThat(GrpcEventLoops.isRunning()).as("the handle's lease was released").isFalse();
         assertThat(spanner.metricsOpenAtClose()).isTrue();
         assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
     }
@@ -267,7 +282,7 @@ class DefaultSpannerDatabaseAccessFactoryTest {
         ClientMetrics metrics = ClientMetricsProbe.create();
         FakeSpanner spanner = new FakeSpanner(new IllegalStateException("no such database"));
 
-        assertThatThrownBy(() -> factoryWith(metrics).create(spanner))
+        assertThatThrownBy(() -> factoryWith(metrics).create(leased(spanner)))
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(spanner.closes()).isEqualTo(1);

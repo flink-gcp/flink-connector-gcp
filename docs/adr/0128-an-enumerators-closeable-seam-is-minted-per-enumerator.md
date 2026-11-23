@@ -115,7 +115,11 @@ monitor on purpose and re-checks the flag afterwards, and that re-check is the o
 releases a transaction the teardown could not see. Clearing a shared flag lets the old thread fall
 through and write its transaction over the new enumerator's field, and `close()` releases only the
 current field value, so one Spanner session leaks with nothing reporting it. A loud restart loop is
-the better failure of the two. The window is real rather than theoretical: `resetToCheckpoint` builds
+the better failure of the two. (Since
+[#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265) the planner opens and closes
+its handle within `plan` rather than a transaction it keeps, and the re-check closes a handle
+opened after `close()`; a shared flag cleared under it would let the old call write its handle over
+the new enumerator's field in the same way.) The window is real rather than theoretical: `resetToCheckpoint` builds
 the replacement coordinator inside the old one's closing future, and that future completes normally
 after `CLOSING_TIMEOUT_MS` as well as on completion, so a close that outlasts 60 seconds leaves the
 old worker thread alive beside the new enumerator.

@@ -195,10 +195,19 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   that type on the configuration fails to serialize the job graph rather than reappearing as a
   restart loop. `StructStreamOpener` stays an instance on the configuration: a reader's copy is
   deserialized per task attempt, so its identical one-way `closed` flag starts false each time.
-- **The enumerator owns `cleanup()`**, wrapped with the client into the one `AutoCloseable` the
-  base closes. Readers close their own transaction handle and never call it — releasing the session
-  would end every other reader's read. Against the pinned client the call is a no-op (multiplexed
-  session); it stays because it is the contract.
+- **Nobody calls `cleanup()`** (`docs/adr/0208`, #2265). The planner opens its client for one
+  `plan` call and closes it, with the transaction handle, before `plan` returns, because a
+  JobManager-side client must not outlive its call; `cleanup()` needs an open client and would end
+  every reader's read if it released the session. Readers close their own transaction handle and
+  never call it either. Against the pinned client it is a no-op (multiplexed session).
+- **Every Spanner client is opened through `SpannerClients.open`**, which holds a `GrpcEventLoops`
+  lease for the client's life and returns a `LeasedSpanner`; close the holder, never the
+  `Spanner` inside it (`docs/adr/0208`). Settings come from `SpannerClients.settings` or, for a
+  component that sets more, `settingsBuilder`: never from a `toBuilder()` copy of built settings,
+  whose `build()` drops the event-loop configurator when an emulator host is set — `open` refuses
+  such settings. **A JobManager-side client** (the planner's, the Change Streams coordinator's)
+  closes when its call returns, and runs that call in a cancellable gRPC `Context` that its
+  `close()` cancels first; the catalog keeps one client until it closes.
 - **The deserialization SPI emits zero or more non-null records synchronously through a collector.**
   The collector is valid only for the deserializer call and must not be retained. Emitting nothing
   increments `recordsSkipped` once for the input row. The progress model is unchanged: a reader
@@ -216,17 +225,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - `SpannerClients` at the module root builds the service handle both directions open. The
   emulator-versus-credentials branch is exactly what `docs/adr/0064` exists for; do not grow a
   second copy.
-- **The two batch seams keep their own copy of the lazy handle lifecycle**; a
-  `LazyBigtableDataClient`-style holder was measured and declined (`docs/adr/0131`) — do not
-  extract one without superseding that record. `SpannerClients` already factors out the part worth
-  sharing, and what stays identical between `BatchClientStructStreamOpener` and
-  `BatchClientPartitionPlanner` is about eight lines. The obstacle is that the planner's `closed`
-  guards more than client construction: the re-check `open()` makes after opening the transaction
-  outside the monitor reads that flag and writes `transaction` under the same monitor `close()`
-  takes to set the flag and read the field, and that interlock is what keeps a transaction the
-  teardown could not see from leaking its session. Bigtable's holder pays because none of the
-  seams it serves owns a second lifecycle, each close being one delegating line — it is not a
-  precedent here.
+- **The reader seam keeps a lazy handle; the planner opens one per `plan` call** (`docs/adr/0208`,
+  #2265). A `LazyBigtableDataClient`-style holder was measured and declined (`docs/adr/0131`), on an
+  argument about the planner's former transaction interlock that #2265 removed: the planner now
+  re-checks `closed` only to close a handle opened after `close()`. Re-weigh a holder against the
+  opener alone, and record it against ADR-0131, before extracting one.
 - `SpannerCredentials` loads only service-account JSON and returns `null` when no credential
   override is configured. Serialize only `serviceAccountKeyFile` paths: bounded and Change Streams
   coordinators load on the JobManager, bounded and Change Streams readers and sink writers load on
@@ -433,8 +436,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   unsupported (ADR-0098).
 - `lookup.cache = FULL` loads through `SpannerFullCacheInputFormat`, which runs the bounded scan's
   own `SpannerSourceConfig` from `scanBuilder`: never build a second read path for the cache. One
-  split per load, one snapshot per load, partitions read sequentially and the session released by
-  the planner on close; `close()` turns every release failure into an `IOException`, which Flink's
+  split per load, one snapshot per load, partitions read sequentially; the planner's client closes
+  when the plan returns and no session is released (see `cleanup()` above). `open()`, each fetch and
+  `close()` run inside `GrpcEventLoops.interruptibleReleases()` (#2269, `docs/adr/0208`); keep any
+  new call that can release a lease there inside it too, and do not open the scope on a writer,
+  reader or enumerator path. `close()` turns every release failure into an `IOException`, which Flink's
   loader logs without discarding the load. `lookup.async` is refused with FULL in the lookup
   config, and a fixed `scan.timestamp-bound.read-timestamp` only on the FULL lookup path, so scans
   keep it. FULL keys are any mapped top-level type except FLOAT/DOUBLE/ARRAY, because Flink's index

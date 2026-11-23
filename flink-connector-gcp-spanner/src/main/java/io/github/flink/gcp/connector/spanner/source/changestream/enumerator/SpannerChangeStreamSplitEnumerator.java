@@ -67,6 +67,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
@@ -256,6 +257,14 @@ public final class SpannerChangeStreamSplitEnumerator
     private Counter splitsReturned = new ThreadSafeSimpleCounter();
     private Counter partitionsDiscovered = new ThreadSafeSimpleCounter();
     @Nullable private SpannerChangeStreamCoordinatorClient client;
+
+    /**
+     * Counted down once {@link #initialize()} has closed the client it installed, while it is
+     * closing it; {@link #close()} waits for it, so that the client's lease is released when the
+     * enumerator's close returns.
+     */
+    @Nullable private CountDownLatch clientReleased;
+
     private boolean initialized;
     private boolean discardRestoredReaderSplits;
     private boolean boundedLedger;
@@ -377,7 +386,28 @@ public final class SpannerChangeStreamSplitEnumerator
             throw new IllegalStateException(
                     "Spanner Change Streams enumerator was already closed.");
         }
-        Duration retention = created.initialize();
+        // On the JobManager a client closes when the call it was opened for returns, not when the
+        // enumerator closes: Flink closes the enumerator without waiting and in practice after it
+        // releases the job's class loader (docs/adr/0208).
+        Initialization initialization;
+        try {
+            initialization = initializationFrom(created.initialize());
+        } catch (Throwable e) {
+            Closers.closeAllSuppressing(e, () -> releaseClient(created));
+            throw e;
+        }
+        // Closed after the start position is resolved, so that a "latest" start does not wait for
+        // the close and skip what was committed meanwhile, and before this call returns, so that
+        // nothing (the end of a bounded read included) is published while the client is open. The
+        // close's duration, normally milliseconds, then comes out of an "earliest" start's
+        // one-minute retention margin like the readers' own start-up, and lengthens the window in
+        // which a checkpoint finds the enumerator not yet initialized.
+        releaseClient(created);
+        return initialization;
+    }
+
+    /** Resolves where the read starts, from the stream's retention and the restored state. */
+    private Initialization initializationFrom(Duration retention) throws Exception {
         StartPositionResolver resolver = StartPositionResolver.create(getClass(), () -> retention);
         if (restoredState == null) {
             Instant start = resolver.resolve(startPosition);
@@ -493,6 +523,26 @@ public final class SpannerChangeStreamSplitEnumerator
         }
         client = created;
         return true;
+    }
+
+    /**
+     * Closes the client {@link #initialize()} installed, unless {@link #close()} already took it
+     * over and closes it itself; a {@link #close()} that lands meanwhile waits for this one.
+     */
+    private void releaseClient(SpannerChangeStreamCoordinatorClient created) throws Exception {
+        CountDownLatch released = new CountDownLatch(1);
+        synchronized (this) {
+            if (client != created) {
+                return;
+            }
+            client = null;
+            clientReleased = released;
+        }
+        try {
+            created.close();
+        } finally {
+            released.countDown();
+        }
     }
 
     private static RestoreExpiry oldest(List<RestoreExpiry> expiries) {
@@ -1406,10 +1456,21 @@ public final class SpannerChangeStreamSplitEnumerator
     @Override
     public void close() throws IOException {
         SpannerChangeStreamCoordinatorClient closing;
+        CountDownLatch released;
         synchronized (this) {
             closed = true;
             closing = client;
             client = null;
+            released = clientReleased;
+        }
+        // A client initialize() is closing is released before this returns; an interrupt ends the
+        // wait early and is restored.
+        if (released != null) {
+            try {
+                released.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         // After the flag: a start() still registering sees it and lets go of what it bound.
         metrics.close();

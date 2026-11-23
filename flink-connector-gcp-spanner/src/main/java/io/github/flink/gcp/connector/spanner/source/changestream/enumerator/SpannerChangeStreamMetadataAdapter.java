@@ -23,6 +23,7 @@ import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.ResultSet;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.Statement;
+import io.grpc.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,6 +38,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -44,6 +46,13 @@ import java.util.regex.Pattern;
 
 /**
  * Reads and reports the Change Stream configuration without exposing the Spanner client to tests.
+ *
+ * <p>{@link #initialize()} runs its reads in a gRPC {@link Context} that {@link #close()} cancels
+ * before it closes the service, so a close that lands while a read is in flight ends the read
+ * rather than waiting for it: gRPC cancels a call when the context it was started in is cancelled.
+ * The cancellation comes first because the service's close waits for its channels to finish their
+ * calls. The first read waits for the session the database client creates in the background, which
+ * the context does not reach; a close then waits for the service's bounded shutdown.
  */
 @Internal
 final class SpannerChangeStreamMetadataAdapter implements SpannerChangeStreamCoordinatorClient {
@@ -72,6 +81,9 @@ final class SpannerChangeStreamMetadataAdapter implements SpannerChangeStreamCoo
     private final Function<Statement, ResultSet> executeQuery;
     private final Runnable closeService;
 
+    /** The context {@link #initialize()} reads in; {@link #close()} cancels it. */
+    private final Context.CancellableContext reads = Context.ROOT.withCancellation();
+
     @Nullable private Duration initializedRetention;
 
     SpannerChangeStreamMetadataAdapter(
@@ -99,7 +111,15 @@ final class SpannerChangeStreamMetadataAdapter implements SpannerChangeStreamCoo
         if (initializedRetention != null) {
             return initializedRetention;
         }
+        Context previous = reads.attach();
+        try {
+            return readConfiguration();
+        } finally {
+            reads.detach(previous);
+        }
+    }
 
+    private Duration readConfiguration() throws IOException {
         Dialect currentDialect = readDialect();
         boolean watchesAll = readWatchesAll(currentDialect);
         List<String> explicitColumnTables = readExplicitColumnTables(currentDialect);
@@ -423,6 +443,11 @@ final class SpannerChangeStreamMetadataAdapter implements SpannerChangeStreamCoo
 
     @Override
     public void close() {
+        reads.cancel(
+                new CancellationException(
+                        "The Spanner Change Streams coordinator client for "
+                                + database
+                                + " was closed."));
         closeService.run();
     }
 }

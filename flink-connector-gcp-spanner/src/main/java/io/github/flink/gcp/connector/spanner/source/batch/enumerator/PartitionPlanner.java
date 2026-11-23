@@ -32,9 +32,11 @@ import java.io.IOException;
 /**
  * Opens a batch read and asks the service to plan it into partitions.
  *
- * <p>The seam the enumerator plans through. It is the enumerator's to close, and closing it
- * releases <em>both</em> the batch transaction and the service handle it was opened on — which is
- * why the split enumerator base class takes one closeable and not two.
+ * <p>The seam the enumerator plans through. On the JobManager a planner's service handle must not
+ * outlive the call it was opened for (docs/adr/0208), so an implementation releases the batch
+ * transaction's handle and the service handle before {@link #plan} returns; closing the planner
+ * ends a call still in flight and refuses later ones. It is the enumerator's to close, as one
+ * closeable.
  *
  * <p><b>Not serializable, deliberately.</b> What travels in the job graph is a {@link
  * PartitionPlannerFactory}, and the source mints one planner per enumerator from it. The JobManager
@@ -103,7 +105,8 @@ public interface PartitionPlanner extends AutoCloseable {
     void useClientMetrics(@Nullable ClientMetrics clientMetrics);
 
     /**
-     * Releases the batch transaction and the client behind it.
+     * Ends the planner: cancels a call still in flight, releases what that call holds, and refuses
+     * later calls.
      *
      * <p>An implementation absorbs nothing: a teardown failure is the enumerator's to report.
      *

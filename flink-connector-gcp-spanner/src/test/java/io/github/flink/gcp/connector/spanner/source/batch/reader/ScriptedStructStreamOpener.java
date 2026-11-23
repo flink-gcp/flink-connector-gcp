@@ -21,6 +21,7 @@ import com.google.cloud.spanner.BatchTransactionId;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.source.TestStructs;
 
 import javax.annotation.Nullable;
@@ -111,6 +112,7 @@ public final class ScriptedStructStreamOpener implements StructStreamOpener {
     @Override
     public StructStream open(BatchTransactionId batchTransactionId, Partition partition) {
         State state = state();
+        state.scopes.add("open stream in scope: " + GrpcEventLoops.inInterruptibleReleases());
         String token = partition.getPartitionToken().toStringUtf8();
         state.openedTokens.add(token);
         RuntimeException failure = state.failNextOpen;
@@ -127,7 +129,18 @@ public final class ScriptedStructStreamOpener implements StructStreamOpener {
 
     @Override
     public void close() {
+        state().scopes.add("close opener in scope: " + GrpcEventLoops.inInterruptibleReleases());
         state().closes.incrementAndGet();
+    }
+
+    /**
+     * Returns, per call that can release a gRPC lease, whether it ran inside {@link
+     * GrpcEventLoops#interruptibleReleases()}.
+     *
+     * @return the recorded calls, in order
+     */
+    public List<String> scopes() {
+        return new ArrayList<>(state().scopes);
     }
 
     /** Returns the partition tokens this opener was asked for, in the order it was asked. */
@@ -205,6 +218,7 @@ public final class ScriptedStructStreamOpener implements StructStreamOpener {
 
         private final Map<String, List<Struct>> rowsByToken;
         private final List<String> openedTokens = new CopyOnWriteArrayList<>();
+        private final List<String> scopes = new CopyOnWriteArrayList<>();
         private final AtomicInteger closes = new AtomicInteger();
         private final AtomicInteger streamCloses = new AtomicInteger();
         private final CountDownLatch released = new CountDownLatch(1);

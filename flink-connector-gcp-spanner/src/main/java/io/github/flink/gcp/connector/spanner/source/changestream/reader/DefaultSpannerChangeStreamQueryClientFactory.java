@@ -29,7 +29,6 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.ReadOnlyTransaction;
-import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
@@ -37,6 +36,7 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
@@ -122,14 +122,16 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
     @Override
     public SpannerChangeStreamQueryClient create(@Nullable ClientMetrics clientMetrics)
             throws Exception {
-        Spanner spanner = SpannerClients.open(database, settings(clientMetrics), clientMetrics);
+        LeasedSpanner spanner =
+                SpannerClients.open(database, settings(clientMetrics), clientMetrics);
         try {
             DatabaseClient client =
-                    spanner.getDatabaseClient(
-                            DatabaseId.of(
-                                    database.getProject(),
-                                    database.getInstance(),
-                                    database.getDatabase()));
+                    spanner.spanner()
+                            .getDatabaseClient(
+                                    DatabaseId.of(
+                                            database.getProject(),
+                                            database.getInstance(),
+                                            database.getDatabase()));
             return new DefaultClient(
                     spanner,
                     client,
@@ -157,7 +159,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
 
     private static final class DefaultClient implements SpannerChangeStreamQueryClient {
 
-        private final Spanner spanner;
+        private final LeasedSpanner spanner;
         private final DatabaseClient client;
         private final Dialect dialect;
         private final String changeStreamName;
@@ -168,7 +170,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
         private boolean closed;
 
         private DefaultClient(
-                Spanner spanner,
+                LeasedSpanner spanner,
                 DatabaseClient client,
                 Dialect dialect,
                 String changeStreamName,
