@@ -850,7 +850,9 @@ class PubSubSequenceExercise(FaultSequence, RecoveryExercise):
             and self.restored_idle(app, status, pods)
             and (
                 self.input_complete()
-                or self.env.clock() >= self.restored_at + REDELIVERY_SECONDS
+                # Only statistics read this poll show the latest restore; a
+                # read that failed may hide one the horizon counts from.
+                or (rest and self.env.clock() >= self.restored_at + REDELIVERY_SECONDS)
             )
         ):
             raise Failure(UNCONFIRMED)

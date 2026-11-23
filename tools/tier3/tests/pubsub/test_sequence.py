@@ -181,6 +181,41 @@ def test_a_pull_the_service_refuses_with_a_429_is_tried_again(
     assert assessed["oracle"] == control.recovery["oracle"]
 
 
+def test_a_rest_read_the_proxy_answers_429_or_500_is_waited_out(admitting, monkeypatch):
+    """The proxy sends the read once; a transient answer says nothing about the job."""
+    world = World(admitting, monkeypatch, pace=1)
+
+    def fail_after_the_first_fault():
+        running = world.a.supervisor.exercise
+        if running.step >= 1 and not hasattr(world, "failed"):
+            world.failed = world.relay.checkpoint_failures = [429, 500]
+
+    world.relay.hooks.append(fail_after_the_first_fault)
+    control = world.run()
+    assert control.recovery["stage"] == "complete", control.reason
+    assert control.recovery["verdict"] == USABLE, control.recovery["reasons"]
+    causes = [
+        event["payload"]["cause"]
+        for event in world.evidence("recovery-rest-unavailable")
+    ]
+    assert any("HTTP 429" in cause for cause in causes)
+    assert any("HTTP 500" in cause for cause in causes)
+
+
+def test_a_rest_read_refused_with_a_403_stops_the_run(admitting, monkeypatch):
+    world = World(admitting, monkeypatch, pace=1)
+
+    def refuse_once():
+        running = world.a.supervisor.exercise
+        if running.step >= 1 and not hasattr(world, "failed"):
+            world.failed = world.relay.checkpoint_failures = [403]
+
+    world.relay.hooks.append(refuse_once)
+    control = world.run()
+    assert control.recovery["stage"] != "complete"
+    assert "HTTP 403" in control.reason
+
+
 def test_a_failed_acknowledgement_still_stops_the_run(admitting, monkeypatch, tmp_path):
     """Its pull was saved, and whether the service took the acknowledgement is unknown."""
     world = World(admitting, monkeypatch, pace=1)
@@ -454,6 +489,9 @@ def test_a_restored_job_with_nothing_to_process_leaves_the_run_unconfirmed(
     exercise.restored_at = 150
     if through:
         exercise.collector.observations = everything(exercise)
+        # An input through needs no restore read.
+        with pytest.raises(Failure, match=UNCONFIRMED):
+            exercise.settle(app(), {}, running(exercise))
     else:
         monkeypatch.setattr(
             exercise.env,
@@ -464,12 +502,25 @@ def test_a_restored_job_with_nothing_to_process_leaves_the_run_unconfirmed(
         monkeypatch.setattr(
             exercise.env, "clock", lambda: 150 + pubsub_exercise.REDELIVERY_SECONDS
         )
+        # A poll whose checkpoint statistics failed may hide a later restore,
+        assert not exercise.settle(app(), {}, running(exercise))
+        # and the next read that answers shows it, which moves the horizon.
+        later = {
+            "counts": {"restored": 2},
+            "latest": {"restored": {"restore_timestamp": 200_000}},
+        }
+        exercise.restarts(later)
+        assert not exercise.settle(app(), later, running(exercise))
+        monkeypatch.setattr(
+            exercise.env, "clock", lambda: 200 + pubsub_exercise.REDELIVERY_SECONDS
+        )
+    answered = {"counts": {"restored": 1}, "latest": {}}
     with pytest.raises(Failure, match=UNCONFIRMED):
-        exercise.settle(app(), {}, running(exercise))
+        exercise.settle(app(), answered, running(exercise))
     # Not while it still lacks a TaskManager.
     exercise.collector.observations = []
     monkeypatch.setattr(exercise.env, "clock", lambda: 10**10)
-    assert not exercise.settle(app(), {}, running(exercise, taskmanagers=1))
+    assert not exercise.settle(app(), answered, running(exercise, taskmanagers=1))
 
 
 class Handoff:

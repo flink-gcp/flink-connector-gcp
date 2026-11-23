@@ -153,6 +153,8 @@ class Relay:
         self.listed = (*SOURCE_METRICS, *SINK_METRICS)
         # The vertex metrics endpoints alone answer 503.
         self.metrics_down = False
+        # The checkpoint statistics answer these statuses, one read each.
+        self.checkpoint_failures = []
         # The job plan answers 503 this many more times.
         self.plan_down = 0
         # The value query answers no id, as Flink's store does for metrics it
@@ -584,6 +586,8 @@ class Relay:
         if self.jm_down:
             raise rt.ApiError(503, method, path)
         suffix = path.split("/proxy/jobs/")[1]
+        if suffix.endswith("/checkpoints") and self.checkpoint_failures:
+            raise rt.ApiError(self.checkpoint_failures.pop(0), method, path)
         if suffix.endswith("/checkpoints"):
             return {
                 "counts": {"completed": len(self.history), "restored": self.restores},

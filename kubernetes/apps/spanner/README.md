@@ -136,6 +136,8 @@ When the job has finished after the last fault, with its whole input processed, 
 The reports carry no watermark or partition readings, since nothing samples the job.
 The Change Streams oracle is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end, because a commit after the end is not relayed; a restore after the input finished can replay it and write its rows again, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
+A restore after the input's latest progress line also leaves the oracle unjudged, as it does for Bigtable, whose sink can commit rows its state carried without logging a line; this sink carries none and a restore that writes logs a line, so here the rule only errs toward unjudged; such a run can run again as it is too.
+The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
 The first `sequence` run, `sp2154-seq-a1`, reached `usable`, as its [findings](../../../docs/adr/evidence/0204-spanner-fault-sequence-findings-2154.md) record.
 
