@@ -3360,7 +3360,7 @@ that loses and regains leadership, starts the counters again from zero.
 | `rowsRead` | counter | rows decoded from the response blocks this subtask received |
 | `bytesRead` | counter | their serialized bytes as they arrived on the wire. Not the billed quantity — BigQuery charges for bytes *scanned from storage*, which a client cannot see — but it is what says whether a job is moving what you expected |
 | `recordsSkipped` | counter | input rows whose deserializer call returned successfully without emitting output — neither emitted nor failed |
-| `readRetries` | counter | attempts at a read stream the client library retried. Rising while the job still progresses is a stream that keeps dropping and resuming — see [Read failures and retries](#read-failures-and-retries) |
+| `readRetries` | counter | attempts at a read stream the client library started again after the previous one failed with any of the statuses it retries. Rising while the job still progresses is a stream that keeps dropping and resuming — see [Read failures and retries](#read-failures-and-retries) |
 | `splitsAssigned` | counter | read streams handed to a reader, on the enumerator |
 | `splitsReturned` | counter | read streams a failed reader gave back, on the enumerator |
 | `readSessionsCreated` | counter | read sessions created, on the enumerator |

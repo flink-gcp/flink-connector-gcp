@@ -21,6 +21,7 @@ import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.retrying.StreamResumptionStrategy;
 import com.google.api.gax.rpc.ServerStreamingCallSettings;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
@@ -103,7 +104,7 @@ public final class BigQueryReadClients {
      * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param emulatorEndpoint the emulator's gRPC endpoint, or {@code null} for BigQuery itself
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
-     * @param onRetry run once per retried attempt, or {@code null} to observe none
+     * @param onRetry run once per attempt the client re-issues, or {@code null} to observe none
      * @return the client with the event-loop lease covering it, and on an emulator also the channel
      *     it runs on; the caller owns it and must close it
      * @throws IOException if the client cannot be created
@@ -143,7 +144,7 @@ public final class BigQueryReadClients {
      *
      * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
-     * @param onRetry run once per retried attempt, or {@code null} to observe none
+     * @param onRetry run once per attempt the client re-issues, or {@code null} to observe none
      * @param lease the event-loop lease the client's channels run under
      * @return the settings
      * @throws IOException if the settings cannot be built
@@ -155,9 +156,6 @@ public final class BigQueryReadClients {
             @Nullable Runnable onRetry,
             GrpcEventLoops.Lease lease)
             throws IOException {
-        // The lease is applied to this builder, never to a toBuilder() of the built settings:
-        // BigQueryReadSettings.toBuilder() copies the stub settings only and drops the retry
-        // listener boundReadRetry sets (google-cloud-bigquerystorage 3.38.0).
         return boundReadRetry(
                 lease.applyTo(productionSettingsBuilder(serviceAccountKeyFile)),
                 retryMaxAttempts,
@@ -182,16 +180,22 @@ public final class BigQueryReadClients {
      * moment the stream was opened — shortening it would cut off the retry of a stream that has
      * been healthy for hours.
      *
-     * <p>The retry listener is the only report a retry makes. Its argument is a {@code Runnable}
-     * rather than the SDK's own listener type so that nothing outside this class has to name a
-     * status and a metadata map it does not read: the counter behind it says how much work the
+     * <p>The retry count is the only report a retry makes, and {@code RetryCountingResumption}
+     * takes it at the client's own resumption strategy, so it covers every retried attempt whatever
+     * status ended the one before and nothing the client then declined to retry. The SDK's {@code
+     * setReadRowsRetryAttemptListener} is not set, alone or beside it: it misses a plain {@code
+     * UNAVAILABLE} retry and counts the attempt {@code maxAttempts} refuses ({@code docs/adr/0084},
+     * revision for #2301).
+     *
+     * <p>Its argument is a {@code Runnable} rather than a strategy so that nothing outside this
+     * class has to know where the count is taken: the counter behind it says how much work the
      * client's retry is doing, which is what an operator cannot otherwise see — a stream that keeps
      * failing and resuming makes progress, so it never trips {@code maxAttempts} and never reports
      * anything else.
      *
      * @param settings the settings to bound, with their transport already chosen
      * @param retryMaxAttempts the bound put on the client's own {@code ReadRows} retry
-     * @param onRetry run once per retried attempt, or {@code null} to observe none
+     * @param onRetry run once per attempt the client re-issues, or {@code null} to observe none
      * @return the settings
      * @throws IOException if the settings cannot be built
      */
@@ -203,9 +207,65 @@ public final class BigQueryReadClients {
         readRows.setRetrySettings(
                 readRows.getRetrySettings().toBuilder().setMaxAttempts(retryMaxAttempts).build());
         if (onRetry != null) {
-            settings.setReadRowsRetryAttemptListener((status, metadata) -> onRetry.run());
+            readRows.setResumptionStrategy(
+                    new RetryCountingResumption(readRows.getResumptionStrategy(), onRetry));
         }
         return settings.build();
+    }
+
+    /**
+     * The client's own {@code ReadRows} resumption strategy, unchanged, with each resume request it
+     * hands out counted.
+     *
+     * <p>The client calls {@link #getResumeRequest(ReadRowsRequest)} only when it is about to
+     * re-issue a broken call, once per such attempt, and on its retry scheduler's thread; a request
+     * it does not get is an attempt it does not make, so only a non-null one is counted. {@link
+     * #createNew()} wraps a fresh delegate rather than this one's, because the client mints a
+     * strategy per call from the one in its settings and the delegate counts the rows that call
+     * delivered: one shared across the streams a reader opens would resume each past rows it never
+     * read.
+     *
+     * <p>The count is taken as the attempt starts. A retry whose backoff ends after the reader
+     * cancelled its stream still starts and is counted, and the cancellation then ends it before
+     * its request is sent.
+     */
+    private static final class RetryCountingResumption
+            implements StreamResumptionStrategy<ReadRowsRequest, ReadRowsResponse> {
+
+        private final StreamResumptionStrategy<ReadRowsRequest, ReadRowsResponse> delegate;
+        private final Runnable onRetry;
+
+        RetryCountingResumption(
+                StreamResumptionStrategy<ReadRowsRequest, ReadRowsResponse> delegate,
+                Runnable onRetry) {
+            this.delegate = delegate;
+            this.onRetry = onRetry;
+        }
+
+        @Override
+        public StreamResumptionStrategy<ReadRowsRequest, ReadRowsResponse> createNew() {
+            return new RetryCountingResumption(delegate.createNew(), onRetry);
+        }
+
+        @Override
+        public ReadRowsResponse processResponse(ReadRowsResponse response) {
+            return delegate.processResponse(response);
+        }
+
+        @Override
+        @Nullable
+        public ReadRowsRequest getResumeRequest(ReadRowsRequest originalRequest) {
+            ReadRowsRequest resume = delegate.getResumeRequest(originalRequest);
+            if (resume != null) {
+                onRetry.run();
+            }
+            return resume;
+        }
+
+        @Override
+        public boolean canResume() {
+            return delegate.canResume();
+        }
     }
 
     /**

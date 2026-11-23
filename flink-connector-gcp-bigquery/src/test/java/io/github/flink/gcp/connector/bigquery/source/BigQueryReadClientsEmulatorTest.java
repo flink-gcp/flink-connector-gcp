@@ -22,13 +22,20 @@ import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadGrpc;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
 import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
+import com.google.cloud.bigquery.storage.v1.ReadRowsRequest;
+import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
+import com.google.rpc.RetryInfo;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigquery.EmulatorConnections;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.grpc.Metadata;
 import io.grpc.Server;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
+import io.grpc.protobuf.ProtoUtils;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -39,9 +46,13 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link BigQueryReadClients}' emulator clients, apart from {@link
@@ -105,11 +116,10 @@ class BigQueryReadClientsEmulatorTest {
                 BigQueryReadSettings settings = client.client().getSettings();
                 assertThat(settings.getCredentialsProvider())
                         .isInstanceOf(NoCredentialsProvider.class);
-                // The emulator arm bounds the client's own ReadRows retry and wires the listener
-                // the same way the production arm does.
+                // The emulator arm bounds the client's own ReadRows retry the same way the
+                // production arm does; the scripted reads below hold its retry count.
                 assertThat(settings.readRowsSettings().getRetrySettings().getMaxAttempts())
                         .isEqualTo(7);
-                assertThat(settings.getReadRowsRetryAttemptListener()).isNotNull();
                 EmulatorConnections.assertPlaintextOnTheGroup(
                         settings.getTransportChannelProvider(), server, target);
             }
@@ -160,6 +170,153 @@ class BigQueryReadClientsEmulatorTest {
             }
         } finally {
             server.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+        }
+    }
+
+    // #2301: the client re-issues a broken ReadRows for statuses it classifies two ways — the
+    // configured retryable code (UNAVAILABLE), and its own list (the INTERNAL transport faults, a
+    // RESOURCE_EXHAUSTED whose RetryInfo carries a delay). The SDK's retry listener saw only the
+    // second.
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"UNAVAILABLE", "INTERNAL_RST_STREAM", "RESOURCE_EXHAUSTED_RETRY_INFO"})
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aRetriedReadAttemptIsCountedWhateverStatusEndedTheOneBefore(String failure)
+            throws Exception {
+        // Three rows, then the failure; the resumed call delivers the remaining two.
+        ScriptedReadRows script = new ScriptedReadRows(failure, 1);
+        AtomicInteger retries = new AtomicInteger();
+
+        long rows = script.read(retries);
+
+        assertThat(script.offsets).as("resumed where the break left").containsExactly(0L, 3L);
+        assertThat(rows).as("every row, read once").isEqualTo(ScriptedReadRows.STREAM_ROWS);
+        assertThat(retries).as("one re-issued attempt").hasValue(1);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"UNAVAILABLE", "INTERNAL_RST_STREAM"})
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void theAttemptTheRetryBoundRefusesIsNotCounted(String failure) throws Exception {
+        // Every call fails; the first delivers three rows and each resumed one none, so the
+        // retryMaxAttempts bound of 3 ends the read after two re-issued attempts. The SDK listener
+        // counted a third for the INTERNAL family, because it runs before the bound is consulted.
+        ScriptedReadRows script = new ScriptedReadRows(failure, Integer.MAX_VALUE);
+        AtomicInteger retries = new AtomicInteger();
+
+        assertThatThrownBy(() -> script.read(retries))
+                .rootCause()
+                .isInstanceOfSatisfying(
+                        StatusRuntimeException.class,
+                        e ->
+                                assertThat(e.getStatus().getCode().name())
+                                        .as("the status the bound gave up on")
+                                        .isEqualTo(failure.replace("_RST_STREAM", "")));
+
+        assertThat(script.offsets).containsExactly(0L, 3L, 3L);
+        assertThat(retries).as("two re-issued attempts").hasValue(2);
+    }
+
+    /**
+     * A {@code ReadRows} server over a five-row stream, read through a production reading client
+     * bounded at three attempts. Each call serves the stream from its requested offset: the first
+     * three rows and then the named failure on the first call, nothing and then the failure on each
+     * further call up to {@code failures}, and the rest of the stream after that, so a resume at
+     * the wrong offset changes the row count as well as the recorded offsets.
+     */
+    private static final class ScriptedReadRows {
+
+        static final int STREAM_ROWS = 5;
+
+        private final String failure;
+        private final int failures;
+        private final List<Long> offsets = new CopyOnWriteArrayList<>();
+
+        ScriptedReadRows(String failure, int failures) {
+            this.failure = failure;
+            this.failures = failures;
+        }
+
+        long read(AtomicInteger retries) throws Exception {
+            Server server =
+                    NettyServerBuilder.forAddress(
+                                    new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0))
+                            .addService(
+                                    new BigQueryReadGrpc.BigQueryReadImplBase() {
+                                        @Override
+                                        public void readRows(
+                                                ReadRowsRequest request,
+                                                StreamObserver<ReadRowsResponse> response) {
+                                            serve(request, response);
+                                        }
+                                    })
+                            .build()
+                            .start();
+            try (GrpcEventLoops.LeasedClient<BigQueryReadClient> client =
+                    BigQueryReadClients.createForReads(
+                            null,
+                            EmulatorEndpoint.parse(
+                                    "127.0.0.1:" + server.getPort(), "emulatorEndpoint"),
+                            3,
+                            retries::incrementAndGet)) {
+                long rows = 0;
+                // The deadline bounds each attempt; the test's timeout bounds the whole read.
+                for (ReadRowsResponse response :
+                        client.client()
+                                .readRowsCallable()
+                                .call(
+                                        ReadRowsRequest.newBuilder().setReadStream("s").build(),
+                                        GrpcCallContext.createDefault()
+                                                .withTimeoutDuration(RPC_DEADLINE))) {
+                    rows += response.getRowCount();
+                }
+                return rows;
+            } finally {
+                server.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+            }
+        }
+
+        private void serve(ReadRowsRequest request, StreamObserver<ReadRowsResponse> response) {
+            offsets.add(request.getOffset());
+            int call = offsets.size();
+            long rows =
+                    call == 1
+                            ? 3
+                            : call <= failures ? 0 : Math.max(0, STREAM_ROWS - request.getOffset());
+            for (long i = 0; i < rows; i++) {
+                response.onNext(ReadRowsResponse.newBuilder().setRowCount(1).build());
+            }
+            if (call <= failures) {
+                response.onError(failure());
+            } else {
+                response.onCompleted();
+            }
+        }
+
+        private StatusRuntimeException failure() {
+            switch (failure) {
+                case "UNAVAILABLE":
+                    return Status.UNAVAILABLE
+                            .withDescription("connection reset")
+                            .asRuntimeException();
+                case "INTERNAL_RST_STREAM":
+                    // One of the INTERNAL descriptions the client classifies as a transport fault.
+                    return Status.INTERNAL
+                            .withDescription("HTTP/2 error code: RST_STREAM")
+                            .asRuntimeException();
+                case "RESOURCE_EXHAUSTED_RETRY_INFO":
+                    Metadata trailers = new Metadata();
+                    trailers.put(
+                            ProtoUtils.keyForProto(RetryInfo.getDefaultInstance()),
+                            RetryInfo.newBuilder()
+                                    .setRetryDelay(
+                                            com.google.protobuf.Duration.newBuilder()
+                                                    .setNanos(10_000_000))
+                                    .build());
+                    return Status.RESOURCE_EXHAUSTED.asRuntimeException(trailers);
+                default:
+                    throw new IllegalArgumentException(failure);
+            }
         }
     }
 

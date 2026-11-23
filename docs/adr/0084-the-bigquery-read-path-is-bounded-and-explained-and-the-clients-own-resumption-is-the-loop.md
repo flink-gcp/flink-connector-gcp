@@ -19,7 +19,7 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-10 (client behaviour read out of the pinned sources; stream counts measured against
   BigQuery the same day)
-- Issues: [#391], [#462], [#64]
+- Issues: [#391], [#462], [#64], [#2301]
 - Modules: bigquery (`source`, `source.reader`, `source.split`, `source.enumerator`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Source
 
@@ -122,13 +122,14 @@ fetcher for twenty-four hours while reporting nothing.
 from `BasicRetryingFuture` — through `java.util.logging` at `FINEST`, which is neither Flink's
 logging framework nor a level any deployment runs at. The bound only catches a stream that is
 making no progress; one that keeps failing and resuming resets the attempt count every time, never
-trips the bound, never fails the job, and simply reads slowly. The counter is wired through
-`BigQueryReadSettings.setReadRowsRetryAttemptListener`, reached by a `setRetryListener(Runnable)`
-seam on `RowStreamOpener` that the source calls once per subtask before any fetcher starts — the
-client captures the listener when it is built, so a later registration would be ignored. It is a
-`ThreadSafeSimpleCounter`: the callback runs on the client's retry scheduler, a thread this
-connector neither owns nor can name. The `Runnable` deliberately does not carry the SDK's status and
-metadata, so nothing outside the client wrapper names types it would not read.
+trips the bound, never fails the job, and simply reads slowly. The counter is taken where the client
+asks its own resumption strategy for the request that resumes a broken call (the revision below
+records why not the SDK's retry listener, which this record first wired). It is reached by a
+`setRetryListener(Runnable)` seam on `RowStreamOpener` that the source calls once per subtask before
+any fetcher starts — the client captures the hook when it is built, so a later registration would be
+ignored. It is a `ThreadSafeSimpleCounter`: the callback runs on the client's retry scheduler, a
+thread this connector neither owns nor can name. The `Runnable` deliberately carries nothing from the
+SDK, so nothing outside the client wrapper names types it would not read.
 
 **A read that fails after its session expired says so, and the split is what carries the expiry.**
 The split already carries the session's Avro schema because a reader is handed splits and nothing
@@ -193,10 +194,35 @@ An unpaced two-stream regression requires a non-zero reopened offset with unread
   `readRetries` reports that it is happening; deciding what to do about it is an operator's, and a
   connector-side response would be the retry loop this record declines.
 
+## Revision: the retry count is taken at the resume request (2026-11-23)
+
+The counter was first wired through `BigQueryReadSettings.setReadRowsRetryAttemptListener`, and that listener does not see every retry.
+In google-cloud-bigquerystorage 3.38.0 the client runs it from its own result algorithm, and only for the statuses that algorithm classifies itself: the `INTERNAL` transport faults and a `RESOURCE_EXHAUSTED` whose `RetryInfo` trailer carries a delay.
+A plain `UNAVAILABLE`, the configured retryable code, is retried through gax's own check and never reaches the listener.
+The listener also runs before `maxAttempts` is consulted, so it counts the attempt the bound then refuses.
+
+Both were measured on 2026-11-23 ([#2301]) against an in-test `ReadRows` server with the bound at 3.
+A stream that broke once with `UNAVAILABLE` after three rows resumed at offset 3 and delivered every row, and the listener counted nothing.
+A stream that failed every call with an `INTERNAL` transport fault made three calls, so two re-issued attempts, and the listener counted three.
+
+The count is now taken in a wrapper around the client's own `ReadRows` resumption strategy, once each time the client asks it for a resume request.
+`ReadRowsAttemptCallable` asks for one only when it re-issues a broken call, once per such attempt, whatever status ended the attempt before.
+The same measurement counts exactly the re-issued attempts in every case: one for each of the three status families, two for the stream the bound ends.
+The SDK's strategy itself is unchanged and still decides the resume offset, and the listener is not also set, because it would count its own statuses twice.
+The count is taken as the attempt starts, so a retry whose backoff ends after the reader cancelled the stream is counted, although the cancellation ends that attempt before its request is sent.
+
+gax's `ApiTracer` was the other candidate and is declined.
+Its `attemptFailedDuration` would see every scheduled retry, but a tracer factory set on `BigQueryReadSettings` never reaches `ReadRows`: `EnhancedBigQueryReadStub.create` rebuilds the stub settings without it, and the measurement's tracer counted nothing for any status.
+`ApiTracer` and `ApiTracerFactory` are also `@InternalApi` in gax 2.90.0.
+
+The wrapper relies on the client calling `getResumeRequest` once per re-issued attempt, which is how both the SDK's `ReadRowsAttemptCallable` and gax's `ServerStreamingAttemptCallable` are written.
+`BigQueryReadClientsEmulatorTest` drives the production reading client against the in-test server, so a client library update that changes this fails there.
+
 [#64]: https://github.com/flink-gcp/flink-connector-gcp/issues/64
 [#390]: https://github.com/flink-gcp/flink-connector-gcp/issues/390
 [#391]: https://github.com/flink-gcp/flink-connector-gcp/issues/391
 [#462]: https://github.com/flink-gcp/flink-connector-gcp/issues/462
+[#2301]: https://github.com/flink-gcp/flink-connector-gcp/issues/2301
 [storage-read-monitoring]: https://cloud.google.com/bigquery/docs/reference/storage#monitor_storage_read_api_use
 [storage-read-pricing]: https://cloud.google.com/bigquery/pricing#storage_read_api_pricing
 [storage-read-quotas]: https://cloud.google.com/bigquery/quotas#storage_read_api
