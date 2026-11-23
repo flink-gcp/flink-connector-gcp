@@ -195,7 +195,7 @@ def test_an_exported_run_reports_the_causes_its_events_name(tmp_path):
     result["recovery"] = {"stage": "finishing", "coverage": {}, "outcomes": {}}
     (run_dir / "result.json").write_text(json.dumps(result))
     approval = json.loads((run_dir / "approval.json").read_text())
-    approval["firestore_trial"] = plan.trial("jm-replacement")
+    approval["firestore_trial"] = plan.trial("sequence")
     (run_dir / "approval.json").write_text(json.dumps(approval))
     (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
     assert assessed["unplanned"] == ["Unplanned workload interruption"]
@@ -221,7 +221,7 @@ def test_a_completed_record_names_its_causes_without_their_events(tmp_path):
         ],
     )
     approval = json.loads((run_dir / "approval.json").read_text())
-    approval["firestore_trial"] = plan.trial("jm-replacement")
+    approval["firestore_trial"] = plan.trial("sequence")
     (run_dir / "approval.json").write_text(json.dumps(approval))
     (assessed,) = analyze.assess_runs([runs.Run(run_dir)])
     assert assessed["unplanned"] == ["Unplanned job restart"]

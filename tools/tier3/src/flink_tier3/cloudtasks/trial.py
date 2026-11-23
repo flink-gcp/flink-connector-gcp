@@ -16,7 +16,7 @@
 import hashlib
 from dataclasses import dataclass
 
-from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND
+from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND, rendered_parallelism
 from ..policy import PROJECT, REGION, RUN_ID
 
 # The application's bounds (kubernetes/apps/cloudtasks RecoveryOptions) and the
@@ -25,10 +25,8 @@ MAX_RECORDS = 360000
 MAX_RECORDS_PER_SECOND = 100
 MAX_INPUT_SECONDS = 1800
 QUEUE_PREFIX = "ct1362-"
-# A single-fault trial runs a savepoint upgrade and then a Pod deletion; each
-# shared fault kind but the default replaces one of the two with the fault it
-# names. The fault sequence of ADR-0204 runs every fault in one run.
-KINDS = (*FAULTS, SEQUENCE_KIND)
+# The one trial kind dispatched: the fault sequence of ADR-0204.
+KINDS = (SEQUENCE_KIND,)
 
 
 def parent():
@@ -42,15 +40,12 @@ class Trial:
     The application names each task with the SHA-256 hex digest of the key
     ``<run-id>/<sequence>``, so a listed name maps back to exactly one sequence
     of this run; ``queue`` is ``ct1362-<run-id>``, as the CUE delivery renders it.
-
-    ``kind`` defaults to the trial the first run was, whose approval names
-    none, so its archived evidence still reads as the trial it ran.
     """
 
     run_id: str
     records: int
     records_per_second: int
-    kind: str = DEFAULT_FAULT
+    kind: str
 
     def __post_init__(self):
         if not isinstance(self.run_id, str) or not RUN_ID.fullmatch(self.run_id):
@@ -71,26 +66,17 @@ class Trial:
 
     @property
     def failover(self):
-        """The Pod the second recovery deletes, as the shared exercise names it."""
-        return FAULTS[self.fault].failover
+        """The exercise base's failover, which the sequence leaves unused."""
+        return FAULTS[DEFAULT_FAULT].failover
 
     @property
     def rescale(self):
-        """The direction the upgrade rescales the sink in, or None."""
-        return FAULTS[self.fault].rescale
-
-    @property
-    def fault(self):
-        """The kind whose sizes the run starts and upgrades at.
-
-        The fault sequence starts and upgrades at two, as a JobManager
-        replacement does, and patches its rescales itself.
-        """
-        return DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind
+        """The exercise base's rescale, which the sequence leaves unused."""
+        return FAULTS[DEFAULT_FAULT].rescale
 
     def parallelism(self, phase):
         """The sink's subtasks in one phase, and the TaskManagers running them."""
-        return FAULTS[self.fault].parallelism(phase)
+        return rendered_parallelism(phase)
 
     @property
     def queue(self):

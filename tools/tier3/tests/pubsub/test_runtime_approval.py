@@ -150,7 +150,7 @@ def test_the_handoff_takes_its_input_domain_from_the_approval(prepared):
         environment, None, lambda *a: pytest.fail("Unexpected I/O")
     )
     handoff = PubSubHandoff(controller, actor_token="b" * 32)
-    assert handoff.records_per_subscription == 1000
+    assert handoff.records_per_subscription == plan.SEQUENCE_RECORDS
 
 
 def test_application_replacement_and_control_quotas(prepared):

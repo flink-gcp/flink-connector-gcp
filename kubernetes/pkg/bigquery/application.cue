@@ -57,9 +57,9 @@ import (
 			fileLoads: #FileLoads
 		}
 
-		// The writers' parallelism and the TaskManager count of this phase; a rescale trial renders
-		// a different one in each phase. Every delivery names it: a default of two here would
-		// conflict with the Flink package's default job parallelism of one.
+		// The writers' parallelism and the TaskManager count of this phase; the fault sequence
+		// patches its rescales on the running application. Every delivery names it: a default of
+		// two here would conflict with the Flink package's default job parallelism of one.
 		parallelism: 1 | 2
 	}
 	let storage = "gs://flink-gcp-tier3-bigquery/runs/\(run.id)"

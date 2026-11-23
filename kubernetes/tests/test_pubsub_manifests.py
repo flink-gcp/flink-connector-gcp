@@ -18,7 +18,6 @@
 import copy
 import itertools
 import json
-import re
 import shutil
 from types import SimpleNamespace
 
@@ -310,10 +309,9 @@ def test_the_pubsub_sequence_renders_its_paced_upgrade_at_two(module):
         "pubsub-recovery",
         run_id="proposal-2240",
         application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
-        pubsub_trial="sequence",
         pubsub_records=str(trial["records_per_subscription"]),
         pubsub_restore_deduplication="true",
-        pubsub_record_delay_millis=str(pubsub_plan.record_delay_millis("sequence")),
+        pubsub_record_delay_millis=str(pubsub_plan.RECORD_DELAY_MILLIS),
     )
     assert result.returncode == 0, result.stderr
     initial, recovery = json.loads(result.stdout)
@@ -324,41 +322,6 @@ def test_the_pubsub_sequence_renders_its_paced_upgrade_at_two(module):
     for app in (initial, recovery):
         assert app["spec"]["mode"] == "native"
         assert app["spec"]["taskManager"]["replicas"] == 2
-
-
-def test_a_single_fault_pubsub_kind_keeps_the_default_flow_control_unpaced(module):
-    result = lifecycle_export(
-        module,
-        "[application, upgradeApplication]",
-        "pubsub-recovery",
-        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
-        pubsub_trial="tm-replacement",
-    )
-    assert result.returncode == 0, result.stderr
-    for app in json.loads(result.stdout):
-        assert app["spec"]["mode"] == "native"
-        assert "scheduler-mode" not in app["spec"]["flinkConfiguration"]
-        assert "volumes" not in app["spec"]["jobManager"]["podTemplate"]["spec"]
-        assert app["spec"]["job"]["args"][-2:] == [
-            "--restore-deduplication=false",
-            "--record-delay-millis=0",
-        ]
-
-
-@pytest.mark.parametrize("trial", ["rescale", "none", "", "reactive-tm-kill"])
-def test_pubsub_rejects_an_unknown_trial(module, trial):
-    """Chosen by comparisons, an unknown trial rendered both applications at one."""
-    result = lifecycle_export(
-        module,
-        "[application, upgradeApplication]",
-        "pubsub-recovery",
-        application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
-        pubsub_trial=trial,
-    )
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-    # The kind table refuses it, as it refuses an unknown Cloud Tasks trial.
-    assert re.search(rf'undefined field: "?{re.escape(trial)}"?:', result.stderr)
 
 
 def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
@@ -379,12 +342,7 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
         active_seconds=pubsub_plan.ACTIVE_SECONDS,
         revision="b" * 40,
         application_image=GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
-        trial={
-            "version": 7,
-            "trial": "jm-replacement",
-            "records_per_subscription": 1000,
-            "restore_deduplication": False,
-        },
+        trial=pubsub_plan.trial("sequence"),
     )
     probe = bundle["delivery"]["probe"]
     assert probe["kind"] == "Pod" and probe["apiVersion"] == "v1"
@@ -426,8 +384,7 @@ def test_pubsub_access_probe_pod_from_real_cue(module, monkeypatch):
     )
 
 
-@pytest.mark.parametrize("trial", ["rescale-out", "rescale-in"])
-def test_pubsub_approval_binds_the_real_cue_delivery(module, monkeypatch, trial):
+def test_pubsub_approval_binds_the_real_cue_delivery(module, monkeypatch):
     """The dispatch's assembled approval binds the delivery it was built from."""
     from flink_tier3 import lifecycle
 
@@ -435,12 +392,7 @@ def test_pubsub_approval_binds_the_real_cue_delivery(module, monkeypatch, trial)
     module.rename(root / "kubernetes")
     monkeypatch.setattr(repository, "ROOT", root)
     monkeypatch.setenv("GOMAXPROCS", "2")
-    pubsub_trial = {
-        "version": 7,
-        "trial": trial,
-        "records_per_subscription": 1000,
-        "restore_deduplication": False,
-    }
+    pubsub_trial = pubsub_plan.trial("sequence")
     application_image = GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST
     bundle = pubsub_plan.prepare(
         run_id="proposal-1429",
@@ -503,25 +455,8 @@ def test_pubsub_approval_binds_the_real_cue_delivery(module, monkeypatch, trial)
     } == delivered_sources()
 
 
-@pytest.mark.parametrize(
-    "trial,initial_parallelism,recovery_parallelism,phase",
-    [
-        ("jm-replacement", 2, 2, "initial"),
-        ("tm-replacement", 2, 2, "initial"),
-        ("rescale-out", 1, 2, "upgrade"),
-        ("rescale-in", 2, 1, "upgrade"),
-    ],
-)
 @pytest.mark.parametrize("records", [3, 1001, 10000])
-def test_pubsub_proposal_from_real_cue(
-    module,
-    monkeypatch,
-    trial,
-    initial_parallelism,
-    recovery_parallelism,
-    phase,
-    records,
-):
+def test_pubsub_proposal_from_real_cue(module, monkeypatch, records):
     root = module.parent
     module.rename(root / "kubernetes")
     monkeypatch.setattr(repository, "ROOT", root)
@@ -535,25 +470,20 @@ def test_pubsub_proposal_from_real_cue(
         "revision": "b" * 40,
         "application_image": GAR + "pubsub-recovery@" + SYNTHETIC_DIGEST,
         "trial": {
-            "version": 7,
-            "trial": trial,
+            **pubsub_plan.trial("sequence"),
             "records_per_subscription": records,
-            "restore_deduplication": False,
         },
     }
     bundle = pubsub_plan.prepare(**inputs)
     proposal = bundle["proposal"]
     initial, recovery = bundle["application"], bundle["recovery_application"]
     assert proposal["approved"] is False
-    assert proposal["cost"]["kind"] == "planning-estimate"
-    assert proposal["cost"]["usd"] == "2.4805"
     assert proposal["application_sha256"] == digest(initial)
     assert proposal["recovery_application_sha256"] == digest(recovery)
     assert proposal["supervisor_sha256"] == digest(bundle["delivery"]["supervisor"])
-    assert initial["spec"]["job"]["parallelism"] == initial_parallelism
-    assert recovery["spec"]["job"]["parallelism"] == recovery_parallelism
-    assert f"--phase={phase}" in recovery["spec"]["job"]["args"]
-    assert (initial == recovery) == trial.endswith("replacement")
+    assert initial["spec"]["job"]["parallelism"] == 2
+    assert recovery["spec"]["job"]["parallelism"] == 2
+    assert "--phase=upgrade" in recovery["spec"]["job"]["args"]
     for app in (initial, recovery):
         assert app["metadata"]["namespace"] == "tier3-pubsub"
         assert app["metadata"]["annotations"]["flink-gcp.io/approval"] == "a" * 32

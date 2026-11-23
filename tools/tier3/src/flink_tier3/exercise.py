@@ -43,10 +43,6 @@ from .metrics import FlinkRest
 # and when a Pod is replaced outside a planned recovery.
 INTERRUPTED = "Unplanned workload interruption; trial is inconclusive"
 REPLACED = "Unplanned workload replacement; trial is inconclusive"
-# The stops of a run already admitted that a campaign repeats: only the
-# platform's own. A replacement is not one of them, because a TaskManager
-# whose JVM died is replaced too, its Pod never restarting a container.
-PLATFORM_STOPS = (INTERRUPTED,)
 # The `DisruptionTarget` reasons only the platform sets: the scheduler's
 # preemption, a node's taint or loss, and an eviction through the API, as a
 # node drain or upgrade makes.
@@ -104,22 +100,22 @@ class Fault:
         return self.initial if phase == "initial" else self.upgrade
 
 
-# The fault kinds every recovery scenario names its trials by: in approvals,
-# dispatch, the lifecycle delivery's sizes and the analysis report. A BigQuery
-# or Cloud Tasks trial runs the savepoint upgrade and then deletes the
-# ``failover`` Pod, and a rescale kind makes that upgrade the rescale; a
-# Pub/Sub trial runs only the kind's fault, deleting the Pod of a replacement
-# or making a rescale its one upgrade. `kubernetes/lifecycle/faults.cue`
-# renders the same sizes, and a test holds it to this table.
+# The single-fault kinds, which no trial dispatches any more (ADR-0204); the
+# single-fault exercise, and the BigQuery and Pub/Sub analyses of archived
+# runs, still name them.
+# A BigQuery or Cloud Tasks trial ran the savepoint upgrade and then deleted
+# the ``failover`` Pod, and a rescale kind made that upgrade the rescale; a
+# Pub/Sub trial ran only the kind's fault, deleting the Pod of a replacement or
+# making a rescale its one upgrade.
 FAULTS = {
     "jm-replacement": Fault("jobmanager", None, 2, 2),
     "tm-replacement": Fault("taskmanager", None, 2, 2),
     "rescale-out": Fault("jobmanager", "out", 1, 2),
     "rescale-in": Fault("jobmanager", "in", 2, 1),
 }
-# The kind of a trial that names none. A BigQuery or Cloud Tasks trial of it
-# runs the upgrade and then the JobManager failover, as those scenarios did
-# before they had fault kinds.
+# The kind whose failover and rescale a sequence trial gives the exercise base,
+# whose stage machine the sequence leaves unused. A BigQuery or Cloud Tasks
+# trial of it ran the upgrade and then the JobManager failover.
 DEFAULT_FAULT = "jm-replacement"
 # The kinds that replace a Pod, by the Pod each deletes, and the rescales by
 # the direction each moves the checkpointed subtasks in.
@@ -1253,15 +1249,19 @@ class FiniteInputExercise(RecoveryExercise):
 # JobManager replacement trial does, and the two rescales move it to one and
 # back.
 SEQUENCE = ("upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out")
+# The writers' parallelism, and TaskManager count, of both applications a
+# trial renders, the initial one and the upgrade; the sequence patches only its
+# rescales away from it. `kubernetes/lifecycle/faults.cue` renders the same,
+# and a test holds it to this.
+RENDERED_PARALLELISM = 2
 SEQUENCE_PARALLELISM = {
-    "upgrade": 2,
-    "jobmanager": 2,
-    "taskmanager": 2,
+    "upgrade": RENDERED_PARALLELISM,
+    "jobmanager": RENDERED_PARALLELISM,
+    "taskmanager": RENDERED_PARALLELISM,
     "rescale-in": 1,
-    "rescale-out": 2,
+    "rescale-out": RENDERED_PARALLELISM,
 }
-# The trial kind a scenario names the fault sequence by, beside its single-fault
-# kinds; it starts and upgrades at the default fault's sizes.
+# The one trial kind every scenario dispatches: the fault sequence.
 SEQUENCE_KIND = "sequence"
 # The faults that change the application, which the Operator applies as a
 # savepoint upgrade.
@@ -1271,6 +1271,13 @@ TIME_LIMIT_SECONDS = 3600
 # The input finished while a fault was still to come or awaited, so the job
 # could not be seen running again after it.
 UNCONFIRMED = "Input finished before the fault sequence did; unconfirmed"
+
+
+def rendered_parallelism(phase):
+    """The rendered parallelism of the `initial` or `upgrade` application."""
+    if phase not in ("initial", "upgrade"):
+        raise ValueError("Unknown trial phase")
+    return RENDERED_PARALLELISM
 
 
 class FaultSequence:

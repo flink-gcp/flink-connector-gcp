@@ -35,9 +35,9 @@ import (
 		// The seed copy's pace per reading subtask, which keeps the batch read's partitions
 		// unfinished through both recoveries; the application's bounds.
 		seedRowsPerSecond: (*50 | int) & >=1 & <=1000
-		// Every vertex but the input, one subtask per single-slot TaskManager; a rescale trial's
-		// phases differ. No default: the Flink package's own parallelism default would contradict
-		// one.
+		// Every vertex but the input, one subtask per single-slot TaskManager; the fault sequence
+		// patches its rescales on the running application. No default: the Flink package's own
+		// parallelism default would contradict one.
 		parallelism: 1 | 2
 		// Where the Change Streams source stops, so the job can finish; the lifecycle chooses it
 		// after the input's last commit. UTC, which the application parses as an instant.

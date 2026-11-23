@@ -15,23 +15,18 @@
 
 import copy
 import json
-from decimal import Decimal
 
 import pytest
 from flink_tier3 import render as command
 from flink_tier3.common import Failure
 from flink_tier3.model import validate_approval
+from flink_tier3.policy import POD_RESOURCES
 from flink_tier3.pubsub import plan
 
 
 @pytest.fixture
 def trial():
-    return {
-        "version": 7,
-        "trial": "rescale-out",
-        "records_per_subscription": 1000,
-        "restore_deduplication": False,
-    }
+    return plan.trial("sequence")
 
 
 @pytest.fixture
@@ -61,7 +56,7 @@ def renderer(monkeypatch):
             "containers": [
                 {
                     "resources": {
-                        category: dict(plan.POD_RESOURCES[role])
+                        category: dict(POD_RESOURCES[role])
                         for category in ("requests", "limits")
                     }
                 }
@@ -110,23 +105,8 @@ def renderer(monkeypatch):
 
     def render(run_id, nonce, expiry, seconds, **options):
         calls.append((run_id, nonce, expiry, seconds, options))
-        kind = options["pubsub_trial"]
-        initial = application(
-            run_id,
-            nonce,
-            expiry,
-            options,
-            1 if kind == "rescale-out" else 2,
-            "initial",
-        )
-        recovery = application(
-            run_id,
-            nonce,
-            expiry,
-            options,
-            1 if kind == "rescale-in" else 2,
-            "initial" if kind.endswith("-replacement") else "upgrade",
-        )
+        initial = application(run_id, nonce, expiry, options, 2, "initial")
+        recovery = application(run_id, nonce, expiry, options, 2, "upgrade")
         supervisor = pod("supervisor")
         supervisor["containers"][0]["image"] = (
             plan.GAR + "lifecycle-tools@sha256:" + "9" * 64
@@ -188,35 +168,15 @@ def renderer(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("kind", plan.TRIALS)
-def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer, kind):
+def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer):
     """The dispatch and actor tests stand on it, so it must pass as the CUE does."""
-    inputs["trial"]["trial"] = kind
     proposal = plan.prepare(**inputs)["proposal"]
     assert proposal["approved"] is False
-    assert renderer[0][4]["pubsub_trial"] == kind
 
 
-@pytest.mark.parametrize(
-    "kind, initial, recovery",
-    [
-        ("jm-replacement", (2, "initial"), (2, "initial")),
-        ("tm-replacement", (2, "initial"), (2, "initial")),
-        ("rescale-out", (1, "initial"), (2, "upgrade")),
-        ("rescale-in", (2, "initial"), (1, "upgrade")),
-        # The sequence's recovery manifest is its savepoint upgrade at two.
-        ("sequence", (2, "initial"), (2, "upgrade")),
-    ],
-)
 @pytest.mark.parametrize("deduplication", [False, True])
-def test_the_trial_fixes_each_manifests_job(
-    trial, kind, initial, recovery, deduplication
-):
-    trial.update(
-        trial=kind,
-        records_per_subscription=40,
-        restore_deduplication=deduplication,
-    )
+def test_the_trial_fixes_each_manifests_job(trial, deduplication):
+    trial.update(records_per_subscription=40, restore_deduplication=deduplication)
     jobs = plan.manifest_jobs("run-1430", trial)
     assert jobs == tuple(
         (
@@ -228,11 +188,11 @@ def test_the_trial_fixes_each_manifests_job(
                 f"--parallelism={parallelism}",
                 f"--require-restored={str(phase == 'upgrade').lower()}",
                 f"--restore-deduplication={str(deduplication).lower()}",
-                # Only the sequence paces its input.
-                f"--record-delay-millis={100 if kind == 'sequence' else 0}",
+                "--record-delay-millis=100",
             ],
         )
-        for parallelism, phase in (initial, recovery)
+        # The recovery manifest is the sequence's savepoint upgrade at two.
+        for parallelism, phase in ((2, "initial"), (2, "upgrade"))
     )
 
 
@@ -336,7 +296,7 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         # Version 5 removed the runtime traffic limits.
         ("traffic_limits", {}),
         ("total_request_limit", 100000),
-        # Spend is approved from the estimate before dispatch, not proposed here.
+        # Dispatch approves no spend, so a trial proposes none.
         ("additional_cost_usd", "10.00"),
     ],
 )
@@ -347,6 +307,7 @@ def test_invalid_trial_refused_before_render(inputs, field, value):
 
 
 def test_the_planned_pass_publishes_each_cohort_in_one_batch(trial):
+    trial["records_per_subscription"] = 1000
     planned = plan.input_plan("proposal-1361", trial)
     # Three cohorts of 333, 333 and 334, one publication each per input.
     assert planned["publish_calls"] == 6
@@ -421,54 +382,16 @@ def test_cli_routes_pubsub_without_authentication(monkeypatch, capsys):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize(
-    "kind, slots",
-    [
-        ("jm-replacement", 7),
-        ("rescale-out", 7),
-        ("sequence", 7),
-    ],
-)
-def test_the_estimate_charges_the_pod_budget_and_the_reserve(kind, slots):
-    # Pods of 1 vCPU, 2 GiB and 1 GiB for the 90 minutes, at 0.141 an hour
-    # each, and the reserve.
-    assert plan.estimate(kind) == slots * Decimal("0.141") * Decimal("1.5") + Decimal(
-        "1.00"
-    )
-
-
-def test_the_estimate_charges_each_slot_at_its_own_shape(monkeypatch):
-    # The policy's Flink and Operator shapes are equal; a distinct one shows
-    # which shape each slot is charged at.
-    shapes = dict(plan.POD_RESOURCES)
-    shapes["operator"] = {"cpu": "2", "memory": "2Gi", "ephemeral-storage": "1Gi"}
-    monkeypatch.setattr(plan, "POD_RESOURCES", shapes)
-    # Three control slots at 0.10 more an hour each, for the 90 minutes.
-    assert plan.estimate("jm-replacement") == (
-        Decimal("0.987") + 3 * Decimal("0.10")
-    ) * Decimal("1.5") + Decimal("1.00")
-
-
-def test_the_proposal_carries_the_estimate_and_its_basis(inputs, renderer):
-    assert plan.prepare(**inputs)["proposal"]["cost"] == {
-        "kind": "planning-estimate",
-        "usd": "2.4805",
-        "reviewed_at": "2026-10-10T00:00:00Z",
-        "other_reserve_usd": "1.00",
-    }
-
-
 @pytest.mark.parametrize("kind", plan.TRIALS)
 def test_a_kind_names_its_whole_trial(kind):
     """A dispatch chooses only the kind; the plan fixes everything else."""
     trial = plan.trial(kind)
     plan.validate_trial(trial)
-    sequence = kind == "sequence"
     assert trial == {
         "version": plan.VERSION,
         "trial": kind,
-        "records_per_subscription": 4800 if sequence else 1000,
-        "restore_deduplication": sequence,
+        "records_per_subscription": 4800,
+        "restore_deduplication": True,
     }
     # The one-pass feasibility check dispatch reaches only after the cluster.
     plan.input_plan("feasibility", trial)

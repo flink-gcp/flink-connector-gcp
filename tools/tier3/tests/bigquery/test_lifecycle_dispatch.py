@@ -68,7 +68,7 @@ def dispatching(monkeypatch):
 def args(tmp_path, **overrides):
     value = {
         "scenario": "bigquery-recovery",
-        "bigquery_trial": "eo-10",
+        "bigquery_trial": "eo-10-sequence",
         "application_digest": DIGEST,
         "run_id": "bq-1424-0001",
         "kubeconfig": tmp_path / "kubeconfig",

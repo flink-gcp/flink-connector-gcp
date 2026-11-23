@@ -15,60 +15,21 @@
 """Offline, unapproved Firestore recovery proposal and delivery bundle."""
 
 from dataclasses import asdict
-from decimal import Decimal
 
 from ..common import digest, json_bytes, utc
-from ..model import Schedule, _hourly
+from ..model import Schedule
 from ..policy import (
     CLEANUP_SECONDS,
     FIRESTORE,
     FIRESTORE_OBSERVATIONS,
-    POD_RESOURCES,
     WINDOWS,
 )
 from ..proposal import check_inputs, render_verified
-from .trial import KINDS, LATE_RECORDS, MODES, SEQUENCE_KIND, Trial
+from .trial import KINDS, MODES, Trial
 
 NAMESPACE = FIRESTORE
 WINDOW_SECONDS = WINDOWS["firestore-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Every dispatchable trial's input: 30 minutes at the rate of the other
-# recovery trials in the same window.
-INPUT = {"records": 180000, "records_per_second": 100}
-# The seed the runner writes to each database and each copy's pace per
-# reading subtask, the package's default pace. Both reads read at one read
-# time planned at the job's first start, and without point-in-time recovery
-# the service refuses a read time older than about an hour, so the seed has a
-# floor and a ceiling.
-#
-# The floor: the copies must still be reading through both recoveries in the
-# fastest layout, two subtasks holding splits from start to end, which a
-# replacement trial gives when the service plans two splits or more. The
-# Spanner trials of #1878, whose exercise and timings this one shares, began
-# the upgrade about 410 seconds into the input and deleted the failover's Pod
-# about 830 seconds in; 108,000 records at 2 x 50 a second take 1,080
-# seconds.
-#
-# The ceiling: the slowest layout, one subtask holding the only split
-# throughout, which the service gives when it plans one split for a small
-# seed, must finish within about 45 minutes of the first start. 108,000 at 50
-# a second take 2,160 seconds; both recoveries stop the copy for at most 114
-# and 101 seconds in #1878, and each restore reads again at most one
-# 30-second checkpoint interval, so the read ends about 2,440 seconds, or 41
-# minutes, after the first start, and the job then finishes.
-#
-# Spanner's 120,000 rows would end about 2,680 seconds after the first start
-# in the slowest layout, at the 45 minutes rather than inside them.
-SEED = {"seed_records": 108000, "seed_records_per_second": 50}
-REVIEWED_AT = "2026-11-08T00:00:00Z"
-# Planning assumptions, which matched the us-central1 prices on the pricing
-# page on 2026-11-08 (the #2085 preregistration): Standard-edition
-# document or entity writes and reads, without the free tier.
-USD_PER_100K_WRITES = Decimal("0.09")
-USD_PER_100K_READS = Decimal("0.03")
-RESERVE_USD = Decimal("1.00")
-
-
 # The fault sequence's input and seed (ADR-0204): ten minutes of input at 10
 # records a second, which outlasts the five faults, and a seed each reading
 # subtask copies at 5 records a second, so the copy outlasts them too, ten
@@ -79,19 +40,17 @@ SEQUENCE_SEED = {"seed_records": 6000, "seed_records_per_second": 5}
 
 
 def trial(kind, started_at=None):
-    """The approved trial of one kind: its fault, the fixed input and seed.
+    """The approved trial of one kind: the fixed input and seed.
 
     Dispatch passes every scenario its window's start; this trial needs none.
     """
     if kind not in KINDS:
         raise ValueError("Unknown Firestore trial: " + str(kind))
-    if kind == SEQUENCE_KIND:
-        return {"kind": kind, **SEQUENCE_INPUT, **SEQUENCE_SEED}
-    return {"kind": kind, **INPUT, **SEED}
+    return {"kind": kind, **SEQUENCE_INPUT, **SEQUENCE_SEED}
 
 
 def validate_trial(value):
-    # Serialized, so `180000.0` or `True` cannot pass as a count.
+    # Serialized, so `6000.0` or `True` cannot pass as a count.
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in KINDS or json_bytes(value) != json_bytes(trial(kind)):
         raise ValueError(
@@ -99,41 +58,6 @@ def validate_trial(value):
             + ", ".join(KINDS)
             + " with its fixed input and seed"
         )
-
-
-def operations(sizes):
-    """The document or entity writes and reads the trial plans, in both databases.
-
-    Each database takes the input, the seed and its late records, and one
-    copy of each seed record; it serves the copy's read of the seed and the
-    oracles' reads of `input`, `seed` and `batch_out`. Copies a restore emits
-    again and the sinks' replays are not counted: at most a checkpoint
-    interval of records each, a few thousand.
-    """
-    records, seed = sizes["records"], sizes["seed_records"]
-    writes = records + seed + LATE_RECORDS + seed
-    reads = seed + records + seed + LATE_RECORDS + seed
-    return {"writes": len(MODES) * writes, "reads": len(MODES) * reads}
-
-
-def estimate(sizes):
-    """Planning estimate for the trial; not a bound on bills.
-
-    Compute for the window, as the Spanner estimate prices it, the planned
-    operations and a reserve for storage, state, evidence and telemetry.
-    """
-    shapes = [
-        POD_RESOURCES["operator"],
-        POD_RESOURCES["supervisor"],
-        *[POD_RESOURCES["smoke"]] * 3,
-    ]
-    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    counts = operations(sizes)
-    usage = (
-        Decimal(counts["writes"]) * USD_PER_100K_WRITES
-        + Decimal(counts["reads"]) * USD_PER_100K_READS
-    ) / 100_000
-    return compute + usage + RESERVE_USD
 
 
 def prepare(
@@ -174,7 +98,6 @@ def prepare(
         firestore_records=identity.records,
         firestore_records_per_second=identity.records_per_second,
         firestore_seed_records_per_second=identity.seed_records_per_second,
-        firestore_trial=identity.kind,
     )
     proposal = {
         "kind": "firestore-trial-proposal",
@@ -202,15 +125,6 @@ def prepare(
             "seed_records": identity.seed_records,
         },
         "observations": dict(FIRESTORE_OBSERVATIONS),
-        "cost": {
-            "kind": "planning-estimate",
-            "usd": str(estimate(trial)),
-            "reviewed_at": REVIEWED_AT,
-            "operations": operations(trial),
-            "usd_per_100k_writes": str(USD_PER_100K_WRITES),
-            "usd_per_100k_reads": str(USD_PER_100K_READS),
-            "other_reserve_usd": str(RESERVE_USD),
-        },
     }
     delivery["config"]["data"]["proposal.json"] = json_bytes(proposal).decode()
     return {

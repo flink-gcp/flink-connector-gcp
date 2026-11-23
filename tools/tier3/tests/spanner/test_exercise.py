@@ -70,7 +70,7 @@ def baseline(prepared, monkeypatch):
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
     end = utc(environment.clock() + 3600)
-    small = Trial(environment.approval.run_id, 5, 1, end, 6, 1)
+    small = Trial(environment.approval.run_id, 5, 1, end, 6, 1, "sequence")
     environment.approval = dataclasses.replace(
         environment.approval, scenario="spanner-recovery"
     )
@@ -224,13 +224,13 @@ def test_the_batch_plan_is_read_from_the_jobmanager_log(baseline):
     }
 
 
-def built(prepared, monkeypatch, kind):
-    """The exercise the supervisor builds for a small trial of `kind`."""
+def built(prepared, monkeypatch):
+    """The exercise the supervisor builds for a small sequence trial."""
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
     # The sequence's end, well inside the run's time limit.
     end = utc(environment.clock() + 1800)
-    small = Trial(environment.approval.run_id, 5, 1, end, 6, 1, kind=kind)
+    small = Trial(environment.approval.run_id, 5, 1, end, 6, 1, kind="sequence")
     environment.approval = dataclasses.replace(
         environment.approval, scenario="spanner-recovery"
     )
@@ -255,13 +255,7 @@ def built(prepared, monkeypatch, kind):
 @pytest.fixture
 def sequence(prepared, monkeypatch):
     """The fault-sequence exercise over the same small input."""
-    return built(prepared, monkeypatch, "sequence")
-
-
-@pytest.mark.parametrize("kind", ["jm-replacement", "tm-replacement", "rescale-in"])
-def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
-    value, _ = built(prepared, monkeypatch, kind)
-    assert type(value) is SpannerExercise
+    return built(prepared, monkeypatch)
 
 
 def test_the_sequence_trial_builds_the_sequence_exercise(sequence):

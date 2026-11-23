@@ -803,7 +803,7 @@ def test_a_shutdown_that_did_not_stop_the_pod_is_no_interruption(
 
 def test_a_mark_from_before_the_binding_still_vetoes(held):
     # An in-flight binding can follow the autoscaler's mark, so the mark still
-    # counts, and the error, if any, is the stop a campaign does not repeat.
+    # counts, and the error, if any, is the replacement's, not the platform's.
     hold(held)
     lose_tm2(held, bound=-300)
     scale_down(held, -400)

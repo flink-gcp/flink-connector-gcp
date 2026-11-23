@@ -22,13 +22,6 @@ from flink_tier3.policy import BIGTABLE_OBSERVATIONS
 START = "2026-10-20T00:00:00Z"
 
 
-def test_the_change_stream_end_is_fixed_by_the_window_it_runs_in():
-    """A stale end would let the source finish having read nothing (#1854)."""
-    trial = plan.trial("rescale-out", START)
-    assert timestamp(trial["change_stream_end"]) == timestamp(START) + 3900
-    plan.validate_trial(trial, START)
-
-
 def test_the_sequence_input_and_oracles_fit_around_its_change_stream_end():
     """An input that cannot finish before the end leaves no run usable, and an
     end too late leaves the oracles no time inside the run's time limit."""

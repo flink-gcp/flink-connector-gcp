@@ -20,7 +20,6 @@ import pytest
 import requests
 from flink_tier3.common import ApiError, Failure, digest
 from flink_tier3.resource import require_resources_clean
-from flink_tier3.spanner import plan
 from flink_tier3.spanner.instance import TABLES, Instance
 from flink_tier3.spanner.lifecycle import SpannerLifecycle
 from flink_tier3.spanner.trial import Trial
@@ -29,7 +28,9 @@ from ..controller_environment import Environment as QueueEnvironment
 from ..doubles import NOW, Response
 
 # The seed every dispatched trial writes.
-TRIAL = Trial("sp-lifecycle", 100, 10, "2026-10-28T01:05:00Z", **plan.SEED)
+# A seed larger than the sequence's, so that it takes several commits.
+SEED = {"seed_rows": 120000, "seed_rows_per_second": 50}
+TRIAL = Trial("sp-lifecycle", 100, 10, "2026-10-28T01:05:00Z", **SEED, kind="sequence")
 DEADLINE = NOW + 600
 INSTANCE, DATABASE = TRIAL.instance_path, TRIAL.database_path
 
@@ -382,7 +383,9 @@ def test_display_names_fit_spanner_and_differ_between_long_run_ids():
     # instance in the project already holds.
     first, second = ("a" * 14 + suffix for suffix in ("b" * 26, "c" * 26))
     names = {
-        Trial(run_id, 100, 10, "2026-10-28T01:05:00Z", **plan.SEED).display_name
+        Trial(
+            run_id, 100, 10, "2026-10-28T01:05:00Z", **SEED, kind="sequence"
+        ).display_name
         for run_id in (first, second, "sp-lifecycle")
     }
     assert len(names) == 3

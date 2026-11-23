@@ -16,26 +16,20 @@
 import copy
 import json
 import re
-from decimal import Decimal
 
 from ..bundle import package_sources
 from ..common import Failure, digest, json_bytes, quantity, timestamp, utc, verify_pod
-from ..exercise import FAULTS, SEQUENCE_KIND
-from ..model import Schedule, _hourly
+from ..exercise import RENDERED_PARALLELISM, SEQUENCE_KIND
+from ..model import Schedule
 from ..policy import CLEANUP_SECONDS, GAR, POD_RESOURCES, SHA, WINDOWS
 from ..workflow import render
 from .access import probe_spec
 from .messages import MAX_BATCH, PUBLISH_BATCH, cohort_ranges, publications
 from .resources import ResourcePlan
-from .verdict import application_pods, sizes
 
-TRIALS = (*FAULTS, SEQUENCE_KIND)
+TRIALS = (SEQUENCE_KIND,)
 WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# When the rates behind the estimate were read from the official pricing
-# pages: the basis of the number the owner approves, not an admission deadline.
-REVIEWED_AT = "2026-10-10T00:00:00Z"
-RESERVE_USD = Decimal("1.00")
 # Version 7 removed `entry_point` with the relay's Table entry point (#2240).
 VERSION = 7
 FIELDS = {
@@ -44,9 +38,6 @@ FIELDS = {
     "records_per_subscription",
     "restore_deduplication",
 }
-# What a single-fault trial runs: 1,000 records per subscription, with
-# restore deduplication off, as #1361 ran them.
-SINGLE_FAULT_RECORDS = 1000
 # The fault sequence's input (ADR-0204): 4,800 records per subscription, which
 # the relay reads at ten a second per subtask, 480 seconds of input at
 # parallelism two. The earlier sequence runs' inputs began 477 to 677 seconds
@@ -63,20 +54,12 @@ def trial(kind):
     """The trial a dispatch of ``kind`` runs; nothing else of it is chosen."""
     if kind not in TRIALS:
         raise Failure("Unknown Pub/Sub trial")
-    sequence = kind == SEQUENCE_KIND
     return {
         "version": VERSION,
         "trial": kind,
-        "records_per_subscription": SEQUENCE_RECORDS
-        if sequence
-        else SINGLE_FAULT_RECORDS,
-        "restore_deduplication": sequence,
+        "records_per_subscription": SEQUENCE_RECORDS,
+        "restore_deduplication": True,
     }
-
-
-def record_delay_millis(kind):
-    """How long the relay waits before each record of a ``kind`` trial."""
-    return RECORD_DELAY_MILLIS if kind == SEQUENCE_KIND else 0
 
 
 def validate_trial(value):
@@ -92,25 +75,6 @@ def validate_trial(value):
         raise Failure("Unknown Pub/Sub trial")
     if type(value["restore_deduplication"]) is not bool:
         raise Failure("Invalid Pub/Sub trial field: restore_deduplication")
-
-
-def estimate(kind):
-    """Planning estimate for one trial; not a bound on bills or SDK retries.
-
-    It charges the Pod slots the admission quotas hold for the whole window:
-    the application's at the Flink shape, four for every kind, which runs at
-    most two TaskManagers, and the three control slots at the Operator's,
-    which is at least the supervisor's, with no Spot or commitment discount. The
-    reserve covers what the input domain and the window bound: Pub/Sub
-    throughput, Cloud Storage operations and storage, Cloud Logging ingestion
-    and the logs and evidence leaving Google Cloud, each a fraction of it at
-    the largest input domain and the exercise's pulls over the whole window.
-    """
-    shapes = [POD_RESOURCES["smoke"]] * application_pods(kind) + [
-        POD_RESOURCES["operator"]
-    ] * 3
-    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    return compute + RESERVE_USD
 
 
 def _pod(pod, role):
@@ -186,20 +150,14 @@ def input_plan(run_id, trial):
 def manifest_jobs(run_id, trial):
     """The (parallelism, job arguments) of the initial and recovery manifests.
 
-    Replacement trials keep both manifests at parallelism two; a rescale trial
-    changes one to two or two to one and requires restored state in the
-    upgrade phase. The fault sequence's recovery manifest is its savepoint
-    upgrade at two, from which the exercise patches its rescales.
+    Both run at parallelism two, and the recovery manifest is the fault
+    sequence's savepoint upgrade, which requires restored state; the exercise
+    patches its rescales from it.
     """
     validate_trial(trial)
-    kind = trial["trial"]
-    initial, recovery = sizes(kind)
-    upgraded = kind == SEQUENCE_KIND or FAULTS[kind].rescale is not None
+    parallelism = RENDERED_PARALLELISM
     jobs = []
-    for parallelism, phase in (
-        (initial, "initial"),
-        (recovery, "upgrade" if upgraded else "initial"),
-    ):
+    for phase in ("initial", "upgrade"):
         jobs.append(
             (
                 parallelism,
@@ -211,7 +169,7 @@ def manifest_jobs(run_id, trial):
                     f"--require-restored={str(phase == 'upgrade').lower()}",
                     "--restore-deduplication="
                     + str(trial["restore_deduplication"]).lower(),
-                    f"--record-delay-millis={record_delay_millis(kind)}",
+                    f"--record-delay-millis={RECORD_DELAY_MILLIS}",
                 ],
             )
         )
@@ -281,15 +239,14 @@ def prepare(
         scenario="pubsub-recovery",
         expression="[application, upgradeApplication, delivery.resources]",
         application_image=application_image,
-        pubsub_trial=trial["trial"],
         pubsub_records=records,
         pubsub_restore_deduplication=str(trial["restore_deduplication"]).lower(),
-        pubsub_record_delay_millis=record_delay_millis(trial["trial"]),
+        pubsub_record_delay_millis=RECORD_DELAY_MILLIS,
         pubsub_probe=probe_argument(resources, schedule),
         pubsub_probe_source=probe_command()[3],
     )
     require_trial_jobs(run_id, trial, initial, recovery)
-    for application, replicas in zip((initial, recovery), sizes(trial["trial"])):
+    for application in (initial, recovery):
         metadata = application["metadata"]
         annotations = metadata.get("annotations", {})
         if (
@@ -303,7 +260,10 @@ def prepare(
         if spec["image"] != application_image:
             raise Failure("Rendered application differs from the Pub/Sub trial")
         _pod(spec["podTemplate"]["spec"], "smoke")
-        for manager, count in (("jobManager", 1), ("taskManager", replicas)):
+        for manager, count in (
+            ("jobManager", 1),
+            ("taskManager", RENDERED_PARALLELISM),
+        ):
             if spec[manager]["replicas"] != count or spec[manager]["resource"] != {
                 "cpu": 1,
                 "memory": "2Gi",
@@ -356,12 +316,6 @@ def prepare(
         "limits": {
             "seconds": WINDOW_SECONDS,
             "cleanup_seconds": CLEANUP_SECONDS,
-        },
-        "cost": {
-            "kind": "planning-estimate",
-            "usd": str(estimate(trial["trial"])),
-            "reviewed_at": REVIEWED_AT,
-            "other_reserve_usd": str(RESERVE_USD),
         },
     }
     data["proposal.json"] = json_bytes(proposal).decode()

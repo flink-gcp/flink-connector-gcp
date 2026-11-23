@@ -17,7 +17,7 @@
 from dataclasses import dataclass
 
 from ..common import Failure, timestamp, utc
-from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND
+from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND, rendered_parallelism
 from ..policy import PROJECT, RUN_ID
 
 # The application's bounds (kubernetes/apps/bigtable RecoveryOptions) and the
@@ -41,8 +41,8 @@ SUM_FAMILY = "agg"
 SUM_QUALIFIER = "count"
 MARKER_FAMILY = "flink_commit"
 RELAY_FAMILY = "r"
-# The single-fault kinds and the fault sequence of ADR-0204.
-KINDS = (*FAULTS, SEQUENCE_KIND)
+# The one trial kind dispatched: the fault sequence of ADR-0204.
+KINDS = (SEQUENCE_KIND,)
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class Trial:
     records: int
     records_per_second: int
     change_stream_end: str
-    kind: str = DEFAULT_FAULT
+    kind: str
 
     def __post_init__(self):
         if (
@@ -94,26 +94,17 @@ class Trial:
 
     @property
     def failover(self):
-        """The Pod the second recovery deletes, as the shared exercise names it."""
-        return FAULTS[self.fault].failover
+        """The exercise base's failover, which the sequence leaves unused."""
+        return FAULTS[DEFAULT_FAULT].failover
 
     @property
     def rescale(self):
-        """The direction the upgrade rescales the job in, or None."""
-        return FAULTS[self.fault].rescale
-
-    @property
-    def fault(self):
-        """The kind whose sizes the run starts and upgrades at.
-
-        The fault sequence starts and upgrades at two, as a JobManager
-        replacement does, and patches its rescales itself.
-        """
-        return DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind
+        """The exercise base's rescale, which the sequence leaves unused."""
+        return FAULTS[DEFAULT_FAULT].rescale
 
     def parallelism(self, phase):
         """Every vertex but the input's subtasks, and the TaskManagers running them."""
-        return FAULTS[self.fault].parallelism(phase)
+        return rendered_parallelism(phase)
 
     @property
     def instance(self):

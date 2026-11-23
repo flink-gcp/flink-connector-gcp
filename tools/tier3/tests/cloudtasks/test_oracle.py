@@ -28,7 +28,7 @@ from flink_tier3.cloudtasks.verdict import (
     verdict,
 )
 
-TRIAL = Trial("ct-oracle", 5, 1)
+TRIAL = Trial("ct-oracle", 5, 1, "sequence")
 PREFIX = TRIAL.queue_path + "/tasks/"
 
 

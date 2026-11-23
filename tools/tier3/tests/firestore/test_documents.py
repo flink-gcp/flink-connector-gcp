@@ -24,7 +24,7 @@ from flink_tier3.firestore.trial import MODES, Trial, record_key
 
 from ..doubles import NOW, Response
 
-TRIAL = Trial("fs-oracle", 20, 10, 30, 1)
+TRIAL = Trial("fs-oracle", 20, 10, 30, 1, "sequence")
 READ_AT = "2026-10-28T01:20:00.123456Z"
 COMMITTED = "2026-10-28T00:30:00.000001Z"
 FIRESTORE = "https://firestore.googleapis.com/v1/"

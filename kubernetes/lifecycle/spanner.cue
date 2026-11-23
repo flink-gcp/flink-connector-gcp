@@ -26,11 +26,6 @@ spannerRecords:           int    @tag(spanner_records,type=int)
 spannerRecordsPerSecond:  int    @tag(spanner_records_per_second,type=int)
 spannerChangeStreamEnd:   string @tag(spanner_change_stream_end)
 spannerSeedRowsPerSecond: int    @tag(spanner_seed_rows_per_second,type=int)
-// A single-fault trial runs a savepoint upgrade and then deletes a Pod. Its kind names the fault
-// that makes it a trial of its own: the JobManager deleted, a TaskManager deleted in its place, or
-// an upgrade that rescales every vertex but the input from one subtask to two or from two to one.
-// The `sequence` trial (ADR-0204) runs every fault in one run.
-spannerTrial: *defaultFault | or([for kind, _ in sequenceKinds {kind}]) @tag(spanner_trial)
 
 // Both Spanner phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it
@@ -44,7 +39,7 @@ if scenario == "spanner-recovery" {
 					records:           spannerRecords, recordsPerSecond: spannerRecordsPerSecond
 					changeStreamEnd:   spannerChangeStreamEnd
 					seedRowsPerSecond: spannerSeedRowsPerSecond
-					parallelism:       sequenceKinds[spannerTrial][trialPhase]
+					parallelism:       renderedParallelism
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

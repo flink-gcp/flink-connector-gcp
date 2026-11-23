@@ -117,11 +117,11 @@ The `tier3-spanner` namespace, its KSA and RBAC are in the [bootstrap root](../.
 
 The `spanner-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-spanner` against an instance it creates for the run, measures the job before and after each recovery, and judges each of the three components on its own table.
 It is the trial set of [#1360](https://github.com/flink-gcp/flink-connector-gcp/issues/1360) and [#1872](https://github.com/flink-gcp/flink-connector-gcp/issues/1872), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-trial) records its design ([#1877](https://github.com/flink-gcp/flink-connector-gcp/issues/1877)).
-It follows the [Bigtable recovery trial](../bigtable/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
+It follows the [Bigtable recovery trial](../bigtable/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2154](https://github.com/flink-gcp/flink-connector-gcp/issues/2154)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165, whose exercise the rest of this section still describes.
 Once a completed checkpoint follows the initial input and the late seed rows are written, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 
@@ -138,25 +138,14 @@ The Change Streams oracle is judged only when the input's latest progress line, 
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
 A restore after the input's latest progress line also leaves the oracle unjudged, as it does for Bigtable, whose sink can commit rows its state carried without logging a line; this sink carries none and a restore that writes logs a line, so here the rule only errs toward unjudged; such a run can run again as it is too.
 The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
-`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults.
 The first `sequence` run, `sp2154-seq-a1`, reached `usable`, as its [findings](../../../docs/adr/evidence/0204-spanner-fault-sequence-findings-2154.md) record.
 
-### Trial and estimate
+### Trial and proposal
 
-Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and the same seed, 120,000 rows copied at 50 rows per second per reading subtask.
-It runs a savepoint upgrade and then deletes a Pod, and its kind names the fault that makes it a trial of its own:
-
-| Kind | Upgrade | Pod deleted | Subtasks of every vertex but the input, initial then upgrade |
-| --- | --- | --- | --- |
-| `jm-replacement` | Keeps its sizes | The JobManager | 2, 2 |
-| `tm-replacement` | Keeps its sizes | The TaskManager that reported the latest input | 2, 2 |
-| `rescale-out` | Rescales the job | The JobManager | 1, 2 |
-| `rescale-in` | Rescales the job | The JobManager | 2, 1 |
-
-The change-stream end is 3,900 seconds after the window's start, as for the Bigtable trial, so dispatch derives it from the window and the trial carries it.
-Two reading subtasks copy the seed in about 20 minutes and one in about 40, so the copy is still reading through both recoveries and done long before the end.
-The job finishes at the end, which leaves the table reads 540 seconds, up to a minute before the cleanup start.
-Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
+The trial's kind is `sequence`, with the input, seed and change-stream end of the [fault sequence](#fault-sequence), and both phases run two subtasks of every vertex but the input.
+Dispatch derives the change-stream end from the window, as for the Bigtable trial, and the trial carries it.
+Render a trial's offline proposal from the repository root:
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
@@ -165,23 +154,20 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
   --started-at 2026-10-28T00:00:00Z --expires-at 2026-10-28T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
   --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/spanner-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --spanner-trial tm-replacement > /tmp/spanner-proposal.json
+  --spanner-trial sequence > /tmp/spanner-proposal.json
 ```
 
 A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
-The estimate is the same for every kind, about USD 2.24: the Pods for the window as the Bigtable estimate prices them, two hours of the 100-processing-unit instance at USD 0.09 an hour, and a USD 1.00 reserve for storage, state, evidence and telemetry.
-The two hours round the 90-minute window up on the assumption, not measured, that the instance is billed for at least an hour.
 
 ### Dispatch
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `spanner-recovery` with two inputs beyond the common ones: `spanner_trial`, the kind, which the dispatch refuses when it is left at `none`; and `application_digest`, the published `spanner-recovery` GAR digest, verified live at dispatch and never pinned.
-The owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios.
+Dispatching is the approval, as for the other scenarios, and no estimate is approved first, since ADR-0204 bounds the run by its time limit.
 The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
 Any run ID fits, because the run's instance is `sp1360-<run-id>`, at most 47 of the 64 characters an instance ID takes.
-One dispatch can carry a campaign of the remaining kinds and a repeat budget, as the [Bigtable dispatch section](../bigtable/README.md#dispatch) describes; for example, `spanner_trial=jm-replacement`, `run_id=sp1878-jm-a1`, `campaign=tm-replacement,rescale-out,rescale-in` and `repeats=2` run the four trials from one dispatch, for at most six attempts.
 
-The [`spanner-recovery`](../../lifecycle/spanner.cue) delivery takes the input and seed pace that the [deployment definition](#deployment-definition) describes from the optional `spanner_records`, `spanner_records_per_second` and `spanner_seed_rows_per_second` tags, the last at most 1,000, the change-stream end from the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and the kind from the `spanner_trial` tag, `jm-replacement` unless given, which sizes every vertex but the input and the TaskManagers from [faults.cue](../../lifecycle/faults.cue).
-Dispatch renders it at the dispatched kind, the input and seed pace every kind shares and a change-stream end 3,900 seconds into the run's window.
+The [`spanner-recovery`](../../lifecycle/spanner.cue) delivery takes the input and seed pace that the [deployment definition](#deployment-definition) describes from the optional `spanner_records`, `spanner_records_per_second` and `spanner_seed_rows_per_second` tags, the last at most 1,000, the change-stream end from the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and sizes every vertex but the input and the TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+Dispatch renders it at the sequence's fixed input and seed pace and a change-stream end 1,800 seconds into the run's window.
 
 ### Instance lifecycle
 

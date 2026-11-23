@@ -27,7 +27,7 @@ from flink_tier3.records import Records
 from .doubles import NOW
 from .test_lifecycle import Store
 
-TRIAL = Trial("ct-lifecycle", 100, 10)
+TRIAL = Trial("ct-lifecycle", 100, 10, "sequence")
 
 
 def application(trial=TRIAL):

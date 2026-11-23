@@ -206,7 +206,7 @@ def test_a_cloudtasks_approval_validates_and_derives_its_trial(prepared):
     validate_approval(value)
     assert "bigquery_trial" not in value and "pubsub_trial" not in value
     trial = Approval.from_dict(value).cloudtasks_plan
-    assert (trial.records, trial.records_per_second) == (180000, 100)
+    assert (trial.records, trial.records_per_second) == (3600, 10)
     assert trial.run_id == value["run_id"]
     assert environment.approval.application_namespace == CLOUDTASKS
     smoke = Approval.from_dict({**value, "scenario": "smoke"})
@@ -470,7 +470,7 @@ def full_coverage():
 def exercise(prepared, monkeypatch):
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
-    small = plan.Trial(environment.approval.run_id, 4, 1)
+    small = plan.Trial(environment.approval.run_id, 4, 1, "sequence")
     monkeypatch.setattr(
         type(environment.approval),
         "cloudtasks_plan",
@@ -741,7 +741,7 @@ def test_the_exercise_needs_the_runs_own_controller(prepared, env):
     environment.actor = "supervisor"
     with pytest.raises(Failure, match="queue controller"):
         CloudTasksExercise(environment, upgrade, None)
-    other = plan.Trial("ct-other", 100, 10)
+    other = plan.Trial("ct-other", 100, 10, "sequence")
     with pytest.raises(Failure, match="queue controller"):
         CloudTasksExercise(environment, upgrade, Controller(environment, other))
 
@@ -857,30 +857,6 @@ def test_the_upgrade_waits_for_flowing_input_and_a_whole_baseline(
     environment.clock.now += 61
     begin_upgrade(checkpoint())
     assert begun == [opened + window]
-
-
-@pytest.mark.parametrize(
-    "kind,failover,rescale,pods",
-    [
-        ("jm-replacement", "jobmanager", None, 3),
-        ("tm-replacement", "taskmanager", None, 3),
-        ("rescale-out", "jobmanager", "out", 2),
-        ("rescale-in", "jobmanager", "in", 3),
-    ],
-)
-def test_the_approved_trial_names_the_exercises_faults(
-    prepared, monkeypatch, kind, failover, rescale, pods
-):
-    environment, _, upgrade, _ = prepared
-    environment.actor = "supervisor"
-    trial = plan.Trial(environment.approval.run_id, 180000, 100, kind)
-    monkeypatch.setattr(
-        type(environment.approval), "cloudtasks_plan", property(lambda self: trial)
-    )
-    value = CloudTasksExercise(environment, upgrade, Controller(environment, trial))
-    assert (value.failover, value.rescale) == (failover, rescale)
-    # The JobManager and one TaskManager per initial sink subtask.
-    assert value.expected_pods == pods
 
 
 class Rest:
@@ -1175,11 +1151,11 @@ def test_the_actors_bind_the_queue_to_the_cleanup_end_and_their_role(prepared):
         actors.barrier(environment)
 
 
-def built(prepared, kind, monkeypatch):
-    """The exercise the supervisor builds for a four-record trial of `kind`."""
+def built(prepared, monkeypatch):
+    """The exercise the supervisor builds for a four-record sequence trial."""
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
-    small = plan.Trial(environment.approval.run_id, 4, 1, kind)
+    small = plan.Trial(environment.approval.run_id, 4, 1, "sequence")
     monkeypatch.setattr(
         type(environment.approval),
         "cloudtasks_plan",
@@ -1195,16 +1171,8 @@ def built(prepared, kind, monkeypatch):
     return value, controller, small
 
 
-@pytest.mark.parametrize(
-    "kind", ["jm-replacement", "tm-replacement", "rescale-out", "rescale-in"]
-)
-def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
-    value, _, _ = built(prepared, kind, monkeypatch)
-    assert type(value) is CloudTasksExercise
-
-
 def test_the_sequence_trial_builds_the_sequence_exercise(prepared, monkeypatch):
-    value, _, _ = built(prepared, "sequence", monkeypatch)
+    value, _, _ = built(prepared, monkeypatch)
     assert isinstance(value, CloudTasksSequenceExercise)
     assert value.measurement_event is None
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
@@ -1222,7 +1190,7 @@ def test_a_sequence_run_is_judged_by_its_listing_alone(
     prepared, monkeypatch, sequences, verdict, reasons
 ):
     """No coverage or recovery proofs: the exactly-once listing decides."""
-    value, controller, small = built(prepared, "sequence", monkeypatch)
+    value, controller, small = built(prepared, monkeypatch)
     # The finished application's transition, which waits for the listing.
     value.persist("complete")
     assert value.stage == LISTING_STAGE
@@ -1237,7 +1205,7 @@ def test_the_sequence_rescales_the_sink_through_its_parallelism_argument(
     prepared, monkeypatch
 ):
     """The approved upgrade names `--parallelism` once, as the patch needs."""
-    value, _, _ = built(prepared, "sequence", monkeypatch)
+    value, _, _ = built(prepared, monkeypatch)
     spec = value.sequence_spec(1)
     args = spec["job"]["args"]
     assert args[args.index("--parallelism") + 1] == "1"
@@ -1252,7 +1220,7 @@ def test_a_sequence_run_whose_task_carries_another_records_body_is_not_usable(
     prepared, monkeypatch
 ):
     """Every name listed once is not enough: each body must be its own key."""
-    value, controller, small = built(prepared, "sequence", monkeypatch)
+    value, controller, small = built(prepared, monkeypatch)
     value.persist("complete")
     pages = listing(small, range(4))
     pages[1][1]["httpRequest"]["body"] = pages[1][0]["httpRequest"]["body"]

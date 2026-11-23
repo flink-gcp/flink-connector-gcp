@@ -40,7 +40,7 @@ def args(tmp_path, **overrides):
     value = {
         "scenario": "cloudtasks-recovery",
         "application_digest": DIGEST,
-        "cloudtasks_trial": "jm-replacement",
+        "cloudtasks_trial": "sequence",
         "run_id": "ct-1769-0001",
         "kubeconfig": tmp_path / "kubeconfig",
         "directory": tmp_path,
@@ -132,7 +132,7 @@ def test_an_admitted_dispatch_runs_the_rig_with_the_delivery_its_approval_fixes(
     assert approval.cloudtasks_trial == plan.trial(kind)
     assert approval.cloudtasks_plan.kind == kind
     [(_, _, _, _, options)] = renderer
-    assert options["cloudtasks_trial"] == kind
+    assert "cloudtasks_trial" not in options
     assert approval.started_at == cli.rt.utc(NOW)
     assert approval.expires_at == cli.rt.utc(NOW + WINDOW)
     assert approval.images["application"] == (
@@ -197,7 +197,7 @@ def test_a_dispatch_without_a_digest_is_refused_before_anything(
 def test_the_assembled_approval_is_the_one_the_model_admits(prepared):
     environment, _, _, proposal = prepared
     reference = environment.approval.to_dict()
-    trial = plan.trial("tm-replacement")
+    trial = plan.trial("sequence")
     approval = cli.resource_approval(
         scenario="cloudtasks-recovery",
         run_id=reference["run_id"],

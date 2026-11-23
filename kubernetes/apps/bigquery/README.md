@@ -97,7 +97,7 @@ The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap
 [`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator schema and Flink 2.2.1 application image.
 A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
 A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`, `backgroundStagingUploadEnabled`, and `maxInFlightUploadOperations` only when the uploader is on), whose defaults and ranges are the connector's except that `backgroundStagingUploadEnabled` defaults to `false`, so that only the uploader trials run it, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders each knob that exists as an argument, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
-The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, its `bigquery_fault` tag selects each phase's parallelism, as the [fault trials](#offline-execution-proposal) list it, and its `bigquery_records` tag, which dispatch always sets, the record count.
+The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, and its `bigquery_records` tag, which dispatch always sets, the record count; both phases run the writers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
 Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
 The offered rate is fixed at 1 MiB/s.
 The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
@@ -119,20 +119,20 @@ The fixed-delay restart strategy restarts the job any number of times with a ten
 
 For the upgrade, render the same inputs with `run.phase: "upgrade"` and update the same deployment.
 Both phases use `upgradeMode: savepoint` and `allowNonRestoredState: false`; only the phase argument and `--require-restored` change, with the latter becoming `true` on upgrade.
-A rescale trial's upgrade also changes `--parallelism`, the job parallelism and the TaskManager count together.
+The fault sequence's rescales patch `--parallelism`, the job parallelism and the TaskManager count together.
 The definition also sets `kubernetes.operator.job.upgrade.last-state-fallback.enabled=false` so an unavailable savepoint cannot be replaced by last-state recovery, and `kubernetes.operator.snapshot.resource.enabled=false` to use the Operator's status-based savepoint reporting instead of separate FlinkStateSnapshot resources.
 These settings follow the generic recovery exercise that [#1311](https://github.com/flink-gcp/flink-connector-gcp/issues/1311) ran; an Operator upgrade must revisit this version-specific reporting choice.
 The running application's checkpointed identity also rejects changed input parameters on restore.
 The package describes that transition; it does not wait for baseline observations, prove a completed savepoint, apply the upgrade or delete the JobManager.
 
-`just tier3-check` renders both phases for all six mode/destination combinations and each fault's sizes against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and that the phases differ only in phase, restoration and a rescale's sizes.
+`just tier3-check` renders both phases for all six mode/destination combinations at the rendered parallelism of two against the pinned schemas and checks input bounds, namespace policy, Pod resources, state paths and that the phases differ only in phase and restoration.
 Those static tests use synthetic digests and do not establish image availability, server admission, task placement or GCS restore permissions.
 The [production dispatch](#production-dispatch) path must bind the exact rendered manifests to the approved trial, provision owned tables, admit the complete workload budget, collect observations, run the query oracle and clean all owned resources.
 
 ## Fault sequence
 
 Three trials run a delivery method under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md), each at ten destinations: `alo-10-sequence` the at-least-once path ([#2150](https://github.com/flink-gcp/flink-connector-gcp/issues/2150)), and `eo-10-sequence` and `fl-10-uploader-sequence` the exactly-once paths ([#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)), FILE_LOADS with the background staging uploader on, as the connector runs it by default.
-Every other trial, and the execution the sections after this one describe, still follows ADR-0165 until the single-fault trials are removed.
+No other trial is dispatched; the single-fault execution that the sections after this one describe still follows ADR-0165 until it is removed ([#2278](https://github.com/flink-gcp/flink-connector-gcp/issues/2278)).
 Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two writers to one and back; the rescales are the approved upgrade with only its parallelism, its TaskManager count and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 No window samples the job, and no fault waits for a commit: each lands wherever the commits happen to be, for the reasons ADR-0204 gives.
@@ -155,7 +155,7 @@ When the job has finished after the last fault, with its whole input processed, 
 A missing, invalid or, in an exactly-once mode, duplicated row makes the run `inconclusive` with `oracle-not-passed` rather than stopping it, and the query is not repeated until it passes, because the finished job, not the tables, says the input was committed; the read ends at the latest a minute before the run's one-hour limit, and a job that finishes later than that stops the run at its time limit.
 Before its query, a FILE_LOADS run lists the [connector-issued jobs](#connector-issued-jobs) and stops if one is not `DONE`, for the reason the [internal recovery execution](#internal-recovery-execution) gives; a listing that failed without an answer, such as a transport error, is repeated until the read window closes.
 An archived report that differs from the rows it came with still stops the run.
-`just tier3-analyze` decides a `sequence` run by its query alone and lists its faults; its proposal still carries the estimate below, which nothing approves.
+`just tier3-analyze` decides a `sequence` run by its query alone and lists its faults.
 
 ## Offline execution proposal
 
@@ -164,25 +164,12 @@ A proposal is not an approval: dispatch admits this scenario only through the [p
 The bundle contains `approved: false` and an empty `approval.json`; rendering never grants execution permission or calls a cloud API.
 It may download pinned public CUE schema dependencies when the local cache is cold.
 
-Name the trial with `--bigquery-trial`: `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one delivery method at one destination count, or one of the [fault sequences](#fault-sequence) `alo-10-sequence`, `eo-10-sequence` and `fl-10-uploader-sequence`.
-`fl-10` is the FILE_LOADS trial at 10 destinations with the sink inputs at the connector's defaults except the background staging uploader, which it keeps off: it asks whether finalization survives the two recoveries, not how it scales.
-`fl-10-uploader` is the same trial with the background staging uploader on at its default of two in-flight upload operations ([#2030](https://github.com/flink-gcp/flink-connector-gcp/issues/2030)); its runs across these recoveries are what turned the connector's default on, as ADR-0195 records, and `fl-10` stays the task-thread comparison.
-These run a savepoint upgrade and a JobManager failover, with the writers at parallelism two in both phases.
-
-The `eo-10`, `fl-10` and `fl-10-uploader` cells also name a fault that takes the place of one of those recoveries ([#1779](https://github.com/flink-gcp/flink-connector-gcp/issues/1779)), as the [shared recovery exercise](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#shared-recovery-exercise-fault-kinds) runs it:
-
-| Trial | Upgrade | Failover | Writers and TaskManagers, initial then upgrade |
-| --- | --- | --- | --- |
-| `<cell>-tm-replacement` | Savepoint upgrade | The TaskManager that reported the latest input | 2, 2 |
-| `<cell>-rescale-out` | Savepoint rescale out | JobManager | 1, 2 |
-| `<cell>-rescale-in` | Savepoint rescale in | JobManager | 2, 1 |
-
-A rescale stays inside the namespace's three-Pod quota, the one the estimate charges for every trial, so the estimate is the same; the three `eo-10` ones are preregistered as [Production dispatch](#production-dispatch) lists.
-That quota has no slot for a replacement, so a TaskManager replacement's new Pod is refused until the deleted one finishes terminating, and Flink retries its creation inside the recovery's 600-second deadline; in the deployed trial the refused request came while the job was restarting and delayed nothing measurable, as the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#taskmanager-replacement) record.
-Every trial now renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
+Name the trial with `--bigquery-trial`: one of the [fault sequences](#fault-sequence) `alo-10-sequence`, `eo-10-sequence` and `fl-10-uploader-sequence`.
+The namespace's three-Pod quota has no slot for a replacement, so after the sequence deletes a TaskManager its new Pod is refused until the deleted one finishes terminating, and Flink retries its creation; in the single-fault trial that deleted a TaskManager, the refused request came while the job was restarting and delayed nothing measurable, as the [fault trial findings](../../../docs/adr/evidence/0165-bigquery-fault-trials-findings-1779.md#taskmanager-replacement) record.
+Every trial renders `--parallelism`, which a `bigquery-recovery` image built before [#1782](https://github.com/flink-gcp/flink-connector-gcp/issues/1782) refuses as an unknown argument at job start, so each needs an image published after it.
 Likewise an image built before [#2226](https://github.com/flink-gcp/flink-connector-gcp/issues/2226) pads its rows with pseudorandom bytes, which the [query oracle](#offline-query-oracle) now counts as invalid, so every trial needs an image published after that change too.
-One bundle describes one trial, not a campaign authorization; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
-The record count is fixed to the mode's 30-minute-equivalent input above, except for the fault sequences' six minutes.
+One bundle describes one trial; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
+The record count is fixed to the fault sequence's six minutes of the mode's rows.
 Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
 Every visibility retry that submits a new job must consume another slot.
 
@@ -190,7 +177,7 @@ For example, render from the repository root with a synthetic image digest for l
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
-  --scenario bigquery-recovery --bigquery-trial eo-10 \
+  --scenario bigquery-recovery --bigquery-trial eo-10-sequence \
   --run-id example-1312 --nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --started-at 2026-09-21T00:00:00Z --expires-at 2026-09-21T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
@@ -207,14 +194,8 @@ The ConfigMap carries that same proposal as `proposal.json`, separately from the
 The declared revision is a requested source identity: the renderer does not prove checkout cleanliness, GitHub main ancestry, image publication/provenance, registry retention or a live namespace/Operator baseline.
 Those checks and final approval belong to [production dispatch](#production-dispatch).
 
-The planning estimate, USD 2.35 for every trial, is what the owner approves before a dispatch; nothing at run time compares spend against it.
-It charges all five running Pods for the full window at the existing conservative CPU/memory/ephemeral-storage rates, adds all reserved query bytes at USD 6.25/TiB, and adds USD 1 for other incremental costs.
-It does not separately price occupancy of the shared policy's extra Operator replacement slot.
-The reviewed sources are [GKE Autopilot pricing](https://cloud.google.com/kubernetes-engine/pricing) and [BigQuery on-demand pricing](https://cloud.google.com/bigquery/pricing), checked on 2026-09-20; the proposal records that date as the estimate's basis.
-It assumes on-demand query billing and takes no free-tier, Spot or commitment discount.
-The reserve is an allowance, not a measured bound on storage, ingestion, retries, networking or telemetry; existing cluster standing charges and unexpected cleanup overruns are outside the estimate.
-The generated observation plan records one minute of warm-up, five minutes each of baseline observation, observation after the upgrade and observation after the failover, ten-minute startup/visibility limits and a ten-minute limit per recovery.
-[Internal recovery execution](#internal-recovery-execution) describes the clocks the exercise enforces from them, and [production dispatch](#production-dispatch) is the only path that runs it.
+The generated observation plan still records the single-fault exercise's timings: one minute of warm-up, five minutes each of baseline observation, observation after the upgrade and observation after the failover, ten-minute startup/visibility limits and a ten-minute limit per recovery.
+A fault sequence uses only the startup limit, by which the runner creates the application, and the visibility limit, for its one read, and is otherwise bounded by its one-hour time limit, as the [fault sequence](#fault-sequence) describes; [Internal recovery execution](#internal-recovery-execution) describes the clocks the single-fault exercise enforced from the rest.
 
 ## Table and row identity
 
@@ -548,7 +529,7 @@ The conditional GCS grants, including the `.inprogress/` grant [#1498](https://g
 ### Approval and shared resource policy
 
 [Production dispatch](#production-dispatch) builds a `bigquery-recovery` approval and validates it once, before it takes the lock; the internal integration and cleanup tests construct one directly.
-It binds `bigquery_trial` to the trial the dispatch named: its delivery method and destination count, and the fault, uploader and record count of the trials that name them.
+It binds `bigquery_trial` to the trial the dispatch named: its delivery method and destination count, its fault, `sequence`, its record count, and the uploader for the trial that names it.
 The approval also pins the initial and upgrade manifest hashes, the rig commit, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
 A valid document is not execution permission on its own: dispatch still requires the environment lock, and the in-cluster entrypoint builds its supervisor only through the actor factory.
@@ -557,8 +538,8 @@ Internal runner admission requires an explicit environment-bound handoff; intern
 The approval requires a 90-minute window with the final 15 minutes reserved for cleanup.
 The application quota covers one JobManager and two TaskManagers, each using the existing 1 CPU, 2 GiB memory and 1 GiB ephemeral-storage shape.
 The control quota covers the Operator, supervisor and one Operator replacement while the previous Pod terminates; five Pods run in the steady state.
-The quotas, not a count in the approval, bound the Pods and PVCs; the approval carries no cost ceiling, because a single-fault trial's spend is approved from the estimate before dispatch and a fault sequence is bounded by its time limit.
-Every trial retains a fixed finite input size, its mode's or the fault sequence's; the approval model derives the resource plan rather than accepting another independently editable copy.
+The quotas, not a count in the approval, bound the Pods and PVCs; the approval carries no cost ceiling, because a fault sequence is bounded by its time limit.
+Every trial retains a fixed finite input size, the fault sequence's for its mode; the approval model derives the resource plan rather than accepting another independently editable copy.
 The resource controller refuses a plan that differs from this approval before reading or creating service resources.
 
 Common creation/adoption uses the approved application namespace.
@@ -612,10 +593,10 @@ The `eo-10` fault trials of [#1779](https://github.com/flink-gcp/flink-connector
 
 | Input | Contract |
 | --- | --- |
-| `bigquery_trial` | `alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, one of the `eo-10`, `fl-10` and `fl-10-uploader` fault trials above, or one of the fault sequences `alo-10-sequence`, `eo-10-sequence` and `fl-10-uploader-sequence`; the default `none` is refused |
+| `bigquery_trial` | One of the fault sequences `alo-10-sequence`, `eo-10-sequence` and `fl-10-uploader-sequence`; the default `none` is refused |
 | `application_digest` | The published `bigquery-recovery` GAR digest, verified live at dispatch and never pinned |
 
-For a single-fault trial the owner approves the run's estimate before dispatching it, and dispatching is the approval; a [fault sequence](#fault-sequence) carries an estimate that nothing approves, as ADR-0204 decides.
+Dispatching is the approval, and no estimate is approved first, as ADR-0204 decides.
 The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget.
 
 The checks that need neither the cluster nor the lock run first: the trial and digest, the dispatch from `main`, the rig commit (the dispatched `main` commit unless `rig_sha` names another), the run ID and an existing run's evidence.
@@ -653,14 +634,14 @@ The source pauses with the job, so the longer deadline takes no input from the w
 The upgrade must restore its new savepoint, preserve the input lineage, advance source progress and complete another checkpoint.
 The proved upgrade then runs for a 300-second window before a single JobManager deletion, which must not restore behind the latest checkpoint triggered since that window opened.
 The replacement JobManager must restore the checkpointed job and advance input and checkpoint evidence again.
-A fault trial changes one of the two as the table in [Offline execution proposal](#offline-execution-proposal) names: a rescale's restored job must also checkpoint more or fewer subtasks than before it, and a TaskManager replacement deletes the TaskManager that reported the latest input, keeps the JobManager and waits for the deleted Pod to go.
+A fault trial changed one of the two as the table in the [Offline execution proposal](https://github.com/flink-gcp/flink-connector-gcp/blob/79af2befed14838c7422a6b270beb393e1083083/kubernetes/apps/bigquery/README.md#offline-execution-proposal) of the single-fault trials named: a rescale's restored job must also checkpoint more or fewer subtasks than before it, and a TaskManager replacement deletes the TaskManager that reported the latest input, keeps the JobManager and waits for the deleted Pod to go.
 A Pod interruption at any stage, a Pod replacement outside a recovery, and a job restart the exercise did not plan, read from the restores the job's checkpoint statistics count, each stop the run as inconclusive, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#unplanned-job-restarts) records.
 
 In FILE_LOADS mode the JobManager, or a fault trial's TaskManager, is deleted only once a listing shows one of the run's load jobs `RUNNING`, so that the failover is issued while a commit's load runs server-side ([#1685](https://github.com/flink-gcp/flink-connector-gcp/issues/1685)).
 A commit takes 5 to 11 seconds of each 120-second checkpoint interval at the trial's sizes and a load 1 to 6 seconds, so a deletion left to the 15-second poll rarely lands inside one.
 Once the window after the upgrade has ended, the supervisor starts a listing of the run's [connector-issued jobs](#connector-issued-jobs) once a second (`in_flight_poll_seconds`), or as soon as the previous one returns when it took longer, and deletes the JobManager as soon as a load is `RUNNING`; a `PENDING` load, or a copy or query, does not count.
 The wait blocks the supervisor loop for at most `in_flight_seconds`, 130 seconds or one checkpoint interval and a margin, which replaces the deadline of the window after the upgrade.
-Input keeps flowing meanwhile and must still last the 300-second post-recovery window. With the earlier ten-minute baseline and post-recovery windows and no window after the upgrade, `bq1313-fl-10-a1`'s input completed 232 seconds after that window ended and `bq1685-fl-10-a1`'s 106 seconds after. The plan's `test_the_input_outlasts_every_window_and_both_recoveries` adds up every fixed delay, each checkpoint the exercise waits for taken as a whole interval, the longest end-to-end duration measured for the mode and a poll; FILE_LOADS is then estimated to leave 139 seconds of input, EO 581 and ALO 621, before the input the failover replays. That is an estimate, not a bound: it leaves out the supervisor's own work in each poll, and a FILE_LOADS checkpoint that ran toward its 120-second timeout would take most of the margin and two such checkpoints more than all of it, so a longer wait would put the run at risk of failing on input that ran out too early.
+Input keeps flowing meanwhile and must still last the 300-second post-recovery window. With the earlier ten-minute baseline and post-recovery windows and no window after the upgrade, `bq1313-fl-10-a1`'s input completed 232 seconds after that window ended and `bq1685-fl-10-a1`'s 106 seconds after. The plan's former `test_the_input_outlasts_every_window_and_both_recoveries`, removed with the single-fault trials, added up every fixed delay, each checkpoint the exercise waits for taken as a whole interval, the longest end-to-end duration measured for the mode and a poll; it estimated that FILE_LOADS left 139 seconds of input, EO 581 and ALO 621, before the input the failover replays. That was an estimate, not a bound: it left out the supervisor's own work in each poll, and a FILE_LOADS checkpoint that ran toward its 120-second timeout would take most of the margin and two such checkpoints more than all of it, so a longer wait would put the run at risk of failing on input that ran out too early.
 A stop is checked once a poll during the wait, a listing that fails in transport, including the control and lock reads it makes first, counts as a listing that saw nothing, and a run in which no load runs by the end fails without deleting the JobManager.
 The loads the wait saw are written into the `failover_in_flight` outcome before the deletion, so the failover record holds them even when the recovery then fails.
 Right after the delete request returns, the supervisor lists again: a load listed `RUNNING` on both sides was running when the deletion was issued, since a job's state only moves forward, and the intersection is recorded as `running_through`; an empty one records a failover issued just as its load finished, and a relisting that fails in transport is recorded as unknown rather than failing the run.

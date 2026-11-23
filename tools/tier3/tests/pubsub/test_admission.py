@@ -442,7 +442,7 @@ def runner_releases_while_supervisor_waits(a, monkeypatch, *, settle_first=True)
 def test_a_supervised_run_whose_application_never_runs_stops_and_cleans(
     admitting, monkeypatch
 ):
-    """The exercise starts after admission and its first stage bounds the wait."""
+    """The exercise starts after admission and its time limit bounds the wait."""
     a = admitting
     a.runner.start(*a.args)
     released = []
@@ -458,7 +458,7 @@ def test_a_supervised_run_whose_application_never_runs_stops_and_cleans(
     a.supervisor.supervise(supervisor_uid(a))
     control = a.environment.refresh()
     assert control.pubsub["stage"] == "cleaned"
-    assert "deadline expired: baseline" in control.reason
+    assert "Run reached its time limit" in control.reason
     # Its access probe pulled once; the exercise's collection pulled again.
     assert a.events.count(("peek", "supervisor")) > 1
     assert not a.service.resources.resources

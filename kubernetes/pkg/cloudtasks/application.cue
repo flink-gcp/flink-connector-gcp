@@ -30,7 +30,7 @@ import (
 		// bounds apply to the default too, which a lower rate makes too long.
 		records: (*180000 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
 		// The sink's subtasks, one per single-slot TaskManager, which the application takes as
-		// `--parallelism`; a rescale trial's phases differ, and the fault sequence patches it.
+		// `--parallelism`; the fault sequence patches its rescales on the running application.
 		// No default: the Flink package's own parallelism default would contradict one.
 		parallelism: 1 | 2
 	}

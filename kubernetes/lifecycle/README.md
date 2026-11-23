@@ -19,7 +19,7 @@ limitations under the License.
 ```text
 lifecycle/
   delivery.cue       # Shared inputs, ConfigMap and supervisor Job
-  faults.cue         # Recovery fault kinds and each phase's sizes
+  faults.cue         # The recovery trials' rendered parallelism
   smoke.cue          # Smoke application
   bigquery.cue       # BigQuery trial inputs and applications
   pubsub.cue         # Pub/Sub trial inputs, applications and access probe
@@ -30,7 +30,7 @@ lifecycle/
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
-The recovery scenarios take their fault kinds and each phase's sizes from [faults.cue](faults.cue), the copy of the shared exercise's `FAULTS` table that a test holds to it ([#1789](https://github.com/flink-gcp/flink-connector-gcp/issues/1789)); a scenario that also runs the fault sequence of ADR-0204 takes `sequenceKinds`, which adds the `sequence` kind at the default fault's sizes.
+The recovery scenarios render both phases at the parallelism in [faults.cue](faults.cue), two, the copy of the shared exercise's `RENDERED_PARALLELISM` that a test holds to it; the fault sequence of ADR-0204 patches its rescales from there.
 The runner selects the scenario through its existing input.
 
 The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
@@ -59,10 +59,9 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `__init__.py`, `cli.py`, `__main__.py`, `runtime.py` | The package's shared exports, the CLI, its entry point in the projected package, and the supervisor's entrypoint |
 | `lifecycle.py` | The Actions frontend: dispatch, which binds a rendered delivery's approval, Job deadline and ConfigMap size limit, then recovery, plans and finalization |
 | `workflow.py` | GitHub, CUE and OpenTofu integration for that frontend |
-| `campaign.py` | The next attempt of a campaign that one dispatch carries |
 | `render.py`, `bundle.py` | The rendered lifecycle delivery, and the package source it projects to the supervisor |
 | `proposal.py` | Rendering and checking an offline trial proposal's manifests |
-| `policy.py`, `policy.toml` | Reviewed environment names, conservative cost rates, each scenario's window and Pod resources |
+| `policy.py`, `policy.toml` | Reviewed environment names, each scenario's window and Pod resources |
 | `model.py` | Approval, schedule and typed control-record transitions |
 | `records.py` | GCS control CAS, evidence and the shared environment lock |
 | `google.py` | Google credentials, standard authorized session and generation-checked GCS operations |
@@ -87,9 +86,9 @@ Merging this implementation does not authorize a dispatch.
 
 ## Execution approval
 
-For a run still under ADR-0165, the owner approves the scenario, a unique run ID and the run's cost estimate before dispatching; dispatching the run is that approval, and nothing at run time compares spend against the estimate.
-The estimate is `estimated_cost` over the window for smoke, and the scenario's plan estimate for a recovery trial, which its rendered proposal carries.
-[ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) drops the estimate and its approval: a trial under it, such as BigQuery's `alo-10-sequence` beside that scenario's single-fault trials, is bounded by its one-hour time limit instead, although its proposal still carries the scenario's estimate until the last scenario moves.
+The owner chooses the scenario and a unique run ID, and dispatching the run is the approval.
+No spend is estimated or approved first: [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) dropped the recovery trials' estimates, and the smoke run's went with the code they shared.
+Every run is bounded by its window and the namespace quotas, and a recovery trial also by its one-hour time limit.
 Only a dispatch on `main` can assume the runner identity and admit work, and the run is pinned to the commit it checks out.
 The run workflow can check out another rig commit through `rig_sha`, which must head a branch of this repository; the workflow verifies that from `main` before checking the rig out, so a fork commit reachable through a pull request ref cannot be selected. The workflow and recovery still run from `main`, and the lock owner records the rig commit beside the workflow's.
 The window starts at admission rather than at dispatch, so queueing costs the run none of its startup budget: a smoke run ends 60 minutes after admission, and a BigQuery, Pub/Sub, Cloud Tasks, Bigtable, Spanner or Firestore trial 90 minutes after it.
@@ -116,7 +115,7 @@ Before admitting anything, the runner verifies the dedicated kubeconfig, explici
 It checks each pinned GAR digest exists and remains at least 24 hours away from seven-day deletion eligibility at the run's expiry.
 These checks run before temporary quota changes or Operator scale-up.
 
-## Resource and cost approval
+## Resource bounds
 
 Requests equal limits for every container.
 The supervisor excludes Spot through required node affinity and runs in `tier3-system`, independently of the Flink Pods.
@@ -142,19 +141,13 @@ What a replacement costs the measurement is scenario-specific; for a smoke run a
 | PVCs | Zero, by the same quotas |
 | State | Cleanup lists at most 10,000 objects under the run prefix and refuses a larger one |
 | Logs | Stop if any 1 MiB read would truncate |
-| Cost estimate | USD 0.81 for a full hour, approved before dispatch |
 
 ResourceQuotas enforce aggregate Pod, CPU, memory, ephemeral storage, PVC, Job, CronJob and StatefulSet admission limits, so the rig does not count Pods or PVCs a second time.
 Every observation checks each Pod's containers, image digests, effective requests/limits and ownership.
 Nothing stops a run on the size of its state or of the evidence it exports: the window bounds how long either grows, the state bucket's one-day expiry bounds what a failed cleanup leaves, and the evidence bucket's 30-day expiry bounds what a run retains.
 Evidence export uses conditional creates; a failed export stops admission and records its operation and cause, as [Cleanup and recovery](#cleanup-and-recovery) describes.
 
-The conservative cost model charges all 4 CPUs at USD 0.10 per CPU-hour, all 8 GiB memory at USD 0.02 per GiB-hour, and all 3.125 GiB ephemeral storage at USD 0.001 per GiB-hour, even for Spot Pods.
-Including USD 0.25 for the bounded storage, requests and telemetry gives USD 0.813125 for a full hour.
-The replacement slot is not charged, because it is quota rather than a running Pod; a Pod that occupied it for a whole hour would add USD 0.141 and reach USD 0.954125.
-Those rates exceed the [published Iowa Autopilot prices](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-09-14; that date is recorded as the estimate's basis, and a run is not refused for its age.
-This is an execution budget model, not a real-time billing meter or a cloud billing cutoff.
-The standing cluster fee and existing persistent infrastructure are outside incremental cost.
+These bounds are an execution budget, not a real-time billing meter or a cloud billing cutoff.
 An API outage, stuck finalizer or unavailable node can delay verified termination beyond expiry; the workflow reports failure, retains the lock and requires incident recovery rather than claiming a cost guarantee it cannot enforce.
 
 ## Admission and supervision
@@ -377,14 +370,11 @@ The lifecycle delivery requires package sources from this command or the runner;
 
 The offline `bigquery-recovery` proposal is described in the [BigQuery proposal runbook](../apps/bigquery/README.md#offline-execution-proposal); it produces an explicitly unapproved bundle.
 The offline `pubsub-recovery` proposal is described in the [Pub/Sub proposal runbook](../apps/pubsub/README.md#offline-trial-proposal).
-The offline `cloudtasks-recovery` proposal is described in the [Cloud Tasks trial runbook](../apps/cloudtasks/README.md#trial-and-estimate).
-The offline `bigtable-recovery` proposal is described in the [Bigtable trial runbook](../apps/bigtable/README.md#trial-and-estimate).
-The offline `spanner-recovery` proposal is described in the [Spanner trial runbook](../apps/spanner/README.md#trial-and-estimate).
-The offline `firestore-recovery` proposal is described in the [Firestore trial runbook](../apps/firestore/README.md#trial-and-estimate).
+The offline `cloudtasks-recovery` proposal is described in the [Cloud Tasks trial runbook](../apps/cloudtasks/README.md#trial-and-proposal).
+The offline `bigtable-recovery` proposal is described in the [Bigtable trial runbook](../apps/bigtable/README.md#trial-and-proposal).
+The offline `spanner-recovery` proposal is described in the [Spanner trial runbook](../apps/spanner/README.md#trial-and-proposal).
+The offline `firestore-recovery` proposal is described in the [Firestore trial runbook](../apps/firestore/README.md#trial-and-proposal).
 The BigQuery approval and its dedicated state bucket are described in [Approval and shared resource policy](../apps/bigquery/README.md#approval-and-shared-resource-policy).
-A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10`, `eo-10`, `alo-50`, `eo-50`, `fl-10` or `fl-10-uploader`, or an `eo-10`, `fl-10` or `fl-10-uploader` fault trial) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
+A BigQuery trial is dispatched through the same run workflow, which takes the trial (`alo-10-sequence`, `eo-10-sequence` or `fl-10-uploader-sequence`) and the published application digest, as [Production dispatch](../apps/bigquery/README.md#production-dispatch) describes.
 A Pub/Sub trial takes its kind and the published application digest, as [Approval dispatch](../apps/pubsub/README.md#approval-dispatch) describes.
-A Cloud Tasks trial takes only the published application digest, as [Dispatch](../apps/cloudtasks/README.md#dispatch) describes.
-A Bigtable trial takes its kind and the published application digest, as [Dispatch](../apps/bigtable/README.md#dispatch) describes.
-A Spanner trial takes its kind and the published application digest, as [Dispatch](../apps/spanner/README.md#dispatch) describes, and so does a Firestore trial, as [its Dispatch section](../apps/firestore/README.md#dispatch) describes.
-A Cloud Tasks, Bigtable, Spanner or Firestore dispatch can also carry a campaign, the kinds to run after its own and a repeat budget, which dispatches each next attempt once the last is idle, as the [Bigtable dispatch section](../apps/bigtable/README.md#dispatch) describes, which applies to all four.
+A Cloud Tasks, Bigtable, Spanner or Firestore trial takes its kind, `sequence`, and the published application digest, as each runbook's Dispatch section describes: [Cloud Tasks](../apps/cloudtasks/README.md#dispatch), [Bigtable](../apps/bigtable/README.md#dispatch), [Spanner](../apps/spanner/README.md#dispatch) and [Firestore](../apps/firestore/README.md#dispatch).
