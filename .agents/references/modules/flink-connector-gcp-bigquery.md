@@ -796,9 +796,14 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   alternative** — gax resets the attempt count on progress but carries the first attempt's start
   time forward, so one bounds a stuck stream and the other would cut off a healthy long one.
 - **A progressing-but-retrying stream trips no bound**, which is exactly why `readRetries` exists;
-  it is a `ThreadSafeSimpleCounter` because the client's retry scheduler increments it. The listener
-  is registered through `RowStreamOpener.setRetryListener`, once per subtask **before any fetcher
+  it is a `ThreadSafeSimpleCounter` because the client's retry scheduler increments it. It is
+  registered through `RowStreamOpener.setRetryListener`, once per subtask **before any fetcher
   starts** — the client captures it when it is built, so a later registration reports nothing.
+  **Count at the resume request, never through the SDK's `setReadRowsRetryAttemptListener`**
+  (`docs/adr/0084`, revision for #2301): `BigQueryReadClients` wraps the client's own resumption
+  strategy and counts each non-null `getResumeRequest`, once per re-issued attempt. The listener misses a
+  plain `UNAVAILABLE` retry and counts the attempt `maxAttempts` refuses (both measured), and a gax
+  tracer factory never reaches `ReadRows` because the client rebuilds its stub settings without it.
 - **`ReadClientRowStreamOpener`'s client lifecycle is monitor-only, deliberately**
   (`docs/adr/0131`, refined by #1046). Every read and write of its `client` and `closed` fields
   happens inside `synchronized (this)`, so unlike the Bigtable and Spanner seams there is no

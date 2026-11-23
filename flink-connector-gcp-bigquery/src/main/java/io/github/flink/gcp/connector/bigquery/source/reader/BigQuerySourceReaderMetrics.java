@@ -106,7 +106,7 @@ public final class BigQuerySourceReaderMetrics {
      * Counts one retried attempt at a read stream, made by the client library rather than by this
      * connector.
      *
-     * <p>Public because the thing that calls it is the client's own retry listener, wired where the
+     * <p>Public because the thing that calls it is the reading client's retry hook, wired where the
      * reader is created rather than from inside this package.
      */
     public void readRetried() {
