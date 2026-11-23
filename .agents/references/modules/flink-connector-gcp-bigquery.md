@@ -475,7 +475,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   lease. **`ReadClientSessionCreator` opens a client per `create` and closes it when the call
   returns** (JobManager: at the end of a job Flink does not wait for the enumerator's close before
   releasing the class loader); do not
-  bring back a client held until `close()`. The pooled path sets `productionChannelProvider`, which restates the SDK's own
+  bring back a client held until `close()`. `BigQueryFullCacheInputFormat` runs `open()`, each
+  `fetch()` and `close()` inside `GrpcEventLoops.interruptibleReleases()` (#2269); keep any new
+  call that can release a lease there inside it too, and do not open the scope on a writer,
+  committer, reader or enumerator path (`docs/adr/0208`). The pooled path sets `productionChannelProvider`, which restates the SDK's own
   pooled-writer transport settings; `StreamWriterRowAppenderFactoryTest` compares it with the SDK's
   through `TestStreamWriterSettings` (in the SDK's package, the `docs/adr/0067` reach), so a bump
   that changes them fails there. A new client site takes a lease too;

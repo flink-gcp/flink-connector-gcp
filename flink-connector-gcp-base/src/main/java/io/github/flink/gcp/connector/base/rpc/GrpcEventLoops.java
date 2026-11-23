@@ -38,6 +38,7 @@ import io.grpc.netty.shaded.io.netty.channel.epoll.EpollSocketChannel;
 import io.grpc.netty.shaded.io.netty.channel.nio.NioIoHandler;
 import io.grpc.netty.shaded.io.netty.channel.socket.nio.NioSocketChannel;
 import io.grpc.netty.shaded.io.netty.util.concurrent.DefaultThreadFactory;
+import io.grpc.netty.shaded.io.netty.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -63,10 +64,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>The group here is shut down by the thread that releases its last {@link Lease}, which waits
  * for the threads to finish. A connector releases its leases from its own {@code close()}. On a
  * TaskManager, Flink runs a writer's and a reader's {@code close()} on the task thread before it
- * releases the class loader, so the group is gone first. On the JobManager it closes a source's
- * enumerator on a thread of its own and does not wait for it, and in practice after the loader is
- * released (Flink 2.2.1, measured in #2237), so a JobManager-side client must not stay open until
- * the enumerator closes: it closes once the call it was opened for returns.
+ * releases the class loader, so the group is gone first. The wait ignores an interrupt, except
+ * inside {@link #interruptibleReleases()}. On the JobManager, Flink closes a source's enumerator on
+ * a thread of its own and does not wait for it, and in practice after the loader is released (Flink
+ * 2.2.1, measured in #2237), so a JobManager-side client must not stay open until the enumerator
+ * closes: it closes once the call it was opened for returns.
  *
  * <p>One group serves every lease in the class loader, the way gRPC's does: it is created by the
  * first lease and shut down by the release of the last one, and a later lease creates a new one. A
@@ -95,6 +97,18 @@ public final class GrpcEventLoops {
 
     /** How long the group's shutdown may take; Netty closes any channel still open on it. */
     private static final long GROUP_SHUTDOWN_SECONDS = 10;
+
+    /** How long a release waits for the group's shutdown at most. */
+    private static final long GROUP_RELEASE_WAIT_SECONDS = GROUP_SHUTDOWN_SECONDS + 1;
+
+    /**
+     * How long a release inside {@link #interruptibleReleases()} waits for the group's shutdown
+     * even if its thread is interrupted. Beyond this, an interrupt ends the wait.
+     */
+    @VisibleForTesting static final long GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS = 1;
+
+    /** Set on a thread inside {@link #interruptibleReleases()}; absent otherwise. */
+    private static final ThreadLocal<Boolean> INTERRUPTIBLE_RELEASES = new ThreadLocal<>();
 
     private static final Object LOCK = new Object();
 
@@ -158,6 +172,37 @@ public final class GrpcEventLoops {
     }
 
     /**
+     * Lets an interrupt end this thread's waits for the group once their first second has passed,
+     * until the returned scope is closed.
+     *
+     * <p>Outside such a scope, the release of the last lease waits for the group's shutdown
+     * whatever the thread's interrupt says, so that a task thread Flink interrupts to cancel the
+     * task, which can release a lease outside its close, still sees the group gone before Flink
+     * releases the class loader. Open the scope only on a thread Flink stops by interrupting it and
+     * gives a deadline to end, where a wait for the whole bound could outlast that deadline. The
+     * first second still ignores an interrupt, which covers a shutdown no busy event loop holds up
+     * (measured in #2269 at milliseconds).
+     *
+     * @return the scope, to be closed on the same thread, usually by try-with-resources
+     */
+    public static InterruptibleReleases interruptibleReleases() {
+        boolean outermost = !inInterruptibleReleases();
+        INTERRUPTIBLE_RELEASES.set(Boolean.TRUE);
+        return new InterruptibleReleases(outermost);
+    }
+
+    /**
+     * Returns whether this thread is inside {@link #interruptibleReleases()}. For tests that check
+     * a release runs in the scope.
+     *
+     * @return whether the scope is open on this thread
+     */
+    @VisibleForTesting
+    public static boolean inInterruptibleReleases() {
+        return Boolean.TRUE.equals(INTERRUPTIBLE_RELEASES.get());
+    }
+
+    /**
      * Returns whether the group is running, which it is exactly while a lease is open. For tests
      * that check a client released its lease when they expect it to.
      *
@@ -198,6 +243,7 @@ public final class GrpcEventLoops {
     }
 
     private static void release() {
+        boolean interruptible = inInterruptibleReleases();
         Group toStop = null;
         synchronized (LOCK) {
             Preconditions.checkState(leases > 0, "No gRPC event-loop lease is open");
@@ -207,7 +253,28 @@ public final class GrpcEventLoops {
             }
         }
         if (toStop != null) {
-            toStop.shutdown();
+            toStop.shutdown(interruptible);
+        }
+    }
+
+    /**
+     * The scope {@link #interruptibleReleases()} opens. Scopes nest: closing the outermost one ends
+     * the scope on the thread, and closing a nested one leaves it open.
+     */
+    public static final class InterruptibleReleases implements AutoCloseable {
+
+        private final boolean outermost;
+
+        private InterruptibleReleases(boolean outermost) {
+            this.outermost = outermost;
+        }
+
+        /** Closes the scope on the calling thread, which must be the one that opened it. */
+        @Override
+        public void close() {
+            if (outermost) {
+                INTERRUPTIBLE_RELEASES.remove();
+            }
         }
     }
 
@@ -227,7 +294,8 @@ public final class GrpcEventLoops {
 
     /**
      * A hold on the group. Closing the last open lease shuts the group down and waits for its
-     * threads; closing a lease twice does nothing.
+     * threads, which an interrupt cuts short only inside {@link #interruptibleReleases()}; closing
+     * a lease twice does nothing.
      */
     public static final class Lease implements AutoCloseable {
 
@@ -305,8 +373,8 @@ public final class GrpcEventLoops {
          *
          * <p>In-flight calls get a bounded time to finish before they are cancelled. The lease is
          * closed whatever happens, so the group never outlives its leases because a client would
-         * not stop; Netty then closes any channel still open on it. An interrupt cuts the wait
-         * short and is restored.
+         * not stop; Netty then closes any channel still open on it. An interrupt cuts the wait for
+         * the client short and is restored; the wait for the group is {@link #close()}'s.
          */
         void closeAfter(BackgroundResource client) {
             try {
@@ -416,16 +484,38 @@ public final class GrpcEventLoops {
                     NioSocketChannel.class);
         }
 
-        void shutdown() {
-            boolean terminated =
-                    eventLoopGroup
-                            .shutdownGracefully(0, GROUP_SHUTDOWN_SECONDS, TimeUnit.SECONDS)
-                            .awaitUninterruptibly(GROUP_SHUTDOWN_SECONDS + 1, TimeUnit.SECONDS);
-            if (!terminated) {
+        /**
+         * Shuts the group down and waits for its threads, for up to {@code
+         * GROUP_RELEASE_WAIT_SECONDS}. Unless the release is interruptible, the whole wait ignores
+         * an interrupt. If it is, only the first {@code GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS} do,
+         * so that a shutdown no busy event loop holds up still finishes before the release returns;
+         * after that, an interrupt ends the wait and is restored, and the group finishes on its own
+         * threads.
+         */
+        void shutdown(boolean interruptible) {
+            Future<?> termination =
+                    eventLoopGroup.shutdownGracefully(0, GROUP_SHUTDOWN_SECONDS, TimeUnit.SECONDS);
+            long uninterruptible =
+                    interruptible
+                            ? GROUP_SHUTDOWN_UNINTERRUPTIBLE_SECONDS
+                            : GROUP_RELEASE_WAIT_SECONDS;
+            try {
+                if (termination.awaitUninterruptibly(uninterruptible, TimeUnit.SECONDS)
+                        || (interruptible
+                                && termination.await(
+                                        GROUP_RELEASE_WAIT_SECONDS - uninterruptible,
+                                        TimeUnit.SECONDS))) {
+                    return;
+                }
                 LOG.warn(
                         "The gRPC event-loop group did not terminate within {} s; its threads may"
                                 + " outlive the job's class loader",
-                        GROUP_SHUTDOWN_SECONDS);
+                        GROUP_RELEASE_WAIT_SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                LOG.warn(
+                        "Interrupted while waiting for the gRPC event-loop group to terminate; its"
+                                + " threads may outlive the job's class loader");
             }
         }
     }
