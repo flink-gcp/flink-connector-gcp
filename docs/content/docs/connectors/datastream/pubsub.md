@@ -528,7 +528,9 @@ reading of "not drained".
 
 That guarantee stops at the park, and deliberately: **a parked split has no client**, so a
 subscription deleted or its access revoked *during* the pause goes unnoticed until the split
-resumes, where reopening its subscriber fails the job instead. A failure recorded before the park is
+resumes, where reopening its subscriber fails the job instead. On Flink 2.x a narrow window lets the
+reader miss that failure and wait instead of failing
+([#2324]({{< param BookRepo >}}/issues/2324), a Flink defect). A failure recorded before the park is
 still reported. The alternative is the unbounded buffer this replaces — detection that costs a
 TaskManager.
 
@@ -875,7 +877,7 @@ measure, having swallowed a failure — and this counter is the only thing that 
 **The teardown's other two outcomes are counted by nothing, deliberately.** A client repeating at
 teardown a failure the reader already has accompanies a job failure already under way over that very
 failure, and a release that follows a *failed start* accompanies the `IOException` that fails the job
-there. Both would be series whose every increment coincides with a louder report; both still log,
+there (barring the Flink 2.x window in [#2324]({{< param BookRepo >}}/issues/2324)). Both would be series whose every increment coincides with a louder report; both still log,
 and [Testing](#testing) has the four messages side by side.
 
 ## Sink
@@ -1829,12 +1831,15 @@ running exactly once and never on a restore. The subscription-create options, th
 the option-to-protobuf translation are unit-tested on their own. The subscriber that wraps the client
 library is unit-tested too ([#325]({{< param BookRepo >}}/issues/325),
 [#350]({{< param BookRepo >}}/issues/350), [#351]({{< param BookRepo >}}/issues/351)), on the paths a
-working client never takes: one that fails to start, which is asked to stop again before the failure
-is reported (an `Error` from a first classload taking the same path as an exception); one whose nack
+working client never takes: one that fails to start, which nacks what the reader still holds of its
+deliveries and is asked to stop again before the failure is reported (an `Error` from a first classload taking
+the same path as an exception); one whose nack
 throws, which must still leave the client asked to stop and waited out; one that does not terminate
 within the shutdown timeout; one that reports at teardown the very failure the reader has already
-been given; and one that fails *during* the teardown, which nothing else reports. All of these are
-absorbed rather than raised, and a `WARN` is the whole of their record — but each says which it is,
+been given; and one that fails *during* the teardown, which nothing else reports. What the client
+raises while its shutdown is waited out is absorbed rather than raised, and is reported by a log line
+(two of the outcomes are also counted, as described below): a `WARN`, except for a failed start's
+wait that only repeats the start failure, which is logged at `DEBUG`. Each `WARN` says which it is,
 because they mean different things to whoever reads the log:
 
 | What the `WARN` says | Counted by | What it means |
@@ -1842,7 +1847,7 @@ because they mean different things to whoever reads the log:
 | `… did not finish shutting down within …` | `subscriberShutdownsAbandoned` | The client outlasted `shutdownTimeout`. This split's messages were nacked before the wait, so nothing is lost; the client may keep its channel and threads until the JVM exits — the shutdown it was asked for is still running, and may yet finish. The one line here with an action behind it: raise `shutdownTimeout(...)`, keeping it under `source.reader.close.timeout` |
 | `… reported at shutdown the failure it had already reported to the reader` | nothing | Expected on a failing teardown. The reader has that failure and the job is failing on it; this line is not a second problem |
 | `… failed while shutting down, and this is the only report of it` | `subscriberFailuresUnreported` | A failure that arrived after the reader stopped pulling, so no job failure is coming. Messages are not lost, but the shutdown is what returns them to Pub/Sub, so redelivery may wait out the acknowledgement deadline instead of being immediate |
-| `… did not shut down cleanly after failing to start` | nothing | The client never ran, so it received nothing and nothing was nacked. The start failure itself is reported separately — and *after* this line, so read on rather than back |
+| `… did not shut down cleanly after failing to start` | nothing | The client failed to start, and the wait for its shutdown then expired or failed for a reason other than the start failure. A client can deliver messages before its start fails; the release nacked what the reader still held of them, as an ordinary shutdown does, so they return to Pub/Sub's redelivery and retry policy. A wait that only repeats the start failure, the usual outcome, is logged at `DEBUG` instead. The start failure itself is reported separately — and *after* this line, so read on rather than back |
 
 **Two of the four are counted** ([#358]({{< param BookRepo >}}/issues/358)), because a `WARN` is
 invisible to a log pipeline filtering below `ERROR` and to every dashboard, while a crash-looping job
@@ -1850,7 +1855,8 @@ emits one of these per subscriber per restart. The two counters are described un
 [Metrics](#metrics) — including why their values are process-wide, which is what a count written
 during a reader's `close()` has to be to be scraped at all. The other two are counted by nothing on
 purpose: each accompanies a louder report of the same incident, the job failure the reader is already
-raising and the start failure that follows the release. For those, grep remains the detector.
+raising and the start failure that follows the release. For those, grep remains the detector; for a
+failed start, grep for the start failure itself, since its release usually logs only at `DEBUG`.
 
 One more integration test measures the *client library* rather than this connector
 ([#349]({{< param BookRepo >}}/issues/349)): a subscriber whose streaming pull fails permanently

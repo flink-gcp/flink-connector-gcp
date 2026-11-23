@@ -80,6 +80,10 @@ final class RecordingAckHandle implements AckHandle {
         return nackCount > 0;
     }
 
+    int nackCount() {
+        return nackCount;
+    }
+
     boolean isUnsettled() {
         return ackCount == 0 && nackCount == 0;
     }

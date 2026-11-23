@@ -19,8 +19,10 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-05 ([#297]) through 2026-08-07 ([#348], [#349], [#350], [#351], the [#348]
   cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23); failed stub
-  creation corrected by [#2291] (2026-11-23); budget clock refined by [#2302] (2026-11-23)
-- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2291], [#2302]
+  creation corrected by [#2291] (2026-11-23); budget clock refined by [#2302] (2026-11-23);
+  failed-start deliveries released by [#2307] (2026-11-23)
+- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2291], [#2302],
+  [#2307], [#2324]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
   including the four-outcome teardown message table, and the reader metrics)
@@ -107,10 +109,13 @@ transport opened. This change leaves untouched what that decision says about the
   "recorded" never meant "consumed" anyway — a stream dying after the last `pullMessages` is
   recorded and read by nothing. The flag needs no ordering argument at all. What the identity
   half rests on is measured: Guava's `notifyFailed` is a no-op on an already-`FAILED` service,
-  so the cause reaching the catch is the one recorded **first**. **Four outcomes, four
+  so the cause reaching the catch is the one recorded **first**. **Four outcomes, four `WARN`
   messages** — the fourth being the failed-start release path, which has its own absorb rather
-  than sharing this one, because both of its messages are false there (nothing was reported to a
-  reader, and `shutdown()` never ran so nothing was nacked).
+  than sharing this one, because both of its messages are false there: nothing was reported to a
+  reader, and the failure being propagated is the start's, not one that arrived after the reader
+  stopped pulling. Since [#2307] the fourth also logs at `DEBUG` when its wait only repeats the
+  start failure. Until then this bullet also said that nothing was nacked because `shutdown()`
+  never ran; the release now nacks what the client had delivered itself.
 - **A throwing `nackSplit` must not skip the stop, and a throwing `shutdown()` must not skip the
   wait** ([#350]) — `Closers.closeAll` in both `shutdown()` and `close()`, [#297]'s rule one and
   two levels further in. `closed` is set before the nack, so the old shape left `shutdown()`'s
@@ -181,6 +186,52 @@ transport opened. This change leaves untouched what that decision says about the
   `withPoolSize`. The release call is kept for the states where `stopAsync()` is genuinely not a
   no-op — a failure registering the listener leaves the service `NEW`, one racing a start leaves it
   `STARTING` — and because it costs a no-op otherwise.
+- **A failed start returns what the client had already delivered** ([#2307]). The release assumed
+  until then that a client which failed to start had received nothing, and both its `WARN` and the
+  Pub/Sub guide said so. That is false. A connection is `RUNNING` once it has started its stream,
+  without waiting for the service to answer (`StreamingSubscriberConnection.doStart()` ends in
+  `initialize(); notifyStarted()`), and it hands on whatever the stream delivers, so it can deliver
+  while the subscriber is still `STARTING` and the startup thread is still waiting for a later
+  connection; when that one fails, the caller's `awaitRunning()` throws with the earlier deliveries
+  already admitted to the buffer, the reader-wide budget (which also counts the unregistered split
+  among its starting holders) and the ack tracker. The release therefore does what `shutdown()`
+  does, in the same order: it latches `closed` and empties the buffer under the monitor every
+  callback admits under, returns the reservation, nacks the split, and only then stops and waits for
+  the client and closes its transport, all in one `closeAllSuppressing` list so a step that throws
+  neither skips the rest nor, short of a JVM-fatal error, replaces the start failure. The latch is
+  the half that a one-time release would miss. A delivery can still arrive after the start has
+  thrown, from a connection the SDK has not stopped yet: the startup thread holds the connection
+  list's lock across its `awaitRunning()` loop, and the failure listener's `runShutdown()` needs the
+  same lock to stop the healthy connections (read in google-cloud-pubsub 1.160.0). With `closed`
+  set, such a delivery is nacked before it reserves anything. The budget gets one step of its own,
+  `releaseFailedStart`, that returns the reservation and the starting share together under its
+  monitor, so no peer sees one without the other. It drops the share even when nothing is returned,
+  because `tryReserve` adds a starting holder before it checks the limits, and it leaves any
+  registered entry alone: the split has none on either caller's path, since a fresh assignment never
+  registered it and a park unregistered it before the reopen. A second route reaches the same
+  release without a `FAILED` client, read in Guava 33.6.0 rather than measured: a delivery that
+  crosses the budget during the start asks the starting client to stop, Guava then reports it as
+  `STOPPING`, and `awaitRunning()` throws on that too. The connector's nack can follow the SDK's own
+  `NACK_IMMEDIATELY` nack of the same delivery; the SDK's `AckHandler.forget()` returns early the
+  second time, so flow control is not released twice, and at worst a second modify-deadline request
+  is queued (read in google-cloud-pubsub 1.160.0). **The release's own wait is logged at `DEBUG`
+  when it only repeats the start failure**: on a `FAILED` client the wait throws, as soon as it
+  takes the service's lock, an `IllegalStateException` carrying `failureCause()`, the cause the
+  start's exception also carries, so the two are told apart by that cause's identity, as the
+  re-report case above is (read in Guava 33.6.0 and api-common 2.73.0, and measured on the
+  credentials failure in Evidence). By the same reading, that `WARN` accompanied every such failed
+  start before this change. An expired wait or any other cause keeps the `WARN`, now saying that the
+  release nacked what the reader still held of the client's deliveries. Four alternatives were
+  declined. Gating admission until the start returns would nack, on every successful start, whatever
+  the early connections delivered, spending delivery attempts and flow-control capacity on a healthy
+  start to cover a failing one; holding those deliveries aside instead needs the same bound and the
+  same release under another name. Registering the split in the budget before the start would remove
+  only the starting share, and a registration can promote a pending park to a failure for a client
+  that then fails to open. Rolling back in the roster has nothing to roll back, because the
+  constructor threw before handing it a subscriber. Correcting only the record would have left the
+  late-delivery window open and held by no test; it was the smaller change, since both callers
+  normally fail the job and discard the reader with its budget and tracker (Evidence has the Flink
+  2.x window where the reader misses that failure, [#2324]).
 - **`BoundedShutdown` is deliberately not adopted here**, though the base module names this
   teardown as its nearest future adopter: [#265]'s problem was `Publisher.shutdown()` blocking
   the **task thread** uninterruptibly and without bound, and here the task thread's wait is
@@ -216,7 +267,9 @@ transport opened. This change leaves untouched what that decision says about the
   - **Counting the failed-start release's timeout into `subscriberShutdownsAbandoned` was
     declined too**, though by that name it would belong: `stopQuietly()` catches
     `TimeoutException | RuntimeException` in one branch deliberately, and splitting it to count
-    half would trade the paragraph above for a branch whose two arms say the same sentence.
+    half would trade the paragraph above for a branch whose two arms say the same sentence. The
+    branch has told one case apart since [#2307], a wait that repeats the start failure, and that
+    decides the log level and nothing else.
   - **The name says the property, not the origin.** `subscriberShutdownFailures` was the obvious
     spelling and is wrong at the edge: the branch also catches a streaming failure that landed
     after the reader's last `pullMessages`, which is not a shutdown failure but *is* one nothing
@@ -275,6 +328,45 @@ transport opened. This change leaves untouched what that decision says about the
   stream watchdog, which `ClientContext.create` schedules on that executor, is built after
   `getTransportChannel()` returns, and the channel pool, statically sized for this client,
   schedules a refresh there only if one is enabled and only after every initial channel exists.
+- [#2307] was **measured both through a scripted client and against the real SDK**. A client
+  that, inside its start, hands one message to the receiver of the production constructor and
+  then throws left the budget holding one message and its 13 bytes with the split among its
+  starting holders, one pending acknowledgement in the ack tracker, and no `nackSplit`. The real
+  SDK was driven through the production `DefaultSubscriberFactory` with an emulator endpoint
+  pointing at a localhost fake `google.pubsub.v1.Subscriber` service, whose every `StreamingPull`
+  stream answers one message and then fails with `PERMISSION_DENIED`; 100 starts per row
+  (google-cloud-pubsub 1.160.0, 2026-11-23):
+
+  | `parallelPullCount` | Failed starts | Deliveries left per failed start |
+  |---|---|---|
+  | 1, 4 | 0 | none |
+  | 16 | 93–99 | 4–9 |
+  | 64 | 95–98 | 21–43 |
+
+  Every failure arrived from `STARTING`; a subscriber reaching `RUNNING` and failing before the
+  caller's `awaitRunning()` returned, the route the issue first described, was never observed. In
+  the fake the SDK's own shutdown nacked about as many messages as were left behind. The real-SDK
+  run is probabilistic, so it is recorded here rather than run per build. What holds the release is
+  unit tests through the production constructor with a real ack tracker: deliveries admitted inside
+  the start are returned and each handle nacked once, a delivery during the stop and one after the
+  constructor has thrown are nacked without reserving or crossing a one-message budget, and a failed
+  reopen after a park returns what the replacement admitted while the slot stays parked. The
+  starting share is shown to leave by the peer's cap, not by usage, which reads zero either way. The
+  `DEBUG` repeat is measured on the real SDK too: `StreamingPullSubscriberFailedStartTest`'s failed
+  start, a credentials failure through `DefaultSubscriberFactory`, logs exactly that line. Each of
+  nine mutations (no release, no latch, no nack, the nack after the stop, the share kept in the
+  budget or by a plain `release`, the repeat test answering always or never, and the repeat test
+  without its null guard) fails at least one of those tests. Read rather than measured: the release
+  acknowledges nothing, and a leftover delivery is acknowledged only as any delivery is, after the
+  record emitter has handled a copy of its message id that the reader drained; and both callers of
+  the constructor, `SubscriberRoster.addSplit` and the reopen of a parked split, throw inside a
+  Flink `SplitFetcher` task. Flink records the failure and wakes the reader, which raises it at its
+  next error check; a throwaway probe showed that on flink-connector-base 2.2.1 and 1.20.5. When the
+  failure is recorded between the reader's error check and its queue poll, the empty poll consumes
+  the wake-up: on 2.2.1 the probe's reader was still waiting after 3 s, because the fetcher thread
+  waits on a latch before the exit hook that would wake it again ([#2324], a Flink defect); on
+  1.20.5 that hook woke it. The release this change adds runs before the start failure is
+  propagated, so it does not depend on the reader failing.
 - [#348]'s premise ("alignment pauses splits routinely") was measured rather than argued:
   `PubSubSourceWatermarkAlignmentITCase` (2026-08-07, emulator, one run: 13 of 200 ahead records
   consumed against 200 of 200 behind). Two things about it are load-bearing: the **throttle** (a
@@ -331,3 +423,5 @@ transport opened. This change leaves untouched what that decision says about the
 [#2263]: https://github.com/flink-gcp/flink-connector-gcp/issues/2263
 [#2291]: https://github.com/flink-gcp/flink-connector-gcp/issues/2291
 [#2302]: https://github.com/flink-gcp/flink-connector-gcp/issues/2302
+[#2307]: https://github.com/flink-gcp/flink-connector-gcp/issues/2307
+[#2324]: https://github.com/flink-gcp/flink-connector-gcp/issues/2324

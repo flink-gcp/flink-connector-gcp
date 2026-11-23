@@ -171,8 +171,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   only for the remainder and stuck clients share one budget (#2302); `awaitTerminated()` absorbs
   the client's re-report and discriminates by `permanentErrorReported`, a flag set where the failure
   is **handed to a caller** — never replace it with a pre-shutdown snapshot; a paused split is
-  still watched via `checkFailure()` from `fetch()` (#348); the failed-start release is kept
-  although mostly a no-op (#349); `BoundedShutdown` is deliberately not adopted here.
+  still watched via `checkFailure()` from `fetch()` (#348); the failed-start release's stop is kept
+  although mostly a no-op (#349), and the release first returns, in `shutdown()`'s order, what the
+  client admitted before its start failed (#2307); `BoundedShutdown` is deliberately not adopted
+  here.
 - **Two of the teardown's four outcomes are counted, and the other two never will be by symmetry**
   (#358, `docs/adr/0012`): an expired wait is `subscriberShutdownsAbandoned` — the sink's spelling,
   because it is the sink's meaning — and a failure the teardown was the only report of is

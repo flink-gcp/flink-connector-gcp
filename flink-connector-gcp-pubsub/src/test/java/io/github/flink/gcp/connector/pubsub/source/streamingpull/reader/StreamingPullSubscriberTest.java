@@ -19,6 +19,8 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
+import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
+import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +29,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -37,6 +41,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -317,9 +322,11 @@ class StreamingPullSubscriberTest {
         // The client is asked to stop before the failure is reported. Read this as pinning the
         // call, not a leak-free restart: against the real SDK a failed start leaves the service
         // FAILED, where Guava's stopAsync() is a no-op — startOrRelease's javadoc has the
-        // measurement. Nothing was nacked: nothing had been received. The transport is released
-        // too, since no caller is left holding this subscriber to release it.
-        assertThat(calls).containsExactly("stopAsync", "awaitTerminated", "releaseTransport");
+        // measurement. The split is nacked first, in shutdown()'s order, because a client that
+        // failed to start may already have delivered (#2307). The transport is released too,
+        // since no caller is left holding this subscriber to release it.
+        assertThat(calls)
+                .containsExactly("nackSplit", "stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -334,7 +341,109 @@ class StreamingPullSubscriberTest {
 
         // The Error takes the same release as the exception above — the same rule as the sibling
         // guard in DefaultMutationBatcherFactory.create (#324). Same caveat as that test's.
-        assertThat(calls).containsExactly("stopAsync", "awaitTerminated", "releaseTransport");
+        assertThat(calls)
+                .containsExactly("nackSplit", "stopAsync", "awaitTerminated", "releaseTransport");
+    }
+
+    @Test
+    void aFailedStartReturnsWhatItHadAlreadyAdmitted() {
+        // #2307: a connection is RUNNING once it has started its stream, so it can deliver while
+        // the
+        // subscriber is still STARTING, and a later connection that fails then fails the start
+        // with those deliveries already admitted. Measured against the real SDK through a fake
+        // Subscriber service; scripted here, through the production constructor, since only it
+        // hands the client the receiver. A real tracker, because the recording one cannot show
+        // that a handle was settled or that the split's entries are gone. A derived budget with
+        // a registered peer, because only the peer's cap shows that the failed split also left
+        // the starting holders: usage reads zero whether it did or not.
+        PubSubAckTracker tracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(
+                        SubscriberBufferLimits.of(
+                                PubSubSubscriberOptions.builder()
+                                        .flowControlMaxOutstandingElementCount(2)
+                                        .flowControlMaxOutstandingRequestBytes(1_000)
+                                        .build()),
+                        event -> {});
+        budget.register("peer", () -> {});
+        RecordingAckHandle first = new RecordingAckHandle("1");
+        RecordingAckHandle second = new RecordingAckHandle("2");
+        IllegalStateException refused = new IllegalStateException("a later stream was refused");
+        DeliveringClient client = new DeliveringClient(calls);
+        client.onStart =
+                () -> {
+                    client.deliver(message("1", "x"), first);
+                    client.deliver(message("2", "xxxx"), second);
+                    throw refused;
+                };
+
+        assertThatThrownBy(() -> subscriberOf(client, tracker, budget))
+                .isInstanceOf(IOException.class)
+                .hasCause(refused);
+
+        // Before #2307 the budget kept both reservations, the tracker both handles, and neither
+        // handle was settled by the connector.
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(budget.usage().bytes()).isZero();
+        assertThat(tracker.outstandingAckCount()).isZero();
+        assertThat(first.nackCount()).isEqualTo(1);
+        assertThat(second.nackCount()).isEqualTo(1);
+        // The peer is alone again, so its own derived share of 4 is the cap, not two shares' 8.
+        for (int i = 0; i < 4; i++) {
+            assertThat(budget.tryReserve("peer", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("peer", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
+    void aDeliveryAfterAFailedStartIsNackedWithoutReserving() {
+        // The failed start's release latches closed, so a delivery that still arrives — from a
+        // connection the SDK has not stopped yet — is nacked instead of admitted to a subscriber
+        // nothing will drain. Two of them against a one-message budget, so that admitting them
+        // would also cross the limit and report an overflow alongside the start failure. One
+        // arrives while the client is being stopped, one after the constructor has thrown.
+        List<SubscriberBufferLimitExceededEvent> events = new ArrayList<>();
+        PubSubAckTracker tracker = new PubSubAckTracker(new TestReaderMetrics().metrics(), null);
+        SubscriberBufferBudget budget = new SubscriberBufferBudget(1, 1 << 20, events::add);
+        RecordingAckHandle duringStop = new RecordingAckHandle("1");
+        RecordingAckHandle afterwards = new RecordingAckHandle("2");
+        DeliveringClient client = new DeliveringClient(calls);
+        client.onStart =
+                () -> {
+                    throw new IllegalStateException("the subscription is gone");
+                };
+        client.onStop = () -> client.deliver(message("1", "x"), duringStop);
+
+        assertThatThrownBy(() -> subscriberOf(client, tracker, budget))
+                .isInstanceOf(IOException.class);
+        client.deliver(message("2", "x"), afterwards);
+
+        assertThat(duringStop.nackCount()).isEqualTo(1);
+        assertThat(afterwards.nackCount()).isEqualTo(1);
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(tracker.outstandingAckCount()).isZero();
+        assertThat(events).isEmpty();
+    }
+
+    @Test
+    void aThrowingNackOnAFailedStartStillStopsAndReleasesTheClient() {
+        // The same list rule as shutdown() (#350), here under closeAllSuppressing: the nack's
+        // failure rides on the start failure rather than replacing it, and the stop, the wait and
+        // the transport release still run.
+        ScriptedClient client = new ScriptedClient(calls);
+        IllegalStateException refused =
+                new IllegalStateException("could not reach the subscription");
+        client.failStartWith(refused);
+        RuntimeException nackRefused = new RuntimeException("the consumer was already settled");
+        ackTracker.failNackWith(nackRefused);
+
+        assertThatThrownBy(() -> subscriberOf(client))
+                .isInstanceOf(IOException.class)
+                .hasCause(refused);
+
+        assertThat(refused.getSuppressed()).containsExactly(nackRefused);
+        assertThat(calls)
+                .containsExactly("nackSplit", "stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -535,5 +644,78 @@ class StreamingPullSubscriberTest {
                 shutdownTimeout,
                 bufferBudget,
                 client);
+    }
+
+    /** Through the production constructor, the only one that hands the client the receiver. */
+    private StreamingPullSubscriber subscriberOf(
+            DeliveringClient client, AckTracker tracker, SubscriberBufferBudget bufferBudget)
+            throws IOException {
+        return new StreamingPullSubscriber(
+                SPLIT_ID,
+                SUBSCRIPTION,
+                (subscription, receiver) -> client.attach(receiver),
+                tracker,
+                () -> calls.add("dataAvailable"),
+                SHUTDOWN_TIMEOUT,
+                bufferBudget);
+    }
+
+    /**
+     * A client that delivers through the receiver it was created with, as the SDK's callback
+     * threads do: from inside its start, from inside its stop, or afterwards. {@link
+     * ScriptedClient} never sees a receiver, since the seam constructor takes a client already
+     * built.
+     */
+    private static final class DeliveringClient implements SubscriberClient {
+
+        private final List<String> calls;
+        @Nullable private SubscriberFactory.MessageConsumer receiver;
+
+        /** Runs inside {@link #start}; a failure it throws is the start's. */
+        Runnable onStart = () -> {};
+
+        /** Runs inside the first {@link #stopAsync} only, so a stop it causes cannot recurse. */
+        @Nullable Runnable onStop;
+
+        DeliveringClient(List<String> calls) {
+            this.calls = calls;
+        }
+
+        DeliveringClient attach(SubscriberFactory.MessageConsumer receiver) {
+            this.receiver = receiver;
+            return this;
+        }
+
+        void deliver(PubsubMessage message, AckHandle handle) {
+            if (receiver == null) {
+                throw new IllegalStateException("the client was never created");
+            }
+            receiver.receive(message, handle);
+        }
+
+        @Override
+        public void start(Consumer<Throwable> onPermanentFailure) {
+            onStart.run();
+        }
+
+        @Override
+        public void stopAsync() {
+            calls.add("stopAsync");
+            Runnable hook = onStop;
+            onStop = null;
+            if (hook != null) {
+                hook.run();
+            }
+        }
+
+        @Override
+        public void awaitTerminated(long timeout, TimeUnit unit) {
+            calls.add("awaitTerminated");
+        }
+
+        @Override
+        public void close() {
+            calls.add("releaseTransport");
+        }
     }
 }
