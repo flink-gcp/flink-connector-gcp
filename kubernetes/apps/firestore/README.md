@@ -133,7 +133,7 @@ The proposal is not an approval, as for the [Spanner trial](../spanner/README.md
 A run is dispatched as the [Spanner trial](../spanner/README.md#dispatch) is, with `firestore_trial` naming the kind and `application_digest` the published `firestore-recovery` GAR digest.
 Any run ID fits, because the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, at most 49 of the 63 characters a database ID takes.
 
-The [`firestore-recovery`](../../lifecycle/firestore.cue) delivery takes the input from the optional `firestore_records` and `firestore_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input; each seed copy's pace per reading subtask from the optional `firestore_seed_records_per_second` tag, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass; and sizes every vertex but the input and the TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+The [`firestore-recovery`](../../lifecycle/firestore.cue) delivery takes the input from the optional `firestore_records` and `firestore_records_per_second` tags, unless given the fault sequence's 6,000 records at 10 per second, and at most 30 minutes of input; each seed copy's pace per reading subtask from the optional `firestore_seed_records_per_second` tag, unless given the sequence's 5, and at most 200, below what the copy sinks' ramp-up throttles pass; and sizes every vertex but the input and the TaskManagers at the parallelism in [parallelism.cue](../../lifecycle/parallelism.cue).
 Dispatch renders it at the sequence's fixed input and seed pace.
 
 ### Database lifecycle

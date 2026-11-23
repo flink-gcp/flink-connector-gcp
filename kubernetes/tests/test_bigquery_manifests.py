@@ -78,7 +78,7 @@ BIGQUERY_MODE_INTERVALS = {"ALO": "30 s", "EO": "30 s", "FILE_LOADS": "120 s"}
 
 
 @pytest.mark.parametrize(
-    "mode,records", [("ALO", 28800), ("EO", 1843200), ("FILE_LOADS", 1843200)]
+    "mode,records", [("ALO", 5760), ("EO", 368640), ("FILE_LOADS", 368640)]
 )
 @pytest.mark.parametrize("destinations", [10, 50])
 def test_bigquery_initial_and_upgrade_preserve_the_trial(
@@ -504,7 +504,7 @@ def test_bigquery_renders_both_phases_at_two(module, mode):
 
 
 @pytest.mark.parametrize(
-    "mode,records", [("ALO", 28800), ("EO", 1843200), ("FILE_LOADS", 1843200)]
+    "mode,records", [("ALO", 5760), ("EO", 368640), ("FILE_LOADS", 368640)]
 )
 @pytest.mark.parametrize("destinations", [10, 50])
 def test_bigquery_proposal_delivery_binds_both_phases(
@@ -617,7 +617,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
         trial=trial,
     )
     proposal = bundle["proposal"]
-    assert proposal["resources"]["trial"]["fault"] == trial["fault"]
+    assert proposal["resources"]["trial"]["records"] == trial["records"]
     assert proposal["approved"] is False
     assert proposal["resources"]["trial"]["mode"] == mode
     assert proposal["resources"]["trial"]["destinations"] == destinations
@@ -685,7 +685,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
     } == delivered_sources()
 
 
-@pytest.mark.parametrize("records", [None, 5760])
+@pytest.mark.parametrize("records", [None, 28800])
 def test_bigquery_records_tag_sets_the_input_or_keeps_the_default(module, records):
     """Dispatch names every trial's count; without it the mode's default renders."""
     tags = ["-t", "bigquery_mode=ALO"]
@@ -695,7 +695,8 @@ def test_bigquery_records_tag_sets_the_input_or_keeps_the_default(module, record
     assert result.returncode == 0, result.stderr
     for app in json.loads(result.stdout):
         args = app["spec"]["job"]["args"]
-        assert args[args.index("--records") + 1] == str(records or 28800)
+        # The default is the fault sequence's input.
+        assert args[args.index("--records") + 1] == str(records or 5760)
 
 
 @pytest.mark.parametrize("records", [32768, 32769])

@@ -12,40 +12,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Whether a deployed Spanner run is a usable recovery trial, and why not."""
+"""Why a Spanner run's data withholds `usable` (ADR-0204)."""
 
-from ..common import INCONCLUSIVE, USABLE
+from ..verdict import component_reasons
 
-# The evidence event carrying the completed record. Both sides spell it from
-# here: the exercise writes it and the offline analyzer reads it.
-COMPLETE_STAGE = "complete"
-COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 # The components the oracles judge, each by its own report under this name.
 COMPONENTS = ("sink", "change_stream", "batch")
+# The Change Streams relay's counts of a failure that timing cannot explain:
+# a row no input names, and a commit after the change stream's end, which the
+# source must not relay. A missing key is the one shortfall a commit after
+# the end leaves.
+RELAY_FAILURES = ("foreign", "after_end")
 
 
-def sequence_verdict(recovery):
-    """A fault-sequence run's verdict: its data alone (ADR-0204).
+def data_reasons(record):
+    """Whether all three oracles passed, the Change Streams one having been judged.
 
-    `usable` says the run completed and all three oracles passed, the Change
-    Streams one having been judged: an input that finished too close to the
-    change stream's end leaves the relay unjudged, since a commit after the
-    end is not relayed. Interruptions, restarts, timings and metrics, the
-    source's watermark among them, decide nothing.
+    An input that finished too close to the change stream's end leaves the
+    relay unjudged, since a commit after the end is not relayed. The source's
+    watermark, like every other metric, decides nothing.
     """
-    record = recovery if isinstance(recovery, dict) else {}
-    outcomes = record.get("outcomes")
-    outcomes = outcomes if isinstance(outcomes, dict) else {}
-    reasons = []
-    if record.get("stage") != COMPLETE_STAGE:
-        reasons.append("recovery-incomplete")
-    oracles = outcomes.get("oracles")
-    oracles = oracles if isinstance(oracles, dict) else {}
-    for component in COMPONENTS:
-        report = oracles.get(component)
-        report = report if isinstance(report, dict) else {}
-        if component == "change_stream" and report.get("judged") is not True:
-            reasons.append(component + "-oracle-unjudged")
-        elif report.get("verdict") != "pass":
-            reasons.append(component + "-oracle-not-passed")
-    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+    return component_reasons(record, COMPONENTS, "change_stream", RELAY_FAILURES)

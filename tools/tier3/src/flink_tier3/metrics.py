@@ -31,7 +31,8 @@ class FlinkRest:
     def __init__(self, env, service, job_id):
         self.env, self.service, self.job_id = env, service, job_id
 
-    def _read(self, suffix, limit):
+    def job(self, path):
+        """One read of the job's endpoint at `path`, at most a MiB."""
         return self.env.kube.request(
             "GET",
             self.env.kube.path(
@@ -39,10 +40,6 @@ class FlinkRest:
                 self.env.approval.application_namespace,
                 self.service["metadata"]["name"] + ":8081",
             )
-            + "/proxy"
-            + suffix,
-            limit=limit,
+            + f"/proxy/jobs/{self.job_id}{path}",
+            limit=MIB,
         )
-
-    def job(self, path, limit=MIB):
-        return self._read(f"/jobs/{self.job_id}{path}", limit)

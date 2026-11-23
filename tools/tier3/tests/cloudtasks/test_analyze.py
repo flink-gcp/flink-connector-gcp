@@ -21,12 +21,14 @@ from flink_tier3 import analyze as shared
 from flink_tier3.cloudtasks import analyze
 from flink_tier3.cloudtasks.oracle import assess, page
 from flink_tier3.cloudtasks.trial import Trial
-from flink_tier3.cloudtasks.verdict import COMPLETE_EVENT, PAGE_EVENT, sequence_verdict
+from flink_tier3.cloudtasks.verdict import PAGE_EVENT, data_reasons
 from flink_tier3.recovery_analysis import (
+    INCOMPLETE_NOTE,
     SINGLE_FAULT,
     SINGLE_FAULT_NOTE,
 )
 from flink_tier3.runs import discover_runs
+from flink_tier3.verdict import COMPLETE_EVENT, sequence_verdict
 
 # The kinds the single-fault trials named, written out so that dropping one
 # from the analyzer's list fails a test here rather than shrinking it.
@@ -98,7 +100,7 @@ def run_directory(
     if faults is not None:
         outcomes["faults"] = faults
     record = {"stage": "complete", "outcomes": outcomes}
-    record.update(sequence_verdict(record))
+    record.update(sequence_verdict(record, data_reasons))
     write(directory, "result.json", {"success": True, "idle": True, "recovery": record})
     for index, listed in enumerate(pages):
         write(
@@ -178,6 +180,29 @@ def test_unreadable_evidence_leaves_the_run_without_a_verdict(tmp_path):
     assert analyze.assess(run)["problems"] == ["approval-without-cloudtasks-trial"]
 
 
+def test_a_malformed_completed_record_leaves_the_run_without_a_verdict(tmp_path):
+    """An unreadable record is an export to fetch again; no stored verdict shows."""
+    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])], faults=FAULTS)
+    write(
+        directory,
+        "supervisor/complete-2.json",
+        {"event": COMPLETE_EVENT, "at": "2026-10-13T00:02:00Z", "payload": "lost"},
+    )
+    [run] = discover_runs(directory)
+    item = analyze.assess(run)
+    assert (item["verdict"], item["stored"], item["problems"]) == (
+        None,
+        None,
+        ["malformed-evidence:1"],
+    )
+    assert item["report"] is None
+    [row] = [
+        line for line in analyze.render([item]).splitlines() if TRIAL.run_id in line
+    ]
+    assert row.startswith(f"| {TRIAL.run_id} | - | - |")
+    assert row.endswith("| malformed-evidence:1 |")
+
+
 def test_a_page_beyond_the_recorded_count_is_reported(tmp_path):
     directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
     write(
@@ -235,7 +260,7 @@ def test_a_stopped_sequence_run_is_inconclusive_by_its_own_reasons(tmp_path):
     """A sequence run stopped before its listing names no single-fault reason."""
     directory = run_directory(tmp_path, [tasks([0, 1])], faults=FAULTS, complete=False)
     record = {"stage": "faults", "outcomes": {"faults": FAULTS}}
-    record.update(sequence_verdict(record))
+    record.update(sequence_verdict(record, data_reasons))
     write(
         directory, "result.json", {"success": False, "idle": True, "recovery": record}
     )
@@ -291,7 +316,9 @@ def test_a_single_fault_run_has_no_verdict_here(tmp_path, complete, kind):
     )
     assert result["problems"] == [SINGLE_FAULT]
     assert result["report"] is None
-    assert SINGLE_FAULT_NOTE in analyze.render([result])
+    rendered = analyze.render([result])
+    assert SINGLE_FAULT_NOTE in rendered
+    assert INCOMPLETE_NOTE in rendered
 
 
 @pytest.mark.parametrize("kind", [None, 3, [], "", "sequnce", "reactive-scale-out"])
@@ -309,7 +336,7 @@ def test_a_completed_record_without_a_listing_has_no_verdict(tmp_path):
     """A completed run is decided by its listing, which this export lacks."""
     directory = run_directory(tmp_path, [tasks([0, 1])], faults=FAULTS)
     record = {"stage": "complete", "outcomes": {"faults": FAULTS}}
-    record.update(sequence_verdict(record))
+    record.update(sequence_verdict(record, data_reasons))
     write(
         directory, "result.json", {"success": False, "idle": True, "recovery": record}
     )

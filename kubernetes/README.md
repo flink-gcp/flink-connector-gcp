@@ -84,7 +84,7 @@ kubernetes/
   cli_tool.cue                   # The render command the manifest tests use
   runs/common.cue                # Run inputs and the environment policy every delivery applies
   lifecycle/delivery.cue         # Lifecycle inputs, ConfigMap and supervisor Job
-  lifecycle/faults.cue           # The recovery trials' rendered parallelism
+  lifecycle/parallelism.cue      # The recovery trials' rendered parallelism
   images/                        # Image pins and the lifecycle-tools image
   tests/fixtures/application.cue # The standard application the shared tests render
   tests/test_manifests.py        # Tests of the shared layers, and the helpers and `module` fixture the scenario tests import

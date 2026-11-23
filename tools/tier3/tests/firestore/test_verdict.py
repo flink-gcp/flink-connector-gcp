@@ -20,11 +20,13 @@ import pytest
 from flink_tier3 import runs
 from flink_tier3.common import USABLE
 from flink_tier3.firestore import analyze, plan
-from flink_tier3.firestore.verdict import COMPONENTS, sequence_verdict
+from flink_tier3.firestore.verdict import COMPONENTS, data_reasons
 from flink_tier3.recovery_analysis import (
+    INCOMPLETE_NOTE,
     SINGLE_FAULT,
     SINGLE_FAULT_NOTE,
 )
+from flink_tier3.verdict import COMPLETE_EVENT, sequence_verdict
 
 from ..test_analyze import write_run
 
@@ -120,8 +122,8 @@ RECORD = {
 }
 
 
-def assessed(tmp_path, record=RECORD, **trial):
-    """The analyzer's account of one run that wrote `record`, under `trial`."""
+def assessed(tmp_path, record=RECORD, extra=(), **trial):
+    """The analyzer's account of a run that wrote `record` and `extra`, under `trial`."""
     run_dir = write_run(
         tmp_path,
         run_id="fs-s1",
@@ -131,7 +133,8 @@ def assessed(tmp_path, record=RECORD, **trial):
                 "event": "recovery-complete",
                 "at": "2026-11-12T02:20:00Z",
                 "payload": record,
-            }
+            },
+            *extra,
         ],
     )
     approval = json.loads((run_dir / "approval.json").read_text())
@@ -154,7 +157,8 @@ def test_a_sequence_run_is_assessed_by_its_oracles_and_lists_its_faults(tmp_path
             "outcomes": {
                 "oracles": {**RECORD["outcomes"]["oracles"], "native_sink": failing}
             },
-        }
+        },
+        data_reasons,
     )["reasons"] == ["native_sink-oracle-not-passed"]
 
 
@@ -184,6 +188,7 @@ def test_a_single_fault_run_has_no_verdict_here(tmp_path, kind):
     rendered = analyze.render([item])
     assert f"| {SINGLE_FAULT} |" in rendered
     assert SINGLE_FAULT_NOTE in rendered
+    assert INCOMPLETE_NOTE in rendered
 
 
 @pytest.mark.parametrize(
@@ -212,4 +217,17 @@ def test_a_sequence_run_stopped_before_its_verdict_is_not_usable():
         "stage": "documents",
         "outcomes": {"oracles": {component: PASSED for component in COMPONENTS}},
     }
-    assert sequence_verdict(record)["reasons"] == ["recovery-incomplete"]
+    assert sequence_verdict(record, data_reasons)["reasons"] == ["recovery-incomplete"]
+
+
+def test_a_malformed_completed_record_leaves_the_run_without_a_verdict(tmp_path):
+    """An unreadable record is an export to fetch again; no stored verdict shows."""
+    item = assessed(tmp_path, extra=({"event": COMPLETE_EVENT, "payload": "baseline"},))
+    assert (item["verdict"], item["stored"], item["problems"]) == (
+        None,
+        None,
+        ["malformed-evidence:1"],
+    )
+    [row] = [line for line in analyze.render([item]).splitlines() if "fs-s1" in line]
+    assert row.startswith("| fs-s1 | - | - |")
+    assert row.endswith("| malformed-evidence:1 |")

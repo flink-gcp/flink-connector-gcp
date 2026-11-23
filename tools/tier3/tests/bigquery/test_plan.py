@@ -197,15 +197,15 @@ def test_complete_identity_and_budget_bindings(inputs, renderer, name):
         "mode": mode,
         "destinations": destinations,
         "records": records,
-        "fault": "sequence",
         "uploader": uploader,
     }
     adapter_plan = ResourcePlan(**{**resource, "trial": Trial(**resource["trial"])})
-    assert adapter_plan.job_body(11)["configuration"]["query"][
+    assert adapter_plan.job_body(0)["configuration"]["query"][
         "maximumBytesBilled"
     ] == str(4 * 1024**3)
     assert proposal["limits"]["input_bytes"] == 360 * 1024**2
-    assert proposal["limits"]["query_bytes"] == 48 * 1024**3
+    # The one query the sequence makes.
+    assert proposal["limits"]["query_bytes"] == 4 * 1024**3
     assert proposal["cleanup_at"] == "2026-09-21T01:15:00Z"
     # The ResourceQuotas bound what a run may hold; the proposal counts no Pods.
     assert set(proposal["limits"]) == {
@@ -293,19 +293,16 @@ def test_the_trials_are_the_sequence_once_per_delivery_method():
         "alo-10-sequence": {
             "mode": "ALO",
             "destinations": 10,
-            "fault": "sequence",
             "records": 5760,
         },
         "eo-10-sequence": {
             "mode": "EO",
             "destinations": 10,
-            "fault": "sequence",
             "records": 368640,
         },
         "fl-10-uploader-sequence": {
             "mode": "FILE_LOADS",
             "destinations": 10,
-            "fault": "sequence",
             "uploader": True,
             "records": 368640,
         },
@@ -623,20 +620,14 @@ def test_the_intervals_are_the_packages():
         # trial without it.
         {"mode": "ALO", "destinations": 10},
         {"mode": "EO", "destinations": 10, "fault": "tm-replacement"},
-        {"mode": "ALO", "destinations": 10, "fault": "sequence"},
-        {"mode": "ALO", "destinations": 10, "fault": "sequence", "records": 5761},
-        {"mode": "EO", "destinations": 10, "fault": "sequence", "records": 5760},
-        {"mode": "ALO", "destinations": 50, "fault": "sequence", "records": 5760},
-        {"mode": "ALO", "destinations": 10, "records": 5760},
-        {"mode": "EO", "destinations": 50, "fault": "sequence", "records": 368640},
-        {"mode": "EO", "destinations": 10, "records": 368640},
+        {"mode": "ALO", "destinations": 10, "records": 5761},
+        {"mode": "EO", "destinations": 10, "records": 5760},
+        {"mode": "ALO", "destinations": 50, "records": 5760},
+        {"mode": "EO", "destinations": 50, "records": 368640},
+        # The fault, which every trial named until #2279, is no field.
+        {"mode": "ALO", "destinations": 10, "fault": "sequence", "records": 5760},
         # FILE_LOADS runs it with the uploader on, as the connector does.
-        {
-            "mode": "FILE_LOADS",
-            "destinations": 10,
-            "fault": "sequence",
-            "records": 368640,
-        },
+        {"mode": "FILE_LOADS", "destinations": 10, "records": 368640},
     ],
 )
 def test_the_sequence_is_refused_outside_its_cell(value):
@@ -666,7 +657,8 @@ def test_the_sequence_proposes_its_input_at_the_default_sizes(
     assert "bigquery_fault" not in options
     assert options["bigquery_records"] == records
     resources = bundle["proposal"]["resources"]["trial"]
-    assert (resources["fault"], resources["records"]) == ("sequence", records)
+    assert "fault" not in resources
+    assert resources["records"] == records
     assert bundle["proposal"]["limits"]["input_bytes"] == 360 * 1024**2
     for application in ("application", "upgrade_application"):
         spec = bundle[application]["spec"]

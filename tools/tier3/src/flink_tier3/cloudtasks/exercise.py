@@ -16,10 +16,10 @@
 from __future__ import annotations
 
 from ..common import Failure, utc
-from ..exercise import FaultSequence, FiniteInputExercise
+from ..exercise import FiniteInputExercise
 from ..policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE, POLL
 from .oracle import assess, page
-from .verdict import PAGE_EVENT, sequence_verdict
+from .verdict import PAGE_EVENT, data_reasons
 
 # The stage between the finished application and the passing listing.
 LISTING_STAGE = "listing"
@@ -30,12 +30,12 @@ class WindowClosed(Failure):
 
 
 class CloudTasksExercise(FiniteInputExercise):
-    """Run the finite input through the faults, then list the paused queue against it.
+    """The Cloud Tasks trial as one fault sequence, judged by its data (ADR-0204).
 
-    The caller supplies the supervisor's queue controller. The verdict is
-    decided from the listing the exercise exported, by the `verdict` the
-    fault sequence names, and written with the transition that completes the
-    run.
+    The finite input runs through the faults, and the paused queue is then
+    listed against it. The caller supplies the supervisor's queue controller.
+    The verdict is decided from the listing the exercise exported, by the
+    exactly-once rule, and written with the transition that completes the run.
     """
 
     namespace = CLOUDTASKS
@@ -88,7 +88,7 @@ class CloudTasksExercise(FiniteInputExercise):
                 break
             self.env.sleep(POLL)
         self.outcomes["listing"] = listing
-        self.complete(self.verdict)
+        self.complete(data_reasons)
 
     def _list(self, attempt, until):
         """One whole listing, exported page by page, and its oracle report.
@@ -129,14 +129,3 @@ class CloudTasksExercise(FiniteInputExercise):
             "queue_state": state,
             "report": assess(self.trial, pages),
         }
-
-
-class CloudTasksSequenceExercise(FaultSequence, CloudTasksExercise):
-    """The Cloud Tasks trial as one fault sequence, judged by its data (ADR-0204).
-
-    The listing and its oracle are the same, so the exactly-once sink is
-    judged by the exactly-once rule.
-    """
-
-    # The verdict the listing's record is judged by.
-    verdict = staticmethod(sequence_verdict)

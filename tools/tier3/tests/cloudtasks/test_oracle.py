@@ -19,7 +19,8 @@ import hashlib
 import pytest
 from flink_tier3.cloudtasks.oracle import assess, page
 from flink_tier3.cloudtasks.trial import Trial
-from flink_tier3.cloudtasks.verdict import COMPLETE_STAGE, sequence_verdict
+from flink_tier3.cloudtasks.verdict import data_reasons
+from flink_tier3.verdict import COMPLETE_STAGE, sequence_verdict
 
 TRIAL = Trial("ct-oracle", 5, 1, "sequence")
 PREFIX = TRIAL.queue_path + "/tasks/"
@@ -114,7 +115,7 @@ PASSED = {"queue_state": "PAUSED", "report": {"verdict": "pass"}}
 
 @pytest.mark.parametrize("value", [None, [], {"stage": "listing"}, {"outcomes": 3}])
 def test_an_unfinished_or_malformed_record_is_inconclusive(value):
-    decided = sequence_verdict(value)
+    decided = sequence_verdict(value, data_reasons)
     assert decided["verdict"] == "inconclusive"
     assert "recovery-incomplete" in decided["reasons"]
 
@@ -150,14 +151,16 @@ def test_a_sequence_run_is_usable_only_complete_paused_and_listed_exactly_once(
     stage, listing, reason
 ):
     """A fault-sequence run (ADR-0204) is judged by its listing alone."""
-    decided = sequence_verdict({"stage": stage, "outcomes": {"listing": listing}})
+    decided = sequence_verdict(
+        {"stage": stage, "outcomes": {"listing": listing}}, data_reasons
+    )
     assert decided == {"verdict": "inconclusive", "reasons": [reason]}
 
 
 def test_a_completed_sequence_run_with_a_passing_listing_is_usable():
     """Nothing but the listing is asked of the record."""
     value = {"stage": COMPLETE_STAGE, "outcomes": {"listing": PASSED}}
-    assert sequence_verdict(value) == {"verdict": "usable", "reasons": []}
+    assert sequence_verdict(value, data_reasons) == {"verdict": "usable", "reasons": []}
 
 
 @pytest.mark.parametrize(

@@ -14,16 +14,9 @@
 """What the deployed verdict says, and what it refuses to say."""
 
 import pytest
-from flink_tier3.bigquery.verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    sequence_verdict,
-)
+from flink_tier3.bigquery.verdict import data_reasons
 from flink_tier3.common import INCONCLUSIVE, USABLE
-
-
-def test_the_event_names_are_spelled_once_for_both_sides():
-    assert COMPLETE_EVENT == "recovery-" + COMPLETE_STAGE
+from flink_tier3.verdict import COMPLETE_STAGE, sequence_verdict
 
 
 @pytest.mark.parametrize(
@@ -57,7 +50,7 @@ def test_the_event_names_are_spelled_once_for_both_sides():
     ],
 )
 def test_a_sequence_verdict_is_its_data_alone(record, reasons):
-    assert sequence_verdict(record) == {
+    assert sequence_verdict(record, data_reasons) == {
         "verdict": INCONCLUSIVE if reasons else USABLE,
         "reasons": reasons,
     }

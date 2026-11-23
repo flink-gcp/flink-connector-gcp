@@ -21,6 +21,7 @@ import pytest
 import yaml
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.exercise import RENDERED_PARALLELISM
+from flink_tier3.firestore.plan import SEQUENCE_INPUT, SEQUENCE_SEED
 from test_manifests import (
     KUBERNETES,
     SYNTHETIC_DIGEST,
@@ -33,6 +34,12 @@ from test_manifests import (
 from test_manifests import module as module  # noqa: PLC0414
 
 FIRESTORE_IMAGE = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/firestore-recovery"
+
+
+# The package's defaults, which are the fault sequence's input.
+RECORDS = SEQUENCE_INPUT["records"]
+RATE = SEQUENCE_INPUT["records_per_second"]
+SEED = SEQUENCE_SEED["seed_records_per_second"]
 
 
 def firestore_leaf(module, **changes):
@@ -53,7 +60,7 @@ def firestore_leaf(module, **changes):
     return path
 
 
-def firestore_args(run_id, phase, records=180000, rate=100, parallelism=2, seed=50):
+def firestore_args(run_id, phase, records=RECORDS, rate=RATE, parallelism=2, seed=SEED):
     return [
         "--run-id",
         run_id,
@@ -105,10 +112,10 @@ def assert_firestore_application(
     run_id,
     expires_at,
     phase,
-    records=180000,
-    rate=100,
+    records=RECORDS,
+    rate=RATE,
     parallelism=2,
-    seed=50,
+    seed=SEED,
 ):
     """The whole delivered contract of one phase but its approval annotations."""
     assert app["metadata"]["name"] == run_id
@@ -197,13 +204,14 @@ def test_firestore_database_ids_fit_firestore_at_the_longest_run_id(module):
         {"phase": "resume"},
         {"records": 1},
         {"records": "100"},
-        # Each within the application's bounds, but longer than 30 minutes of input.
-        {"records": 180001},
+        # Each within the application's bounds, but longer than 30 minutes of input,
+        # at the default rate or another.
+        {"records": 18001},
         {"records": 1801, "recordsPerSecond": 1},
         {"records": 360000, "recordsPerSecond": 100},
         # The default count at a lower rate, omitted or given.
-        {"recordsPerSecond": 50},
-        {"records": 180000, "recordsPerSecond": 50},
+        {"recordsPerSecond": 1},
+        {"records": 6000, "recordsPerSecond": 1},
         {"recordsPerSecond": 0},
         {"recordsPerSecond": 101},
         # The seed copy's pace, per reading subtask.

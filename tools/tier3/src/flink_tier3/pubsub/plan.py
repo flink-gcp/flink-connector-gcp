@@ -30,14 +30,10 @@ from .resources import ResourcePlan
 TRIALS = (SEQUENCE_KIND,)
 WINDOW_SECONDS = WINDOWS["pubsub-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Version 7 removed `entry_point` with the relay's Table entry point (#2240).
-VERSION = 7
-FIELDS = {
-    "version",
-    "trial",
-    "records_per_subscription",
-    "restore_deduplication",
-}
+# Version 7 removed `entry_point` with the relay's Table entry point (#2240),
+# and version 8 `restore_deduplication`, which the fault sequence fixes (#2279).
+VERSION = 8
+FIELDS = {"version", "trial", "records_per_subscription"}
 # The fault sequence's input (ADR-0204): 4,800 records per subscription, which
 # the relay reads at ten a second per subtask, 480 seconds of input at
 # parallelism two. The earlier sequence runs' inputs began 477 to 677 seconds
@@ -48,6 +44,7 @@ FIELDS = {
 # the source's ledger suppressing nothing it should deliver.
 SEQUENCE_RECORDS = 4800
 RECORD_DELAY_MILLIS = 100
+RESTORE_DEDUPLICATION = "true"
 
 
 def trial(kind):
@@ -58,7 +55,6 @@ def trial(kind):
         "version": VERSION,
         "trial": kind,
         "records_per_subscription": SEQUENCE_RECORDS,
-        "restore_deduplication": True,
     }
 
 
@@ -73,8 +69,6 @@ def validate_trial(value):
         raise Failure("Invalid Pub/Sub trial field: records_per_subscription")
     if value["trial"] not in TRIALS:
         raise Failure("Unknown Pub/Sub trial")
-    if type(value["restore_deduplication"]) is not bool:
-        raise Failure("Invalid Pub/Sub trial field: restore_deduplication")
 
 
 def _pod(pod, role):
@@ -167,8 +161,7 @@ def manifest_jobs(run_id, trial):
                     f"--records-per-subscription={trial['records_per_subscription']}",
                     f"--parallelism={parallelism}",
                     f"--require-restored={str(phase == 'upgrade').lower()}",
-                    "--restore-deduplication="
-                    + str(trial["restore_deduplication"]).lower(),
+                    f"--restore-deduplication={RESTORE_DEDUPLICATION}",
                     f"--record-delay-millis={RECORD_DELAY_MILLIS}",
                 ],
             )
@@ -240,7 +233,7 @@ def prepare(
         expression="[application, upgradeApplication, delivery.resources]",
         application_image=application_image,
         pubsub_records=records,
-        pubsub_restore_deduplication=str(trial["restore_deduplication"]).lower(),
+        pubsub_restore_deduplication=RESTORE_DEDUPLICATION,
         pubsub_record_delay_millis=RECORD_DELAY_MILLIS,
         pubsub_probe=probe_argument(resources, schedule),
         pubsub_probe_source=probe_command()[3],

@@ -128,7 +128,7 @@ The application has taken the sink's subtasks as `--parallelism` since [#2250](h
 The run's queue is `ct1362-<run-id>` in `flink-gcp/us-central1`.
 Choose a run ID that has not been used: a deleted queue's name can stay unavailable for a tombstone window of up to three days, and a used ID already has evidence, which dispatch refuses.
 
-The [`cloudtasks-recovery`](../../lifecycle/cloudtasks.cue) delivery takes the input from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input, and sizes both phases' sink and TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+The [`cloudtasks-recovery`](../../lifecycle/cloudtasks.cue) delivery takes the input from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, unless given the fault sequence's 3,600 records at 10 per second, and at most 30 minutes of input, and sizes both phases' sink and TaskManagers at the parallelism in [parallelism.cue](../../lifecycle/parallelism.cue).
 Dispatch renders it at the sequence's fixed input.
 
 ### Queue lifecycle

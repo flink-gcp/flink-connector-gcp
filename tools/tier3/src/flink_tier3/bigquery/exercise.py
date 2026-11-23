@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from ..common import Failure, StorageRequestFailed, transient
-from ..exercise import FaultSequence, FiniteInputExercise
+from ..exercise import FiniteInputExercise
 from ..policy import (
     BIGQUERY,
     BIGQUERY_OBSERVATIONS,
@@ -24,7 +24,7 @@ from ..policy import (
     QUERY_EVIDENCE_BYTES,
 )
 from .oracle import assess
-from .verdict import sequence_verdict
+from .verdict import data_reasons
 
 
 def require_handoff(env, handoff):
@@ -42,10 +42,17 @@ def require_handoff(env, handoff):
 
 
 class BigQueryExercise(FiniteInputExercise):
-    """Run the finite input through the faults, then read its tables by query.
+    """The BigQuery trial as one fault sequence, judged by its data (ADR-0204).
 
-    The fault sequence reads the tables, through the supervisor's query
-    handoff, and decides the verdict from them.
+    The job finishes with its input, and one query then reads every table,
+    through the supervisor's query handoff. Its report is the verdict: rows
+    that are invalid or missing, or in an exactly-once mode duplicated, fail
+    the run through the verdict rather than ending it, and the query is not
+    repeated until it passes, since the finished job, not the tables, says the
+    input was committed. No load is awaited before a fault: the faults land
+    wherever the commits happen to be (#2148). A FILE_LOADS run refuses to
+    read while a job its committer issued is not DONE, as every FILE_LOADS
+    trial does, and lists them again while a listing gets no answer.
     """
 
     namespace = BIGQUERY
@@ -81,21 +88,6 @@ class BigQueryExercise(FiniteInputExercise):
             raise Failure("BigQuery archived oracle differs from its rows")
         return report
 
-
-class BigQuerySequenceExercise(FaultSequence, BigQueryExercise):
-    """The BigQuery trial as one fault sequence, judged by its data (ADR-0204).
-
-    The job finishes with its input, and one query then reads every table.
-    Its report is the verdict: rows that are invalid or missing, or in an
-    exactly-once mode duplicated, fail the run through the verdict rather than
-    ending it, and the query is not repeated until it passes, since the
-    finished job, not the tables, says the input was committed. No load is
-    awaited before a fault: the faults land wherever the commits happen to
-    be (#2148). A FILE_LOADS run refuses to
-    read while a job its committer issued is not DONE, as every FILE_LOADS
-    trial does, and lists them again while a listing gets no answer.
-    """
-
     def verify_rows(self, supervisor):
         """Read the tables once, within the read window, and complete the run."""
         if self.stage != "visibility":
@@ -110,7 +102,7 @@ class BigQuerySequenceExercise(FaultSequence, BigQueryExercise):
         name = "final-0"
         report = self.read_rows(supervisor, name, until)
         self.outcomes["query"] = {"observation": name, "report": report}
-        self.complete(sequence_verdict)
+        self.complete(data_reasons)
 
     def _listed_jobs(self, supervisor, until):
         """The connector jobs not DONE, listed again while a listing gets no answer.

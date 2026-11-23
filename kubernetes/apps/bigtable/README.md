@@ -90,7 +90,7 @@ The faults all land while the input runs, because the fault sequence ends a run 
 ## Deployment definition
 
 [`pkg/bigtable.#Application`](../../pkg/bigtable/application.cue) defines the job on Flink 2.2.1 / Java 17, and the [`bigtable-recovery`](../../lifecycle/bigtable.cue) lifecycle scenario renders its initial and upgrade phases from one input identity.
-The delivery supplies the run ID, image digest, phase, parallelism and change-stream end, and optionally the record count and rate, 180,000 records at 100 per second unless given; the package refuses more than 30 minutes of input.
+The delivery supplies the run ID, image digest, phase, parallelism and change-stream end, and optionally the record count and rate, unless given the fault sequence's 2,400 records at 10 per second; the package refuses more than 30 minutes of input.
 It names the instance `bt1316-<run-id>`, so the run ID has at most 26 characters, and passes no emulator endpoint or credentials file.
 
 The deployment runs as the `tier3-bigtable/bigtable` KSA, which selects the `tier3-bigtable` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-bigtable.tf) limit it to the `bt1316-` instances.
@@ -125,6 +125,7 @@ The Change Streams relay reads `eo`, so the exactly-once path runs in this scena
 The relay is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end; a restore after the input finished can replay it and commit rows whose staged commit it discarded only then, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
 A restore after the input's latest progress line also leaves the relay unjudged: it can commit rows its state carried without logging a line, and its recorded time, when the JobManager assigned the state, precedes those commits by as long as the tasks take to deploy; such a run can run again as it is too.
+Timing explains only a missing row, so an unjudged relay that counts a foreign row, a cell outside its family or a row `eo` did not apply has not passed, and the run does not run again as it is ([#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279)).
 The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults.
 
@@ -153,7 +154,7 @@ Dispatching is the approval, as for the other scenarios, and no estimate is appr
 The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
 The run ID has at most 26 characters, because the run's instance is `bt1316-<run-id>` and an instance ID has at most 33.
 
-The [`bigtable-recovery`](../../lifecycle/bigtable.cue) delivery takes the input that the [deployment definition](#deployment-definition) describes from the optional `bigtable_records` and `bigtable_records_per_second` tags, the change-stream end from the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and sizes every vertex but the input and the TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+The [`bigtable-recovery`](../../lifecycle/bigtable.cue) delivery takes the input that the [deployment definition](#deployment-definition) describes from the optional `bigtable_records` and `bigtable_records_per_second` tags, the change-stream end from the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and sizes every vertex but the input and the TaskManagers at the parallelism in [parallelism.cue](../../lifecycle/parallelism.cue).
 Dispatch renders it at the sequence's fixed input and a change-stream end 1,800 seconds into the run's window.
 
 ### Instance lifecycle
@@ -187,11 +188,12 @@ The relay is judged only when the input's latest progress line came at least 120
 
 ### Verdict and analysis
 
-The run is `usable` when it completed and all three oracles passed, the relay's having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `relay-oracle-unjudged` or `<component>-oracle-not-passed`, for `eo`, `alo` or `relay`, as its reasons.
+The run is `usable` when it completed and all three oracles passed, the relay's having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `relay-oracle-unjudged` or `<component>-oracle-not-passed`, for `eo`, `alo` or `relay`, as its reasons; an unjudged relay reads as `relay-oracle-unjudged` unless it counts a foreign row, a cell outside its family or a row `eo` did not apply, which read as `relay-oracle-not-passed`.
 The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
 
 `just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory and lists the faults the run injected, and it reports a single-fault run as the [Cloud Tasks section](../cloudtasks/README.md#verdict-and-analysis) does, without a verdict and as `single-fault-trial`.
 It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
+A record written before [#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279) stored `relay-oracle-unjudged` for an unjudged relay that also counted a definitive failure, so it now reads as `relay-oracle-not-passed` with `verdict-differs-from-the-record`.
 
 The four trials of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855) are preregistered in the [Bigtable recovery trial preregistration](../../../docs/adr/evidence/0165-bigtable-recovery-preregistration-1855.md), and each kind reached `usable`, as their [findings](../../../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) record.
 Their pilot showed the unconditional creator role enough for the runner to create its `bt1316-` instance, which does not test whether IAM checks a create against the project, one of the premises the grants' [ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-foundation) left unmeasured; it did measure the other, that the instance-name conditions admit the workload's and the supervisor's data-plane calls, which the oracles' reads depend on.

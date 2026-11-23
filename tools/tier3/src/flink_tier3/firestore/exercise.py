@@ -19,11 +19,11 @@ from __future__ import annotations
 import re
 
 from ..common import Failure, retryable_commit, timestamp
-from ..exercise import FaultSequence, FiniteInputExercise
+from ..exercise import FiniteInputExercise
 from ..policy import FIRESTORE, FIRESTORE_OBSERVATIONS, FIRESTORE_STATE, POLL
 from .oracle import BatchCopy, Seed, Sink
 from .trial import BATCH, INPUT, LATE_RECORDS, MODES, SEED
-from .verdict import sequence_verdict
+from .verdict import data_reasons
 
 # The stage between the finished application and the read collections.
 ORACLE_STAGE = "documents"
@@ -41,12 +41,14 @@ PLANNED = re.compile(
 
 
 class FirestoreExercise(FiniteInputExercise):
-    """Run the finite input through the faults, then read both databases against it.
+    """The Firestore trial as one fault sequence, judged by its data (ADR-0204).
 
-    The caller supplies the supervisor's database controller. The job
-    finishes once the input is complete and both copies are done. The verdict
-    is decided from the four oracle reports, by the `verdict` the fault
-    sequence names, and written with the transition that completes the run.
+    The finite input runs through the faults, and both databases are then
+    read against it. The caller supplies the supervisor's database
+    controller. The late seed records are written before the first fault.
+    The job finishes once the input is complete and both copies are done. The
+    verdict is decided from the four oracle reports and written with the
+    transition that completes the run.
     """
 
     namespace = FIRESTORE
@@ -68,7 +70,7 @@ class FirestoreExercise(FiniteInputExercise):
         self.plan_lines = set()
         super().__init__(env, upgrade, trial)
 
-    def progress(self, pod, text):
+    def read_progress(self, pod, text):
         """Read the input's progress, and each batch read's plan from the JobManager.
 
         A plan is logged once, when its read is planned at the job's first
@@ -76,7 +78,7 @@ class FirestoreExercise(FiniteInputExercise):
         judged, so the last plan read of each mode is kept, and a line read
         again counts once.
         """
-        super().progress(pod, text)
+        super().read_progress(pod, text)
         if pod["metadata"].get("labels", {}).get("component") != "jobmanager":
             return
         modes = {self.trial.database(mode): mode for mode in MODES}
@@ -93,6 +95,10 @@ class FirestoreExercise(FiniteInputExercise):
                 "read_time": match["read_time"],
                 "plans": plans.get(mode, {}).get("plans", 0) + 1,
             }
+
+    def ready_for_sequence(self):
+        """The first fault waits for both databases' late seed records."""
+        return self.late_seeds_written()
 
     def late_seeds_written(self):
         """Write each database's missing late seed records; whether both are written."""
@@ -178,7 +184,7 @@ class FirestoreExercise(FiniteInputExercise):
             oracles[mode + "_sink"] = checks[INPUT].report()
             oracles[mode + "_batch"] = batch
         self.outcomes["oracles"] = oracles
-        self.complete(self.verdict)
+        self.complete(data_reasons)
 
     def late_after_plan(self, mode):
         """Whether a database's late commit followed its plan's read time, or None unread."""
@@ -190,17 +196,3 @@ class FirestoreExercise(FiniteInputExercise):
             return timestamp(late["commit_time"]) > timestamp(plan["read_time"])
         except Failure:
             return None
-
-
-class FirestoreSequenceExercise(FaultSequence, FirestoreExercise):
-    """The Firestore trial as one fault sequence, judged by its data (ADR-0204).
-
-    The late seed records are written before the first fault.
-    """
-
-    # The verdict the oracles' record is judged by.
-    verdict = staticmethod(sequence_verdict)
-
-    def ready_for_sequence(self):
-        """The first fault waits for both databases' late seed records."""
-        return self.late_seeds_written()

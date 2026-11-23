@@ -19,80 +19,43 @@ only the downloaded evidence directory can check the stored verdict against
 them. The oracle reports are not rebuilt: the supervisor read the
 collections, which the databases' deletion removed, and exported only the
 reports.
-
-Every event name and stage comes from ``flink_tier3.firestore.verdict``,
-which the exercise writes from, so a rename cannot reach only one side.
 """
 
 from ..common import UNPLANNED_EVENT
 from ..recovery_analysis import (
+    INCOMPLETE_NOTE,
     SINGLE_FAULT_NOTE,
-    malformed_records,
-    names_single_fault,
-    recovery_record,
-    single_fault,
-    unreadable,
-    verdict_problems,
+    approval_checks,
+    assess_sequence,
+    by_record,
+    fault_column,
+    oracle_figure,
+    recorded_oracles,
 )
 from .trial import Trial
-from .verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    COMPONENTS,
-    sequence_verdict,
-)
+from .verdict import COMPONENTS, data_reasons
 
 SCENARIO = "firestore-recovery"
 FIELD = "firestore_trial"
 
 
-def _trial(run):
-    approval = run.approval if isinstance(run.approval, dict) else {}
-    value = approval.get(FIELD)
-    if not isinstance(value, dict):
-        return None
-    try:
-        return Trial(run.run_id, **value)
-    except (TypeError, ValueError):
-        return None
-
-
 def assess(run):
-    """One Firestore run's verdict, beside the faults it injected (ADR-0204)."""
-    record = recovery_record(run, COMPLETE_EVENT)
-    outcomes = record.get("outcomes") if isinstance(record, dict) else None
-    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-    return {**_verdict(run), "faults": faults if isinstance(faults, list) else []}
+    """One Firestore run's verdict, beside the faults it injected (ADR-0204).
+
+    The verdict is decided by the data alone.
+    """
+    return assess_sequence(
+        run,
+        by_record(data_reasons, _details),
+        **approval_checks(FIELD, Trial),
+    )
 
 
-def _verdict(run):
-    malformed = malformed_records(run, COMPLETE_EVENT)
-    if names_single_fault(run, FIELD):
-        return single_fault(run, recovery_record(run, COMPLETE_EVENT))
-    if _trial(run) is None:
-        return unreadable(run, None, ["approval-without-firestore-trial"])
-    if not isinstance(run.result, dict):
-        return unreadable(run, None, ["missing-result.json"])
-    if malformed:
-        return unreadable(run, None, [f"malformed-evidence:{malformed}"])
-    complete = bool(run.events_of(COMPLETE_EVENT))
-    record = recovery_record(run, COMPLETE_EVENT)
-    if not isinstance(record, dict):
-        return unreadable(run, None, ["missing-" + COMPLETE_EVENT])
-    if not complete and record.get("stage") == COMPLETE_STAGE:
-        return unreadable(run, record, ["missing-" + COMPLETE_EVENT])
-    # Decided by the data alone.
-    decided = sequence_verdict(record)
-    outcomes = record.get("outcomes")
-    oracles = outcomes.get("oracles") if isinstance(outcomes, dict) else None
+def _details(run, record):
+    """The oracle reports, and the causes the run carried on through."""
     return {
-        "run_id": run.run_id,
-        "verdict": decided["verdict"],
-        "stored": record.get("verdict"),
-        "reasons": decided["reasons"],
-        "problems": sorted(verdict_problems(record, decided, complete)),
-        "oracles": oracles if isinstance(oracles, dict) else None,
-        "unplanned": _unplanned(run, outcomes),
+        **recorded_oracles(run, record),
+        "unplanned": _unplanned(run, record.get("outcomes")),
     }
 
 
@@ -115,22 +78,6 @@ def _unplanned(run, outcomes):
 def assess_runs(runs):
     """Every Firestore run in a discovered evidence directory, in the order given."""
     return [assess(run) for run in runs if run.scenario == SCENARIO]
-
-
-def _figure(oracles, component, key):
-    report = oracles.get(component) if isinstance(oracles, dict) else None
-    value = report.get(key) if isinstance(report, dict) else None
-    return "-" if value is None or isinstance(value, (dict, list)) else value
-
-
-def _faults(item):
-    """A sequence run's injected faults in order, or `-` for a single-fault run."""
-    kinds = [
-        fault.get("kind")
-        for fault in item.get("faults") or []
-        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
-    ]
-    return ", ".join(kinds) or "-"
 
 
 def render(assessments):
@@ -156,18 +103,18 @@ def render(assessments):
     ]
     for item in assessments:
         oracles = item.get("oracles")
-        verdicts = {c: _figure(oracles, c, "verdict") for c in COMPONENTS}
+        verdicts = {c: oracle_figure(oracles, c, "verdict") for c in COMPONENTS}
         batches = " | ".join(
             f"{verdicts[mode + '_batch']} | "
-            f"{_figure(oracles, mode + '_batch', 'extra_deliveries')} | "
-            f"{_figure(oracles, mode + '_batch', 'read_seconds')}"
+            f"{oracle_figure(oracles, mode + '_batch', 'extra_deliveries')} | "
+            f"{oracle_figure(oracles, mode + '_batch', 'read_seconds')}"
             for mode in ("native", "datastore")
         )
         lines.append(
             f"| {item['run_id']} | {item['verdict'] or '-'} | {item['stored'] or '-'} "
             f"| {verdicts['native_sink']} | "
             f"{verdicts['datastore_sink']} | {batches} | "
-            f"{', '.join(item.get('unplanned') or []) or '-'} | {_faults(item)} | "
+            f"{', '.join(item.get('unplanned') or []) or '-'} | {fault_column(item)} | "
             f"{', '.join(item['reasons']) or '-'} | {', '.join(item['problems']) or '-'} |"
         )
     lines.extend(
@@ -186,6 +133,7 @@ def render(assessments):
                 "on through, which decides nothing."
             ),
             SINGLE_FAULT_NOTE,
+            INCOMPLETE_NOTE,
         ]
     )
     return "\n".join(lines) + "\n"

@@ -20,7 +20,7 @@ import pytest
 from flink_tier3.bigtable.exercise import (
     COMMIT_SECONDS,
     ORACLE_STAGE,
-    BigtableSequenceExercise,
+    BigtableExercise,
 )
 from flink_tier3.bigtable.trial import Trial
 from flink_tier3.common import TransportError, timestamp, utc
@@ -143,9 +143,9 @@ def sequence(prepared, monkeypatch):
     return built(prepared, monkeypatch)
 
 
-def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
+def test_the_supervisor_builds_the_exercise_under_the_runs_time_limit(sequence):
     value, _ = sequence
-    assert isinstance(value, BigtableSequenceExercise)
+    assert isinstance(value, BigtableExercise)
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 

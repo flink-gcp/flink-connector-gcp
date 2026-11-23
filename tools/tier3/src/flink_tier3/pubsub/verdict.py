@@ -12,14 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Whether a deployed Pub/Sub recovery trial carries its claim, and why not."""
+"""Why a Pub/Sub run's output withholds `usable` (ADR-0204), and its Pod budget."""
 
-from ..common import INCONCLUSIVE, USABLE
 from ..exercise import SEQUENCE_KIND, SEQUENCE_PARALLELISM
-
-COMPLETE_STAGE = "complete"
-# The evidence event the exercise writes and the offline analysis reads.
-COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 
 
 def application_pods(kind):
@@ -72,19 +67,12 @@ def input_reasons(inputs):
     return reasons
 
 
-def sequence_verdict(recovery):
-    """A fault-sequence run's verdict: its output alone (ADR-0204).
+def data_reasons(record):
+    """Why the run's output does not carry the claim, if it does not.
 
-    `usable` says the run completed, the oracle accepted every collected line
-    and found every logical input of both subscriptions, and every output
-    named its input under an ID the input was published with. Duplicates are
-    reported beside it, and interruptions, restarts, timings and metrics
-    decide nothing.
+    It carries it when the oracle accepted every collected line and found
+    every logical input of both subscriptions, and every output named its
+    input under an ID the input was published with. Duplicates are reported
+    beside it.
     """
-    record = recovery if isinstance(recovery, dict) else {}
-    reasons = []
-    if record.get("stage") != COMPLETE_STAGE:
-        reasons.append("recovery-incomplete")
-    reasons.extend(oracle_reasons(record.get("oracle")))
-    reasons.extend(input_reasons(record.get("inputs")))
-    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+    return [*oracle_reasons(record.get("oracle")), *input_reasons(record.get("inputs"))]

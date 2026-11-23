@@ -104,7 +104,7 @@ The check runs only while the input is active: once the input has finished, Flin
 ## Deployment definition
 
 [`pkg/spanner.#Application`](../../pkg/spanner/application.cue) defines the job on Flink 2.2.1 / Java 17, and the [`spanner-recovery`](../../lifecycle/spanner.cue) lifecycle scenario renders its initial and upgrade phases from one input identity.
-The delivery supplies the run ID, image digest, phase, parallelism and change-stream end, and optionally the record count and rate, 180,000 records at 100 per second unless given, and the seed pace, 50 rows per second per reading subtask unless given; the package refuses more than 30 minutes of input.
+The delivery supplies the run ID, image digest, phase, parallelism and change-stream end, and optionally the record count and rate, unless given the fault sequence's 3,600 records at 10 per second, and the seed pace, unless given the sequence's 5 rows per second per reading subtask; the package refuses more than 30 minutes of input.
 It names the instance `sp1360-<run-id>`, which a run ID of the full 40 characters keeps at 47 of Spanner's 64, and passes no emulator endpoint or credentials file.
 
 The deployment runs as the `tier3-spanner/spanner` KSA, which selects the `tier3-spanner` GSA through Workload Identity; the [GCP grants](../../../opentofu/flink-gcp/tier3-spanner.tf) limit it to the `sp1360-` instances.
@@ -137,6 +137,7 @@ The reports carry no watermark or partition readings, since nothing samples the 
 The Change Streams oracle is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end, because a commit after the end is not relayed; a restore after the input finished can replay it and write its rows again, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
 A restore after the input's latest progress line also leaves the oracle unjudged, as it does for Bigtable, whose sink can commit rows its state carried without logging a line; this sink carries none and a restore that writes logs a line, so here the rule only errs toward unjudged; such a run can run again as it is too.
+Timing explains only a missing key, so an unjudged oracle that counts a foreign key or a commit after the end has not passed, and the run does not run again as it is ([#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279)).
 The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults.
 The first `sequence` run, `sp2154-seq-a1`, reached `usable`, as its [findings](../../../docs/adr/evidence/0204-spanner-fault-sequence-findings-2154.md) record.
@@ -166,7 +167,7 @@ Dispatching is the approval, as for the other scenarios, and no estimate is appr
 The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
 Any run ID fits, because the run's instance is `sp1360-<run-id>`, at most 47 of the 64 characters an instance ID takes.
 
-The [`spanner-recovery`](../../lifecycle/spanner.cue) delivery takes the input and seed pace that the [deployment definition](#deployment-definition) describes from the optional `spanner_records`, `spanner_records_per_second` and `spanner_seed_rows_per_second` tags, the last at most 1,000, the change-stream end from the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and sizes every vertex but the input and the TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+The [`spanner-recovery`](../../lifecycle/spanner.cue) delivery takes the input and seed pace that the [deployment definition](#deployment-definition) describes from the optional `spanner_records`, `spanner_records_per_second` and `spanner_seed_rows_per_second` tags, the last at most 1,000, the change-stream end from the required `spanner_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and sizes every vertex but the input and the TaskManagers at the parallelism in [parallelism.cue](../../lifecycle/parallelism.cue).
 Dispatch renders it at the sequence's fixed input and seed pace and a change-stream end 1,800 seconds into the run's window.
 
 ### Instance lifecycle
@@ -222,7 +223,7 @@ Each oracle reports counts and the first 20 keys of each kind of deviation:
 - **Sink, `input`:** every input key holds its sequence and no other key is there.
   It reports each key's executions, counted as the key's distinct commit times in `relay`, a lower bound only through a commit the relay missed, as [Graph and what each table records](#graph-and-what-each-table-records) describes.
 - **Change Streams, `relay`:** every input key was delivered at least once, no delivered key lies outside the input, and no key's last relayed commit is later than the change stream's end.
-  The oracle is judged only when the input's latest progress line came at least 120 seconds before the change stream's end and no restore followed that line, as the [fault sequence](#fault-sequence) describes; otherwise it is unjudged, never passed.
+  The oracle is judged only when the input's latest progress line came at least 120 seconds before the change stream's end and no restore followed that line, as the [fault sequence](#fault-sequence) describes; otherwise it is unjudged, never passed, unless it counts a foreign key or a commit after the end, which fails it.
   It judges keys, not commits, so a lost second commit of a key whose other commit was relayed is not detected.
   It reports replays, deliveries beyond a key's commits, and the deliveries of each phase.
 - **Batch read, `batch_out`:** `seed` holds the 3,600 seed rows and the 16 late ones, each with its own value, every seed key was copied with one value, its own, and no foreign or late key was copied.
@@ -230,11 +231,12 @@ Each oracle reports counts and the first 20 keys of each kind of deviation:
 
 ### Verdict and analysis
 
-The run is `usable` when it completed and all three oracles passed, the Change Streams one having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `change_stream-oracle-unjudged` or `<component>-oracle-not-passed`, for `sink`, `change_stream` or `batch`, as its reasons.
+The run is `usable` when it completed and all three oracles passed, the Change Streams one having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `change_stream-oracle-unjudged` or `<component>-oracle-not-passed`, for `sink`, `change_stream` or `batch`, as its reasons; an unjudged oracle reads as `change_stream-oracle-unjudged` unless it counts a foreign key or a commit after the end, which read as `change_stream-oracle-not-passed`.
 The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
 
 `just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory and lists the faults the run injected, and it reports a single-fault run without a verdict and as `single-fault-trial`, as for the Bigtable trial.
 It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
+A record written before [#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279) stored `change_stream-oracle-unjudged` for an unjudged oracle that also counted a definitive failure, so it now reads as `change_stream-oracle-not-passed` with `verdict-differs-from-the-record`.
 
 The four trials of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878) are preregistered in the [Spanner recovery trial preregistration](../../../docs/adr/evidence/0165-spanner-recovery-preregistration-1878.md), and each kind reached `usable`, as their [findings](../../../docs/adr/evidence/0165-spanner-recovery-findings-1878.md) record.
 The measurements of #1877 all ran as the owner, so the runner's and the supervisor's grants in the [foundation's ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#spanner-recovery-foundation) were first run by these trials, and no attempt's exported evidence holds a `PERMISSION_DENIED`.

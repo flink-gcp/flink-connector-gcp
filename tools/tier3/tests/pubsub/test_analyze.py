@@ -30,11 +30,12 @@ from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.pubsub import analyze as pubsub_analyze
 from flink_tier3.pubsub import plan
 from flink_tier3.pubsub.output import parse
-from flink_tier3.pubsub.verdict import COMPLETE_EVENT
 from flink_tier3.recovery_analysis import (
+    INCOMPLETE_NOTE,
     SINGLE_FAULT,
     SINGLE_FAULT_NOTE,
 )
+from flink_tier3.verdict import COMPLETE_EVENT
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
 from ..test_lifecycle import rt
@@ -303,6 +304,17 @@ def test_a_missing_input_receipt_leaves_no_verdict(exported, target):
     assert [p.split(":")[0] for p in assessed["problems"]] == ["missing-input-receipts"]
 
 
+def test_a_version_7_sequence_approval_reads_as_the_sequence(exported):
+    """Before #2279 the trial also named its restore deduplication, always on."""
+    run_dir, control = exported
+    approval = json.loads((run_dir / "approval.json").read_text())
+    approval["pubsub_trial"].update(version=7, restore_deduplication=True)
+    (run_dir / "approval.json").write_text(json.dumps(approval))
+    assessed = assess(run_dir)
+    assert (assessed["verdict"], assessed["problems"]) == (USABLE, [])
+    assert assessed["stored"] == control.recovery["verdict"]
+
+
 @pytest.mark.parametrize("kind", ARCHIVED_KINDS)
 def test_a_single_fault_run_has_no_verdict_here(exported, kind):
     """Its approval names a kind no trial runs any more; its record is still read."""
@@ -319,6 +331,7 @@ def test_a_single_fault_run_has_no_verdict_here(exported, kind):
     rendered = pubsub_analyze.render([assessed])
     assert f"| {SINGLE_FAULT} |" in rendered
     assert SINGLE_FAULT_NOTE in rendered
+    assert INCOMPLETE_NOTE in rendered
 
 
 @pytest.mark.parametrize("kind", [None, 3, [], "", "sequnce"])

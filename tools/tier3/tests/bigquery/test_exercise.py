@@ -21,7 +21,7 @@ import pytest
 import requests
 from flink_tier3 import analyze
 from flink_tier3.bigquery import plan
-from flink_tier3.bigquery.exercise import BigQuerySequenceExercise, require_handoff
+from flink_tier3.bigquery.exercise import BigQueryExercise, require_handoff
 from flink_tier3.bigquery.handoff import BigQueryHandoff
 from flink_tier3.bigquery.lifecycle import BigQueryLifecycle
 from flink_tier3.bigquery.oracle import assess
@@ -519,7 +519,7 @@ def test_runner_refuses_binding_drift_before_mutation(prepared, fault):
     elif fault == "deadline":
         actor.binding["query_until"] -= 1
     elif fault == "plan":
-        actor.controller.plan = replace(actor.controller.plan, query_slots=1)
+        actor.controller.plan = replace(actor.controller.plan, query_slots=2)
     elif fault == "manifest":
         application["spec"]["job"]["args"][3] = "upgrade"
     else:
@@ -545,7 +545,7 @@ def test_handoff_requires_same_environment(prepared):
 @pytest.mark.parametrize("fault", ["future", "invalid-lineage"])
 def test_invalid_progress_is_not_recovery_evidence(prepared, fault):
     environment, _, upgrade, _ = prepared
-    exercise = BigQuerySequenceExercise(environment, upgrade)
+    exercise = BigQueryExercise(environment, upgrade)
     at = environment.clock() + (1 if fault == "future" else 0)
     lineage = (
         "bad" if fault == "invalid-lineage" else "11111111-1111-4111-8111-111111111111"
@@ -789,9 +789,11 @@ SEQUENCE_TRIALS = [plan.trial(name) for name in plan.TRIALS]
 
 
 @pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
-def test_the_sequence_trial_builds_the_sequence_exercise(prepared, trial):
+def test_the_supervisor_builds_the_exercise_over_the_trials_input_in_time(
+    prepared, trial
+):
     value = supervised(prepared)
-    assert isinstance(value, BigQuerySequenceExercise)
+    assert isinstance(value, BigQueryExercise)
     assert value.records == trial["records"]
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 

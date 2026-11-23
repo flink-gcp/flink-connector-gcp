@@ -193,14 +193,6 @@ def test_empty_tables_still_produce_aggregates(tables):
         ("records", True),
         ("records", 19),
         ("records", 2 * 1024**3 // 1024 + 1),
-        ("fault", "none"),
-        ("fault", None),
-        # The single-fault kinds, which no trial runs any more.
-        ("fault", "jm-replacement"),
-        ("fault", "tm-replacement"),
-        ("fault", "rescale-out"),
-        ("fault", "rescale-in"),
-        ("fault", ["rescale-in"]),
     ],
 )
 def test_invalid_trial_never_produces_sql(field, value):

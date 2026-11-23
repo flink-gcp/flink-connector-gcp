@@ -174,9 +174,9 @@ def test_the_fake_render_satisfies_the_proposal_checks(inputs, renderer):
     assert proposal["approved"] is False
 
 
-@pytest.mark.parametrize("deduplication", [False, True])
-def test_the_trial_fixes_each_manifests_job(trial, deduplication):
-    trial.update(records_per_subscription=40, restore_deduplication=deduplication)
+def test_the_trial_fixes_each_manifests_job(trial):
+    """Every run reads with restore deduplication on, which no trial chooses."""
+    trial.update(records_per_subscription=40)
     jobs = plan.manifest_jobs("run-1430", trial)
     assert jobs == tuple(
         (
@@ -187,7 +187,7 @@ def test_the_trial_fixes_each_manifests_job(trial, deduplication):
                 "--records-per-subscription=40",
                 f"--parallelism={parallelism}",
                 f"--require-restored={str(phase == 'upgrade').lower()}",
-                f"--restore-deduplication={str(deduplication).lower()}",
+                "--restore-deduplication=true",
                 "--record-delay-millis=100",
             ],
         )
@@ -285,6 +285,9 @@ def test_malformed_manifests_are_refused_rather_than_raising(inputs, manifest):
         # Version 7 removed the entry point with the Table relay (#2240).
         ("version", 6),
         ("entry_point", "datastream"),
+        # Version 8 removed restore deduplication, which the sequence fixes.
+        ("version", 7),
+        ("restore_deduplication", True),
         ("trial", None),
         ("records_per_subscription", 1),
         ("records_per_subscription", 2),
@@ -391,7 +394,6 @@ def test_a_kind_names_its_whole_trial(kind):
         "version": plan.VERSION,
         "trial": kind,
         "records_per_subscription": 4800,
-        "restore_deduplication": True,
     }
     # The one-pass feasibility check dispatch reaches only after the cluster.
     plan.input_plan("feasibility", trial)

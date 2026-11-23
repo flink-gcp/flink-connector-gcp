@@ -92,6 +92,7 @@ Arguments use `--name=value`; unknown or repeated arguments fail.
 [`pkg/pubsub.#Application`](../../pkg/pubsub/application.cue) defines the relay on Flink 2.2.1 / Java 17.
 A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription` and `parallelism` inputs.
 The lifecycle delivery also supplies `restoreDeduplication` and `recordDelayMillis`; the source runs at the connector's default flow control.
+Unless a delivery names them, the package takes the fault sequence's input and relay settings, 4,800 records per subscription with restore deduplication on and 100 milliseconds before each record, and every delivery names the parallelism.
 The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade and parallelism 1/2 combination, and the lifecycle tests render the `sequence` kind.
 The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs the kind it names through the runner's [admission](#admission-and-effective-access) and the supervisor's [fault sequence](#fault-sequence).
 
@@ -132,7 +133,7 @@ The runner and the supervisor prepare, admit and clean up the run's resources, a
 
 ### Fault sequence
 
-[`PubSubSequenceExercise`](../../../tools/tier3/src/flink_tier3/pubsub/exercise.py) runs the `sequence` kind under ADR-0204: the shared fault sequence of [`flink_tier3/exercise.py`](../../../tools/tier3/src/flink_tier3/exercise.py), with the relay's input, progress and completion.
+[`PubSubExercise`](../../../tools/tier3/src/flink_tier3/pubsub/exercise.py) runs the `sequence` kind under ADR-0204: the shared fault sequence of [`flink_tier3/exercise.py`](../../../tools/tier3/src/flink_tier3/exercise.py), with the relay's input, progress and completion.
 
 Admission publishes `before_checkpoint`, and on each poll the exercise asks the runner for the next [cohort](#cohort-requests) once the one before it is out, so the subscriptions hold the whole input within a few polls of the job starting.
 The relay reads it at 100 ms per input per subtask, ten inputs a second per subscription at parallelism two and five at one.
@@ -192,7 +193,7 @@ It does not prove that the installed package, checkout or application image came
 
 The trial's kind, `sequence`, starts both manifests at parallelism two and runs every fault of ADR-0204 in turn, as the [fault sequence](#fault-sequence) describes.
 Its recovery manifest, `recovery_application`, which the delivery also stores under the shared key `upgrade-application.json`, is its savepoint upgrade at two and requires restored state; the exercise patches its rescales from it.
-The kind fixes the rest of the trial, which the plan derives in `pubsub_plan.trial`: 4,800 records per subscription with restore deduplication on, at 100 ms per input.
+The kind fixes the rest of the run: `pubsub_plan.trial` derives its 4,800 records per subscription, and the plan renders restore deduplication on and 100 ms per input into both manifests.
 Each plan covers two input subscriptions.
 Each subscription's domain splits into three disjoint, nonempty cohorts at `floor(records / 3)` and `floor(2 * records / 3)`, published in this order:
 
@@ -206,9 +207,9 @@ Each range is published in ascending batches of at most 1,000, the publish API's
 The output records exact logical messages, payload bytes and required publication calls.
 The cohorts' names come from the single-fault exercise, which published `after_checkpoint` after a retained checkpoint and `after_recovery` after a recovery; the sequence only spreads the input over three publications.
 
-The trial, which the approval keeps as `pubsub_trial`, has exactly four fields: `version` 7, `trial`, `records_per_subscription` and `restore_deduplication`.
+The trial, which the approval keeps as `pubsub_trial`, has exactly three fields: `version` 8, `trial` and `records_per_subscription`.
+Version 8 removed `restore_deduplication`, which version 6 had added: every run sets the source's `restoreDeduplication` ([#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049)) in both manifests, and the [offline recomputation](#offline-recomputation) reads a version-7 approval, which names it, as the same `sequence` run.
 Version 7 removed `entry_point`, with the Table entry point.
-`restore_deduplication` sets the source's `restoreDeduplication` ([#2049](https://github.com/flink-gcp/flink-connector-gcp/issues/2049)) in both manifests; version 6 added it.
 Version 5 removed version 4's `traffic_limits`: no runtime ceiling meters the trial's messages, calls, requests or evidence bytes.
 Those requests are nearly free, and the trial's cost is bounded by its input domain, its window and its Pod quota, as [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md) records.
 
@@ -249,7 +250,7 @@ Enabling the scenario does not approve a run.
 #### Internal approval contract
 
 [Dispatch](#approval-dispatch) builds a `pubsub-recovery` approval and validates it once, before it takes the lock.
-Its `pubsub_trial` is the trial its kind names, in the [offline proposal schema](#offline-trial-proposal), version 7, from which the input plan derives the trial's input domain.
+Its `pubsub_trial` is the trial its kind names, in the [offline proposal schema](#offline-trial-proposal), version 8, from which the input plan derives the trial's input domain.
 The approval pins the run/nonce, the rig commit, initial and recovery manifest hashes, exactly the Operator, lifecycle-tools and Pub/Sub application image roles, and observed idle namespace/quota UIDs for `tier3-pubsub` and `tier3-system`.
 It requires an integral 90-minute window with fifteen minutes reserved for cleanup.
 Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
@@ -697,7 +698,7 @@ The [offline recomputation](#offline-recomputation) uses the same port over the 
 
 ### Verdict and analysis
 
-[`pubsub.sequence_verdict`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) decides a `sequence` run from the record its completion writes.
+The shared [`sequence_verdict`](../../../tools/tier3/src/flink_tier3/verdict.py) decides a `sequence` run from the record its completion writes, with the reasons [`pubsub.data_reasons`](../../../tools/tier3/src/flink_tier3/pubsub/verdict.py) gives.
 The run is `usable` when it completed, the [oracle](#offline-output-reconciliation) accepted every collected line and found every logical input of both subscriptions, and every output names its input under an ID the runner's publication receipt for that input holds.
 
 | Condition | Reason when it fails |

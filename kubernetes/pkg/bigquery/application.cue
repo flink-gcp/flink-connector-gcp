@@ -50,10 +50,12 @@ import (
 		mode:         "ALO" | "EO" | "FILE_LOADS"
 		destinations: 10 | 50
 		records:      int & >=(2 * destinations)
-		if mode == "ALO" {records: *28800 | (int & <=32768)}
-		if mode == "EO" {records: *1843200 | (int & <=2097152)}
+		// By default the fault sequence's input that `flink_tier3/bigquery/plan.py` fixes
+		// (ADR-0204): six minutes at 1 MiB/s of the mode's rows.
+		if mode == "ALO" {records: *5760 | (int & <=32768)}
+		if mode == "EO" {records: *368640 | (int & <=2097152)}
 		if mode == "FILE_LOADS" {
-			records:   *1843200 | (int & <=2097152)
+			records:   *368640 | (int & <=2097152)
 			fileLoads: #FileLoads
 		}
 

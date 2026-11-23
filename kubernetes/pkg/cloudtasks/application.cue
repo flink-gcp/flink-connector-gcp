@@ -24,11 +24,12 @@ import (
 		id:    string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
 		image: string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/cloudtasks-recovery@sha256:[0-9a-f]{64}$"
 		phase: *"initial" | "upgrade"
-		// The application's own bounds, which it checks again when the job starts.
-		recordsPerSecond: (*100 | int) & >=1 & <=100
+		// The application's own bounds, which it checks again when the job starts, and by default
+		// the fault sequence's input that `flink_tier3/cloudtasks/plan.py` fixes (ADR-0204).
+		recordsPerSecond: (*10 | int) & >=1 & <=100
 		// At most 30 minutes of input, as the BigQuery trial in the same 90-minute window has. The
 		// bounds apply to the default too, which a lower rate makes too long.
-		records: (*180000 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
+		records: (*3600 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
 		// The sink's subtasks, one per single-slot TaskManager, which the application takes as
 		// `--parallelism`; the fault sequence patches its rescales on the running application.
 		// No default: the Flink package's own parallelism default would contradict one.

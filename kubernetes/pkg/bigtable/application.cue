@@ -26,11 +26,12 @@ import (
 		id:    string & =~"^[a-z0-9]([a-z0-9-]{0,24}[a-z0-9])?$"
 		image: string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/bigtable-recovery@sha256:[0-9a-f]{64}$"
 		phase: *"initial" | "upgrade"
-		// The application's own bounds, which it checks again when the job starts.
-		recordsPerSecond: (*100 | int) & >=1 & <=100
+		// The application's own bounds, which it checks again when the job starts, and by default
+		// the fault sequence's input that `flink_tier3/bigtable/plan.py` fixes (ADR-0204).
+		recordsPerSecond: (*10 | int) & >=1 & <=100
 		// At most 30 minutes of input, as the other trials in the same 90-minute window have. The
 		// bounds apply to the default too, which a lower rate makes too long.
-		records: (*180000 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
+		records: (*2400 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
 		// Every vertex but the input, one subtask per single-slot TaskManager; the fault sequence
 		// patches its rescales on the running application. No default: the Flink package's own
 		// parallelism default would contradict one.

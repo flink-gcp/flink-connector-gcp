@@ -22,6 +22,8 @@ from flink_tier3.spanner import instance
 from flink_tier3.spanner.instance import Instance
 from flink_tier3.spanner.oracle import BatchCopy, ChangeStream, Seed, Sink, micros
 from flink_tier3.spanner.trial import Trial, row_key
+from flink_tier3.spanner.verdict import data_reasons
+from flink_tier3.verdict import sequence_verdict
 
 from ..doubles import NOW, Response
 
@@ -241,6 +243,47 @@ def test_the_change_stream_oracle_fails_on_each_deviation(rows, kind):
         check.add(rows)
     report = check.report(True)
     assert (report["verdict"], report[kind]) == ("fail", 1)
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        # Only rows missing, which a commit after the end leaves unrelayed.
+        (
+            [row for n in range(1, TRIAL.records) for row in relay_rows(n)],
+            "change_stream-oracle-unjudged",
+        ),
+        # A commit after the end, which the source must not relay, and a row
+        # no input names fail the relay whenever the input finished.
+        (
+            [
+                *(row for n in range(TRIAL.records) for row in relay_rows(n)),
+                *relay_rows(2, at=END + 1),
+            ],
+            "change_stream-oracle-not-passed",
+        ),
+        (
+            [
+                *(row for n in range(1, TRIAL.records) for row in relay_rows(n)),
+                ("zz", "initial/u/0", 1),
+            ],
+            "change_stream-oracle-not-passed",
+        ),
+    ],
+)
+def test_an_unjudged_relay_fails_only_on_what_timing_cannot_explain(rows, reason):
+    """An unjudged relay can run again as it is only when it just lacks rows."""
+    check = ChangeStream(TRIAL)
+    check.add(rows)
+    oracles = {
+        "sink": {"verdict": "pass"},
+        "change_stream": check.report(False),
+        "batch": {"verdict": "pass"},
+    }
+    decided = sequence_verdict(
+        {"stage": "complete", "outcomes": {"oracles": oracles}}, data_reasons
+    )
+    assert decided["reasons"] == [reason]
 
 
 def seed_rows(trial, late=True):

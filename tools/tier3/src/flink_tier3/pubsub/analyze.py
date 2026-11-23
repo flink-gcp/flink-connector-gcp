@@ -30,22 +30,20 @@ import re
 from ..common import Failure
 from ..exercise import SEQUENCE_KIND
 from ..recovery_analysis import (
+    INCOMPLETE_NOTE,
     PUBSUB_SINGLE_FAULT_KINDS,
-    SINGLE_FAULT,
     SINGLE_FAULT_NOTE,
-    malformed_records,
-    recovery_record,
+    assess_sequence,
+    fault_kinds,
+    judged,
     unreadable,
     verdict_problems,
 )
+from ..verdict import sequence_verdict
 from .messages import output_line
 from .oracle import COUNTERS, input_ids, published_ids, reconcile
 from .output import RETRIED_EVENT, parse
-from .verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    sequence_verdict,
-)
+from .verdict import data_reasons
 
 SCENARIO = "pubsub-recovery"
 # The domain `cohort_ranges` accepts, so an unreadable approval leaves one run
@@ -202,13 +200,8 @@ def _missing(record, lines, complete):
     return max(0, sum(counted) - len(lines))
 
 
-def _unreadable(run, record, problems):
-    return {
-        **unreadable(run, record, problems),
-        "oracle": None,
-        "extra_publications": None,
-        "faults": None,
-    }
+# A run without a verdict has no rebuilt oracle, publication count or faults.
+BLANK = {"oracle": None, "extra_publications": None, "faults": None}
 
 
 def assess(run):
@@ -216,37 +209,41 @@ def assess(run):
 
     A run whose evidence lacks what the verdict is decided from has no
     verdict: a partial download would otherwise lower it for what is only
-    missing from the export. A run that never completed exported its account
-    of itself, which says so, and is `inconclusive`. A run of a single-fault
-    kind has no verdict here.
+    missing from the export. A run of a single-fault kind has no verdict here.
     """
-    approval = run.approval if isinstance(run.approval, dict) else {}
-    identity = _identity(approval)
-    malformed = malformed_records(run, COMPLETE_EVENT)
-    result = run.result if isinstance(run.result, dict) else None
-    kind = _kind(approval)
-    if kind in PUBSUB_SINGLE_FAULT_KINDS:
-        record = recovery_record(run, COMPLETE_EVENT)
-        return _unreadable(run, record, [SINGLE_FAULT])
-    if identity is None or kind != SEQUENCE_KIND:
-        return _unreadable(run, None, ["approval-without-pubsub-trial"])
-    if result is None:
-        return _unreadable(run, None, ["missing-result.json"])
-    completions = run.events_of(COMPLETE_EVENT)
-    complete = bool(completions)
-    record = completions[-1]["payload"] if complete else result.get("recovery")
-    if malformed:
-        return _unreadable(run, record, [f"malformed-evidence:{malformed}"])
-    if not isinstance(record, dict):
-        return _unreadable(run, None, ["missing-" + COMPLETE_EVENT])
-    if not complete and record.get("stage") == COMPLETE_STAGE:
-        return _unreadable(run, record, ["missing-" + COMPLETE_EVENT])
-    records, nonce = identity
+    return assess_sequence(
+        run,
+        _decide,
+        archived=lambda run: _kind(_approval(run)) in PUBSUB_SINGLE_FAULT_KINDS,
+        trial_problem=_trial_problem,
+        malformed_stored=True,
+        blank=BLANK,
+    )
+
+
+def _approval(run):
+    return run.approval if isinstance(run.approval, dict) else {}
+
+
+def _trial_problem(run):
+    """Why the approval holds no readable sequence trial, or None when it does.
+
+    A trial of an earlier version, which also named `restore_deduplication`,
+    reads the same: only its kind and record count are read.
+    """
+    approval = _approval(run)
+    if _identity(approval) is None or _kind(approval) != SEQUENCE_KIND:
+        return "approval-without-pubsub-trial"
+    return None
+
+
+def _decide(run, record, complete):
+    records, nonce = _identity(_approval(run))
     directory = run.directory / "pubsub" / "messages" / nonce
     published, bad_inputs = _published(directory, records)
     lines, bad_batches, lost = _collected(directory, _retried(run, record))
     if bad_inputs or bad_batches:
-        return _unreadable(
+        return unreadable(
             run,
             record,
             [f"malformed-message-evidence:{bad_inputs + bad_batches}"],
@@ -267,7 +264,7 @@ def assess(run):
     if complete and unreceipted:
         problems.append(f"missing-input-receipts:{len(unreceipted)}")
     if problems:
-        return _unreadable(run, record, problems)
+        return unreadable(run, record, problems)
     # The publication receipts bind each returned ID to its input, so an
     # output naming an input under an ID no receipt holds was not published by
     # this run.
@@ -277,29 +274,21 @@ def assess(run):
     oracle = reconcile(lines, run.run_id, records)
     # The verdict itself checks every output's input ID against the receipts,
     # as the supervisor did.
-    decided = sequence_verdict({**record, "oracle": oracle, "inputs": inputs})
-    problems.extend(verdict_problems(record, decided, complete))
-    return {
-        "run_id": run.run_id,
-        "verdict": decided["verdict"],
-        "stored": record.get("verdict"),
-        "reasons": decided["reasons"],
-        "problems": sorted(problems),
-        "oracle": oracle,
-        "extra_publications": sum(len(ids) - 1 for ids in published.values()),
-        "faults": _faults(record),
-    }
-
-
-def _faults(record):
-    """The kinds of the faults a sequence run's record says it injected, in order."""
+    decided = sequence_verdict(
+        {**record, "oracle": oracle, "inputs": inputs}, data_reasons
+    )
     outcomes = record.get("outcomes")
-    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-    return [
-        fault["kind"]
-        for fault in (faults if isinstance(faults, list) else ())
-        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
-    ]
+    return judged(
+        run,
+        record,
+        decided,
+        verdict_problems(record, decided, complete),
+        oracle=oracle,
+        extra_publications=sum(len(ids) - 1 for ids in published.values()),
+        faults=fault_kinds(
+            outcomes.get("faults") if isinstance(outcomes, dict) else None
+        ),
+    )
 
 
 def assess_runs(runs):
@@ -383,10 +372,7 @@ def render(assessments):
                 "publication receipts."
             ),
             SINGLE_FAULT_NOTE,
-            (
-                f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which "
-                "is inconclusive rather than an evidence problem."
-            ),
+            INCOMPLETE_NOTE,
         ]
     )
     return "\n".join(lines) + "\n"

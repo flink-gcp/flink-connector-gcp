@@ -18,14 +18,19 @@ import flink "github.com/flink-gcp/flink-connector-gcp/kubernetes/pkg/flink"
 
 #Application: {
 	run: {
-		id:                     string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
-		image:                  string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/pubsub-recovery@sha256:[0-9a-f]{64}$"
-		phase:                  *"initial" | "upgrade"
-		recordsPerSubscription: *1000 | (int & >=1 & <=10000)
-		parallelism:            *1 | 2
-		restoreDeduplication:   *false | bool
+		id:    string & =~"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"
+		image: string & =~"^us-central1-docker[.]pkg[.]dev/flink-gcp/flink-tier3/pubsub-recovery@sha256:[0-9a-f]{64}$"
+		phase: *"initial" | "upgrade"
+		// By default the fault sequence's input and relay settings, which
+		// `flink_tier3/pubsub/plan.py` fixes (ADR-0204).
+		recordsPerSubscription: *4800 | (int & >=1 & <=10000)
+		// The relay's subtasks, one per single-slot TaskManager; the fault sequence patches its
+		// rescales on the running application. No default: the Flink package's own parallelism
+		// default would contradict one.
+		parallelism:          1 | 2
+		restoreDeduplication: *true | bool
 		// How long the relay waits before each record, which paces the input the subscriptions hold.
-		recordDelayMillis: *0 | (int & >=0 & <=1000)
+		recordDelayMillis: *100 | (int & >=0 & <=1000)
 	}
 	let storage = "gs://flink-gcp-tier3-pubsub/runs/\(run.id)"
 	let containerResources = {
