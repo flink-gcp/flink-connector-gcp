@@ -18,9 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-05 ([#297]) through 2026-08-07 ([#348], [#349], [#350], [#351], the [#348]
-  cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23); budget clock
-  refined by [#2302] (2026-11-23)
-- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2302]
+  cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23); failed stub
+  creation corrected by [#2291] (2026-11-23); budget clock refined by [#2302] (2026-11-23)
+- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2291], [#2302]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
   including the four-outcome teardown message table, and the reader metrics)
@@ -138,22 +138,48 @@ transport opened. This change leaves untouched what that decision says about the
   shape of the trap ADR-0001's `recordsSkipped` and BigQuery's eager schema derivation both
   exist for. The check must read the recorded failure and never the message count, since a
   paused split is *supposed* to produce none.
-- **The failed-start release is a no-op, and there is nothing left for it to release** ([#349],
-  correcting the inference [#325] drew). [#325]'s own half stands — Guava's `stopAsync()` is
-  guarded by `state().compareTo(RUNNING) <= 0` and `FAILED` sorts last, so once the service has
-  failed the call enters nothing. What was wrong was what followed from it: **the channel and
-  executors it cannot reach have already been released, by the SDK itself.**
-  `Subscriber.startStreamingConnections()` adds to every connection a listener whose
-  `failed(...)` runs `runShutdown()` — `stopAllStreamingConnections`,
-  `shutdownBackgroundResources`, `subscriberStub.shutdownNow()` — **before** it calls
-  `notifyFailed`, so a connection that fails to start, or a stream that dies on a missing IAM
-  grant, releases everything on the SDK's own path. `doStart()`'s other failure,
-  `GrpcSubscriberStub.create` throwing `IOException`, strands nothing either: it happens before
-  the stub exists. **Owning the channel and executor (`setChannelProvider` /
-  `setExecutorProvider`) was declined for it**: that means taking over channel sizing, which the
-  SDK derives from `parallelPullCount`, to cover the one path out of four the SDK does not cover
-  itself. The release call is kept for the states where `stopAsync()` is genuinely not a no-op —
-  a failure registering the listener leaves the service `NEW`, one racing a start leaves it
+- **The failed-start release's `stopAsync()` is a no-op, and on most routes nothing running is left
+  for it to release** ([#349], correcting the inference [#325] drew; refined by [#2291]). Since
+  [#2263] the release also closes the client's transport (see Context); what follows is about the
+  SDK stop. [#325]'s own half stands — Guava's `stopAsync()` is guarded by
+  `state().compareTo(RUNNING) <= 0` and `FAILED` sorts last, so once the service has failed the call
+  enters nothing. What was wrong was what followed from it: **when a connection reports its failure,
+  the executors it cannot reach, and in production the channel, are released by the SDK itself.**
+  `Subscriber.startStreamingConnections()` adds to every connection a listener whose `failed(...)`
+  runs `runShutdown()` — `stopAllStreamingConnections`, `shutdownBackgroundResources`,
+  `subscriberStub.shutdownNow()` — **before** it calls `notifyFailed`, so a connection that fails to
+  start, or a stream that dies on a missing IAM grant, releases everything on the SDK's own path.
+  That order is the listener's, not the subscriber's: when a connection fails to start, the startup
+  thread's own `awaitRunning()` throws and its `notifyFailed` can report `FAILED` while the
+  listener, which runs on the system executor, is still in `runShutdown()`, so the release can
+  finish after the failure is reported ([#2291]). It still finishes. `doStart()`'s other failure,
+  `GrpcSubscriberStub.create` throwing, leaves the system executor unreleased ([#2291]; this said
+  "strands nothing" until then). The stub never exists, yet `Subscriber.Builder.build()` has already
+  created that executor and the constructor has registered it for `runShutdown()`, which nothing
+  runs on this path. When the throw comes from `ClientContext.create`, on the credentials or on
+  building the transport channel, the executor has started no thread: both steps run before anything
+  is scheduled on it, and a `ScheduledThreadPoolExecutor` starts a worker only for its first task.
+  On the measured credentials failure, what is left is an object that becomes unreachable with the
+  failed `Subscriber`. Two narrower cases of this route were read, not measured. A throw after
+  `ClientContext.create` returns, which in 1.160.0 can come from mTLS certificate-provider discovery
+  while the operations stub's settings are built, leaves the stream watchdog scheduled on that
+  executor, the same residue as the synchronous route below. And a channel pool whose later channel
+  fails to build leaves its earlier channels open, holding the executor, because the pool builds
+  them one at a time with no rollback. **Owning that executor (`setSystemExecutorProvider`) so the
+  release could shut it down was declined.** On the measured route there is no thread to stop. On
+  the routes that leave the watchdog running, the late stub failure above, the startup thread itself
+  failing to start (`doStart()`'s `new Thread(...).start()` throwing, for example at the JVM's
+  native-thread limit), and a throw in the synchronous part of `startStreamingConnections` (see
+  Evidence), owning it means taking over the sizing the SDK derives from `parallelPullCount`
+  (`max(6, 2 * parallelPullCount)` threads), to cover routes the SDK does not cover itself; in
+  production the stub's channels would stay open either way, while with an emulator the connector
+  owns the one fixed channel, which the SDK neither sizes nor closes, and the release closes it.
+  Until [#2291] this decision named the channel and the message executor (`setChannelProvider` /
+  `setExecutorProvider`) instead. That would not have covered those routes, because the watchdog
+  runs on the system executor rather than the message executor, and since [#2263] the connector
+  supplies the channel provider anyway, which in production the SDK still sizes through
+  `withPoolSize`. The release call is kept for the states where `stopAsync()` is genuinely not a
+  no-op — a failure registering the listener leaves the service `NEW`, one racing a start leaves it
   `STARTING` — and because it costs a no-op otherwise.
 - **`BoundedShutdown` is deliberately not adopted here**, though the base module names this
   teardown as its nearest future adopter: [#265]'s problem was `Publisher.shutdown()` blocking
@@ -183,8 +209,10 @@ transport opened. This change leaves untouched what that decision says about the
     report of the same incident — a job failure the reader is already raising, and the
     `IOException` `startOrRelease` is propagating as `stopQuietly()` runs — so a series for either
     would increment only when something more visible already had. What the failed-start release
-    would otherwise report, stranded resources, [#349] measured the SDK to release itself on three
-    of that path's four routes.
+    would otherwise report, stranded resources, the SDK releases itself when a connection fails to
+    start: read from the source, through the same connection listener that [#349] measured
+    releasing the executors when a stream dies after a successful start. And [#2291] measured that
+    a client context whose credentials fail leaves the subscriber's executor without a thread.
   - **Counting the failed-start release's timeout into `subscriberShutdownsAbandoned` was
     declined too**, though by that name it would belong: `stopQuietly()` catches
     `TimeoutException | RuntimeException` in one branch deliberately, and splitting it to count
@@ -222,14 +250,31 @@ transport opened. This change leaves untouched what that decision says about the
 - The counters need no new test seam: every one of the four outcomes already had a unit test from
   [#325], [#349] and [#351], and each now asserts the residues — including the two that must stay at
   zero, which is what makes the non-counts pinned rather than incidental.
-- [#349] was **measured both ways**: from the 1.152.0 sources, and empirically by
-  `PubSubSubscriberFailureReleaseITCase` — executors handed to a subscriber whose streaming pull
-  fails permanently come back shut down, over repeated attempts. That class tests the *vendor*
-  on purpose, because a javadoc here asserts the vendor's behaviour, and the executor is its
-  observable because a `FixedTransportChannelProvider` would take ownership away from the SDK
-  and so measure us instead of it. What remains uncovered is narrow and was never the claim: a
-  throw in the **synchronous** part of `startStreamingConnections` before any connection
-  listener exists.
+- [#349] was **read from the 1.152.0 sources and measured for one route**:
+  `PubSubSubscriberFailureReleaseITCase` starts a subscriber successfully, lets its streaming pull
+  fail permanently on a missing subscription, and observes that the message executors it handed over
+  come back shut down, over repeated attempts. That class tests the *vendor* on purpose, because a
+  javadoc here asserts the vendor's behaviour, and the executor is its observable because a
+  `FixedTransportChannelProvider` would take ownership away from the SDK and so measure us instead
+  of it. Its observable is narrower than the claim, and [#2291] corrected the earlier wording
+  "measured both ways": it sees only `isShutdown()` on the message executors, so neither the order
+  of `runShutdown()` against `notifyFailed` nor `subscriberStub.shutdownNow()` is seen, and a
+  connection that fails to start, which never reaches `RUNNING`, is source reading. Within
+  `startStreamingConnections()`, what remains uncovered by the SDK itself is narrow and was never
+  the claim: a throw out of the **synchronous** part of `startStreamingConnections` itself, which
+  reaches `notifyFailed` without any connection reporting a failure to the listener that runs
+  `runShutdown()`.
+- [#2291] was **measured through the production factory**: `StreamingPullSubscriberFailedStartTest`
+  builds the client through `DefaultSubscriberFactory` with a credentials provider that throws
+  `IOException`, starts it through `StreamingPullSubscriber` so the failed-start release runs, and
+  then reads the SDK's system executor. It had not been shut down, given a task, or started a
+  thread (google-cloud-pubsub 1.160.0, gax 2.90.0, 2026-11-23). One failed start suffices: each
+  builds its own executor, and nothing carries over between starts for a second to accumulate. A
+  mutant that hands the executor one task fails the test, so a BOM bump that schedules work
+  before the failure point fails it too. The transport-channel route was read, not run: the
+  stream watchdog, which `ClientContext.create` schedules on that executor, is built after
+  `getTransportChannel()` returns, and the channel pool, statically sized for this client,
+  schedules a refresh there only if one is enabled and only after every initial channel exists.
 - [#348]'s premise ("alignment pauses splits routinely") was measured rather than argued:
   `PubSubSourceWatermarkAlignmentITCase` (2026-08-07, emulator, one run: 13 of 200 ahead records
   consumed against 200 of 200 behind). Two things about it are load-bearing: the **throttle** (a
@@ -284,4 +329,5 @@ transport opened. This change leaves untouched what that decision says about the
 [#358]: https://github.com/flink-gcp/flink-connector-gcp/issues/358
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
 [#2263]: https://github.com/flink-gcp/flink-connector-gcp/issues/2263
+[#2291]: https://github.com/flink-gcp/flink-connector-gcp/issues/2291
 [#2302]: https://github.com/flink-gcp/flink-connector-gcp/issues/2302

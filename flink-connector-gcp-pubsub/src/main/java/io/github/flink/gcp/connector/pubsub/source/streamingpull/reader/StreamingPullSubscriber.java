@@ -236,9 +236,12 @@ final class StreamingPullSubscriber implements PullSubscriber {
     /**
      * Starts the client, asking it to stop again if that fails.
      *
-     * <p><b>This call is a no-op in the case it was written for, and the resources it was written
-     * to release are released anyway — by the SDK, not by us.</b> Both halves measured on {@code
-     * google-cloud-pubsub} 1.152.0 and Guava 33.5.0 (#325 found the first, #349 the second).
+     * <p><b>The stop this asks for is a no-op in the case it was written for, and on most routes
+     * nothing running is left for it to release — the SDK releases it, or it never started.</b>
+     * Closing the client afterwards releases the transport it holds (ADR-0208); everything below is
+     * about the stop. Both halves measured on {@code google-cloud-pubsub} 1.152.0 and Guava 33.5.0
+     * (#325 found the first, #349 the second); the stub-creation route below was measured on
+     * 1.160.0 (#2291).
      *
      * <p>The no-op half: Guava's {@code stopAsync()} is guarded by {@code
      * state().compareTo(RUNNING) <= 0} and {@code FAILED} sorts last, so once the service has
@@ -250,21 +253,31 @@ final class StreamingPullSubscriber implements PullSubscriber {
      * stopAllStreamingConnections}, {@code shutdownBackgroundResources}, {@code
      * subscriberStub.shutdownNow()} — <em>before</em> it calls {@code notifyFailed}. A connection
      * that fails to start, or a stream that dies on a missing IAM grant, therefore releases the
-     * stub, the executors and the background resources on the SDK's own path, whichever of the two
-     * {@code notifyFailed} calls wins the race. {@code doStart()}'s other failure, {@code
-     * GrpcSubscriberStub.create} throwing {@code IOException}, strands nothing either: it happens
-     * before the stub exists.
+     * stub, the executors and the background resources on the SDK's own path. When a connection
+     * fails to start, the startup thread's own {@code notifyFailed} can win that race, so the
+     * subscriber may be reported {@code FAILED} while the listener is still releasing; the release
+     * still finishes (#2291). {@code doStart()}'s other failure, {@code GrpcSubscriberStub.create}
+     * throwing, leaves the system executor unreleased, since only {@code runShutdown()} shuts it
+     * down. When the throw comes from {@code ClientContext.create}, on the credentials or the
+     * transport channel, nothing has been scheduled on that executor and it has started no thread;
+     * a later throw in the stub's construction would leave the stream watchdog scheduled there
+     * (#2291; ADR-0012 has the mechanism and the cases read but not measured, {@code
+     * StreamingPullSubscriberFailedStartTest} the measurement).
      *
-     * <p>What is left uncovered is narrow, and is not what the guard covers: a throw in the
-     * <em>synchronous</em> part of {@code startStreamingConnections} — {@code
-     * executorProvider.getExecutor()}, or building a connection — which happens before any
+     * <p>What is left uncovered is narrow, and is not what the guard covers: the startup thread
+     * itself failing to start ({@code doStart()}'s {@code new Thread(...).start()} throwing), or a
+     * throw in the <em>synchronous</em> part of {@code startStreamingConnections} — {@code
+     * executorProvider.getExecutor()}, or building a connection — both of which happen before any
      * connection listener exists, so nothing runs {@code runShutdown()} and the stub plus any
-     * executor already added stay open. Owning the channel and executor ourselves ({@code
-     * Subscriber.Builder.setChannelProvider} / {@code setExecutorProvider}) would close it, and was
-     * declined: it means taking over channel sizing, which the SDK derives from {@code
-     * parallelPullCount}, to cover the one path out of four that the SDK does not cover itself.
+     * executor already added stay open, with the stream watchdog still scheduled on the system
+     * executor. Only owning that executor ({@code Subscriber.Builder.setSystemExecutorProvider})
+     * would let the release stop the watchdog; owning the channel and the message executor ({@code
+     * setChannelProvider} / {@code setExecutorProvider}) would not, and the connector has supplied
+     * the channel provider since #2263 anyway. It was declined: the SDK sizes that executor from
+     * {@code parallelPullCount}, so owning it means taking over that sizing to cover routes the SDK
+     * does not cover itself (ADR-0012).
      *
-     * <p>So the call is kept for the states where {@code stopAsync()} is <em>not</em> a no-op — a
+     * <p>So the stop is kept for the states where {@code stopAsync()} is <em>not</em> a no-op — a
      * failure registering the listener leaves the service {@code NEW}, one racing a start in
      * progress leaves it {@code STARTING} — and because it costs a no-op otherwise.
      */

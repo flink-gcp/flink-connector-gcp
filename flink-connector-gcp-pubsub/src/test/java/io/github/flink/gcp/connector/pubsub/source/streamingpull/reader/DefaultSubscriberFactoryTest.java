@@ -36,10 +36,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for the settings mapping of {@link DefaultSubscriberFactory}.
  *
- * <p>Assertions go through the {@link Subscriber.Builder} the factory configures rather than a
- * built {@link Subscriber}: {@code build()} eagerly allocates a scheduled thread pool that only a
- * started-then-stopped subscriber releases, so building one per assertion would leak daemon threads
- * for the life of the test JVM. One test builds a real subscriber as the end-to-end anchor.
+ * <p>Most assertions go through the {@link Subscriber.Builder} the factory configures rather than a
+ * built {@link Subscriber}: {@code build()} allocates a scheduled thread pool that only a
+ * started-then-stopped subscriber shuts down. That pool starts no thread until it is given a task
+ * ({@code StreamingPullSubscriberFailedStartTest} measures this), so a subscriber built and never
+ * started leaves an executor that is never shut down rather than a running thread. The tests that
+ * build one through the factory check what only the built subscriber or its transport shows.
  */
 class DefaultSubscriberFactoryTest {
 
