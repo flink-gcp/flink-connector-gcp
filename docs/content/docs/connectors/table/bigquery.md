@@ -1167,12 +1167,16 @@ on the DataStream page for the full statement; what a SQL user needs is:
   and reconnects the same buffered stream at its next offset. It needs Flink's `EXACTLY_ONCE`
   checkpointing mode with checkpoints-after-tasks-finish enabled. Both are already Flink's defaults;
   a cluster that overrides either has the job refused when the graph is built.
-- **`file-loads`** — always exactly-once, by staging rows as files on Cloud Storage and importing
-  them with load jobs. In streaming execution each checkpoint issues at least one load job per
-  table, against BigQuery's quota of **1,500 per table per day**, so the checkpoint interval has a
-  floor — two minutes — that `sink.file-loads.min-checkpoint-interval` lowers only as an explicit
-  opt-in; and each checkpoint appends, so `write-truncate`, `write-truncate-data` and `write-empty`
-  are refused there.
+- **`file-loads`** — exactly-once when a restart restores the whole job state from its latest
+  checkpoint or savepoint and keeps the sink's options and BigQuery job project, by staging rows as
+  files on Cloud Storage and importing them with load jobs. A *stateless* redeploy or a rewind to
+  an older position is not such a restart; [Delivery guarantees and
+  state]({{< relref "docs/connectors/datastream/bigquery" >}}#delivery-guarantees-and-state) on the
+  DataStream page says what each can lose or repeat. In streaming execution
+  each checkpoint issues at least one load job per table, against BigQuery's quota of **1,500 per
+  table per day**, so the checkpoint interval has a floor — two minutes — that
+  `sink.file-loads.min-checkpoint-interval` lowers only as an explicit opt-in; and each checkpoint
+  appends, so `write-truncate`, `write-truncate-data` and `write-empty` are refused there.
   Both refusals arrive when the plan is built, and each names the `sink.file-loads.*` key you
   would change. The quota is per *table* while the floor is checked per *job*, so two jobs writing
   one table, or two `INSERT INTO` statements in one `StatementSet`, each pass the check and
@@ -1183,7 +1187,7 @@ on the DataStream page for the full statement; what a SQL user needs is:
 The [worked examples]({{< relref "docs/examples/bigquery" >}}) carry what neither of those bullets
 can: how to redeploy an exactly-once job without losing the rows a discarded checkpoint was holding,
 and why a FILE_LOADS staging bucket wants to be a dedicated one with a lifecycle rule sized above
-the longest outage the job must recover from.
+the longest a staged file can wait for its load.
 
 ## Design decisions
 

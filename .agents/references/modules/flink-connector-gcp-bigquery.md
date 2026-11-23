@@ -414,7 +414,7 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   ZSTD and UNCOMPRESSED), and with Parquet's default heap allocator. Before switching
   `GcsStagingStorage` to gRPC, adding a codec or giving the Parquet builder an allocator, check
   what an unclosed writer or channel holds and revisit `abort()`; `deleteObjects` also calls
-  `Storage.delete(BlobId...)`, which the gRPC client rejects as HTTP-only.
+  `Storage.batch()`, which the gRPC client rejects as HTTP-only.
   Finalization does not parallelize appends, size rolls, capacity evictions, or idle closes
   (`docs/adr/0146`).
   `backgroundStagingUploadEnabled` (default true since #2034, ADR-0195) is the separate switch for those, sized by

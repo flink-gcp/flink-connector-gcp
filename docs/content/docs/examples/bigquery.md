@@ -171,9 +171,11 @@ streaming-insert cost and exactly-once in both execution modes.
 
 Point `stagingPath` at a **dedicated bucket, separate from checkpoint and savepoint storage, with a
 lifecycle rule** deleting objects after a few days, so files orphaned by a hard failure expire on
-their own. Size the rule above the longest outage you intend to recover from: files a checkpoint
-still references *are* the data, and a streaming job restored after the rule expired them leaves
-its pending loads permanently failing.
+their own. Size the rule above the longest a staged file can wait for the last load that may read
+it: from the file's creation through the outage you intend to recover from and the restored job's
+load, or through the whole run in batch. Files a checkpoint still references *are* the data, and a
+streaming job restored after the rule expired them leaves every pending load that still has to
+read one of them failing on every retry while that file is missing.
 
 Batch is the same builder with `RuntimeExecutionMode.BATCH` and no checkpointing — everything loads
 at end of input.
