@@ -2301,9 +2301,12 @@ The propagation wait uses the schema schedule rather than the general recovery s
 ### File loads
 
 `WriteMethod.FILE_LOADS` writes each destination table's rows to files on Cloud Storage and
-loads them with BigQuery load jobs — free of streaming-insert cost, always exactly-once. Batch
-execution loads everything at end of input; streaming execution loads each checkpoint's files
-(the checkpoint is the trigger, like Beam's streaming FILE_LOADS `triggeringFrequency` model):
+loads them with BigQuery load jobs — free of streaming-insert cost, and exactly-once when a restart
+restores the whole job state from its latest checkpoint or savepoint and keeps the sink's options
+and job project (see **Job project** below; a stateless redeploy or a rewind to an older position
+is not such a restart, see [Delivery guarantees and state](#delivery-guarantees-and-state)). Batch
+execution loads everything at end of input; streaming execution loads each checkpoint's files (the
+checkpoint is the trigger, like Beam's streaming FILE_LOADS `triggeringFrequency` model):
 
 {{< java-snippet file="BigQueryConnectorFileLoads.java" tag="bigquery-connector-file-loads" >}}
 
@@ -3012,15 +3015,35 @@ disabled the provided schema *is* the table's, so no tightening is ever sent.
 **Staging cleanup.** Staged files are deleted only after every destination load and
 temporary-table cleanup complete normally — best-effort; on destination execution failure or
 cleanup interruption they are deliberately kept so a Flink restart retries deterministically.
+Files the sink could not delete are logged at WARN as `Failed to delete N of M staging objects`,
+with the first file the service refused as the cause, such as a 403 from a missing
+`storage.objects.delete` permission. A batch request that fails as a whole is logged separately as
+`Could not complete a batched delete`, with its own error, and any of its files left without an
+answer are counted in N. A file Cloud Storage reports as not found (404) is not counted and is
+logged only at DEBUG: a commit restored onto loads an earlier attempt completed may find that
+attempt's files deleted.
 Point `stagingPath` at a
 **dedicated bucket (separate from checkpoint/savepoint storage) with a lifecycle rule** (for
 example: delete objects after 1–7 days) so orphans from hard failures expire on their own. Size
-the rule's age above the longest outage you intend to recover from: staged files referenced by a
-checkpoint *are* the data, and restoring a streaming job after the rule already expired them
-leaves the pending loads permanently failing (the poisoned committables can then only be dropped
-by starting without state). A file the writer discards before it starts finalizing that file (on
-cancellation, failover or a JVM-fatal failure) leaves no orphan: no object appears, and Cloud
-Storage expires the unfinalized upload within a week.
+the rule's age above the longest a staged file can wait for the last load that may read it. The
+age counts from the file's creation. In streaming that wait lasts at least until the checkpoint
+carrying the file completes, and across a failure it also takes in the outage you intend to
+recover from and the restored job's time to load the file; in batch it is the whole run, because
+every file loads at end of input. Staged files referenced by a checkpoint *are* the data, and
+restoring a streaming job after the rule already expired them leaves every pending load that still
+has to read one of them failing on every retry while that file is missing. Starting without state
+drops those committables. Restoring an earlier retained checkpoint or savepoint can also get past
+them, when the BigQuery jobs its commits need already completed successfully and the restored job
+can still find them: re-attaching to a job reads no staged file, but BigQuery keeps job history
+for six months, and the restored job must look in the project those jobs ran in (see **Job
+project** above). Restore it under a new Flink job id, as `flink run -s` assigns by default: a run
+under the old id numbers its checkpoints as the old run did, and a destination loaded through
+temporary tables can then re-attach to the old run's final copy instead of copying its own loads.
+If the source can still replay from that checkpoint, the job processes everything after it again
+and appends what it emits on top of what later checkpoints already loaded. A
+file the writer discards before it starts finalizing that file (on cancellation, failover or a
+JVM-fatal failure) leaves no orphan: no object appears, and Cloud Storage expires the unfinalized
+upload within a week.
 
 **Errors.** `FailureHandler` covers serialization/Avro-conversion failures (row-level, before
 staging). A load job itself is all-or-nothing: there is no per-row policy at load time, and a

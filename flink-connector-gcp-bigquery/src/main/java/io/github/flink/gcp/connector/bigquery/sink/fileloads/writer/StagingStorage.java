@@ -46,8 +46,9 @@ public interface StagingStorage extends Serializable, AutoCloseable {
     WritableByteChannel createObject(String gcsUri, int chunkBytes) throws IOException;
 
     /**
-     * Deletes the given staging objects, best-effort: failures (including already-deleted objects)
-     * are logged and swallowed.
+     * Deletes the given staging objects, best-effort: failures are logged and swallowed. An object
+     * that no longer exists is not a failure, because an earlier attempt of the same commit may
+     * have deleted it.
      *
      * @param gcsUris the object URIs to delete
      */

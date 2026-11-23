@@ -23,6 +23,9 @@ import com.google.cloud.WriteChannel;
 import com.google.cloud.storage.BlobId;
 import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.Storage;
+import com.google.cloud.storage.StorageBatch;
+import com.google.cloud.storage.StorageBatchResult;
+import com.google.cloud.storage.StorageException;
 import com.google.cloud.storage.StorageOptions;
 import io.github.flink.gcp.connector.bigquery.BigQueryCredentials;
 import org.slf4j.Logger;
@@ -32,6 +35,7 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.nio.channels.WritableByteChannel;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -52,7 +56,11 @@ public final class GcsStagingStorage implements StagingStorage {
 
     private static final Logger LOG = LoggerFactory.getLogger(GcsStagingStorage.class);
 
-    /** Objects per batched delete request (the GCS batch API accepts up to 100 operations). */
+    /**
+     * Objects per submitted batch. The client already splits a batch into requests of 100, the most
+     * the GCS batch API accepts, but it stops at the first request that fails as a whole;
+     * submitting each 100 separately still attempts the rest.
+     */
     private static final int DELETE_BATCH_SIZE = 100;
 
     private transient Storage storage;
@@ -66,6 +74,14 @@ public final class GcsStagingStorage implements StagingStorage {
     /** Creates staging storage with optional runtime-loaded service-account credentials. */
     public GcsStagingStorage(@Nullable String serviceAccountKeyFile) {
         this.serviceAccountKeyFile = serviceAccountKeyFile;
+    }
+
+    /** Creates staging storage over an already built client, for tests. */
+    @VisibleForTesting
+    static GcsStagingStorage withClient(Storage storage) {
+        GcsStagingStorage staging = new GcsStagingStorage();
+        staging.storage = storage;
+        return staging;
     }
 
     /** Returns the configured key-file path, or {@code null} for ADC. */
@@ -88,33 +104,67 @@ public final class GcsStagingStorage implements StagingStorage {
         return channel;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The batch is built here rather than through {@code Storage.delete(BlobId...)}, which
+     * reports a missing object and a refused deletion alike as {@code false}.
+     */
     @Override
     public void deleteObjects(List<String> gcsUris) {
         int failed = 0;
+        int notFound = 0;
+        StorageException firstFailure = null;
         for (int from = 0; from < gcsUris.size(); from += DELETE_BATCH_SIZE) {
             List<String> chunk =
                     gcsUris.subList(from, Math.min(from + DELETE_BATCH_SIZE, gcsUris.size()));
-            BlobId[] blobIds = new BlobId[chunk.size()];
-            for (int i = 0; i < chunk.size(); i++) {
-                blobIds[i] = BlobId.fromGsUtilUri(chunk.get(i));
-            }
+            List<StorageBatchResult<Boolean>> results = new ArrayList<>(chunk.size());
             try {
-                for (Boolean deleted : storage().delete(blobIds)) {
-                    if (!Boolean.TRUE.equals(deleted)) {
-                        failed++;
+                StorageBatch batch = storage().batch();
+                for (String gcsUri : chunk) {
+                    results.add(batch.delete(BlobId.fromGsUtilUri(gcsUri)));
+                }
+                batch.submit();
+            } catch (IOException | RuntimeException e) {
+                // Not a count of failed deletions: the results read below say which objects were
+                // deleted or not found before the request failed, such as in a truncated response.
+                LOG.warn(
+                        "Could not complete a batched delete of {} staging objects",
+                        chunk.size(),
+                        e);
+            }
+            // An object with no result, or whose result never arrived because its request failed
+            // as a whole, counts as a failure: nothing says it was deleted.
+            failed += chunk.size() - results.size();
+            for (StorageBatchResult<Boolean> result : results) {
+                if (!result.completed()) {
+                    failed++;
+                    continue;
+                }
+                try {
+                    if (!Boolean.TRUE.equals(result.get())) {
+                        notFound++;
+                    }
+                } catch (StorageException e) {
+                    failed++;
+                    if (firstFailure == null) {
+                        firstFailure = e;
                     }
                 }
-            } catch (IOException | RuntimeException e) {
-                failed += chunk.size();
-                LOG.warn("Failed to delete a batch of {} staging objects", chunk.size(), e);
             }
         }
+        if (notFound > 0) {
+            LOG.debug("{} of {} staging objects were already deleted", notFound, gcsUris.size());
+        }
         if (failed > 0) {
+            // The first per-object failure, if any, names the cause, such as a missing
+            // storage.objects.delete permission; a failed request was logged with its own above.
             LOG.warn(
                     "Failed to delete {} of {} staging objects; a bucket lifecycle rule is"
                             + " recommended to expire leftovers",
                     failed,
-                    gcsUris.size());
+                    gcsUris.size(),
+                    firstFailure);
         }
     }
 
@@ -136,10 +186,10 @@ public final class GcsStagingStorage implements StagingStorage {
 
     /**
      * Builds the client on the HTTP transport, the {@code StorageOptions} default. Two things rely
-     * on that transport. {@link #deleteObjects(List)} calls {@code Storage.delete(BlobId...)},
-     * which the gRPC client rejects as HTTP-only. {@code StagedFileWriter.abort()} leaves the
-     * upload channel unclosed, which on HTTP holds only a heap buffer; what an abandoned gRPC write
-     * holds has not been checked. Revisit both before switching the transport.
+     * on that transport. {@link #deleteObjects(List)} calls {@code Storage.batch()}, which the gRPC
+     * client rejects as HTTP-only. {@code StagedFileWriter.abort()} leaves the upload channel
+     * unclosed, which on HTTP holds only a heap buffer; what an abandoned gRPC write holds has not
+     * been checked. Revisit both before switching the transport.
      */
     private Storage storage() throws IOException {
         if (storage == null) {
