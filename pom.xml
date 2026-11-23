@@ -161,7 +161,7 @@ limitations under the License.
         <maven.compiler.release>17</maven.compiler.release>
         <!-- Read by the Spotless plugin configuration below. -->
         <spotless.skip>false</spotless.skip>
-        <google-cloud-libraries-bom.version>26.93.0</google-cloud-libraries-bom.version>
+        <google-cloud-libraries-bom.version>26.94.0</google-cloud-libraries-bom.version>
         <!-- OpenTelemetry, whose Metrics API base's ClientMetrics implements (#713, ADR-0186)
              and which most Google Cloud clients bring in transitively, their built-in metrics
              export using the SDK. libraries-bom manages none of it, so this import is what keeps the
@@ -172,7 +172,7 @@ limitations under the License.
              OpenTelemetry its own build never tested, which is why Dependabot ignores it (#1946).
              The requireUpperBoundDeps execution below fails the build when a client asks for a
              newer OpenTelemetry than this; nothing catches the opposite direction. -->
-        <opentelemetry-bom.version>1.62.0</opentelemetry-bom.version>
+        <opentelemetry-bom.version>1.67.0</opentelemetry-bom.version>
         <!-- Not managed by the Google Cloud libraries BOM -->
         <avro.version>1.12.2</avro.version>
         <!-- Avro declares zstd-jni `optional`, so the codec it enables is only on the classpath
