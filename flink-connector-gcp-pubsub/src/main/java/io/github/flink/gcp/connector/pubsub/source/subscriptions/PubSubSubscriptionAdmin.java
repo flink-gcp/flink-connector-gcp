@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.subscriptions;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.rpc.AlreadyExistsException;
@@ -29,30 +30,49 @@ import com.google.cloud.pubsub.v1.SubscriptionAdminSettings;
 import com.google.protobuf.Timestamp;
 import com.google.pubsub.v1.DeadLetterPolicy;
 import com.google.pubsub.v1.ExpirationPolicy;
+import com.google.pubsub.v1.GetSubscriptionRequest;
 import com.google.pubsub.v1.SeekRequest;
 import com.google.pubsub.v1.Subscription;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionCreateOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.function.Function;
 
 /**
  * Default {@link SubscriptionAdmin} backed by the Pub/Sub {@link SubscriptionAdminClient}.
  *
  * <p>Every call opens its own client and closes it — together with its gRPC channel — when the call
- * returns, so {@link #close()} has nothing to release. That is not only about cost: the
- * enumerator's {@code close()} runs on the scheduler thread while a startup check may still be
- * running on a worker thread, and a client owned across calls would be torn out from under it. The
- * check is a handful of calls at job start, so a per-call client is cheap enough to buy that. With
- * an emulator endpoint the clients connect to it over a plaintext channel with no credentials.
+ * returns. That is not only about cost: the enumerator's {@code close()} runs on the scheduler
+ * thread while a startup check may still be running on a worker thread, and a client owned across
+ * calls would be torn out from under it. The check is a handful of calls at job start, so a
+ * per-call client is cheap enough to buy that.
+ *
+ * <p>The client's channels run on the connector's gRPC event-loop group ({@link GrpcEventLoops},
+ * ADR-0208), and closing the client waits for them before it releases its lease. That close has to
+ * come before Flink releases the job's class loader, which on the JobManager it does without
+ * waiting for the enumerator to close (Flink 2.2.1, #2237); a client still open by then stops the
+ * group on a closed loader. So {@link #close()} cancels the call in flight, retries included,
+ * through its future, and closes its client: the waiting call then returns at once rather than when
+ * the service answers. With an emulator endpoint the client is handed a plaintext channel opened
+ * for it, with no credentials, and closed after it.
+ *
+ * <p>One admin belongs to one enumerator, which is what makes the one-way {@code closed} flag
+ * correct. The monitor is this object's own and is held while a client is opened and a call
+ * started, never while a call runs.
  */
 @Internal
 public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
@@ -61,6 +81,19 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
 
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     @Nullable private final CredentialsProvider credentialsOverride;
+
+    /** The client of the call in flight, or {@code null} between calls. */
+    @GuardedBy("this")
+    @Nullable
+    private GrpcEventLoops.LeasedClient<SubscriptionAdminClient> inFlight;
+
+    /** The call {@code inFlight} is waiting on, which {@link #close()} cancels. */
+    @GuardedBy("this")
+    @Nullable
+    private ApiFuture<?> inFlightCall;
+
+    @GuardedBy("this")
+    private boolean closed;
 
     /** Creates an admin using application-default credentials. */
     public PubSubSubscriptionAdmin() {
@@ -103,25 +136,25 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
      */
     @FunctionalInterface
     interface SubscriptionLookup {
-        Subscription get(String subscriptionPath);
+        Subscription get(String subscriptionPath) throws IOException;
     }
 
     /** One {@code CreateSubscription} call; see {@link SubscriptionLookup}. */
     @FunctionalInterface
     interface SubscriptionCreator {
-        Subscription create(Subscription subscription);
+        Subscription create(Subscription subscription) throws IOException;
     }
 
     @Override
     @Nullable
     public SubscriptionInfo describe(SubscriptionDestination subscription) throws IOException {
-        SubscriptionAdminClient client = newClient();
+        GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client = open();
         try {
-            return describeWith(client::getSubscription, subscription);
+            return describeWith(lookup(client), subscription);
         } catch (NotFoundException e) {
             return null;
         } finally {
-            closeQuietly(client);
+            release(client);
         }
     }
 
@@ -155,12 +188,20 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
     public SubscriptionInfo create(
             SubscriptionDestination subscription, SubscriptionCreateOptions options)
             throws IOException {
-        SubscriptionAdminClient client = newClient();
+        GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client = open();
         try {
             return createWith(
-                    client::createSubscription, client::getSubscription, subscription, options);
+                    toCreate ->
+                            call(
+                                    client,
+                                    admin ->
+                                            admin.createSubscriptionCallable()
+                                                    .futureCall(toCreate)),
+                    lookup(client),
+                    subscription,
+                    options);
         } finally {
-            closeQuietly(client);
+            release(client);
         }
     }
 
@@ -219,9 +260,9 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                         .setSubscription(subscription.toSubscriptionPath())
                         .setTime(toTimestamp(timestamp))
                         .build();
-        SubscriptionAdminClient client = newClient();
+        GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client = open();
         try {
-            client.seek(request);
+            call(client, admin -> admin.seekCallable().futureCall(request));
             LOG.info("Sought Pub/Sub subscription {} to {}", subscription, timestamp);
         } catch (RuntimeException e) {
             throw new IOException(
@@ -233,24 +274,151 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                             + " (roles/pubsub.subscriber).",
                     e);
         } finally {
-            closeQuietly(client);
+            release(client);
         }
     }
 
+    /**
+     * Cancels the call in flight and closes its client, and refuses every later call. The waiting
+     * call then fails at once, so the worker thread running it does not outlive the source.
+     */
     @Override
     public void close() {
-        // Clients are short-lived within each call; there is nothing to release here.
+        GrpcEventLoops.LeasedClient<SubscriptionAdminClient> open;
+        ApiFuture<?> call;
+        synchronized (this) {
+            closed = true;
+            open = inFlight;
+            call = inFlightCall;
+            inFlight = null;
+            inFlightCall = null;
+        }
+        if (call != null) {
+            // Cancels the call and any retry gax has scheduled for it, so the client below has
+            // nothing in flight to wait for.
+            call.cancel(true);
+        }
+        if (open != null) {
+            closeQuietly(open);
+        }
+    }
+
+    /** Opens a client for one admin call and records it as in flight. */
+    private GrpcEventLoops.LeasedClient<SubscriptionAdminClient> open() throws IOException {
+        synchronized (this) {
+            if (closed) {
+                throw closedFailure();
+            }
+            inFlight = newClient();
+            return inFlight;
+        }
+    }
+
+    /** Starts one call on the client, recording it so {@link #close()} can cancel it, and waits. */
+    private <T> T call(
+            GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client,
+            Function<SubscriptionAdminClient, ApiFuture<T>> start)
+            throws IOException {
+        ApiFuture<T> call;
+        synchronized (this) {
+            if (inFlight != client) {
+                // close() took the client away between two calls on it.
+                throw closedFailure();
+            }
+            call = start.apply(client.client());
+            inFlightCall = call;
+        }
+        try {
+            return await(call);
+        } finally {
+            synchronized (this) {
+                if (inFlightCall == call) {
+                    inFlightCall = null;
+                }
+            }
+        }
+    }
+
+    private SubscriptionLookup lookup(GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client) {
+        return path ->
+                call(
+                        client,
+                        admin ->
+                                admin.getSubscriptionCallable()
+                                        .futureCall(
+                                                GetSubscriptionRequest.newBuilder()
+                                                        .setSubscription(path)
+                                                        .build()));
     }
 
     /**
-     * Shuts the per-call client down, logging rather than propagating a failure.
+     * Closes the call's client, then forgets it. It stays findable while it closes, so a close()
+     * racing this finds it and waits for the same close rather than returning first.
+     */
+    private void release(GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client) {
+        closeQuietly(client);
+        synchronized (this) {
+            if (inFlight == client) {
+                inFlight = null;
+                inFlightCall = null;
+            }
+        }
+    }
+
+    private static IOException closedFailure() {
+        return new IOException(
+                "The Pub/Sub subscription admin was closed; the source is shutting down.");
+    }
+
+    /**
+     * Waits for a call, interruptibly. The SDK's own synchronous wait is uninterruptible, and a
+     * retry gax had scheduled can be dropped by the client's shutdown without completing the call,
+     * so a thread waiting that way could wait forever; Flink interrupts the coordinator's worker
+     * when it closes the source, and this wait answers that by cancelling the call. A failure the
+     * service answered with is rethrown as the SDK's synchronous call would throw it, so the
+     * callers' mappings above see the same types.
+     */
+    private static <T> T await(ApiFuture<T> call) throws IOException {
+        try {
+            return call.get();
+        } catch (InterruptedException e) {
+            call.cancel(true);
+            Thread.currentThread().interrupt();
+            throw new InterruptedIOException(
+                    "Interrupted during a Pub/Sub subscription admin call; the source is shutting"
+                            + " down.");
+        } catch (CancellationException e) {
+            // close() cancelled it: the call did not fail, the source is going away. An
+            // IOException rather than the RuntimeException get() threw, so the callers' mappings
+            // above do not report it as a failed call with a permission hint.
+            throw new IOException(
+                    "A Pub/Sub subscription admin call was cancelled; the source is shutting"
+                            + " down.",
+                    e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                // The failure may have been raised on a gax thread; this records where it was
+                // waited for, as the SDK's own synchronous call does.
+                cause.addSuppressed(new Exception("The call was awaited here"));
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IOException(cause);
+        }
+    }
+
+    /**
+     * Closes the per-call client, logging rather than propagating a failure.
      *
      * <p>Not try-with-resources, which would close before the catch clauses run and so report a
      * channel that would not shut down cleanly as a failed call. That matters most for {@link
      * #seek}: the restarted job re-seeks a subscription whose seek is wrongly reported as failed,
      * and under a start position resolved against the clock that discards more messages each time.
      */
-    private static void closeQuietly(SubscriptionAdminClient client) {
+    private static void closeQuietly(GrpcEventLoops.LeasedClient<SubscriptionAdminClient> client) {
         try {
             client.close();
         } catch (RuntimeException e) {
@@ -329,34 +497,36 @@ public class PubSubSubscriptionAdmin implements SubscriptionAdmin {
                 .build();
     }
 
-    private SubscriptionAdminClient newClient() throws IOException {
+    /** Opens a client for one call, on the connector's event-loop group; for tests too. */
+    @VisibleForTesting
+    GrpcEventLoops.LeasedClient<SubscriptionAdminClient> newClient() throws IOException {
         try {
-            if (emulatorEndpoint == null && credentialsOverride == null) {
-                return SubscriptionAdminClient.create();
+            if (emulatorEndpoint == null) {
+                SubscriptionAdminSettings.Builder settings = productionSettings();
+                return GrpcEventLoops.open(
+                        lease -> SubscriptionAdminClient.create(lease.applyTo(settings).build()));
             }
-            return SubscriptionAdminClient.create(clientSettings());
+            return EmulatorChannels.openLeasedClient(
+                    SubscriptionAdminSettings.defaultGrpcTransportProviderBuilder(),
+                    emulatorEndpoint,
+                    channel ->
+                            SubscriptionAdminClient.create(
+                                    SubscriptionAdminSettings.newBuilder()
+                                            .setCredentialsProvider(NoCredentialsProvider.create())
+                                            .setTransportChannelProvider(channel)
+                                            .build()));
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Pub/Sub subscription admin client", e);
         }
     }
 
-    /** Returns the non-default client settings for tests and {@link #newClient()}. */
+    /** Returns the production client's settings, before the lease is applied; for tests too. */
     @VisibleForTesting
-    SubscriptionAdminSettings clientSettings() throws IOException {
-        if (emulatorEndpoint == null) {
-            return SubscriptionAdminSettings.newBuilder()
-                    .setCredentialsProvider(credentialsOverride)
-                    .build();
+    SubscriptionAdminSettings.Builder productionSettings() {
+        SubscriptionAdminSettings.Builder settings = SubscriptionAdminSettings.newBuilder();
+        if (credentialsOverride != null) {
+            settings.setCredentialsProvider(credentialsOverride);
         }
-        // The instantiating provider is auto-closed by the client, so each call's finally-block
-        // closeQuietly closes the emulator channel together with the client. Deliberately not
-        // try-with-resources, for the reason closeQuietly's own javadoc gives.
-        return SubscriptionAdminSettings.newBuilder()
-                .setCredentialsProvider(NoCredentialsProvider.create())
-                .setTransportChannelProvider(
-                        EmulatorChannels.plaintextProvider(
-                                SubscriptionAdminSettings.defaultGrpcTransportProviderBuilder(),
-                                emulatorEndpoint))
-                .build();
+        return settings;
     }
 }

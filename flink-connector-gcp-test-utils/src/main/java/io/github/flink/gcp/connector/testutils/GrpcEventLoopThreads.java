@@ -18,7 +18,7 @@ package io.github.flink.gcp.connector.testutils;
 
 import org.apache.flink.annotation.Internal;
 
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 /**
  * Observes the threads of the connectors' own gRPC event-loop group ({@code
@@ -72,11 +72,28 @@ public final class GrpcEventLoopThreads {
      * @throws InterruptedException if interrupted while waiting
      */
     public static boolean awaitNone() throws InterruptedException {
-        return await(false);
+        return await(false, Duration.ofSeconds(TIMEOUT_SECONDS));
+    }
+
+    /**
+     * Waits up to the given time for every thread of the group to finish. For a check before a test
+     * opens a client: a MiniCluster job an earlier class in the fork cancelled tears its clients
+     * down after that class has returned, within the clients' own shutdown budgets.
+     *
+     * @param timeout how long to wait
+     * @return whether they had finished in time
+     * @throws InterruptedException if interrupted while waiting
+     */
+    public static boolean awaitNone(Duration timeout) throws InterruptedException {
+        return await(false, timeout);
     }
 
     private static boolean await(boolean alive) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+        return await(alive, Duration.ofSeconds(TIMEOUT_SECONDS));
+    }
+
+    private static boolean await(boolean alive, Duration timeout) throws InterruptedException {
+        long deadline = System.nanoTime() + timeout.toNanos();
         while (alive() != alive) {
             if (System.nanoTime() >= deadline) {
                 return false;

@@ -995,6 +995,12 @@ Every publisher release runs in two phases, including capacity and idle eviction
 Every selected publisher is asked to shut down, and only then is any of them waited on, so the waits
 overlap: a release costs one `shutdownTimeout` (30 s by default) however many publishers it covers,
 rather than one per topic.
+After that wait the released publishers let go of the connector's gRPC event-loop group one after
+another, on the same thread, and that is not part of the budget.
+Against an emulator each one shuts its channel down and waits up to 10 s for it, so a release of
+several can add that once per publisher; a release that leaves the group with no client, for
+example the eviction of the only active publisher, also waits up to about 10 s for the group to
+stop ([gRPC threads and job shutdown]({{< relref "docs/connectors#grpc-threads-and-job-shutdown" >}})).
 That matters with dynamic destinations,
 where seven sequential 30 s waits would exceed Flink's `task.cancellation.timeout` (180 s) and make
 a cancelling task a fatal TaskManager error. On a task failure or a clean shutdown that watchdog

@@ -25,6 +25,7 @@ import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
 import io.github.flink.gcp.connector.base.failure.FailureHandler;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.StubWriterInitContext;
 import io.github.flink.gcp.connector.testutils.TestSinkWriterMetricGroup;
 import io.github.flink.gcp.connector.testutils.pubsub.PubSubEmulatorContainers;
@@ -152,6 +153,40 @@ class PubSubDeadLetterQueueITCase {
                                             message.getAttributesMap().get("dlq-timestamp"))))
                     .isBetween(before, Instant.now());
         }
+    }
+
+    /**
+     * The queue's publisher runs on the connector's own gRPC event-loop group and stops it when the
+     * queue closes (ADR-0208, #2263). A group left running by an earlier class in this reused fork
+     * would make the checks pass or fail for the wrong reason, so it is ruled out first; the
+     * harness's own clients run on gRPC's group, not this one.
+     */
+    @Test
+    void thePublisherRunsOnTheEventLoopGroupAndStopsItOnClose() throws Exception {
+        assertThat(GrpcEventLoopThreads.awaitNone(Duration.ofSeconds(60)))
+                .as(
+                        "no %s* thread before the queue opens: an earlier class in this fork left"
+                                + " the group running",
+                        GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        Fixture fixture = newFixture();
+        try {
+            fixture.queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+            fixture.queue.offer(new StubElement(ByteString.copyFromUtf8("event loop")));
+            fixture.queue.flush();
+
+            assertThat(GrpcEventLoopThreads.alive())
+                    .as("a %s* thread while the queue is open", GrpcEventLoopThreads.PREFIX)
+                    .isTrue();
+        } finally {
+            fixture.close();
+        }
+
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread once the queue closed", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        assertThat(clients.pullMessagesUntil(fixture.subscriptionPath, 1, PULL_DEADLINE))
+                .hasSize(1);
     }
 
     @Test

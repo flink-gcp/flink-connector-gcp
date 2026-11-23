@@ -55,7 +55,9 @@ Decisions worth keeping from [#211]:
   subclassed (ADR-0007), so every seam here is arranged deliberately. The second seam is
   `close()`'s: its two steps are held as `@VisibleForTesting` `AutoCloseable` fields
   (`publisherShutdown`, `channelShutdown`) that `open()` assigns, so [#276]'s test can make the
-  publisher's shutdown throw an `Error` and assert the channel is shut down anyway. **The
+  publisher's shutdown throw an `Error` and assert the channel is shut down anyway. Since
+  [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263)
+  the second is `transportRelease`, which releases the publisher's transport (ADR-0208). **The
   not-open guard reads `publisherShutdown`, not `publisher`** — they are set and cleared
   together, so it means the same thing, and it lets the test drive `close()` without opening a
   real publisher and stranding a gax executor in the test JVM.

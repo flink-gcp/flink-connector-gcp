@@ -18,8 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-05 ([#297]) through 2026-08-07 ([#348], [#349], [#350], [#351], the [#348]
-  cluster); revised by [#358] (2026-08-09)
-- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358]
+  cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23)
+- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
   including the four-outcome teardown message table, and the reader metrics)
@@ -36,6 +36,17 @@ takes a `Consumer<Throwable>` rather than an SDK `ApiService.Listener`, so no ve
 reaches the seam; the production constructor cannot delegate through `this(...)` because the
 receiver it hands the factory is `this::receiveMessage`, so the two constructors assign the same
 fields and share only `startOrRelease`.
+
+Since [#2263] the client is one connector-owned interface, `SubscriberClient` (start, stop,
+bounded wait, and a close that releases its transport), which `DefaultSubscriberFactory` returns
+and a test scripts; its `start` still takes a `Consumer<Throwable>`. Both constructors end in one
+private constructor that opens the client with `this::receiveMessage`, the production one through
+the factory and the seam by returning the scripted client. The same change gave the failed-start
+release something to release, which the decision on it below predates: once the factory has
+returned a client, the subscriber owns that client's transport (ADR-0208), so the release closes
+the client after `stopQuietly()`, and with an emulator that also shuts down the channel the
+transport opened. This change leaves untouched what that decision says about the SDK's
+`stopAsync()` being a no-op on a failed service. The other decisions are unchanged.
 
 ## Decision
 
@@ -243,3 +254,4 @@ fields and share only `startOrRelease`.
 [#351]: https://github.com/flink-gcp/flink-connector-gcp/issues/351
 [#358]: https://github.com/flink-gcp/flink-connector-gcp/issues/358
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
+[#2263]: https://github.com/flink-gcp/flink-connector-gcp/issues/2263

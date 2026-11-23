@@ -22,6 +22,7 @@ import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
@@ -158,16 +159,44 @@ class DefaultSubscriberFactoryTest {
                         .parallelPullCount(2)
                         .build();
 
-        Subscriber subscriber =
+        try (SubscriberClient client =
                 new DefaultSubscriberFactory(
                                 options,
                                 OrderingMode.NONE,
                                 EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
-                        .create(SUBSCRIPTION, NO_OP_CONSUMER);
+                        .create(SUBSCRIPTION, NO_OP_CONSUMER)) {
+            Subscriber subscriber = sdkSubscriber(client);
+            assertThat(subscriber.getFlowControlSettings().getMaxOutstandingElementCount())
+                    .isEqualTo(50);
+            assertThat(field(subscriber, "numPullers")).isEqualTo(2);
+        }
+    }
 
-        assertThat(subscriber.getFlowControlSettings().getMaxOutstandingElementCount())
-                .isEqualTo(50);
-        assertThat(field(subscriber, "numPullers")).isEqualTo(2);
+    /**
+     * A subscriber comes with a hold on the connector's gRPC event-loop group, on both transports,
+     * which its owner releases (ADR-0208, #2263); {@code PubSubTransportsTest} covers what the hold
+     * puts on the group, and {@code StreamingPullSubscriberTest} when the owner releases it.
+     */
+    @Test
+    void aSubscriberComesWithAnEventLoopLeaseItsOwnerReleases() throws Exception {
+        for (EmulatorEndpoint endpoint :
+                new EmulatorEndpoint[] {
+                    null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint")
+                }) {
+            SubscriberClient client =
+                    new DefaultSubscriberFactory(
+                                    PubSubSubscriberOptions.defaults(),
+                                    OrderingMode.NONE,
+                                    endpoint,
+                                    NoCredentialsProvider.create())
+                            .create(SUBSCRIPTION, NO_OP_CONSUMER);
+            try {
+                assertThat(GrpcEventLoops.isRunning()).as("the subscriber holds a lease").isTrue();
+            } finally {
+                client.close();
+            }
+            assertThat(GrpcEventLoops.isRunning()).as("closing released the lease").isFalse();
+        }
     }
 
     @Test
@@ -186,25 +215,26 @@ class DefaultSubscriberFactoryTest {
     void theReceiverFlavorFollowsAwaitAckConfirmation() throws Exception {
         // The two SDK receiver interfaces are chosen when the subscriber is built and cannot be
         // swapped afterwards, so this is what decides whether an acknowledgement can be confirmed.
-        Subscriber fireAndForget =
+        try (SubscriberClient fireAndForget =
                 new DefaultSubscriberFactory(
                                 PubSubSubscriberOptions.defaults(),
                                 OrderingMode.NONE,
                                 EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
-                        .create(SUBSCRIPTION, NO_OP_CONSUMER);
-        Subscriber confirming =
-                new DefaultSubscriberFactory(
-                                PubSubSubscriberOptions.builder()
-                                        .awaitAckConfirmation(Duration.ofSeconds(30))
-                                        .build(),
-                                OrderingMode.NONE,
-                                EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
-                        .create(SUBSCRIPTION, NO_OP_CONSUMER);
-
-        assertThat(field(fireAndForget, "receiver")).isNotNull();
-        assertThat(field(fireAndForget, "receiverWithAckResponse")).isNull();
-        assertThat(field(confirming, "receiver")).isNull();
-        assertThat(field(confirming, "receiverWithAckResponse")).isNotNull();
+                        .create(SUBSCRIPTION, NO_OP_CONSUMER)) {
+            try (SubscriberClient confirming =
+                    new DefaultSubscriberFactory(
+                                    PubSubSubscriberOptions.builder()
+                                            .awaitAckConfirmation(Duration.ofSeconds(30))
+                                            .build(),
+                                    OrderingMode.NONE,
+                                    EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint"))
+                            .create(SUBSCRIPTION, NO_OP_CONSUMER)) {
+                assertThat(field(sdkSubscriber(fireAndForget), "receiver")).isNotNull();
+                assertThat(field(sdkSubscriber(fireAndForget), "receiverWithAckResponse")).isNull();
+                assertThat(field(sdkSubscriber(confirming), "receiver")).isNull();
+                assertThat(field(sdkSubscriber(confirming), "receiverWithAckResponse")).isNotNull();
+            }
+        }
     }
 
     @Test
@@ -225,6 +255,10 @@ class DefaultSubscriberFactoryTest {
                         SUBSCRIPTION.toSubscriptionPath(), (MessageReceiver) (m, reply) -> {});
         DefaultSubscriberFactory.configure(builder, options, orderingMode);
         return builder;
+    }
+
+    private static Subscriber sdkSubscriber(SubscriberClient client) {
+        return ((DefaultSubscriberFactory.SubscriberAdapter) client).subscriber();
     }
 
     private static Object field(Object target, String name) throws Exception {

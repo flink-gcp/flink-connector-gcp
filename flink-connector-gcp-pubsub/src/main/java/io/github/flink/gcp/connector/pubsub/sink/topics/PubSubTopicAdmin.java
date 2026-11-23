@@ -29,6 +29,7 @@ import com.google.pubsub.v1.Topic;
 import com.google.pubsub.v1.TopicName;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import org.slf4j.Logger;
@@ -46,8 +47,10 @@ import java.time.Duration;
  * channel). When auto-creation does trigger, the client is short-lived: opened for the creation
  * call and closed with it — together with its channel — so its resources are not held for the
  * writer's remaining lifetime for what is typically a one-shot event ({@link #close()} therefore
- * has nothing to release). With an emulator endpoint the short-lived clients connect to it over a
- * plaintext channel with no credentials. Creation conflicts ({@code ALREADY_EXISTS}, the topic was
+ * has nothing to release). The client's channels run on the connector's gRPC event-loop group
+ * ({@link GrpcEventLoops}, ADR-0208), and closing it waits for them before it releases its lease.
+ * With an emulator endpoint the client is handed a plaintext channel opened for it, with no
+ * credentials, and closed after it. Creation conflicts ({@code ALREADY_EXISTS}, the topic was
  * created concurrently — for example by a parallel subtask) are treated as success.
  */
 @Internal
@@ -89,8 +92,8 @@ public class PubSubTopicAdmin implements TopicAdmin {
     @Override
     public void createTopic(TopicDestination destination, @Nullable TopicCreateOptions options)
             throws IOException {
-        try (TopicAdminClient client = newClient()) {
-            client.createTopic(toTopic(destination, options));
+        try (GrpcEventLoops.LeasedClient<TopicAdminClient> admin = newClient()) {
+            admin.client().createTopic(toTopic(destination, options));
             LOG.info("Created Pub/Sub topic {}", destination);
         } catch (AlreadyExistsException e) {
             LOG.info("Pub/Sub topic {} already exists, not creating it", destination);
@@ -142,33 +145,36 @@ public class PubSubTopicAdmin implements TopicAdmin {
         // Clients are short-lived within createTopic; there is nothing to release here.
     }
 
-    private TopicAdminClient newClient() throws IOException {
+    /** Opens a client for one call, on the connector's event-loop group; for tests too. */
+    @VisibleForTesting
+    GrpcEventLoops.LeasedClient<TopicAdminClient> newClient() throws IOException {
         try {
-            if (emulatorEndpoint == null && credentialsOverride == null) {
-                return TopicAdminClient.create();
+            if (emulatorEndpoint == null) {
+                TopicAdminSettings.Builder settings = productionSettings();
+                return GrpcEventLoops.open(
+                        lease -> TopicAdminClient.create(lease.applyTo(settings).build()));
             }
-            return TopicAdminClient.create(clientSettings());
+            return EmulatorChannels.openLeasedClient(
+                    TopicAdminSettings.defaultGrpcTransportProviderBuilder(),
+                    emulatorEndpoint,
+                    channel ->
+                            TopicAdminClient.create(
+                                    TopicAdminSettings.newBuilder()
+                                            .setCredentialsProvider(NoCredentialsProvider.create())
+                                            .setTransportChannelProvider(channel)
+                                            .build()));
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Pub/Sub admin client", e);
         }
     }
 
-    /** Returns the non-default client settings for tests and {@link #newClient()}. */
+    /** Returns the production client's settings, before the lease is applied; for tests too. */
     @VisibleForTesting
-    TopicAdminSettings clientSettings() throws IOException {
-        if (emulatorEndpoint == null) {
-            return TopicAdminSettings.newBuilder()
-                    .setCredentialsProvider(credentialsOverride)
-                    .build();
+    TopicAdminSettings.Builder productionSettings() {
+        TopicAdminSettings.Builder settings = TopicAdminSettings.newBuilder();
+        if (credentialsOverride != null) {
+            settings.setCredentialsProvider(credentialsOverride);
         }
-        // The instantiating provider is auto-closed by the client, so the try-with-resources in
-        // createTopic closes the emulator channel together with the client.
-        return TopicAdminSettings.newBuilder()
-                .setCredentialsProvider(NoCredentialsProvider.create())
-                .setTransportChannelProvider(
-                        EmulatorChannels.plaintextProvider(
-                                TopicAdminSettings.defaultGrpcTransportProviderBuilder(),
-                                emulatorEndpoint))
-                .build();
+        return settings;
     }
 }

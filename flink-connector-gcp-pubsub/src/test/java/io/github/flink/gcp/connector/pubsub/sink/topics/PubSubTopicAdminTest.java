@@ -17,7 +17,12 @@
 package io.github.flink.gcp.connector.pubsub.sink.topics;
 
 import com.google.api.gax.core.NoCredentialsProvider;
+import com.google.api.gax.rpc.TransportChannelProvider;
+import com.google.cloud.pubsub.v1.TopicAdminClient;
 import com.google.pubsub.v1.Topic;
+import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.pubsub.EventLoopChannelChecks;
 import io.github.flink.gcp.connector.pubsub.sink.TopicCreateOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import org.junit.jupiter.api.Test;
@@ -43,9 +48,37 @@ class PubSubTopicAdminTest {
 
         assertThat(
                         new PubSubTopicAdmin(null, credentials)
-                                .clientSettings()
+                                .productionSettings()
                                 .getCredentialsProvider())
                 .isSameAs(credentials);
+    }
+
+    @Test
+    void aClientForEachCallRunsOnTheEventLoopGroup() throws Exception {
+        // Both arms. No credentials for production: its channels connect lazily, so nothing here
+        // talks to the service; the emulator arm's endpoint is never dialled either.
+        for (EmulatorEndpoint endpoint :
+                new EmulatorEndpoint[] {
+                    null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint")
+                }) {
+            GrpcEventLoops.LeasedClient<TopicAdminClient> client =
+                    new PubSubTopicAdmin(endpoint, NoCredentialsProvider.create()).newClient();
+            try {
+                assertThat(GrpcEventLoops.isRunning()).as("the client holds a lease").isTrue();
+                TransportChannelProvider provider =
+                        client.client().getSettings().getTransportChannelProvider();
+                if (endpoint == null) {
+                    EventLoopChannelChecks.assertBuildsChannelsOnTheGroup(provider);
+                } else {
+                    assertThat(provider.shouldAutoClose())
+                            .as("the emulator channel is the holder's, not the client's")
+                            .isFalse();
+                }
+            } finally {
+                client.close();
+            }
+            assertThat(GrpcEventLoops.isRunning()).as("closing released the lease").isFalse();
+        }
     }
 
     @Test

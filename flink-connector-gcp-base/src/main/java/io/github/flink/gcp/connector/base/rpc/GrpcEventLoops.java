@@ -18,6 +18,7 @@ package io.github.flink.gcp.connector.base.rpc;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 
 import com.google.api.core.ApiFunction;
@@ -25,6 +26,7 @@ import com.google.api.gax.core.BackgroundResource;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.ClientSettings;
 import com.google.api.gax.rpc.TransportChannelProvider;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.netty.shaded.io.netty.channel.Channel;
@@ -136,9 +138,19 @@ public final class GrpcEventLoops {
     public static <C extends BackgroundResource> LeasedClient<C> open(ClientFactory<C> factory)
             throws IOException {
         Preconditions.checkNotNull(factory, "factory must not be null");
+        return open(factory, null);
+    }
+
+    /**
+     * Opens a lease and creates a client under it that also owns {@code channel}: closing the
+     * returned holder closes the client, then the channel. For {@link
+     * EmulatorChannels#openLeasedClient}, whose client runs on a channel the lease cannot reach.
+     */
+    static <C extends BackgroundResource> LeasedClient<C> open(
+            ClientFactory<C> factory, @Nullable LeasedClient<?> channel) throws IOException {
         Lease lease = acquire();
         try {
-            return new LeasedClient<>(factory.create(lease), lease);
+            return new LeasedClient<>(factory.create(lease), lease, channel);
         } catch (IOException | RuntimeException | Error e) {
             lease.close();
             throw e;
@@ -274,7 +286,8 @@ public final class GrpcEventLoops {
 
         /**
          * Puts a channel built outside any transport provider on the group, for {@link
-         * EmulatorChannels#openLeasedPlaintextChannel(EmulatorEndpoint)}'s caller-owned channel.
+         * EmulatorChannels#openLeasedPlaintextChannel(InstantiatingGrpcChannelProvider.Builder,
+         * EmulatorEndpoint)}'s caller-owned channel.
          *
          * @param builder the channel builder
          * @return the same builder
@@ -321,10 +334,11 @@ public final class GrpcEventLoops {
     /**
      * A client and the lease covering its channels. Closing it shuts the client down, waits for its
      * channels to terminate, cancels their calls if they have not within a bounded time, and only
-     * then releases the lease. The first {@link #close()} does that; a concurrent or later one
-     * waits until it has finished, unless it is interrupted while it waits. A client that does not
-     * terminate within the bounds is given up on, so a finished close means the lease is released,
-     * not that every channel has terminated.
+     * then releases the lease; a holder from {@link EmulatorChannels#openLeasedClient} then closes
+     * the emulator channel the client ran on the same way. The first {@link #close()} does that; a
+     * concurrent or later one waits until it has finished, unless it is interrupted while it waits.
+     * A client that does not terminate within the bounds is given up on, so a finished close means
+     * the lease is released, not that every channel has terminated.
      *
      * @param <C> the client type
      */
@@ -332,12 +346,17 @@ public final class GrpcEventLoops {
 
         private final C client;
         private final Lease lease;
+
+        /** A channel the client runs on and this holder closes after it, or {@code null}. */
+        @Nullable private final LeasedClient<?> channel;
+
         private final AtomicBoolean closing = new AtomicBoolean();
         private final CountDownLatch closed = new CountDownLatch(1);
 
-        private LeasedClient(C client, Lease lease) {
+        private LeasedClient(C client, Lease lease, @Nullable LeasedClient<?> channel) {
             this.client = client;
             this.lease = lease;
+            this.channel = channel;
         }
 
         /** Returns the client; close this holder, not the client. */
@@ -353,7 +372,14 @@ public final class GrpcEventLoops {
         public void close() {
             if (closing.compareAndSet(false, true)) {
                 try {
-                    lease.closeAfter(client);
+                    // closeAll's contract: the channel closes whatever the client's close did,
+                    // and the first failure is the one reported, with a later one suppressed.
+                    Closers.closeAll(() -> lease.closeAfter(client), channel);
+                } catch (Exception e) {
+                    // Neither close declares a checked exception, so this is the unchecked one
+                    // closeAll collected; an Error leaves closeAll as itself and never reaches
+                    // here.
+                    ExceptionUtils.rethrow(e);
                 } finally {
                     closed.countDown();
                 }

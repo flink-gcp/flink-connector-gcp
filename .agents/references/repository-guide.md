@@ -1169,8 +1169,9 @@ connector gets its own module file rather than a section here.
   `docs/adr/0003`): the Bigtable batcher and the Pub/Sub subscriber do, by unrelated mechanisms.
   Their wrappers absorb the re-report, each SPI's `close()` javadoc binds a third implementation
   to the same contract, and the absorb stays per-connector because the mechanisms share no type
-  to catch. A client that cannot be subclassed holds its operations as functional values, or the
-  absorb has no test. The nine-SPI survey, the asymmetric consequences and the #351 refinement
+  to catch. A client that cannot be subclassed holds its operations as functional values, or
+  behind a connector-owned interface as the Pub/Sub subscriber does (`SubscriberClient`, #2263),
+  or the absorb has no test. The nine-SPI survey, the asymmetric consequences and the #351 refinement
   (what else a wide absorb catches) are in the ADR.
 - **A `Duration` knob a connector will convert to nanoseconds is bounded at the setter that
   accepts it** (#334; `docs/adr/0068`), at `Duration.ofNanos(Long.MAX_VALUE)` — past that

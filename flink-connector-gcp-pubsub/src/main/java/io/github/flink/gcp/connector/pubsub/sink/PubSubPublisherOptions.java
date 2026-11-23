@@ -811,8 +811,11 @@ public final class PubSubPublisherOptions implements Serializable {
          * <p>The budget is measured from the moment the writer asks the publisher to shut down, and
          * every publisher selected by one release is asked before any is waited on, so that release
          * costs this once however many publishers it covers. Keep it under Flink's {@code
-         * task.cancellation.timeout} (180 s by default) for final close; for running eviction it is
-         * also the maximum task-thread stall caused by one release.
+         * task.cancellation.timeout} (180 s by default) for final close; for running eviction it
+         * bounds the shutdown part of the task-thread stall one release causes. After it, each
+         * released publisher lets go of the connector's gRPC event-loop group one after another:
+         * against an emulator each waits up to 10 seconds for its channel, and a release that
+         * leaves the group with no client waits up to about 10 seconds more for it to stop.
          *
          * <p>If a running-task release gives up while publisher shutdown work or resources are
          * still alive, the writer fails before opening a replacement. The pinned SDK can otherwise

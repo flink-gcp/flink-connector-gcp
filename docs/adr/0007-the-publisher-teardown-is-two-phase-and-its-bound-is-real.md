@@ -79,7 +79,8 @@ Decisions not to re-litigate about the teardown itself:
 - **The two steps are functional values, not a `Publisher`**, because `Publisher` cannot be
   subclassed — non-final, but its only constructor is private ([#324]), the same mechanism that
   makes Bigtable's `BigtableDataClient` unfakeable. That is the only seam a test can drive, the
-  same argument `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` fields make.
+  same argument `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` fields make
+  (`channelShutdown` became `transportRelease` in [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263)).
 - **The give-up warning does not attribute itself to [#265]**: the budget is shared, and a
   healthy teardown an earlier publisher left no time for reaches the same branch. **Both
   warnings report the time actually waited, not the configured budget**, for that same reason —

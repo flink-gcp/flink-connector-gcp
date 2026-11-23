@@ -107,6 +107,9 @@ trees, all internal calls under the fourth clause:
 - **base**: `InstantiatingGrpcChannelProvider.Builder.setChannelConfigurator` is `@BetaApi`
   (`EmulatorChannels.plaintextProvider` — the five client-owned emulator sites of ADR-0081's
   split; the three caller-owned `openPlaintextChannel`/`fixedProvider` sites do not touch it).
+  Since ADR-0208, `GrpcEventLoops.Lease` applies the connector's event-loop group through the same
+  setter; Pub/Sub's three such sites moved to caller-owned channels (#2263), and
+  `plaintextProvider` is left with BigQuery's and Datastore's emulator arms.
 - **bigquery**: `BigQueryReadClient` and `BigQueryReadSettings` are class-level `@BetaApi`
   (`BigQueryReadClients`, `ReadClientSessionCreator` — the whole Storage Read source path;
   the Storage Read API service is GA); `TimePartitioning.Builder.setField` and

@@ -48,9 +48,10 @@ Two rules the implementations turn on:
   subscriber's `awaitTerminated()` catches `TimeoutException | RuntimeException` because Guava
   reports a state, not a named exception. A shared helper would have to be parameterised by the
   thing that differs, which is the whole of it.
-- **A client that cannot be subclassed needs its operations held as functional values**, or the
-  absorb has no test. Every one of these clients is unextendable, but **not all by the same
-  mechanism**, and the distinction is worth keeping because only one of them is a rule someone
+- **A client that cannot be subclassed needs a seam a test can script**, its operations held as
+  functional values or behind a connector-owned interface, or the absorb has no test. Every one
+  of these clients is unextendable, but **not all by the same mechanism**, and the distinction is
+  worth keeping because only one of them is a rule someone
   can break: gax's `Batcher` is `@InternalExtensionOnly`, so a fake would be legal Java and an
   unsupported extension; `Subscriber` and `Publisher` are non-final classes whose only
   constructor is `private`; `BigtableDataClient`'s is **package-private** (`@InternalApi("Visible
@@ -61,7 +62,10 @@ Two rules the implementations turn on:
   #325 three more, and the sixth — the base module's `CLAUDE.md` — outlived both). Worth the
   tally, because the claim was copied rather than checked each time. There is no mocking library
   here, so injection is the only seam — #324 for the batcher adapter, #325 for the subscriber,
-  and `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` before both.
+  and `PubSubDeadLetterQueue`'s `publisherShutdown`/`channelShutdown` (now `transportRelease`)
+  before both. Since [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263) the
+  subscriber's seam is one connector-owned interface, `SubscriberClient`, rather than functional
+  values: a test scripts it as it scripted the values.
 
 ## Evidence
 

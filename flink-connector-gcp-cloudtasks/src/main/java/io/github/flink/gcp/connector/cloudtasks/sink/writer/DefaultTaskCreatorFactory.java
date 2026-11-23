@@ -24,7 +24,6 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
 import com.google.api.gax.grpc.GrpcCallContext;
-import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.rpc.UnaryCallable;
 import com.google.api.gax.tracing.OpenTelemetryMetricsFactory;
 import com.google.cloud.tasks.v2.CloudTasksClient;
@@ -128,7 +127,6 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
     @Override
     public TaskCreator create(@Nullable ClientMetrics clientMetrics) throws IOException {
-        GrpcEventLoops.LeasedClient<GrpcTransportChannel> channel = null;
         GrpcEventLoops.LeasedClient<CloudTasksClient> client = null;
         try {
             if (emulatorEndpoint == null) {
@@ -139,22 +137,25 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
                         GrpcEventLoops.open(
                                 lease -> CloudTasksClient.create(lease.applyTo(settings).build()));
             } else {
-                channel = EmulatorChannels.openLeasedPlaintextChannel(emulatorEndpoint);
-                CloudTasksSettings.Builder settings =
-                        CloudTasksSettings.newBuilder()
-                                .setTransportChannelProvider(
-                                        EmulatorChannels.fixedProvider(channel))
-                                .setCredentialsProvider(NoCredentialsProvider.create());
-                applyClientMetrics(settings, clientMetrics);
-                // The channel's own lease covers it, and a fixed provider takes no lease, so this
-                // one only gives the client the same bounded close as the production arm's.
-                client = GrpcEventLoops.open(lease -> CloudTasksClient.create(settings.build()));
+                client =
+                        EmulatorChannels.openLeasedClient(
+                                CloudTasksSettings.defaultGrpcTransportProviderBuilder(),
+                                emulatorEndpoint,
+                                channel -> {
+                                    CloudTasksSettings.Builder settings =
+                                            CloudTasksSettings.newBuilder()
+                                                    .setTransportChannelProvider(channel)
+                                                    .setCredentialsProvider(
+                                                            NoCredentialsProvider.create());
+                                    applyClientMetrics(settings, clientMetrics);
+                                    return CloudTasksClient.create(settings.build());
+                                });
             }
-            return new CloudTasksClientAdapter(client, channel, clientMetrics);
+            return new CloudTasksClientAdapter(client, clientMetrics);
         } catch (IOException | RuntimeException | Error e) {
-            // Both are owned here until the adapter takes them over on success; which failure is
-            // reported is closeAllSuppressing's contract.
-            Closers.closeAllSuppressing(e, client, channel);
+            // Owned here until the adapter takes it over on success; which failure is reported is
+            // closeAllSuppressing's contract.
+            Closers.closeAllSuppressing(e, client);
             throw e;
         }
     }
@@ -258,31 +259,22 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
     /**
      * Adapts the SDK {@link CloudTasksClient} to the writer-facing {@link TaskCreator}. It closes
-     * the client, then the caller-owned channel if there is one, each releasing its event-loop
-     * lease, and the client metrics it was given last: closed client metrics drop what they are
-     * given, so a call still completing would lose its recording.
+     * the client, which releases its event-loop lease and, on the emulator arm, closes the
+     * caller-owned channel after it, and the client metrics it was given last: closed client
+     * metrics drop what they are given, so a call still completing would lose its recording.
      */
     static final class CloudTasksClientAdapter implements TaskCreator {
 
         private final GrpcEventLoops.LeasedClient<CloudTasksClient> client;
         private final UnaryCallable<CreateTaskRequest, Task> createTaskCallable;
-        @Nullable private final GrpcEventLoops.LeasedClient<GrpcTransportChannel> ownedChannel;
         @Nullable private final ClientMetrics clientMetrics;
 
         CloudTasksClientAdapter(
                 GrpcEventLoops.LeasedClient<CloudTasksClient> client,
-                @Nullable GrpcEventLoops.LeasedClient<GrpcTransportChannel> ownedChannel,
                 @Nullable ClientMetrics clientMetrics) {
             this.client = client;
             this.createTaskCallable = client.client().createTaskCallable();
-            this.ownedChannel = ownedChannel;
             this.clientMetrics = clientMetrics;
-        }
-
-        /** The caller-owned channel, or {@code null}; the test seam for the emulator arm. */
-        @Nullable
-        GrpcTransportChannel ownedChannel() {
-            return ownedChannel == null ? null : ownedChannel.client();
         }
 
         /** The adapted client; the test seam reading the settings the factory built. */
@@ -305,7 +297,7 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
         @Override
         public void close() throws Exception {
-            Closers.closeAll(client, ownedChannel, clientMetrics);
+            Closers.closeAll(client, clientMetrics);
         }
     }
 }
