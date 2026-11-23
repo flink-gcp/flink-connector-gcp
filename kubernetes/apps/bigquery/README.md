@@ -167,9 +167,9 @@ The `fl-10` trial ran Avro staging at 10 open destinations with TaskManager heap
 ## Deployment definition
 
 [`pkg/bigquery.#Application`](../../pkg/bigquery/application.cue) defines one finite trial as a FlinkDeployment for the pinned Operator schema and Flink 2.2.1 application image.
-A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` defaults to the mode's 30-minute-equivalent count above.
+A delivery supplies `run.id`, `run.image`, `run.mode` (`ALO`, `EO` or `FILE_LOADS`), `run.destinations` (`10` or `50`) and `run.parallelism` (`1` or `2`); `run.phase` defaults to `initial` and `run.records` to the [fault sequence](#fault-sequence)'s six minutes of the mode's rows, 5,760 in ALO mode and 368,640 in EO and FILE_LOADS modes.
 A FILE_LOADS delivery may also set `run.fileLoads` (`stagingFormat`, `maxConcurrentCheckpointFinalizations`, `maxConcurrentDestinations`, `maxStagingFileBytes`, `maxOpenDestinations`, `backgroundStagingUploadEnabled`, and `maxInFlightUploadOperations` only when the uploader is on), whose defaults and ranges are the connector's except that `backgroundStagingUploadEnabled` defaults to `false`, so that only the uploader trials run it, with `maxOpenDestinations` capped at those 10,000 pending files; the package renders each knob that exists as an argument, and refuses an out-of-range or unknown knob or any knob in a Storage Write mode.
-The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, and its `bigquery_records` tag, which dispatch always sets, the record count; both phases run the writers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+The lifecycle delivery's `bigquery_mode` tag selects the mode and leaves the knobs at their defaults, its `bigquery_uploader` tag turns the background staging uploader on at its default bound, and its `bigquery_records` tag, which dispatch always sets, the record count; both phases run the writers at the parallelism in [parallelism.cue](../../lifecycle/parallelism.cue).
 Explicit record counts retain the application's minimum of twice the destination count and 2 GiB serialized-input ceiling.
 The offered rate is fixed at 1 MiB/s.
 The image must be a lowercase SHA-256 digest from the fixed `bigquery-recovery` GAR package; this checks its form, while publication provenance and registry retention still require verification before admission.
@@ -250,8 +250,7 @@ Every trial renders `--parallelism`, which a `bigquery-recovery` image built bef
 Likewise an image built before [#2226](https://github.com/flink-gcp/flink-connector-gcp/issues/2226) pads its rows with pseudorandom bytes, which the [query oracle](#offline-query-oracle) now counts as invalid, so every trial needs an image published after that change too.
 One bundle describes one trial; the renderer does not allocate unique run IDs/nonces or prove that other trials ran.
 The record count is fixed to the fault sequence's six minutes of the mode's rows.
-Every trial has the scenario's query budget: 12 slots, each billing at most 4 GiB with a 60-second timeout.
-Every visibility retry that submits a new job must consume another slot.
+Every trial has the scenario's query budget: one slot, for the one query the sequence makes, billing at most 4 GiB with a 60-second timeout.
 
 For example, render from the repository root with a synthetic image digest for local review:
 
@@ -308,7 +307,7 @@ The subsections below give the approval, the delivery it is bound into, the reso
 #### Approval and shared resource policy
 
 [Production dispatch](#production-dispatch) builds a `bigquery-recovery` approval and validates it once, before it takes the lock; the internal integration and cleanup tests construct one directly.
-It binds `bigquery_trial` to the trial the dispatch named: its delivery method and destination count, its fault, `sequence`, its record count, and the uploader for the trial that names it.
+It binds `bigquery_trial` to the trial the dispatch named: its delivery method and destination count, its record count, and the uploader for the trial that names it.
 The approval also pins the initial and upgrade manifest hashes, the rig commit, runtime image digests, run/lock identity, and the observed namespace, Operator and idle-quota identities.
 Nothing validates it again: admission checks only its window, and recovery reads it as written, so a later policy change cannot strand a held run's recovery.
 A valid document is not execution permission on its own: dispatch still requires the environment lock, and the in-cluster entrypoint builds its supervisor only through the actor factory.
@@ -331,7 +330,7 @@ Synthetic tests cover these boundaries and compose the real approval, environmen
 They do not establish a functioning quiescence barrier or live service acceptance.
 
 The actor factories, writer fencing, query-evidence accounting and the verdict are connected ([#1419](https://github.com/flink-gcp/flink-connector-gcp/issues/1419)–[#1424](https://github.com/flink-gcp/flink-connector-gcp/issues/1424)), and both execution entrypoints admit this scenario.
-The query artifacts share 10 MiB, `QUERY_EVIDENCE_BYTES`, divided equally among the scenario's 12 query slots; the receipts and run documents have no byte budget, because the window bounds what a run writes and the evidence bucket's 30-day expiry bounds what it retains.
+The query artifact has 10 MiB, `QUERY_EVIDENCE_BYTES`, which the query handoff divides equally among the plan's query slots, and the sequence has one; the receipts and run documents have no byte budget, because the window bounds what a run writes and the evidence bucket's 30-day expiry bounds what it retains.
 
 The collected queries' billed bytes are summed into the retained control state as `billed_bytes`.
 Each query was already refused above its own `maximum_bytes_billed`, and the slot count bounds the worst case, but nothing added them up, so a finished trial could not state what it had actually spent.
@@ -369,7 +368,7 @@ Only a persisted creation intent authorizes deletion, and expiration is only a f
 Each query slot has a deterministic job ID that does not change after a timeout or restart.
 Submission returns an existing job of that ID, or the one a create conflict names, without comparing its configuration with the plan, for the same reason as tables.
 There are no automatic retries, fresh retry IDs or polling loops in the adapter.
-A new visibility observation must consume another durably reserved slot; reusing a slot reads the same job's result.
+A new observation must consume another durably reserved slot; reusing a slot reads the same job's result.
 The [REST job configuration](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/Job#JobConfiguration) bounds billed query bytes, but `jobTimeoutMs` is a best-effort service cancellation request.
 The adapter checks the caller's absolute deadline before requests, after response headers and at streamed-body boundaries, caps each response at 1 MiB and bounds request timeouts by the remaining time.
 An operation-specific adapter view shares the session, plan and clock while taking the earlier of the operation deadline and the original adapter deadline; it never mutates or extends the original deadline.
@@ -677,8 +676,9 @@ The verdict reports no measured value: a throughput or a memory figure from this
 A stored verdict, or stored reasons, other than the recomputed ones is reported as `verdict-differs-from-the-record`; the receipt's other claims decide nothing.
 An evidence set without `result.json` or without the run's account of itself has no verdict, and neither has one holding a record nothing can read, or one whose record says the run completed with no `recovery-complete` event beside it: fetch the evidence again.
 A run that did not complete exported its account of itself, which says so, and is `inconclusive`.
-A single-fault run, whose receipt's trial names no fault, as the first trials' and every JobManager replacement's did, or the fault it injected, `tm-replacement`, `rescale-out` or `rescale-in`, is reported without a verdict, beside the verdict it stored and the problem `single-fault-trial`; it is analysed at the revision its approval's `sha` names.
-A receipt without a trial, or whose trial names any other fault, `jm-replacement` included, is reported as `receipt-without-bigquery-trial` and has no verdict.
+A `sequence` run's receipt names its trial's record count, and either no fault or the `sequence` that every sequence receipt named before [#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279) removed the field.
+A single-fault run, whose receipt's trial names no record count, and no fault, as the first trials' and every JobManager replacement's did, or the fault it injected, `tm-replacement`, `rescale-out` or `rescale-in`, is reported without a verdict, beside the verdict it stored and the problem `single-fault-trial`; it is analysed at the revision its approval's `sha` names.
+A receipt without a trial, or with any other trial, such as one naming `jm-replacement` or a record count beside a fault other than `sequence`, is reported as `receipt-without-bigquery-trial` and has no verdict.
 
 The analysis does not classify a disagreement as an edited record or as an inconsistent export ([#1726](https://github.com/flink-gcp/flink-connector-gcp/issues/1726)).
 The records are files the same owner writes, so such a classification would raise the cost of a forged record without excluding one, and the owner who runs a trial is also the one who reads it.

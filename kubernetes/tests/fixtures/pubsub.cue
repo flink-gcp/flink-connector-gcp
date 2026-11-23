@@ -20,12 +20,14 @@ run: namespace: "tier3-pubsub"
 let inputs = run
 let application = pubsub.#Application & {
 	run: {
-		id:                     inputs.id
-		image:                  inputs.image
-		phase:                  inputs.phase
-		recordsPerSubscription: inputs.recordsPerSubscription
-		parallelism:            inputs.parallelism
+		id:    inputs.id
+		image: inputs.image
+		phase: inputs.phase
 	}
+	// Forwarded only when given, so that a leaf without one meets the
+	// package's own default, or its lack of one.
+	if inputs.recordsPerSubscription != _|_ {run: recordsPerSubscription: inputs.recordsPerSubscription}
+	if inputs.parallelism != _|_ {run: parallelism: inputs.parallelism}
 }
 
 delivery: resources: app: application.resource

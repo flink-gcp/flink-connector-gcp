@@ -23,9 +23,9 @@ import (
 
 // The trial's inputs, which dispatch and the offline renderer supply: the input and relay
 // settings that `flink_tier3/pubsub/plan.py` fixes for the fault sequence (ADR-0204).
-pubsubRecords:              *1000 | (int & >=3 & <=10000) @tag(pubsub_records,type=int)
-pubsubRestoreDeduplication: *false | bool                 @tag(pubsub_restore_deduplication,type=bool)
-pubsubRecordDelayMillis:    *0 | (int & >=0 & <=1000)     @tag(pubsub_record_delay_millis,type=int)
+pubsubRecords:              *4800 | (int & >=3 & <=10000) @tag(pubsub_records,type=int)
+pubsubRestoreDeduplication: *true | bool                  @tag(pubsub_restore_deduplication,type=bool)
+pubsubRecordDelayMillis:    *100 | (int & >=0 & <=1000)   @tag(pubsub_record_delay_millis,type=int)
 // The workload access probe's test plan and program, from `pubsub_plan.prepare`,
 // which checks the rendered Pod against both.
 pubsubProbe:       *"{}" | string @tag(pubsub_probe)

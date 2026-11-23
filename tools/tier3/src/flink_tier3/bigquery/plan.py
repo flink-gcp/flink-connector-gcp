@@ -20,6 +20,7 @@ import re
 from dataclasses import asdict
 
 from ..common import Failure, digest, json_bytes, timestamp, utc
+from ..exercise import SEQUENCE_KIND
 from ..model import Schedule
 from ..policy import (
     BIGQUERY_OBSERVATIONS,
@@ -31,12 +32,14 @@ from ..policy import (
 )
 from ..proposal import verify_resources
 from ..workflow import render
-from .oracle import ROW_BYTES, SEQUENCE_KIND, Trial
+from .oracle import ROW_BYTES, Trial
 from .resources import ResourcePlan
 
 WINDOW_SECONDS = WINDOWS["bigquery-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-QUERY_SLOTS = 12
+# The run's one query, `final-0`, which reads every table once the job has
+# finished; a repeated request reuses its slot rather than taking another.
+QUERY_SLOTS = 1
 BYTES_PER_QUERY = 4 * 1024**3
 QUERY_TIMEOUT_MS = 60000
 # The dispatchable trials, the fault sequence of ADR-0204 once per delivery
@@ -63,7 +66,7 @@ def trial(name):
     if name not in TRIALS:
         raise Failure("BigQuery trial must be one of " + ", ".join(TRIALS))
     mode, destinations, uploader = TRIALS[name]
-    value = {"mode": mode, "destinations": destinations, "fault": SEQUENCE_KIND}
+    value = {"mode": mode, "destinations": destinations}
     if uploader:
         value["uploader"] = True
     value["records"] = SEQUENCE_RECORDS[mode]
@@ -85,7 +88,6 @@ def resource_plan(run_id, nonce, expires_at, trial):
             trial["mode"],
             trial["destinations"],
             trial["records"],
-            trial["fault"],
             trial.get("uploader", False),
         ),
         nonce,

@@ -269,7 +269,7 @@ def test_staged_uploads_share_the_run_state_object_ceiling(prepared):
 @pytest.mark.parametrize(
     "field,value",
     [
-        ("query_slots", 1),
+        ("query_slots", 2),
         ("maximum_bytes_billed", 1024**3),
         ("query_timeout_ms", 1),
         ("expires_ms", 1790000000000),

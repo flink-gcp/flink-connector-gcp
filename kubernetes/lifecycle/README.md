@@ -19,7 +19,7 @@ limitations under the License.
 ```text
 lifecycle/
   delivery.cue       # Shared inputs, ConfigMap and supervisor Job
-  faults.cue         # The recovery trials' rendered parallelism
+  parallelism.cue    # The recovery trials' rendered parallelism
   smoke.cue          # Smoke application
   bigquery.cue       # BigQuery trial inputs and applications
   pubsub.cue         # Pub/Sub trial inputs, applications and access probe
@@ -30,7 +30,7 @@ lifecycle/
 ```
 
 The scenario files share `package tier3` with `delivery.cue` and load together as one delivery.
-The recovery scenarios render both phases at the parallelism in [faults.cue](faults.cue), two, the copy of the shared exercise's `RENDERED_PARALLELISM` that a test holds to it; the fault sequence of ADR-0204 patches its rescales from there.
+The recovery scenarios render both phases at the parallelism in [parallelism.cue](parallelism.cue), two, the copy of the shared exercise's `RENDERED_PARALLELISM` that a test holds to it; the fault sequence of ADR-0204 patches its rescales from there.
 The runner selects the scenario through its existing input.
 
 The `Tier-3 run` workflow admits one application and returns the environment to its tracked idle state.
@@ -70,14 +70,15 @@ Third-party dependencies remain preinstalled in the pinned image; package source
 | `runner.py` | External admission, settlement and finalization |
 | `supervisor.py` | Progress/checkpoint observation and supervision |
 | `cleanup.py` | Ownership-aware cleanup and idle verification |
-| `exercise.py` | The fault sequence of [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) that every scenario runs: recorded operation intents, the owned savepoint upgrade and rescales, Pod deletion, scheduling evidence and the finite-input exercise the five finite-input scenarios build on |
+| `exercise.py` | The fault sequence of [ADR-0204](../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) that every scenario's exercise runs as its base class: recorded operation intents, the owned savepoint upgrade and rescales, Pod deletion, scheduling evidence and the finite-input exercise the five finite-input scenarios build on, which reads their progress lines and fixes their input lineage at the first fault |
+| `verdict.py` | The completed record's stage and event, and the verdict every scenario decides from it, with the reasons the scenario's own data gives |
 | `metrics.py` | The job's REST API, read through its Service, and the event that carries each poll's checkpoint statistics |
 | `resource.py`, `actors.py`, `rest.py` | What the scenarios whose runner creates one service resource share: its lifecycle from intent to deletion, the actors that own it, and deadline-bounded REST calls |
 | `quiesce.py` | The writer listings and retrying poll that the quiescence barriers share |
-| `analyze.py`, `runs.py`, `recovery_analysis.py` | Downloaded run directories, the offline analysis of deployed recovery runs, and the steps every scenario's analysis shares |
+| `analyze.py`, `runs.py`, `recovery_analysis.py` | Downloaded run directories, the offline analysis of deployed recovery runs, and the steps every scenario's analysis shares, from reading the completed record to the fault column the other five render |
 | `bootstrap.py`, `chart.py`, `schemas.py` | The idle bootstrap and Operator roots, the checksum-pinned Operator chart, and the generated CRD packages |
 | `common.py`, `repository.py` | Shared helpers, and the repository checkout the checkout commands read |
-| `<connector>/` | One connector's scenario: its trial, plan, the lifecycle of the resources it creates, exercise, oracles, verdict and analysis |
+| `<connector>/` | One connector's scenario: its trial, plan, the lifecycle of the resources it creates, exercise, oracles, the reasons its verdict adds, and analysis |
 
 The policy file is part of the reviewed revision, with no runtime override path.
 API collection paths and identity-validation rules stay in Python because they describe implementation contracts.

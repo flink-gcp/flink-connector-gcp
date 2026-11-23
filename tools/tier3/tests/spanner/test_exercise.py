@@ -18,13 +18,13 @@ import dataclasses
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.common import TransportError, timestamp, utc
+from flink_tier3.common import Failure, TransportError, timestamp, utc
 from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.spanner import instance
 from flink_tier3.spanner.exercise import (
     COMMIT_SECONDS,
     ORACLE_STAGE,
-    SpannerSequenceExercise,
+    SpannerExercise,
 )
 from flink_tier3.spanner.instance import Instance
 from flink_tier3.spanner.trial import LATE_ROWS, Trial, row_key
@@ -173,6 +173,40 @@ def test_the_batch_plan_is_read_from_the_jobmanager_log(baseline):
     }
 
 
+# A valid lineage, as the input's progress lines name one.
+LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
+
+
+@pytest.mark.parametrize(
+    "lineage,offset,refusal",
+    [
+        (LINEAGE, 0, None),
+        ("bad", 0, "Spanner input lineage changed or is invalid"),
+        (LINEAGE, 1, "Spanner progress is dated in the future"),
+    ],
+    ids=["read", "invalid-lineage", "future"],
+)
+def test_a_taskmanagers_progress_line_is_read_and_checked(
+    baseline, lineage, offset, refusal
+):
+    """Reading the plan lines extends the shared reading of progress lines."""
+    value, _ = baseline
+    pod = {"metadata": {"uid": "tm", "labels": {"component": "taskmanager"}}}
+    line = (
+        f"{rt.utc(value.env.clock() + offset)} event=spanner-progress "
+        f"run_id={value.env.approval.run_id} phase=initial lineage={lineage} "
+        "restored=false processed=1 sequence=0\n"
+    )
+    if refusal is not None:
+        with pytest.raises(Failure, match=refusal):
+            value.progress(pod, line)
+        return
+    value.progress(pod, line)
+    assert [(s["lineage"], s["processed"]) for s in value.samples.values()] == [
+        (LINEAGE, 1)
+    ]
+
+
 def built(prepared, monkeypatch):
     """The exercise the supervisor builds for a small sequence trial."""
     environment, _, upgrade, _ = prepared
@@ -201,21 +235,15 @@ def built(prepared, monkeypatch):
     return value, database
 
 
-@pytest.fixture
-def sequence(prepared, monkeypatch):
-    """The fault-sequence exercise over the same small input."""
-    return built(prepared, monkeypatch)
-
-
-def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
-    value, _ = sequence
-    assert isinstance(value, SpannerSequenceExercise)
+def test_the_supervisor_builds_the_exercise_under_the_runs_time_limit(baseline):
+    value, _ = baseline
+    assert isinstance(value, SpannerExercise)
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 
-def test_the_first_fault_waits_for_the_late_seed_rows(sequence):
+def test_the_first_fault_waits_for_the_late_seed_rows(baseline):
     """Rows written before the read planned its snapshot would be copied."""
-    value, database = sequence
+    value, database = baseline
     copies, database.tables["batch_out"] = database.tables["batch_out"], []
     assert value.ready_for_sequence() is False
     assert database.commits == []
@@ -241,9 +269,9 @@ def finish(value, database, at):
     value.persist("complete")
 
 
-def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
+def test_a_sequence_run_is_judged_by_its_data_alone(baseline):
     """The three oracles decide, without a watermark."""
-    value, database = sequence
+    value, database = baseline
     value.env.sleep(10)
     finish(value, database, value.env.clock())
     value.verify_tables()
@@ -255,9 +283,9 @@ def test_a_sequence_run_is_judged_by_its_data_alone(sequence):
     assert "partitions_reread" not in oracles["batch"]
 
 
-def test_the_relay_is_judged_from_the_latest_progress_line(sequence):
+def test_the_relay_is_judged_from_the_latest_progress_line(baseline):
     """A restore after the input finished may write its rows again later."""
-    value, database = sequence
+    value, database = baseline
     end = timestamp(value.trial.change_stream_end)
     finish(value, database, end - COMMIT_SECONDS - 60)
     # The input finished again after a restore, too close to the end.
@@ -278,10 +306,10 @@ def test_the_relay_is_judged_from_the_latest_progress_line(sequence):
     ids=["before-the-line", "just-after-the-line", "near-the-end"],
 )
 def test_a_restore_after_the_latest_progress_line_leaves_the_relay_unjudged(
-    sequence, restore, judged
+    baseline, restore, judged
 ):
     """The shared rule; this sink carries no writes, so it only errs toward unjudged."""
-    value, database = sequence
+    value, database = baseline
     end = timestamp(value.trial.change_stream_end)
     line = end - COMMIT_SECONDS - 900
     finish(value, database, line)

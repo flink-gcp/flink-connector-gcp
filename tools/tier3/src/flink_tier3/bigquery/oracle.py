@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..exercise import SEQUENCE_KIND, rendered_parallelism
+from ..exercise import rendered_parallelism
 
 PROJECT = "flink-gcp"
 DATASET = "flink_gcp_tier3_bigquery"
@@ -77,7 +77,6 @@ class Trial:
     mode: str
     destinations: int
     records: int
-    fault: str = SEQUENCE_KIND
     uploader: bool = False
 
     def __post_init__(self):
@@ -93,9 +92,6 @@ class Trial:
             2 * self.destinations <= self.records <= 2 * 1024**3 // ROW_BYTES[self.mode]
         ):
             raise ValueError("records must cover two writers and fit 2 GiB")
-        # The fault sequence of ADR-0204, which runs every fault in one run.
-        if self.fault != SEQUENCE_KIND:
-            raise ValueError("fault must be " + SEQUENCE_KIND)
         if type(self.uploader) is not bool or (
             self.uploader and self.mode != "FILE_LOADS"
         ):

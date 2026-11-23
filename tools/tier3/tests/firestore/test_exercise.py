@@ -18,11 +18,11 @@ import dataclasses
 from types import SimpleNamespace
 
 import pytest
-from flink_tier3.common import TransportError
+from flink_tier3.common import Failure, TransportError
 from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.firestore import database
 from flink_tier3.firestore.database import Databases
-from flink_tier3.firestore.exercise import ORACLE_STAGE, FirestoreSequenceExercise
+from flink_tier3.firestore.exercise import ORACLE_STAGE, FirestoreExercise
 from flink_tier3.firestore.trial import LATE_RECORDS, MODES, Trial
 from flink_tier3.supervisor import RESOURCE_EXERCISES
 
@@ -164,6 +164,40 @@ def test_each_batch_plan_is_read_from_the_jobmanager_log(baseline):
     }
 
 
+# A valid lineage, as the input's progress lines name one.
+LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
+
+
+@pytest.mark.parametrize(
+    "lineage,offset,refusal",
+    [
+        (LINEAGE, 0, None),
+        ("bad", 0, "Firestore input lineage changed or is invalid"),
+        (LINEAGE, 1, "Firestore progress is dated in the future"),
+    ],
+    ids=["read", "invalid-lineage", "future"],
+)
+def test_a_taskmanagers_progress_line_is_read_and_checked(
+    baseline, lineage, offset, refusal
+):
+    """Reading the plan lines extends the shared reading of progress lines."""
+    value, _ = baseline
+    pod = {"metadata": {"uid": "tm", "labels": {"component": "taskmanager"}}}
+    line = (
+        f"{rt.utc(value.env.clock() + offset)} event=firestore-progress "
+        f"run_id={value.env.approval.run_id} phase=initial lineage={lineage} "
+        "restored=false processed=1 sequence=0\n"
+    )
+    if refusal is not None:
+        with pytest.raises(Failure, match=refusal):
+            value.progress(pod, line)
+        return
+    value.progress(pod, line)
+    assert [(s["lineage"], s["processed"]) for s in value.samples.values()] == [
+        (LINEAGE, 1)
+    ]
+
+
 def built(prepared, monkeypatch, late=True):
     """The exercise the supervisor builds for a small sequence trial.
 
@@ -203,9 +237,9 @@ def sequence(prepared, monkeypatch):
     return built(prepared, monkeypatch)
 
 
-def test_the_sequence_trial_builds_the_sequence_exercise(sequence):
+def test_the_supervisor_builds_the_exercise_under_the_runs_time_limit(sequence):
     value, _ = sequence
-    assert isinstance(value, FirestoreSequenceExercise)
+    assert isinstance(value, FirestoreExercise)
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 

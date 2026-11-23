@@ -20,8 +20,8 @@ from types import SimpleNamespace
 import pytest
 from flink_tier3 import actors
 from flink_tier3.cloudtasks import plan
-from flink_tier3.cloudtasks.exercise import LISTING_STAGE, CloudTasksSequenceExercise
-from flink_tier3.cloudtasks.verdict import COMPLETE_EVENT, PAGE_EVENT
+from flink_tier3.cloudtasks.exercise import LISTING_STAGE, CloudTasksExercise
+from flink_tier3.cloudtasks.verdict import PAGE_EVENT
 from flink_tier3.common import Failure, TransportError
 from flink_tier3.exercise import TIME_LIMIT_SECONDS
 from flink_tier3.model import Approval, validate_approval
@@ -36,6 +36,7 @@ from flink_tier3.resource import require_resources_clean
 from flink_tier3.rest import Unsent
 from flink_tier3.runner import Runner
 from flink_tier3.supervisor import RESOURCE_EXERCISES
+from flink_tier3.verdict import COMPLETE_EVENT
 
 from ..dispatched import inputs as inputs  # noqa: PLC0414
 from ..dispatched import prepared as prepared  # noqa: PLC0414
@@ -730,9 +731,11 @@ def built(prepared, monkeypatch):
     return value, controller, small
 
 
-def test_the_sequence_trial_builds_the_sequence_exercise(prepared, monkeypatch):
+def test_the_supervisor_builds_the_exercise_under_the_runs_time_limit(
+    prepared, monkeypatch
+):
     value, _, _ = built(prepared, monkeypatch)
-    assert isinstance(value, CloudTasksSequenceExercise)
+    assert isinstance(value, CloudTasksExercise)
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
 
 

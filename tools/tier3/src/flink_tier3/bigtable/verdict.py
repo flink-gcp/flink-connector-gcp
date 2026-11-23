@@ -12,39 +12,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Whether a deployed Bigtable run is a usable recovery trial, and why not."""
+"""Why a Bigtable run's data withholds `usable` (ADR-0204)."""
 
-from ..common import INCONCLUSIVE, USABLE
+from ..verdict import component_reasons
 
-# The evidence event carrying the completed record. Both sides spell it from
-# here: the exercise writes it and the offline analyzer reads it.
-COMPLETE_STAGE = "complete"
-COMPLETE_EVENT = "recovery-" + COMPLETE_STAGE
 # The components the oracles judge, each by its own report under this name.
 COMPONENTS = ("eo", "alo", "relay")
+# The relay's counts of a failure that timing cannot explain: a row the
+# relay wrote that no input names, a cell outside its family, and an identity
+# relayed although `eo` did not apply it. A missing row is the one shortfall
+# a commit after the change stream's end leaves.
+RELAY_FAILURES = ("foreign", "foreign_families", "unapplied")
 
 
-def sequence_verdict(recovery):
-    """A fault-sequence run's verdict: its data alone (ADR-0204).
+def data_reasons(record):
+    """Whether all three oracles passed, the relay's having been judged.
 
-    `usable` says the run completed and all three oracles passed, the relay's
-    having been judged: an input that finished too close to the change
-    stream's end leaves the relay unjudged, since a commit after the end is
-    not relayed. Interruptions, restarts, timings and metrics decide nothing.
+    An input that finished too close to the change stream's end leaves the
+    relay unjudged, since a commit after the end is not relayed.
     """
-    record = recovery if isinstance(recovery, dict) else {}
-    outcomes = record.get("outcomes")
-    outcomes = outcomes if isinstance(outcomes, dict) else {}
-    reasons = []
-    if record.get("stage") != COMPLETE_STAGE:
-        reasons.append("recovery-incomplete")
-    oracles = outcomes.get("oracles")
-    oracles = oracles if isinstance(oracles, dict) else {}
-    for component in COMPONENTS:
-        report = oracles.get(component)
-        report = report if isinstance(report, dict) else {}
-        if component == "relay" and report.get("judged") is not True:
-            reasons.append(component + "-oracle-unjudged")
-        elif report.get("verdict") != "pass":
-            reasons.append(component + "-oracle-not-passed")
-    return {"verdict": INCONCLUSIVE if reasons else USABLE, "reasons": reasons}
+    return component_reasons(record, COMPONENTS, "relay", RELAY_FAILURES)

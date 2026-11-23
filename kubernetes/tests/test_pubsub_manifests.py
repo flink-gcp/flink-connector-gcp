@@ -55,6 +55,7 @@ def pubsub_delivery(module, **inputs):
         "parallelism": 1,
         **inputs,
     }
+    run = {key: value for key, value in run.items() if value is not None}
     path = leaf(module, "runs/pubsub", {"run": run})
     shutil.copyfile(
         KUBERNETES / "tests/fixtures/pubsub.cue", module / path / "application.cue"
@@ -100,8 +101,9 @@ def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records
         f"--records-per-subscription={records}",
         f"--parallelism={parallelism}",
         f"--require-restored={str(phase == 'upgrade').lower()}",
-        "--restore-deduplication=false",
-        "--record-delay-millis=0",
+        # The package's defaults are the fault sequence's relay settings.
+        f"--restore-deduplication={pubsub_plan.RESTORE_DEDUPLICATION}",
+        f"--record-delay-millis={pubsub_plan.RECORD_DELAY_MILLIS}",
     ]
     config = spec["flinkConfiguration"]
     # Unbounded: a run waits out any number of restarts (ADR-0204).
@@ -144,6 +146,15 @@ def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records
         }
 
 
+def test_pubsub_takes_the_sequences_record_count_unless_a_delivery_names_one(module):
+    path = pubsub_delivery(module, recordsPerSubscription=None)
+    result = cue(module, "cmd", "render", path)
+    assert result.returncode == 0, result.stderr
+    [app] = list(yaml.safe_load_all(result.stdout))
+    expected = f"--records-per-subscription={pubsub_plan.SEQUENCE_RECORDS}"
+    assert expected in app["spec"]["job"]["args"]
+
+
 @pytest.mark.parametrize(
     "inputs",
     [
@@ -153,6 +164,9 @@ def test_pubsub_recovery_deployment_contract(module, phase, parallelism, records
         {"recordsPerSubscription": 0},
         {"recordsPerSubscription": 10001},
         {"recordsPerSubscription": "1"},
+        # One subtask on each of at most two single-slot TaskManagers, and no
+        # default: the Flink package's own parallelism default would contradict one.
+        {"parallelism": None},
         {"parallelism": 0},
         # Three TaskManagers were only the AdaptiveScheduler kinds' (#2240).
         {"parallelism": 3},

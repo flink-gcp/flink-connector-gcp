@@ -21,6 +21,7 @@ import shutil
 import pytest
 import yaml
 from flink_tier3.bundle import delivered_sources
+from flink_tier3.cloudtasks.plan import SEQUENCE_INPUT
 from test_manifests import (
     CLOUDTASKS_IMAGE,
     KUBERNETES,
@@ -32,6 +33,10 @@ from test_manifests import (
     workload,
 )
 from test_manifests import module as module  # noqa: PLC0414
+
+# The package's defaults, which are the fault sequence's input.
+RECORDS = SEQUENCE_INPUT["records"]
+RATE = SEQUENCE_INPUT["records_per_second"]
 
 
 def cloudtasks_leaf(module, **changes):
@@ -52,7 +57,7 @@ def cloudtasks_leaf(module, **changes):
     return path
 
 
-def cloudtasks_args(run_id, phase, records=180000, rate=100, parallelism=2):
+def cloudtasks_args(run_id, phase, records=RECORDS, rate=RATE, parallelism=2):
     return [
         "--run-id",
         run_id,
@@ -139,7 +144,7 @@ def test_cloudtasks_initial_and_upgrade_preserve_the_trial(module):
         assert rendered.returncode == 0, rendered.stderr
         [app] = list(yaml.safe_load_all(rendered.stdout))
         assert_cloudtasks_application(
-            app, "ct-contract", "2026-10-13T08:00:00Z", phase, 180000, 100
+            app, "ct-contract", "2026-10-13T08:00:00Z", phase, RECORDS, RATE
         )
         applications.append(app)
     # Updating the same deployment changes only the phase and restored-state requirement.
@@ -161,8 +166,8 @@ def test_cloudtasks_parallelism_sizes_the_sink_and_its_taskmanagers(
         "ct-contract",
         "2026-10-13T08:00:00Z",
         "initial",
-        180000,
-        100,
+        RECORDS,
+        RATE,
         parallelism,
     )
 
@@ -186,13 +191,14 @@ def test_cloudtasks_input_boundaries_render(module, records, rate):
         {"phase": "resume"},
         {"records": 1},
         {"records": "100"},
-        # Each within the application's bounds, but longer than 30 minutes of input.
-        {"records": 180001},
+        # Each within the application's bounds, but longer than 30 minutes of input,
+        # at the default rate or another.
+        {"records": 18001},
         {"records": 1801, "recordsPerSecond": 1},
         {"records": 360000, "recordsPerSecond": 100},
         # The default count at a lower rate, omitted or given.
-        {"recordsPerSecond": 50},
-        {"records": 180000, "recordsPerSecond": 50},
+        {"recordsPerSecond": 1},
+        {"records": 3600, "recordsPerSecond": 1},
         {"recordsPerSecond": 0},
         {"recordsPerSecond": 101},
         # One sink subtask on each of at most two single-slot TaskManagers, and
@@ -321,7 +327,8 @@ def test_cloudtasks_namespace_policy_without_application_package(module, overrid
 @pytest.mark.parametrize(
     "inputs,records,rate,parallelism",
     [
-        ({}, 180000, 100, (2, 2)),
+        # The package's default is the fault sequence's input.
+        ({}, RECORDS, RATE, (2, 2)),
         (
             {"cloudtasks_records": "90000", "cloudtasks_records_per_second": "50"},
             90000,

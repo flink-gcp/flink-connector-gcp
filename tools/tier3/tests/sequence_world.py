@@ -19,9 +19,11 @@ is the world it runs in and the fixtures it takes.
 """
 
 import copy
+from types import SimpleNamespace
 
-from flink_tier3.exercise import RecoveryExercise
+from flink_tier3.exercise import FiniteInputExercise
 from flink_tier3.policy import CLOUDTASKS, CLOUDTASKS_OBSERVATIONS, CLOUDTASKS_STATE
+from flink_tier3.verdict import COMPLETE_STAGE
 
 from .dispatched import inputs as inputs  # noqa: PLC0414
 from .dispatched import prepared as prepared  # noqa: PLC0414
@@ -32,12 +34,22 @@ from .test_lifecycle import rt
 LINEAGE = "123e4567-e89b-12d3-a456-426614174000"
 
 
-class Exercise(RecoveryExercise):
+class Exercise(FiniteInputExercise):
+    """The shared exercise over a finite input, with no oracle of its own.
+
+    Its completion writes the shared `complete` stage, which no scenario's
+    oracle delays.
+    """
+
     namespace = CLOUDTASKS
     state_bucket = CLOUDTASKS_STATE
     timing = CLOUDTASKS_OBSERVATIONS
+    service = "Cloud Tasks"
     progress_event = "cloudtasks-progress"
-    records = 1000
+    oracle_stage = COMPLETE_STAGE
+
+    def __init__(self, env, upgrade):
+        super().__init__(env, upgrade, SimpleNamespace(records=1000))
 
 
 class World:

@@ -18,9 +18,9 @@ import copy
 
 import pytest
 from flink_tier3 import exercise as exercise_module
-from flink_tier3.bigquery.exercise import BigQuerySequenceExercise
-from flink_tier3.bigtable.exercise import BigtableSequenceExercise
-from flink_tier3.cloudtasks.exercise import CloudTasksSequenceExercise
+from flink_tier3.bigquery.exercise import BigQueryExercise
+from flink_tier3.bigtable.exercise import BigtableExercise
+from flink_tier3.cloudtasks.exercise import CloudTasksExercise
 from flink_tier3.common import UNPLANNED_EVENT, ApiError, Failure, TransportError
 from flink_tier3.exercise import (
     RECORD_SECONDS,
@@ -28,13 +28,13 @@ from flink_tier3.exercise import (
     SHUTDOWN_MESSAGE,
     TIME_LIMIT_SECONDS,
     UNCONFIRMED,
-    FaultSequence,
 )
-from flink_tier3.firestore.exercise import FirestoreSequenceExercise
+from flink_tier3.firestore.exercise import FirestoreExercise
 from flink_tier3.metrics import FlinkRest
 from flink_tier3.policy import MIB
-from flink_tier3.pubsub.exercise import PubSubSequenceExercise
-from flink_tier3.spanner.exercise import SpannerSequenceExercise
+from flink_tier3.pubsub.exercise import PubSubExercise
+from flink_tier3.spanner.exercise import SpannerExercise
+from flink_tier3.verdict import COMPLETE_EVENT, COMPLETE_STAGE
 
 from .sequence_world import LINEAGE, Exercise, World, preempted
 from .sequence_world import env as env  # noqa: PLC0414
@@ -42,10 +42,6 @@ from .sequence_world import inputs as inputs  # noqa: PLC0414
 from .sequence_world import prepared as prepared  # noqa: PLC0414
 from .sequence_world import renderer as renderer  # noqa: PLC0414
 from .test_lifecycle import rt
-
-
-class Sequenced(FaultSequence, Exercise):
-    pass
 
 
 class SequenceWorld(World):
@@ -56,7 +52,7 @@ class SequenceWorld(World):
     """
 
     def __init__(self, prepared, monkeypatch):
-        super().__init__(prepared, monkeypatch, Sequenced)
+        super().__init__(prepared, monkeypatch, Exercise)
         self.emitted = []
         self.patch_errors = []
         # The state the job the Operator names reports on its own REST API,
@@ -164,7 +160,7 @@ class SequenceWorld(World):
 
     def poll(self):
         self.exercise.scheduling(copy.deepcopy(list(self.pods.values())))
-        self.exercise.attach_rest(
+        self.exercise.track_rest(
             self.service, self.app["status"]["jobStatus"].get("jobId", "1" * 32)
         )
         return self.observe()
@@ -226,6 +222,24 @@ def test_one_run_injects_every_fault_in_order_and_finishes(world):
     world.job_state = "FINISHED"
     assert world.poll() is True
     assert world.exercise.stage == "complete"
+
+
+def test_the_completing_transition_writes_the_event_the_analyzer_reads(world):
+    """The analyzer finds a completed run's record under `COMPLETE_EVENT`."""
+    through(world, "rescale-out")
+    world.advance(5)
+    world.processed = world.exercise.records - 100
+    world.flowing()
+    world.state("FINISHED")
+    world.job_state = "FINISHED"
+    assert world.poll() is True
+    prefix = f"runs/{world.env.approval.run_id}/supervisor/"
+    written = [
+        value
+        for item in world.env.store.objects(prefix)
+        if (value := world.env.store.read(item["name"])[0])["event"] == COMPLETE_EVENT
+    ]
+    assert [value["payload"]["stage"] for value in written] == [COMPLETE_STAGE]
 
 
 def test_no_fault_lands_before_a_checkpoint_follows_flowing_input(world):
@@ -479,7 +493,7 @@ def test_the_rest_reader_follows_the_loops_service_and_job(world):
     world.app["status"]["jobStatus"]["jobId"] = "2" * 32
     world.poll()
     assert world.readers == ["1" * 32, "2" * 32]
-    world.exercise.attach_rest(None, "2" * 32)
+    world.exercise.track_rest(None, "2" * 32)
     assert world.exercise.rest is None
     world.exercise.awaiting = None
     world.exercise.outcomes["faults"] = [{"kind": "upgrade"}]
@@ -1032,6 +1046,19 @@ def test_the_lineage_is_fixed_by_the_first_fault(world):
         )
 
 
+def test_every_line_is_checked_before_a_fresh_start_could_prune_it(world):
+    """An invalid lineage is refused although a later line names another one."""
+    world.advance(10)
+    lines = "".join(
+        f"{rt.utc(world.env.clock() - age)} event=cloudtasks-progress "
+        f"run_id={world.env.approval.run_id} phase=initial lineage={lineage} "
+        f"restored=false processed={n} sequence={n - 1}\n"
+        for age, lineage, n in ((2, "bad", 100), (1, LINEAGE, 200))
+    )
+    with pytest.raises(Failure, match="input lineage changed or is invalid"):
+        world.exercise.progress(world.pods["tm-1"], lines)
+
+
 def test_a_poll_without_checkpoint_statistics_is_waited_out(world):
     world.start()
     assert world.exercise.tolerate_rest(TransportError("GET proxy: reset"))
@@ -1074,12 +1101,12 @@ def test_the_run_and_its_oracle_reads_end_within_the_time_limit(world):
 @pytest.mark.parametrize(
     "exercise,reads",
     [
-        (SpannerSequenceExercise, True),
-        (BigtableSequenceExercise, True),
-        (FirestoreSequenceExercise, False),
-        (BigQuerySequenceExercise, False),
-        (CloudTasksSequenceExercise, False),
-        (PubSubSequenceExercise, False),
+        (SpannerExercise, True),
+        (BigtableExercise, True),
+        (FirestoreExercise, False),
+        (BigQueryExercise, False),
+        (CloudTasksExercise, False),
+        (PubSubExercise, False),
     ],
 )
 def test_only_the_change_stream_verdicts_wait_for_a_restore_read(exercise, reads):

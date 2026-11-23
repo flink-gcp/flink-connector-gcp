@@ -20,31 +20,27 @@ import math
 import re
 import uuid
 
-from .bigquery.exercise import (
-    BigQueryExercise,
-    BigQuerySequenceExercise,
-    require_handoff,
-)
-from .bigtable.exercise import BigtableExercise, BigtableSequenceExercise
+from .bigquery.exercise import BigQueryExercise, require_handoff
+from .bigtable.exercise import BigtableExercise
 from .cleanup import Cleanup
-from .cloudtasks.exercise import CloudTasksExercise, CloudTasksSequenceExercise
+from .cloudtasks.exercise import CloudTasksExercise
 from .common import ApiError, Failure, transient, utc
-from .firestore.exercise import FirestoreExercise, FirestoreSequenceExercise
+from .firestore.exercise import FirestoreExercise
 from .metrics import CHECKPOINTS_EVENT
 from .model import Phase
 from .policy import MIB, POLL, SMOKE
-from .pubsub.exercise import PubSubSequenceExercise
+from .pubsub.exercise import PubSubExercise
 from .pubsub.guard import PubSubGuard, admission_deadline
 from .pubsub.handoff import runner_released
 from .resource import RESOURCE_SCENARIOS
-from .spanner.exercise import SpannerExercise, SpannerSequenceExercise
+from .spanner.exercise import SpannerExercise
 
 # The exercise of each scenario whose runner creates one resource.
 RESOURCE_EXERCISES = {
-    "cloudtasks-recovery": CloudTasksSequenceExercise,
-    "bigtable-recovery": BigtableSequenceExercise,
-    "spanner-recovery": SpannerSequenceExercise,
-    "firestore-recovery": FirestoreSequenceExercise,
+    "cloudtasks-recovery": CloudTasksExercise,
+    "bigtable-recovery": BigtableExercise,
+    "spanner-recovery": SpannerExercise,
+    "firestore-recovery": FirestoreExercise,
 }
 
 
@@ -73,9 +69,9 @@ class Supervisor:
         self.log_since = {}
         self.pod_read_failures = {}
         self.exercise = (
-            BigQuerySequenceExercise(env, upgrade)
+            BigQueryExercise(env, upgrade)
             if env.approval.scenario == "bigquery-recovery" and upgrade is not None
-            else PubSubSequenceExercise(env, upgrade, pubsub)
+            else PubSubExercise(env, upgrade, pubsub)
             if env.approval.scenario == "pubsub-recovery"
             and upgrade is not None
             and pubsub is not None
@@ -386,7 +382,7 @@ class Supervisor:
                     if rest.get("counts", {}).get("completed", 0) > 0:
                         self.env.records.checkpoint()
                 if self.exercise:
-                    self.exercise.attach_rest(service, job_id)
+                    self.exercise.track_rest(service, job_id)
                     self.exercise.restarts(rest)
                     if self.exercise.observe(app, rest, pods):
                         if isinstance(self.exercise, BigQueryExercise):

@@ -17,11 +17,11 @@
 from __future__ import annotations
 
 from ..common import Failure, timestamp, utc
-from ..exercise import FaultSequence, FiniteInputExercise
+from ..exercise import FiniteInputExercise
 from ..policy import BIGTABLE, BIGTABLE_OBSERVATIONS, BIGTABLE_STATE, POLL
 from .oracle import AtLeastOnce, ExactlyOnce, Relay
 from .trial import AT_LEAST_ONCE_TABLE, EXACTLY_ONCE_TABLE, RELAY_TABLE
-from .verdict import sequence_verdict
+from .verdict import data_reasons
 
 # The stage between the finished application and the read tables.
 ORACLE_STAGE = "tables"
@@ -33,15 +33,19 @@ COMMIT_SECONDS = 120
 
 
 class BigtableExercise(FiniteInputExercise):
-    """Run the finite input through the faults, then read all three tables against it.
+    """The Bigtable trial as one fault sequence, judged by its data (ADR-0204).
 
-    The caller supplies the supervisor's instance controller. The job
-    finishes once the change-stream source reaches its end, after the input.
-    The verdict is decided from the three oracle reports, by the `verdict`
-    the fault sequence names, and written with the transition that completes
-    the run.
+    The finite input runs through the faults, and all three tables are then
+    read against it. The caller supplies the supervisor's instance
+    controller. The job finishes once the change-stream source reaches its
+    end, after the input. The verdict is decided from the three oracle
+    reports, `eo` judged exactly once, and written with the transition that
+    completes the run. The relay is judged when the input's latest progress
+    line came the commit margin before the change stream's end and no restore
+    followed that line.
     """
 
+    reads_final_restore = True
     namespace = BIGTABLE
     state_bucket = BIGTABLE_STATE
     timing = BIGTABLE_OBSERVATIONS
@@ -103,17 +107,4 @@ class BigtableExercise(FiniteInputExercise):
             "alo": checks[AT_LEAST_ONCE_TABLE].report(),
             "relay": checks[RELAY_TABLE].report(eo.applied, judged),
         }
-        self.complete(self.verdict)
-
-
-class BigtableSequenceExercise(FaultSequence, BigtableExercise):
-    """The Bigtable trial as one fault sequence, judged by its data (ADR-0204).
-
-    The oracles are the same three, `eo` judged exactly once. The relay is
-    judged when the input's latest progress line came the commit margin
-    before the change stream's end and no restore followed that line.
-    """
-
-    # The verdict the oracles' record is judged by.
-    verdict = staticmethod(sequence_verdict)
-    reads_final_restore = True
+        self.complete(data_reasons)

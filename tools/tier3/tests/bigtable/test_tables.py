@@ -19,7 +19,9 @@ import pytest
 from flink_tier3.bigtable.instance import Instance, merge
 from flink_tier3.bigtable.oracle import AtLeastOnce, ExactlyOnce, Relay
 from flink_tier3.bigtable.trial import Trial
+from flink_tier3.bigtable.verdict import data_reasons
 from flink_tier3.common import Failure, TransportError
+from flink_tier3.verdict import sequence_verdict
 
 from ..doubles import NOW, Http
 
@@ -228,3 +230,44 @@ def test_the_relay_oracle_requires_every_applied_identity_and_counts_replays():
     check.add([relay_row(n) for n in range(TRIAL.records)])
     report = check.report(applied - {"0/0000000"}, True)
     assert (report["verdict"], report["unapplied"]) == ("fail", 1)
+
+
+EVERY = [relay_row(n) for n in range(TRIAL.records)]
+
+
+@pytest.mark.parametrize(
+    ("rows", "unapplied", "reason"),
+    [
+        # Only an applied identity missing, which a commit after the end
+        # leaves unrelayed.
+        (EVERY[1:], set(), "relay-oracle-unjudged"),
+        # A relayed identity `eo` did not apply, a row no input names, and a
+        # cell outside the relay's family fail it whenever the input finished.
+        (EVERY, {"0/0000000"}, "relay-oracle-not-passed"),
+        (
+            [*EVERY[1:], ("zz", [("r", "initial/u/0", 0, b"")])],
+            set(),
+            "relay-oracle-not-passed",
+        ),
+        (
+            [*EVERY[1:], (EVERY[0][0], [("x", "q", 0, b"")])],
+            set(),
+            "relay-oracle-not-passed",
+        ),
+    ],
+)
+def test_an_unjudged_relay_fails_only_on_what_timing_cannot_explain(
+    rows, unapplied, reason
+):
+    """An unjudged relay can run again as it is only when it just lacks rows."""
+    check = Relay(TRIAL)
+    check.add(rows)
+    oracles = {
+        "eo": {"verdict": "pass"},
+        "alo": {"verdict": "pass"},
+        "relay": check.report(set(TRIAL.row_keys()) - unapplied, False),
+    }
+    decided = sequence_verdict(
+        {"stage": "complete", "outcomes": {"oracles": oracles}}, data_reasons
+    )
+    assert decided["reasons"] == [reason]

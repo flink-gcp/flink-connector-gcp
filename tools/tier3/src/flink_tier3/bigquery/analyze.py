@@ -21,38 +21,37 @@ analysis vocabulary that already exists, `usable` and `inconclusive`, and a
 run whose evidence cannot be read has no verdict.
 
 It takes a run the way ``analyze`` already reads one, and imports nothing from
-it, because ``analyze`` is what calls this. Every event name and stage it looks
-for comes from ``flink_tier3.bigquery.verdict``, which the exercise writes
-from, so a rename cannot reach only one side and leave this reporting missing
-evidence.
+it, because ``analyze`` is what calls this.
 """
 
 from ..exercise import SEQUENCE_KIND
 from ..recovery_analysis import (
     BIGQUERY_SINGLE_FAULTS,
-    SINGLE_FAULT,
+    INCOMPLETE_NOTE,
     SINGLE_FAULT_NOTE,
-    malformed_records,
-    recovery_record,
-    single_fault,
-    unreadable,
-    verdict_problems,
+    assess_sequence,
+    by_record,
+    fault_column,
 )
-from .verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    sequence_verdict,
-)
+from .verdict import data_reasons
 
 SCENARIO = "bigquery-recovery"
 
 
 def assess(run):
-    """One BigQuery run's verdict, beside the faults it injected (ADR-0204)."""
-    record = recovery_record(run, COMPLETE_EVENT)
-    outcomes = record.get("outcomes") if isinstance(record, dict) else None
-    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-    return {**_verdict(run), "faults": faults if isinstance(faults, list) else []}
+    """One BigQuery run's verdict, beside the faults it injected (ADR-0204).
+
+    The trial is the receipt's, so a run without a receipt is reported as
+    such before its trial is read. A run of a single-fault kind has no verdict
+    here.
+    """
+    return assess_sequence(
+        run,
+        by_record(data_reasons),
+        archived=_archived,
+        trial_problem=_trial_problem,
+        malformed_stored=True,
+    )
 
 
 def _trial(run):
@@ -64,15 +63,29 @@ def _trial(run):
 def _trial_problem(run):
     """Why the receipt's trial is not the fault sequence, or None when it is.
 
-    A receipt names a single-fault trial only in the shape those trials were
-    written in; a receipt without a trial, or with any other, is malformed.
+    A run without a receipt is left to the receipt's own check. A current
+    trial names its record count, a positive whole number as dispatch writes
+    it, and no fault or the `sequence` an earlier revision of the plans
+    wrote; a receipt without a trial, or with any other, is malformed.
     """
     trial = _trial(run)
-    if trial is not None and trial.get("fault") == SEQUENCE_KIND:
+    if not isinstance(run.result, dict) or (
+        trial is not None
+        and _records(trial.get("records"))
+        and trial.get("fault", SEQUENCE_KIND) == SEQUENCE_KIND
+    ):
         return None
-    if trial is not None and _single_fault_trial(trial):
-        return SINGLE_FAULT
     return "receipt-without-bigquery-trial"
+
+
+def _records(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _archived(run):
+    """Whether the receipt's trial is one a single-fault run wrote."""
+    trial = _trial(run)
+    return trial is not None and _single_fault_trial(trial)
 
 
 def _single_fault_trial(trial):
@@ -82,9 +95,8 @@ def _single_fault_trial(trial):
     the upgrade and JobManager replacement every early trial ran, or one of
     the faults later ones injected instead; the earliest also carried fields
     the plans later dropped, so other fields are not checked. Only the
-    sequence named its record count, so a trial that names one is a sequence
-    that lost its fault, whose stored verdict must not be shown as an
-    archived run's.
+    sequence named its record count, so a trial that names one is a
+    sequence, whose stored verdict must not be shown as an archived run's.
     """
     return (
         trial.get("mode") in ("ALO", "EO", "FILE_LOADS")
@@ -94,58 +106,9 @@ def _single_fault_trial(trial):
     )
 
 
-def _verdict(run):
-    """One BigQuery run's recomputed verdict, its stored one and its problems.
-
-    A run whose evidence lacks what the verdict is decided from, or holds a
-    record nothing can read, has no verdict; re-export it and read it again. A
-    run that never completed exported its account of itself, which says so,
-    and is `inconclusive`. A run of a single-fault kind has no verdict here.
-    """
-    malformed = malformed_records(run, COMPLETE_EVENT)
-    result = run.result if isinstance(run.result, dict) else None
-    if result is None:
-        return unreadable(run, None, ["missing-result.json"])
-    complete = bool(run.events_of(COMPLETE_EVENT))
-    record = recovery_record(run, COMPLETE_EVENT)
-    problem = _trial_problem(run)
-    if problem == SINGLE_FAULT:
-        return single_fault(run, record)
-    if problem is not None:
-        return unreadable(run, None, [problem])
-    # A truncated download.
-    if malformed:
-        return unreadable(run, record, [f"malformed-evidence:{malformed}"])
-    if not isinstance(record, dict):
-        return unreadable(run, None, ["missing-" + COMPLETE_EVENT])
-    # A record that says it completed, with no completion evidence beside it,
-    # is an export missing a file.
-    if not complete and record.get("stage") == COMPLETE_STAGE:
-        return unreadable(run, record, ["missing-" + COMPLETE_EVENT])
-    # Decided by the data alone.
-    decided = sequence_verdict(record)
-    return {
-        "run_id": run.run_id,
-        "verdict": decided["verdict"],
-        "stored": record.get("verdict"),
-        "reasons": decided["reasons"],
-        "problems": verdict_problems(record, decided, complete),
-    }
-
-
 def assess_runs(runs):
     """Every BigQuery run in a discovered evidence directory, in the order given."""
     return [assess(run) for run in runs if run.scenario == SCENARIO]
-
-
-def _faults(item):
-    """A sequence run's injected faults in order, or `-` for a single-fault run."""
-    kinds = [
-        fault.get("kind")
-        for fault in item.get("faults") or []
-        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
-    ]
-    return ", ".join(kinds) or "-"
 
 
 def render(assessments):
@@ -168,7 +131,7 @@ def render(assessments):
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
-                faults=_faults(item),
+                faults=fault_column(item),
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",
             )
@@ -179,8 +142,5 @@ def render(assessments):
         "through the faults listed."
     )
     lines.append(SINGLE_FAULT_NOTE)
-    lines.append(
-        f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which is "
-        "inconclusive rather than an evidence problem."
-    )
+    lines.append(INCOMPLETE_NOTE)
     return "\n".join(lines) + "\n"

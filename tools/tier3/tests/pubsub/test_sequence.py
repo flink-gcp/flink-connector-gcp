@@ -48,7 +48,7 @@ def kinds(control):
 
 def test_the_supervisor_builds_the_sequence_exercise(admitting):
     built = admitting.supervisor.exercise
-    assert type(built) is pubsub_exercise.PubSubSequenceExercise
+    assert type(built) is pubsub_exercise.PubSubExercise
     assert built.handoff is admitting.supervisor.pubsub
 
 

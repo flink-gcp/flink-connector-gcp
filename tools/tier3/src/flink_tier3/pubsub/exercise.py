@@ -17,18 +17,13 @@
 import re
 
 from ..common import Failure, timestamp, utc
-from ..exercise import (
-    SEQUENCE,
-    SEQUENCE_KIND,
-    UNCONFIRMED,
-    FaultSequence,
-    RecoveryExercise,
-)
+from ..exercise import SEQUENCE, SEQUENCE_KIND, UNCONFIRMED, RecoveryExercise
 from ..policy import PUBSUB, PUBSUB_EXERCISE, PUBSUB_STATE
+from ..verdict import COMPLETE_STAGE, sequence_verdict
 from .messages import COHORTS, input_path, message_prefix, publications
 from .oracle import input_ids, published_ids, reconcile
 from .output import OutputCollector
-from .verdict import COMPLETE_STAGE, sequence_verdict
+from .verdict import data_reasons
 
 # The line an attempt logs on its initialization, before any record.
 ATTEMPT = re.compile(
@@ -68,7 +63,7 @@ REDELIVERY_SECONDS = 600
 FINAL_PULLS = 200
 
 
-class PubSubSequenceExercise(FaultSequence, RecoveryExercise):
+class PubSubExercise(RecoveryExercise):
     """The Pub/Sub trial as one fault sequence, judged by its output (ADR-0204).
 
     The runner publishes the whole input, the admission cohort and then the
@@ -94,7 +89,6 @@ class PubSubSequenceExercise(FaultSequence, RecoveryExercise):
     namespace = PUBSUB
     state_bucket = PUBSUB_STATE
     timing = PUBSUB_EXERCISE
-    progress_event = "pubsub-progress"
 
     def __init__(self, env, upgrade, handoff):
         if env.approval.scenario != "pubsub-recovery":
@@ -112,9 +106,6 @@ class PubSubSequenceExercise(FaultSequence, RecoveryExercise):
         self.announced = {}
         # How many cohorts have been asked for; admission publishes the first.
         self.requested = 1
-        # The relay has no input lineage to fix: a fresh start reads the same
-        # subscriptions. Set, so the first fault records none.
-        self.lineage = env.approval.run_id
 
     def progress(self, pod, text):
         """Read the relay's progress lines as the job's progress."""
@@ -295,7 +286,8 @@ class PubSubSequenceExercise(FaultSequence, RecoveryExercise):
             "retried_pulls": list(self.collector.retried),
         }
         decided = sequence_verdict(
-            {"stage": COMPLETE_STAGE, "outcomes": self.outcomes, **details}
+            {"stage": COMPLETE_STAGE, "outcomes": self.outcomes, **details},
+            data_reasons,
         )
         self.persist(
             COMPLETE_STAGE, observed=summary(self.collector), **details, **decided

@@ -36,6 +36,7 @@ from .common import (
     utc,
 )
 from .metrics import FlinkRest
+from .verdict import COMPLETE_STAGE, event_name, sequence_verdict
 
 # The causes recorded when the platform preempts a workload Pod or loses its
 # node, and when a Pod is replaced outside a fault.
@@ -59,6 +60,46 @@ SHUTDOWN_MESSAGE = "Shutdown manager detected shutdown event"
 # seconds before every scale-down shutdown of the nodes from 2026-10-19 to
 # 2026-10-22, and none before the reclamation in bt1855-ri-a2.
 SCALE_DOWN_LEAD_SECONDS = 600
+# The wait before repeating an oracle's read that failed transiently.
+RETRY_SECONDS = 5
+# What the fault sequence's oracle window leaves before the run's deadline, its
+# time limit or the cleanup start, whichever is first, for writing the
+# record's transition before the run stops.
+RECORD_SECONDS = 60
+# The faults one run injects under ADR-0204, in order, and the parallelism the
+# job runs at once each has been injected: the run starts at two, as a
+# JobManager replacement trial does, and the two rescales move it to one and
+# back.
+SEQUENCE = ("upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out")
+# The writers' parallelism, and TaskManager count, of both applications a
+# trial renders, the initial one and the upgrade; the sequence patches only its
+# rescales away from it. `kubernetes/lifecycle/parallelism.cue` renders the
+# same, and a test holds it to this.
+RENDERED_PARALLELISM = 2
+SEQUENCE_PARALLELISM = {
+    "upgrade": RENDERED_PARALLELISM,
+    "jobmanager": RENDERED_PARALLELISM,
+    "taskmanager": RENDERED_PARALLELISM,
+    "rescale-in": 1,
+    "rescale-out": RENDERED_PARALLELISM,
+}
+# The one trial kind every scenario dispatches: the fault sequence.
+SEQUENCE_KIND = "sequence"
+# The faults that change the application, which the Operator applies as a
+# savepoint upgrade.
+SAVEPOINT_FAULTS = ("upgrade", "rescale-in", "rescale-out")
+# How long a run may take from its admission to its verdict (ADR-0204).
+TIME_LIMIT_SECONDS = 3600
+# The input finished while a fault was still to come or awaited, so the job
+# could not be seen running again after it.
+UNCONFIRMED = "Input finished before the fault sequence did; unconfirmed"
+
+
+def rendered_parallelism(phase):
+    """The rendered parallelism of the `initial` or `upgrade` application."""
+    if phase not in ("initial", "upgrade"):
+        raise ValueError("Unknown trial phase")
+    return RENDERED_PARALLELISM
 
 
 def bound_at(pod):
@@ -74,19 +115,43 @@ def bound_at(pod):
 
 
 class RecoveryExercise:
-    """The run's Pods, progress and state locations, read for the fault sequence.
+    """One run that injects every fault kind and waits out everything else.
 
-    A service exercise names its namespace, state bucket, timing and progress
-    event. The `FaultSequence` mixed in ahead of it decides the run: it sets
-    the deadline and supplies `recovering`, `unplanned` and every step of the
-    sequence, which the Pod and progress reads here call back into.
+    A scenario's exercise names its namespace, state bucket and timing,
+    reads its job's progress lines, and reads its oracle once the job has
+    finished (ADR-0204).
+    The run starts at parallelism 2, and once a completed checkpoint follows
+    flowing input, and the scenario's own preparation is done, it injects each
+    fault of `SEQUENCE` in turn: the savepoint upgrade, the JobManager's
+    deletion, the deletion of the TaskManager reporting the input, and a
+    rescale to one and back to two, each a patch of the approved upgrade
+    manifest that changes only the parallelism.
+
+    Before each fault, and before completion, it waits until the job runs
+    again: `RUNNING`, reconciled to the last patch, with a JobManager and as
+    many TaskManagers as the parallelism, and with progress logged after a
+    restore that followed the fault. A line logged before that restore, by
+    the job the fault stopped, is not the job running again.
+
+    Anything else is recorded and waited out, however often it happens: an
+    interruption, a replacement, an eviction, a container restart, a restore,
+    a patch that conflicted, a Pod already gone, or a REST or API failure.
+    Nothing judges a restore planned or unplanned. The run ends when the job
+    has finished with its whole input after the last fault, and the
+    scenario's verdict decides by the data; it stops abnormally when the job
+    fails, the application is deleted or rolled back, or the time limit
+    passes, and without a verdict when the input finishes first.
     """
 
     namespace: str
     state_bucket: str
     timing: dict
-    progress_event: str
     records: int
+    # Whether the verdict reads the latest restore, so that only a poll whose
+    # checkpoint statistics answered may complete the run. Only a verdict
+    # that needs it may wait: BigQuery's FILE_LOADS check refuses a load
+    # still running when the job finished, which a later poll would miss.
+    reads_final_restore = False
 
     def __init__(self, env, upgrade):
         if upgrade is None:
@@ -104,6 +169,21 @@ class RecoveryExercise:
         self.stable_pods = None
         self.retiring_pods = set()
         self.rest = None
+        self.deadline = min(
+            env.schedule.started + TIME_LIMIT_SECONDS,
+            env.schedule.cleanup_at,
+        )
+        self.parallelism = SEQUENCE_PARALLELISM["upgrade"]
+        self.step = 0
+        # The fault the job is recovering from: its kind and when it was
+        # injected, and for a patch the spec and the generation it waits for.
+        self.awaiting = None
+        # The latest restore the job's statistics showed, in seconds.
+        self.restored_at = None
+
+    @property
+    def recovering(self):
+        return self.awaiting is not None
 
     def prefix(self, kind):
         """The run's own location for ``checkpoints`` or ``savepoints``."""
@@ -146,44 +226,79 @@ class RecoveryExercise:
             "outcomes": copy.deepcopy(self.outcomes),
             **details,
         }
-        self.env.records.evidence("recovery-" + stage, value)
+        self.env.records.evidence(event_name(stage), value)
         self.env.records.recovery_step(self.stage if self.initialized else None, value)
         self.stage, self.initialized = stage, True
 
-    def progress(self, pod, text):
-        pattern = (
-            rf"event={self.progress_event} run_id=(\S+) phase=(\S+) lineage=(\S+) "
-            r"restored=(true|false) processed=([0-9]+) sequence=([0-9]+)"
+    def tolerate_rest(self, error):
+        """Whether a failed read of the job's REST API is waited out.
+
+        The Service proxy sends the read once, so a failure that says nothing
+        about the job is waited out here (ADR-0204): a transport failure, an
+        API server's 429 or a 500 from it or the JobManager, and the other
+        transient statuses, as well as a 404, which a fault that removes the
+        endpoint leaves. Any other failure stops the run.
+        """
+        self.check_open()
+        return transient(error) or (isinstance(error, ApiError) and error.status == 404)
+
+    def check_open(self):
+        """Stop the run once it is stopped, or once its time limit has passed."""
+        self.env.require_running("Recovery exercise has been stopped")
+        if self.env.clock() >= self.deadline:
+            raise Failure("Run reached its time limit at stage " + self.stage)
+
+    def unplanned(self, message):
+        """Record one cause the run waits out; nothing is a stop."""
+        cause = message.split(";")[0]
+        causes = self.outcomes.get("unplanned", [])
+        if cause not in causes:
+            self.outcomes["unplanned"] = [*causes, cause]
+            self.env.emit(UNPLANNED_EVENT, {"stage": self.stage, "cause": cause})
+
+    def restarts(self, rest):
+        """Record each restore the job's statistics show, judged neither planned nor unplanned."""
+        restored = (rest.get("latest") or {}).get("restored")
+        at = restored.get("restore_timestamp") if restored else None
+        if type(at) is not int or (
+            self.restored_at is not None and at / 1000 <= self.restored_at
+        ):
+            return
+        self.restored_at = at / 1000
+        self.env.emit(
+            "job-restore",
+            {
+                "stage": self.stage,
+                "restored": restored,
+                "count": (rest.get("counts") or {}).get("restored"),
+            },
         )
-        for line in text.splitlines():
-            match = re.search(pattern, line)
-            if not match:
-                continue
-            run_id, phase, lineage, _restored, processed, sequence = match.groups()
-            at = timestamp(line.split(" ", 1)[0])
-            if run_id != self.env.approval.run_id or phase not in (
-                "initial",
-                "upgrade",
-            ):
-                raise Failure("Recovery progress belongs to another run or phase")
-            if at < self.env.schedule.started:
-                raise Failure("Recovery progress predates this run")
-            if phase == "upgrade" and self.stage == "baseline":
-                raise Failure("Upgrade progress appeared before its approved operation")
-            processed, sequence = int(processed), int(sequence)
-            if not 0 < processed <= self.records or sequence != processed - 1:
-                raise Failure("Recovery progress violates the deterministic input")
-            sample = {
-                "at": at,
-                "phase": phase,
-                "lineage": lineage,
-                "processed": processed,
-                "sequence": sequence,
-                "pod_uid": pod["metadata"]["uid"],
-            }
-            self.samples[(sample["pod_uid"], at, phase, processed)] = sample
+
+    def progress(self, pod, text):
+        """Read one Pod's progress lines into the samples, as the scenario logs them.
+
+        Each sample names when its line was logged, its phase, how many records
+        it shows processed and the Pod that logged it, which is what the
+        sequence reads.
+        """
+        raise NotImplementedError
 
     def scheduling(self, pods):
+        """Record what the platform did, then take the Pods as they now are.
+
+        Pods only going away, as an idle TaskManager does after a rescale in
+        or once the input is done, or only arriving, as at startup, are not a
+        replacement; the platform's own interruptions are recorded from their
+        events and conditions either way.
+        """
+        if self.awaiting is None and self.stable_pods is not None:
+            current = {
+                p["metadata"]["uid"]
+                for p in pods
+                if p["metadata"]["namespace"] == self.namespace
+            } - self.retiring_pods
+            if current <= self.stable_pods or self.stable_pods <= current:
+                self.rebaseline(pods)
         owned = set(self.env.observed)
         new_events = []
         # A Pod the platform took for another or lost with its node, an
@@ -244,6 +359,8 @@ class RecoveryExercise:
                 self.unplanned(INTERRUPTED)
             else:
                 self.unplanned(REPLACED)
+        if self.awaiting is None:
+            self.rebaseline(pods)
 
     def reclaimed(self, lost):
         """Whether a lost Pod's node shut down gracefully after the Pod was bound there.
@@ -349,256 +466,6 @@ class RecoveryExercise:
                 return pod
         return None
 
-
-# The stage that completes a run, which carries its verdict.
-COMPLETE_STAGE = "complete"
-# The wait before repeating an oracle's read that failed transiently.
-RETRY_SECONDS = 5
-# What the fault sequence's oracle window leaves before the run's deadline, its
-# time limit or the cleanup start, whichever is first, for writing the
-# record's transition before the run stops.
-RECORD_SECONDS = 60
-
-
-class FiniteInputExercise(RecoveryExercise):
-    """A recovery exercise over one finite, checkpointed input lineage.
-
-    A subclass names `service` for its messages and `oracle_stage`, the stage
-    a finished application waits in until the scenario's oracle has passed. It
-    sets its own attributes before calling this constructor with the trial.
-    """
-
-    service: str
-    oracle_stage: str
-
-    def __init__(self, env, upgrade, trial):
-        self.trial = trial
-        self.records = trial.records
-        super().__init__(env, upgrade)
-
-    def progress(self, pod, text):
-        super().progress(pod, text)
-        for sample in self.samples.values():
-            try:
-                valid = str(uuid.UUID(sample["lineage"])) == sample["lineage"]
-            except ValueError:
-                valid = False
-            if sample["at"] > self.env.clock():
-                raise Failure(f"{self.service} progress is dated in the future")
-            if not valid:
-                raise Failure(f"{self.service} input lineage changed or is invalid")
-
-    def persist(self, stage, **details):
-        if stage == COMPLETE_STAGE:
-            stage = self.oracle_stage
-        super().persist(stage, **details)
-
-    def retried(self, call, until, closed=None, said_nothing=transient):
-        """One oracle read, repeated while it fails without saying anything.
-
-        Before `until`, a failure that `said_nothing` does not excuse says
-        something about the read and is raised. Once it has passed, any
-        failure is raised, as `closed` when the caller names the window's
-        closing apart.
-        """
-        while True:
-            try:
-                return call()
-            except Failure as error:
-                if self.env.clock() >= until:
-                    if closed is None:
-                        raise
-                    raise closed(str(error)) from error
-                if not said_nothing(error):
-                    raise
-            self.env.sleep(RETRY_SECONDS)
-
-    def complete(self, verdict):
-        """Write the completing transition with the verdict decided over it.
-
-        `verdict` decides from the record the transition is about to write,
-        which the offline analyzer recomputes once the evidence is exported.
-        """
-        decided = verdict({"stage": COMPLETE_STAGE, "outcomes": self.outcomes})
-        # The stage the oracle waited in is complete only now.
-        RecoveryExercise.persist(
-            self, COMPLETE_STAGE, processed=self.records, **decided
-        )
-
-
-# The faults one run injects under ADR-0204, in order, and the parallelism the
-# job runs at once each has been injected: the run starts at two, as a
-# JobManager replacement trial does, and the two rescales move it to one and
-# back.
-SEQUENCE = ("upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out")
-# The writers' parallelism, and TaskManager count, of both applications a
-# trial renders, the initial one and the upgrade; the sequence patches only its
-# rescales away from it. `kubernetes/lifecycle/faults.cue` renders the same,
-# and a test holds it to this.
-RENDERED_PARALLELISM = 2
-SEQUENCE_PARALLELISM = {
-    "upgrade": RENDERED_PARALLELISM,
-    "jobmanager": RENDERED_PARALLELISM,
-    "taskmanager": RENDERED_PARALLELISM,
-    "rescale-in": 1,
-    "rescale-out": RENDERED_PARALLELISM,
-}
-# The one trial kind every scenario dispatches: the fault sequence.
-SEQUENCE_KIND = "sequence"
-# The faults that change the application, which the Operator applies as a
-# savepoint upgrade.
-SAVEPOINT_FAULTS = ("upgrade", "rescale-in", "rescale-out")
-# How long a run may take from its admission to its verdict (ADR-0204).
-TIME_LIMIT_SECONDS = 3600
-# The input finished while a fault was still to come or awaited, so the job
-# could not be seen running again after it.
-UNCONFIRMED = "Input finished before the fault sequence did; unconfirmed"
-
-
-def rendered_parallelism(phase):
-    """The rendered parallelism of the `initial` or `upgrade` application."""
-    if phase not in ("initial", "upgrade"):
-        raise ValueError("Unknown trial phase")
-    return RENDERED_PARALLELISM
-
-
-class FaultSequence:
-    """One run that injects every fault kind and waits out everything else.
-
-    Mixed in ahead of a scenario's `FiniteInputExercise` (ADR-0204). The run
-    starts at parallelism 2, and once a completed checkpoint follows flowing
-    input, and the scenario's own preparation is done, it injects each fault
-    of `SEQUENCE` in turn: the savepoint upgrade, the JobManager's deletion,
-    the deletion of the TaskManager reporting the input, and a rescale to one
-    and back to two, each a patch of the approved upgrade manifest that
-    changes only the parallelism.
-
-    Before each fault, and before completion, it waits until the job runs
-    again: `RUNNING`, reconciled to the last patch, with a JobManager and as
-    many TaskManagers as the parallelism, and with progress logged after a
-    restore that followed the fault. A line logged before that restore, by
-    the job the fault stopped, is not the job running again.
-
-    Anything else is recorded and waited out, however often it happens: an
-    interruption, a replacement, an eviction, a container restart, a restore,
-    a patch that conflicted, a Pod already gone, or a REST or API failure.
-    Nothing judges a restore planned or unplanned. The run ends when the job
-    has finished with its whole input after the last fault, and the
-    scenario's `verdict` decides by the data; it stops abnormally when the job
-    fails, the application is deleted or rolled back, or the time limit
-    passes, and without a verdict when the input finishes first.
-    """
-
-    # Whether the verdict reads the latest restore, so that only a poll whose
-    # checkpoint statistics answered may complete the run. Only a verdict
-    # that needs it may wait: BigQuery's FILE_LOADS check refuses a load
-    # still running when the job finished, which a later poll would miss.
-    reads_final_restore = False
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.deadline = min(
-            self.env.schedule.started + TIME_LIMIT_SECONDS,
-            self.env.schedule.cleanup_at,
-        )
-        self.parallelism = SEQUENCE_PARALLELISM["upgrade"]
-        self.step = 0
-        # The fault the job is recovering from: its kind and when it was
-        # injected, and for a patch the spec and the generation it waits for.
-        self.awaiting = None
-        # The latest restore the job's statistics showed, in seconds.
-        self.restored_at = None
-        # The input lineage the faults run on, fixed by the first fault.
-        self.lineage = None
-
-    @property
-    def recovering(self):
-        return self.awaiting is not None
-
-    def tolerate_rest(self, error):
-        """Whether a failed read of the job's REST API is waited out.
-
-        The Service proxy sends the read once, so a failure that says nothing
-        about the job is waited out here (ADR-0204): a transport failure, an
-        API server's 429 or a 500 from it or the JobManager, and the other
-        transient statuses, as well as a 404, which a fault that removes the
-        endpoint leaves. Any other failure stops the run.
-        """
-        self.check_open()
-        return transient(error) or (isinstance(error, ApiError) and error.status == 404)
-
-    def check_open(self):
-        """Stop the run once it is stopped, or once its time limit has passed."""
-        self.env.require_running("Recovery exercise has been stopped")
-        if self.env.clock() >= self.deadline:
-            raise Failure("Run reached its time limit at stage " + self.stage)
-
-    def unplanned(self, message):
-        """Record one cause the run waits out; nothing is a stop."""
-        cause = message.split(";")[0]
-        causes = self.outcomes.get("unplanned", [])
-        if cause not in causes:
-            self.outcomes["unplanned"] = [*causes, cause]
-            self.env.emit(UNPLANNED_EVENT, {"stage": self.stage, "cause": cause})
-
-    def restarts(self, rest):
-        """Record each restore the job's statistics show, judged neither planned nor unplanned."""
-        restored = (rest.get("latest") or {}).get("restored")
-        at = restored.get("restore_timestamp") if restored else None
-        if type(at) is not int or (
-            self.restored_at is not None and at / 1000 <= self.restored_at
-        ):
-            return
-        self.restored_at = at / 1000
-        self.env.emit(
-            "job-restore",
-            {
-                "stage": self.stage,
-                "restored": restored,
-                "count": (rest.get("counts") or {}).get("restored"),
-            },
-        )
-
-    def scheduling(self, pods):
-        """Record what the platform did, then take the Pods as they now are.
-
-        Pods only going away, as an idle TaskManager does after a rescale in
-        or once the input is done, or only arriving, as at startup, are not a
-        replacement; the platform's own interruptions are recorded from their
-        events and conditions either way.
-        """
-        if self.awaiting is None and self.stable_pods is not None:
-            current = {
-                p["metadata"]["uid"]
-                for p in pods
-                if p["metadata"]["namespace"] == self.namespace
-            } - self.retiring_pods
-            if current <= self.stable_pods or self.stable_pods <= current:
-                self.rebaseline(pods)
-        super().scheduling(pods)
-        if self.awaiting is None:
-            self.rebaseline(pods)
-
-    def progress(self, pod, text):
-        """Read progress; before the first fault a fresh start may replace the lineage.
-
-        A job restarted before its first completed checkpoint starts its input
-        again under a new lineage, which writes the same records; once the
-        first fault lands, the lineage is fixed.
-        """
-        super().progress(pod, text)
-        if self.lineage is None:
-            if not self.samples:
-                return
-            latest = max(self.samples.values(), key=lambda s: s["at"])["lineage"]
-            stale = [k for k, s in self.samples.items() if s["lineage"] != latest]
-            if stale:
-                self.env.emit("fresh-start", {"lineage": latest})
-            for key in stale:
-                del self.samples[key]
-        elif any(s["lineage"] != self.lineage for s in self.samples.values()):
-            raise Failure("Input lineage changed after the first fault")
-
     def input_complete(self):
         """Whether the latest progress read shows the whole input.
 
@@ -612,39 +479,9 @@ class FaultSequence:
         latest = max(self.samples.values(), key=lambda s: (s["at"], s["processed"]))
         return latest["processed"] == self.records
 
-    def input_finished_at(self):
-        """When the latest progress line showed the whole input.
-
-        A restore after an earlier completion may replay the input and finish
-        it again, writing its rows again, so the latest line is the one a
-        relay must have time for.
-        """
-        return max(sample["at"] for sample in self.samples.values())
-
-    def restored_after_input(self):
-        """Whether a restore followed the input's latest progress line.
-
-        Such a restore may commit staged writes its state carried without
-        logging a line, and its recorded time is when the JobManager assigned
-        the state, before the tasks that commit were deployed, so it cannot
-        bound when those writes landed. It is current only for a run that
-        sets `reads_final_restore`, which completes on a poll whose checkpoint
-        statistics answered.
-        """
-        return self.restored_at is not None and self.restored_at > (
-            self.input_finished_at()
-        )
-
     def ready_for_sequence(self):
         """Whether a scenario's own preparation lets the first fault go ahead."""
         return True
-
-    def oracle_window(self):
-        """The oracle's reads end within the time limit, before the record's write."""
-        return min(
-            self.env.clock() + self.timing["visibility_seconds"],
-            self.deadline - RECORD_SECONDS,
-        )
 
     def observe(self, app, rest, pods):
         self.check_open()
@@ -717,10 +554,6 @@ class FaultSequence:
                 return False
             return self.ready_for_sequence()
         return True
-
-    def attach_rest(self, service, job_id):
-        """Keep a REST reader for the job the loop verified."""
-        self.track_rest(service, job_id)
 
     def finished(self):
         """Whether the job the Operator names has finished, by its own REST status.
@@ -800,10 +633,7 @@ class FaultSequence:
             awaiting.update(
                 spec=self.sequence_spec(SEQUENCE_PARALLELISM[kind]), generation=None
             )
-        if self.lineage is None:
-            latest = max(self.samples.values(), key=lambda s: s["at"])
-            self.lineage = latest["lineage"]
-            self.env.records.record_lineage(self.lineage)
+        self.before_fault()
         self.parallelism = SEQUENCE_PARALLELISM[kind]
         self.boundary = self.env.clock()
         self.outcomes.setdefault("faults", []).append(fault)
@@ -819,6 +649,13 @@ class FaultSequence:
             self.awaiting = None
             self.step -= 1
             self.env.emit("fault-target-gone", {"kind": kind, **fault["pod"]})
+
+    def before_fault(self):
+        """Fix what the faults run on, as a fault is about to be recorded.
+
+        The shared sequence fixes nothing; an exercise over a finite input
+        fixes the lineage its input runs under.
+        """
 
     def sequence_spec(self, parallelism):
         """The approved upgrade spec at `parallelism`: its sizes and argument only."""
@@ -900,3 +737,168 @@ class FaultSequence:
                 and current["metadata"]["uid"] == pod["metadata"]["uid"]
                 and not current["metadata"].get("deletionTimestamp")
             )
+
+
+class FiniteInputExercise(RecoveryExercise):
+    """A recovery exercise over one finite, checkpointed input lineage.
+
+    A subclass names `service` for its messages, `progress_event` for the
+    event its progress lines carry, and `oracle_stage`, the stage a finished
+    application waits in until the scenario's oracle has passed. It sets its
+    own attributes before calling this constructor with the trial.
+
+    Each progress line names the input lineage it reads. A job restarted
+    before its first completed checkpoint starts its input again under a new
+    lineage, which writes the same records, so before the first fault the
+    latest lineage replaces the others; the first fault fixes it.
+    """
+
+    service: str
+    progress_event: str
+    oracle_stage: str
+
+    def __init__(self, env, upgrade, trial):
+        self.trial = trial
+        self.records = trial.records
+        super().__init__(env, upgrade)
+        # The input lineage the faults run on, fixed by the first fault.
+        self.lineage = None
+
+    def progress(self, pod, text):
+        """Read progress; before the first fault a fresh start may replace the lineage.
+
+        The lines themselves are read, and checked, by `read_progress`, which a
+        scenario extends, before a fresh start prunes any of them.
+        """
+        self.read_progress(pod, text)
+        if self.lineage is None:
+            if not self.samples:
+                return
+            latest = max(self.samples.values(), key=lambda s: s["at"])["lineage"]
+            stale = [k for k, s in self.samples.items() if s["lineage"] != latest]
+            if stale:
+                self.env.emit("fresh-start", {"lineage": latest})
+            for key in stale:
+                del self.samples[key]
+        elif any(s["lineage"] != self.lineage for s in self.samples.values()):
+            raise Failure("Input lineage changed after the first fault")
+
+    def read_progress(self, pod, text):
+        """Read one Pod's progress lines into the samples, and check every sample."""
+        pattern = (
+            rf"event={self.progress_event} run_id=(\S+) phase=(\S+) lineage=(\S+) "
+            r"restored=(true|false) processed=([0-9]+) sequence=([0-9]+)"
+        )
+        for line in text.splitlines():
+            match = re.search(pattern, line)
+            if not match:
+                continue
+            run_id, phase, lineage, _restored, processed, sequence = match.groups()
+            at = timestamp(line.split(" ", 1)[0])
+            if run_id != self.env.approval.run_id or phase not in (
+                "initial",
+                "upgrade",
+            ):
+                raise Failure("Recovery progress belongs to another run or phase")
+            if at < self.env.schedule.started:
+                raise Failure("Recovery progress predates this run")
+            if phase == "upgrade" and self.stage == "baseline":
+                raise Failure("Upgrade progress appeared before its approved operation")
+            processed, sequence = int(processed), int(sequence)
+            if not 0 < processed <= self.records or sequence != processed - 1:
+                raise Failure("Recovery progress violates the deterministic input")
+            sample = {
+                "at": at,
+                "phase": phase,
+                "lineage": lineage,
+                "processed": processed,
+                "sequence": sequence,
+                "pod_uid": pod["metadata"]["uid"],
+            }
+            self.samples[(sample["pod_uid"], at, phase, processed)] = sample
+        for sample in self.samples.values():
+            try:
+                valid = str(uuid.UUID(sample["lineage"])) == sample["lineage"]
+            except ValueError:
+                valid = False
+            if sample["at"] > self.env.clock():
+                raise Failure(f"{self.service} progress is dated in the future")
+            if not valid:
+                raise Failure(f"{self.service} input lineage changed or is invalid")
+
+    def before_fault(self):
+        """The first fault fixes the lineage the rest run on: its latest line's."""
+        if self.lineage is None:
+            latest = max(self.samples.values(), key=lambda s: s["at"])
+            self.lineage = latest["lineage"]
+            self.env.records.record_lineage(self.lineage)
+
+    def input_finished_at(self):
+        """When the latest progress line showed the whole input.
+
+        A restore after an earlier completion may replay the input and finish
+        it again, writing its rows again, so the latest line is the one a
+        relay must have time for.
+        """
+        return max(sample["at"] for sample in self.samples.values())
+
+    def restored_after_input(self):
+        """Whether a restore followed the input's latest progress line.
+
+        Such a restore may commit staged writes its state carried without
+        logging a line, and its recorded time is when the JobManager assigned
+        the state, before the tasks that commit were deployed, so it cannot
+        bound when those writes landed. It is current only for a run that
+        sets `reads_final_restore`, which completes on a poll whose checkpoint
+        statistics answered.
+        """
+        return self.restored_at is not None and self.restored_at > (
+            self.input_finished_at()
+        )
+
+    def oracle_window(self):
+        """The oracle's reads end within the time limit, before the record's write."""
+        return min(
+            self.env.clock() + self.timing["visibility_seconds"],
+            self.deadline - RECORD_SECONDS,
+        )
+
+    def persist(self, stage, **details):
+        if stage == COMPLETE_STAGE:
+            stage = self.oracle_stage
+        super().persist(stage, **details)
+
+    def retried(self, call, until, closed=None, said_nothing=transient):
+        """One oracle read, repeated while it fails without saying anything.
+
+        Before `until`, a failure that `said_nothing` does not excuse says
+        something about the read and is raised. Once it has passed, any
+        failure is raised, as `closed` when the caller names the window's
+        closing apart.
+        """
+        while True:
+            try:
+                return call()
+            except Failure as error:
+                if self.env.clock() >= until:
+                    if closed is None:
+                        raise
+                    raise closed(str(error)) from error
+                if not said_nothing(error):
+                    raise
+            self.env.sleep(RETRY_SECONDS)
+
+    def complete(self, data_reasons):
+        """Write the completing transition with the verdict decided over it.
+
+        The verdict is decided, by the scenario's `data_reasons`, from the
+        record the transition is about to write, which the offline analyzer
+        recomputes once the evidence is exported.
+        """
+        decided = sequence_verdict(
+            {"stage": COMPLETE_STAGE, "outcomes": self.outcomes}, data_reasons
+        )
+        # The stage the oracle waited in is complete only now.
+        RecoveryExercise.persist(
+            self, COMPLETE_STAGE, processed=self.records, **decided
+        )

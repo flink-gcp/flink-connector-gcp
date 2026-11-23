@@ -22,26 +22,23 @@ import json
 
 import pytest
 from flink_tier3 import analyze
+from flink_tier3.bigquery import plan
 from flink_tier3.bigquery.analyze import SCENARIO, render
-from flink_tier3.bigquery.verdict import COMPLETE_EVENT, COMPLETE_STAGE
 from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.recovery_analysis import (
+    INCOMPLETE_NOTE,
     SINGLE_FAULT,
     SINGLE_FAULT_NOTE,
     counts,
 )
+from flink_tier3.verdict import COMPLETE_EVENT, COMPLETE_STAGE
 
 # The faults the single-fault trials' receipts named, written out so that
 # dropping one from the analyzer's list fails a test here rather than
 # shrinking it. A JobManager replacement named none.
 ARCHIVED_FAULTS = ("tm-replacement", "rescale-out", "rescale-in")
 RUN = "bq-1423-0001"
-SEQUENCE_TRIAL = {
-    "mode": "ALO",
-    "destinations": 10,
-    "fault": "sequence",
-    "records": 5760,
-}
+SEQUENCE_TRIAL = plan.trial("alo-10-sequence")
 FAULTS = ["upgrade", "jobmanager", "taskmanager", "rescale-in", "rescale-out"]
 
 
@@ -134,6 +131,21 @@ def test_a_sequence_run_is_decided_by_its_query_and_lists_its_faults(
     assert "Deployed BigQuery runs" in analyze.render_markdown(report)
 
 
+@pytest.mark.parametrize(
+    "trial",
+    [
+        SEQUENCE_TRIAL,
+        # The receipts of sequence runs before #2279 also named the fault.
+        {**SEQUENCE_TRIAL, "fault": "sequence"},
+    ],
+)
+def test_a_sequence_receipt_reads_with_or_without_its_fault(tmp_path, trial):
+    value = record()
+    write_run(tmp_path, value, receipt_for(value, bigquery_trial=trial))
+    _, item = assessed(tmp_path)
+    assert (item["verdict"], item["problems"]) == (USABLE, [])
+
+
 def test_a_sequence_run_stopped_before_its_query_is_incomplete(tmp_path):
     """A record the run left mid-sequence is judged by its own stage."""
     value = record(stage="taskmanager", verdict=None, reasons=[])
@@ -183,6 +195,7 @@ def test_a_single_fault_run_has_no_verdict_here(tmp_path, trial):
         section
     )
     assert SINGLE_FAULT_NOTE in section
+    assert INCOMPLETE_NOTE in section
 
 
 @pytest.mark.parametrize(
@@ -202,9 +215,15 @@ def test_a_single_fault_run_has_no_verdict_here(tmp_path, trial):
         {},
         {"destinations": 10},
         {"mode": "ALO", "fault": "tm-replacement"},
-        # A sequence trial that lost its fault still names its record count,
-        # which no single-fault trial named.
-        {"mode": "ALO", "destinations": 10, "records": 5760},
+        # Only the sequence named its record count, and with any fault but
+        # its own it is no trial a revision wrote.
+        {"mode": "ALO", "destinations": 10, "records": 5760, "fault": "rescale-in"},
+        {"mode": "ALO", "destinations": 10, "records": 5760, "fault": None},
+        # Dispatch writes the record count as a positive whole number.
+        {"mode": "ALO", "destinations": 10, "records": None},
+        {"mode": "ALO", "destinations": 10, "records": "5760"},
+        {"mode": "ALO", "destinations": 10, "records": 0},
+        {"mode": "ALO", "destinations": 10, "records": True},
         {"mode": "STORAGE_WRITE", "destinations": 10},
     ],
 )

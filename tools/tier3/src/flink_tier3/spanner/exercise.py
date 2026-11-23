@@ -19,11 +19,11 @@ from __future__ import annotations
 import re
 
 from ..common import Failure, retryable_commit, timestamp, utc
-from ..exercise import FaultSequence, FiniteInputExercise
+from ..exercise import FiniteInputExercise
 from ..policy import POLL, SPANNER, SPANNER_OBSERVATIONS, SPANNER_STATE
 from .oracle import BatchCopy, ChangeStream, Seed, Sink, micros
 from .trial import BATCH_TABLE, INPUT_TABLE, LATE_ROWS, RELAY_TABLE, SEED_TABLE
-from .verdict import sequence_verdict
+from .verdict import data_reasons
 
 # The stage between the finished application and the read tables.
 ORACLE_STAGE = "tables"
@@ -44,15 +44,19 @@ PLANNED = re.compile(
 
 
 class SpannerExercise(FiniteInputExercise):
-    """Run the finite input through the faults, then read the four tables against it.
+    """The Spanner trial as one fault sequence, judged by its data (ADR-0204).
 
-    The caller supplies the supervisor's instance controller. The job
-    finishes once the change-stream source reaches its end and the batch copy
-    is done, after the input. The verdict is decided from the three oracle
-    reports, by the `verdict` the fault sequence names, and written with the
-    transition that completes the run.
+    The finite input runs through the faults, and the four tables are then
+    read against it. The caller supplies the supervisor's instance
+    controller. The late seed rows are written before the first fault. The
+    job finishes once the change-stream source reaches its end and the batch
+    copy is done, after the input. The verdict is decided from the three
+    oracle reports and written with the transition that completes the run.
+    The relay is judged when the input's latest progress line came the commit
+    margin before the change stream's end and no restore followed that line.
     """
 
+    reads_final_restore = True
     namespace = SPANNER
     state_bucket = SPANNER_STATE
     timing = SPANNER_OBSERVATIONS
@@ -74,7 +78,7 @@ class SpannerExercise(FiniteInputExercise):
         self.plan_lines = set()
         super().__init__(env, upgrade, trial)
 
-    def progress(self, pod, text):
+    def read_progress(self, pod, text):
         """Read the input's progress, and the batch read's plan from the JobManager.
 
         The plan is logged once, when the read is planned at the job's first
@@ -82,7 +86,7 @@ class SpannerExercise(FiniteInputExercise):
         judged, so the last plan read is kept, and a line read again counts
         once.
         """
-        super().progress(pod, text)
+        super().read_progress(pod, text)
         if pod["metadata"].get("labels", {}).get("component") != "jobmanager":
             return
         for line in text.splitlines():
@@ -103,6 +107,10 @@ class SpannerExercise(FiniteInputExercise):
         if self.session is None:
             self.session = api.session()
         return api
+
+    def ready_for_sequence(self):
+        """The first fault waits for the late seed rows."""
+        return self.late_seed_written()
 
     def late_seed_written(self):
         """Write the late seed rows unless written; whether they are."""
@@ -194,7 +202,7 @@ class SpannerExercise(FiniteInputExercise):
             "change_stream": stream,
             "batch": batch,
         }
-        self.complete(self.verdict)
+        self.complete(data_reasons)
 
     def late_after_plan(self):
         """Whether the late commit followed the plan's read timestamp, or None unread."""
@@ -205,20 +213,3 @@ class SpannerExercise(FiniteInputExercise):
             return micros(late["commit_timestamp"]) > micros(plan["read_timestamp"])
         except Failure:
             return None
-
-
-class SpannerSequenceExercise(FaultSequence, SpannerExercise):
-    """The Spanner trial as one fault sequence, judged by its data (ADR-0204).
-
-    The late seed rows are written before the first fault. The relay is
-    judged when the input's latest progress line came the commit margin
-    before the change stream's end and no restore followed that line.
-    """
-
-    # The verdict the oracles' record is judged by.
-    verdict = staticmethod(sequence_verdict)
-    reads_final_restore = True
-
-    def ready_for_sequence(self):
-        """The first fault waits for the late seed rows."""
-        return self.late_seed_written()

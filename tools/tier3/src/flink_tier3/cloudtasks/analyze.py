@@ -19,44 +19,32 @@ evidence directory can check the stored verdict against them. The vocabulary
 is the analysis vocabulary the other sections use, `usable` and
 `inconclusive`, and a run whose evidence cannot be read has no verdict.
 
-Every event name and stage comes from ``flink_tier3.cloudtasks.verdict``,
-which the exercise writes from, so a rename cannot reach only one side.
+The listing pages' event name comes from ``flink_tier3.cloudtasks.verdict``,
+which the exercise writes them under, so a rename cannot reach only one
+side.
 """
 
 from collections import Counter
 
 from ..recovery_analysis import (
+    INCOMPLETE_NOTE,
     SINGLE_FAULT_NOTE,
-    malformed_records,
-    names_single_fault,
-    recovery_record,
-    single_fault,
+    approval_checks,
+    approval_trial,
+    assess_sequence,
+    fault_column,
+    judged,
     unreadable,
     verdict_problems,
 )
+from ..verdict import sequence_verdict
 from .oracle import assess as assess_pages
 from .trial import Trial
-from .verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    PAGE_EVENT,
-    sequence_verdict,
-)
+from .verdict import PAGE_EVENT, data_reasons
 
 SCENARIO = "cloudtasks-recovery"
 FIELD = "cloudtasks_trial"
 PAGE_KEYS = ("ids", "foreign", "dispatched", "mismatched")
-
-
-def _trial(run):
-    approval = run.approval if isinstance(run.approval, dict) else {}
-    value = approval.get(FIELD)
-    if not isinstance(value, dict):
-        return None
-    try:
-        return Trial(run.run_id, **value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _pages(run, attempt):
@@ -92,65 +80,34 @@ def _mismatched_are_listed(payload):
     return Counter(payload["mismatched"]) <= Counter(payload["ids"])
 
 
-def _result(run, record, decided, problems, report):
-    return {
-        "run_id": run.run_id,
-        "verdict": decided["verdict"],
-        "stored": record.get("verdict"),
-        "reasons": decided["reasons"],
-        "problems": sorted(problems),
-        "report": report,
-    }
-
-
-def _unreadable(run, record, problems):
-    return {**unreadable(run, record, problems), "report": None}
+# A run without a verdict has no rebuilt report.
+BLANK = {"report": None}
 
 
 def assess(run):
-    """One Cloud Tasks run's verdict, beside the faults it injected (ADR-0204)."""
-    record = recovery_record(run, COMPLETE_EVENT)
-    outcomes = record.get("outcomes") if isinstance(record, dict) else None
-    faults = outcomes.get("faults") if isinstance(outcomes, dict) else None
-    return {**_verdict(run), "faults": faults if isinstance(faults, list) else []}
-
-
-def _verdict(run):
-    """One Cloud Tasks run's recomputed verdict, its stored one and its problems.
+    """One Cloud Tasks run's verdict, beside the faults it injected (ADR-0204).
 
     A completed run is judged from the pages of the listing attempt its record
     names, recomputing the oracle report rather than reading the stored one; a
     page missing from the export, or a completed record without a listing,
     leaves the run without a verdict. A page carries the ids whose body the
     supervisor found wrong, not the bodies, so that check is re-counted, not
-    re-run. A run that never completed exported its account of itself, which
-    says so, and is `inconclusive`. A run of a single-fault kind has no verdict
-    here.
+    re-run.
     """
-    trial = _trial(run)
-    malformed = malformed_records(run, COMPLETE_EVENT)
-    result = run.result if isinstance(run.result, dict) else None
-    if names_single_fault(run, FIELD):
-        record = recovery_record(run, COMPLETE_EVENT)
-        return {**single_fault(run, record), "report": None}
-    if trial is None:
-        return _unreadable(run, None, ["approval-without-cloudtasks-trial"])
-    if result is None:
-        return _unreadable(run, None, ["missing-result.json"])
-    # A truncated download: a completed record that is not an object.
-    if malformed:
-        return _unreadable(run, None, [f"malformed-evidence:{malformed}"])
-    complete = bool(run.events_of(COMPLETE_EVENT))
-    record = recovery_record(run, COMPLETE_EVENT)
-    if not isinstance(record, dict):
-        return _unreadable(run, None, ["missing-" + COMPLETE_EVENT])
-    if not complete and record.get("stage") == COMPLETE_STAGE:
-        return _unreadable(run, record, ["missing-" + COMPLETE_EVENT])
+    return assess_sequence(
+        run,
+        _decide,
+        **approval_checks(FIELD, Trial),
+        blank=BLANK,
+    )
+
+
+def _decide(run, record, complete):
     if not complete:
         # Decided by the data alone, so the record is judged as it stands.
-        decided = sequence_verdict(record)
-        return _result(
-            run, record, decided, verdict_problems(record, decided, False), None
+        decided = sequence_verdict(record, data_reasons)
+        return judged(
+            run, record, decided, verdict_problems(record, decided, False), report=None
         )
     outcomes = record.get("outcomes")
     outcomes = outcomes if isinstance(outcomes, dict) else {}
@@ -158,22 +115,24 @@ def _verdict(run):
     if not isinstance(listing, dict):
         # A completed run is decided by its listing, so a record without one
         # leaves the verdict nothing to be decided from.
-        return _unreadable(run, record, ["missing-listing-record"])
+        return unreadable(run, record, ["missing-listing-record"])
     attempt, count = listing.get("attempt"), listing.get("pages")
     # The supervisor exports at least one page, an empty queue's included.
     if type(attempt) is not int or type(count) is not int or count < 1:
-        return _unreadable(run, record, ["malformed-listing-record"])
+        return unreadable(run, record, ["malformed-listing-record"])
     pages, malformed = _pages(run, attempt)
     if malformed:
-        return _unreadable(run, record, [f"malformed-pages:{malformed}"])
+        return unreadable(run, record, [f"malformed-pages:{malformed}"])
     if sorted(pages) != list(range(count)):
         missing = len(set(range(count)) - set(pages))
         extra = len(set(pages) - set(range(count)))
         counts = {"missing-pages": missing, "extra-pages": extra}
-        return _unreadable(
+        return unreadable(
             run, record, [f"{name}:{n}" for name, n in counts.items() if n]
         )
-    report = assess_pages(trial, [pages[index] for index in range(count)])
+    report = assess_pages(
+        approval_trial(run, FIELD, Trial), [pages[index] for index in range(count)]
+    )
     problems = []
     if listing.get("report") != report:
         problems.append("report-differs-from-pages")
@@ -181,25 +140,16 @@ def _verdict(run):
         {
             **record,
             "outcomes": {**outcomes, "listing": {**listing, "report": report}},
-        }
+        },
+        data_reasons,
     )
     problems.extend(verdict_problems(record, decided, True))
-    return _result(run, record, decided, problems, report)
+    return judged(run, record, decided, problems, report=report)
 
 
 def assess_runs(runs):
     """Every Cloud Tasks run in a discovered evidence directory, in the order given."""
     return [assess(run) for run in runs if run.scenario == SCENARIO]
-
-
-def _faults(item):
-    """A sequence run's injected faults in order, or `-` for a single-fault run."""
-    kinds = [
-        fault.get("kind")
-        for fault in item.get("faults") or []
-        if isinstance(fault, dict) and isinstance(fault.get("kind"), str)
-    ]
-    return ", ".join(kinds) or "-"
 
 
 def render(assessments):
@@ -231,7 +181,7 @@ def render(assessments):
                 run=item["run_id"],
                 verdict=item["verdict"] or "-",
                 stored=item["stored"] or "-",
-                faults=_faults(item),
+                faults=fault_column(item),
                 reasons=", ".join(item["reasons"]) or "-",
                 problems=", ".join(item["problems"]) or "-",
                 **{
@@ -258,10 +208,7 @@ def render(assessments):
                 "alone."
             ),
             SINGLE_FAULT_NOTE,
-            (
-                f"A run whose stage is not `{COMPLETE_STAGE}` did not finish, which "
-                "is inconclusive rather than an evidence problem."
-            ),
+            INCOMPLETE_NOTE,
         ]
     )
     return "\n".join(lines) + "\n"

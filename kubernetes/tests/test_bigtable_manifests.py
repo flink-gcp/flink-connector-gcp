@@ -19,6 +19,7 @@ import shutil
 
 import pytest
 import yaml
+from flink_tier3.bigtable.plan import SEQUENCE_INPUT
 from flink_tier3.bundle import delivered_sources
 from flink_tier3.exercise import RENDERED_PARALLELISM
 from test_manifests import (
@@ -34,6 +35,11 @@ from test_manifests import module as module  # noqa: PLC0414
 
 BIGTABLE_IMAGE = "us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigtable-recovery"
 END = "2026-10-20T01:30:00Z"
+
+
+# The package's defaults, which are the fault sequence's input.
+RECORDS = SEQUENCE_INPUT["records"]
+RATE = SEQUENCE_INPUT["records_per_second"]
 
 
 def bigtable_leaf(module, **changes):
@@ -55,7 +61,7 @@ def bigtable_leaf(module, **changes):
     return path
 
 
-def bigtable_args(run_id, phase, records=180000, rate=100, parallelism=2, end=END):
+def bigtable_args(run_id, phase, records=RECORDS, rate=RATE, parallelism=2, end=END):
     return [
         "--run-id",
         run_id,
@@ -101,7 +107,7 @@ def bigtable_configuration(run_id):
 
 
 def assert_bigtable_application(
-    app, run_id, expires_at, phase, records=180000, rate=100, parallelism=2, end=END
+    app, run_id, expires_at, phase, records=RECORDS, rate=RATE, parallelism=2, end=END
 ):
     """The whole delivered contract of one phase but its approval annotations."""
     assert app["metadata"]["name"] == run_id
@@ -183,13 +189,14 @@ def test_bigtable_instance_id_fits_bigtable_at_the_longest_run_id(module):
         {"phase": "resume"},
         {"records": 1},
         {"records": "100"},
-        # Each within the application's bounds, but longer than 30 minutes of input.
-        {"records": 180001},
+        # Each within the application's bounds, but longer than 30 minutes of input,
+        # at the default rate or another.
+        {"records": 18001},
         {"records": 1801, "recordsPerSecond": 1},
         {"records": 360000, "recordsPerSecond": 100},
         # The default count at a lower rate, omitted or given.
-        {"recordsPerSecond": 50},
-        {"records": 180000, "recordsPerSecond": 50},
+        {"recordsPerSecond": 1},
+        {"records": 2400, "recordsPerSecond": 1},
         {"recordsPerSecond": 0},
         {"recordsPerSecond": 101},
         # One subtask on each of at most two single-slot TaskManagers, and no

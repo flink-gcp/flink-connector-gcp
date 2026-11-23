@@ -16,12 +16,8 @@
 
 import pytest
 from flink_tier3.common import INCONCLUSIVE, USABLE
-from flink_tier3.pubsub.verdict import (
-    COMPLETE_EVENT,
-    COMPLETE_STAGE,
-    application_pods,
-    sequence_verdict,
-)
+from flink_tier3.pubsub.verdict import application_pods, data_reasons
+from flink_tier3.verdict import COMPLETE_STAGE, sequence_verdict
 
 ORACLE = {
     "lines": 64,
@@ -33,10 +29,6 @@ ORACLE = {
     "output_publication_duplicates": 0,
     "repeated_output_delivery": 0,
 }
-
-
-def test_the_event_names_are_spelled_once_for_both_sides():
-    assert COMPLETE_EVENT == "recovery-" + COMPLETE_STAGE
 
 
 def test_the_sequence_holds_the_jobmanager_two_taskmanagers_and_a_replacement():
@@ -62,14 +54,17 @@ def sequence_record(**overrides):
 
 
 def test_a_complete_sequence_with_its_output_is_usable():
-    assert sequence_verdict(sequence_record()) == {"verdict": USABLE, "reasons": []}
+    assert sequence_verdict(sequence_record(), data_reasons) == {
+        "verdict": USABLE,
+        "reasons": [],
+    }
 
 
 def test_a_sequence_needs_no_recovery_outcome_or_replay():
     # Recovery outcomes and duplicates decide nothing (ADR-0204).
     record = sequence_record(outcomes={})
     record["oracle"]["repeated_input_processing"] = 900
-    assert sequence_verdict(record)["verdict"] == USABLE
+    assert sequence_verdict(record, data_reasons)["verdict"] == USABLE
 
 
 @pytest.mark.parametrize(
@@ -96,7 +91,7 @@ def test_a_sequence_needs_no_recovery_outcome_or_replay():
     ],
 )
 def test_each_sequence_shortfall_is_inconclusive_with_its_reason(change, reasons):
-    assert sequence_verdict(sequence_record(**change)) == {
+    assert sequence_verdict(sequence_record(**change), data_reasons) == {
         "verdict": INCONCLUSIVE,
         "reasons": reasons,
     }
@@ -104,4 +99,4 @@ def test_each_sequence_shortfall_is_inconclusive_with_its_reason(change, reasons
 
 @pytest.mark.parametrize("value", [None, [], "complete", 7])
 def test_an_untyped_sequence_record_is_inconclusive_without_raising(value):
-    assert sequence_verdict(value)["verdict"] == INCONCLUSIVE
+    assert sequence_verdict(value, data_reasons)["verdict"] == INCONCLUSIVE
