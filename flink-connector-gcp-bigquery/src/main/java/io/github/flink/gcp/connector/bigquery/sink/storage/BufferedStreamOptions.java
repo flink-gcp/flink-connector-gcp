@@ -37,9 +37,12 @@ import java.util.Objects;
  * <p>Two groups of knobs configure two distinct layers:
  *
  * <ul>
- *   <li><b>{@code recovery*} and {@code maxAppendRequestBytes}</b> — the connector's own bounded
- *       recovery budget: stream creation, transient append failures that surfaced past the SDK's
- *       retries, and the restore probe (same vocabulary as {@link DefaultStreamOptions}).
+ *   <li><b>{@code recovery*} and {@code maxAppendRequestBytes}</b> — the connector's own layer
+ *       (same vocabulary as {@link DefaultStreamOptions}): {@code maxAppendRequestBytes} is the
+ *       append-batching threshold (see {@link Builder#maxAppendRequestBytes(long)}), and {@code
+ *       recovery*} is the bounded recovery budget for stream creation, transient append failures
+ *       that surfaced past the SDK's retries, and the restore probe. The same schedule also paces
+ *       the committer's in-place flush retries.
  *   <li><b>{@code retry*} and {@code maxRetryDuration}</b> — the SDK's in-stream retry of retriable
  *       append failures (for example {@code ABORTED}, {@code UNAVAILABLE}, {@code CANCELLED},
  *       {@code INTERNAL}, {@code DEADLINE_EXCEEDED} and quota {@code RESOURCE_EXHAUSTED}), so
@@ -317,8 +320,8 @@ public final class BufferedStreamOptions implements Serializable {
 
         /**
          * Sets the first backoff of the connector-driven recovery schedule (stream creation after
-         * table auto-creation, transient append failures, the restore probe). Defaults to {@link
-         * #DEFAULT_RECOVERY_INITIAL_BACKOFF}.
+         * table auto-creation, transient append failures, the restore probe, the committer's flush
+         * retries). Defaults to {@link #DEFAULT_RECOVERY_INITIAL_BACKOFF}.
          *
          * @param recoveryInitialBackoff the first backoff, at least 1 ms
          * @return this builder

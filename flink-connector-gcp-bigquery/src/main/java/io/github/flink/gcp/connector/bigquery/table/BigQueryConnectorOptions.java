@@ -818,7 +818,9 @@ public final class BigQueryConnectorOptions {
 
     /**
      * The first backoff of the connector's own recovery schedule, which creates the stream after a
-     * table auto-creation, reopens it after a transient failure and drives the restore probe.
+     * table auto-creation, re-appends after a transient failure, drives the restore probe and
+     * retries a commit flush that failed transiently or, under CREATE_IF_NEEDED, with a status that
+     * may mask a table not yet propagated.
      */
     public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RECOVERY_INITIAL_BACKOFF =
             ConfigOptions.key("sink.buffered-stream.recovery.initial-backoff")
@@ -826,8 +828,11 @@ public final class BigQueryConnectorOptions {
                     .noDefaultValue()
                     .withDescription(
                             "The first backoff of the connector's own recovery schedule, which"
-                                    + " creates the stream after a table auto-creation, reopens it"
-                                    + " after a transient failure and drives the restore probe.");
+                                    + " creates the stream after a table auto-creation,"
+                                    + " re-appends after a transient failure, drives the restore"
+                                    + " probe and retries a commit flush that failed transiently"
+                                    + " or, under CREATE_IF_NEEDED, with a status that may mask a"
+                                    + " table not yet propagated.");
 
     /** The ceiling that recovery schedule's backoff grows to. */
     public static final ConfigOption<Duration> SINK_BUFFERED_STREAM_RECOVERY_MAX_BACKOFF =

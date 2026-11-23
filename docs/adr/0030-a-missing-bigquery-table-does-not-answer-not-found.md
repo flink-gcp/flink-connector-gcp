@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-06 (measured on [#289], which grew a writer change because of it); buffered half
   measured 2026-08-08 on [#318], which grew a committer change the same way; the buffered
-  **append** side measured 2026-08-08 on [#382], which grew no code change because of it
+  **append** side measured 2026-08-08 on [#382], which grew no code change because of it; the
+  cost of a commit-time allowance corrected 2026-11-23 ([#2285])
 - Issues: [#289], [#318], [#382]
 - Modules: bigquery (`sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § A missing table does
@@ -169,9 +170,9 @@ discipline whose absence this ADR exists to record. Every observation of a table
 will not confirm is the masked code; `NOT_FOUND` is in the wide verdict for the emulator, which
 answers it, and for the writers, which recovered on it before any of this was measured. Adding a
 commit-time allowance for a code the service has never been seen to answer for this condition would
-be a fresh unbacked inference, in the direction that costs rather than saves: about 55 s per
-committable with the default `recovery*` values, serially, across every committable a restore
-replays.
+be a fresh unbacked inference, in the direction that costs rather than saves: about 55 s with the
+default `recovery*` values before each commit fails, a restore's re-commit included, because a
+commit stops at the first committable that exhausts the budget.
 
 The direction being declined is worth naming as a risk and not as a fact: `FlushRows` targets a
 write *stream*, streams age out on a seven-day TTL, and a missing stream is terminal mid-run — but
@@ -250,3 +251,4 @@ cannot influence.
 [#318]: https://github.com/flink-gcp/flink-connector-gcp/issues/318
 [#382]: https://github.com/flink-gcp/flink-connector-gcp/issues/382
 [#827]: https://github.com/flink-gcp/flink-connector-gcp/issues/827
+[#2285]: https://github.com/flink-gcp/flink-connector-gcp/issues/2285

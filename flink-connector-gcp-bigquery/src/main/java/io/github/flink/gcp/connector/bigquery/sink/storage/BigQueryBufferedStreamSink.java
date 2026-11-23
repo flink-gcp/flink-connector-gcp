@@ -73,16 +73,17 @@ import java.util.function.Supplier;
  * BufferedStreamCommitter}) — two-phase commit on Flink checkpoints.
  *
  * <p>Each destination's stream is reused across checkpoints and tracked in writer state; idle,
- * checkpoint-clean destinations are evicted after the configured timeout. {@code FlushRows} runs
- * once per changed destination per checkpoint, so no checkpoint-cadence guard is needed (unlike
- * FILE_LOADS with its per-table daily load-job limit).
+ * checkpoint-clean destinations are evicted after the configured timeout. When every flush succeeds
+ * at once, {@code FlushRows} runs once per checkpoint for each writer subtask's stream that
+ * received rows (retries and a restore's re-commit add calls), so no checkpoint-cadence guard is
+ * needed (unlike FILE_LOADS with its per-table daily load-job limit).
  *
  * <p>The execution mode must be explicit: {@link RuntimeExecutionMode#AUTOMATIC} is rejected when
  * the pre-commit topology is added, because were it to resolve to streaming with checkpointing
  * disabled, rows would buffer forever without ever being flushed. Streaming requires checkpointing
  * with {@link CheckpointingMode#EXACTLY_ONCE} and checkpoints-after-tasks-finish (the final batch
- * rides the post-finish checkpoint). {@link RuntimeExecutionMode#BATCH} is supported: the single
- * end-of-input committable is committed when the job completes.
+ * rides the post-finish checkpoint). {@link RuntimeExecutionMode#BATCH} is supported: the
+ * end-of-input committables are committed when the job completes.
  *
  * <p>The pre-commit topology is identity — it exists only as the graph-construction validation
  * hook. Committables need no checkpoint stamping (flush offsets are absolute) and no global routing
