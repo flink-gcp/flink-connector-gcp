@@ -24,25 +24,24 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
 import com.google.api.gax.grpc.GrpcCallContext;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.rpc.UnaryCallable;
 import com.google.api.gax.tracing.OpenTelemetryMetricsFactory;
 import com.google.cloud.tasks.v2.CloudTasksClient;
 import com.google.cloud.tasks.v2.CloudTasksSettings;
 import com.google.cloud.tasks.v2.CreateTaskRequest;
 import com.google.cloud.tasks.v2.Task;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.grpc.CallOptions;
 import io.grpc.Deadline;
-import io.grpc.ManagedChannel;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Creates a {@link TaskCreator} backed by a {@code google-cloud-tasks} {@link CloudTasksClient},
@@ -69,15 +68,19 @@ import java.util.concurrent.TimeUnit;
  * <p>Checkpointed creation also uses this factory for a production-only v2beta3 queue-retention
  * readback with the same credential selection. That client surface is beta in the pinned SDK;
  * retain its published retention semantics when updating the dependency (ADR-0158).
+ *
+ * <p>Every channel runs on the connector's gRPC event-loop group ({@link GrpcEventLoops},
+ * ADR-0208), not on gRPC's own, whose delayed destroy can run after Flink closes the job's class
+ * loader. A production client holds a lease applied to its settings. The emulator arm builds its
+ * channel itself from the endpoint's gRPC target, so a resolver scheme such as {@code dns:///}
+ * survives and no client-certificate setting turns it into TLS; that channel holds a lease of its
+ * own and closes after the client. Each close releases its lease within {@link
+ * GrpcEventLoops.LeasedClient}'s bounds.
  */
 @Internal
 public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
-    private static final Logger LOG = LoggerFactory.getLogger(DefaultTaskCreatorFactory.class);
-
     private static final long serialVersionUID = 1L;
-
-    private static final long SHUTDOWN_TIMEOUT_SECONDS = 30;
 
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
@@ -125,25 +128,33 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
     @Override
     public TaskCreator create(@Nullable ClientMetrics clientMetrics) throws IOException {
-        ManagedChannel ownedChannel = null;
+        GrpcEventLoops.LeasedClient<GrpcTransportChannel> channel = null;
+        GrpcEventLoops.LeasedClient<CloudTasksClient> client = null;
         try {
-            CloudTasksSettings.Builder settings;
-            if (emulatorEndpoint != null) {
-                settings = CloudTasksSettings.newBuilder();
-                ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
-                settings.setTransportChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
-                        .setCredentialsProvider(NoCredentialsProvider.create());
+            if (emulatorEndpoint == null) {
+                CloudTasksSettings.Builder settings =
+                        productionSettings(serviceAccountKeyFile, channelPoolSize);
+                applyClientMetrics(settings, clientMetrics);
+                client =
+                        GrpcEventLoops.open(
+                                lease -> CloudTasksClient.create(lease.applyTo(settings).build()));
             } else {
-                settings = productionSettings(serviceAccountKeyFile, channelPoolSize);
+                channel = EmulatorChannels.openLeasedPlaintextChannel(emulatorEndpoint);
+                CloudTasksSettings.Builder settings =
+                        CloudTasksSettings.newBuilder()
+                                .setTransportChannelProvider(
+                                        EmulatorChannels.fixedProvider(channel))
+                                .setCredentialsProvider(NoCredentialsProvider.create());
+                applyClientMetrics(settings, clientMetrics);
+                // The channel's own lease covers it, and a fixed provider takes no lease, so this
+                // one only gives the client the same bounded close as the production arm's.
+                client = GrpcEventLoops.open(lease -> CloudTasksClient.create(settings.build()));
             }
-            applyClientMetrics(settings, clientMetrics);
-            return new CloudTasksClientAdapter(
-                    CloudTasksClient.create(settings.build()), ownedChannel, clientMetrics);
-        } catch (IOException | RuntimeException e) {
-            // The channel is owned here until the adapter takes it over on success.
-            if (ownedChannel != null) {
-                ownedChannel.shutdownNow();
-            }
+            return new CloudTasksClientAdapter(client, channel, clientMetrics);
+        } catch (IOException | RuntimeException | Error e) {
+            // Both are owned here until the adapter takes them over on success; which failure is
+            // reported is closeAllSuppressing's contract.
+            Closers.closeAllSuppressing(e, client, channel);
             throw e;
         }
     }
@@ -198,13 +209,21 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
         Preconditions.checkState(
                 emulatorEndpoint == null,
                 "Queue retention readback is unavailable for an emulator endpoint.");
-        try (var client =
-                com.google.cloud.tasks.v2beta3.CloudTasksClient.create(
-                        retentionSettings(serviceAccountKeyFile).build())) {
-            return queueRetention(client.getQueue(queuePath));
+        try (var client = openRetentionClient(serviceAccountKeyFile)) {
+            return queueRetention(client.client().getQueue(queuePath));
         } catch (RuntimeException e) {
             throw retentionReadFailure(e);
         }
+    }
+
+    /** Opens the v2beta3 client the retention readback uses, on the event-loop group. */
+    static GrpcEventLoops.LeasedClient<com.google.cloud.tasks.v2beta3.CloudTasksClient>
+            openRetentionClient(@Nullable String serviceAccountKeyFile) throws IOException {
+        var settings = retentionSettings(serviceAccountKeyFile);
+        return GrpcEventLoops.open(
+                lease ->
+                        com.google.cloud.tasks.v2beta3.CloudTasksClient.create(
+                                lease.applyTo(settings).build()));
     }
 
     static IOException retentionReadFailure(RuntimeException failure) {
@@ -239,29 +258,36 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
     /**
      * Adapts the SDK {@link CloudTasksClient} to the writer-facing {@link TaskCreator}. It closes
-     * the client metrics it was given after the client and its channel: closed client metrics drop
-     * what they are given, so a call still completing would lose its recording.
+     * the client, then the caller-owned channel if there is one, each releasing its event-loop
+     * lease, and the client metrics it was given last: closed client metrics drop what they are
+     * given, so a call still completing would lose its recording.
      */
     static final class CloudTasksClientAdapter implements TaskCreator {
 
-        private final CloudTasksClient client;
+        private final GrpcEventLoops.LeasedClient<CloudTasksClient> client;
         private final UnaryCallable<CreateTaskRequest, Task> createTaskCallable;
-        @Nullable private final ManagedChannel ownedChannel;
+        @Nullable private final GrpcEventLoops.LeasedClient<GrpcTransportChannel> ownedChannel;
         @Nullable private final ClientMetrics clientMetrics;
 
         CloudTasksClientAdapter(
-                CloudTasksClient client,
-                @Nullable ManagedChannel ownedChannel,
+                GrpcEventLoops.LeasedClient<CloudTasksClient> client,
+                @Nullable GrpcEventLoops.LeasedClient<GrpcTransportChannel> ownedChannel,
                 @Nullable ClientMetrics clientMetrics) {
             this.client = client;
-            this.createTaskCallable = client.createTaskCallable();
+            this.createTaskCallable = client.client().createTaskCallable();
             this.ownedChannel = ownedChannel;
             this.clientMetrics = clientMetrics;
         }
 
+        /** The caller-owned channel, or {@code null}; the test seam for the emulator arm. */
+        @Nullable
+        GrpcTransportChannel ownedChannel() {
+            return ownedChannel == null ? null : ownedChannel.client();
+        }
+
         /** The adapted client; the test seam reading the settings the factory built. */
         CloudTasksClient client() {
-            return client;
+            return client.client();
         }
 
         @Override
@@ -279,22 +305,7 @@ public class DefaultTaskCreatorFactory implements TaskCreatorFactory {
 
         @Override
         public void close() throws Exception {
-            try {
-                client.shutdown();
-                if (!client.awaitTermination(SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                    LOG.warn(
-                            "The Cloud Tasks client did not terminate within {} seconds; its"
-                                    + " resources may leak until the JVM exits.",
-                            SHUTDOWN_TIMEOUT_SECONDS);
-                }
-            } finally {
-                if (ownedChannel != null) {
-                    ownedChannel.shutdownNow();
-                }
-                if (clientMetrics != null) {
-                    clientMetrics.close();
-                }
-            }
+            Closers.closeAll(client, ownedChannel, clientMetrics);
         }
     }
 }

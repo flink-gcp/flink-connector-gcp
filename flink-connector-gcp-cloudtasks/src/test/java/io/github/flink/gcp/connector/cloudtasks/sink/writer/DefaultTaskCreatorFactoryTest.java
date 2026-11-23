@@ -19,12 +19,15 @@ package io.github.flink.gcp.connector.cloudtasks.sink.writer;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.util.InstantiationUtil;
 
+import com.google.api.core.ApiFunction;
 import com.google.api.core.ApiFuture;
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.GoogleCredentialsProvider;
+import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.ApiCallContext;
+import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.api.gax.rpc.UnaryCallable;
 import com.google.api.gax.tracing.OpenTelemetryMetricsFactory;
 import com.google.auth.oauth2.ServiceAccountCredentials;
@@ -34,17 +37,26 @@ import com.google.cloud.tasks.v2.Task;
 import com.google.cloud.tasks.v2.stub.CloudTasksStub;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.cloudtasks.CloudTasksClientMetrics;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksCreateTaskSink;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksSinkConfig;
 import io.github.flink.gcp.connector.cloudtasks.sink.CloudTasksWriterOptions;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.opentelemetry.api.common.AttributeKey;
 import io.opentelemetry.api.common.Attributes;
 import io.opentelemetry.api.metrics.DoubleHistogram;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
@@ -55,6 +67,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class DefaultTaskCreatorFactoryTest {
 
     @TempDir Path tempDir;
+
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        // The event-loop group is process-wide, so a creator left open would keep it running into
+        // the next test and hide a release that never happened.
+        assertThat(GrpcEventLoops.isRunning()).as("an event-loop lease was left open").isFalse();
+    }
 
     @Test
     void configuredCredentialsReachTheClientSettings() throws Exception {
@@ -129,16 +148,81 @@ class DefaultTaskCreatorFactoryTest {
     }
 
     @Test
-    void buildsAndClosesAProductionCreatorWithConfiguredCredentials() throws Exception {
-        // The pool rides along so create() and close() run once against a real multi-channel
-        // client; the channels connect lazily, so nothing here talks to the service.
+    void aProductionCreatorBuildsItsChannelsOnTheEventLoopGroup() throws Exception {
+        // Both transports: the client's default one and a resized pool, which the lease must not
+        // cost its size. The channels connect lazily, so nothing here talks to the service.
         Path keyFile = ServiceAccountKeyFiles.create(tempDir);
 
-        TaskCreator creator =
-                new DefaultTaskCreatorFactory(keyFile.toString(), null, 2).create(null);
+        for (Integer pool : new Integer[] {null, 2}) {
+            TaskCreator creator =
+                    new DefaultTaskCreatorFactory(keyFile.toString(), null, pool).create(null);
+            try {
+                assertThat(GrpcEventLoops.isRunning())
+                        .as("the creator holds an event-loop lease")
+                        .isTrue();
+                InstantiatingGrpcChannelProvider provider =
+                        provider(
+                                ((DefaultTaskCreatorFactory.CloudTasksClientAdapter) creator)
+                                        .client()
+                                        .getSettings()
+                                        .getTransportChannelProvider());
+                assertThat(provider.getChannelPoolSettings())
+                        .isEqualTo(ChannelPoolSettings.staticallySized(pool == null ? 1 : pool));
+                assertBuildsChannelsOnTheGroup(provider);
+            } finally {
+                creator.close();
+            }
+            assertThat(GrpcEventLoops.isRunning()).as("the creator released its lease").isFalse();
+        }
+    }
 
-        assertThat(creator).isNotNull();
-        creator.close();
+    @Test
+    void theRetentionReadbackBuildsItsChannelsOnTheEventLoopGroup() throws Exception {
+        // A key file rather than ADC: the client resolves its credentials as it is created, and a
+        // build machine need not have application-default credentials.
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
+        try (var client = DefaultTaskCreatorFactory.openRetentionClient(keyFile.toString())) {
+            assertBuildsChannelsOnTheGroup(
+                    provider(client.client().getSettings().getTransportChannelProvider()));
+        }
+    }
+
+    private static InstantiatingGrpcChannelProvider provider(TransportChannelProvider provider) {
+        assertThat(provider).isInstanceOf(InstantiatingGrpcChannelProvider.class);
+        return (InstantiatingGrpcChannelProvider) provider;
+    }
+
+    /**
+     * Builds a channel through the provider's configurator, connects it to a local socket and
+     * checks that a thread of the connector's group serves it: the group starts a thread only when
+     * a channel registers on it, and gRPC's own threads are named otherwise.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void assertBuildsChannelsOnTheGroup(InstantiatingGrpcChannelProvider provider)
+            throws Exception {
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no group thread before the channel connects")
+                .isTrue();
+        ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
+                provider.toBuilder().getChannelConfigurator();
+        assertThat(configurator).as("the provider carries the lease's configurator").isNotNull();
+        try (ServerSocket server = new ServerSocket(0)) {
+            ManagedChannel channel =
+                    configurator
+                            .apply(
+                                    NettyChannelBuilder.forAddress(
+                                                    "127.0.0.1", server.getLocalPort())
+                                            .usePlaintext())
+                            .build();
+            try {
+                channel.getState(true);
+                assertThat(GrpcEventLoopThreads.awaitAlive())
+                        .as("a %s* thread serves the channel", GrpcEventLoopThreads.PREFIX)
+                        .isTrue();
+            } finally {
+                channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+            }
+        }
     }
 
     @Test
@@ -157,18 +241,59 @@ class DefaultTaskCreatorFactoryTest {
     }
 
     @Test
-    void buildsAndClosesAnEmulatorBackedCreatorWithoutCredentials() throws Exception {
-        // Nothing here talks to the endpoint: the channel connects lazily, so this covers the
-        // plaintext/no-credentials wiring the emulator integration tests (#25) build on.
-        TaskCreator creator =
-                new DefaultTaskCreatorFactory(
-                                null,
-                                EmulatorEndpoint.parse("localhost:8123", "emulatorEndpoint"),
-                                null)
-                        .create(null);
+    void anEmulatorCreatorRunsItsOwnPlaintextChannelOnTheEventLoopGroup() throws Exception {
+        // Both target forms EmulatorEndpoint accepts: host:port, and a scheme-prefixed gRPC target,
+        // whose resolver scheme the channel keeps rather than splitting it into a host and a port.
+        // A socket each, so that a reconnect left over from one form cannot answer for the other.
+        for (String scheme : new String[] {"", "dns:///"}) {
+            try (ServerSocket server = new ServerSocket(0)) {
+                server.setSoTimeout(10_000);
+                String target = scheme + "127.0.0.1:" + server.getLocalPort();
+                assertThat(GrpcEventLoopThreads.awaitNone())
+                        .as("no group thread before the creator opens")
+                        .isTrue();
+                TaskCreator creator =
+                        new DefaultTaskCreatorFactory(
+                                        null,
+                                        EmulatorEndpoint.parse(target, "emulatorEndpoint"),
+                                        null)
+                                .create(null);
+                try {
+                    DefaultTaskCreatorFactory.CloudTasksClientAdapter adapter =
+                            (DefaultTaskCreatorFactory.CloudTasksClientAdapter) creator;
+                    TransportChannelProvider provider =
+                            adapter.client().getSettings().getTransportChannelProvider();
+                    assertThat(provider.shouldAutoClose())
+                            .as("the client does not close the caller-owned channel")
+                            .isFalse();
+                    assertThat(provider.getTransportChannel()).isSameAs(adapter.ownedChannel());
+                    assertThat(adapter.client().getSettings().getCredentialsProvider())
+                            .isInstanceOf(NoCredentialsProvider.class);
 
-        assertThat(creator).isNotNull();
-        creator.close();
+                    ManagedChannel channel = (ManagedChannel) adapter.ownedChannel().getChannel();
+                    channel.getState(true);
+                    // The connection reaching this socket, opening with HTTP/2's cleartext
+                    // preface rather than a TLS handshake, shows the target resolved to it and
+                    // the channel is plaintext; the thread name shows which group serves it.
+                    try (Socket accepted = server.accept()) {
+                        accepted.setSoTimeout(10_000);
+                        byte[] preface = new byte[3];
+                        accepted.getInputStream().readNBytes(preface, 0, 3);
+                        assertThat(new String(preface, StandardCharsets.US_ASCII))
+                                .as("the first bytes %s sends", target)
+                                .isEqualTo("PRI");
+                    }
+                    assertThat(GrpcEventLoopThreads.awaitAlive())
+                            .as("a %s* thread serves %s", GrpcEventLoopThreads.PREFIX, target)
+                            .isTrue();
+                } finally {
+                    creator.close();
+                }
+                assertThat(GrpcEventLoops.isRunning())
+                        .as("the creator released both leases")
+                        .isFalse();
+            }
+        }
     }
 
     @Test
@@ -313,7 +438,10 @@ class DefaultTaskCreatorFactoryTest {
         var request = com.google.cloud.tasks.v2.CreateTaskRequest.getDefaultInstance();
         try (var adapter =
                 new DefaultTaskCreatorFactory.CloudTasksClientAdapter(
-                        com.google.cloud.tasks.v2.CloudTasksClient.create(stub), null, null)) {
+                        GrpcEventLoops.open(
+                                lease -> com.google.cloud.tasks.v2.CloudTasksClient.create(stub)),
+                        null,
+                        null)) {
             var deadline = io.grpc.Deadline.after(-1, java.util.concurrent.TimeUnit.SECONDS);
             adapter.createTask(request, deadline).get();
             assertThat(
@@ -342,8 +470,11 @@ class DefaultTaskCreatorFactoryTest {
 
         // A call completing while the client terminates still records; one after close does not.
         new DefaultTaskCreatorFactory.CloudTasksClientAdapter(
-                        com.google.cloud.tasks.v2.CloudTasksClient.create(
-                                new IdleStub(() -> histogram.record(0.25, createTask))),
+                        GrpcEventLoops.open(
+                                lease ->
+                                        com.google.cloud.tasks.v2.CloudTasksClient.create(
+                                                new IdleStub(
+                                                        () -> histogram.record(0.25, createTask)))),
                         null,
                         metrics)
                 .close();

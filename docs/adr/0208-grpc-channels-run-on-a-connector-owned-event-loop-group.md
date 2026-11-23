@@ -20,7 +20,8 @@ limitations under the License.
 - Date: 2026-11-21
 - Issues: [#2237](https://github.com/flink-gcp/flink-connector-gcp/issues/2237),
   [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243)
-- Modules: base, bigquery
+- Modules: base, bigquery, cloudtasks
+- Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
 
 ## Context
@@ -57,6 +58,9 @@ releases the group's last lease shuts it down and waits for its threads.**
   It refuses settings whose provider does not build its own channels, such as a fixed provider
   around a caller-built channel, because the group cannot reach that channel and leaving it on
   gRPC's group silently is the failure this decision removes.
+  A caller that owns its channel opens it with `EmulatorChannels.openLeasedPlaintextChannel`
+  instead (refined 2026-11-22, #2243), which builds the channel on the group under a lease of its
+  own; the caller closes the clients using it first and the channel's holder last.
   The configurator reads the current group when gax builds a channel and leaves the builder alone
   when no lease is open, so a configurator that outlives its lease never hands a channel a
   terminated group.
@@ -110,7 +114,35 @@ releases the group's last lease shuts it down and waits for its threads.**
   is opened for a writer whose own appender holds a lease, and the pool closes and awaits a
   connection when its last writer closes, before that writer's appender releases its lease.
 
-The other connectors move onto the group in #2243.
+**In the Cloud Tasks connector (#2243, 2026-11-22), every client holds a lease the same way.**
+
+- The task creator, which the eager writer and the exactly-once committer each open on a
+  TaskManager, opens its production client with `open`.
+- **The emulator arm keeps ADR-0081's caller-owned channel**, now opened on the group by
+  `EmulatorChannels.openLeasedPlaintextChannel`, which builds it as before from the endpoint's
+  gRPC target (`EmulatorEndpoint.getTarget()`, resolver scheme intact) and returns it under a lease of its own (a `LeasedClient`
+  around gax's `GrpcTransportChannel`).
+  `fixedProvider` hands it to the client, whose own `open` lease covers no channel and only gives
+  it the same bounded close; the creator closes the client first and the channel last, and its
+  creation failure path, `Error`s included, closes whichever of the two it had opened through
+  `Closers.closeAllSuppressing`, whose contract decides which failure is reported.
+  The channel now closes gracefully within the bounds below, where the creator used to call
+  `shutdownNow()` on it after waiting up to 30 s for the client.
+  Moving the arm to `EmulatorChannels.plaintextProvider` instead, which a lease reaches like any
+  other provider, was tried and declined.
+  gax-grpc 2.90.0 (`InstantiatingGrpcChannelProvider.createChannelBuilder`) builds that channel
+  with `forAddress` from the endpoint split at its last colon, so a scheme-prefixed target such as
+  `dns:///localhost:8123`, which `EmulatorEndpoint` accepts, stops working: measured 2026-11-22,
+  creating the client fails with `IllegalArgumentException: Invalid host or port`.
+  With `GOOGLE_API_USE_CLIENT_CERTIFICATE=true` and a client certificate available, the same
+  method creates the builder with TLS channel credentials, which the plaintext configurator
+  cannot override; that one is read from the source, not measured.
+- The client's close is `LeasedClient`'s, 5 s and then 5 s more after cancelling its calls, in
+  place of the creator's earlier 30 s wait that only logged a warning when it ran out.
+- The committer's v2beta3 queue-retention readback opens a client the same way and closes it when
+  the call returns.
+
+The Pub/Sub, Bigtable, Spanner and Firestore connectors move onto the group in #2243.
 
 ## Evidence
 
@@ -208,7 +240,8 @@ writing jobs here were not traced.
 - The group stops whenever its last lease closes, for example when the last destination of a
   default-stream writer is evicted as idle, and the next client starts a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  Until #2243 lands, that is every channel of the other connectors.
+  Until #2243 lands, that is every channel of the Pub/Sub, Bigtable, Spanner and Firestore
+  connectors.
 - `productionChannelProvider` restates the SDK's pooled-writer transport settings, so a change to
   them in a later google-cloud-bigquerystorage is not picked up by itself.
   `StreamWriterRowAppenderFactoryTest` compares the restated provider with the one the SDK builds,
