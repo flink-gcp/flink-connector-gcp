@@ -567,15 +567,17 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   failures in the TaskManager's tasks and a `Metaspace` `OutOfMemoryError` that stopped the
   JobManager at the ninth job.
   The threads that grew with them belong to executors the client libraries keep in static fields
-  and never shut down (grpc-gcp 1.20.0's `gcp-mc-bg` pool, Spanner's `multiplexed-session-maintainer`),
-  which are the likely hold on each job's class loader; no heap dump was taken, and
-  [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296) follows it up.
+  and never shut down (grpc-gcp 1.20.0's `gcp-mc-bg` pool, Spanner's `multiplexed-session-maintainer`).
+  Heap dumps later showed every strong path to each finished job's class loader running through
+  these threads in both processes; the connector now lets them exit
+  ([ADR-0210](0210-a-session-cluster-can-opt-out-of-grpc-buffer-pools-and-spanner-static-executors-let-idle-threads-exit.md),
+  [#2296](https://github.com/flink-gcp/flink-connector-gcp/issues/2296)).
 
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
 shaded Netty allocator, reachable after six jobs, so that is unrelated to this change.
 A later investigation traced this kind of retention, on reading jobs, to Netty's finalizers
-([ADR-0210](0210-a-finished-jobs-grpc-buffer-pools-are-released-by-netty-finalizers.md)); the
+([ADR-0210](0210-a-session-cluster-can-opt-out-of-grpc-buffer-pools-and-spanner-static-executors-let-idle-threads-exit.md)); the
 writing jobs here were not traced.
 
 ## Alternatives declined
