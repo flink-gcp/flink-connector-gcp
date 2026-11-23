@@ -17,11 +17,12 @@ limitations under the License.
 # ADR-0141: A surface's stability tier is set by what can reshape its inputs and outputs
 
 - Status: Accepted
-- Date: 2026-08-23 (measured 2026-08-23); revised by [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068) (2026-11-07)
+- Date: 2026-08-23 (measured 2026-08-23); revised by [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068) (2026-11-07) and by [#2319](https://github.com/flink-gcp/flink-connector-gcp/pull/2319) (2026-11-24)
 - Issues: [#783](https://github.com/flink-gcp/flink-connector-gcp/issues/783),
   [#728](https://github.com/flink-gcp/flink-connector-gcp/issues/728),
   [#706](https://github.com/flink-gcp/flink-connector-gcp/issues/706),
-  [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068)
+  [#2068](https://github.com/flink-gcp/flink-connector-gcp/issues/2068),
+  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322)
 - Modules: all
 - Current behavior: `docs/content/_index.md` § API reference
 
@@ -133,9 +134,14 @@ trees, all internal calls under the fourth clause:
   `GCRules` is class-level `@BetaApi` (`BigtableTableAdmin`); the admin methods the module
   calls — `createTable`, `getTable`, `modifyFamilies` on the sink's ensure, `getTable` and
   `getAppProfile` on the change-stream preflight — are `@ObsoleteApi` (a deprecation-adjacent
-  tier, not an instability one). Both entries are historical since
+  tier, not an instability one). Both entries became historical when
   [#1622](https://github.com/flink-gcp/flink-connector-gcp/issues/1622) moved every admin call to
-  the protobuf client, which builds no `GCRules` and calls no model method.
+  the protobuf client, which builds no `GCRules` and calls no model method. The `GCRules` entry
+  still is. The `@ObsoleteApi` one is current again: google-cloud-bigtable 2.89.0
+  ([#2319](https://github.com/flink-gcp/flink-connector-gcp/pull/2319)) marks the admin clients,
+  their `create` factories and their settings classes, through which the module opens both admin
+  clients (`LeasedBigtableClient`, `BigtableCredentials`), until
+  [#2322](https://github.com/flink-gcp/flink-connector-gcp/issues/2322) moves to the V2 clients.
 - **spanner**: `com.google.cloud.ByteArray` and `com.google.cloud.Date` are class-level
   `@BetaApi` (`RowDataToSpannerValueConverter`, `DataChangeRecordToRowDataConverter`); every
   Spanner client surface the module calls (`DatabaseClient.batchWriteAtLeastOnce`,

@@ -11,9 +11,13 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `com.google.bigtable.admin.v2` request, in main code, the test harnesses and the SQL jar's
   smoke test alike (#1622). The pinned client marks nearly every model method of both admin
   clients `@ObsoleteApi`, and the model types parse every family's value type, so a family type
-  the SDK does not know fails the whole read (ADR-0156). The wrappers' only unmarked methods are
-  `getBaseClient()`, the `create` factories, `close`, the project and instance id getters, and the
-  consistency and restore-optimization waits. Test harnesses build families with `BigtableAdminProtos`;
+  the SDK does not know fails the whole read (ADR-0156). Since 2.89.0 the wrappers are marked
+  too: both classes, their `create` factories, their settings classes and the consistency and
+  restore-optimization waits are `@ObsoleteApi`, and the module still opens its admin clients
+  through those factories and settings (`LeasedBigtableClient`, `BigtableCredentials`);
+  `getBaseClient()` and `close` stay unmarked. Opening `BigtableTableAdminClientV2` and
+  `BigtableInstanceAdminClientV2` from the `Base*AdminSettings` instead is #2322. Test harnesses
+  build families with `BigtableAdminProtos`;
   `BigtableTableAdminTest` and `ColumnFamilyTypesTest` pin the sink's create and modify requests
   field by field.
 
