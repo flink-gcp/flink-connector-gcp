@@ -158,3 +158,66 @@ The Pub/Sub, Bigtable, Spanner, Firestore and Cloud Tasks connectors still use g
 ([#2243]({{< param BookRepo >}}/issues/2243)).
 Under `FAIL`, placing them in Flink's `lib/` avoids the exit, because the parent class loader never
 closes.
+
+## Memory a finished job leaves on a session cluster
+
+A job that ships the connector brings its own copy of the gRPC transport, and once it opens a gRPC
+channel, its own pooled Netty buffer allocator.
+When the job ends, what those pools still hold is released by Netty's finalizers, which run only
+after a collection has found the pools unreachable, and the job's class loader goes only after
+that.
+In the measured BigQuery jobs, a finished job's class loader went after two or three full
+collections run one after another with no other collection between them, where a job without the
+connector needed one.
+
+A TaskManager with no work ran no collection at all for three minutes when measured, so these class
+loaders can stay for minutes.
+G1's concurrent cycles did not unload them either on JDK 17: with `-XX:G1PeriodicGCInterval`
+forcing one every 20 seconds on an idle TaskManager, none of them unloaded a class, for a job with
+the connector or one without it.
+Only full collections did.
+On Flink 2.2.1, three finished BigQuery reading jobs raised the TaskManager's direct memory by about
+16 MB, which was back at its earlier level when read after the third full collection, and
+metaspace fell by about 50 MB as the loaders went ([#2244]({{< param BookRepo >}}/issues/2244)).
+When a direct-memory reservation cannot be met even after pending references have been processed,
+the JVM requests a collection and retries briefly before it gives up, and pools that need further
+collections are not necessarily released in that time.
+A session cluster that starts many short jobs can therefore fail a job with
+`OutOfMemoryError: Cannot reserve ... bytes of direct buffer memory` while that memory is
+waiting to be released.
+At ordinary job lifetimes the retention does no harm.
+
+A session cluster that runs many short jobs can avoid it in either of two ways:
+
+- **Unpooled gRPC buffers**: set the gRPC transport's allocator to unpooled on the TaskManagers.
+
+  ```yaml
+  env.java.opts.taskmanager: -Dio.grpc.netty.shaded.io.netty.allocator.type=unpooled
+  ```
+
+  The property name carries the prefix that grpc-netty-shaded relocates Netty under, so it applies
+  to gRPC alone and leaves Flink's own Netty alone.
+  A `flink-sql-connector-gcp-*` jar relocates gRPC a second time, under its own prefix, so for a
+  SQL jar added with `ADD JAR` the property is
+  `io.github.flink.gcp.connector.<product>.shaded.io.grpc.netty.shaded.io.netty.allocator.type`,
+  with `<product>` being `bigquery`, `pubsub` and so on, one per jar.
+  gRPC then allocates and frees each buffer instead of pooling it.
+  In the measurement, direct memory after three jobs stayed within 2 MB of its value before them,
+  and the class loaders went within two full collections.
+  A session cluster's JobManager also loads the connector for a source's enumerator, and
+  `env.java.opts.jobmanager` sets the same property there, although only TaskManagers were
+  measured.
+  Its effect on throughput has not been measured, and the connector's performance measurements use
+  the pooled default.
+- **The connector in `lib/`**: with the connector and its dependencies in `lib/` and no longer in
+  the job jars, every job shares one copy of the gRPC transport and its pools.
+  A job jar that still bundles the connector, or grpc-netty-shaded for another client, loads its
+  own copy first, because Flink resolves classes child-first by default.
+  On the TaskManager measured, with the same reading job run 30 times from a jar holding only the
+  job's class, direct memory grew by about 20 MB over the first 15 jobs and not at all over the
+  next 15.
+  This deployment needs the same connector release wherever the job graph is built, as
+  [Upgrading the connector](#upgrading-the-connector) describes.
+
+The reasoning, and the fixes that were weighed and declined, are in
+[ADR-0210]({{< param BookRepo >}}/blob/main/docs/adr/0210-a-finished-jobs-grpc-buffer-pools-are-released-by-netty-finalizers.md).

@@ -156,8 +156,10 @@ The log pattern ended with `%throwable`, which formats without loading classes.
 
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
-shaded Netty allocator, reachable after six jobs, so that is unrelated to this change and is
-tracked in [#2244](https://github.com/flink-gcp/flink-connector-gcp/issues/2244).
+shaded Netty allocator, reachable after six jobs, so that is unrelated to this change.
+A later investigation traced this kind of retention, on reading jobs, to Netty's finalizers
+([ADR-0210](0210-a-finished-jobs-grpc-buffer-pools-are-released-by-netty-finalizers.md)); the
+writing jobs here were not traced.
 
 ## Alternatives declined
 
