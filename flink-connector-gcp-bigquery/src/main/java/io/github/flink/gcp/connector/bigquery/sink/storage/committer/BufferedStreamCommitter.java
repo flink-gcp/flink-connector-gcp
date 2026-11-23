@@ -47,10 +47,11 @@ import java.util.Collection;
  * — {@code FlushRows} is idempotent, so retrying is always safe and cheaper than a job restart.
  * Everything else deliberately uses none of the {@link CommitRequest} retry signals: the failure
  * throws, the job restarts, and the framework re-commits the restored requests (repeating a
- * stream's last flush, to the same offset, succeeds, and an {@code ALREADY_EXISTS} answer is also
- * taken as already flushed). This is stricter than Beam's flush handler (which also skips {@code
- * NOT_FOUND} / {@code INVALID_ARGUMENT}): wrongly skipping would be silent data loss, wrongly
- * failing is a visible restart.
+ * stream's last flush, to the same offset, succeeds, and a flush below the offset the stream is
+ * already flushed to answers {@code ALREADY_EXISTS}, which is taken as already flushed). This is
+ * stricter than Beam's flush handler (which also skips {@code NOT_FOUND} / {@code
+ * INVALID_ARGUMENT}): wrongly skipping would be silent data loss, wrongly failing is a visible
+ * restart.
  *
  * <p>Under {@link CreateDisposition#CREATE_IF_NEEDED} the masked-existence verdict ({@link
  * AppendErrorClassifier#isExistenceMasked}, deliberately not the writers' wider missing-table one)

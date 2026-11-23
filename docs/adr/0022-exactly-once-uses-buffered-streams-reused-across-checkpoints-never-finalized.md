@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-07-25; dynamic destinations and schema evolution added 2026-08-13 ([#76], [#77]);
-  the answer to a repeated flush corrected 2026-11-23 ([#2272])
+  the answer to a repeated flush corrected 2026-11-23 ([#2272]); the committer's in-place retries
+  and the answer to a lower flush recorded 2026-11-23 ([#2283])
 - Issues: [#30], [#76], [#77]
 - Modules: bigquery (`sink.storage`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § Exactly-once
@@ -37,15 +38,25 @@ limitations under the License.
   Committables need no destination because `FlushRows` addresses the full stream resource name,
   so their version-1 format remains unchanged.
 - Committable = (streamName, inclusive flushOffset, subtaskId); the committer calls `FlushRows`
-  synchronously; repeating a stream's last flush, to the same offset, succeeds, as the restores in
-  the [exactly-once fault sequences](evidence/0204-bigquery-exactly-once-fault-sequence-findings-2148.md#where-the-faults-landed-against-the-commits)
-  measured, and `ALREADY_EXISTS` is taken as already flushed — the
-  idempotent-re-commit foundation, whose `ALREADY_EXISTS` handling follows Apache Beam's
-  `StorageApiFlushAndFinalizeDoFn` —
-  everything else throws (restart +
-  idempotent re-commit; no deterministic-id machinery, no checkpoint stamper, no `.global()` —
-  the committer runs at sink parallelism, the pre-commit topology is identity and exists only as
-  the validation hook).
+  synchronously.
+  Repeating a stream's last flush, to the same offset, succeeds, as the restores in the
+  [exactly-once fault sequences](evidence/0204-bigquery-exactly-once-fault-sequence-findings-2148.md#where-the-faults-landed-against-the-commits)
+  measured.
+  A flush below the offset the stream is already flushed to answers `ALREADY_EXISTS` ("Attempted
+  to flush to offset 9 when stream is already flushed to 19", measured 2026-11-23 against real
+  BigQuery), and the committer takes that answer, like an `OFFSET_ALREADY_EXISTS` error, as
+  already flushed, so re-committing a committable older than the stream's last flush does not fail
+  the commit.
+  That is the idempotent-re-commit foundation; its `ALREADY_EXISTS` handling follows Apache Beam's
+  `StorageApiFlushAndFinalizeDoFn`.
+  A transient failure, and under `CREATE_IF_NEEDED` a status that may mask a table not yet
+  propagated, is retried in place on the recovery schedule.
+  Any other failure, an exhausted retry budget, or a response offset other than the requested one
+  throws and fails the commit; the restored requests are re-committed when Flink restarts the job
+  or the job is restored.
+  There is no deterministic-id machinery, no checkpoint stamper and no `.global()`: the committer
+  runs at sink parallelism, and the pre-commit topology is identity and exists only as the
+  validation hook.
 - Restore: synchronous probe append at the restored offset; offset conflicts / dead stream /
   reopen failure abandon the stream for a fresh one at offset 0 (rows past the restored offset
   were never committable, so they stay invisible).
@@ -96,3 +107,4 @@ has previously shown a rare service-controlled tail near two hours.
 [#76]: https://github.com/flink-gcp/flink-connector-gcp/issues/76
 [#77]: https://github.com/flink-gcp/flink-connector-gcp/issues/77
 [#2272]: https://github.com/flink-gcp/flink-connector-gcp/issues/2272
+[#2283]: https://github.com/flink-gcp/flink-connector-gcp/issues/2283
