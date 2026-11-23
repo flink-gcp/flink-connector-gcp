@@ -19,8 +19,10 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-11-21
 - Issues: [#2237](https://github.com/flink-gcp/flink-connector-gcp/issues/2237),
-  [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243)
-- Modules: base, bigquery, cloudtasks
+  [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243),
+  [#2262](https://github.com/flink-gcp/flink-connector-gcp/issues/2262),
+  [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263)
+- Modules: base, bigquery, cloudtasks, pubsub
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
 
@@ -61,6 +63,14 @@ releases the group's last lease shuts it down and waits for its threads.**
   A caller that owns its channel opens it with `EmulatorChannels.openLeasedPlaintextChannel`
   instead (refined 2026-11-22, #2243), which builds the channel on the group under a lease of its
   own; the caller closes the clients using it first and the channel's holder last.
+  Since 2026-11-23 (#2263) it takes the API's provider builder and copies the settings gax would
+  put on a channel built from that provider: the maximum inbound message and metadata sizes and the
+  keep-alive settings, without which an emulator channel runs at gRPC's 4 MiB inbound default.
+  `EmulatorChannels.openLeasedClient` pairs that channel with a gax client created on it: its
+  `LeasedClient` closes the client within the bounds below, then the channel, and a failure to
+  create the client closes the channel.
+  The lease-less `openPlaintextChannel` and `fixedProvider(ManagedChannel)`, and the overload with
+  no provider builder, were removed with their last callers.
   The configurator reads the current group when gax builds a channel and leaves the builder alone
   when no lease is open, so a configurator that outlives its lease never hands a channel a
   terminated group.
@@ -118,14 +128,11 @@ releases the group's last lease shuts it down and waits for its threads.**
 
 - The task creator, which the eager writer and the exactly-once committer each open on a
   TaskManager, opens its production client with `open`.
-- **The emulator arm keeps ADR-0081's caller-owned channel**, now opened on the group by
-  `EmulatorChannels.openLeasedPlaintextChannel`, which builds it as before from the endpoint's
-  gRPC target (`EmulatorEndpoint.getTarget()`, resolver scheme intact) and returns it under a lease of its own (a `LeasedClient`
-  around gax's `GrpcTransportChannel`).
-  `fixedProvider` hands it to the client, whose own `open` lease covers no channel and only gives
-  it the same bounded close; the creator closes the client first and the channel last, and its
-  creation failure path, `Error`s included, closes whichever of the two it had opened through
-  `Closers.closeAllSuppressing`, whose contract decides which failure is reported.
+- **The emulator arm keeps ADR-0081's caller-owned channel**, now opened on the group with its
+  client by `EmulatorChannels.openLeasedClient`, which builds the channel as before from the
+  endpoint's gRPC target (`EmulatorEndpoint.getTarget()`, resolver scheme intact) under a lease of
+  its own, carrying `CloudTasksSettings`' transport defaults since #2263, and closes it after the
+  client, on the creation failure path too.
   The channel now closes gracefully within the bounds below, where the creator used to call
   `shutdownNow()` on it after waiting up to 30 s for the client.
   Moving the arm to `EmulatorChannels.plaintextProvider` instead, which a lease reaches like any
@@ -142,7 +149,44 @@ releases the group's last lease shuts it down and waits for its threads.**
 - The committer's v2beta3 queue-retention readback opens a client the same way and closes it when
   the call returns.
 
-The Pub/Sub, Bigtable, Spanner and Firestore connectors move onto the group in #2243.
+**In the Pub/Sub connector (#2263, 2026-11-23), every client holds a lease the same way.**
+
+- `Publisher` and `Subscriber` are not gax `BackgroundResource`s, so their hold cannot travel
+  with them as a `LeasedClient`.
+  `PubSubTransports` opens a `Transport` instead: a channel provider and its hold on the group,
+  which the client's owner closes once the client has shut down or been given up on.
+  In production the hold is a bare lease applied to a provider that restates the one the SDK's
+  builder uses by default, because that default sits in a private field of `Publisher.Builder` and
+  `Subscriber.Builder` with no getter, and a provider has to be set whole to carry the lease.
+  The subscriber still sizes the pool from its parallel pull count, since the lease's copy of the
+  provider accepts a pool size like the SDK's.
+- The sink's publisher releases its transport through `BoundedShutdown`'s release slot, so it
+  is released on the give-up path too; the dead-letter queue releases it as the entry after its
+  publisher's teardown in its `close()` list; the source's subscriber releases it after the
+  bounded wait for termination, and after a failed start, where no caller is left to.
+- **The emulator arms open a caller-owned channel**, with the API's channel settings: the admins
+  through `openLeasedClient`, the publisher and the subscriber through
+  `openLeasedPlaintextChannel` inside their `Transport`.
+  For the topic admin, the subscription admin and the subscriber, which used
+  `EmulatorChannels.plaintextProvider`, that also removes the two failures recorded for Cloud
+  Tasks below: a `dns:///` endpoint and a configured client certificate.
+  A publisher's or subscriber's `Transport` cancels what is in flight with `shutdownNow()` before
+  its holder waits for the channel, as the sink's release always did; the dead-letter queue's used
+  to shut its channel down gracefully without waiting. An admin's channel closes after its client
+  within `LeasedClient`'s bounds.
+  A subscriber on an emulator now multiplexes its parallel pull streams over that one channel,
+  where gax built a pool of that size.
+- The topic admin, used on a TaskManager when a sink creates a missing topic, still opens a client for each creation call, now as a `LeasedClient`.
+- **The subscription admin, on the JobManager, closes its client when each call returns, and its
+  `close()` cancels a call still in flight** and closes that call's client, the session creator's
+  treatment above: the calls go through `ApiFuture`s that the calling thread awaits
+  interruptibly, and a call's client stays findable until its close has finished, so a racing
+  `close()` waits for that close rather than returning first.
+  Measured 2026-11-23 against an endpoint that accepts the connection and never answers: the
+  enumerator's close ended a waiting `GetSubscription` within 4 s, against the 5 s it took when
+  only the client's close ended it.
+
+The Bigtable, Spanner and Firestore connectors move onto the group in #2243.
 
 ## Evidence
 
@@ -185,6 +229,16 @@ The log pattern ended with `%throwable`, which formats without loading classes.
     either form.
   - On the code this records, a writing job was also cancelled 5 times and had its JobManager
     stopped once, with no exit.
+
+- **Pub/Sub** (#2263), measured 2026-11-23 on the same kind of cluster with the Pub/Sub emulator:
+  a SQL job reading one subscription into one topic, the SQL connector JAR shipped with it
+  (`sql-client.sh -j`), cancelled 8 s after it started running, 12 times per arm.
+  On 1.4.0 the TaskManager exited with code 239 in 12 of 12, after `NoClassDefFoundError:
+  .../IntObjectHashMap$2` from a `grpc-default-worker-ELG` thread; with the group, neither process
+  exited in 12 of 12 on the first form of this change and in 12 of 12 on the code this records,
+  and no `grpc-default-worker-ELG` thread appeared.
+  The JobManager did not exit on either arm; these trials cancel after the enumerator's startup
+  calls have returned, so they do not exercise a cancellation while one is in flight.
 
 One prototype trial exited the TaskManager with a direct-memory `OutOfMemoryError` at job start.
 The same A/B run on 1.4.0 and on the prototype left six user-code class loaders, each with its own
@@ -240,12 +294,16 @@ writing jobs here were not traced.
 - The group stops whenever its last lease closes, for example when the last destination of a
   default-stream writer is evicted as idle, and the next client starts a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  Until #2243 lands, that is every channel of the Pub/Sub, Bigtable, Spanner and Firestore
-  connectors.
+  Until #2243 lands, that is every channel of the Bigtable, Spanner and Firestore connectors.
 - `productionChannelProvider` restates the SDK's pooled-writer transport settings, so a change to
   them in a later google-cloud-bigquerystorage is not picked up by itself.
   `StreamWriterRowAppenderFactoryTest` compares the restated provider with the one the SDK builds,
   so such a change fails the build instead.
+- `PubSubTransports` restates the default providers of the SDK's `Publisher` and `Subscriber`
+  builders in the same way; `PubSubTransportsTest` compares them with the builders' own fields.
+- A Pub/Sub publisher or subscriber whose shutdown overran its budget releases its hold anyway.
+  If that was the group's last lease, the group's shutdown closes the channels the abandoned
+  client still holds.
 - On the JobManager a client is safe only if it is closed before the job's class loader is
   released: a release while a read session is being created, when a table read starts or once a
   query read's query has finished, can still see the group torn down after the loader closed,

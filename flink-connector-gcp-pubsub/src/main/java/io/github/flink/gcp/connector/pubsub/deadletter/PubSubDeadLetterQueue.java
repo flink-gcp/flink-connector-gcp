@@ -33,12 +33,11 @@ import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
-import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubCredentials;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
+import io.github.flink.gcp.connector.pubsub.PubSubTransports;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.grpc.ManagedChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -193,9 +192,6 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
 
     private transient Publisher publisher;
 
-    /** The emulator channel this instance owns and shuts down; null on the ADC transport. */
-    @Nullable private transient ManagedChannel ownedChannel;
-
     /**
      * The two steps {@link #close()} runs, held as fields rather than called directly so a test can
      * drive its failure path: {@link Publisher} cannot be subclassed (non-final, but its only
@@ -208,8 +204,11 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
      */
     @Nullable @VisibleForTesting transient AutoCloseable publisherShutdown;
 
-    /** The second of the two; see {@code publisherShutdown}. */
-    @Nullable @VisibleForTesting transient AutoCloseable channelShutdown;
+    /**
+     * The second of the two; see {@code publisherShutdown}. It releases the publisher's {@link
+     * PubSubTransports} transport, its hold on the connector's gRPC event-loop group (ADR-0208).
+     */
+    @Nullable @VisibleForTesting transient AutoCloseable transportRelease;
 
     /** Publishes not yet awaited; task-thread only, like every other field here. */
     private transient List<ApiFuture<String>> inFlightPublishes;
@@ -251,19 +250,21 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         subtaskIndex = context.getSubtaskIndex();
         inFlightPublishes = new ArrayList<>();
         CredentialsProvider credentials = PubSubCredentials.load(serviceAccountKeyFile);
-        Publisher.Builder builder = Publisher.newBuilder(topic.toTopicPath());
+        PubSubTransports.Transport transport = null;
         try {
+            transport = PubSubTransports.openForPublisher(emulatorEndpoint);
+            Publisher.Builder builder =
+                    Publisher.newBuilder(topic.toTopicPath())
+                            .setChannelProvider(transport.channelProvider());
             if (emulatorEndpoint != null) {
-                ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
-                builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
-                        .setCredentialsProvider(NoCredentialsProvider.create());
+                builder.setCredentialsProvider(NoCredentialsProvider.create());
             } else {
                 configureCredentials(builder, credentials);
             }
             publisher = builder.build();
-            // The channel is released by channelShutdown, the next entry in close()'s list, rather
-            // than by the teardown itself: it is graceful shutdown() here, not the sink's
-            // shutdownNow(), and Closers.closeAll already runs it whatever the first entry did.
+            // The transport is released by transportRelease, the next entry in close()'s list,
+            // rather than by the teardown itself: Closers.closeAll already runs it whatever the
+            // first entry did, and a release that fails is reported there.
             publisherShutdown =
                     new BoundedShutdown(
                             publisher::shutdown,
@@ -277,12 +278,13 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
                             // Flink would drop the later registration with a warning. Splitting
                             // them also says which publisher is stalling.
                             PubSubShutdownResidue.DEAD_LETTER_PUBLISHER_SHUTDOWNS_ABANDONED);
-            channelShutdown = this::shutdownChannel;
-        } catch (IOException | RuntimeException e) {
-            // The channel is owned here until the publisher takes it over on success.
-            if (ownedChannel != null) {
-                ownedChannel.shutdownNow();
-                ownedChannel = null;
+            transportRelease = transport;
+        } catch (IOException | RuntimeException | Error e) {
+            // The transport is owned here until close() takes it over on success; which failure
+            // is reported is closeAllSuppressing's contract.
+            Closers.closeAllSuppressing(e, transport);
+            if (e instanceof Error) {
+                throw (Error) e;
             }
             throw new IOException(
                     "Failed to create the dead-letter publisher for Pub/Sub topic " + topic + ".",
@@ -290,9 +292,22 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
         }
         // Last, so that the names exist exactly when the queue can be used: an open that threw
         // above fails the writer's creation, and the metric group goes with the task.
-        metrics =
-                new PubSubDeadLetterQueueMetrics(
-                        context.getMetricGroup(), this::getInFlightMessages);
+        try {
+            metrics =
+                    new PubSubDeadLetterQueueMetrics(
+                            context.getMetricGroup(), this::getInFlightMessages);
+        } catch (RuntimeException | Error e) {
+            // The host sink calls open() before it owns the queue, so nothing would close what
+            // was just opened: the publisher and its hold on the event-loop group.
+            try {
+                Closers.closeAllSuppressing(e, publisherShutdown, transportRelease);
+            } finally {
+                publisher = null;
+                publisherShutdown = null;
+                transportRelease = null;
+            }
+            throw e;
+        }
     }
 
     /** Applies an explicit provider without replacing the SDK's ADC provider when it is absent. */
@@ -346,19 +361,18 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
             return;
         }
         try {
-            // Through Closers.closeAll, so the channel is shut down even when the publisher's
-            // shutdown throws: an emulator channel left running holds a gRPC transport open.
-            Closers.closeAll(publisherShutdown, channelShutdown);
+            // Through Closers.closeAll, so the transport is released even when the publisher's
+            // shutdown throws: a lease left open keeps the event-loop group running.
+            Closers.closeAll(publisherShutdown, transportRelease);
         } finally {
             publisher = null;
-            ownedChannel = null;
             inFlightPublishes = null;
             // The registered gauges outlive this field — they read through method references —
             // so clearing it releases nothing and only keeps this block's meaning uniform: after
             // close, every field open() set is gone.
             metrics = null;
             publisherShutdown = null;
-            channelShutdown = null;
+            transportRelease = null;
         }
     }
 
@@ -508,12 +522,6 @@ public final class PubSubDeadLetterQueue implements DeadLetterQueue {
     @VisibleForTesting
     Duration flushTimeout() {
         return flushTimeout;
-    }
-
-    private void shutdownChannel() {
-        if (ownedChannel != null) {
-            ownedChannel.shutdown();
-        }
     }
 
     /**

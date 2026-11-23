@@ -20,7 +20,6 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.ExceptionUtils;
 
-import com.google.api.core.ApiService;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
@@ -38,7 +37,6 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Consumer;
 
 /**
  * {@link PullSubscriber} backed by a {@code google-cloud-pubsub} {@link Subscriber}.
@@ -63,15 +61,16 @@ import java.util.function.Consumer;
  * {@link #bufferUsage()} for the per-paused-split policy, which may park one split before the
  * aggregate reader budget is reached.
  *
- * <p>The client's three lifecycle operations are held as functional values rather than as a {@link
- * Subscriber}, <b>because that is the only seam a test can drive</b> (#325). {@code Subscriber} is
- * a non-final class whose only constructor is private, so it cannot be subclassed to misbehave —
- * the same mechanism that makes {@code Publisher} unfakeable for {@code BoundedShutdown}, and the
- * same effect, by package-private access rather than private, for the {@code BigtableDataClient}
- * behind Bigtable's batcher adapter. This class's failure paths all need a client that misbehaves:
- * one that fails to start, one that never terminates, and one that reports at teardown a failure
- * this subscriber has already delivered. None of them was reachable before, since the emulator and
- * gated ITCases exercise only a client that works.
+ * <p>The client is held as a {@link SubscriberClient} rather than as a {@link Subscriber},
+ * <b>because a {@code Subscriber} is not a seam a test can drive</b> (#325). It is a non-final
+ * class whose only constructor is private, so it cannot be subclassed to misbehave — the same
+ * mechanism that makes {@code Publisher} unfakeable for {@code BoundedShutdown}, and the same
+ * effect, by package-private access rather than private, for the {@code BigtableDataClient} behind
+ * Bigtable's batcher adapter. This class's failure paths all need a client that misbehaves: one
+ * that fails to start, one that never terminates, and one that reports at teardown a failure this
+ * subscriber has already delivered. A scripted client produces each of them on demand, which the
+ * emulator and gated ITCases do not. The production constructor has its factory create the client;
+ * the seam constructor takes a scripted one.
  *
  * <p>The teardown itself — the bounded waits, the three-exit classification and the four {@code
  * WARN} messages whose fragments the documentation quotes verbatim (#359) — is {@link
@@ -86,21 +85,8 @@ import java.util.function.Consumer;
 final class StreamingPullSubscriber implements PullSubscriber {
 
     /**
-     * Registers a permanent-failure sink with the client and starts it, returning once it is
-     * running.
-     *
-     * <p>Takes the sink rather than an SDK {@code ApiService.Listener} so no vendor type reaches
-     * this seam: what this class needs from the listener is the {@link Throwable}, and a test
-     * driving a failure should not have to build a listener to deliver one.
-     */
-    @FunctionalInterface
-    interface SubscriberStart {
-        void start(Consumer<Throwable> onPermanentFailure);
-    }
-
-    /**
      * The client's own bounded wait for termination, satisfied by {@code
-     * Subscriber::awaitTerminated}.
+     * SubscriberClient::awaitTerminated}.
      *
      * <p>Not {@code BoundedShutdown.TerminationWait}, whose shape is {@code boolean await(...)
      * throws InterruptedException} against this one's {@code void ... throws TimeoutException}.
@@ -115,8 +101,13 @@ final class StreamingPullSubscriber implements PullSubscriber {
     private final AckTracker ackTracker;
     private final SubscriberBufferBudget bufferBudget;
     private final Runnable dataAvailableSignal;
-    private final Runnable subscriberStopAsync;
     private final SubscriberTeardown teardown;
+
+    /**
+     * The client. Closing it releases its hold on the connector's gRPC event-loop group (ADR-0208),
+     * which happens once it has terminated or been given up on.
+     */
+    private final SubscriberClient client;
 
     @GuardedBy("this")
     private final Deque<PubsubMessage> messages = new ArrayDeque<>();
@@ -164,58 +155,17 @@ final class StreamingPullSubscriber implements PullSubscriber {
             Duration shutdownTimeout,
             SubscriberBufferBudget bufferBudget)
             throws IOException {
-        this.splitId = splitId;
-        this.subscription = subscription;
-        this.ackTracker = ackTracker;
-        this.bufferBudget = bufferBudget;
-        this.dataAvailableSignal = dataAvailableSignal;
-        Subscriber subscriber = subscriberFactory.create(subscription, this::receiveMessage);
-        this.subscriberStopAsync = subscriber::stopAsync;
-        // this::isAlreadyReported leaks a half-built instance, harmlessly: the teardown stores the
-        // predicate and calls it only from stopQuietly/awaitTerminated, never during construction.
-        this.teardown =
-                new SubscriberTeardown(
-                        subscription,
-                        shutdownTimeout,
-                        subscriber::stopAsync,
-                        subscriber::awaitTerminated,
-                        this::isAlreadyReported);
-        // The client is created here rather than in a this(...) delegation because the receiver it
-        // takes is this::receiveMessage, which does not exist until the instance does. So the two
-        // constructors assign the same fields instead of one calling the other, and share only what
-        // has to be shared: the start, and what it does when it fails.
-        startOrRelease(
-                onPermanentFailure ->
-                        registerFailureListenerAndStart(subscriber, onPermanentFailure));
-    }
-
-    /**
-     * The seam. Takes the client's three lifecycle operations directly, so a test can supply ones
-     * that fail; see the class javadoc for why a fake {@link Subscriber} is not an option.
-     */
-    @VisibleForTesting
-    StreamingPullSubscriber(
-            String splitId,
-            SubscriptionDestination subscription,
-            AckTracker ackTracker,
-            Runnable dataAvailableSignal,
-            Duration shutdownTimeout,
-            SubscriberStart subscriberStart,
-            Runnable subscriberStopAsync,
-            TerminationWait subscriberAwaitTerminated)
-            throws IOException {
         this(
                 splitId,
                 subscription,
                 ackTracker,
                 dataAvailableSignal,
                 shutdownTimeout,
-                SubscriberBufferBudget.unbounded(),
-                subscriberStart,
-                subscriberStopAsync,
-                subscriberAwaitTerminated);
+                bufferBudget,
+                receiver -> subscriberFactory.create(subscription, receiver));
     }
 
+    /** The seam: takes a client a test has scripted to misbehave, instead of a factory. */
     @VisibleForTesting
     StreamingPullSubscriber(
             String splitId,
@@ -224,46 +174,54 @@ final class StreamingPullSubscriber implements PullSubscriber {
             Runnable dataAvailableSignal,
             Duration shutdownTimeout,
             SubscriberBufferBudget bufferBudget,
-            SubscriberStart subscriberStart,
-            Runnable subscriberStopAsync,
-            TerminationWait subscriberAwaitTerminated)
+            SubscriberClient client)
+            throws IOException {
+        this(
+                splitId,
+                subscription,
+                ackTracker,
+                dataAvailableSignal,
+                shutdownTimeout,
+                bufferBudget,
+                receiver -> client);
+    }
+
+    /**
+     * Both constructors end here. The client is opened in this body rather than passed in because
+     * the production one's receiver is {@code this::receiveMessage}, which a {@code this(...)}
+     * argument cannot name.
+     */
+    private StreamingPullSubscriber(
+            String splitId,
+            SubscriptionDestination subscription,
+            AckTracker ackTracker,
+            Runnable dataAvailableSignal,
+            Duration shutdownTimeout,
+            SubscriberBufferBudget bufferBudget,
+            ClientOpener clientOpener)
             throws IOException {
         this.splitId = splitId;
         this.subscription = subscription;
         this.ackTracker = ackTracker;
         this.bufferBudget = bufferBudget;
         this.dataAvailableSignal = dataAvailableSignal;
-        this.subscriberStopAsync = subscriberStopAsync;
+        this.client = clientOpener.open(this::receiveMessage);
+        // this::isAlreadyReported leaks a half-built instance, harmlessly: the teardown stores the
+        // predicate and calls it only from stopQuietly/awaitTerminated, never during construction.
         this.teardown =
                 new SubscriberTeardown(
                         subscription,
                         shutdownTimeout,
-                        subscriberStopAsync,
-                        subscriberAwaitTerminated,
+                        client::stopAsync,
+                        client::awaitTerminated,
                         this::isAlreadyReported);
-        startOrRelease(subscriberStart);
+        startOrRelease();
     }
 
-    /**
-     * The production wiring, and the one thing here no unit test reaches — stated so it is not
-     * mistaken for pinned. Every test drives the seam constructor, so nothing checks that the
-     * listener is registered <em>before</em> the start (a failure raised in between would be lost,
-     * and the split would then stall silently rather than fail), that the executor is a direct one,
-     * or that the two teardown operations bind the client this starts. A fake {@link Subscriber} is
-     * what it would take, which is the thing that cannot be built.
-     */
-    private static void registerFailureListenerAndStart(
-            Subscriber subscriber, Consumer<Throwable> onPermanentFailure) {
-        subscriber.addListener(
-                new ApiService.Listener() {
-                    @Override
-                    public void failed(ApiService.State from, Throwable failure) {
-                        onPermanentFailure.accept(failure);
-                    }
-                },
-                // A direct executor: recording the failure and waking the fetcher are both cheap.
-                Runnable::run);
-        subscriber.startAsync().awaitRunning();
+    /** Opens the client, handing it the receiver for its messages. */
+    @FunctionalInterface
+    private interface ClientOpener {
+        SubscriberClient open(SubscriberFactory.MessageConsumer receiver) throws IOException;
     }
 
     /**
@@ -301,9 +259,9 @@ final class StreamingPullSubscriber implements PullSubscriber {
      * failure registering the listener leaves the service {@code NEW}, one racing a start in
      * progress leaves it {@code STARTING} — and because it costs a no-op otherwise.
      */
-    private void startOrRelease(SubscriberStart subscriberStart) throws IOException {
+    private void startOrRelease() throws IOException {
         try {
-            subscriberStart.start(this::fail);
+            client.start(this::fail);
         } catch (RuntimeException e) {
             releaseAfterFailedStart(e);
             throw new IOException(
@@ -323,19 +281,22 @@ final class StreamingPullSubscriber implements PullSubscriber {
      * Through {@link Closers#closeAllSuppressing} rather than a bare call, as at the sibling site
      * (#324): a release that throws must be suppressed onto the failure being propagated, never
      * replace it. The SDK's own {@code stopAsync()} cannot throw — Guava catches {@code Throwable}
-     * inside it — but this method's operations are injected, so what holds for the production
-     * client is not what holds for the seam.
+     * inside it — but the client is injected, so what holds for the production client is not what
+     * holds for the seam's.
      */
     private void releaseAfterFailedStart(Throwable failure) {
-        Closers.closeAllSuppressing(failure, teardown::stopQuietly);
+        // Closing the client releases its transport: nothing else holds this subscriber once the
+        // constructor throws.
+        // The client may still be stopping on it, which the group's shutdown cuts short.
+        Closers.closeAllSuppressing(failure, teardown::stopQuietly, client);
     }
 
     /**
      * Receives a message from the client library, on one of its callback threads.
      *
      * <p>Package-private rather than private so the buffer accounting can be driven without a
-     * client: this is the client library's callback, and the seam constructor takes the client's
-     * lifecycle operations only, never its receiver.
+     * client: this is the client library's callback, and the client a test hands the seam
+     * constructor never calls it.
      */
     @VisibleForTesting
     void receiveMessage(PubsubMessage message, AckHandle ackHandle) {
@@ -443,7 +404,7 @@ final class StreamingPullSubscriber implements PullSubscriber {
 
     @Override
     public void requestStop() {
-        subscriberStopAsync.run();
+        client.stopAsync();
     }
 
     /**
@@ -487,7 +448,7 @@ final class StreamingPullSubscriber implements PullSubscriber {
         // SPI's javadoc argues for — the nack is what must not be skipped — survives a failure in
         // either step.
         try {
-            Closers.closeAll(() -> ackTracker.nackSplit(splitId), subscriberStopAsync::run);
+            Closers.closeAll(() -> ackTracker.nackSplit(splitId), client::stopAsync);
         } catch (Exception e) {
             // Neither step declares a checked exception, so this is the unchecked one closeAll
             // collected; an Error leaves closeAll as itself and never reaches here.
@@ -501,8 +462,9 @@ final class StreamingPullSubscriber implements PullSubscriber {
         // guarantees the client was asked to stop whatever else it did, so a shutdown that throws
         // leaves a stop in progress that still has to be waited out. The reader's own closeAll
         // covers that on its path, calling shutdown before close so close meets the idempotence
-        // guard; removeSplit calls close() directly and has only this.
-        Closers.closeAll(this::shutdown, teardown::awaitTerminated);
+        // guard; removeSplit calls close() directly and has only this. The transport is released
+        // last, after the client has terminated or the wait for it has given up.
+        Closers.closeAll(this::shutdown, teardown::awaitTerminated, client);
     }
 
     /**

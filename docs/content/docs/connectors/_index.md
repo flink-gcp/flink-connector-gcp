@@ -130,8 +130,8 @@ The destroy then fails with `NoClassDefFoundError`, and under
 writer or reader, and a session cluster's JobManager, taking its other jobs with it, after a
 BigQuery source is cancelled.
 
-The BigQuery and Cloud Tasks connectors therefore run their gRPC clients on an event-loop group of
-their own, whose threads are named `flink-gcp-grpc-elg-*`.
+The BigQuery, Cloud Tasks and Pub/Sub connectors therefore run their gRPC clients on an event-loop
+group of their own, whose threads are named `flink-gcp-grpc-elg-*`.
 There is one group for each copy of the connectors' shared classes in a class loader, so each SQL
 connector JAR, which relocates its own copy, has its own.
 The last reader, writer, committer or enumerator using a group to close shuts it down and waits
@@ -139,13 +139,17 @@ for its threads.
 On a TaskManager, Flink closes writers, committers and readers before it closes the loader, so the
 group is gone first.
 On the JobManager, Flink does not wait for a source's enumerator to close before it releases the
-loader, so BigQuery's enumerator does not wait for its close either: it closes its client, and
-releases its hold on the group, as soon as the read session exists.
-A loader released while that session is being created can still see the group torn down after
-it closed: the job ends in any way, a stop with a savepoint included, or the JobManager
-shuts down, when a table read starts or when a query read's query has finished.
-Closing the enumerator then asks for the creation to be cancelled rather than waiting for its
-answer.
+loader, so an enumerator does not wait for its close either: it closes each client, and releases
+its hold on the group, as soon as the call it opened the client for returns.
+BigQuery's enumerator does that once the read session exists, and Pub/Sub's after each check,
+creation or seek of a subscription when the source starts.
+A loader released while such a call is in flight can still see the group torn down after it
+closed: the job ends in any way, a stop with a savepoint included, or the JobManager shuts down,
+when a BigQuery table read starts, when a BigQuery query read's query has finished, or while a
+Pub/Sub source starts.
+Closing the enumerator then asks for the call to be cancelled rather than waiting for its answer.
+Pub/Sub's publishers and subscribers keep the shutdown budgets of their own options and release
+their hold on the group when that shutdown finishes or its budget runs out.
 Any other client a connector closes itself gets 5 seconds for its calls to finish before they
 are cancelled.
 A Storage Write API default-stream writer is closed by the client library instead, whose own waits
@@ -156,7 +160,7 @@ connector, with the same location and credentials, the two share the pool's conn
 connector stops the group when its last BigQuery client closes even if the job's writers are still
 using them.
 
-The Pub/Sub, Bigtable, Spanner and Firestore connectors still use gRPC's group
+The Bigtable, Spanner and Firestore connectors still use gRPC's group
 ([#2243]({{< param BookRepo >}}/issues/2243)).
 Under `FAIL`, placing them in Flink's `lib/` avoids the exit, because the parent class loader never
 closes.

@@ -18,19 +18,19 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import org.apache.flink.annotation.Internal;
 
-import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.io.IOException;
 
 /**
- * Creates the {@code google-cloud-pubsub} {@link Subscriber} backing one split.
+ * Creates the {@code google-cloud-pubsub} subscriber backing one split, as a {@link
+ * SubscriberClient}.
  *
  * <p>Instances are created on the task manager inside {@code createReader} and hold no client state
- * of their own, so nothing here is shipped in the job graph. Returned subscribers are not started —
- * the caller starts each one only after registering its failure listener, so a startup failure is
- * not missed.
+ * of their own, so nothing here is shipped in the job graph. Returned subscribers are not started:
+ * the caller starts each through {@link SubscriberClient#start(java.util.function.Consumer)}, which
+ * registers the failure listener first, so a startup failure is not missed.
  */
 @Internal
 public interface SubscriberFactory {
@@ -40,10 +40,11 @@ public interface SubscriberFactory {
      *
      * @param subscription the subscription to consume
      * @param consumer invoked for every received message
-     * @return the created, not yet started subscriber
+     * @return the created, not yet started subscriber, whose transport the caller releases by
+     *     closing it
      * @throws IOException if the subscriber cannot be created
      */
-    Subscriber create(SubscriptionDestination subscription, MessageConsumer consumer)
+    SubscriberClient create(SubscriptionDestination subscription, MessageConsumer consumer)
             throws IOException;
 
     /**

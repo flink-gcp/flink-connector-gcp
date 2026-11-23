@@ -19,6 +19,7 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 
+import com.google.api.core.ApiService;
 import com.google.api.gax.batching.FlowControlSettings;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
@@ -26,9 +27,9 @@ import com.google.cloud.pubsub.v1.MessageReceiver;
 import com.google.cloud.pubsub.v1.MessageReceiverWithAckResponse;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.cloud.pubsub.v1.SubscriberShutdownSettings;
-import com.google.cloud.pubsub.v1.stub.SubscriberStubSettings;
-import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.pubsub.PubSubTransports;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
@@ -37,6 +38,9 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 
 /**
  * {@link SubscriberFactory} building {@code google-cloud-pubsub} {@link Subscriber} instances
@@ -58,9 +62,10 @@ import java.time.Duration;
  *       default — which is what keeps the ordering guarantee independent of that default.
  * </ul>
  *
- * <p>When an emulator endpoint is set, subscribers connect to it over a plaintext channel with no
- * credentials. The transport provider is the instantiating one, so each subscriber creates the
- * channel it uses and releases it when it stops.
+ * <p>Every subscriber runs on a {@link PubSubTransports} transport, with its channels on the
+ * connector's gRPC event-loop group (ADR-0208), which the returned {@link SubscriberClient} holds
+ * until its owner closes it. With an emulator endpoint the subscriber connects over a plaintext
+ * channel with no credentials.
  */
 @Internal
 public final class DefaultSubscriberFactory implements SubscriberFactory {
@@ -125,13 +130,23 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
     }
 
     @Override
-    public Subscriber create(SubscriptionDestination subscription, MessageConsumer consumer)
+    public SubscriberClient create(SubscriptionDestination subscription, MessageConsumer consumer)
             throws IOException {
+        PubSubTransports.Transport transport = null;
         try {
-            Subscriber.Builder builder = newBuilder(subscription, consumer);
+            transport = PubSubTransports.openForSubscriber(emulatorEndpoint);
+            Subscriber.Builder builder =
+                    newBuilder(subscription, consumer)
+                            .setChannelProvider(transport.channelProvider());
             configure(builder, options, orderingMode);
-            return builder.build();
-        } catch (RuntimeException e) {
+            return new SubscriberAdapter(builder.build(), transport);
+        } catch (IOException | RuntimeException | Error e) {
+            // Owned here until the caller takes it over on success; which failure is reported is
+            // closeAllSuppressing's contract.
+            Closers.closeAllSuppressing(e, transport);
+            if (e instanceof Error) {
+                throw (Error) e;
+            }
             throw new IOException(
                     "Failed to create the Pub/Sub subscriber for subscription " + subscription, e);
         }
@@ -162,11 +177,7 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
                                             consumer.receive(message, AckHandle.of(reply)));
         }
         if (emulatorEndpoint != null) {
-            builder.setChannelProvider(
-                            EmulatorChannels.plaintextProvider(
-                                    SubscriberStubSettings.defaultGrpcTransportProviderBuilder(),
-                                    emulatorEndpoint))
-                    .setCredentialsProvider(NoCredentialsProvider.create());
+            builder.setCredentialsProvider(NoCredentialsProvider.create());
         } else if (credentialsOverride != null) {
             builder.setCredentialsProvider(credentialsOverride);
         }
@@ -224,5 +235,67 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
                     options.getFlowControlMaxOutstandingRequestBytes());
         }
         return flowControl.build();
+    }
+
+    /**
+     * Adapts the SDK {@link Subscriber} and its transport to the reader-facing {@link
+     * SubscriberClient} interface.
+     */
+    @VisibleForTesting
+    static final class SubscriberAdapter implements SubscriberClient {
+
+        private final Subscriber subscriber;
+        private final PubSubTransports.Transport transport;
+
+        SubscriberAdapter(Subscriber subscriber, PubSubTransports.Transport transport) {
+            this.subscriber = subscriber;
+            this.transport = transport;
+        }
+
+        /** The SDK client, for a test that reads what the builder configured. */
+        @VisibleForTesting
+        Subscriber subscriber() {
+            return subscriber;
+        }
+
+        /**
+         * The production wiring, and the one thing in the subscriber's start that no unit test
+         * reaches — stated so it is not mistaken for pinned. {@code StreamingPullSubscriberTest}
+         * drives its seam constructor, so nothing checks that the listener is registered
+         * <em>before</em> the start (a failure raised in between would be lost, and the split would
+         * then stall silently rather than fail), or that the executor is a direct one. A fake
+         * {@link Subscriber} is what it would take, which is the thing that cannot be built. That
+         * the stop and the wait act on the client this starts is structural: all three use the one
+         * {@code subscriber} this adapter holds.
+         */
+        @Override
+        public void start(Consumer<Throwable> onPermanentFailure) {
+            subscriber.addListener(
+                    new ApiService.Listener() {
+                        @Override
+                        public void failed(ApiService.State from, Throwable failure) {
+                            onPermanentFailure.accept(failure);
+                        }
+                    },
+                    // A direct executor: recording the failure and waking the fetcher are both
+                    // cheap.
+                    Runnable::run);
+            subscriber.startAsync().awaitRunning();
+        }
+
+        @Override
+        public void stopAsync() {
+            subscriber.stopAsync();
+        }
+
+        @Override
+        public void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
+            subscriber.awaitTerminated(timeout, unit);
+        }
+
+        @Override
+        public void close() {
+            transport.close();
+        }
     }
 }

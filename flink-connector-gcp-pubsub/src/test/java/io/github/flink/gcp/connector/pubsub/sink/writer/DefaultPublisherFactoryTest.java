@@ -20,10 +20,12 @@ import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.batching.FlowController;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.GrpcTransportChannel;
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
@@ -32,8 +34,10 @@ import io.grpc.ManagedChannelBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
 import java.lang.reflect.Field;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -369,7 +373,8 @@ class DefaultPublisherFactoryTest {
         DefaultPublisherFactory factory =
                 new DefaultPublisherFactory(PubSubPublisherOptions.defaults(), null, credentials);
 
-        Publisher.Builder builder = factory.newBuilder(TOPIC, null);
+        Publisher.Builder builder =
+                factory.newBuilder(TOPIC, InstantiatingGrpcChannelProvider.newBuilder().build());
 
         assertThat(field(builder, "credentialsProvider")).isSameAs(credentials);
     }
@@ -393,27 +398,32 @@ class DefaultPublisherFactoryTest {
     }
 
     /**
-     * The emulator channel the adapter owns reaches the teardown's release slot, which is what
-     * makes it released on the give-up path too. {@link BoundedShutdown} owns the "released
+     * The release the adapter is handed reaches the teardown's release slot, which is what makes
+     * the transport released on the give-up path too. {@link BoundedShutdown} owns the "released
      * whatever happened" contract and its own tests pin it; this is the wiring on this side of it,
-     * and the only thing that fails if the adapter stops passing the channel.
+     * and the only thing that fails if the adapter stops passing the release.
      */
     @Test
-    void theAdapterReleasesItsOwnedChannel() throws Exception {
+    void theAdapterHandsItsReleaseToTheTeardown() throws Exception {
         ManagedChannel channel = lazyChannel();
-        Publisher publisher =
-                Publisher.newBuilder(TOPIC.toTopicPath())
-                        .setChannelProvider(
-                                FixedTransportChannelProvider.create(
-                                        GrpcTransportChannel.create(channel)))
-                        .setCredentialsProvider(NoCredentialsProvider.create())
-                        .build();
+        AtomicBoolean released = new AtomicBoolean();
+        try {
+            Publisher publisher =
+                    Publisher.newBuilder(TOPIC.toTopicPath())
+                            .setChannelProvider(
+                                    FixedTransportChannelProvider.create(
+                                            GrpcTransportChannel.create(channel)))
+                            .setCredentialsProvider(NoCredentialsProvider.create())
+                            .build();
 
-        new DefaultPublisherFactory.PublisherAdapter(
-                        publisher, TOPIC, channel, Duration.ofSeconds(30))
-                .close();
+            new DefaultPublisherFactory.PublisherAdapter(
+                            publisher, TOPIC, () -> released.set(true), Duration.ofSeconds(30))
+                    .close();
 
-        assertThat(channel.isShutdown()).isTrue();
+            assertThat(released).isTrue();
+        } finally {
+            channel.shutdownNow();
+        }
     }
 
     /**
@@ -444,6 +454,55 @@ class DefaultPublisherFactoryTest {
         } finally {
             publisher.close();
         }
+    }
+
+    /**
+     * A publisher holds a hold on the connector's gRPC event-loop group from creation to close, on
+     * both transports (ADR-0208, #2263); {@code PubSubTransportsTest} covers what the hold puts on
+     * the group. No credentials for production: the publisher resolves them as it is built, and its
+     * channels connect lazily, so nothing here talks to the service.
+     */
+    @Test
+    void aPublisherHoldsAnEventLoopLeaseUntilItCloses() throws Exception {
+        for (EmulatorEndpoint endpoint :
+                new EmulatorEndpoint[] {
+                    null, EmulatorEndpoint.parse("localhost:1", "emulatorEndpoint")
+                }) {
+            TopicPublisher publisher =
+                    new DefaultPublisherFactory(
+                                    PubSubPublisherOptions.defaults(),
+                                    endpoint,
+                                    NoCredentialsProvider.create())
+                            .create(TOPIC);
+            try {
+                assertThat(GrpcEventLoops.isRunning()).as("the publisher holds a lease").isTrue();
+            } finally {
+                publisher.close();
+            }
+            assertThat(GrpcEventLoops.isRunning()).as("closing released the lease").isFalse();
+        }
+    }
+
+    /**
+     * {@code Publisher.Builder.build()} declares {@link IOException}, which it throws when the
+     * credentials cannot be had; the transport opened for it is released then too, or the group
+     * would keep running with no publisher to close it.
+     */
+    @Test
+    void aPublisherThatCannotBeBuiltReleasesItsLease() {
+        IOException noCredentials = new IOException("no credentials here");
+        DefaultPublisherFactory factory =
+                new DefaultPublisherFactory(
+                        PubSubPublisherOptions.defaults(),
+                        null,
+                        () -> {
+                            throw noCredentials;
+                        });
+
+        assertThatThrownBy(() -> factory.create(TOPIC)).isSameAs(noCredentials);
+        assertThat(GrpcEventLoops.isRunning())
+                .as("the failed creation released its lease")
+                .isFalse();
     }
 
     /** Connects lazily, so no test here needs anything listening. */

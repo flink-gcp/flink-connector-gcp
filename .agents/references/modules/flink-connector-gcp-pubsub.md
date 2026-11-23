@@ -108,6 +108,26 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   count into a **second** `PubSubShutdownResidue` adder, since one name on the host's group would
   collide with the sink's and Flink drops the later registration.
 
+## gRPC event-loop group (`docs/adr/0208`, #2263)
+
+- Every client runs on base's `GrpcEventLoops` group. `Publisher` and `Subscriber` are not gax
+  `BackgroundResource`s, so they take a `PubSubTransports.Transport` (a channel provider plus the
+  lease or emulator-channel holder) and their owner closes it after the client: the sink adapter
+  through `BoundedShutdown`'s release slot, the dead-letter queue as the next `close()` entry,
+  `StreamingPullSubscriber` after its bounded termination wait and after a failed start.
+  `SubscriberFactory.create` returns a `SubscriberClient` for that reason, the source's counterpart
+  of the sink's `TopicPublisher`: `DefaultSubscriberFactory.SubscriberAdapter` holds the SDK client
+  and its transport, and its `close()` releases only the transport.
+- The production providers restate the SDK builders' private defaults
+  (`PubSubTransports.publisherDefaults()`/`subscriberDefaults()`); `PubSubTransportsTest` is the
+  drift guard. Never set a provider on a `Publisher`/`Subscriber` builder without one of them.
+- Emulator arms are caller-owned channels with the API's channel settings, never
+  `plaintextProvider` (`dns:///` and client-certificate failures, `docs/adr/0208`).
+- The topic and subscription admins open a client per call. `PubSubSubscriptionAdmin` runs on the
+  JobManager, so its calls go through `ApiFuture`s it awaits interruptibly and its `close()`
+  cancels the call in flight; keep every new admin call on that path (`call(...)`), not on the
+  client's synchronous method.
+
 ## Metrics (`docs/adr/0010`; conventions in the base module's detailed guidance)
 
 - Plain counters — every sink increment is on the task thread. `numRecordsSend` is counted

@@ -277,17 +277,20 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `TableCreateOptionsMapper` — runs after the parse and is pre-empted by it, which `docs/adr/0127`
   records rather than fixes.
 - `EmulatorChannels` is split **by who owns the channel**, not by settings type (`docs/adr/0081`):
-  `plaintextProvider` where the client closes its own channel, `openPlaintextChannel` +
-  `fixedProvider` where the caller does — and the ownership difference is load-bearing at three
-  sites, so never unify them. **Always pass an API's own
-  `defaultGrpcTransportProviderBuilder()`**, never a bare one: the API's defaults include the
-  inbound message limit, and losing it fails only on an emulator and only past 4 MiB.
+  `plaintextProvider` where the client closes its own channel, `openLeasedPlaintextChannel` +
+  `fixedProvider` where the caller does — and the ownership difference is load-bearing, so never
+  unify them. A new emulator arm takes the caller-owned route: `plaintextProvider` hands the target
+  to gax, which cannot dial a `dns:///` target and turns TLS under a client certificate
+  (`docs/adr/0208`); it stays only for BigQuery's and Datastore's arms until #2266/#2267. **Always
+  pass an API's own `defaultGrpcTransportProviderBuilder()`** (or the provider the SDK's builder
+  uses), never a bare one, to either: the API's defaults include the inbound message limit, and
+  losing it fails only on an emulator and only past 4 MiB.
   `NoCredentialsProvider` stays at each call site — the three builder types share no supertype —
   and `PubSubTestClients` cannot use any of this, since `base` depends on test-utils and not the
   reverse. `plaintextProvider` reaches the channel through the `@BetaApi`
   `setChannelConfigurator`, so its client-owned emulator sites ride that Beta surface — the
-  caller-owned sites (`openPlaintextChannel`/`openLeasedPlaintextChannel` with `fixedProvider`)
-  do not. An internal call,
+  caller-owned sites (`openLeasedPlaintextChannel` with `fixedProvider`) do not, though every
+  `GrpcEventLoops.Lease.applyTo` does. An internal call,
   tier-irrelevant under `docs/adr/0141`; reread the annotation on a gax bump.
 - `GrpcEventLoops` (`docs/adr/0208`, #2237) is the event-loop group every connector gRPC channel
   runs on instead of gRPC's own, whose delayed destroy runs after Flink closes a job jar's class
@@ -298,12 +301,16 @@ record — context, evidence, declined alternatives — is the named ADR under `
   channels something else closes and awaits (the Storage Write API pool). The rules: never build
   a channel while no lease covers it, and never release a lease under a live channel. `applyTo`
   composes after an existing configurator, so the emulator's plaintext one survives, and refuses a
-  provider that does not build its own channels (a `fixedProvider`). A caller-owned emulator
-  channel comes from `EmulatorChannels.openLeasedPlaintextChannel`, a `LeasedClient` around a
-  `GrpcTransportChannel` that `fixedProvider(LeasedClient)` hands to its clients; close the clients
-  first and the channel holder last, and on a creation failure (`Error`s included) close both
-  with `Closers.closeAllSuppressing`. The lease-less `openPlaintextChannel` and `fixedProvider(ManagedChannel)` remain only
-  for Pub/Sub's publisher and dead-letter queue until they move (#2243). Apply the lease to a settings *builder*: a gapic `toBuilder()` can drop
+  provider that does not build its own channels (a `fixedProvider`). A gax client on a caller-owned
+  emulator channel comes from `EmulatorChannels.openLeasedClient`, whose `LeasedClient` closes the
+  client and then the channel, and closes the channel if the client cannot be created; use it
+  rather than pairing a channel and a client by hand. The channel alone
+  (`openLeasedPlaintextChannel`, a `LeasedClient` around a `GrpcTransportChannel` that
+  `fixedProvider(LeasedClient)` hands to clients) is for a client that is not a
+  `BackgroundResource`. A client that is not a gax `BackgroundResource` (Pub/Sub's
+  `Publisher` and `Subscriber`) cannot be a `LeasedClient`: its owner holds the lease or the
+  channel holder beside it and releases it after the client's own bounded shutdown, on the
+  give-up path too (`PubSubTransports`). Apply the lease to a settings *builder*: a gapic `toBuilder()` can drop
   hand-written fields (`BigQueryReadSettings` drops its retry listener). The group is shared by
   every lease on one copy of `GrpcEventLoops` in a class loader (each SQL JAR relocates its own
   copy, so it has its own group) and refcounted, so a test opening leases closes every one in a `finally` (`GrpcEventLoopsTest`
@@ -312,8 +319,10 @@ record — context, evidence, declined alternatives — is the named ADR under `
   when the enumerator closes: at the end of a job Flink 2.2.1 closes coordinators asynchronously and
   does not wait before releasing the job's class loader, and a client open then can exit a session
   cluster's JobManager under `FAIL`
-  (measured 8 of 8 on BigQuery's source before #2237's fix). BigQuery and Cloud Tasks are migrated;
-  Pub/Sub, Bigtable, Spanner and Firestore are #2243.
+  (measured 8 of 8 on BigQuery's source before #2237's fix), and its `close()` cancels a call in
+  flight through the call's `ApiFuture` before closing the client (`ReadClientSessionCreator`,
+  `PubSubSubscriptionAdmin`). BigQuery, Cloud Tasks and Pub/Sub are migrated; Bigtable, Spanner
+  and Firestore are #2243's remaining sub-issues.
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

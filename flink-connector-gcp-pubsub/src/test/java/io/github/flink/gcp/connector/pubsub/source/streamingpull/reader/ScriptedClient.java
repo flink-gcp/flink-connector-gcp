@@ -27,10 +27,11 @@ import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
- * A client whose three lifecycle operations can be made to misbehave, standing in for the SDK
- * {@code Subscriber} — which cannot be subclassed, its only constructor being private.
+ * A client whose lifecycle operations can be made to misbehave, standing in for the SDK {@code
+ * Subscriber} — which cannot be subclassed, its only constructor being private. Its close, the
+ * release of the transport, is recorded as {@code releaseTransport}.
  */
-final class ScriptedClient {
+final class ScriptedClient implements SubscriberClient {
 
     private final List<String> calls;
 
@@ -60,7 +61,8 @@ final class ScriptedClient {
         requireStarted().accept(failure);
     }
 
-    void start(Consumer<Throwable> onPermanentFailure) {
+    @Override
+    public void start(Consumer<Throwable> onPermanentFailure) {
         this.onPermanentFailure = onPermanentFailure;
         if (startFailure != null) {
             ExceptionUtils.rethrow(startFailure);
@@ -75,14 +77,16 @@ final class ScriptedClient {
         this.stopFailure = failure;
     }
 
-    void stopAsync() {
+    @Override
+    public void stopAsync() {
         calls.add("stopAsync");
         if (stopFailure != null) {
             requireStarted().accept(stopFailure);
         }
     }
 
-    void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
+    @Override
+    public void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
         calls.add("awaitTerminated");
         awaitedMillis.add(unit.toMillis(timeout));
         awaitedUnits.add(unit);
@@ -92,6 +96,11 @@ final class ScriptedClient {
         if (terminationFailure instanceof RuntimeException) {
             throw (RuntimeException) terminationFailure;
         }
+    }
+
+    @Override
+    public void close() {
+        calls.add("releaseTransport");
     }
 
     private Consumer<Throwable> requireStarted() {

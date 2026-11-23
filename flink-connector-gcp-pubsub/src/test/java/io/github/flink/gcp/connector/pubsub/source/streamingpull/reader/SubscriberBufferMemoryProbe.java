@@ -23,6 +23,8 @@ import io.github.flink.gcp.connector.pubsub.source.SubscriberBufferLimits;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Child-process entry point for {@link SubscriberBufferMemoryBoundaryTest}. */
@@ -36,7 +38,7 @@ final class SubscriberBufferMemoryProbe {
     public static void main(String[] args) throws Exception {
         PubSubSubscriberOptions options = PubSubSubscriberOptions.builder().build();
         AtomicInteger rejected = new AtomicInteger();
-        AtomicInteger stops = new AtomicInteger();
+        List<String> calls = new ArrayList<>();
         SubscriberBufferBudget budget =
                 new SubscriberBufferBudget(
                         SubscriberBufferLimits.of(options), event -> rejected.incrementAndGet());
@@ -49,9 +51,7 @@ final class SubscriberBufferMemoryProbe {
                         () -> {},
                         Duration.ofSeconds(1),
                         budget,
-                        onFailure -> {},
-                        stops::incrementAndGet,
-                        (timeout, unit) -> {});
+                        new ScriptedClient(calls));
         budget.register(SPLIT_ID, subscriber::requestStop);
 
         byte[] payload = new byte[PAYLOAD_BYTES];
@@ -67,7 +67,8 @@ final class SubscriberBufferMemoryProbe {
         }
 
         long buffered = subscriber.bufferUsage().messages();
-        if (buffered != limit || rejected.get() != 1 || stops.get() == 0) {
+        long stops = calls.stream().filter("stopAsync"::equals).count();
+        if (buffered != limit || rejected.get() != 1 || stops == 0) {
             throw new AssertionError(
                     "buffered=" + buffered + ", rejected=" + rejected + ", stops=" + stops);
         }

@@ -110,7 +110,8 @@ class StreamingPullSubscriberTest {
 
         // Both halves, and neither held before: the stop ran although the nack failed, and the
         // wait ran although the shutdown failed.
-        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
+        assertThat(calls)
+                .containsExactly("nackSplit", "stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -133,8 +134,11 @@ class StreamingPullSubscriberTest {
 
         // Order, not just occurrence: waiting before asking the client to stop would spend the
         // whole budget on a client that had not been told to shut down, and nacking after the wait
-        // would hold the split's messages for its duration.
-        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
+        // would hold the split's messages for its duration. The transport goes last: releasing it
+        // before the wait would stop the event-loop group under channels the client still uses
+        // (ADR-0208).
+        assertThat(calls)
+                .containsExactly("nackSplit", "stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -148,7 +152,8 @@ class StreamingPullSubscriberTest {
         // already-shut-down subscriber on the ordinary path and must only wait.
         subscriber.close();
 
-        assertThat(calls).containsExactly("nackSplit", "stopAsync", "awaitTerminated");
+        assertThat(calls)
+                .containsExactly("nackSplit", "stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -166,8 +171,9 @@ class StreamingPullSubscriberTest {
         // The client is asked to stop before the failure is reported. Read this as pinning the
         // call, not a leak-free restart: against the real SDK a failed start leaves the service
         // FAILED, where Guava's stopAsync() is a no-op — startOrRelease's javadoc has the
-        // measurement. Nothing was nacked: nothing had been received.
-        assertThat(calls).containsExactly("stopAsync", "awaitTerminated");
+        // measurement. Nothing was nacked: nothing had been received. The transport is released
+        // too, since no caller is left holding this subscriber to release it.
+        assertThat(calls).containsExactly("stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -182,7 +188,7 @@ class StreamingPullSubscriberTest {
 
         // The Error takes the same release as the exception above — the same rule as the sibling
         // guard in DefaultMutationBatcherFactory.create (#324). Same caveat as that test's.
-        assertThat(calls).containsExactly("stopAsync", "awaitTerminated");
+        assertThat(calls).containsExactly("stopAsync", "awaitTerminated", "releaseTransport");
     }
 
     @Test
@@ -371,8 +377,6 @@ class StreamingPullSubscriberTest {
                 () -> calls.add("dataAvailable"),
                 SHUTDOWN_TIMEOUT,
                 bufferBudget,
-                client::start,
-                client::stopAsync,
-                client::awaitTerminated);
+                client);
     }
 }

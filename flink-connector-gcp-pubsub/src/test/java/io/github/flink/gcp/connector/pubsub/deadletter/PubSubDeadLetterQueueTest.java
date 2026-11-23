@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.pubsub.deadletter;
 
+import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.InstantiationUtil;
 
 import com.google.api.core.ApiFuture;
@@ -26,7 +27,9 @@ import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.failure.DefaultFailureHandlerContext;
 import io.github.flink.gcp.connector.base.failure.FailedElement;
+import io.github.flink.gcp.connector.base.failure.FailureHandlerContext;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
@@ -40,16 +43,20 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 import static io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue.MAX_ATTRIBUTE_VALUE_BYTES;
 import static io.github.flink.gcp.connector.pubsub.deadletter.PubSubDeadLetterQueue.TRUNCATION_MARKER;
@@ -386,6 +393,102 @@ class PubSubDeadLetterQueueTest {
         }
     }
 
+    /**
+     * The queue's publisher holds a hold on the connector's gRPC event-loop group from open to
+     * close, on both transports (ADR-0208, #2263); {@code PubSubTransportsTest} covers what the
+     * hold puts on the group. A key file rather than ADC for production: the publisher resolves its
+     * credentials as it is built, and a build machine need not have application-default ones.
+     */
+    @Test
+    void theQueueHoldsAnEventLoopLeaseFromOpenToClose() throws Exception {
+        Path keyFile = ServiceAccountKeyFiles.create(tempDir);
+        for (PubSubDeadLetterQueue queue :
+                new PubSubDeadLetterQueue[] {
+                    PubSubDeadLetterQueue.builder()
+                            .topic(TOPIC)
+                            .serviceAccountKeyFile(keyFile.toString())
+                            .build(),
+                    PubSubDeadLetterQueue.builder()
+                            .topic(TOPIC)
+                            .emulatorEndpoint("localhost:1")
+                            .build()
+                }) {
+            queue.open(DefaultFailureHandlerContext.of(new StubWriterInitContext(0)));
+            try {
+                assertThat(GrpcEventLoops.isRunning()).as("the open queue holds a lease").isTrue();
+            } finally {
+                queue.close();
+            }
+            assertThat(GrpcEventLoops.isRunning()).as("closing released the lease").isFalse();
+        }
+    }
+
+    /**
+     * The host sink calls {@code open} before it owns the queue, so a metric registration that
+     * fails after the publisher is up must close it, and release its event-loop lease, itself.
+     */
+    @Test
+    void aFailedMetricRegistrationReleasesWhatOpenOpened() throws Exception {
+        // The publisher's executor thread is what shows its shutdown ran: it outlives a publisher
+        // nobody shut down. The failure comes from the first registration rather than from the
+        // group's getter, and records the threads alive then, so the test also fails if a change
+        // ever registered metrics before the publisher existed and so had nothing to release.
+        // Tracked by identity, since threads other tests left may still be ending.
+        Set<Thread> gaxThreadsBefore = gaxThreads();
+        Set<Thread> startedForThePublisher = new HashSet<>();
+        IllegalStateException refused = new IllegalStateException("no metrics here");
+        MetricGroup refusing =
+                (MetricGroup)
+                        Proxy.newProxyInstance(
+                                MetricGroup.class.getClassLoader(),
+                                new Class<?>[] {MetricGroup.class},
+                                (proxy, method, args) -> {
+                                    startedForThePublisher.addAll(gaxThreads());
+                                    startedForThePublisher.removeAll(gaxThreadsBefore);
+                                    throw refused;
+                                });
+        PubSubDeadLetterQueue queue =
+                PubSubDeadLetterQueue.builder()
+                        .topic(TOPIC)
+                        .emulatorEndpoint("localhost:1")
+                        .build();
+
+        assertThatThrownBy(
+                        () ->
+                                queue.open(
+                                        new FailureHandlerContext() {
+                                            @Override
+                                            public int getSubtaskIndex() {
+                                                return 0;
+                                            }
+
+                                            @Override
+                                            public MetricGroup getMetricGroup() {
+                                                return refusing;
+                                            }
+                                        }))
+                .isSameAs(refused);
+        assertThat(GrpcEventLoops.isRunning()).as("the failed open released its lease").isFalse();
+        assertThat(queue.publisherShutdown).isNull();
+        assertThat(startedForThePublisher)
+                .as("the publisher's executor thread, alive when the registration failed")
+                .isNotEmpty();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (startedForThePublisher.stream().anyMatch(Thread::isAlive)
+                && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(startedForThePublisher)
+                .as("executor threads of the publisher the failed open created")
+                .noneMatch(Thread::isAlive);
+    }
+
+    private static Set<Thread> gaxThreads() {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(t -> t.isAlive() && t.getName().startsWith("Gax-"))
+                .collect(Collectors.toCollection(HashSet::new));
+    }
+
     @Test
     void missingServiceAccountKeyFailsWithoutLeakingThePathOrCause() {
         Path keyFile = tempDir.resolve("mounted-secret-name.json");
@@ -443,7 +546,8 @@ class PubSubDeadLetterQueueTest {
     @Test
     void closeShutsDownTheChannelEvenWhenThePublisherShutdownThrowsAnError() {
         // #276: Flink's IOUtils.closeAll rethrows an Error from inside its loop, so an emulator
-        // channel was left running with its gRPC transport open. That the Error reaches the caller
+        // channel was left running with its gRPC transport open; today the transport is also the
+        // publisher's hold on the event-loop group. That the Error reaches the caller
         // as an Error is the other half: Flink halts the JVM on a fatal one, and only if it
         // arrives unwrapped.
         //
@@ -456,16 +560,16 @@ class PubSubDeadLetterQueueTest {
                 () -> {
                     throw new NoClassDefFoundError("publisher shutdown blew up");
                 };
-        queue.channelShutdown = () -> ran.add("channel");
+        queue.transportRelease = () -> ran.add("transport");
 
         assertThatThrownBy(queue::close)
                 .isInstanceOf(NoClassDefFoundError.class)
                 .hasMessage("publisher shutdown blew up");
-        assertThat(ran).containsExactly("channel");
+        assertThat(ran).containsExactly("transport");
         // The steps are cleared whatever happened, so a second close is the no-op an unopened
         // queue's is: it neither reruns a step nor throws the same Error again.
         assertThatCode(queue::close).doesNotThrowAnyException();
-        assertThat(ran).containsExactly("channel");
+        assertThat(ran).containsExactly("transport");
     }
 
     /**

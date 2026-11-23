@@ -336,8 +336,7 @@ class SubscriberTeardownTest {
                 ackTracker,
                 () -> calls.add("dataAvailable"),
                 SHUTDOWN_TIMEOUT,
-                client::start,
-                client::stopAsync,
-                client::awaitTerminated);
+                SubscriberBufferBudget.unbounded(),
+                client);
     }
 }

@@ -18,7 +18,9 @@ package io.github.flink.gcp.connector.base.rpc;
 
 import com.google.api.core.ApiFunction;
 import com.google.api.gax.core.BackgroundResource;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.api.gax.rpc.FixedTransportChannelProvider;
 import com.google.api.gax.rpc.TransportChannelProvider;
 import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import io.grpc.ManagedChannel;
@@ -220,7 +222,8 @@ class GrpcEventLoopsTest {
                 ManagedChannelBuilder.forTarget("localhost:1").usePlaintext().build();
         GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
         try {
-            TransportChannelProvider fixed = EmulatorChannels.fixedProvider(channel);
+            TransportChannelProvider fixed =
+                    FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel));
 
             assertThatThrownBy(() -> lease.applyTo(fixed))
                     .isInstanceOf(IllegalArgumentException.class)

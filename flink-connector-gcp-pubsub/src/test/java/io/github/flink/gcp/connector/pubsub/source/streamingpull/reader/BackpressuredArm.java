@@ -221,7 +221,7 @@ final class BackpressuredArm {
                 new DefaultSubscriberFactory(options, orderingMode, emulatorEndpoint);
         SubscriberFactory factory =
                 (assignedSubscription, consumer) -> {
-                    Subscriber created =
+                    SubscriberClient created =
                             delegateFactory.create(
                                     assignedSubscription,
                                     (message, ackHandle) -> {
@@ -232,7 +232,7 @@ final class BackpressuredArm {
                                                 .incrementAndGet();
                                         consumer.receive(message, ackHandle);
                                     });
-                    client.set(created);
+                    client.set(((DefaultSubscriberFactory.SubscriberAdapter) created).subscriber());
                     return created;
                 };
         this.reader =

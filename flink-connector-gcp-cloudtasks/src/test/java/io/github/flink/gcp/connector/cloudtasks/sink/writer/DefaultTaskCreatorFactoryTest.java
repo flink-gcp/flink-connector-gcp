@@ -25,6 +25,7 @@ import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.api.gax.core.GoogleCredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.ChannelPoolSettings;
+import com.google.api.gax.grpc.GrpcTransportChannel;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.rpc.ApiCallContext;
 import com.google.api.gax.rpc.TransportChannelProvider;
@@ -266,11 +267,13 @@ class DefaultTaskCreatorFactoryTest {
                     assertThat(provider.shouldAutoClose())
                             .as("the client does not close the caller-owned channel")
                             .isFalse();
-                    assertThat(provider.getTransportChannel()).isSameAs(adapter.ownedChannel());
                     assertThat(adapter.client().getSettings().getCredentialsProvider())
                             .isInstanceOf(NoCredentialsProvider.class);
 
-                    ManagedChannel channel = (ManagedChannel) adapter.ownedChannel().getChannel();
+                    ManagedChannel channel =
+                            (ManagedChannel)
+                                    ((GrpcTransportChannel) provider.getTransportChannel())
+                                            .getChannel();
                     channel.getState(true);
                     // The connection reaching this socket, opening with HTTP/2's cleartext
                     // preface rather than a TLS handshake, shows the target resolved to it and
@@ -440,7 +443,6 @@ class DefaultTaskCreatorFactoryTest {
                 new DefaultTaskCreatorFactory.CloudTasksClientAdapter(
                         GrpcEventLoops.open(
                                 lease -> com.google.cloud.tasks.v2.CloudTasksClient.create(stub)),
-                        null,
                         null)) {
             var deadline = io.grpc.Deadline.after(-1, java.util.concurrent.TimeUnit.SECONDS);
             adapter.createTask(request, deadline).get();
@@ -475,7 +477,6 @@ class DefaultTaskCreatorFactoryTest {
                                         com.google.cloud.tasks.v2.CloudTasksClient.create(
                                                 new IdleStub(
                                                         () -> histogram.record(0.25, createTask)))),
-                        null,
                         metrics)
                 .close();
         histogram.record(0.5, createTask);

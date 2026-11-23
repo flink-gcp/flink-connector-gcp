@@ -24,15 +24,16 @@ import com.google.api.gax.batching.BatchingSettings;
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.retrying.RetrySettings;
+import com.google.api.gax.rpc.TransportChannelProvider;
 import com.google.cloud.pubsub.v1.Publisher;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.BoundedShutdown;
-import io.github.flink.gcp.connector.base.rpc.EmulatorChannels;
+import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
+import io.github.flink.gcp.connector.pubsub.PubSubTransports;
 import io.github.flink.gcp.connector.pubsub.sink.PubSubPublisherOptions;
 import io.github.flink.gcp.connector.pubsub.sink.TopicDestination;
-import io.grpc.ManagedChannel;
 
 import javax.annotation.Nullable;
 
@@ -45,8 +46,10 @@ import java.time.Duration;
  * (options with no batching or retry overrides leave the publisher builder untouched, so the
  * default configuration is byte-identical to the SDK's).
  *
- * <p>When an emulator endpoint is set, publishers connect to it over a plaintext channel with no
- * credentials; each publisher owns its channel and shuts it down on close.
+ * <p>Every publisher runs on a {@link PubSubTransports} transport, with its channels on the
+ * connector's gRPC event-loop group (ADR-0208); its teardown releases the transport once the
+ * publisher has shut down or been given up on. With an emulator endpoint the publisher connects
+ * over a plaintext channel with no credentials.
  */
 @Internal
 public final class DefaultPublisherFactory implements PublisherFactory {
@@ -114,32 +117,28 @@ public final class DefaultPublisherFactory implements PublisherFactory {
 
     @Override
     public TopicPublisher create(TopicDestination destination) throws IOException {
-        ManagedChannel ownedChannel = null;
+        PubSubTransports.Transport transport = PubSubTransports.openForPublisher(emulatorEndpoint);
         try {
-            if (emulatorEndpoint != null) {
-                ownedChannel = EmulatorChannels.openPlaintextChannel(emulatorEndpoint);
-            }
-            Publisher.Builder builder = newBuilder(destination, ownedChannel);
+            Publisher.Builder builder = newBuilder(destination, transport.channelProvider());
             configure(builder, options);
             return new PublisherAdapter(
-                    builder.build(), destination, ownedChannel, options.getShutdownTimeout());
-        } catch (IOException | RuntimeException e) {
-            // The channel is owned here until the adapter takes it over on success.
-            if (ownedChannel != null) {
-                ownedChannel.shutdownNow();
-            }
+                    builder.build(), destination, transport::close, options.getShutdownTimeout());
+        } catch (IOException | RuntimeException | Error e) {
+            // Owned here until the adapter takes it over on success; which failure is reported is
+            // closeAllSuppressing's contract.
+            Closers.closeAllSuppressing(e, transport);
             throw e;
         }
     }
 
-    /** Starts the SDK builder with the configured transport and credentials mode. */
+    /** Starts the SDK builder on the given transport, with the configured credentials mode. */
     @VisibleForTesting
     Publisher.Builder newBuilder(
-            TopicDestination destination, @Nullable ManagedChannel ownedChannel) {
-        Publisher.Builder builder = Publisher.newBuilder(destination.toTopicPath());
+            TopicDestination destination, TransportChannelProvider channelProvider) {
+        Publisher.Builder builder =
+                Publisher.newBuilder(destination.toTopicPath()).setChannelProvider(channelProvider);
         if (emulatorEndpoint != null) {
-            builder.setChannelProvider(EmulatorChannels.fixedProvider(ownedChannel))
-                    .setCredentialsProvider(NoCredentialsProvider.create());
+            builder.setCredentialsProvider(NoCredentialsProvider.create());
         } else if (credentialsOverride != null) {
             builder.setCredentialsProvider(credentialsOverride);
         }
@@ -303,12 +302,17 @@ public final class DefaultPublisherFactory implements PublisherFactory {
         /** Package-private so a test can read the budget {@link #create} handed over. */
         @VisibleForTesting final BoundedShutdown teardown;
 
-        /** Package-private so a test can hand it a channel it can then assert on. */
+        /**
+         * Package-private so a test can hand it a release it can then assert on.
+         *
+         * @param release releases the publisher's transport once the teardown has finished or given
+         *     up, whatever happened; {@code null} when there is nothing to release
+         */
         @VisibleForTesting
         PublisherAdapter(
                 Publisher publisher,
                 TopicDestination destination,
-                @Nullable ManagedChannel ownedChannel,
+                @Nullable Runnable release,
                 Duration shutdownTimeout) {
             this.publisher = publisher;
             this.teardown =
@@ -316,7 +320,7 @@ public final class DefaultPublisherFactory implements PublisherFactory {
                             publisher::shutdown,
                             publisher::awaitTermination,
                             "topic " + destination,
-                            ownedChannel == null ? null : ownedChannel::shutdownNow,
+                            release,
                             shutdownTimeout,
                             PubSubShutdownResidue.PUBLISHER_SHUTDOWNS_ABANDONED);
         }
