@@ -267,7 +267,8 @@ class BigQueryFileLoadsEncryptionRealGcpITCase {
                             RealGcs.uri(path),
                             file.length,
                             1,
-                            StagingFormat.AVRO));
+                            StagingFormat.AVRO,
+                            RealTables.destination(table).getDataset()));
         }
         return committables;
     }

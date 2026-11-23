@@ -53,6 +53,7 @@ class StagedFileWriterTest {
                                         FileLoadsOptions.DEFAULT_ZSTD_LEVEL,
                                         "job",
                                         TableDestination.of("project", "dataset", "table"),
+                                        "dataset",
                                         "gs://bucket/object",
                                         SCHEMA,
                                         stream,

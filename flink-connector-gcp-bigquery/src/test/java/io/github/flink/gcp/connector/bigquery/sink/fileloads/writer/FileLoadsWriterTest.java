@@ -647,7 +647,29 @@ class FileLoadsWriterTest {
     }
 
     @Test
-    void everyCommittableCarriesTheConfiguredJobProject() throws Exception {
+    void twoRunsOfOneSubtaskStageUnderDifferentWholeUuids() throws Exception {
+        // A commit names its temporary tables from its staged URIs, and a redeploy without state
+        // under a fixed job id repeats the job id, subtask and attempt, so the random segment alone
+        // tells two runs' files apart; it is a whole UUID, not a 32-bit prefix of one (#2289).
+        List<String> uris = new ArrayList<>();
+        for (int run = 0; run < 2; run++) {
+            FileLoadsWriter<TestRow> writer =
+                    writer(
+                            config(FailureHandler.failJob()),
+                            new InMemoryStagingStorage(),
+                            taskThreadOptions().build());
+            writer.write(new TestRow("t1", "a", 1L), CONTEXT);
+            uris.add(writer.prepareCommit().iterator().next().getUri());
+            writer.close();
+        }
+
+        assertThat(uris)
+                .allSatisfy(uri -> assertThat(uri).matches(".*/\\d+-\\d+-[0-9a-f]{32}-0\\.avro"));
+        assertThat(uris.get(0)).isNotEqualTo(uris.get(1));
+    }
+
+    @Test
+    void everyCommittableCarriesItsRunsJobProjectAndTemporaryDataset() throws Exception {
         // One option set per way a file finishes, since each records its committable from a
         // different place: a checkpoint's serial close after the uploader is drained, an eviction
         // collected from the background uploader, a close on the task thread, and the concurrent
@@ -660,7 +682,12 @@ class FileLoadsWriterTest {
                                         .destinationResolver(
                                                 (element, context) ->
                                                         TableDestination.of(
-                                                                "p", "d", element.table))
+                                                                "p",
+                                                                // t2 lives in another dataset.
+                                                                element.table.equals("t2")
+                                                                        ? "e"
+                                                                        : "d",
+                                                                element.table))
                                         .serializer(new TestRowSerializer(SCHEMA))
                                         .parentProject("jobs-project")
                                         .fileLoadsOptions(
@@ -695,10 +722,19 @@ class FileLoadsWriterTest {
                     .as(path.getKey())
                     .hasSize(2)
                     .allSatisfy(
-                            committable ->
-                                    assertThat(committable.getJobProject())
-                                            .as(path.getKey())
-                                            .isEqualTo("jobs-project"));
+                            committable -> {
+                                assertThat(committable.getJobProject())
+                                        .as(path.getKey())
+                                        .isEqualTo("jobs-project");
+                                // No tempDataset configured: each destination's own dataset.
+                                assertThat(committable.getRecordedTempDataset())
+                                        .as(path.getKey())
+                                        .isEqualTo(committable.getDestination().getDataset());
+                            });
+            assertThat(committables)
+                    .as(path.getKey())
+                    .extracting(FileLoadsCommittable::getRecordedTempDataset)
+                    .containsExactlyInAnyOrder("d", "e");
         }
 
         FileLoadsWriter<TestRow> unconfigured =
@@ -710,6 +746,19 @@ class FileLoadsWriterTest {
         Collection<FileLoadsCommittable> committables = unconfigured.prepareCommit();
         unconfigured.close();
         assertThat(committables).singleElement().returns(null, FileLoadsCommittable::getJobProject);
+
+        FileLoadsWriter<TestRow> scratch =
+                writer(
+                        config(FailureHandler.failJob()),
+                        new InMemoryStagingStorage(),
+                        taskThreadOptions().tempDataset("scratch").build());
+        scratch.write(new TestRow("t1", "a", 1L), CONTEXT);
+        Collection<FileLoadsCommittable> scratchCommittables = scratch.prepareCommit();
+        scratch.close();
+        // A restored commit names its temporary tables in the dataset this run resolved (#2289).
+        assertThat(scratchCommittables)
+                .singleElement()
+                .returns("scratch", FileLoadsCommittable::getRecordedTempDataset);
     }
 
     @Test

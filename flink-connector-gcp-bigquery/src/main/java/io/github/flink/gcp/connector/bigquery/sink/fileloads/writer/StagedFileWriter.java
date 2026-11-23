@@ -51,6 +51,8 @@ interface StagedFileWriter {
      * @param parquetCompression the codec of a Parquet file
      * @param avroCompression the codec of an Avro file
      * @param zstdLevel the level of either format's zstandard codec
+     * @param tempDataset the dataset of the destination's temporary tables as this run resolved it,
+     *     which the finished file's committable records
      * @param maxStagingFileBytes the roll threshold, which sizes Parquet's row group; see that
      *     implementation for why it cannot be ignored there
      */
@@ -61,6 +63,7 @@ interface StagedFileWriter {
             int zstdLevel,
             String flinkJobId,
             TableDestination destination,
+            String tempDataset,
             String uri,
             Schema schema,
             OutputStream stream,
@@ -69,11 +72,19 @@ interface StagedFileWriter {
         switch (format) {
             case AVRO:
                 return new AvroStagedFileWriter(
-                        flinkJobId, destination, uri, schema, stream, avroCompression, zstdLevel);
+                        flinkJobId,
+                        destination,
+                        tempDataset,
+                        uri,
+                        schema,
+                        stream,
+                        avroCompression,
+                        zstdLevel);
             case PARQUET:
                 return new ParquetStagedFileWriter(
                         flinkJobId,
                         destination,
+                        tempDataset,
                         uri,
                         schema,
                         stream,

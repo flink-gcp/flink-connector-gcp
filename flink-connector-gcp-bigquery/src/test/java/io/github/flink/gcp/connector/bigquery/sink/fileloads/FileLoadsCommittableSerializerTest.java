@@ -38,7 +38,8 @@ class FileLoadsCommittableSerializerTest {
                         "gs://bucket/prefix/jobid/my-project.my_dataset.my_table/0-0-abc-0.avro",
                         123_456L,
                         789L,
-                        StagingFormat.AVRO);
+                        StagingFormat.AVRO,
+                        "my_dataset");
 
         FileLoadsCommittable copy =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(committable));
@@ -56,7 +57,8 @@ class FileLoadsCommittableSerializerTest {
                                 "gs://bucket/o.avro",
                                 1L,
                                 1L,
-                                StagingFormat.AVRO)
+                                StagingFormat.AVRO,
+                                "d")
                         .withCheckpointId(42L);
 
         FileLoadsCommittable copy =
@@ -75,7 +77,8 @@ class FileLoadsCommittableSerializerTest {
                         "gs://bucket/o.parquet",
                         1L,
                         1L,
-                        StagingFormat.PARQUET);
+                        StagingFormat.PARQUET,
+                        "d");
 
         FileLoadsCommittable copy =
                 serializer.deserialize(serializer.getVersion(), serializer.serialize(committable));
@@ -93,7 +96,8 @@ class FileLoadsCommittableSerializerTest {
                                 "gs://bucket/o.avro",
                                 1L,
                                 1L,
-                                StagingFormat.AVRO)
+                                StagingFormat.AVRO,
+                                "d")
                         .withCheckpointId(42L)
                         .withJobProject("jobs-project");
 
@@ -114,7 +118,8 @@ class FileLoadsCommittableSerializerTest {
                                 batch.getUri(),
                                 batch.getByteCount(),
                                 batch.getRowCount(),
-                                batch.getFormat())
+                                batch.getFormat(),
+                                "d")
                         .withJobProject("other");
         assertThat(
                         serializer.deserialize(
@@ -135,10 +140,157 @@ class FileLoadsCommittableSerializerTest {
 
         FileLoadsCommittable restored = serializer.deserialize(3, versionThree);
 
-        assertThat(serializer.getVersion()).isEqualTo(4);
         assertThat(restored.getJobProject()).isNull();
         assertThat(restored.getFormat()).isEqualTo(StagingFormat.PARQUET);
         assertThat(restored.getCheckpointId()).isEqualTo(42L);
+        assertThat(restored.isStagedByOlderVersion()).isTrue();
+    }
+
+    @Test
+    void readsAVersionFourCommittableAsStagedByAnOlderVersion() throws IOException {
+        // Every run before #2289 named its temporary tables and jobs from the Flink job id and
+        // checkpoint id and recorded no temporary dataset. A restored commit that a successful
+        // attempt already ran has had its staged files deleted, so it can only re-attach to that
+        // attempt's jobs under the names they had.
+        byte[] versionFour = versionFourBytes("gs://bucket/o.avro", 42L, "jobs-project");
+
+        FileLoadsCommittable restored = serializer.deserialize(4, versionFour);
+
+        assertThat(serializer.getVersion()).isEqualTo(5);
+        assertThat(restored.isStagedByOlderVersion()).isTrue();
+        assertThat(restored.getRecordedTempDataset()).isNull();
+        assertThat(restored.getJobProject()).isEqualTo("jobs-project");
+        assertThat(restored.getCheckpointId()).isEqualTo(42L);
+    }
+
+    @Test
+    void keepsARestoredCommittableUnrecordedWhenWrittenAgain() throws IOException {
+        // A restored committable that has not committed yet is written again by this version, as a
+        // failed commit or a retained unaligned checkpoint's channel state does; it must still be
+        // planned under the names its earlier attempt used.
+        FileLoadsCommittable restored =
+                serializer.deserialize(4, versionFourBytes("gs://bucket/o.avro", 42L, null));
+
+        FileLoadsCommittable rewritten =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(restored));
+
+        assertThat(rewritten).isEqualTo(restored);
+        assertThat(rewritten.isStagedByOlderVersion()).isTrue();
+        assertThat(rewritten.withCheckpointId(43L).isStagedByOlderVersion()).isTrue();
+        assertThat(rewritten.withJobProject("jobs-project").isStagedByOlderVersion()).isTrue();
+    }
+
+    @Test
+    void writesTheTemporaryDatasetOfNewCommittables() throws IOException {
+        FileLoadsCommittable committable =
+                new FileLoadsCommittable(
+                                "0123456789abcdef0123456789abcdef",
+                                TableDestination.of("p", "d", "t"),
+                                "gs://bucket/o.avro",
+                                1L,
+                                1L,
+                                StagingFormat.AVRO,
+                                "scratch")
+                        .withCheckpointId(42L)
+                        .withJobProject("jobs-project");
+
+        FileLoadsCommittable copy =
+                serializer.deserialize(serializer.getVersion(), serializer.serialize(committable));
+
+        assertThat(copy).isEqualTo(committable);
+        assertThat(copy.getRecordedTempDataset()).isEqualTo("scratch");
+        assertThat(copy.isStagedByOlderVersion()).isFalse();
+        // The dataset is part of the committable's identity, not decoration.
+        assertThat(copy)
+                .isNotEqualTo(
+                        new FileLoadsCommittable(
+                                copy.getFlinkJobId(),
+                                copy.getDestination(),
+                                copy.getUri(),
+                                copy.getByteCount(),
+                                copy.getRowCount(),
+                                copy.getFormat(),
+                                copy.getCheckpointId(),
+                                copy.getJobProject(),
+                                "other"));
+        assertThatThrownBy(
+                        () ->
+                                new FileLoadsCommittable(
+                                        "0123456789abcdef0123456789abcdef",
+                                        TableDestination.of("p", "d", "t"),
+                                        "gs://bucket/o.avro",
+                                        1L,
+                                        1L,
+                                        StagingFormat.AVRO,
+                                        null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(
+                        () ->
+                                new FileLoadsCommittable(
+                                        "0123456789abcdef0123456789abcdef",
+                                        TableDestination.of("p", "d", "t"),
+                                        "gs://bucket/o.avro",
+                                        1L,
+                                        1L,
+                                        StagingFormat.AVRO,
+                                        42L,
+                                        "jobs-project",
+                                        null))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void readsAndWritesTheVersionFiveLayout() throws IOException {
+        // Pinned by hand, so the layout state this version writes cannot be edited in place by a
+        // later one; a change takes a new version that still reads this one (ADR-0200).
+        byte[] versionFive = versionFiveBytes("gs://bucket/o.avro", 42L, "jobs-project", "scratch");
+        byte[] withoutDataset = versionFiveBytes("gs://bucket/o.avro", 42L, null, null);
+
+        FileLoadsCommittable restored = serializer.deserialize(5, versionFive);
+        FileLoadsCommittable unrecorded = serializer.deserialize(5, withoutDataset);
+
+        assertThat(restored.getUri()).isEqualTo("gs://bucket/o.avro");
+        assertThat(restored.getCheckpointId()).isEqualTo(42L);
+        assertThat(restored.getJobProject()).isEqualTo("jobs-project");
+        assertThat(restored.getRecordedTempDataset()).isEqualTo("scratch");
+        assertThat(restored.isStagedByOlderVersion()).isFalse();
+        assertThat(serializer.serialize(restored)).isEqualTo(versionFive);
+        assertThat(unrecorded.getRecordedTempDataset()).isNull();
+        assertThat(unrecorded.isStagedByOlderVersion()).isTrue();
+        assertThat(serializer.serialize(unrecorded)).isEqualTo(withoutDataset);
+    }
+
+    /** Writes the version-5 layout by hand, for the reason {@link #versionTwoBytes} gives. */
+    private static byte[] versionFiveBytes(
+            String uri,
+            Long checkpointId,
+            @javax.annotation.Nullable String jobProject,
+            @javax.annotation.Nullable String tempDataset)
+            throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (java.io.DataOutputStream data = new java.io.DataOutputStream(out)) {
+            data.write(versionFourBytes(uri, checkpointId, jobProject));
+            data.writeBoolean(tempDataset != null);
+            if (tempDataset != null) {
+                data.writeUTF(tempDataset);
+            }
+        }
+        return out.toByteArray();
+    }
+
+    /** Writes the version-4 layout by hand, for the reason {@link #versionTwoBytes} gives. */
+    private static byte[] versionFourBytes(
+            String uri, Long checkpointId, @javax.annotation.Nullable String jobProject)
+            throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        try (java.io.DataOutputStream data = new java.io.DataOutputStream(out)) {
+            data.write(versionThreeBytes(uri, StagingFormat.AVRO, checkpointId));
+            data.writeBoolean(jobProject != null);
+            if (jobProject != null) {
+                data.writeUTF(jobProject);
+            }
+        }
+        return out.toByteArray();
     }
 
     /** Writes the version-3 layout by hand, for the reason {@link #versionTwoBytes} gives. */
@@ -178,6 +330,7 @@ class FileLoadsCommittableSerializerTest {
         assertThat(restored.getByteCount()).isEqualTo(7L);
         assertThat(restored.getRowCount()).isEqualTo(3L);
         assertThat(restored.getCheckpointId()).isEqualTo(42L);
+        assertThat(restored.isStagedByOlderVersion()).isTrue();
     }
 
     /**
@@ -213,7 +366,8 @@ class FileLoadsCommittableSerializerTest {
                         "gs://bucket/o.avro",
                         1L,
                         1L,
-                        StagingFormat.AVRO);
+                        StagingFormat.AVRO,
+                        "d");
         byte[] bytes = serializer.serialize(committable);
 
         assertThatThrownBy(() -> serializer.deserialize(99, bytes))

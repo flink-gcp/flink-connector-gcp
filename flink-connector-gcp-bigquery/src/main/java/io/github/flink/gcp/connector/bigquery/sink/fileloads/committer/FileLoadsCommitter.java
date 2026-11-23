@@ -163,8 +163,10 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
         }
         // The framework commits one checkpoint at a time, so every committable of a call shares
         // one (possibly null) checkpoint id and one originating Flink job id, and so one run's job
-        // project; a mix would break the per-checkpoint job-id attribution, or look for previous
-        // attempts' jobs in two projects, so it fails loudly instead of being split up.
+        // project, and either all of them or none were staged by a version before #2289. A mix
+        // would break the per-checkpoint job-id attribution, look for previous attempts' jobs in
+        // two projects, or name one commit's tables two ways, so it fails loudly instead of being
+        // split up. Recorded temporary datasets may differ, one per destination.
         List<FileLoadsCommittable> committables = new ArrayList<>(requests.size());
         for (CommitRequest<FileLoadsCommittable> request : requests) {
             committables.add(request.getCommittable());
@@ -174,8 +176,11 @@ public final class FileLoadsCommitter implements Committer<FileLoadsCommittable>
             Preconditions.checkState(
                     Objects.equals(committable.getCheckpointId(), first.getCheckpointId())
                             && committable.getFlinkJobId().equals(first.getFlinkJobId())
-                            && Objects.equals(committable.getJobProject(), first.getJobProject()),
-                    "A commit batch mixes checkpoints, Flink job ids or job projects: %s vs %s",
+                            && Objects.equals(committable.getJobProject(), first.getJobProject())
+                            && committable.isStagedByOlderVersion()
+                                    == first.isStagedByOlderVersion(),
+                    "A commit batch mixes checkpoints, Flink job ids, job projects, or files staged"
+                            + " before and after #2289: %s vs %s",
                     first,
                     committable);
         }

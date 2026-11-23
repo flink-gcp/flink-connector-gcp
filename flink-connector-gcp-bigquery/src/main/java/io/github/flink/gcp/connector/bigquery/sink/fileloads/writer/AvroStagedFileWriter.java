@@ -89,6 +89,7 @@ final class AvroStagedFileWriter implements StagedFileWriter {
 
     private final String flinkJobId;
     private final TableDestination destination;
+    private final String tempDataset;
     private final String uri;
     private final CountingOutputStream countingStream;
     private final DataFileWriter<GenericRecord> avroWriter;
@@ -97,6 +98,7 @@ final class AvroStagedFileWriter implements StagedFileWriter {
     AvroStagedFileWriter(
             String flinkJobId,
             TableDestination destination,
+            String tempDataset,
             String uri,
             Schema schema,
             OutputStream stream,
@@ -105,6 +107,7 @@ final class AvroStagedFileWriter implements StagedFileWriter {
             throws IOException {
         this.flinkJobId = flinkJobId;
         this.destination = destination;
+        this.tempDataset = tempDataset;
         this.uri = uri;
         this.countingStream = new CountingOutputStream(stream);
         DataFileWriter<GenericRecord> writer =
@@ -136,7 +139,8 @@ final class AvroStagedFileWriter implements StagedFileWriter {
                 uri,
                 countingStream.getCount(),
                 rowCount,
-                StagingFormat.AVRO);
+                StagingFormat.AVRO,
+                tempDataset);
     }
 
     @Override

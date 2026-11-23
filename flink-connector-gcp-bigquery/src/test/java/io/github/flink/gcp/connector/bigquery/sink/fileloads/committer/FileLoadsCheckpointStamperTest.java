@@ -45,7 +45,8 @@ class FileLoadsCheckpointStamperTest {
                 "gs://bucket/prefix/" + name + ".avro",
                 10,
                 5,
-                StagingFormat.AVRO);
+                StagingFormat.AVRO,
+                T1.getDataset());
     }
 
     /**

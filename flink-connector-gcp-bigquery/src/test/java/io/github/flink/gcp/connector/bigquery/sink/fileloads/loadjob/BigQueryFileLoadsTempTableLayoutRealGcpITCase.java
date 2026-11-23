@@ -41,6 +41,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.OlderVersionCommittables;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
@@ -64,6 +65,9 @@ import org.junit.jupiter.api.Timeout.ThreadMode;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import javax.annotation.Nullable;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -237,14 +241,15 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
      * A commit retried after an upgrade, from the checkpoint a job restarting in a loop was stuck
      * on: an earlier version ran the same planned leaf loads and intermediate copy without the
      * destination's layout, under the same ids, and was refused the final copy on every restart,
-     * which spent one retry id each time.
+     * which spent one retry id each time. Its committables come back from that version's state, so
+     * they carry its naming scheme.
      */
     @Test
     void aRetryAfterAnUpgradeRunsOnItsOwnTablesAndIds() throws Exception {
         String table = table("upgraded");
         createDestination(table, LAYOUTS.get("both"), "");
         TableLayout layout = TableLayout.of(RealBigQuery.tableDefinition(table));
-        List<FileLoadsCommittable> committables = stage(table);
+        List<FileLoadsCommittable> committables = stagedByOlderVersion(stage(table));
         DestinationCommitPlan planned = plan(committables);
         assertThat(planned.copy.intermediateLevels).isNotEmpty();
         BigQueryLoadJobRunner earlier = new BigQueryLoadJobRunner(null, POLL);
@@ -318,14 +323,18 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
     /**
      * A commit retried after its final copy succeeded, as when another destination of the same
      * commit failed: it must neither load again, which would need the staged files, nor copy again,
-     * which would append the rows twice.
+     * which would append the rows twice. For files an older version staged this is also the commit
+     * a restore from 1.4.0's savepoint runs again, under the names that version derived (#2289).
      */
-    @Test
-    void aRetryAfterTheFinalCopySucceededReattachesToItAlone() throws Exception {
-        String table = table("committed");
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aRetryAfterTheFinalCopySucceededReattachesToItAlone(boolean stagedByOlderVersion)
+            throws Exception {
+        String table = table("committed_" + (stagedByOlderVersion ? "older" : "current"));
         createDestination(table, LAYOUTS.get("both"), "");
         TableLayout layout = TableLayout.of(RealBigQuery.tableDefinition(table));
-        List<FileLoadsCommittable> committables = stage(table);
+        List<FileLoadsCommittable> committables =
+                stagedByOlderVersion ? stagedByOlderVersion(stage(table)) : stage(table);
         orchestrator(WriteDisposition.WRITE_APPEND).run(committables);
         assertDestination(table, layout, 3);
         RealGcs.deletePrefix(PREFIX + table + "/");
@@ -333,6 +342,45 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
         orchestrator(WriteDisposition.WRITE_APPEND).run(committables);
 
         assertDestination(table, layout, 3);
+    }
+
+    /**
+     * Two commits of different files under one Flink job id and checkpoint id, as a redeploy
+     * without state under a fixed job id, a restore of an older checkpoint, or a second sink into
+     * the same table makes them (#2289). The second must load its own files. Measured on
+     * 2026-11-23, versions that named temporary tables and copies from those ids alone re-attached
+     * the second commit to the first one's copy and dropped its rows without a failure. An
+     * appending commit into a laid-out destination is the case the final-copy shortcut skipped;
+     * {@code WRITE_TRUNCATE_DATA} never asks for that shortcut, and its copy and terminal query
+     * re-attached by their ids alone.
+     */
+    @ParameterizedTest
+    @EnumSource(
+            value = WriteDisposition.class,
+            names = {"WRITE_APPEND", "WRITE_TRUNCATE_DATA"})
+    void aCommitRepeatingAnEarlierCommitsIdsLoadsItsOwnFiles(WriteDisposition disposition)
+            throws Exception {
+        boolean append = disposition == WriteDisposition.WRITE_APPEND;
+        String table = table("repeated_" + disposition.name().toLowerCase(Locale.ROOT));
+        createDestination(table, append ? LAYOUTS.get("both") : "", "");
+        TableLayout layout = TableLayout.of(RealBigQuery.tableDefinition(table));
+        // Streaming commits append only; a batch commit carries no checkpoint id.
+        Long checkpointId = append ? 1L : null;
+
+        orchestrator(disposition, checkpointId).run(stage(table, "first", 0));
+        orchestrator(disposition, checkpointId).run(stage(table, "second", 3));
+
+        assertDestination(table, layout, append ? 6 : 3);
+        // The first commit's rows are n = 0, 1 and 2 and the second's 3, 4 and 5: an append keeps
+        // each once, and a replacement keeps only the second's.
+        assertThat(
+                        RealBigQuery.queryLongs(
+                                "SELECT n FROM "
+                                        + RealBigQuery.tablePath(table)
+                                        + " WHERE ts >= TIMESTAMP '2000-01-01' ORDER BY n"))
+                .as("rows of %s", table)
+                .containsExactlyElementsOf(
+                        append ? List.of(0L, 1L, 2L, 3L, 4L, 5L) : List.of(3L, 4L, 5L));
     }
 
     /**
@@ -383,6 +431,12 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
             earlier.submitLoad(load.jobId, specOf(load));
             earlier.awaitJob(load.jobId);
         }
+    }
+
+    /** The committables as they are restored from state a version before #2289 wrote. */
+    private static List<FileLoadsCommittable> stagedByOlderVersion(
+            List<FileLoadsCommittable> committables) {
+        return OlderVersionCommittables.of(committables);
     }
 
     /** The plan of a commit over one destination's committables, before reconciliation. */
@@ -511,7 +565,13 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
     }
 
     private static LoadJobOrchestrator orchestrator(WriteDisposition disposition) {
-        return orchestrator(disposition, new BigQueryLoadJobRunner(null, POLL), LIMITS);
+        return orchestrator(disposition, null);
+    }
+
+    private static LoadJobOrchestrator orchestrator(
+            WriteDisposition disposition, @Nullable Long checkpointId) {
+        return orchestrator(
+                disposition, new BigQueryLoadJobRunner(null, POLL), LIMITS, checkpointId);
     }
 
     /** An appending commit whose three files fit one direct load per destination. */
@@ -521,6 +581,14 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
 
     private static LoadJobOrchestrator orchestrator(
             WriteDisposition disposition, LoadJobRunner runner, Limits limits) {
+        return orchestrator(disposition, runner, limits, null);
+    }
+
+    private static LoadJobOrchestrator orchestrator(
+            WriteDisposition disposition,
+            LoadJobRunner runner,
+            Limits limits,
+            @Nullable Long checkpointId) {
         return new LoadJobOrchestrator(
                 config(),
                 options(disposition),
@@ -528,7 +596,7 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                 new BigQueryTableAdmin(),
                 new InMemoryStagingStorage(),
                 FLINK_JOB_ID,
-                null,
+                checkpointId,
                 new SimpleCounter(),
                 limits);
     }
@@ -555,10 +623,19 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
 
     /** Three one-row Avro files for {@code table}, one per load job under {@link #LIMITS}. */
     private static List<FileLoadsCommittable> stage(String table) throws IOException {
+        return stage(table, "", 0);
+    }
+
+    /**
+     * Three one-row Avro files for {@code table} under the object-name prefix {@code set}, whose
+     * rows count {@code n} up from {@code firstN}.
+     */
+    private static List<FileLoadsCommittable> stage(String table, String set, int firstN)
+            throws IOException {
         List<FileLoadsCommittable> committables = new ArrayList<>(3);
         for (int i = 0; i < 3; i++) {
-            String path = PREFIX + table + "/" + i + ".avro";
-            byte[] file = oneRowAvroFile(i, "region-" + i);
+            String path = PREFIX + table + "/" + set + i + ".avro";
+            byte[] file = oneRowAvroFile(firstN + i, "region-" + i);
             RealGcs.upload(path, file);
             committables.add(
                     new FileLoadsCommittable(
@@ -567,7 +644,8 @@ class BigQueryFileLoadsTempTableLayoutRealGcpITCase {
                             RealGcs.uri(path),
                             file.length,
                             1,
-                            StagingFormat.AVRO));
+                            StagingFormat.AVRO,
+                            RealTables.destination(table).getDataset()));
         }
         return committables;
     }

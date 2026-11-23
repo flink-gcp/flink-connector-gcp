@@ -536,7 +536,8 @@ class LoadJobOrchestratorFailureAggregationTest {
                 "gs://bucket/prefix/" + name + format.getExtension(),
                 bytes,
                 10,
-                format);
+                format,
+                destination.getDataset());
     }
 
     private static void awaitLatch(CountDownLatch latch) throws IOException {

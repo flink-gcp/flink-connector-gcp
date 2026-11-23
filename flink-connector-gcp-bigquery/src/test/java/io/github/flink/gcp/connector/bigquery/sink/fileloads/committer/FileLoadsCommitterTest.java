@@ -37,6 +37,7 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.OlderVersionCommittables;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.BigQueryLoadJobRunner;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.loadjob.CopyJobSpec;
@@ -369,7 +370,8 @@ class FileLoadsCommitterTest {
                         + (format == StagingFormat.AVRO ? ".avro" : ".parquet"),
                 10,
                 5,
-                format);
+                format,
+                destination.getDataset());
     }
 
     @Test
@@ -418,6 +420,29 @@ class FileLoadsCommitterTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("mixes");
         assertThat(harness.runner.loads).isEmpty();
+    }
+
+    @Test
+    void commitBatchesMixingFilesStagedBeforeAndAfterTheRecordAreRejected() throws IOException {
+        // Restored and new committables never share a checkpoint, so a batch carrying files an
+        // older version staged beside files this version staged means the invariant broke;
+        // planning one commit's tables two ways must not run. Presence is compared, not the value:
+        // two destinations recording their own datasets is the normal case.
+        Harness harness = new Harness();
+        FileLoadsCommittable current = file("a").withCheckpointId(1);
+        FileLoadsCommittable inOtherDataset =
+                file(TableDestination.of("p", "e", "t2"), "c").withCheckpointId(1);
+        FileLoadsCommittable restored = file("b").withCheckpointId(1);
+        FileLoadsCommittable olderVersion = OlderVersionCommittables.of(restored);
+
+        assertThatThrownBy(() -> harness.commit(current, olderVersion))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("#2289");
+        assertThat(harness.runner.loads).isEmpty();
+
+        Harness twoDatasets = new Harness();
+        twoDatasets.commit(current, inOtherDataset);
+        assertThat(twoDatasets.runner.loads).hasSize(2);
     }
 
     @Test
@@ -527,7 +552,8 @@ class FileLoadsCommitterTest {
                                 "gs://bucket/prefix/a.avro",
                                 10,
                                 5,
-                                StagingFormat.AVRO)
+                                StagingFormat.AVRO,
+                                T1.getDataset())
                         .withCheckpointId(3));
 
         assertThat(harness.runner.loads.keySet())

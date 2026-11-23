@@ -180,7 +180,8 @@ class LoadJobOrchestratorJobProjectTest {
                 "gs://bucket/prefix/" + name + StagingFormat.AVRO.getExtension(),
                 bytes,
                 10,
-                StagingFormat.AVRO);
+                StagingFormat.AVRO,
+                T1.getDataset());
     }
 
     private static void run(

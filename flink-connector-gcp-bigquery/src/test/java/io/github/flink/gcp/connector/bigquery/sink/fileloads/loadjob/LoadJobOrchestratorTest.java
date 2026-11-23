@@ -150,7 +150,8 @@ class LoadJobOrchestratorTest {
                 "gs://bucket/prefix/" + name + format.getExtension(),
                 bytes,
                 10,
-                format);
+                format,
+                destination.getDataset());
     }
 
     /** Everything one orchestration run touches. */
@@ -744,28 +745,6 @@ class LoadJobOrchestratorTest {
         assertThat(retry.runner.queries).containsOnlyKeys(queryJobId);
         assertThat(retry.runner.deletedTables).isEmpty();
         assertThat(retry.storage.getDeleted()).isEmpty();
-    }
-
-    @Test
-    void streamingTempTablesUseConfiguredTempDataset() throws IOException {
-        Harness harness =
-                new Harness(
-                        FileLoadsOptions.builder()
-                                .stagingPath("gs://bucket/prefix")
-                                .tempDataset("temp_ds")
-                                .build(),
-                        builder -> {},
-                        7L);
-        long sixTiB = 6L << 40;
-
-        harness.orchestrator.run(List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB)));
-
-        assertThat(harness.runner.loads.values())
-                .hasSize(2)
-                .allSatisfy(
-                        spec ->
-                                assertThat(spec.getDestination().getDataset())
-                                        .isEqualTo("temp_ds"));
     }
 
     @Test

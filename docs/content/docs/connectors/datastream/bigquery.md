@@ -2702,7 +2702,20 @@ id of the run that staged them, so even a restore under a *new* Flink job id (`f
 savepoint or retained checkpoint) reproduces the original job ids and re-attaches. The jobs that
 fill the temporary tables of a destination needing a layout (see below) also carry a hash of that
 layout and the creation time of the table they fill, so they re-attach only within one incarnation
-of that table, and the final copy into such a destination carries a fixed `-laidout` suffix. Known
+of that table, and the final copy into such a destination carries a fixed `-laidout` suffix.
+Leaf temporary tables are named from the staged files loaded into them, the id of each job that
+fills one hashes that table, and every other temporary table, copy and terminal query derives from
+the tables it reads, so every job a commit can re-attach to read its own files.
+A commit that repeats an earlier commit's Flink job id and checkpoint id, as a redeploy without
+state under a fixed job id, a restore of an older checkpoint, or a second sink into the same table
+does, therefore runs its own jobs.
+Committables restored from state an earlier connector version wrote keep that version's names,
+which depended on those ids alone: such a commit, repeating an earlier commit's ids, can re-attach
+to that commit's final copy and lose its own rows without failing.
+Such committables record no temporary dataset, and those staged before the job-project option
+(see **Job project** below) no job project either, so restore that state under the `tempDataset`
+and job project its run used; under others a pending commit can fail on every restart or copy its
+rows a second time. Known
 residual
 risk (shared with the Beam and Dataproc designs): if a failure destroys the persisted
 committables *and* re-runs the writer stage after load jobs were already submitted, the retried
@@ -2864,9 +2877,9 @@ overwrites the destination for ordinary dispositions.
 For `WRITE_TRUNCATE_DATA`, the last copy instead creates one aggregate temporary table and a
 standard-SQL `SELECT *` query writes that aggregate to the existing destination with BigQuery's
 `WRITE_TRUNCATE_DATA` disposition.
-Streaming names include the checkpoint id, and every intermediate name
-and job id also includes deterministic level, group and source identity, so a retry reconstructs
-the same hierarchy for an unchanged destination layout.
+Streaming names include the checkpoint id, every leaf name hashes the staged files it is loaded
+from, and every intermediate name and job id also includes deterministic level, group and source
+identity, so a retry reconstructs the same hierarchy for an unchanged destination layout.
 
 The connector builds and validates the complete plan before it reconciles a destination table or
 submits a job. Reconciliation then renames a laid-out destination's temporary tables and the jobs
@@ -2882,7 +2895,11 @@ alone fits the published bounds; they cannot reserve quota already consumed by o
 failed attempts. Increase `maxStagingFileBytes`, reduce the volume per batch/checkpoint, or lengthen
 the checkpoint interval when a plan approaches either ceiling.
 
-Temporary tables go to the destination's dataset by default, or to `tempDataset(...)`. The
+Temporary tables go to the destination's dataset by default, or to `tempDataset(...)`. Each staged
+file records the dataset its run resolved, and a commit uses the recorded one, so a restore under
+another `tempDataset` finishes its pending commits where their earlier attempts left them, and the
+new dataset applies to files staged after the restore (files that an earlier connector version
+staged record none and use the configured dataset). The
 temporary and final datasets must be in the same BigQuery location. A dedicated temporary dataset
 with a default table expiration is recommended so temporary tables that are not laid out (below),
 orphaned by hard failures, are garbage-collected; laid-out tables carry their own expiration. Copy jobs support no schema update options and require matching
@@ -3042,9 +3059,9 @@ drops those committables. Restoring an earlier retained checkpoint or savepoint 
 them, when the BigQuery jobs its commits need already completed successfully and the restored job
 can still find them: re-attaching to a job reads no staged file, but BigQuery keeps job history
 for six months, and the restored job must look in the project those jobs ran in (see **Job
-project** above). Restore it under a new Flink job id, as `flink run -s` assigns by default: a run
-under the old id numbers its checkpoints as the old run did, and a destination loaded through
-temporary tables can then re-attach to the old run's final copy instead of copying its own loads.
+project** above). A run restored under the old Flink job id numbers its checkpoints as the old run
+did, which is safe: the commits it makes name their temporary tables after their own files, and
+the restored committables keep the job id they were staged under, whatever id the restore assigns.
 If the source can still replay from that checkpoint, the job processes everything after it again
 and appends what it emits on top of what later checkpoints already loaded. A
 file the writer discards before it starts finalizing that file (on cancellation, failover or a
