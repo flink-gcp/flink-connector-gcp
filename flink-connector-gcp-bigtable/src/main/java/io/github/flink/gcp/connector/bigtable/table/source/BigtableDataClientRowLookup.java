@@ -31,10 +31,11 @@ import com.google.cloud.bigtable.data.v2.models.TableId;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
@@ -69,7 +70,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
     private final boolean exportClientMetricsToCloudMonitoring;
 
     /** The client and its event-loop lease (ADR-0208), from {@link #open} to {@link #close}. */
-    @Nullable private transient LeasedBigtableClient<BigtableDataClient> client;
+    @Nullable private transient GrpcEventLoops.LeasedClient<BigtableDataClient> client;
 
     BigtableDataClientRowLookup(
             TableDestination destination,
@@ -96,7 +97,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
                 exportClientMetricsToFlink
                         ? BigtableClientMetrics.register(metricGroup, READ_ROW)
                         : null;
-        client = LeasedBigtableClient.openData(settingsBuilder(clientMetrics));
+        client = BigtableClients.openData(settingsBuilder(clientMetrics));
     }
 
     /**

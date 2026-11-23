@@ -19,9 +19,12 @@ package io.github.flink.gcp.connector.spanner;
 import com.google.cloud.spanner.Spanner;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+
 /**
- * Pairs a test double of the Spanner handle with a lease of its own, for tests in other packages
- * that hand a component a {@link LeasedSpanner}. The caller checks the lease is released.
+ * Pairs a test double of the Spanner handle with a lease of its own, for tests that hand a
+ * component a leased handle. The caller checks the lease is released.
  */
 public final class TestLeasedSpanners {
 
@@ -33,7 +36,11 @@ public final class TestLeasedSpanners {
      * @param spanner the handle
      * @return the pair, which releases the lease once the handle closes
      */
-    public static LeasedSpanner leased(Spanner spanner) {
-        return new LeasedSpanner(spanner, GrpcEventLoops.acquire());
+    public static GrpcEventLoops.LeasedClient<Spanner> leased(Spanner spanner) {
+        try {
+            return GrpcEventLoops.openAutoCloseable(lease -> spanner);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 }

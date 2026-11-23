@@ -124,9 +124,11 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
 - Emulator arms are caller-owned channels with the API's channel settings, never
   `plaintextProvider` (`dns:///` and client-certificate failures, `docs/adr/0208`).
 - The topic and subscription admins open a client per call. `PubSubSubscriptionAdmin` runs on the
-  JobManager, so its calls go through `ApiFuture`s it awaits interruptibly and its `close()`
-  cancels the call in flight; keep every new admin call on that path (`call(...)`), not on the
-  client's synchronous method.
+  JobManager, so its calls go through base's `PerCallClientRunner` (#2312): `ApiFuture`s awaited
+  interruptibly, and a `close()` that cancels the call in flight; keep every new admin call on that
+  path (`call(...)`), not on the client's synchronous method. A client that fails to close with an
+  exception after a successful call is logged, not reported as the call's failure (a seek wrongly
+  reported failed is re-run on restart and discards more messages).
 
 ## Metrics (`docs/adr/0010`; conventions in the base module's detailed guidance)
 

@@ -32,9 +32,9 @@ import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
@@ -79,7 +79,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     private final boolean exportClientMetricsToCloudMonitoring;
 
     /** The client and its event-loop lease (ADR-0208), from {@link #open} to {@link #close}. */
-    @Nullable private transient LeasedBigtableClient<BigtableDataClient> client;
+    @Nullable private transient GrpcEventLoops.LeasedClient<BigtableDataClient> client;
 
     private transient Iterator<ByteStringRange> remainingRanges = Collections.emptyIterator();
     private transient Iterator<Row> rows = Collections.emptyIterator();
@@ -144,7 +144,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
         }
         try {
             if (rowStreamOpener == null) {
-                client = LeasedBigtableClient.openData(settingsBuilder());
+                client = BigtableClients.openData(settingsBuilder());
             }
             remainingRanges = ranges.iterator();
             if (remainingRanges.hasNext()) {

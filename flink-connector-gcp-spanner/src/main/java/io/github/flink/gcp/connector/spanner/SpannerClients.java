@@ -23,6 +23,7 @@ import org.apache.flink.util.Preconditions;
 import com.google.api.core.ApiFunction;
 import com.google.auth.Credentials;
 import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
+import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
@@ -268,8 +269,8 @@ public final class SpannerClients {
      * @return the handle with its lease, which the caller owns and must close
      * @throws IOException if the handle cannot be created
      */
-    public static LeasedSpanner open(DatabaseDestination database, SpannerOptions settings)
-            throws IOException {
+    public static GrpcEventLoops.LeasedClient<Spanner> open(
+            DatabaseDestination database, SpannerOptions settings) throws IOException {
         return open(String.valueOf(database), settings);
     }
 
@@ -281,10 +282,10 @@ public final class SpannerClients {
      * @param settings the settings to open the handle from, carrying the client metrics
      * @param clientMetrics the client metrics the settings carry, or {@code null}
      * @return the handle with its lease, which the caller owns and closes with {@link
-     *     #close(LeasedSpanner, ClientMetrics)}
+     *     #close(GrpcEventLoops.LeasedClient, ClientMetrics)}
      * @throws IOException if the handle cannot be created
      */
-    public static LeasedSpanner open(
+    public static GrpcEventLoops.LeasedClient<Spanner> open(
             DatabaseDestination database,
             SpannerOptions settings,
             @Nullable ClientMetrics clientMetrics)
@@ -305,7 +306,8 @@ public final class SpannerClients {
      * @param spanner the handle to close
      * @param clientMetrics the client metrics to close after it, or {@code null}
      */
-    public static void close(LeasedSpanner spanner, @Nullable ClientMetrics clientMetrics) {
+    public static void close(
+            GrpcEventLoops.LeasedClient<Spanner> spanner, @Nullable ClientMetrics clientMetrics) {
         try {
             spanner.close();
         } finally {
@@ -329,7 +331,8 @@ public final class SpannerClients {
      *     after a {@code toBuilder()} copy rebuilt with an emulator host, or with a channel
      *     provider set, which the client uses in place of the configurator
      */
-    public static LeasedSpanner open(String target, SpannerOptions settings) throws IOException {
+    public static GrpcEventLoops.LeasedClient<Spanner> open(String target, SpannerOptions settings)
+            throws IOException {
         Preconditions.checkArgument(
                 settings.getChannelConfigurator() instanceof EventLoopConfigurator
                         // A transport provider replaces the configurator altogether.
@@ -338,16 +341,19 @@ public final class SpannerClients {
                         + " event-loop group; build them from SpannerClients' builder, not a"
                         + " toBuilder() copy, and set no channel provider",
                 target);
-        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
-        try {
-            return new LeasedSpanner(settings.getService(), lease);
-        } catch (RuntimeException e) {
-            lease.close();
-            throw new IOException("Failed to create the Spanner client for " + target + ".", e);
-        } catch (Error e) {
-            lease.close();
-            throw e;
-        }
+        // Spanner is not a gax BackgroundResource: the holder closes it with its own close(),
+        // which waits for its channels to terminate (6.127.0 waits up to ten seconds for each of
+        // its four stubs and its watchdog in turn), and then releases the lease. The settings
+        // carry the group through their configurator, so the factory has nothing to apply.
+        return GrpcEventLoops.openAutoCloseable(
+                lease -> {
+                    try {
+                        return settings.getService();
+                    } catch (RuntimeException e) {
+                        throw new IOException(
+                                "Failed to create the Spanner client for " + target + ".", e);
+                    }
+                });
     }
 
     /**

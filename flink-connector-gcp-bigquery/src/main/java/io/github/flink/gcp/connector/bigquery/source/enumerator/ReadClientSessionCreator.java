@@ -20,24 +20,20 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.util.ExceptionUtils;
 
-import com.google.api.core.ApiFuture;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.StatusCode;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.CreateReadSessionRequest;
 import com.google.cloud.bigquery.storage.v1.ReadSession;
-import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
 import io.github.flink.gcp.connector.base.rpc.StatusCodes;
 import io.github.flink.gcp.connector.bigquery.source.BigQueryReadClients;
 
 import javax.annotation.Nullable;
 
 import java.io.IOException;
-import java.io.InterruptedIOException;
 import java.util.Locale;
-import java.util.concurrent.ExecutionException;
 
 /**
  * Creates read sessions through a {@link BigQueryReadClient}.
@@ -61,22 +57,21 @@ import java.util.concurrent.ExecutionException;
  *
  * <p>One creator belongs to one enumerator: {@link DefaultReadSessionCreatorFactory} mints it, and
  * the source mints one per {@code createEnumerator} and {@code restoreEnumerator}. That is what
- * makes the one-way {@code closed} flag below correct — it ends this object rather than poisoning
+ * makes the runner's one-way closed flag below correct — it ends this object rather than poisoning
  * one the next enumerator will also be handed ({@code docs/adr/0128}).
  *
- * <p>Creation and release are guarded, and not for tidiness: {@link
+ * <p>The calls go through a {@link PerCallClientRunner}, and not for tidiness: {@link
  * #create(CreateReadSessionRequest)} runs on a coordinator worker thread while {@link #close()}
  * runs on the thread Flink closes the coordinator on (a dedicated one in Flink 2.2.1, which a
  * coordinator's final close does not wait for), and the two race whenever a job is cancelled during
  * session creation. Unguarded, {@code close} reads a field the worker has not yet written, closes
  * nothing, and the client — a gRPC channel and its executor — is leaked in the JobManager with
- * nothing left to reach it. Guarded, {@code close} cancels the call in flight, retries included,
- * rather than waiting for an answer nothing would read; if the cancellation lands while gax is
- * starting a retry and misses it, the creating thread's wait still ends when Flink interrupts it.
- * The lock is held while the client is built and the call started, never while the call runs. The
- * monitor is this object's own rather than a lock field: one creator belongs to one enumerator, so
- * the only contention is between that enumerator's session creation and its teardown, and a
- * separate lock would name nothing this object does not.
+ * nothing left to reach it. Through the runner, {@code close} cancels the call in flight, retries
+ * included, rather than waiting for an answer nothing would read, and the waiting {@code create}
+ * then fails with an {@link IOException} that says the creator was closed; a client still being
+ * built when {@code close} runs is closed unused by the creating thread. If the cancellation lands
+ * while gax is starting a retry and misses it, the creating thread's wait still ends when Flink
+ * interrupts it.
  */
 @Internal
 public final class ReadClientSessionCreator implements ReadSessionCreator {
@@ -84,19 +79,9 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
     @Nullable private final String serviceAccountKeyFile;
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
 
-    /**
-     * The client of the {@link #create(CreateReadSessionRequest)} call in flight, with the
-     * event-loop lease covering it, or {@code null} between calls.
-     */
-    @Nullable private GrpcEventLoops.LeasedClient<BigQueryReadClient> inFlight;
-
-    /**
-     * The call {@link #create(CreateReadSessionRequest)} is waiting on, which {@link #close()}
-     * cancels.
-     */
-    @Nullable private ApiFuture<ReadSession> inFlightCall;
-
-    private boolean closed;
+    /** Runs each {@code CreateReadSession} call on a client of its own. */
+    private final PerCallClientRunner runner =
+            new PerCallClientRunner("BigQuery read session creator");
 
     /**
      * Creates the session creator.
@@ -121,82 +106,18 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
 
     @Override
     public ReadSession create(CreateReadSessionRequest request) throws IOException {
-        GrpcEventLoops.LeasedClient<BigQueryReadClient> opened;
-        ApiFuture<ReadSession> call;
-        synchronized (this) {
-            if (closed) {
-                throw new IOException(
-                        "The BigQuery read session creator was closed; the source is shutting"
-                                + " down.");
-            }
-            opened = BigQueryReadClients.createForSessions(serviceAccountKeyFile, emulatorEndpoint);
-            try {
-                // Started under the monitor, so that close() always finds the call it cancels.
-                call = opened.client().createReadSessionCallable().futureCall(request);
-            } catch (RuntimeException | Error e) {
-                Closers.closeAllSuppressing(e, opened);
-                throw e;
-            }
-            inFlight = opened;
-            inFlightCall = call;
-        }
-        // Closed before the call is forgotten, so a close() racing this finds it still in flight
-        // and waits for the same close rather than returning while it runs, unless interrupted.
         try {
-            ReadSession session;
-            try {
-                session = await(call);
-            } catch (IOException | RuntimeException | Error e) {
-                // A failure closing the client is attached to the call's rather than put in its
-                // place, save for a JVM-fatal one, which Closers lets through.
-                Closers.closeAllSuppressing(e, opened);
-                throw e;
-            }
-            opened.close();
-            return session;
+            return runner.call(
+                    () ->
+                            BigQueryReadClients.createForSessions(
+                                    serviceAccountKeyFile, emulatorEndpoint),
+                    client -> client.createReadSessionCallable().futureCall(request));
         } catch (ApiException e) {
             String hint = viewHint(e);
             if (hint == null) {
                 throw e;
             }
             throw new IOException(hint, e);
-        } finally {
-            synchronized (this) {
-                if (inFlight == opened) {
-                    inFlight = null;
-                    inFlightCall = null;
-                }
-            }
-        }
-    }
-
-    /**
-     * Waits for the call, interruptibly. The SDK's own synchronous wait is uninterruptible, and a
-     * retry gax had scheduled can be dropped by the client's shutdown without completing the call,
-     * so a thread waiting that way could wait forever; Flink interrupts the coordinator's worker
-     * when it closes the source, and this wait answers that by cancelling the call.
-     */
-    private static ReadSession await(ApiFuture<ReadSession> call) throws IOException {
-        try {
-            return call.get();
-        } catch (InterruptedException e) {
-            call.cancel(true);
-            Thread.currentThread().interrupt();
-            throw new InterruptedIOException(
-                    "Interrupted while creating a BigQuery read session; the source is shutting"
-                            + " down.");
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException) {
-                // The failure may have been raised on a gax thread; this records where it was
-                // waited for, as the SDK's own synchronous call does.
-                cause.addSuppressed(new Exception("The read session was awaited here"));
-                throw (RuntimeException) cause;
-            }
-            if (cause instanceof Error) {
-                throw (Error) cause;
-            }
-            throw new IOException(cause);
         }
     }
 
@@ -252,22 +173,6 @@ public final class ReadClientSessionCreator implements ReadSessionCreator {
 
     @Override
     public void close() {
-        GrpcEventLoops.LeasedClient<BigQueryReadClient> open;
-        ApiFuture<ReadSession> call;
-        synchronized (this) {
-            closed = true;
-            open = inFlight;
-            call = inFlightCall;
-            inFlight = null;
-            inFlightCall = null;
-        }
-        if (call != null) {
-            // Cancels the call and any retry gax has scheduled for it, so the client below has
-            // nothing in flight to wait for and the waiting create() returns at once.
-            call.cancel(true);
-        }
-        if (open != null) {
-            open.close();
-        }
+        runner.close();
     }
 }

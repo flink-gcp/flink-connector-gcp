@@ -91,7 +91,8 @@ class LazyBigtableDataClientTest {
                                                 await(
                                                         releaseConstruction,
                                                         CONSTRUCTION_WAIT_SECONDS);
-                                                return LeasedBigtableClient.open(lease -> client);
+                                                return GrpcEventLoops.openAutoCloseable(
+                                                        lease -> client);
                                             }));
             await(constructionStarted);
 
@@ -146,7 +147,8 @@ class LazyBigtableDataClientTest {
                                                 await(
                                                         releaseConstruction,
                                                         CONSTRUCTION_WAIT_SECONDS);
-                                                return LeasedBigtableClient.open(lease -> client);
+                                                return GrpcEventLoops.openAutoCloseable(
+                                                        lease -> client);
                                             }));
             await(constructionStarted);
 

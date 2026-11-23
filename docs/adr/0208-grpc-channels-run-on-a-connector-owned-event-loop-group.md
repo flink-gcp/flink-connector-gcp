@@ -25,7 +25,9 @@ limitations under the License.
   [#2264](https://github.com/flink-gcp/flink-connector-gcp/issues/2264),
   [#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265),
   [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
-  [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269)
+  [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269),
+  [#2282](https://github.com/flink-gcp/flink-connector-gcp/issues/2282),
+  [#2312](https://github.com/flink-gcp/flink-connector-gcp/issues/2312)
 - Modules: base, bigquery, bigtable, cloudtasks, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
@@ -227,7 +229,9 @@ releases the group's last lease shuts it down and waits for its threads.**
   one interrupted during that wait, it gives the wait up at once, consuming the interrupt, and skips
   the rest of its cleanup.
   The admin clients' `close()` only shuts their channels down (`BackgroundResourceAggregation`).
-  `LeasedBigtableClient` pairs one with its lease: it applies the lease to the instantiating
+  `LeasedBigtableClient` (removed in #2312, below: base's `LeasedClient` holds the client and
+  `BigtableClients` applies the lease) pairs one with its lease: it applies the lease to the
+  instantiating
   provider of the client's stub settings, since the Bigtable settings wrap stub settings rather
   than extend gax's `ClientSettings`, and its close closes the client and then releases the lease,
   whose last release waits for the group and so closes any channel still open on it.
@@ -248,7 +252,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   180 s without the cancellation, at once with it);
   the table admin and the staged sink's metadata check open a client for each call, as before.
 - **On the JobManager, the scan enumerator's row-key sampler and the Change Streams coordinator
-  open a client for each call and close it when the call returns** (`PerCallClientRunner`): the
+  open a client for each call and close it when the call returns** (`PerCallClientRunner`, in base
+  since #2312): the
   sampler's one `SampleRowKeys`, and the coordinator's profile check, retention read and partition
   listing, including the reconciliation scan every 10 s.
   The calls go through `ApiFuture`s awaited interruptibly, and `close()` cancels the call in
@@ -268,7 +273,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   The catalog holds one leased admin client from its first request until it closes, as the
   Spanner catalog does below (decided by the owner on 2026-11-23, to keep one rule for connector
   catalogs: a per-request client was the first form of this change).
-- `LeasedBigtableClient` restores an interrupt the client's close consumed, whether set before the
+- `LeasedBigtableClient` (base's `LeasedClient` since #2312) restores an interrupt the client's
+  close consumed, whether set before the
   close or delivered during it, before it releases the lease, so that a release inside
   `interruptibleReleases()` still sees it: an interrupted full lookup cache load closes its data
   client first.
@@ -294,8 +300,9 @@ releases the group's last lease shuts it down and waits for its threads.**
   lease, because the settings are built before the client is opened; it reaches the group only
   while a lease is open.
   `SpannerClients.open` opens the lease before the client builds its channels and returns a
-  `LeasedSpanner`, whose `close()` closes the client and then releases the lease, and which a
-  second caller waits on, since the client refuses a second close.
+  `LeasedSpanner` (base's `LeasedClient` since #2312, below), whose `close()` closes the client and
+  then releases the lease, and which a second caller waits on, since the client refuses a second
+  close.
   The client waits up to 10 s for each of its four stubs and its watchdog in turn as it closes
   (google-cloud-spanner 6.127.0), so it takes that bound rather than `LeasedClient`'s.
 - **The settings come from a `SpannerOptions.Builder` subclass that composes the group into every
@@ -389,6 +396,68 @@ releases the group's last lease shuts it down and waits for its threads.**
   A client per call would set up channels and a session for every catalog request.
 - The readers, the change-stream query clients, the sink's writer and the lookup function hold
   their client's lease from open to close on the TaskManager, as before #2265 they held the client.
+
+**The holder and the per-call runner moved to base (#2312, 2026-11-23).**
+
+- **`GrpcEventLoops.LeasedClient` holds a client that is not a gax `BackgroundResource` too.**
+  `open` still bounds a gax client's close as above; `openAutoCloseable` calls the client's own
+  `close()` once, restores an interrupt that close consumed, and then releases the lease.
+  Bigtable's `LeasedBigtableClient` and Spanner's `LeasedSpanner` were that second form in each
+  module and are removed; Bigtable opens its clients through `BigtableClients`, and Spanner through
+  `SpannerClients.open` as before.
+  A holder that also owns an emulator channel now closes the channel before it releases the
+  client's lease, rather than after; both leases are released whatever the closes did.
+- **`Lease.applyTo(TransportChannelProvider)` is public**, for settings that take a transport
+  provider without extending gax's `ClientSettings`, such as Bigtable's stub settings, which
+  carried a copy of it.
+- **`PerCallClientRunner` is in `base.rpc`**, and BigQuery's session creator and Pub/Sub's
+  subscription admin use it alongside Bigtable's sampler and coordinator.
+  For the two that move, two things change.
+  The client is built outside the owner's monitor, so `close()` no longer waits for a client
+  being built, and one built after it is closed unused by the calling thread.
+  A call that `close()` cancels fails with an `IOException` that says so; BigQuery's creator threw
+  the future's raw `CancellationException`, which its method does not declare (#2282).
+  A client is published to the runner before its call starts, so an owner close that arrives while
+  the calling thread closes a client whose call could not start waits for that close.
+- **The runner holds a thread's interrupt back only while a client opened with
+  `openAutoCloseable` closes**, and restores it before the lease is released: such a client's own
+  `close()` can stop at its first interrupted wait and skip the rest of its cleanup, as a Bigtable
+  data client's does.
+  A gax client's bounded shutdown answers an interrupt with `shutdownNow()` and skips nothing,
+  because its `shutdown()` reaches every resource it aggregates before anything waits
+  (`BackgroundResourceAggregation`, gax 2.90.0 and 2.91.0); that corrects #2282's account of the
+  BigQuery path, where restoring the interrupt before the close only shortened the termination
+  wait.
+  So the interrupt that ends a call's wait is set again before the client closes: BigQuery's and
+  Pub/Sub's clients answer it at once, as they did, and a Bigtable client has it held back.
+  Either way it is back before the lease is released, which a full lookup cache load relies on:
+  Flink gives the load 10 s once it interrupts it, and a release inside `interruptibleReleases()`
+  stops waiting for a busy group after its first second only on an interrupted thread.
+  Bigtable's runner had restored it only after the lease was released.
+- **Only the thread that closes a client holds its interrupt back.**
+  A thread that finds another closing the same client waits for that close, and an interrupt ends
+  the wait, whether it was set before the wait began or arrives during it (decided by the owner on
+  2026-11-23).
+  Bigtable's runner had held back an interrupt set before the wait as well, because it cleared the
+  interrupt around the whole holder close.
+  The two differ only on an owner's close that arrives interrupted, and Flink 2.2.1 and 1.20.5
+  close a source's enumerator before they shut the coordinator's executor down
+  (`SourceCoordinator.close()`), so the coordinator's worker is interrupted only after the owner's
+  close has returned; the closing thread arrives interrupted only after `closeAsyncWithTimeout`
+  aborted it at its 60 s timeout, when Flink has stopped waiting for it.
+- **A client that fails to close with an exception after its call succeeded is logged, not
+  reported as the call's failure**, the subscription admin's rule since #2263: the call's result
+  does not depend on the close, and the lease is released either way.
+  An `Error` from that close is thrown, as it is everywhere else.
+  A failed call carries the close failure as a suppressed exception, as Bigtable's runner and
+  BigQuery's creator did; they had thrown it in place of a result.
+  The subscription admin had logged every close failure, and now one travels unlogged on a
+  failure it answers instead of throwing (`NotFoundException` from `describe`, `AlreadyExists`
+  from a creation, which reads the subscription back on a second client); a close failure in its
+  own `close()` is still logged.
+- **Spanner's batch planner stays off the runner.**
+  Its calls are synchronous and expose no `ApiFuture`; it cancels them through the gRPC `Context`
+  they run in, and a deferred operation's multiplexed session is created outside that context.
 
 The Firestore connector moves onto the group in #2243.
 
@@ -529,6 +598,22 @@ writing jobs here were not traced.
   The parent class loader never closes, so it avoids the failure.
   But the upgrade guidance recommends shipping the connector with the job, which leaves one copy of
   it, and that is the deployment that exits.
+- **A sibling of `LeasedClient` for clients that are not `BackgroundResource`s** (#2312).
+  `PerCallClientRunner` holds clients of both kinds, so two holder types would need a third,
+  shared one for the runner to take.
+- **Holding the interrupt back for a gax client too** (#2312's first form).
+  It protects no cleanup there, and a resource that would not terminate could then hold a full
+  lookup cache load's close for `LeasedClient`'s bounds.
+  The close waits once before cancelling and once after, and each wait passes the whole 5 s to
+  each resource the client aggregates in turn until one times out (gax 2.91.0), so such a
+  resource costs at least 10 s, Flink's entire budget.
+- **Holding back a waiting thread's interrupt** (#2312), as Bigtable's runner did for one set
+  before the wait.
+  The thread closing the client holds its own interrupt back so that the client's cleanup runs to
+  the end; a waiting thread does none of that cleanup, and the close finishes whether or not it
+  stays.
+  Holding its interrupt back would only keep a thread that is being stopped waiting for another
+  thread's close, up to that client's whole close (twelve minutes for a Bigtable data client).
 - **A group per client.**
   It would multiply event-loop threads by the number of clients, where one shared group matches
   what gRPC itself does.

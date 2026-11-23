@@ -27,12 +27,13 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Key;
 import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.ResultSet;
+import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Struct;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClientMetrics;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
@@ -63,7 +64,7 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
 
     @Nullable private final String keyOrderColumn;
     private transient boolean keyColumnDescending;
-    @Nullable private transient LeasedSpanner spanner;
+    @Nullable private transient GrpcEventLoops.LeasedClient<Spanner> spanner;
     @Nullable private transient ClientMetrics clientMetrics;
     @Nullable private transient DatabaseClient client;
 
@@ -189,7 +190,7 @@ final class SpannerDatabaseRowLookup implements SpannerRowLookup {
         }
         spanner = SpannerClients.open(database, settings());
         client =
-                spanner.spanner()
+                spanner.client()
                         .getDatabaseClient(
                                 DatabaseId.of(
                                         database.getProject(),

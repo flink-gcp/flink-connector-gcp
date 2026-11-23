@@ -49,6 +49,7 @@ import java.io.IOException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 /**
  * The Netty event-loop group the connectors' gRPC channels run on, in place of gRPC's own.
@@ -73,11 +74,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>One group serves every lease in the class loader, the way gRPC's does: it is created by the
  * first lease and shut down by the release of the last one, and a later lease creates a new one. A
  * channel therefore has to close before the lease that covers it is released. A client that owns
- * its channels is opened with {@link #open(ClientFactory)}, whose {@link LeasedClient#close()} does
- * both in that order. A client whose settings take a channel configurator instead of a transport
- * provider composes {@link #channelConfigurator} and is opened under a lease its owner holds. A
- * channel built while no lease is open falls back to gRPC's own group, so a configurator that
- * outlives its lease never hands a channel a terminated group.
+ * its channels is opened with {@link #open(ClientFactory)}, or with {@link
+ * #openAutoCloseable(ClientFactory)} when it is not a gax {@link BackgroundResource}, and the
+ * returned {@link LeasedClient#close()} does both in that order. A client whose settings take a
+ * channel configurator instead of a transport provider composes {@link #channelConfigurator} into
+ * them before the lease exists. A channel built while no lease is open falls back to gRPC's own
+ * group, so a configurator that outlives its lease never hands a channel a terminated group.
  *
  * <p>Like gRPC's group, it uses epoll where the shaded native transport loads and NIO otherwise,
  * with Netty's default thread count. The threads are daemons named {@code flink-gcp-grpc-elg-*}.
@@ -144,7 +146,11 @@ public final class GrpcEventLoops {
     }
 
     /**
-     * Opens a lease and creates a client under it, releasing the lease if the creation fails.
+     * Opens a lease and creates a gax client under it, releasing the lease if the creation fails.
+     *
+     * <p>The returned holder's {@link LeasedClient#close()} shuts the client down, waits a bounded
+     * time for its channels to terminate, cancels their calls if they have not, and then releases
+     * the lease.
      *
      * @param factory creates the client, applying the lease to its settings
      * @param <C> the client type
@@ -164,12 +170,108 @@ public final class GrpcEventLoops {
      */
     static <C extends BackgroundResource> LeasedClient<C> open(
             ClientFactory<C> factory, @Nullable LeasedClient<?> channel) throws IOException {
+        return open(factory, client -> () -> shutdownBounded(client), channel, false);
+    }
+
+    /**
+     * Opens a lease and creates a client under it that is not a gax {@link BackgroundResource},
+     * releasing the lease if the creation fails. For a client such as Bigtable's or Spanner's,
+     * whose termination this class cannot wait for.
+     *
+     * <p>The returned holder's {@link LeasedClient#close()} calls the client's own {@code close()}
+     * once and then releases the lease, whatever that close did. How long the close waits, and for
+     * what, is the client library's; a gax client is opened with {@link #open(ClientFactory)}
+     * instead, whose close this class bounds. A close that consumes the thread's interrupt, whether
+     * set before it began or delivered while it ran and reported as the cause of its failure, has
+     * the interrupt restored before the lease is released, so that a release inside {@link
+     * #interruptibleReleases()} still sees it.
+     *
+     * @param factory creates the client, applying the lease to its settings if they take a
+     *     transport provider
+     * @param <C> the client type
+     * @return the client paired with its lease
+     * @throws IOException if the factory does
+     * @throws IllegalArgumentException if the factory returns a gax {@link BackgroundResource},
+     *     which is shut down within {@link #open(ClientFactory)}'s bounds before this is thrown,
+     *     since its own {@code close()} would not wait for its channels
+     */
+    public static <C extends AutoCloseable> LeasedClient<C> openAutoCloseable(
+            ClientFactory<C> factory) throws IOException {
+        Preconditions.checkNotNull(factory, "factory must not be null");
+        return open(factory, client -> () -> closeRestoringInterrupt(client), null, true);
+    }
+
+    private static <C> LeasedClient<C> open(
+            ClientFactory<C> factory,
+            Function<? super C, AutoCloseable> closer,
+            @Nullable LeasedClient<?> channel,
+            boolean ownClose)
+            throws IOException {
         Lease lease = acquire();
         try {
-            return new LeasedClient<>(factory.create(lease), lease, channel);
+            C client = factory.create(lease);
+            Preconditions.checkState(client != null, "The client factory returned null");
+            if (ownClose && client instanceof BackgroundResource) {
+                shutdownBounded((BackgroundResource) client);
+                throw new IllegalArgumentException(
+                        "A gax BackgroundResource is opened with GrpcEventLoops.open, whose close"
+                                + " waits for its channels; got "
+                                + client.getClass().getName());
+            }
+            return new LeasedClient<>(client, closer.apply(client), ownClose, lease, channel);
         } catch (IOException | RuntimeException | Error e) {
             lease.close();
             throw e;
+        }
+    }
+
+    /**
+     * Shuts a gax client down and waits for its channels to terminate, cancelling their calls if
+     * they have not within a bounded time.
+     *
+     * <p>{@code shutdown()} reaches every resource the client aggregates before anything waits (gax
+     * 2.91.0 {@code BackgroundResourceAggregation}), so an interrupt cuts short only the waits: it
+     * is answered with {@code shutdownNow()} and restored.
+     */
+    private static void shutdownBounded(BackgroundResource client) {
+        boolean interrupted = false;
+        try {
+            client.shutdown();
+            if (!client.awaitTermination(CLIENT_TERMINATION_SECONDS, TimeUnit.SECONDS)) {
+                client.shutdownNow();
+                client.awaitTermination(CLIENT_TERMINATION_SECONDS, TimeUnit.SECONDS);
+            }
+        } catch (InterruptedException e) {
+            interrupted = true;
+            client.shutdownNow();
+        } finally {
+            // Restored even if shutdownNow() threw, so that a release inside
+            // interruptibleReleases() still sees it.
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * Closes a client with its own {@code close()}, then restores an interrupt that close consumed:
+     * one already set when the close began, or one that arrived during it, which a client such as
+     * Bigtable's or Spanner's reports only as a close failure caused by an {@link
+     * InterruptedException}.
+     */
+    private static void closeRestoringInterrupt(AutoCloseable client) throws Exception {
+        boolean interrupted = Thread.currentThread().isInterrupted();
+        try {
+            client.close();
+        } catch (Exception e) {
+            if (ExceptionUtils.findThrowable(e, InterruptedException.class).isPresent()) {
+                interrupted = true;
+            }
+            throw e;
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -301,14 +403,19 @@ public final class GrpcEventLoops {
         }
     }
 
-    /** Creates a client whose settings the given lease has been applied to. */
+    /**
+     * Creates a client under a lease that is already open. A client whose settings take a transport
+     * provider applies the lease to them; one whose settings already carry {@link
+     * #channelConfigurator}, such as Spanner's, has nothing to apply.
+     */
     @FunctionalInterface
-    public interface ClientFactory<C extends BackgroundResource> {
+    public interface ClientFactory<C> {
 
         /**
          * Creates the client.
          *
-         * @param lease the lease to apply to the client's settings
+         * @param lease the open lease, to apply to the client's settings if they take a transport
+         *     provider
          * @return the client
          * @throws IOException if the client cannot be created
          */
@@ -347,9 +454,19 @@ public final class GrpcEventLoops {
                     applyTo(settings.getTransportChannelProvider()));
         }
 
-        /** Returns a copy of an instantiating provider with the group applied; refuses others. */
-        @VisibleForTesting
-        TransportChannelProvider applyTo(TransportChannelProvider provider) {
+        /**
+         * Returns a copy of a transport provider that puts the channels it builds on the group,
+         * composed after any channel configurator it already carries; every other setting it holds
+         * is kept. For settings that take a transport provider but do not extend gax's {@code
+         * ClientSettings}, such as a Bigtable client's stub settings.
+         *
+         * @param provider the settings' transport provider
+         * @return the copy, to set on the settings in place of {@code provider}
+         * @throws IllegalArgumentException if the provider is not an instantiating gRPC provider,
+         *     as {@link #applyTo(ClientSettings.Builder)} does
+         */
+        public TransportChannelProvider applyTo(TransportChannelProvider provider) {
+            Preconditions.checkNotNull(provider, "provider must not be null");
             Preconditions.checkArgument(
                     provider instanceof InstantiatingGrpcChannelProvider,
                     "The event-loop group applies only to a provider that builds its own channels,"
@@ -388,29 +505,6 @@ public final class GrpcEventLoops {
             return (NettyChannelBuilder) configure(builder);
         }
 
-        /**
-         * Shuts a client down, waits for its channels to terminate, and then closes this lease.
-         *
-         * <p>In-flight calls get a bounded time to finish before they are cancelled. The lease is
-         * closed whatever happens, so the group never outlives its leases because a client would
-         * not stop; Netty then closes any channel still open on it. An interrupt cuts the wait for
-         * the client short and is restored; the wait for the group is {@link #close()}'s.
-         */
-        void closeAfter(BackgroundResource client) {
-            try {
-                client.shutdown();
-                if (!client.awaitTermination(CLIENT_TERMINATION_SECONDS, TimeUnit.SECONDS)) {
-                    client.shutdownNow();
-                    client.awaitTermination(CLIENT_TERMINATION_SECONDS, TimeUnit.SECONDS);
-                }
-            } catch (InterruptedException e) {
-                client.shutdownNow();
-                Thread.currentThread().interrupt();
-            } finally {
-                close();
-            }
-        }
-
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
@@ -420,19 +514,34 @@ public final class GrpcEventLoops {
     }
 
     /**
-     * A client and the lease covering its channels. Closing it shuts the client down, waits for its
-     * channels to terminate, cancels their calls if they have not within a bounded time, and only
-     * then releases the lease; a holder from {@link EmulatorChannels#openLeasedClient} then closes
-     * the emulator channel the client ran on the same way. The first {@link #close()} does that; a
-     * concurrent or later one waits until it has finished, unless it is interrupted while it waits.
-     * A client that does not terminate within the bounds is given up on, so a finished close means
-     * the lease is released, not that every channel has terminated.
+     * A client and the lease covering its channels.
+     *
+     * <p>Closing it closes the client the way the method that opened it states ({@link
+     * GrpcEventLoops#open(ClientFactory)} bounds a gax client's shutdown; {@link
+     * GrpcEventLoops#openAutoCloseable(ClientFactory)} calls the client's own {@code close()}),
+     * then closes the emulator channel the client ran on if it came from {@link
+     * EmulatorChannels#openLeasedClient}, and only then releases the lease, whatever the earlier
+     * steps did. The first {@link #close()} does that; a concurrent or later one waits until it has
+     * finished, and an interrupt, whether set when it begins to wait or delivered while it waits,
+     * ends the wait at once and is restored. A finished close means the lease is released, not that
+     * every channel has terminated: a client that does not terminate within its bounds is given up
+     * on, and Netty closes a channel still open on the group when the group shuts down.
      *
      * @param <C> the client type
      */
-    public static final class LeasedClient<C extends BackgroundResource> implements AutoCloseable {
+    public static final class LeasedClient<C> implements AutoCloseable {
 
         private final C client;
+
+        /** Closes the client, without the lease. */
+        private final AutoCloseable clientClose;
+
+        /**
+         * Whether the client closes with its own {@code close()}, which can skip cleanup on an
+         * interrupted thread, rather than with the bounded gax shutdown, which skips none.
+         */
+        private final boolean ownClose;
+
         private final Lease lease;
 
         /** A channel the client runs on and this holder closes after it, or {@code null}. */
@@ -441,42 +550,87 @@ public final class GrpcEventLoops {
         private final AtomicBoolean closing = new AtomicBoolean();
         private final CountDownLatch closed = new CountDownLatch(1);
 
-        private LeasedClient(C client, Lease lease, @Nullable LeasedClient<?> channel) {
+        private LeasedClient(
+                C client,
+                AutoCloseable clientClose,
+                boolean ownClose,
+                Lease lease,
+                @Nullable LeasedClient<?> channel) {
             this.client = client;
+            this.clientClose = clientClose;
+            this.ownClose = ownClose;
             this.lease = lease;
             this.channel = channel;
         }
 
-        /** Returns the client; close this holder, not the client. */
+        /**
+         * Returns the client; close this holder, not the client.
+         *
+         * @return the client
+         */
         public C client() {
             return client;
         }
 
         /**
-         * Closes the client and releases its lease, or waits for the close already under way. An
-         * interrupt ends the wait early and is restored.
+         * Closes the client, then its emulator channel if it has one, and releases the lease, or
+         * waits for the close already under way. The lease is released even if an earlier step
+         * fails; the first failure is then thrown, a checked one wrapped in an unchecked exception.
+         * An interrupt ends a waiting caller's wait at once and is restored.
          */
         @Override
         public void close() {
-            if (closing.compareAndSet(false, true)) {
+            close(false);
+        }
+
+        /**
+         * Closes as {@link #close()} does, but for a client opened with {@link
+         * GrpcEventLoops#openAutoCloseable}, if this call is the one that closes it, the thread's
+         * interrupt is held back while the client closes and is restored before the lease is
+         * released. A caller that waits for a close already under way is not affected: an interrupt
+         * still ends its wait. A gax client opened with {@link GrpcEventLoops#open(ClientFactory)}
+         * closes as {@link #close()} does: its bounded shutdown answers an interrupt with {@code
+         * shutdownNow()}, which skips none of its cleanup, and holding the interrupt back would
+         * only make the close wait out its bounds.
+         *
+         * <p>For {@link PerCallClientRunner}: a client library can give up its own close at once on
+         * an interrupted thread and skip the rest of its cleanup (Bigtable's data client does), and
+         * the runner's clients are closed on threads Flink interrupts to stop them. An interrupt
+         * delivered during the close still reaches it.
+         */
+        void closeWithInterruptHeldBack() {
+            close(ownClose);
+        }
+
+        private void close(boolean holdInterrupt) {
+            if (!closing.compareAndSet(false, true)) {
                 try {
-                    // closeAll's contract: the channel closes whatever the client's close did,
-                    // and the first failure is the one reported, with a later one suppressed.
-                    Closers.closeAll(() -> lease.closeAfter(client), channel);
-                } catch (Exception e) {
-                    // Neither close declares a checked exception, so this is the unchecked one
-                    // closeAll collected; an Error leaves closeAll as itself and never reaches
-                    // here.
-                    ExceptionUtils.rethrow(e);
-                } finally {
-                    closed.countDown();
+                    closed.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
                 return;
             }
+            boolean held = holdInterrupt && Thread.interrupted();
             try {
-                closed.await();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                // closeAll's contract: every step runs whatever an earlier one did, and the first
+                // failure is the one reported, with a later one suppressed. The lease goes last,
+                // after the held-back interrupt is restored, so that a release inside
+                // interruptibleReleases() still sees it.
+                Closers.closeAll(
+                        clientClose,
+                        channel,
+                        () -> {
+                            if (held) {
+                                Thread.currentThread().interrupt();
+                            }
+                        },
+                        lease);
+            } catch (Exception e) {
+                // An Error leaves closeAll as itself and never reaches here.
+                ExceptionUtils.rethrow(e);
+            } finally {
+                closed.countDown();
             }
         }
     }

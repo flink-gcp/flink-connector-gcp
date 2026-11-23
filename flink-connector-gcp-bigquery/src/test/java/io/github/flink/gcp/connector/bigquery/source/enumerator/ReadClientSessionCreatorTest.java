@@ -225,7 +225,12 @@ class ReadClientSessionCreatorTest {
             worker.join(TimeUnit.SECONDS.toMillis(30));
 
             assertThat(worker.isAlive()).as("the creation outlived the close").isFalse();
-            assertThat(failure.get()).isInstanceOf(CancellationException.class);
+            // An IOException that says so, not the CancellationException the future's get()
+            // throws, which create() does not declare (#2282).
+            assertThat(failure.get())
+                    .isInstanceOf(IOException.class)
+                    .hasMessageContaining("was closed while a call was in flight")
+                    .hasCauseInstanceOf(CancellationException.class);
             // When the server saw the call cancelled, not when the teardown after it finished: a
             // close that waited for the call would leave it open until the client gave up on it.
             assertThat(cancelled.await(30, TimeUnit.SECONDS))

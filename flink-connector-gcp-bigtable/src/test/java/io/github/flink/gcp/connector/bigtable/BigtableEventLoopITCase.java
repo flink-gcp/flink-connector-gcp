@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * deployment can be after Flink has closed the job's class loader; under {@code
  * cluster.uncaught-exception-handling: FAIL} that exits the TaskManager or JobManager. The emulator
  * arms are the ones a test can reach; the production arms apply the same lease to the SDK's own
- * provider, which {@code LeasedBigtableClientTest} covers. The harness's own clients run on gRPC's
+ * provider, which {@code BigtableClientsTest} covers. The harness's own clients run on gRPC's
  * group, not this one.
  */
 class BigtableEventLoopITCase extends AbstractBigtableEmulatorITCase {

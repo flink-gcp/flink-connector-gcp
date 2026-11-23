@@ -29,14 +29,15 @@ import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Dialect;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.ReadOnlyTransaction;
+import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
-import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerCredentials;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
@@ -122,11 +123,11 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
     @Override
     public SpannerChangeStreamQueryClient create(@Nullable ClientMetrics clientMetrics)
             throws Exception {
-        LeasedSpanner spanner =
+        GrpcEventLoops.LeasedClient<Spanner> spanner =
                 SpannerClients.open(database, settings(clientMetrics), clientMetrics);
         try {
             DatabaseClient client =
-                    spanner.spanner()
+                    spanner.client()
                             .getDatabaseClient(
                                     DatabaseId.of(
                                             database.getProject(),
@@ -159,7 +160,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
 
     private static final class DefaultClient implements SpannerChangeStreamQueryClient {
 
-        private final LeasedSpanner spanner;
+        private final GrpcEventLoops.LeasedClient<Spanner> spanner;
         private final DatabaseClient client;
         private final Dialect dialect;
         private final String changeStreamName;
@@ -170,7 +171,7 @@ public final class DefaultSpannerChangeStreamQueryClientFactory
         private boolean closed;
 
         private DefaultClient(
-                LeasedSpanner spanner,
+                GrpcEventLoops.LeasedClient<Spanner> spanner,
                 DatabaseClient client,
                 Dialect dialect,
                 String changeStreamName,

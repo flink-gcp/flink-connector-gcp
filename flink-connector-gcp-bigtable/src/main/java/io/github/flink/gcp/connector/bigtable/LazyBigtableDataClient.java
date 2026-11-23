@@ -25,6 +25,8 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.base.rpc.PerCallClientRunner;
 
 import javax.annotation.Nullable;
 
@@ -78,7 +80,7 @@ public final class LazyBigtableDataClient implements Serializable {
     private final boolean exportClientMetricsToCloudMonitoring;
 
     /** The client with the event-loop lease covering its channels (ADR-0208). */
-    @Nullable private transient volatile LeasedBigtableClient<BigtableDataClient> client;
+    @Nullable private transient volatile GrpcEventLoops.LeasedClient<BigtableDataClient> client;
 
     /**
      * What the owning component loaded and pushed in.
@@ -119,7 +121,7 @@ public final class LazyBigtableDataClient implements Serializable {
 
     /** Returns the client, building it on first use. */
     public BigtableDataClient get(TableDestination table) throws IOException {
-        return get(table, LeasedBigtableClient::openData);
+        return get(table, BigtableClients::openData);
     }
 
     /**
@@ -130,7 +132,7 @@ public final class LazyBigtableDataClient implements Serializable {
      */
     @VisibleForTesting
     BigtableDataClient get(TableDestination table, DataClientCreator creator) throws IOException {
-        LeasedBigtableClient<BigtableDataClient> existing = client;
+        GrpcEventLoops.LeasedClient<BigtableDataClient> existing = client;
         if (existing != null) {
             return existing.client();
         }
@@ -204,7 +206,7 @@ public final class LazyBigtableDataClient implements Serializable {
      * refuses later use.
      */
     public void close() throws IOException {
-        LeasedBigtableClient<BigtableDataClient> toClose;
+        GrpcEventLoops.LeasedClient<BigtableDataClient> toClose;
         synchronized (this) {
             closed = true;
             toClose = client;
@@ -221,7 +223,7 @@ public final class LazyBigtableDataClient implements Serializable {
     @FunctionalInterface
     interface DataClientCreator {
 
-        LeasedBigtableClient<BigtableDataClient> create(BigtableDataSettings.Builder settings)
-                throws IOException;
+        GrpcEventLoops.LeasedClient<BigtableDataClient> create(
+                BigtableDataSettings.Builder settings) throws IOException;
     }
 }

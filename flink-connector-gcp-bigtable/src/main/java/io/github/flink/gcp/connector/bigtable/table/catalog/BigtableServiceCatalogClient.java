@@ -30,7 +30,8 @@ import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.bigtable.BigtableClients;
 
 import javax.annotation.Nullable;
 
@@ -62,13 +63,13 @@ import java.util.Map;
 final class BigtableServiceCatalogClient implements BigtableCatalogClient {
 
     /** The admin client and its event-loop lease, released when the catalog closes this. */
-    private final LeasedBigtableClient<BigtableTableAdminClient> client;
+    private final GrpcEventLoops.LeasedClient<BigtableTableAdminClient> client;
 
     private final String project;
     private final String instance;
 
     private BigtableServiceCatalogClient(
-            LeasedBigtableClient<BigtableTableAdminClient> client,
+            GrpcEventLoops.LeasedClient<BigtableTableAdminClient> client,
             String project,
             String instance) {
         this.client = client;
@@ -93,7 +94,7 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
             @Nullable CredentialsProvider credentials)
             throws IOException {
         return new BigtableServiceCatalogClient(
-                LeasedBigtableClient.openTableAdmin(
+                BigtableClients.openTableAdmin(
                         settingsBuilder(project, instance, emulatorEndpoint, credentials)),
                 project,
                 instance);
