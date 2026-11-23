@@ -17,8 +17,10 @@ limitations under the License.
 # ADR-0183: FILE_LOADS temporary tables take the destination's live layout
 
 - Status: Accepted
-- Date: 2026-10-10
-- Issues: [#1671](https://github.com/flink-gcp/flink-connector-gcp/issues/1671)
+- Date: 2026-10-10; base names derived from staged files by
+  [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289) (2026-11-23)
+- Issues: [#1671](https://github.com/flink-gcp/flink-connector-gcp/issues/1671),
+  [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289)
 - Modules: bigquery
 - Current behavior: [File loads](../content/docs/connectors/datastream/bigquery.md#file-loads)
 
@@ -294,3 +296,23 @@ one pending commit, and it fails loudly rather than losing rows.
   copy within one location is free.
 - **Giving `WRITE_TRUNCATE_DATA`'s temporary tables the layout too, for one rule.** Its query works
   without it, so the layout would add new names and ids to a path that was not broken.
+
+## Revision: the names the salt extends derive from staged files (2026-11-23)
+
+The layout salt, the incarnation and the `-laidout` marker are suffixes on a base name or id.
+Before [#2289](https://github.com/flink-gcp/flink-connector-gcp/issues/2289) that base hashed the
+Flink job id, the checkpoint id, the destination and the format, which repeat across runs, and the
+final copy's look-up under either id let a commit skip its own loads on finding an earlier commit's
+copy done.
+A committable now records the temporary dataset its run resolved, and for a committable that
+records one a leaf's base name hashes its staged URIs and the id of the job filling it hashes that
+table
+([ADR-0018](0018-file-loads-commits-deterministic-load-jobs-in-the-committer.md), revision of
+2026-11-23).
+Every rule of this record applies to the new bases unchanged: a retry over the same committables
+derives the same bases, the salt still follows the destination's layout and the incarnation the
+table's creation time, and the final copy's equivalent id still spans a change of clustering.
+Because the dataset is recorded, a restore under another configured one still names the tables
+the attempt used.
+A committable an older version staged records none and keeps the old base, so a retry across the upgrade still finds
+the tables and jobs its attempt left, as the first of the three retries above requires.

@@ -347,6 +347,26 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   copy an empty table, losing rows silently. Laid-out loads and copies are `CREATE_NEVER`, and a
   destination whose final copy succeeded under either id (`LoadJobRunner.copySucceeded`, DONE only,
   not RUNNING) skips preparation and loads, laid out or not: ask before the layout guard.
+- **Temporary-table identity derives from the staged files, and the committable records the
+  temporary dataset its run resolved** (`docs/adr/0018`, revision for #2289). A leaf's name hashes
+  its partition's sorted URIs and its load id hashes that table; every other temporary name, copy
+  id and terminal query id hashes the tables it reads, so do not give one material that bypasses
+  them. The Flink job id and checkpoint id repeat across runs (HA application mode,
+  older-checkpoint restores, two sinks into one table), so a name built from them alone lets a
+  commit re-attach to another's copy and drop its rows silently. The planner names a destination's
+  temporary tables in the recorded dataset, never from `tempDataset` at commit time: every
+  temporary name and copy id hashes table paths, so a restore under another dataset would miss a
+  copy its attempt completed and copy the rows again. A committable without a recorded dataset
+  (`isStagedByOlderVersion`: serializer v2-v4, or v5 written back from them) keeps the 1.4.0
+  names, which must stay byte-identical (the older-version batch and streaming pins in
+  `LoadJobOrchestratorTempTableLayoutTest`), because planning it under new names stalls the
+  restore of a commit whose files are already deleted. Keep "no dataset" impossible for anything
+  the writer stages: the dataset goes to each file as it opens, the public constructors require
+  one, and `FileLoadsCommittable.stagedByOlderVersion` is package-private for the serializer
+  (tests reach it through `OlderVersionCommittables`); do not widen it. The committer
+  compares the record's presence across a batch, never its value. Do not reintroduce a
+  naming-scheme enum or derive the marker from the serializer version (ADR-0018 records both
+  declined), and retire the older names only by the record's absence.
 - **Staging files default to zstandard level 3, and the reason is CPU — never size.** Measured
   with this writer: deflate 11,436 ms against zstandard 3,182 ms for 2M rows, and 1.8% *more*
   bytes, so a size win must not be reintroduced from #283's 1,000-row probe (17% is a small-file

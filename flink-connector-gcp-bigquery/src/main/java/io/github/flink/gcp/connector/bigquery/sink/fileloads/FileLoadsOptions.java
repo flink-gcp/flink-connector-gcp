@@ -631,7 +631,11 @@ public final class FileLoadsOptions implements Serializable {
          * share a BigQuery location. A dedicated dataset with a default table expiration is
          * recommended so temporary tables orphaned by hard failures are garbage-collected; those
          * laid out for a column- or range-partitioned or clustered destination carry their own
-         * expiration instead ({@link #tempTableExpiration(Duration)}).
+         * expiration instead ({@link #tempTableExpiration(Duration)}). Each staged file records the
+         * dataset its run resolved, so a commit restored under another value finishes in the
+         * dataset its files recorded, and a change applies to files staged after the restore. Files
+         * an earlier connector version staged record none and commit in the configured dataset, so
+         * keep this unchanged in the redeploy that restores such state.
          *
          * @param tempDataset the dataset id, in the same project as the destination table
          * @return this builder

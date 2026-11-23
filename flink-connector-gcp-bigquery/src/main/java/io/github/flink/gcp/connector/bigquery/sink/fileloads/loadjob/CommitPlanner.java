@@ -85,6 +85,17 @@ import java.util.TreeMap;
  * committables produces identical partitions, temporary table names and job ids (hashes over
  * destination and source URIs; streaming ids additionally carry a visible {@code -c<checkpointId>}
  * segment for attribution), letting the {@link LoadJobRunner} re-attach instead of double-loading.
+ *
+ * <p><b>Identity.</b> A leaf temporary table's name hashes the staged URIs it is loaded from, and
+ * the job that fills it hashes that table as well as the URIs. Every other temporary table and
+ * every copy and terminal query hashes the tables it reads, so each job a commit can re-attach to
+ * derives from that commit's own files. Staged URIs carry a random segment per writer instance,
+ * while the Flink job id and checkpoint id can repeat: a redeploy without state under a fixed job
+ * id, a restore of an older checkpoint, or a second sink into the same table repeats them, and a
+ * name derived from them alone lets such a commit re-attach to an earlier commit's copy and drop
+ * its own rows (#2289). Those older names remain only for files a version before #2289 staged
+ * ({@link FileLoadsCommittable#isStagedByOlderVersion()}), whose restored commits must re-attach to
+ * the jobs their earlier attempt ran under them.
  */
 @Internal
 final class CommitPlanner {
@@ -123,6 +134,10 @@ final class CommitPlanner {
 
     /** Builds and validates every load, copy level, terminal query and cleanup target first. */
     CommitPlan plan(List<FileLoadsCommittable> committables) throws IOException {
+        // The committer refuses a batch mixing files staged before and after #2289; restored and
+        // new committables never share a checkpoint.
+        boolean olderNames = committables.get(0).isStagedByOlderVersion();
+        Map<TableDestination, String> tempDatasets = tempDatasets(committables, olderNames);
         List<DestinationLoad> destinationLoads = groupByDestinationAndFormat(committables);
         Map<TableDestination, Integer> formatsPerDestination = new HashMap<>();
         Set<TableDestination> overflowingDestinations = new HashSet<>();
@@ -147,12 +162,22 @@ final class CommitPlanner {
                 List<FileLoadsCommittable> partition = load.partitions.get(partitionIndex);
                 List<String> uris = urisOf(partition);
                 if (useTempTables) {
+                    // The two places where the names of a version before #2289 differ: the leaf
+                    // here and the leaf load id below.
                     TableDestination tempTable =
-                            tempTable(
-                                    load.destination,
-                                    load.format,
-                                    formatsPerDestination.get(load.destination) > 1,
-                                    partitionIndex);
+                            olderNames
+                                    ? olderVersionTempTable(
+                                            load.destination,
+                                            load.format,
+                                            formatsPerDestination.get(load.destination) > 1,
+                                            partitionIndex,
+                                            tempDatasets.get(load.destination))
+                                    : tempTable(
+                                            load.destination,
+                                            load.format,
+                                            partitionIndex,
+                                            uris,
+                                            tempDatasets.get(load.destination));
                     loadsByDestination
                             .computeIfAbsent(load.destination, unused -> new ArrayList<>())
                             .add(
@@ -162,7 +187,10 @@ final class CommitPlanner {
                                             uris,
                                             jobId(
                                                     "flink-bq-load",
-                                                    load.destination,
+                                                    // The job a retry re-attaches to must have
+                                                    // filled this table, not one named otherwise,
+                                                    // for example under another temporary dataset.
+                                                    olderNames ? load.destination : tempTable,
                                                     uris,
                                                     "p" + partitionIndex),
                                             JobInfo.CreateDisposition.CREATE_IF_NEEDED,
@@ -197,7 +225,11 @@ final class CommitPlanner {
         List<DestinationCommitPlan> destinations = new ArrayList<>(loadsByDestination.size());
         for (Map.Entry<TableDestination, List<PlannedLoad>> entry : loadsByDestination.entrySet()) {
             List<TableDestination> leafTables = copySources.get(entry.getKey());
-            DestinationCopy copy = leafTables == null ? null : planCopy(entry.getKey(), leafTables);
+            DestinationCopy copy =
+                    leafTables == null
+                            ? null
+                            : planCopy(
+                                    entry.getKey(), leafTables, tempDatasets.get(entry.getKey()));
             if (copy != null) {
                 copyJobCount += copy.jobCount();
             }
@@ -208,7 +240,7 @@ final class CommitPlanner {
     }
 
     private DestinationCopy planCopy(
-            TableDestination destination, List<TableDestination> leafTables) {
+            TableDestination destination, List<TableDestination> leafTables, String tempDataset) {
         List<TableDestination> cleanupTables = new ArrayList<>(leafTables);
         List<List<PlannedCopy>> intermediateLevels = new ArrayList<>();
         List<TableDestination> sources = new ArrayList<>(leafTables);
@@ -226,7 +258,7 @@ final class CommitPlanner {
                     continue;
                 }
                 TableDestination intermediate =
-                        intermediateTable(destination, groupSources, level, group);
+                        intermediateTable(destination, tempDataset, groupSources, level, group);
                 cleanupTables.add(intermediate);
                 nextSources.add(intermediate);
                 jobs.add(
@@ -253,7 +285,7 @@ final class CommitPlanner {
         JobInfo.WriteDisposition copyWriteDisposition =
                 toWriteDisposition(options.getWriteDisposition());
         if (options.getWriteDisposition() == WriteDisposition.WRITE_TRUNCATE_DATA) {
-            copyDestination = aggregateTable(destination, sources);
+            copyDestination = aggregateTable(destination, tempDataset, sources);
             cleanupTables.add(copyDestination);
             copyCreateDisposition = JobInfo.CreateDisposition.CREATE_IF_NEEDED;
             copyWriteDisposition = JobInfo.WriteDisposition.WRITE_TRUNCATE;
@@ -421,8 +453,32 @@ final class CommitPlanner {
     private TableDestination tempTable(
             TableDestination destination,
             StagingFormat format,
+            int partitionIndex,
+            List<String> uris,
+            String tempDataset) {
+        // The staged URIs make the name this commit's own: the job id and checkpoint id repeat
+        // across runs, and a name derived from them alone lets one commit re-attach to another's
+        // copy and drop its own rows (#2289).
+        return tempTableNamed(
+                destination,
+                tempDataset,
+                destination.toTablePath() + "\n" + format + "\n" + String.join("\n", uris),
+                "_p" + partitionIndex);
+    }
+
+    /**
+     * The leaf temporary table a version before #2289 named, which a restored commit of the files
+     * it staged must reproduce byte for byte to re-attach to that attempt's jobs. Its job id,
+     * unlike the current one, hashes the destination rather than this table (see {@link
+     * #plan(List)}). Remove it with {@link FileLoadsCommittable#isStagedByOlderVersion()} once no
+     * such state is restored.
+     */
+    private TableDestination olderVersionTempTable(
+            TableDestination destination,
+            StagingFormat format,
             boolean multipleFormats,
-            int partitionIndex) {
+            int partitionIndex,
+            String tempDataset) {
         String hashMaterial = destination.toTablePath();
         if (checkpointId != null || multipleFormats) {
             // A format transition can put two independently partitioned loads for one destination
@@ -430,23 +486,31 @@ final class CommitPlanner {
             // Streaming folds the format in unconditionally, not only where a transition is
             // visible in this commit, so a destination's name is unchanged by the checkpoint on
             // which a second format appears. Do not narrow this to multipleFormats alone: it
-            // renames every streaming single-format temp table, no test fails, and the first thing
-            // to notice is a retried commit that no longer re-attaches to the temp tables its
-            // predecessor left behind. Measured on #818.
+            // renames every streaming single-format temp table, and a restored commit no longer
+            // re-attaches to the temp tables its predecessor left behind (measured on #818); the
+            // older-version streaming pins in LoadJobOrchestratorTempTableLayoutTest now fail.
             hashMaterial += "\n" + format;
         }
-        return tempTableNamed(destination, hashMaterial, "_p" + partitionIndex);
+        return tempTableNamed(destination, tempDataset, hashMaterial, "_p" + partitionIndex);
     }
 
     private TableDestination intermediateTable(
-            TableDestination destination, List<TableDestination> sources, int level, int group) {
+            TableDestination destination,
+            String tempDataset,
+            List<TableDestination> sources,
+            int level,
+            int group) {
         return tempTableNamed(
-                destination, hashMaterialOf(destination, sources), "_l" + level + "_g" + group);
+                destination,
+                tempDataset,
+                hashMaterialOf(destination, sources),
+                "_l" + level + "_g" + group);
     }
 
     private TableDestination aggregateTable(
-            TableDestination destination, List<TableDestination> sources) {
-        return tempTableNamed(destination, hashMaterialOf(destination, sources), "_aggregate");
+            TableDestination destination, String tempDataset, List<TableDestination> sources) {
+        return tempTableNamed(
+                destination, tempDataset, hashMaterialOf(destination, sources), "_aggregate");
     }
 
     /**
@@ -455,11 +519,7 @@ final class CommitPlanner {
      * of stranding them; callers vary only that material and the suffix.
      */
     private TableDestination tempTableNamed(
-            TableDestination destination, String hashMaterial, String suffix) {
-        String dataset =
-                options.getTempDataset() != null
-                        ? options.getTempDataset()
-                        : destination.getDataset();
+            TableDestination destination, String tempDataset, String hashMaterial, String suffix) {
         String name =
                 "tmp_"
                         + flinkJobId
@@ -467,7 +527,37 @@ final class CommitPlanner {
                         + sha256Hex(hashMaterial).substring(0, 12)
                         + (checkpointId != null ? "_c" + checkpointId : "")
                         + suffix;
-        return TableDestination.of(destination.getProject(), dataset, name);
+        return TableDestination.of(destination.getProject(), tempDataset, name);
+    }
+
+    /**
+     * The dataset each destination's temporary tables go to: the one its committables recorded
+     * (#2289), or, for committables an older version wrote, the configured one, else the
+     * destination's own. A restored commit thus names its tables in the dataset the run that staged
+     * its files used, whatever the restored job configures: under another dataset its final copy,
+     * whose id hashes the tables it reads, would miss the copy an earlier attempt completed and
+     * copy the rows again. One run resolves one dataset per destination, so a destination whose
+     * committables resolve two fails loudly.
+     */
+    private Map<TableDestination, String> tempDatasets(
+            List<FileLoadsCommittable> committables, boolean olderNames) {
+        Map<TableDestination, String> datasets = new HashMap<>();
+        for (FileLoadsCommittable committable : committables) {
+            TableDestination destination = committable.getDestination();
+            String dataset =
+                    olderNames
+                            ? FileLoadsCommittable.resolveTempDataset(
+                                    options.getTempDataset(), destination)
+                            : committable.getRecordedTempDataset();
+            String previous = datasets.putIfAbsent(destination, dataset);
+            Preconditions.checkState(
+                    previous == null || previous.equals(dataset),
+                    "A FILE_LOADS commit resolves two temporary datasets for %s: %s and %s",
+                    destination,
+                    previous,
+                    dataset);
+        }
+        return datasets;
     }
 
     /** What a copy target hashes: its final destination and the sources feeding that step. */
@@ -478,9 +568,10 @@ final class CommitPlanner {
 
     /**
      * A deterministic job id: prefix, Flink job id, and a hash of the destination and sources. The
-     * hash alone is the idempotency key — source URI sets are unique per run by construction — and
-     * a streaming id additionally carries a visible {@code -c<checkpointId>} segment so a BigQuery
-     * job can be attributed to its checkpoint.
+     * hash alone is the idempotency key — source URI sets are unique per run by construction, and
+     * outside the older names so is every temporary table a copy reads — and a streaming id
+     * additionally carries a visible {@code -c<checkpointId>} segment so a BigQuery job can be
+     * attributed to its checkpoint.
      */
     private String jobId(
             String prefix, TableDestination destination, List<String> sources, String suffix) {

@@ -50,6 +50,7 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
 
     private final String flinkJobId;
     private final TableDestination destination;
+    private final String tempDataset;
     private final String uri;
     private final CountingOutputStream countingStream;
 
@@ -63,6 +64,7 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
     ParquetStagedFileWriter(
             String flinkJobId,
             TableDestination destination,
+            String tempDataset,
             String uri,
             Schema schema,
             OutputStream stream,
@@ -72,6 +74,7 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
             throws IOException {
         this.flinkJobId = flinkJobId;
         this.destination = destination;
+        this.tempDataset = tempDataset;
         this.uri = uri;
         this.countingStream = new CountingOutputStream(stream);
         // A failure here leaves the staging stream unclosed, as abort() does: closing it would
@@ -175,7 +178,8 @@ final class ParquetStagedFileWriter implements StagedFileWriter {
                 uri,
                 countingStream.getCount(),
                 rowCount,
-                StagingFormat.PARQUET);
+                StagingFormat.PARQUET,
+                tempDataset);
     }
 
     @Override

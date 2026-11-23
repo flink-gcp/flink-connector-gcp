@@ -110,6 +110,10 @@ public final class FileLoadsWriter<T>
     private final BigQuerySinkConfig<T> config;
     private final StagingStorage storage;
     private final String flinkJobId;
+
+    /** The configured temporary dataset, or {@code null} for each destination's own. */
+    @Nullable private final String configuredTempDataset;
+
     private final String pathPrefix;
     private final String filePrefix;
     private final long maxStagingFileBytes;
@@ -172,12 +176,17 @@ public final class FileLoadsWriter<T>
         this.storage = storage;
         this.flinkJobId = flinkJobId;
         this.pathPrefix = options.getStagingPath() + "/" + flinkJobId;
+        this.configuredTempDataset = options.getTempDataset();
+        // The whole random UUID, not a prefix of it: a FILE_LOADS commit's temporary tables are
+        // named from its staged URIs, and the Flink job id, subtask and attempt repeat across runs
+        // (a redeploy without state under a fixed job id), so this segment alone tells two runs'
+        // files apart (#2289).
         this.filePrefix =
                 subtaskIndex
                         + "-"
                         + attemptNumber
                         + "-"
-                        + UUID.randomUUID().toString().substring(0, 8);
+                        + UUID.randomUUID().toString().replace("-", "");
         this.maxStagingFileBytes = options.getMaxStagingFileBytes();
         this.maxOpenDestinations = options.getMaxOpenDestinations();
         this.maxPendingFiles = options.getMaxPendingFiles();
@@ -560,6 +569,8 @@ public final class FileLoadsWriter<T>
         // Stamped here, the one point every finished file passes, rather than by each format's
         // writer: the project is the run's, not the file's (see
         // FileLoadsCommittable#getJobProject).
+        // The temporary dataset is given to each file as it opens, so no file can be emitted
+        // without one and planned under the names of a version before #2289.
         finishedFiles.add(committable.withJobProject(config.getParentProject()));
         metrics.fileFinished(committable.getByteCount());
     }
@@ -681,6 +692,7 @@ public final class FileLoadsWriter<T>
                         zstdLevel,
                         flinkJobId,
                         destination,
+                        FileLoadsCommittable.resolveTempDataset(configuredTempDataset, destination),
                         uri,
                         state.avroSchema,
                         stream == null ? Channels.newOutputStream(channel) : stream,

@@ -42,12 +42,30 @@ import java.io.IOException;
  * <p>Version 4 added the project the committable's BigQuery jobs run in (#2178). Versions 2 and 3
  * are migrated with none, as no run before it configured one; such a committable commits where the
  * restored job's configuration says.
+ *
+ * <p>Version 5 added the dataset of the destination's temporary tables (#2289). Its absence marks a
+ * file a version before #2289 staged ({@link FileLoadsCommittable#isStagedByOlderVersion()}), whose
+ * commit is planned under the temporary-table names and job ids that version derived. Versions 2 to
+ * 4 are migrated without one, and a version-5 committable that records none, written back from such
+ * state, keeps that absence. For version 3 as every release up to 1.4.0 wrote it, and for version
+ * 4, those are the base names those runs used, so a restored commit derives the base
+ * temporary-table names and job ids the attempt that may already have run it derived. Such
+ * committables record no temporary dataset, and version 3 no job project, so restore them under the
+ * {@code tempDataset} and job project that attempt used: a commit whose final copy succeeded then
+ * re-attaches to it instead of reloading files that attempt deleted, and one whose final copy did
+ * not still follows ADR-0183's layout rules, which can need the staged files. Before the first
+ * release, version 2 and the earliest version 3 were written by code that appended a streaming
+ * commit's overflow partitions directly to the destination; such a commit is planned through
+ * temporary tables now and is not reproduced.
  */
 @Internal
 public final class FileLoadsCommittableSerializer
         implements SimpleVersionedSerializer<FileLoadsCommittable> {
 
-    private static final int VERSION = 4;
+    private static final int VERSION = 5;
+
+    /** The layout before the temporary dataset, which no run before #2289 recorded. */
+    private static final int VERSION_WITHOUT_TEMP_DATASET = 4;
 
     /** The layout before the job project, whose committables all used the default project. */
     private static final int VERSION_WITHOUT_JOB_PROJECT = 3;
@@ -82,6 +100,11 @@ public final class FileLoadsCommittableSerializer
             if (jobProject != null) {
                 out.writeUTF(jobProject);
             }
+            String recordedTempDataset = committable.getRecordedTempDataset();
+            out.writeBoolean(recordedTempDataset != null);
+            if (recordedTempDataset != null) {
+                out.writeUTF(recordedTempDataset);
+            }
         }
         return bytes.toByteArray();
     }
@@ -89,6 +112,7 @@ public final class FileLoadsCommittableSerializer
     @Override
     public FileLoadsCommittable deserialize(int version, byte[] serialized) throws IOException {
         if (version != VERSION
+                && version != VERSION_WITHOUT_TEMP_DATASET
                 && version != VERSION_WITHOUT_JOB_PROJECT
                 && version != VERSION_WITHOUT_FORMAT) {
             throw new IOException("Unknown committable version: " + version);
@@ -107,7 +131,24 @@ public final class FileLoadsCommittableSerializer
                             : StagingFormat.valueOf(in.readUTF());
             Long checkpointId = in.readBoolean() ? in.readLong() : null;
             // Versions 2 and 3 predate the job project, so no run then configured one.
-            String jobProject = version == VERSION && in.readBoolean() ? in.readUTF() : null;
+            String jobProject =
+                    version > VERSION_WITHOUT_JOB_PROJECT && in.readBoolean() ? in.readUTF() : null;
+            // Versions 2 to 4 predate the recorded temporary dataset, and a version-5 committable
+            // written back from their state keeps its absence: all of them were staged before
+            // #2289 and are planned under the names their attempt used.
+            String recordedTempDataset =
+                    version == VERSION && in.readBoolean() ? in.readUTF() : null;
+            if (recordedTempDataset == null) {
+                return FileLoadsCommittable.stagedByOlderVersion(
+                        flinkJobId,
+                        destination,
+                        uri,
+                        byteCount,
+                        rowCount,
+                        format,
+                        checkpointId,
+                        jobProject);
+            }
             return new FileLoadsCommittable(
                     flinkJobId,
                     destination,
@@ -116,7 +157,8 @@ public final class FileLoadsCommittableSerializer
                     rowCount,
                     format,
                     checkpointId,
-                    jobProject);
+                    jobProject,
+                    recordedTempDataset);
         }
     }
 }

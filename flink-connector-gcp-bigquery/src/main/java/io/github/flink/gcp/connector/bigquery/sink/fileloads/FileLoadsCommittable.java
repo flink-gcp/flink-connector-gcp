@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.util.Preconditions;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
 
@@ -27,8 +28,8 @@ import java.util.Objects;
 /**
  * One finalized staging file: the Flink job id of the run that staged it, its destination table,
  * its Cloud Storage URI, size counters used for load-job partitioning, the checkpoint that
- * triggered it in streaming execution, and the project that run's BigQuery jobs run in when it
- * configured one.
+ * triggered it in streaming execution, the project that run's BigQuery jobs run in when it
+ * configured one, and the dataset that run put the destination's temporary tables in.
  *
  * <p>Load jobs reference exactly the URIs collected from committables — never a bucket prefix — so
  * objects orphaned by failed attempts can never leak into a load.
@@ -52,6 +53,13 @@ import java.util.Objects;
  * <p>The checkpoint id is stamped by the pre-commit stage (the writer does not know it); it stays
  * {@code null} in batch execution and selects the streaming behavior of the load-job orchestrator
  * (visible {@code -c<id>} job-id segment and checkpoint-scoped overflow tables).
+ *
+ * <p>The dataset of the destination's temporary tables travels for the reason the job project does
+ * (#2289): a re-commit names the tables the attempt that may already have run it filled, whatever
+ * {@code tempDataset} the restored job configures, or a destination whose copy that attempt
+ * completed is copied again. Its presence also tells the planner which names that attempt derived:
+ * a committable restored from state an older version wrote carries none, and its commit is planned
+ * in the configured dataset under the names that version gave its temporary tables and jobs.
  */
 @Internal
 public final class FileLoadsCommittable {
@@ -64,15 +72,19 @@ public final class FileLoadsCommittable {
     private final StagingFormat format;
     @Nullable private final Long checkpointId;
     @Nullable private final String jobProject;
+    @Nullable private final String recordedTempDataset;
 
     /**
-     * Creates a committable without a checkpoint id (as emitted by the writer).
+     * Creates a committable without a checkpoint id, as the writer emits it.
      *
      * @param flinkJobId the Flink job id (hex) of the run that staged the file
      * @param destination the destination table
      * @param uri the staging object URI ({@code gs://bucket/name})
      * @param byteCount the object size in bytes
      * @param rowCount the number of rows in the object
+     * @param format the format the file was written in
+     * @param recordedTempDataset the dataset of the destination's temporary tables as the run that
+     *     staged the file resolved it (see {@link #resolveTempDataset(String, TableDestination)})
      */
     public FileLoadsCommittable(
             String flinkJobId,
@@ -80,8 +92,18 @@ public final class FileLoadsCommittable {
             String uri,
             long byteCount,
             long rowCount,
-            StagingFormat format) {
-        this(flinkJobId, destination, uri, byteCount, rowCount, format, null, null);
+            StagingFormat format,
+            String recordedTempDataset) {
+        this(
+                Preconditions.checkNotNull(recordedTempDataset),
+                flinkJobId,
+                destination,
+                uri,
+                byteCount,
+                rowCount,
+                format,
+                null,
+                null);
     }
 
     /**
@@ -97,8 +119,78 @@ public final class FileLoadsCommittable {
      *     execution
      * @param jobProject the project the run that staged the file runs its BigQuery jobs in, or
      *     {@code null} when that run configured none
+     * @param recordedTempDataset the dataset of the destination's temporary tables as the run that
+     *     staged the file resolved it (see {@link #resolveTempDataset(String, TableDestination)})
      */
     public FileLoadsCommittable(
+            String flinkJobId,
+            TableDestination destination,
+            String uri,
+            long byteCount,
+            long rowCount,
+            StagingFormat format,
+            @Nullable Long checkpointId,
+            @Nullable String jobProject,
+            String recordedTempDataset) {
+        this(
+                Preconditions.checkNotNull(recordedTempDataset),
+                flinkJobId,
+                destination,
+                uri,
+                byteCount,
+                rowCount,
+                format,
+                checkpointId,
+                jobProject);
+    }
+
+    /**
+     * Restores a committable that a version before #2289 staged, which recorded no temporary
+     * dataset (see {@link #isStagedByOlderVersion()}). Package-private, so that in main code only
+     * the committable serializer, in this package, creates one; everything this version stages
+     * records its dataset.
+     *
+     * @param flinkJobId the Flink job id (hex) of the run that staged the file
+     * @param destination the destination table
+     * @param uri the staging object URI ({@code gs://bucket/name})
+     * @param byteCount the object size in bytes
+     * @param rowCount the number of rows in the object
+     * @param format the format the file was written in
+     * @param checkpointId the checkpoint that triggered this file, or {@code null} in batch
+     *     execution
+     * @param jobProject the project the run that staged the file runs its BigQuery jobs in, or
+     *     {@code null} when that run configured none
+     * @return the committable
+     */
+    static FileLoadsCommittable stagedByOlderVersion(
+            String flinkJobId,
+            TableDestination destination,
+            String uri,
+            long byteCount,
+            long rowCount,
+            StagingFormat format,
+            @Nullable Long checkpointId,
+            @Nullable String jobProject) {
+        return new FileLoadsCommittable(
+                null,
+                flinkJobId,
+                destination,
+                uri,
+                byteCount,
+                rowCount,
+                format,
+                checkpointId,
+                jobProject);
+    }
+
+    /**
+     * The one constructor that accepts no temporary dataset, so only {@link
+     * #stagedByOlderVersion(String, TableDestination, String, long, long, StagingFormat, Long,
+     * String)} and the copies below can produce such a committable. The dataset leads so that the
+     * signature differs from the public constructor's.
+     */
+    private FileLoadsCommittable(
+            @Nullable String recordedTempDataset,
             String flinkJobId,
             TableDestination destination,
             String uri,
@@ -115,11 +207,13 @@ public final class FileLoadsCommittable {
         this.format = format;
         this.checkpointId = checkpointId;
         this.jobProject = jobProject;
+        this.recordedTempDataset = recordedTempDataset;
     }
 
     /** Returns a copy of this committable stamped with the given checkpoint id. */
     public FileLoadsCommittable withCheckpointId(long checkpointId) {
         return new FileLoadsCommittable(
+                recordedTempDataset,
                 flinkJobId,
                 destination,
                 uri,
@@ -138,6 +232,7 @@ public final class FileLoadsCommittable {
      */
     public FileLoadsCommittable withJobProject(@Nullable String jobProject) {
         return new FileLoadsCommittable(
+                recordedTempDataset,
                 flinkJobId,
                 destination,
                 uri,
@@ -202,6 +297,48 @@ public final class FileLoadsCommittable {
         return jobProject;
     }
 
+    /**
+     * Returns the dataset a run puts a destination's temporary tables in: its configured {@code
+     * tempDataset}, or the destination's own dataset when it configures none. The writer records
+     * it, and a commit of committables an older version wrote resolves it the same way.
+     *
+     * @param configuredTempDataset the run's configured {@code tempDataset}, or {@code null}
+     * @param destination the destination table
+     * @return the dataset
+     */
+    public static String resolveTempDataset(
+            @Nullable String configuredTempDataset, TableDestination destination) {
+        return configuredTempDataset != null ? configuredTempDataset : destination.getDataset();
+    }
+
+    /**
+     * Returns the dataset of the destination's temporary tables as the run that staged the file
+     * resolved it, or {@code null} for a file a version before #2289 staged.
+     *
+     * <p>A commit names its temporary tables in this dataset rather than in the one the committing
+     * job configures, so a restored commit finds the tables and jobs the attempt that may already
+     * have run it left; a committable carrying none uses the configured dataset.
+     */
+    @Nullable
+    public String getRecordedTempDataset() {
+        return recordedTempDataset;
+    }
+
+    /**
+     * Returns whether a version before #2289 staged this file, which then recorded no temporary
+     * dataset.
+     *
+     * <p>Its commit is planned under the temporary-table names and job ids that version derived
+     * from the Flink job id and checkpoint id rather than from the staged files: a successful
+     * commit deletes its files, and every restore commits the last checkpoint's committables again,
+     * so a restored commit can only re-attach to the jobs its attempt ran under those names. The
+     * record is persisted rather than derived from the serializer version, because a restored
+     * committable that has not yet committed is written again in the current version.
+     */
+    public boolean isStagedByOlderVersion() {
+        return recordedTempDataset == null;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -218,7 +355,8 @@ public final class FileLoadsCommittable {
                 && uri.equals(that.uri)
                 && format == that.format
                 && Objects.equals(checkpointId, that.checkpointId)
-                && Objects.equals(jobProject, that.jobProject);
+                && Objects.equals(jobProject, that.jobProject)
+                && Objects.equals(recordedTempDataset, that.recordedTempDataset);
     }
 
     @Override
@@ -231,7 +369,8 @@ public final class FileLoadsCommittable {
                 rowCount,
                 format,
                 checkpointId,
-                jobProject);
+                jobProject,
+                recordedTempDataset);
     }
 
     @Override
@@ -251,6 +390,9 @@ public final class FileLoadsCommittable {
                 + ", checkpointId="
                 + checkpointId
                 + (jobProject != null ? ", jobProject=" + jobProject : "")
+                + (recordedTempDataset != null
+                        ? ", recordedTempDataset=" + recordedTempDataset
+                        : "")
                 + "}";
     }
 }

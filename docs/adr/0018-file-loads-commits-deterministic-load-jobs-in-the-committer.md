@@ -26,8 +26,9 @@ limitations under the License.
   [#1129] (2026-08-29); writer checkpoint finalization concurrency revised by [#1164]
   (2026-08-30); laid-out temporary tables revised by [#1671] (2026-10-09); staging upload revised
   by [#2021] (2026-11-04); a job refused as it is submitted revised by [#2181] (2026-11-17); job project
-  revised by [#2178] (2026-11-18, ADR-0206); retry ids uncapped by [#2181] (2026-11-19)
-- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021], [#2178], [#2181]
+  revised by [#2178] (2026-11-18, ADR-0206); retry ids uncapped by [#2181] (2026-11-19);
+  temporary-table names derived from staged files by [#2289] (2026-11-23)
+- Issues: [#14], [#69], [#72], [#198], [#337], [#380], [#284], [#491], [#598], [#646], [#1128], [#1129], [#1164], [#1671], [#2021], [#2178], [#2181], [#2289]
 - Modules: bigquery (`sink.fileloads`)
 - Current behavior: `docs/content/docs/connectors/datastream/bigquery.md` § File loads
 
@@ -358,6 +359,108 @@ The refusal at submission still fails the attempt: with no cap, probing past it 
 refused job after another for as long as the attempt lasted.
 The query source's reuse walk had the same cap for the same reason and loses it too (ADR-0089).
 
+## Revision: temporary tables are named from their staged files (2026-11-23)
+
+The Decision's idempotency key is a hash of the staged URIs, and direct loads have always used it.
+The temporary-table path did not.
+A leaf temporary table's name hashed the Flink job id, the checkpoint id, the destination and the
+staging format, and every intermediate table, copy and terminal query hashed the tables it read, so
+none of them depended on the files ([#2289]).
+The path assumed that a Flink job id and checkpoint id never repeat, and they do.
+Flink's application mode with high availability fixes the job id from the cluster id, so a redeploy
+without state reuses it and numbers checkpoints from 1 again; restoring an older checkpoint repeats
+the ids that followed it; and two `FILE_LOADS` sinks writing one table in one job share both.
+
+Measured on 2026-11-23 against BigQuery, a second commit of other files under the same ids found the
+first commit's final copy done and re-attached to it, and its own rows never reached the
+destination.
+Nothing failed and nothing was logged above INFO.
+The plain, laid-out and batch cases each held 3 rows where 6 were written, while the same commit
+under the next checkpoint id, under another job id, or on the direct-load path held 6.
+Under `WRITE_TRUNCATE_DATA`, which never asks whether its final copy succeeded, the final copy and
+terminal query re-attach by their ids alone in the same way.
+
+A leaf temporary table's name now also hashes the partition's sorted staged URIs.
+Each writer instance puts a whole random UUID (122 random bits) in its object names, so two runs'
+URIs differ where the Flink job id, subtask and attempt repeat, and every downstream name and id
+becomes this commit's own through the table paths it hashes.
+The writer used only the UUID's first eight hexadecimal digits before; with names now derived
+from the URIs, those 32 bits were all that told two runs' files apart, and the whole UUID costs
+24 more characters in each object name.
+The id of the job that fills a leaf now also hashes that table, because a re-attach compares ids,
+never the table a job filled.
+A retry over the same committables still derives the same base names and ids, to which ADR-0183's
+layout salt, table incarnation and final-copy marker apply as before.
+
+The dataset of a destination's temporary tables travels in the committable too, as the run that
+staged the file resolved it: the configured `tempDataset`, or the destination's own dataset.
+Every temporary name and every copy id hashes table paths, which include the dataset, so a commit
+restored under another configured `tempDataset` derived other ids from the same files.
+Found by reading the code in the independent review of [#2289], not by a run: when an attempt completed one
+destination's final copy and failed on another destination, the restore under another dataset
+missed that copy, loaded the retained files again and copied them a second time; once a completed
+commit had deleted its files, it failed on every restart instead.
+The recorded dataset gives the restored commit the tables and ids its attempt used, whatever the
+restored job configures, so a change of `tempDataset` applies to files staged after the restore.
+The resolved dataset is recorded, not the configured option as ADR-0206 records the job project.
+A run with no `tempDataset` would then record nothing, which could not be told from a committable an
+older version staged, and a restore after setting the option would copy that commit again.
+
+The record's absence also marks a file a version before #2289 staged, whose commit keeps that
+version's names (`FileLoadsCommittable#isStagedByOlderVersion`).
+A successful commit deletes its staged files, and every restore commits the last checkpoint's
+committables again, so a committable restored from state an older version wrote must be planned
+under the names its attempt used.
+Under the new names it would re-attach to loads that filled tables the copy no longer reads, or,
+with new load ids too, load files already deleted, and fail on every restart.
+The committable serializer's version 5 records the dataset; versions 2 to 4 read without one, and a
+version-5 committable written back from such state keeps that absence.
+The marker is persisted rather than derived from the serializer version, because a restored
+committable that has not committed is written again in the current version first: a failed commit,
+or a retained unaligned checkpoint whose channel state carries the older version's committables to
+the committer as new elements.
+Every file this version stages records a dataset: the writer hands the resolved dataset to each file
+as it opens, the public constructors require one, and in main code only the serializer can create
+a committable without it, through a package-private factory.
+The committer refuses a batch that mixes recorded and unrecorded committables; restored and new
+committables never share a checkpoint, so a mix means an invariant broke.
+Recorded datasets may differ, one per destination, so the check compares presence, not value.
+
+Two alternatives were declined in favour of the presence rule.
+A separate naming-scheme enum duplicated the record: every committable the writer emits records a
+dataset, so the enum's older value marked exactly the committables without one, and it named a
+value no new data would ever carry.
+Deriving the marker from the serializer version alone loses it in the write-back above.
+
+Two further alternatives were declined.
+Planning restored committables under the new names would stall the ordinary upgrade, a restore from
+a stop-with-savepoint, until the state was discarded, which is worse than the rows a collision can
+lose.
+Proving from job metadata that an old-scheme copy read this commit's rows cannot work: a load job
+records its URIs and its table, while a copy records only its source tables, so a copy that ran
+after this commit's loads may still have read rows another commit wrote into the same tables
+before it.
+
+What remains is the old behaviour for committables an older version wrote.
+A commit of such committables that repeats an earlier commit's ids can still re-attach to that
+commit's copy.
+Such a commit also records no temporary dataset, so it is planned in the configured one, and a
+redeploy that changes `tempDataset` can make it fail on every restart or copy its rows a second
+time, depending on whether its leaves are laid out and its staged files remain.
+Both are what the older release would have done with them, whenever after the upgrade such a
+commit is planned; files the upgraded writer stages are exposed to neither.
+Every restore of state an older release wrote should therefore keep its `tempDataset` and its
+effective job project (ADR-0206), since those committables record neither.
+
+The older names can be removed once no state an older release staged is restored.
+The retirement test is the record's absence, not the serializer version, because version-5 state
+can carry committables written back from older state.
+Removing them changes the compatibility ADR-0200 promises for a committable's serialized form: the
+serializer would reject a committable without a dataset with a message naming the upgrade path
+(restore once on a release that reads it, let those commits finish, and take a new checkpoint or
+savepoint), as it rejects version 1 today, and `isStagedByOlderVersion`, the planner's older-name
+branch and the nullable dataset would go.
+
 ## Design references
 
 Moved here from the module README's provenance section ([#1096]), because the designs credited
@@ -399,3 +502,4 @@ are the ones this record's decisions rest on:
 [#2178]: https://github.com/flink-gcp/flink-connector-gcp/issues/2178
 [#1671]: https://github.com/flink-gcp/flink-connector-gcp/issues/1671
 [#2181]: https://github.com/flink-gcp/flink-connector-gcp/issues/2181
+[#2289]: https://github.com/flink-gcp/flink-connector-gcp/issues/2289

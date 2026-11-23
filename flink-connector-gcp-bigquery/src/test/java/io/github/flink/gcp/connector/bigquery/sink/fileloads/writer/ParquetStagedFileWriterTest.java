@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigquery.sink.fileloads.writer;
 
 import io.github.flink.gcp.connector.bigquery.sink.TableDestination;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.ParquetCompression;
 import org.apache.avro.Schema;
@@ -113,6 +114,7 @@ class ParquetStagedFileWriterTest {
                 new ParquetStagedFileWriter(
                         "job",
                         TableDestination.of("project", "dataset", "table"),
+                        "dataset",
                         "gs://bucket/object",
                         schema,
                         OutputStream.nullOutputStream(),
@@ -138,6 +140,7 @@ class ParquetStagedFileWriterTest {
                     new ParquetStagedFileWriter(
                             "job",
                             TableDestination.of("project", "dataset", "table"),
+                            "scratch",
                             "gs://bucket/object",
                             schema,
                             OutputStream.nullOutputStream(),
@@ -147,7 +150,10 @@ class ParquetStagedFileWriterTest {
             while (!writer.isFull(THRESHOLD)) {
                 writer.append(rows.apply(id++));
             }
-            sizes.add(writer.finish().getByteCount());
+            FileLoadsCommittable finished = writer.finish();
+            // The committable records the dataset the writer was given, not the destination's.
+            assertThat(finished.getRecordedTempDataset()).isEqualTo("scratch");
+            sizes.add(finished.getByteCount());
         }
         return sizes;
     }

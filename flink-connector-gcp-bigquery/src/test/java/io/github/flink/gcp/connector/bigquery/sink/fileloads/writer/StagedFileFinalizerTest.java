@@ -1050,7 +1050,8 @@ class StagedFileFinalizerTest {
                 "gs://bucket/" + name,
                 1,
                 1,
-                StagingFormat.AVRO);
+                StagingFormat.AVRO,
+                "dataset");
     }
 
     @FunctionalInterface

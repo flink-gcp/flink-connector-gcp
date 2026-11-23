@@ -36,7 +36,9 @@ import io.github.flink.gcp.connector.bigquery.sink.WriteDisposition;
 import io.github.flink.gcp.connector.bigquery.sink.WriteMethod;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.BigQueryFileLoadsSink;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittable;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsCommittableSerializer;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.FileLoadsOptions;
+import io.github.flink.gcp.connector.bigquery.sink.fileloads.OlderVersionCommittables;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.StagingFormat;
 import io.github.flink.gcp.connector.bigquery.sink.fileloads.writer.InMemoryStagingStorage;
 import io.github.flink.gcp.connector.bigquery.sink.serializer.BigQueryProtoSerializationSchema;
@@ -51,13 +53,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link LoadJobOrchestrator} giving temporary tables the layout of a partitioned or
- * clustered destination (ADR-0183), and for what the jobs that fill a destination state, against
- * recording fakes.
+ * clustered destination (ADR-0183), for the names and ids they and their jobs take for files this
+ * version and an older one staged their jobs (#2289), and for what the jobs that fill a destination
+ * state, against recording fakes.
  */
 class LoadJobOrchestratorTempTableLayoutTest {
 
@@ -107,7 +112,29 @@ class LoadJobOrchestratorTempTableLayoutTest {
                 "gs://bucket/prefix/" + name + StagingFormat.AVRO.getExtension(),
                 bytes,
                 10,
-                StagingFormat.AVRO);
+                StagingFormat.AVRO,
+                destination.getDataset());
+    }
+
+    /** {@code file} as a run whose temporary dataset resolved to {@code tempDataset} staged it. */
+    private static FileLoadsCommittable inTempDataset(
+            FileLoadsCommittable file, String tempDataset) {
+        return new FileLoadsCommittable(
+                file.getFlinkJobId(),
+                file.getDestination(),
+                file.getUri(),
+                file.getByteCount(),
+                file.getRowCount(),
+                file.getFormat(),
+                file.getCheckpointId(),
+                file.getJobProject(),
+                tempDataset);
+    }
+
+    /** The committables as they are restored from state a version before #2289 wrote. */
+    private static List<FileLoadsCommittable> stagedByOlderVersion(
+            List<FileLoadsCommittable> files) {
+        return OlderVersionCommittables.of(files);
     }
 
     /** Everything one orchestration run touches. */
@@ -189,8 +216,17 @@ class LoadJobOrchestratorTempTableLayoutTest {
             FileLoadsOptions.builder().stagingPath("gs://bucket/prefix").build();
 
     private static List<FileLoadsCommittable> threeOversizedFiles() {
+        return oversizedFiles("a", "b", "c");
+    }
+
+    /** Files too large to share a load job, so each fills a temporary table of its own. */
+    private static List<FileLoadsCommittable> oversizedFiles(String... names) {
         long sixTiB = 6L << 40;
-        return List.of(file(T1, "a", sixTiB), file(T1, "b", sixTiB), file(T1, "c", sixTiB));
+        List<FileLoadsCommittable> files = new ArrayList<>(names.length);
+        for (String name : names) {
+            files.add(file(T1, name, sixTiB));
+        }
+        return files;
     }
 
     private static Harness withExistingTable(TableLayout layout) {
@@ -298,13 +334,14 @@ class LoadJobOrchestratorTempTableLayoutTest {
     }
 
     @Test
-    void laidOutNamesAndIdsArePinned() throws IOException {
+    void olderVersionLaidOutNamesAndIdsArePinned() throws IOException {
         Harness harness = withExistingTable(PARTITIONED_AND_CLUSTERED);
 
-        harness.orchestrator.run(threeOversizedFiles());
+        harness.orchestrator.run(stagedByOlderVersion(threeOversizedFiles()));
 
-        // Pinned literally: a retried commit restored across an upgrade finds its tables and
-        // re-attaches to its jobs by these names and ids, so the salt must not drift.
+        // Pinned literally: a commit restored from state an older version wrote finds its tables
+        // and re-attaches to its jobs by these names and ids, so neither they nor the salt may
+        // drift.
         assertThat(CommitPlanner.layoutSalt(PARTITIONED_AND_CLUSTERED)).isEqualTo("b40ff274");
         assertThat(harness.runner.loads.keySet())
                 .first()
@@ -319,12 +356,14 @@ class LoadJobOrchestratorTempTableLayoutTest {
     }
 
     @Test
-    void unpartitionedDestinationsKeepTheirJobIds() throws IOException {
+    void olderVersionUnpartitionedNamesAndIdsArePinned() throws IOException {
         Harness harness = Harness.plain();
 
-        harness.orchestrator.run(threeOversizedFiles());
+        harness.orchestrator.run(stagedByOlderVersion(threeOversizedFiles()));
 
-        // Pinned literally: a retried commit restored across an upgrade re-attaches by these ids.
+        // Pinned literally: a commit restored from state an older version wrote re-attaches by
+        // these names and ids. A successful attempt deleted its staged files, so under any other
+        // names it could neither re-attach nor load them again.
         assertThat(harness.runner.loads.keySet())
                 .containsExactly(
                         "flink-bq-load-" + FLINK_JOB_ID + "-4ecae23c5143f639-p0",
@@ -334,6 +373,378 @@ class LoadJobOrchestratorTempTableLayoutTest {
                 .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-6a44639ead366984");
         assertThat(loadTables(harness).get(0).getTable())
                 .isEqualTo("tmp_" + FLINK_JOB_ID + "_57b4d06d46c9_p0");
+    }
+
+    @Test
+    void olderVersionStreamingNamesAndIdsArePinned() throws IOException {
+        Harness harness = new Harness(OPTIONS, builder -> {}, 7L, Limits.BIGQUERY);
+
+        harness.orchestrator.run(stagedByOlderVersion(threeOversizedFiles()));
+
+        // Pinned literally, and recomputed from 1.4.0's derivation outside this code: a streaming
+        // commit restored from that version's checkpoint or savepoint re-attaches by these names
+        // and ids, which take the checkpoint segment and fold the staging format into the hash.
+        assertThat(harness.runner.loads.keySet())
+                .containsExactly(
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4ecae23c5143f639-p0",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-17a6853089163595-p1",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-75e4dec0e13b0f39-p2");
+        assertThat(loadTables(harness).get(0).getTable())
+                .isEqualTo("tmp_" + FLINK_JOB_ID + "_54a2badd475a_c7_p0");
+        assertThat(harness.runner.copies.keySet())
+                .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-c7-aa511602215ce9c4");
+    }
+
+    @Test
+    void olderVersionFilesWrittenBackByThisVersionKeepTheirNames() throws IOException {
+        // A restored committable that has not committed is written again by this version, in the
+        // version-5 layout, before it commits; it must still plan under the 1.4.0 names pinned in
+        // olderVersionStreamingNamesAndIdsArePinned.
+        FileLoadsCommittableSerializer serializer = new FileLoadsCommittableSerializer();
+        List<FileLoadsCommittable> writtenBack = new ArrayList<>();
+        for (FileLoadsCommittable file : stagedByOlderVersion(threeOversizedFiles())) {
+            writtenBack.add(
+                    serializer.deserialize(
+                            serializer.getVersion(),
+                            serializer.serialize(file.withCheckpointId(7L))));
+        }
+        Harness harness = new Harness(OPTIONS, builder -> {}, 7L, Limits.BIGQUERY);
+
+        harness.orchestrator.run(writtenBack);
+
+        assertThat(harness.runner.loads.keySet())
+                .containsExactly(
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4ecae23c5143f639-p0",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-17a6853089163595-p1",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-75e4dec0e13b0f39-p2");
+        assertThat(harness.runner.copies.keySet())
+                .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-c7-aa511602215ce9c4");
+    }
+
+    @Test
+    void uriDerivedStreamingNamesAndIdsArePinned() throws IOException {
+        Harness harness = new Harness(OPTIONS, builder -> {}, 7L, Limits.BIGQUERY);
+
+        harness.orchestrator.run(threeOversizedFiles());
+
+        // Pinned literally for the reason uriDerivedNamesAndIdsArePinned gives, and recomputed
+        // outside this code: the streaming checkpoint segment comes on top of the URI hash.
+        assertThat(harness.runner.loads.keySet())
+                .containsExactly(
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-9bb39e0971d977a3-p0",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-4cb2656901da57fd-p1",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c7-f514a856731087a5-p2");
+        assertThat(loadTables(harness).get(0).getTable())
+                .isEqualTo("tmp_" + FLINK_JOB_ID + "_e88106585483_c7_p0");
+        assertThat(harness.runner.copies.keySet())
+                .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-c7-af346af83af6b828");
+    }
+
+    @Test
+    void uriDerivedNamesAndIdsArePinned() throws IOException {
+        Harness plain = Harness.plain();
+        Harness laidOut = withExistingTable(PARTITIONED_AND_CLUSTERED);
+
+        plain.orchestrator.run(threeOversizedFiles());
+        laidOut.orchestrator.run(threeOversizedFiles());
+
+        // Pinned literally: a retried commit re-attaches by these names and ids, so changing them
+        // takes a new record in the committable, never an edit here.
+        assertThat(plain.runner.loads.keySet())
+                .containsExactly(
+                        "flink-bq-load-" + FLINK_JOB_ID + "-a46d2635e4333ab8-p0",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-cf81386069c16b3e-p1",
+                        "flink-bq-load-" + FLINK_JOB_ID + "-c39c2d39f5581ae8-p2");
+        assertThat(loadTables(plain).get(0).getTable())
+                .isEqualTo("tmp_" + FLINK_JOB_ID + "_e88106585483_p0");
+        assertThat(plain.runner.copies.keySet())
+                .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-40644794e0f1d10f");
+        assertThat(laidOut.runner.loads.keySet())
+                .first()
+                .isEqualTo(
+                        "flink-bq-load-"
+                                + FLINK_JOB_ID
+                                + "-a46d2635e4333ab8-p0-layout-b40ff274-t1001");
+        assertThat(loadTables(laidOut).get(0).getTable())
+                .isEqualTo("tmp_" + FLINK_JOB_ID + "_e88106585483_p0_layout_b40ff274");
+        assertThat(laidOut.runner.copies.keySet())
+                .containsExactly("flink-bq-copy-" + FLINK_JOB_ID + "-40644794e0f1d10f-laidout");
+    }
+
+    @Test
+    void aStreamingCommitRepeatingAnEarlierCommitsIdsLoadsItsOwnFiles() throws IOException {
+        // The measured case of #2289: a redeploy without state under a fixed job id, or a restore
+        // of an older checkpoint, repeats the Flink job id and the checkpoint id with new files.
+        assertARepeatedCommitLoadsItsOwnFiles(
+                () -> new Harness(OPTIONS, builder -> {}, 1L, Limits.BIGQUERY));
+    }
+
+    @Test
+    void aBatchCommitRepeatingAnEarlierCommitsJobIdLoadsItsOwnFiles() throws IOException {
+        assertARepeatedCommitLoadsItsOwnFiles(Harness::plain);
+    }
+
+    @Test
+    void aLaidOutCommitRepeatingAnEarlierCommitsIdsLoadsItsOwnFiles() throws IOException {
+        assertARepeatedCommitLoadsItsOwnFiles(
+                () -> {
+                    Harness harness = new Harness(OPTIONS, builder -> {}, 1L, Limits.BIGQUERY);
+                    harness.tableAdmin.tables.put(T1, SCHEMA);
+                    harness.tableAdmin.layouts.put(T1, PARTITIONED_AND_CLUSTERED);
+                    return harness;
+                });
+    }
+
+    @Test
+    void aWriteTruncateDataCommitRepeatingAnEarlierCommitsIdsLoadsItsOwnFiles() throws IOException {
+        // This disposition never asks whether its final copy succeeded; its copy and terminal
+        // query would re-attach by id alone, so their ids must differ too. It is batch-only, so
+        // the commits carry no checkpoint id.
+        assertARepeatedCommitLoadsItsOwnFiles(
+                () -> new Harness(options(WriteDisposition.WRITE_TRUNCATE_DATA), builder -> {}));
+    }
+
+    @Test
+    void aCommitOfOlderVersionFilesStillReattachesToTheCopyItsIdsName() throws IOException {
+        // What every version before #2289 did, kept only for committables restored from its
+        // state: the commit cannot tell an earlier commit's copy from its own and loads nothing.
+        Harness first = new Harness(OPTIONS, builder -> {}, 1L, Limits.BIGQUERY);
+        first.orchestrator.run(stagedByOlderVersion(oversizedFiles("a", "b", "c")));
+        Harness second = new Harness(OPTIONS, builder -> {}, 1L, Limits.BIGQUERY);
+        second.runner.copiesThatSucceeded.addAll(first.runner.copies.keySet());
+
+        second.orchestrator.run(stagedByOlderVersion(oversizedFiles("d", "e", "f")));
+
+        assertThat(second.runner.loads).isEmpty();
+        assertThat(second.runner.copies.keySet())
+                .containsExactlyElementsOf(first.runner.copies.keySet());
+    }
+
+    @Test
+    void aLeafLoadNamesTheTemporaryTableItFills() throws IOException {
+        Harness destinationDataset = Harness.plain();
+        Harness scratchDataset = Harness.plain();
+
+        destinationDataset.orchestrator.run(threeOversizedFiles());
+        scratchDataset.orchestrator.run(
+                threeOversizedFiles().stream()
+                        .map(file -> inTempDataset(file, "scratch"))
+                        .toList());
+
+        // The same files with their tables in another dataset fill other tables, so their load ids
+        // differ too: a re-attach compares only ids, never the table a job filled.
+        assertThat(loadTables(scratchDataset))
+                .allSatisfy(table -> assertThat(table.getDataset()).isEqualTo("scratch"));
+        assertThat(scratchDataset.runner.loads.keySet())
+                .doesNotContainAnyElementsOf(destinationDataset.runner.loads.keySet());
+    }
+
+    @Test
+    void aRestoredCommitNamesItsTablesInTheTemporaryDatasetItsFilesRecorded() throws IOException {
+        // An attempt copied this destination and the commit then failed elsewhere, so the restore
+        // commits the same files again, now under another configured tempDataset (#2289).
+        List<FileLoadsCommittable> files = new ArrayList<>();
+        for (FileLoadsCommittable file : threeOversizedFiles()) {
+            files.add(inTempDataset(file.withCheckpointId(1L), "scratch_old"));
+        }
+        // Three different datasets: the recorded one, the newly configured one, and the
+        // destination's own, so substituting either of the others for the recorded one fails.
+        Harness first = new Harness(OPTIONS, builder -> {}, 1L, Limits.BIGQUERY);
+        first.orchestrator.run(files);
+        Harness restored =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .tempDataset("scratch")
+                                .build(),
+                        builder -> {},
+                        1L,
+                        Limits.BIGQUERY);
+        restored.runner.copiesThatSucceeded.addAll(first.runner.copies.keySet());
+
+        restored.orchestrator.run(files);
+
+        // The recorded dataset names the tables the attempt filled, so the completed copy is
+        // found and nothing is loaded or copied again.
+        assertThat(restored.runner.loads).isEmpty();
+        assertThat(restored.runner.copies.keySet())
+                .containsExactlyElementsOf(first.runner.copies.keySet());
+        assertThat(onlyCopy(restored).getSourceTables())
+                .allSatisfy(table -> assertThat(table.getDataset()).isEqualTo("scratch_old"));
+
+        // Files recording none, as an older version staged them, take the configured dataset under
+        // that version's naming. Under scratch the copy an older run completed in scratch_old is
+        // missed, while the old leaf load ids, which do not name their table, stay the same: the
+        // runner re-attaches to the loads that filled scratch_old and the copy then reads scratch's
+        // unfilled tables and fails on every restart (a laid-out destination, whose load ids name
+        // the table's incarnation, would load again instead). The same files under
+        // scratch_old find the copy. The dataset is the only change, which is why a new run
+        // records it.
+        List<FileLoadsCommittable> legacy =
+                stagedByOlderVersion(
+                        threeOversizedFiles().stream()
+                                .map(file -> file.withCheckpointId(1L))
+                                .toList());
+        Harness legacyFirst =
+                new Harness(tempDatasetOptions("scratch_old"), builder -> {}, 1L, Limits.BIGQUERY);
+        legacyFirst.orchestrator.run(legacy);
+        Harness unrecorded =
+                new Harness(tempDatasetOptions("scratch"), builder -> {}, 1L, Limits.BIGQUERY);
+        unrecorded.runner.copiesThatSucceeded.addAll(legacyFirst.runner.copies.keySet());
+        unrecorded.orchestrator.run(legacy);
+        Harness sameDataset =
+                new Harness(tempDatasetOptions("scratch_old"), builder -> {}, 1L, Limits.BIGQUERY);
+        sameDataset.runner.copiesThatSucceeded.addAll(legacyFirst.runner.copies.keySet());
+        sameDataset.orchestrator.run(legacy);
+
+        assertThat(loadTables(legacyFirst))
+                .hasSize(3)
+                .allSatisfy(table -> assertThat(table.getDataset()).isEqualTo("scratch_old"));
+        assertThat(unrecorded.runner.loads.keySet())
+                .containsExactlyElementsOf(legacyFirst.runner.loads.keySet());
+        assertThat(unrecorded.runner.copies.keySet())
+                .doesNotContainAnyElementsOf(legacyFirst.runner.copies.keySet());
+        assertThat(onlyCopy(unrecorded).getSourceTables())
+                .allSatisfy(table -> assertThat(table.getDataset()).isEqualTo("scratch"));
+        assertThat(sameDataset.runner.loads).isEmpty();
+    }
+
+    private static FileLoadsOptions tempDatasetOptions(String tempDataset) {
+        return FileLoadsOptions.builder()
+                .stagingPath("gs://bucket/prefix")
+                .tempDataset(tempDataset)
+                .build();
+    }
+
+    @Test
+    void aRestoredCommitKeepsEveryTemporaryTableAndIdInItsRecordedDataset() throws IOException {
+        // Intermediate levels (a fan-out of two) and WRITE_TRUNCATE_DATA's aggregate table, copy
+        // and terminal query: every one of their ids hashes a temporary table's path, and this
+        // disposition never asks whether its final copy succeeded, so each must be the attempt's.
+        Limits fanOutOfTwo = new Limits(2, 100, 100, 100);
+        List<FileLoadsCommittable> files = new ArrayList<>();
+        for (FileLoadsCommittable file : threeOversizedFiles()) {
+            files.add(inTempDataset(file, "scratch_old"));
+        }
+        Harness first =
+                new Harness(
+                        options(WriteDisposition.WRITE_TRUNCATE_DATA),
+                        builder -> {},
+                        null,
+                        fanOutOfTwo);
+        first.orchestrator.run(files);
+        Harness restored =
+                new Harness(
+                        FileLoadsOptions.builder()
+                                .stagingPath("gs://bucket/prefix")
+                                .writeDisposition(WriteDisposition.WRITE_TRUNCATE_DATA)
+                                .tempDataset("scratch")
+                                .build(),
+                        builder -> {},
+                        null,
+                        fanOutOfTwo);
+
+        restored.orchestrator.run(files);
+
+        assertThat(first.runner.copies).hasSizeGreaterThan(1);
+        assertThat(first.runner.queries).hasSize(1);
+        assertThat(restored.runner.loads.keySet())
+                .containsExactlyElementsOf(first.runner.loads.keySet());
+        assertThat(restored.runner.copies.keySet())
+                .containsExactlyElementsOf(first.runner.copies.keySet());
+        assertThat(restored.runner.queries.keySet())
+                .containsExactlyElementsOf(first.runner.queries.keySet());
+        assertThat(restored.runner.copies.values())
+                .allSatisfy(
+                        copy -> {
+                            assertThat(copy.getDestination().getDataset()).isEqualTo("scratch_old");
+                            assertThat(copy.getSourceTables())
+                                    .allSatisfy(
+                                            table ->
+                                                    assertThat(table.getDataset())
+                                                            .isEqualTo("scratch_old"));
+                        });
+    }
+
+    @Test
+    void eachDestinationKeepsTheTemporaryDatasetItsFilesRecorded() throws IOException {
+        // Without tempDataset each destination records its own dataset, so one commit routinely
+        // carries several; each destination's tables go to its own.
+        TableDestination inE = TableDestination.of("p", "e", "t2");
+        long sixTiB = 6L << 40;
+        List<FileLoadsCommittable> files = new ArrayList<>();
+        for (String name : List.of("a", "b")) {
+            files.add(file(T1, name, sixTiB));
+            files.add(file(inE, name, sixTiB));
+        }
+        Harness harness = Harness.plain();
+
+        harness.orchestrator.run(files);
+
+        assertThat(harness.runner.copies.values())
+                .hasSize(2)
+                .allSatisfy(
+                        copy ->
+                                assertThat(copy.getSourceTables())
+                                        .allSatisfy(
+                                                table ->
+                                                        assertThat(table.getDataset())
+                                                                .isEqualTo(
+                                                                        copy.getDestination()
+                                                                                .getDataset())));
+    }
+
+    @Test
+    void aDestinationWhoseFilesRecordTwoTemporaryDatasetsFailsBeforeAnyJob() {
+        // One run resolves one dataset per destination, so two for one destination is corrupt
+        // state; a mix of recorded and unrecorded files is the committer's to refuse.
+        List<FileLoadsCommittable> files = threeOversizedFiles();
+        Harness harness = Harness.plain();
+
+        assertThatThrownBy(
+                        () ->
+                                harness.orchestrator.run(
+                                        List.of(
+                                                files.get(0),
+                                                inTempDataset(files.get(1), "scratch"),
+                                                files.get(2))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("two temporary datasets");
+        assertThat(harness.runner.loads).isEmpty();
+    }
+
+    /**
+     * Runs a commit, then a second commit of other files under the same Flink job id and checkpoint
+     * id against a service where every copy of the first succeeded, and asserts that the second
+     * loads and copies its own files rather than re-attaching to the first's jobs.
+     */
+    private static void assertARepeatedCommitLoadsItsOwnFiles(Supplier<Harness> newHarness)
+            throws IOException {
+        Harness first = newHarness.get();
+        first.orchestrator.run(oversizedFiles("a", "b", "c"));
+        Harness second = newHarness.get();
+        second.runner.copiesThatSucceeded.addAll(first.runner.copies.keySet());
+
+        second.orchestrator.run(oversizedFiles("d", "e", "f"));
+
+        assertThat(second.runner.loads.values())
+                .flatExtracting(LoadJobSpec::getSourceUris)
+                .containsExactlyInAnyOrder(
+                        "gs://bucket/prefix/d.avro",
+                        "gs://bucket/prefix/e.avro",
+                        "gs://bucket/prefix/f.avro");
+        assertThat(second.runner.loads.keySet())
+                .doesNotContainAnyElementsOf(first.runner.loads.keySet());
+        assertThat(loadTables(second)).doesNotContainAnyElementsOf(loadTables(first));
+        assertThat(second.runner.copies.keySet())
+                .isNotEmpty()
+                .doesNotContainAnyElementsOf(first.runner.copies.keySet());
+        assertThat(second.runner.copies.values())
+                .extracting(CopyJobSpec::getEquivalentJobId)
+                .doesNotContainAnyElementsOf(first.runner.copies.keySet());
+        assertThat(second.runner.queries).hasSameSizeAs(first.runner.queries);
+        assertThat(second.runner.queries.keySet())
+                .allSatisfy(id -> assertThat(first.runner.queries).doesNotContainKey(id));
     }
 
     @Test
