@@ -21,6 +21,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -52,6 +53,9 @@ class LazyBigtableDataClientTest {
 
         try {
             assertThat(first).isNotNull();
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the built client holds a lease on the event-loop group")
+                    .isTrue();
             BigtableDataClient second =
                     holder.get(
                             TABLE,
@@ -63,6 +67,7 @@ class LazyBigtableDataClientTest {
         } finally {
             holder.close();
         }
+        assertThat(GrpcEventLoops.isRunning()).as("close released the client's lease").isFalse();
     }
 
     @Test
@@ -86,7 +91,7 @@ class LazyBigtableDataClientTest {
                                                 await(
                                                         releaseConstruction,
                                                         CONSTRUCTION_WAIT_SECONDS);
-                                                return client;
+                                                return LeasedBigtableClient.open(lease -> client);
                                             }));
             await(constructionStarted);
 
@@ -141,7 +146,7 @@ class LazyBigtableDataClientTest {
                                                 await(
                                                         releaseConstruction,
                                                         CONSTRUCTION_WAIT_SECONDS);
-                                                return client;
+                                                return LeasedBigtableClient.open(lease -> client);
                                             }));
             await(constructionStarted);
 
@@ -159,6 +164,9 @@ class LazyBigtableDataClientTest {
             releaseConstruction.countDown();
             assertThat(getting.get(WAIT_SECONDS, TimeUnit.SECONDS)).isSameAs(client);
             closing.get(WAIT_SECONDS, TimeUnit.SECONDS);
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the close that waited for construction released the late lease")
+                    .isFalse();
 
             // BigtableDataClient exposes no shutdown state. As in
             // DefaultMutationBatcherFactoryTest, a closed client's background executor rejects

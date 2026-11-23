@@ -34,6 +34,7 @@ import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 import io.github.flink.gcp.connector.bigtable.sink.GcRule;
@@ -116,7 +117,8 @@ public class BigtableTableAdmin implements TableAdmin {
     @Override
     public EnsureResult ensureTable(TableDestination destination, TableCreateOptions options)
             throws IOException {
-        try (BigtableTableAdminClient client = newClient(destination)) {
+        try (LeasedBigtableClient<BigtableTableAdminClient> leased = newClient(destination)) {
+            BigtableTableAdminClient client = leased.client();
             return ensureWith(
                     destination,
                     options,
@@ -254,7 +256,8 @@ public class BigtableTableAdmin implements TableAdmin {
             Map<String, ColumnFamilyType> expected,
             boolean allowMissing)
             throws IOException {
-        try (BigtableTableAdminClient client = newClient(destination)) {
+        try (LeasedBigtableClient<BigtableTableAdminClient> leased = newClient(destination)) {
+            BigtableTableAdminClient client = leased.client();
             ColumnFamilyTypes.check(
                     destination, expected, familyTypesOf(client, destination), allowMissing);
         } catch (NotFoundException e) {
@@ -399,9 +402,11 @@ public class BigtableTableAdmin implements TableAdmin {
         // Clients are short-lived within ensureTable; there is nothing to release here.
     }
 
-    private BigtableTableAdminClient newClient(TableDestination destination) throws IOException {
+    /** Opens a short-lived client, on the connector's gRPC event-loop group (ADR-0208). */
+    private LeasedBigtableClient<BigtableTableAdminClient> newClient(TableDestination destination)
+            throws IOException {
         try {
-            return BigtableTableAdminClient.create(settings(destination));
+            return LeasedBigtableClient.openTableAdmin(settingsBuilder(destination));
         } catch (IOException | RuntimeException e) {
             throw new IOException("Failed to create the Bigtable admin client", e);
         }
@@ -410,6 +415,10 @@ public class BigtableTableAdmin implements TableAdmin {
     /** Builds the admin settings, exposed so tests can verify credential injection. */
     @VisibleForTesting
     BigtableTableAdminSettings settings(TableDestination destination) throws IOException {
+        return settingsBuilder(destination).build();
+    }
+
+    private BigtableTableAdminSettings.Builder settingsBuilder(TableDestination destination) {
         BigtableTableAdminSettings.Builder settings =
                 emulatorEndpoint == null
                         ? BigtableTableAdminSettings.newBuilder()
@@ -419,7 +428,6 @@ public class BigtableTableAdmin implements TableAdmin {
             settings.setCredentialsProvider(credentialsOverride);
         }
         return settings.setProjectId(destination.getProject())
-                .setInstanceId(destination.getInstance())
-                .build();
+                .setInstanceId(destination.getInstance());
     }
 }

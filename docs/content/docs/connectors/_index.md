@@ -130,8 +130,8 @@ The destroy then fails with `NoClassDefFoundError`, and under
 writer or reader, and a session cluster's JobManager, taking its other jobs with it, after a
 BigQuery source is cancelled.
 
-The BigQuery, Cloud Tasks, Pub/Sub and Spanner connectors therefore run their gRPC clients on an
-event-loop group of their own, whose threads are named `flink-gcp-grpc-elg-*`.
+The BigQuery, Bigtable, Cloud Tasks, Pub/Sub and Spanner connectors therefore run their gRPC clients
+on an event-loop group of their own, whose threads are named `flink-gcp-grpc-elg-*`.
 There is one group for each copy of the connectors' shared classes in a class loader, so each SQL
 connector JAR, which relocates its own copy, has its own.
 The last reader, writer, committer, lookup function, enumerator or catalog using a group to close
@@ -143,31 +143,45 @@ loader, so an enumerator does not wait for its close either: it closes each clie
 its hold on the group, as soon as the call it opened the client for returns.
 BigQuery's enumerator does that once the read session exists, Pub/Sub's after each check,
 creation or seek of a subscription when the source starts, Spanner's batch enumerator once it has
-planned the read's partitions, and Spanner's Change Streams enumerator once it has read the
-stream's configuration.
+planned the read's partitions, Spanner's Change Streams enumerator once it has read the stream's
+configuration, Bigtable's scan enumerator once it has sampled the table's row keys, and Bigtable's
+Change Streams enumerator after each check of the application profile, read of the table's
+retention and listing of its partitions, including the partition scan it repeats every 10 seconds.
 A loader released while such a call is in flight can still see the group torn down after it
 closed: the job ends in any way, a stop with a savepoint included, or the JobManager shuts down,
-when a BigQuery table read starts, when a BigQuery query read's query has finished, or while a
-Pub/Sub or Spanner source starts.
+when a BigQuery table read starts, when a BigQuery query read's query has finished, while a
+Pub/Sub or Spanner source starts, or while a Bigtable enumerator is waiting for one of the calls
+above.
 Closing the enumerator then asks for the call to be cancelled rather than waiting for its answer.
 A Spanner Change Streams enumerator, or the enumerator of a Spanner Table API scan that reads
 through `scan.index` or whose primary-key filter depends on the key's sort order, closed before
 its client has created its first session waits for the client's own shutdown instead, which took
 about 20 seconds for the Change Streams enumerator against an endpoint that never answered.
 A catalog keeps its client until it is closed.
-The SQL Gateway and the SQL Client close a session's catalogs before its class loader; a catalog
-registered in a program's own `TableEnvironment` is never closed by Flink, so its client stays
-open for as long as the process runs.
+The SQL Gateway and the SQL Client close a session's catalogs before its class loader, so a
+catalog's hold on the group is released before that loader closes.
+In a program's own `TableEnvironment`, the client stays open until the catalog instance is closed,
+whoever closes it: the program itself, or Flink when it drops the catalog or, during an
+`ALTER CATALOG`, before it opens the replacement; a catalog left open keeps its client for as long
+as the process runs.
 Pub/Sub's publishers and subscribers keep the shutdown budgets of their own options and release
 their hold on the group when that shutdown finishes or its budget runs out.
 A Spanner client waits up to 10 seconds for each of its four stubs in turn as it closes.
 Any other client a connector closes itself gets 5 seconds for its calls to finish before they
-are cancelled.
+are cancelled, except Bigtable's.
+A Bigtable data client's own close can wait minutes for calls still in flight, up to six for its
+session pool and six more for its other channels, and the admin clients' close does not wait at
+all.
+The connector closes a Bigtable client once the calls it started have ended or been cancelled
+where it can cancel them, a full lookup cache load's scan among them; one it cannot, such as a
+point read (a lookup's, or one a full lookup cache load makes for a range whose endpoints are equal
+and closed) or a mutation an interrupted writer teardown left running, can hold an uninterrupted
+close for that long.
 A Storage Write API default-stream writer is closed by the client library instead, whose own waits
 can take minutes when it closes a connection's last writer.
 The last close also waits up to 11 seconds for the group.
-When Flink interrupts a BigQuery or Spanner full lookup cache load, which it gives 10 seconds to
-end, that wait ends after its first second.
+When Flink interrupts a BigQuery, Bigtable or Spanner full lookup cache load, which it gives 10
+seconds to end, that wait ends after its first second.
 If an event loop is still busy then, the group's threads can outlive the job's class loader and
 fail as described above.
 In a thread dump, `flink-gcp-grpc-elg-*` threads left after every job using the connector has
@@ -190,10 +204,25 @@ catalog has, and no client turns the export back on.
 With direct access enabled (`GOOGLE_SPANNER_ENABLE_DIRECT_ACCESS`), the DirectPath control-plane
 channels are the other, and the ALTS handshaker runs on an event-loop group of its own.
 
-The Bigtable and Firestore connectors still use gRPC's group
+A Bigtable client's built-in export of its metrics to Cloud Monitoring is the exception within the
+Bigtable connector.
+The client library builds that export's own client from nothing but an endpoint and credentials,
+so its channel stays on gRPC's group, and while the export is on, which it is by default for the
+readers', writers' and lookups' clients, the exit can still follow a job that used one.
+This was reproduced outside Flink and reported to the client library
+([#2297]({{< param BookRepo >}}/issues/2297)).
+Turning the export off with `exportClientMetricsToCloudMonitoring(false)` or the
+`client-metrics.export-to-cloud-monitoring` Table option removes that channel.
+The clients the Bigtable enumerators open on the JobManager never export to Cloud Monitoring,
+whatever the option says, for this reason and because a client opened for each call would report
+each time under a new client id.
+Under DirectPath on Google Cloud, gRPC's own xDS and ALTS control channels are another such
+channel, also unmeasured.
+
+The Firestore connector still uses gRPC's group
 ([#2243]({{< param BookRepo >}}/issues/2243)).
-Under `FAIL`, placing them in Flink's `lib/` avoids the exit, because the parent class loader never
-closes.
+Under `FAIL`, placing it in Flink's `lib/` avoids the exit, because the parent class loader never
+closes; the same holds for the Bigtable and Spanner channels above.
 
 ## Memory a finished job leaves on a session cluster
 

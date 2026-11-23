@@ -17,6 +17,7 @@
 package io.github.flink.gcp.connector.bigtable.sink.tables;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.annotation.VisibleForTesting;
 
 import com.google.api.gax.core.CredentialsProvider;
 import com.google.bigtable.admin.v2.AppProfile;
@@ -29,6 +30,7 @@ import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.ColumnFamilyType;
 
@@ -58,10 +60,15 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
             String markerFamily,
             Map<String, ColumnFamilyType> expectedFamilies)
             throws IOException {
-        try (BigtableInstanceAdminClient instances =
-                        BigtableInstanceAdminClient.create(instanceSettings(destination));
-                BigtableTableAdminClient tables =
-                        BigtableTableAdminClient.create(tableSettings(destination))) {
+        // Each client holds its own lease on the event-loop group (ADR-0208), released after it
+        // closes; the try closes the table client first, then the instance client.
+        try (LeasedBigtableClient<BigtableInstanceAdminClient> leasedInstances =
+                        LeasedBigtableClient.openInstanceAdmin(
+                                instanceSettingsBuilder(destination));
+                LeasedBigtableClient<BigtableTableAdminClient> leasedTables =
+                        LeasedBigtableClient.openTableAdmin(tableSettingsBuilder(destination))) {
+            BigtableInstanceAdminClient instances = leasedInstances.client();
+            BigtableTableAdminClient tables = leasedTables.client();
             String instance =
                     "projects/"
                             + destination.getProject()
@@ -90,8 +97,14 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
         }
     }
 
+    @VisibleForTesting
     BigtableInstanceAdminSettings instanceSettings(TableDestination destination)
             throws IOException {
+        return instanceSettingsBuilder(destination).build();
+    }
+
+    private BigtableInstanceAdminSettings.Builder instanceSettingsBuilder(
+            TableDestination destination) {
         var builder =
                 endpoint == null
                         ? BigtableInstanceAdminSettings.newBuilder()
@@ -101,10 +114,15 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
         if (credentials != null) {
             builder.setCredentialsProvider(credentials);
         }
-        return builder.build();
+        return builder;
     }
 
+    @VisibleForTesting
     BigtableTableAdminSettings tableSettings(TableDestination destination) throws IOException {
+        return tableSettingsBuilder(destination).build();
+    }
+
+    private BigtableTableAdminSettings.Builder tableSettingsBuilder(TableDestination destination) {
         var builder =
                 endpoint == null
                         ? BigtableTableAdminSettings.newBuilder()
@@ -114,7 +132,7 @@ public final class BigtableStagedTableAdmin implements StagedTableAdmin {
         if (credentials != null) {
             builder.setCredentialsProvider(credentials);
         }
-        return builder.build();
+        return builder;
     }
 
     static void validateMetadata(

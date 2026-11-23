@@ -290,8 +290,12 @@ public class BigtableSourceBuilder<T> {
     }
 
     /**
-     * Sets whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
-     * Monitoring. Optional; on by default.
+     * Sets whether the readers' Bigtable clients keep exporting their built-in client-side metrics
+     * to Cloud Monitoring. Optional; on by default.
+     *
+     * <p>The enumerator's row-key sampling client never exports, whatever this says: it is opened
+     * for one call on the JobManager, where the export's own channel would run on gRPC's event-loop
+     * group rather than the connector's (ADR-0208).
      *
      * <p>Off, the client creates no Cloud Monitoring exporter at all. Besides the export, that
      * removes the exporter's platform detection when a client closes: off Google Cloud, where
@@ -394,10 +398,7 @@ public class BigtableSourceBuilder<T> {
                         serviceAccountKeyFile,
                         samplerFactory != null
                                 ? samplerFactory
-                                : new DefaultRowKeySamplerFactory(
-                                        appProfileId,
-                                        emulatorEndpoint,
-                                        exportClientMetricsToCloudMonitoring),
+                                : new DefaultRowKeySamplerFactory(appProfileId, emulatorEndpoint),
                         opener != null
                                 ? opener
                                 : new DataClientRowStreamOpener(

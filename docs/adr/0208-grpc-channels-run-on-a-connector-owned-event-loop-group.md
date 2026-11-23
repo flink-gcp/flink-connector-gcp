@@ -22,10 +22,11 @@ limitations under the License.
   [#2243](https://github.com/flink-gcp/flink-connector-gcp/issues/2243),
   [#2262](https://github.com/flink-gcp/flink-connector-gcp/issues/2262),
   [#2263](https://github.com/flink-gcp/flink-connector-gcp/issues/2263),
+  [#2264](https://github.com/flink-gcp/flink-connector-gcp/issues/2264),
   [#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265),
   [#2267](https://github.com/flink-gcp/flink-connector-gcp/issues/2267),
   [#2269](https://github.com/flink-gcp/flink-connector-gcp/issues/2269)
-- Modules: base, bigquery, cloudtasks, pubsub, spanner
+- Modules: base, bigquery, bigtable, cloudtasks, pubsub, spanner
 - Refines: [ADR-0081](0081-emulator-transport-is-shared-by-channel-ownership-not-by-settings-type.md)
 - Current behavior: `docs/content/docs/connectors/_index.md` § gRPC threads and job shutdown
 
@@ -64,7 +65,8 @@ releases the group's last lease shuts it down and waits for its threads.**
   Flink's full lookup cache stops a load by interrupting it and fails its close if the load has
   not ended 10 s later (`CacheLoader.close()`, Flink 1.20.5, 2.2.1 and 2.3.0), so a wait of up to
   11 s on the load's thread could outlast that budget; the BigQuery and Spanner loads open, fetch
-  and close inside the scope.
+  and close inside the scope, and the Bigtable load opens and closes inside it (#2264), which is
+  where its client, the only lease it holds, is created and closed.
   The first second keeps the guarantee for a shutdown that no busy event loop holds up, which
   took milliseconds when measured (see Evidence).
 - A lease applies the group to a client's settings (`applyTo(ClientSettings.Builder)`) or to a
@@ -214,6 +216,76 @@ releases the group's last lease shuts it down and waits for its threads.**
   enumerator's close ended a waiting `GetSubscription` within 4 s, against the 5 s it took when
   only the client's close ended it.
 
+**In the Bigtable connector (#2264, 2026-11-23), every client holds a lease the same way.**
+
+- None of the three Bigtable clients is a gax `BackgroundResource`: `BigtableDataClient`,
+  `BigtableTableAdminClient` and `BigtableInstanceAdminClient` are plain `AutoCloseable`s
+  (google-cloud-bigtable 2.88.0).
+  The data client's `close()` drains its session pool for up to six minutes, then shuts its classic
+  channels down and waits up to six minutes for them to terminate without cancelling the classic
+  calls still in flight (gax 2.90.0 `GrpcTransportChannel.close()`); on an interrupted thread, or
+  one interrupted during that wait, it gives the wait up at once, consuming the interrupt, and skips
+  the rest of its cleanup.
+  The admin clients' `close()` only shuts their channels down (`BackgroundResourceAggregation`).
+  `LeasedBigtableClient` pairs one with its lease: it applies the lease to the instantiating
+  provider of the client's stub settings, since the Bigtable settings wrap stub settings rather
+  than extend gax's `ClientSettings`, and its close closes the client and then releases the lease,
+  whose last release waits for the group and so closes any channel still open on it.
+- The lease reaches every channel the data client builds from that provider: its channel pool
+  (`BigtableClientContext` composes its own configurators after the provider's), its session
+  channels (`GaxBasicChannelProvider` and `GaxDirectAccessChannelProvider` apply the provider's
+  configurator), and a DirectPath data channel, which gax builds through
+  `Grpc.newChannelBuilder` and the shaded Netty transport.
+- **The emulator arms keep the SDK's own `newBuilderForEmulator(host, port)`**, which sets an
+  instantiating provider with a plaintext configurator of its own; the lease is composed after
+  it, so no caller-owned channel is needed.
+- On a TaskManager, the sinks' per-instance clients release their leases as they close on the
+  client reaper's threads, which the writer's close waits for; the readers' clients through
+  `LazyBigtableDataClient`, the lookup and the full lookup cache hold theirs from open to close,
+  the full lookup cache's load inside `interruptibleReleases()` as BigQuery's is, and a load
+  stopped part-way cancelling its read stream before it closes the client, since the data client's
+  close would otherwise wait for that stream (measured on the emulator with 8 MiB left unread: past
+  180 s without the cancellation, at once with it);
+  the table admin and the staged sink's metadata check open a client for each call, as before.
+- **On the JobManager, the scan enumerator's row-key sampler and the Change Streams coordinator
+  open a client for each call and close it when the call returns** (`PerCallClientRunner`): the
+  sampler's one `SampleRowKeys`, and the coordinator's profile check, retention read and partition
+  listing, including the reconciliation scan every 10 s.
+  The calls go through `ApiFuture`s awaited interruptibly, and `close()` cancels the call in
+  flight before closing its client, the session creator's treatment above.
+  Unlike that creator, the runner builds the client outside its monitor, because building a
+  production data client makes calls of its own (each pooled channel's priming and the DirectPath
+  check, each bounded at a minute, and the session configuration, 5 s for each of its attempts),
+  and the reconciliation
+  scan would otherwise hold a teardown up every 10 s; a client that finishes building after
+  `close()` is closed by the calling thread unused.
+  Every client it closes, from `call()` or `close()`, a late-built one included, is closed with
+  the thread's interrupt held
+  back and restored afterwards, because the data client's close gives up its wait at once on an
+  interrupted thread and then skips the rest of its cleanup; Flink's `shutdownNow()` of the
+  coordinator's executor interrupts a worker still building a client after the owner closed.
+  An interrupt arriving during that close still cuts it short.
+  The catalog holds one leased admin client from its first request until it closes, as the
+  Spanner catalog does below (decided by the owner on 2026-11-23, to keep one rule for connector
+  catalogs: a per-request client was the first form of this change).
+- `LeasedBigtableClient` restores an interrupt the client's close consumed, whether set before the
+  close or delivered during it, before it releases the lease, so that a release inside
+  `interruptibleReleases()` still sees it: an interrupted full lookup cache load closes its data
+  client first.
+- **The JobManager-side data clients never export to Cloud Monitoring**, whatever the source's
+  `exportClientMetricsToCloudMonitoring` says; the choice governs the readers' clients only.
+  Decided by the owner on 2026-11-23.
+  The built-in exporter builds its own `MetricServiceClient` from an endpoint and credentials
+  alone (`BigtableCloudMonitoringExporter.create`), so its channel cannot carry a lease and runs
+  on gRPC's group, which on the JobManager would bring back the failure this group exists to
+  prevent.
+  A client per call would also report under a fresh `client_uid` each time (a random UUID per
+  client, `EnvInfo.computeUid`), so the reconciliation scan alone would start a new series every
+  10 s, each close would flush an export, and a principal without permission to write to Cloud
+  Monitoring would log the exporter's warning once per client, every 10 s, instead of once.
+  Off Google Cloud, each close would also wait for the exporter's platform detection to time out
+  connecting to the metadata server's address, which measured 75 s on #1815 and #1902.
+
 **In the Spanner connector (#2265, 2026-11-23), every client holds a lease the same way.**
 
 - `Spanner` is not a gax `BackgroundResource`, and `SpannerOptions` takes a channel configurator
@@ -307,14 +379,18 @@ releases the group's last lease shuts it down and waits for its threads.**
   The SQL Gateway, and the SQL Client through it, close a session's catalogs synchronously before
   its class loader: `SessionContext.close()` closes each catalog and only then the session's
   class loader (Flink 2.2.1 through the catalog manager, 1.20.5 catalog by catalog; read from the
-  source), so the lease is released, and the group stopped, in time.
-  A catalog registered in a program's own `TableEnvironment` is never closed by Flink, so its
-  client and lease stay for as long as the process runs, as its client did before #2265.
+  source), so the catalog's lease is released before that loader closes; whether the group then
+  stops depends on any other lease open in the same class loader, as for every release.
+  In a program's own `TableEnvironment`, the client and lease stay until the catalog instance is
+  closed, whoever closes it: the program itself, or Flink when it drops the catalog
+  (`CatalogManager.unregisterCatalog`) or, during an `ALTER CATALOG`, before it opens the
+  replacement (`alterCatalog`; both versions); a catalog left open keeps them for as long as the
+  process runs, as its client did before #2265.
   A client per call would set up channels and a session for every catalog request.
 - The readers, the change-stream query clients, the sink's writer and the lookup function hold
   their client's lease from open to close on the TaskManager, as before #2265 they held the client.
 
-The Bigtable and Firestore connectors move onto the group in #2243.
+The Firestore connector moves onto the group in #2243.
 
 ## Evidence
 
@@ -367,6 +443,23 @@ The log pattern ended with `%throwable`, which formats without loading classes.
   and no `grpc-default-worker-ELG` thread appeared.
   The JobManager did not exit on either arm; these trials cancel after the enumerator's startup
   calls have returned, so they do not exercise a cancellation while one is in flight.
+
+- **Bigtable** (#2264), measured 2026-11-23 on the same kind of cluster with the Bigtable
+  emulator, the SQL connector JAR shipped with each job (`sql-client.sh -j`).
+  A first job on each fresh cluster wrote eight rows through the sink, creating the table, and
+  finished.
+  Then a bounded job scanned that table into a second table, through the scan enumerator's
+  row-key sampler on the JobManager and the reader and the sink on the TaskManager, and ran to
+  the end, 8 times per arm.
+  A streaming job writing generated rows through the sink was also cancelled 8 s after it started
+  running, 8 times per arm.
+  On 1.4.0 the first job exited the TaskManager with code 239 on each of the 3 clusters, every one
+  of the 8 scanning jobs exited both the JobManager and the TaskManager with code 239, and every
+  one of the 8 cancellations exited the TaskManager with code 239, each after
+  `NoClassDefFoundError: .../IntObjectHashMap$2` from a `grpc-default-worker-ELG` thread.
+  With this change, neither process exited after any of these jobs, and no
+  `grpc-default-worker-ELG` thread appeared.
+  The emulator has no change streams, so the Change Streams coordinator was not exercised.
 
 - **Releasing after an interrupt** (#2269), measured 2026-11-23 on a workstation with a unit-level
   probe that closed the last leased client 20 times per case, interrupted and not.
@@ -482,7 +575,26 @@ writing jobs here were not traced.
 - The group stops whenever its last lease closes, for example when the last destination of a
   default-stream writer is evicted as idle, and the next client starts a new one.
 - A channel a client builds without a lease still uses gRPC's group.
-  Until #2243 lands, that is every channel of the Bigtable and Firestore connectors.
+  Until #2243 lands, that is every channel of the Firestore connector.
+- **A Bigtable data client's built-in Cloud Monitoring export still uses gRPC's group.**
+  Its `MetricServiceClient` takes no channel settings from the data client, so while the export
+  is on, which is the default for the readers', the sinks' and the lookups' clients, each such
+  client on a TaskManager keeps a channel on gRPC's group, and the delayed teardown of that group
+  can still run after the job's class loader has closed.
+  Reproduced outside Flink on 2026-11-23
+  ([#2297](https://github.com/flink-gcp/flink-connector-gcp/issues/2297)): with the data channels
+  on an event-loop group of the reproducer's own, closing the client and then its class loader
+  logged `NoClassDefFoundError` from the teardown of gRPC's group in 5 of 5 runs with the export on,
+  and in none of 5 with it off.
+  Reported upstream as
+  [googleapis/google-cloud-java#15144](https://github.com/googleapis/google-cloud-java/issues/15144).
+  Turning the export off (`exportClientMetricsToCloudMonitoring(false)` or the Table option)
+  removes it.
+- Under DirectPath, gRPC's xDS client and ALTS handshaker open control channels of their own,
+  which no channel configurator reaches; they stay on gRPC's own groups.
+  This applies only on Google Cloud with DirectPath in use and has not been measured.
+- The Change Streams coordinator now builds a data client for each reconciliation scan, so each
+  scan pays a client's setup, channel priming included, every 10 s.
 - `productionChannelProvider` restates the SDK's pooled-writer transport settings, so a change to
   them in a later google-cloud-bigquerystorage is not picked up by itself.
   `StreamWriterRowAppenderFactoryTest` compares the restated provider with the one the SDK builds,
@@ -498,8 +610,9 @@ writing jobs here were not traced.
   because that close runs on Flink's threads in no order with the release.
   The job ending in any way, a stop with a savepoint included, or the JobManager shutting down
   releases the loader.
-  Every other connector's JobManager-side client (enumerators, catalogs) needs the same treatment,
-  which #2243 covers.
+  Every other connector's enumerator-side client needs the same treatment, which #2243 covers.
+  A catalog does not: it keeps its client until it is closed, and the SQL Gateway closes it
+  before the session's class loader (see the Spanner and Bigtable sections).
   A Spanner Change Streams coordinator, or the planner of a batch read whose operation is
   deferred, closed while its database client creates its first session waits for the client's shutdown (about 20 s measured
   for the coordinator; the planner's is the same wait, not measured), a longer window for that

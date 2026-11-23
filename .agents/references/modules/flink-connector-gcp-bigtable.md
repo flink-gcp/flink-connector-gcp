@@ -17,6 +17,37 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   `BigtableTableAdminTest` and `ColumnFamilyTypesTest` pin the sink's create and modify requests
   field by field.
 
+## gRPC event-loop group (`docs/adr/0208`, #2264)
+
+- **Every Bigtable client is opened through `LeasedBigtableClient`** (`openData`,
+  `openTableAdmin`, `openInstanceAdmin`), never `Bigtable*Client.create`. None of the three is a
+  gax `BackgroundResource`, so base's `LeasedClient` cannot hold them; the holder applies the lease
+  to the stub settings' instantiating provider and closes the client, then the lease. The
+  `open*` methods take the settings *builder*: a settings `toBuilder()` round trip is not
+  guaranteed to carry every field, which is why the general `open(Factory)` and `applyTo` stay
+  package-private. The emulator arms keep the SDK's
+  `newBuilderForEmulator(host, port)`, whose own plaintext configurator the lease composes after.
+- **A JobManager-side client is opened per call through `PerCallClientRunner`**: the row-key sampler
+  and the Change Streams coordinator (profile check, retention, partition listing incl. the 10 s
+  reconciliation scan). Every new JobManager call goes through `calls.call(<settings builder
+  supplier>, <the LeasedBigtableClient.open* matching those settings>, client -> <async
+  callable>.futureCall(...))` (settings prepared under the runner's monitor, the client built
+  outside it), never a synchronous SDK method;
+  `close()` cancels the call in flight and does not wait for a client being built. An owner's `close()` closes its `PerCallClientRunner` *before* clearing its credentials,
+  or a call slipping in between builds settings with none and reaches Bigtable as ADC. The
+  catalog is the exception: like every connector catalog it holds one leased admin client from
+  its first request until it closes (owner, 2026-11-23; the SQL Gateway closes catalogs before the
+  session's class loader).
+- **JobManager-side data clients never export to Cloud Monitoring** (owner, 2026-11-23): the
+  sampler and coordinator pass `false` to `applyClientMetrics` whatever the source option says,
+  and the option's docs say it governs the readers only. The built-in exporter's
+  `MetricServiceClient` takes no channel settings, so its channel runs on gRPC's group; that
+  residual on TaskManager clients (export on by default) is recorded in ADR-0208, not fixed, and
+  tracked upstream in #2297.
+- Event-loop checks: `BigtableEventLoopITCase` (sink, reader, sampler) and
+  `BigtableCatalogITCase.holdsItsClientOnTheGroupUntilItCloses` on the emulator; the Change Streams
+  coordinator has no emulator path (the emulator has no change streams).
+
 ## Sink design (`docs/adr/0041`, `0042`, `0074`, `0145`)
 
 - Implemented, never adopted or vendored; the serializer SPI keeps
@@ -363,31 +394,31 @@ or the explicit -1 server-time sentinel. Empty deletion intervals must not becom
 - **One coordinator client belongs to one Change Streams enumerator** (`docs/adr/0128`).
   `BigtableChangeStreamSourceConfig` carries a `ChangeStreamCoordinatorClientFactory`, not a client,
   and it is not `@Nullable` any more: the source used to mint inline only when the configuration
-  held none, which left a test-injected client shared by every enumerator. `DefaultChangeStreamCoordinatorClient`'s three lazy
-  accessors are now guarded by its monitor behind a one-way closed flag, as its sibling seams were:
-  they were a check-then-create against fields `close()` nulls, so a teardown between a check and
-  its assignment closed nothing and left the client the reconciliation scan then assigned owned by
-  no one, reaching Bigtable as ADC because `close()` nulls the credentials too. `volatile` does not
-  make a compound operation atomic.
+  held none, which left a test-injected client shared by every enumerator. The coordinator holds no
+  SDK client: each call opens one through `PerCallClientRunner`, whose one-way closed flag refuses a
+  call that overtakes the teardown (#2264; the lazy accessors that replaced a check-then-create
+  race in #990 are gone with it).
 
 - **One sampler belongs to one enumerator** (`docs/adr/0128`). `BigtableSourceConfig` carries a
   `RowKeySamplerFactory`, not a sampler, and `BigtableScanSource` mints one in both
   `createEnumerator` and `restoreEnumerator`, closing it itself if the enumerator's constructor
   throws before taking it. `RowKeySampler` is deliberately not `Serializable`. The sticky flag is a
-  level down, in `LazyBigtableDataClient`, whose reader-side holders —
-  `DataClientRowStreamOpener` and the change-stream `DataClientChangeStreamOpener` — are
-  unaffected, because a reader's copy is deserialized per task attempt.
+  level down, in the sampler's `PerCallClientRunner` since #2264; the reader-side holders of
+  `LazyBigtableDataClient` — `DataClientRowStreamOpener` and the change-stream
+  `DataClientChangeStreamOpener` — are unaffected, because a reader's copy is deserialized per
+  task attempt.
 
-- **The three lazy data-client seams rely on their owners' teardown, not on client leases**
-  (`docs/adr/0142`). The scan reader stops its fetchers before closing the row-stream opener; the
-  Change Streams reader cancels active reads before closing its opener; and the scan enumerator
-  may close its sampler while asynchronous sampling is in flight, after which the shared
-  enumerator ignores the completion. `LazyBigtableDataClient.close()` clears both the client and
-  pushed credentials, and credential injection takes the same monitor so nothing can restore the
-  holder's provider after close. That guarantee covers the holder's reference, not another seam
-  that shares the same provider, such as the Change Streams restore resolver. A lease would
-  duplicate those three lifecycle protocols and make the coordinator wait for a sampling RPC it
-  currently abandons during teardown.
+- **The two lazy data-client seams rely on their owners' teardown, not on operation leases**
+  (`docs/adr/0142`, refined by #2264). The scan reader stops its fetchers before closing the
+  row-stream opener; the Change Streams reader cancels active reads before closing its opener. The
+  scan enumerator's sampler left the holder in #2264: its close cancels a sampling call in flight,
+  and the enumerator still ignores a completion after close. (The holder's client does hold an
+  event-loop lease, ADR-0208; that covers the channels, not an operation.)
+  `LazyBigtableDataClient.close()` clears both the client and pushed credentials, and credential
+  injection takes the same monitor so nothing can restore the holder's provider after close. That
+  guarantee covers the holder's reference, not another seam that shares the same provider, such as
+  the Change Streams restore resolver. An operation lease would duplicate the two owners' lifecycle
+  protocols.
 
 - **The assignment protocol is the base module's** (`docs/adr/0083`): `BigtableScanSplitEnumerator`
   extends `PullAssignmentSplitEnumerator` and supplies the sampling — `restore`, the sampling call,

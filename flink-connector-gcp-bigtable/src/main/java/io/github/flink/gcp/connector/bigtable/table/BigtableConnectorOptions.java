@@ -184,7 +184,8 @@ public final class BigtableConnectorOptions {
     /**
      * Whether the Bigtable client keeps exporting its built-in client-side metrics to Cloud
      * Monitoring. Turning it off also removes the exporter's platform detection when a client
-     * closes. Applies to every client the table's source, sink and lookups build.
+     * closes. Applies to every client the table's source, sink and lookups build, except the source
+     * enumerators' clients, which never export.
      */
     public static final ConfigOption<Boolean> CLIENT_METRICS_EXPORT_TO_CLOUD_MONITORING =
             ConfigOptions.key("client-metrics.export-to-cloud-monitoring")
@@ -195,7 +196,8 @@ public final class BigtableConnectorOptions {
                                     + " metrics to Cloud Monitoring. Turning it off also removes"
                                     + " the exporter's platform detection when a client closes."
                                     + " Applies to every client the table's source, sink and"
-                                    + " lookups build.");
+                                    + " lookups build, except the source enumerators' clients,"
+                                    + " which never export.");
 
     // ------------------------------------------------------------------------
     //  Cell encoding

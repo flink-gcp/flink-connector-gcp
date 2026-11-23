@@ -1457,6 +1457,8 @@ Against the emulator the client records too, with one deviation: the emulator se
 **Exporting to Flink does not stop the export to Cloud Monitoring.**
 The client keeps its built-in exporter beside the second recorder this option adds, and it also exports per-connection and channel-pool measurements that only Cloud Monitoring receives.
 `exportClientMetricsToCloudMonitoring(false)` (`client-metrics.export-to-cloud-monitoring = 'false'`) removes that exporter, whether or not anything is exported to Flink.
+The sources' enumerators never keep it: they open a client for each call on the JobManager, the Change Streams enumerator every 10 seconds, and each such client would report under a client id of its own and run its exporter's channel on gRPC's own event-loop group (see [gRPC threads and job shutdown]({{< relref "docs/connectors" >}}#grpc-threads-and-job-shutdown)).
+Their series in Flink are unaffected.
 Off Google Cloud it also removes a stall: when a client closes, the exporter detects the platform by connecting to the metadata server's address with no timeout, and where nothing answers there, a close can wait for the operating system's connect timeout (75 seconds, measured on [#1815]({{< param BookRepo >}}/issues/1815) and again on [#1902]({{< param BookRepo >}}/issues/1902), where a client without the exporter closed in under a millisecond).
 
 **Single-row operations can take another path, and with the Cloud Monitoring export off, report nothing.**

@@ -24,14 +24,18 @@ import org.apache.flink.util.CloseableIterator;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.protobuf.ByteString;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.AbstractBigtableEmulatorITCase;
+import io.github.flink.gcp.connector.bigtable.EventLoopObserver;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import javax.annotation.Nullable;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -139,6 +143,36 @@ class BigtableCatalogITCase extends AbstractBigtableEmulatorITCase {
                         "_key BYTES nullable=false PRI(_key)",
                         "address MAP<BYTES, BYTES> nullable=true null",
                         "profile MAP<BYTES, BYTES> nullable=true null");
+    }
+
+    /**
+     * The catalog holds its admin client, on the connector's gRPC event-loop group, from its first
+     * request until it closes (ADR-0208, ADR-0168), and its close releases the lease.
+     */
+    @Test
+    void holdsItsClientOnTheGroupUntilItCloses() throws Exception {
+        assertThat(EventLoopObserver.awaitNoGroup(Duration.ofSeconds(60)))
+                .as("no lease and no %s* thread before the test", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        createTable("held", "cf");
+        TableEnvironment table = catalog(null);
+
+        assertThat(collect(table, "SHOW TABLES")).contains(Row.of("held"));
+        assertThat(collect(table, "DESCRIBE held")).isNotEmpty();
+        assertThat(GrpcEventLoops.isRunning())
+                .as("the open catalog holds its client's lease")
+                .isTrue();
+        assertThat(GrpcEventLoopThreads.alive())
+                .as("a %s* thread while the catalog is open", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+
+        table.getCatalog("bt").orElseThrow().close();
+
+        assertThat(EventLoopObserver.awaitNoGroup(Duration.ofSeconds(10)))
+                .as(
+                        "no lease and no %s* thread once the catalog closed",
+                        GrpcEventLoopThreads.PREFIX)
+                .isTrue();
     }
 
     /** The issue's acceptance: a map value read with CAST is what the equivalent ROW DDL reads. */

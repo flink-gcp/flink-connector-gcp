@@ -34,6 +34,7 @@ import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
@@ -67,7 +68,8 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
     private final boolean exportClientMetricsToFlink;
     private final boolean exportClientMetricsToCloudMonitoring;
 
-    @Nullable private transient BigtableDataClient client;
+    /** The client and its event-loop lease (ADR-0208), from {@link #open} to {@link #close}. */
+    @Nullable private transient LeasedBigtableClient<BigtableDataClient> client;
 
     BigtableDataClientRowLookup(
             TableDestination destination,
@@ -94,7 +96,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
                 exportClientMetricsToFlink
                         ? BigtableClientMetrics.register(metricGroup, READ_ROW)
                         : null;
-        client = BigtableDataClient.create(settings(clientMetrics));
+        client = LeasedBigtableClient.openData(settingsBuilder(clientMetrics));
     }
 
     /**
@@ -103,6 +105,11 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
      */
     @VisibleForTesting
     BigtableDataSettings settings(@Nullable ClientMetrics clientMetrics) throws IOException {
+        return settingsBuilder(clientMetrics).build();
+    }
+
+    private BigtableDataSettings.Builder settingsBuilder(@Nullable ClientMetrics clientMetrics)
+            throws IOException {
         EmulatorEndpoint endpoint =
                 emulatorEndpoint == null
                         ? null
@@ -116,7 +123,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
                         BigtableCredentials.loadData(serviceAccountKeyFile));
         BigtableDataClients.applyClientMetrics(
                 settings, clientMetrics, exportClientMetricsToCloudMonitoring);
-        return settings.build();
+        return settings;
     }
 
     @Override
@@ -148,7 +155,7 @@ final class BigtableDataClientRowLookup implements BigtableRowLookup {
         if (client == null) {
             throw new IllegalStateException("The Bigtable row lookup has not been opened.");
         }
-        return client;
+        return client.client();
     }
 
     private boolean isInRange(ByteString rowKey) {

@@ -44,7 +44,6 @@ public final class DefaultChangeStreamCoordinatorClientFactory
     private final TableDestination table;
     private final String appProfileId;
     @Nullable private final String serviceAccountKeyFile;
-    private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
      * Creates the factory.
@@ -52,26 +51,17 @@ public final class DefaultChangeStreamCoordinatorClientFactory
      * @param table the table whose change stream is coordinated
      * @param appProfileId the single-cluster application profile to route through
      * @param serviceAccountKeyFile the service-account key-file path, or {@code null} for ADC
-     * @param exportClientMetricsToCloudMonitoring whether each coordinator's data client keeps its
-     *     built-in Cloud Monitoring export
      */
     public DefaultChangeStreamCoordinatorClientFactory(
-            TableDestination table,
-            String appProfileId,
-            @Nullable String serviceAccountKeyFile,
-            boolean exportClientMetricsToCloudMonitoring) {
+            TableDestination table, String appProfileId, @Nullable String serviceAccountKeyFile) {
         this.table = table;
         this.appProfileId = appProfileId;
         this.serviceAccountKeyFile = serviceAccountKeyFile;
-        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
     }
 
     @Override
     public ChangeStreamCoordinatorClient create() throws IOException {
         return new DefaultChangeStreamCoordinatorClient(
-                table,
-                appProfileId,
-                BigtableCredentials.loadAll(serviceAccountKeyFile),
-                exportClientMetricsToCloudMonitoring);
+                table, appProfileId, BigtableCredentials.loadAll(serviceAccountKeyFile));
     }
 }

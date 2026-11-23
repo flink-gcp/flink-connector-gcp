@@ -31,8 +31,10 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableCredentials;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableConnectorOptions;
@@ -53,6 +55,13 @@ import java.util.List;
  * <p>Its client keeps or drops the built-in Cloud Monitoring export as configured, but exports
  * nothing to Flink: Flink's full cache configures and opens its copy of this format with no runtime
  * context, so no metric group reaches it (Flink 2.2.1, {@code InputFormatCacheLoader}).
+ *
+ * <p>Its client holds a lease on the connector's gRPC event-loop group from {@link
+ * #open(GenericInputSplit)} to {@link #close()} (ADR-0208), and both run inside {@link
+ * GrpcEventLoops#interruptibleReleases()}: Flink stops a load by interrupting it and fails the
+ * lookup's close when the load has not ended 10 s later ({@code CacheLoader.close()}), so a release
+ * of the connector's last lease on an interrupted load stops waiting for the group once the wait's
+ * first second has passed (#2269).
  */
 @Internal
 final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
@@ -69,9 +78,21 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
     @Nullable private final RowStreamOpener rowStreamOpener;
     private final boolean exportClientMetricsToCloudMonitoring;
 
-    @Nullable private transient BigtableDataClient client;
+    /** The client and its event-loop lease (ADR-0208), from {@link #open} to {@link #close}. */
+    @Nullable private transient LeasedBigtableClient<BigtableDataClient> client;
+
     private transient Iterator<ByteStringRange> remainingRanges = Collections.emptyIterator();
     private transient Iterator<Row> rows = Collections.emptyIterator();
+
+    /**
+     * The range's read, kept so that a load stopped part-way can cancel it: the data client's close
+     * waits up to six minutes for its classic calls still in flight and cancels none of them, so an
+     * abandoned stream would hold that close (#2264). A range whose endpoints are equal and both
+     * closed is read as a point read, whose stream completes with its row; its call, still waiting
+     * for its final status, then ignores the cancellation, and the load may already have moved on
+     * to the next range.
+     */
+    @Nullable private transient ServerStream<Row> stream;
 
     BigtableFullCacheInputFormat(
             TableDestination destination,
@@ -109,6 +130,13 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
 
     @Override
     public void open(GenericInputSplit split) throws IOException {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            openLoad(split);
+        }
+    }
+
+    private void openLoad(GenericInputSplit split) throws IOException {
         super.open(split);
         if (split.getSplitNumber() != 0) {
             rows = Collections.emptyIterator();
@@ -116,7 +144,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
         }
         try {
             if (rowStreamOpener == null) {
-                client = BigtableDataClient.create(settings());
+                client = LeasedBigtableClient.openData(settingsBuilder());
             }
             remainingRanges = ranges.iterator();
             if (remainingRanges.hasNext()) {
@@ -134,6 +162,10 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
      */
     @VisibleForTesting
     BigtableDataSettings settings() throws IOException {
+        return settingsBuilder().build();
+    }
+
+    private BigtableDataSettings.Builder settingsBuilder() throws IOException {
         EmulatorEndpoint endpoint =
                 emulatorEndpoint == null
                         ? null
@@ -147,7 +179,7 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
                         BigtableCredentials.loadData(serviceAccountKeyFile));
         BigtableDataClients.applyClientMetrics(
                 settings, null, exportClientMetricsToCloudMonitoring);
-        return settings.build();
+        return settings;
     }
 
     @Override
@@ -170,14 +202,29 @@ final class BigtableFullCacheInputFormat extends GenericInputFormat<RowData> {
             return;
         }
         Query query = Query.create(TableId.of(destination.getTable())).range(range).filter(filter);
-        ServerStream<Row> stream = client.readRows(query);
+        stream = client.client().readRows(query);
         rows = stream.iterator();
     }
 
     @Override
     public void close() {
+        try (GrpcEventLoops.InterruptibleReleases releases =
+                GrpcEventLoops.interruptibleReleases()) {
+            closeLoad();
+        }
+    }
+
+    private void closeLoad() {
         rows = Collections.emptyIterator();
         remainingRanges = Collections.emptyIterator();
+        if (stream != null) {
+            // A finished stream ignores the cancellation. A scan the load stopped part-way is
+            // cancelled, so it can terminate without the loader consuming its remaining rows,
+            // which the client's close below would otherwise wait for. An earlier range's point
+            // read whose call outlived its row is beyond reach here (see the field).
+            stream.cancel();
+            stream = null;
+        }
         if (client != null) {
             client.close();
             client = null;

@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.bigtable.table.source;
 
+import org.apache.flink.core.io.GenericInputSplit;
 import org.apache.flink.metrics.testutils.MetricListener;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.types.logical.RowType;
@@ -23,6 +24,7 @@ import org.apache.flink.table.types.logical.RowType;
 import com.google.cloud.bigtable.data.v2.models.Filters;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
@@ -60,7 +62,9 @@ class BigtableLookupClientMetricsTest {
 
         // Against an endpoint nothing listens on: opening builds the client and reads nothing.
         lookup.open(listener.getMetricGroup());
+        assertThat(GrpcEventLoops.isRunning()).as("the open lookup holds a lease").isTrue();
         lookup.close();
+        assertThat(GrpcEventLoops.isRunning()).as("close released the lease").isFalse();
 
         assertThat(listener.getCounter("rpcMethod", "ReadRow", "operations")).isPresent();
     }
@@ -91,6 +95,33 @@ class BigtableLookupClientMetricsTest {
         // Flink's full cache gives its loader no metric group, so there is nothing to register on.
         ClientMetricsSettings.assertExportsNothing(fullCache(false).settings());
         ClientMetricsSettings.assertAsShipped(fullCache(true).settings());
+    }
+
+    @Test
+    void theFullCacheHoldsALeaseFromOpenToClose() throws Exception {
+        // No range to read, so opening builds the client and starts no read.
+        BigtableFullCacheInputFormat format =
+                new BigtableFullCacheInputFormat(
+                        TABLE,
+                        SCHEMA,
+                        null,
+                        "null",
+                        TrailingBytes.IGNORE,
+                        FILTER,
+                        Collections.emptyList(),
+                        null,
+                        null,
+                        ENDPOINT,
+                        null,
+                        true);
+
+        format.open(new GenericInputSplit(0, 1));
+        try {
+            assertThat(GrpcEventLoops.isRunning()).as("the loading format holds a lease").isTrue();
+        } finally {
+            format.close();
+        }
+        assertThat(GrpcEventLoops.isRunning()).as("close released the lease").isFalse();
     }
 
     private static BigtableDataClientRowLookup lookup(
