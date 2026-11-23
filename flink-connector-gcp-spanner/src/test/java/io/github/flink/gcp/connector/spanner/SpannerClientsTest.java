@@ -16,6 +16,7 @@
 
 package io.github.flink.gcp.connector.spanner;
 
+import com.google.api.core.ApiFunction;
 import com.google.auth.oauth2.AccessToken;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.NoCredentials;
@@ -23,10 +24,18 @@ import com.google.cloud.spanner.CustomOpenTelemetryMetricsProvider;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.ServerSocket;
 import java.util.Date;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -40,6 +49,110 @@ class SpannerClientsTest {
             EmulatorEndpoint.parse("localhost:9010", "emulatorEndpoint");
     private static final GoogleCredentials CREDENTIALS =
             GoogleCredentials.create(new AccessToken("token", new Date(Long.MAX_VALUE)));
+
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isRunning()).as("a lease was left open").isFalse();
+    }
+
+    @Test
+    void anEmulatorsChannelsRunOnTheGroupThoughBuildReplacesTheConfigurator() throws Exception {
+        // build() sets its own plaintext configurator when an emulator host is set (6.127.0); the
+        // builder composes the group's into it, and the client stays in its emulator mode.
+        SpannerOptions settings = SpannerClients.settings(DATABASE, EMULATOR);
+
+        assertThat(settings.isEmulatorEnabled()).isTrue();
+        assertRunsOnTheGroup(settings);
+    }
+
+    @Test
+    void theServicesChannelsRunOnTheGroup() throws Exception {
+        assertRunsOnTheGroup(SpannerClients.settings(DATABASE, null, CREDENTIALS, null, true));
+    }
+
+    @Test
+    void theTestSwitchsChannelsRunOnTheGroup() throws Exception {
+        SpannerClients.bypassEmulatorModeForTesting(true);
+        try {
+            assertRunsOnTheGroup(SpannerClients.settings(DATABASE, EMULATOR));
+        } finally {
+            SpannerClients.bypassEmulatorModeForTesting(false);
+        }
+    }
+
+    @Test
+    void aBuilderAComponentSetsMoreOnKeepsTheGroup() throws Exception {
+        SpannerOptions.Builder builder =
+                SpannerClients.settingsBuilder(DATABASE, EMULATOR, null, null, true);
+        builder.setNumChannels(2);
+
+        assertRunsOnTheGroup(builder.build());
+    }
+
+    @Test
+    void openRefusesARebuiltCopyWhoseBuildDroppedTheGroup() {
+        // A plain toBuilder() copy rebuilt with an emulator host gets build()'s bare plaintext
+        // configurator back: its channels would run on gRPC's own group.
+        SpannerOptions rebuilt = SpannerClients.settings(DATABASE, EMULATOR).toBuilder().build();
+
+        assertThatThrownBy(() -> SpannerClients.open(DATABASE, rebuilt))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("event-loop group")
+                .hasMessageContaining(DATABASE.toString());
+    }
+
+    @Test
+    void openRefusesSettingsWithAChannelProvider() {
+        // The client uses a transport provider in place of the configurator, so its channels would
+        // run on gRPC's own group.
+        SpannerOptions withProvider =
+                SpannerClients.settingsBuilder(DATABASE, EMULATOR, null, null, true)
+                        .setChannelProvider(
+                                com.google.api.gax.grpc.InstantiatingGrpcChannelProvider
+                                        .newBuilder()
+                                        .setEndpoint("localhost:9010")
+                                        .build())
+                        .build();
+
+        assertThatThrownBy(() -> SpannerClients.open(DATABASE, withProvider))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("set no channel provider");
+    }
+
+    /**
+     * Connects a channel through the settings' configurator under a lease and checks that the
+     * group's threads serve it.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static void assertRunsOnTheGroup(SpannerOptions settings) throws Exception {
+        ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator =
+                settings.getChannelConfigurator();
+        // A group an earlier test released may still be stopping; its threads would answer the
+        // check below for a channel that never reached the group.
+        assertThat(GrpcEventLoopThreads.awaitNone())
+                .as("no %s* thread before the channel is built", GrpcEventLoopThreads.PREFIX)
+                .isTrue();
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+        try (ServerSocket server = new ServerSocket(0)) {
+            ManagedChannel channel =
+                    configurator
+                            .apply(
+                                    NettyChannelBuilder.forAddress(
+                                            "127.0.0.1", server.getLocalPort()))
+                            .build();
+            try {
+                channel.getState(true);
+                assertThat(GrpcEventLoopThreads.awaitAlive())
+                        .as("a %s* thread while the channel connects", GrpcEventLoopThreads.PREFIX)
+                        .isTrue();
+            } finally {
+                channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            lease.close();
+        }
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
 
     @Test
     void anEmulatorEndpointAlsoTurnsOffCredentialsAndTransportSecurity() {
@@ -160,9 +273,11 @@ class SpannerClientsTest {
         assertThat(ClientMetricsProbe.isOpen(metrics)).as("the probe on open metrics").isTrue();
         ClosingSpanner spanner = new ClosingSpanner(metrics);
 
-        SpannerClients.close(spanner.spanner(), metrics);
+        SpannerClients.close(
+                new LeasedSpanner(spanner.spanner(), GrpcEventLoops.acquire()), metrics);
 
         assertThat(spanner.closes()).isOne();
+        assertThat(GrpcEventLoops.isRunning()).as("the handle's lease was released").isFalse();
         assertThat(spanner.metricsOpenAtClose()).isTrue();
         assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
     }
@@ -177,5 +292,6 @@ class SpannerClientsTest {
                 .isInstanceOf(IOException.class);
 
         assertThat(ClientMetricsProbe.isOpen(metrics)).isFalse();
+        assertThat(GrpcEventLoops.isRunning()).as("the failed open released its lease").isFalse();
     }
 }

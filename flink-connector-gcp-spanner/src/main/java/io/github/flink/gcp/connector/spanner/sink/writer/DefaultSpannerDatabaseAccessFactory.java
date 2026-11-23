@@ -24,13 +24,13 @@ import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.Options.TransactionOption;
-import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.sink.SpannerWriterOptions;
 
@@ -130,13 +130,12 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
     @VisibleForTesting
     SpannerOptions settings() {
         SpannerOptions.Builder settings =
-                SpannerClients.settings(
+                SpannerClients.settingsBuilder(
                         database,
                         emulatorEndpoint,
                         credentialsOverride,
                         clientMetrics,
-                        exportClientMetricsToCloudMonitoring)
-                        .toBuilder();
+                        exportClientMetricsToCloudMonitoring);
         // Re-check at the TaskManager boundary: a Java-serialized options instance can bypass the
         // public builder, and a positive sub-millisecond value becomes the SDK's zero sentinel.
         settings.getSpannerStubSettingsBuilder()
@@ -148,14 +147,15 @@ public final class DefaultSpannerDatabaseAccessFactory implements SpannerDatabas
     }
 
     @VisibleForTesting
-    SpannerDatabaseAccess create(Spanner spanner) {
+    SpannerDatabaseAccess create(LeasedSpanner spanner) {
         try {
             DatabaseClient client =
-                    spanner.getDatabaseClient(
-                            DatabaseId.of(
-                                    database.getProject(),
-                                    database.getInstance(),
-                                    database.getDatabase()));
+                    spanner.spanner()
+                            .getDatabaseClient(
+                                    DatabaseId.of(
+                                            database.getProject(),
+                                            database.getInstance(),
+                                            database.getDatabase()));
             TransactionOption[] transactionOptions = transactionOptions(writerOptions);
             return new SpannerServiceAdapter(
                     database.toString(),

@@ -34,6 +34,7 @@ import com.google.cloud.spanner.KeySet;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerExceptionFactory;
 import com.google.cloud.spanner.TimestampBound;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerSource;
 import io.github.flink.gcp.connector.spanner.source.SpannerSourceBuilder;
@@ -136,6 +137,32 @@ class SpannerFullCacheInputFormatTest {
         assertThat(opener.streamCloses()).isEqualTo(1);
         assertThat(opener.closes()).isEqualTo(1);
         assertThat(planning.closes()).isEqualTo(1);
+    }
+
+    @Test
+    void everyCallThatCanReleaseAGrpcLeaseRunsWhereAnInterruptCanEndTheWaitForTheGroup()
+            throws Exception {
+        // Flink stops a load by interrupting it and gives it 10 s; a release of the last gRPC
+        // lease outside the scope would wait for the event-loop group up to 11 s whatever the
+        // interrupt says (#2269). The real planner releases its client's lease inside plan(), and
+        // the reader's client is created by the first open and released by close().
+        ScriptedPartitionPlanner.Factory planning =
+                ScriptedPartitionPlanner.planning("scope", "p0", "p1");
+        ScriptedStructStreamOpener opener = opener("scope");
+
+        assertThat(load(format(planning, opener, TimestampBound.strong(), false)))
+                .containsExactly(1L, 2L, 3L);
+
+        assertThat(planning.scopes())
+                .containsExactly("plan in scope: true", "close planner in scope: true");
+        assertThat(opener.scopes())
+                .containsExactly(
+                        "open stream in scope: true",
+                        "open stream in scope: true",
+                        "close opener in scope: true");
+        assertThat(GrpcEventLoops.inInterruptibleReleases())
+                .as("the scope ended with each call of the load")
+                .isFalse();
     }
 
     @Test

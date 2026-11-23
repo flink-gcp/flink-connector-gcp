@@ -190,5 +190,8 @@ class SpannerReadOperationTest {
                 .isSameAs(concrete);
         assertThat(SpannerReadOperationResolution.resolve(concrete, client, readTimestamp))
                 .isSameAs(concrete);
+        // The planner builds a database client only for a deferred operation.
+        assertThat(SpannerReadOperationResolution.isDeferred(deferred)).isTrue();
+        assertThat(SpannerReadOperationResolution.isDeferred(concrete)).isFalse();
     }
 }

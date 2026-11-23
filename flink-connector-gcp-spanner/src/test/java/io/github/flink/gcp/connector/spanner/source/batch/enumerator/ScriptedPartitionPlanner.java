@@ -23,6 +23,7 @@ import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.TestPartitions;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 
@@ -108,6 +109,7 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
                             + " used.");
         }
         State state = state(id);
+        state.scopes.add("plan in scope: " + GrpcEventLoops.inInterruptibleReleases());
         state.plans.incrementAndGet();
         state.bounds.add(bound);
         state.partitionOptions.add(partitionOptions);
@@ -129,6 +131,7 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
         closed = true;
         ownCloses.incrementAndGet();
         State state = state(id);
+        state.scopes.add("close planner in scope: " + GrpcEventLoops.inInterruptibleReleases());
         state.closes.incrementAndGet();
         RuntimeException failure = state.failClose;
         if (failure != null) {
@@ -203,6 +206,14 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
             return state(id).closes.get();
         }
 
+        /**
+         * Returns, per call that can release a gRPC lease, whether it ran inside {@link
+         * GrpcEventLoops#interruptibleReleases()}.
+         */
+        public List<String> scopes() {
+            return new ArrayList<>(state(id).scopes);
+        }
+
         /** Returns the timestamp bounds this recording's planners were asked for, in order. */
         public List<TimestampBound> bounds() {
             return new ArrayList<>(state(id).bounds);
@@ -240,6 +251,7 @@ public final class ScriptedPartitionPlanner implements PartitionPlanner {
         private final List<PartitionOptions> partitionOptions = new CopyOnWriteArrayList<>();
         private final List<Boolean> dataBoostFlags = new CopyOnWriteArrayList<>();
         private final List<String> priorities = new CopyOnWriteArrayList<>();
+        private final List<String> scopes = new CopyOnWriteArrayList<>();
 
         @Nullable private volatile RuntimeException failNextPlan;
         @Nullable private volatile RuntimeException failClose;

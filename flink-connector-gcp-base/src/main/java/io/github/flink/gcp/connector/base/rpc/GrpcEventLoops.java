@@ -74,8 +74,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * first lease and shut down by the release of the last one, and a later lease creates a new one. A
  * channel therefore has to close before the lease that covers it is released. A client that owns
  * its channels is opened with {@link #open(ClientFactory)}, whose {@link LeasedClient#close()} does
- * both in that order. A channel built while no lease is open falls back to gRPC's own group, so a
- * configurator that outlives its lease never hands a channel a terminated group.
+ * both in that order. A client whose settings take a channel configurator instead of a transport
+ * provider composes {@link #channelConfigurator} and is opened under a lease its owner holds. A
+ * channel built while no lease is open falls back to gRPC's own group, so a configurator that
+ * outlives its lease never hands a channel a terminated group.
  *
  * <p>Like gRPC's group, it uses epoll where the shaded native transport loads and NIO otherwise,
  * with Netty's default thread count. The threads are daemons named {@code flink-gcp-grpc-elg-*}.
@@ -200,6 +202,27 @@ public final class GrpcEventLoops {
     @VisibleForTesting
     public static boolean inInterruptibleReleases() {
         return Boolean.TRUE.equals(INTERRUPTIBLE_RELEASES.get());
+    }
+
+    /**
+     * Returns a channel configurator that applies {@code existing} and then puts the channel on the
+     * group, for a client whose settings take a configurator rather than a transport provider, such
+     * as Spanner's {@code SpannerOptions}.
+     *
+     * <p>It is the configurator a lease's {@code applyTo} puts on a provider builder, offered as a
+     * static method because such settings are usually assembled before the client is opened and its
+     * lease exists. Like that one, it reaches the group only while a lease is open, so the caller
+     * opens one before the client builds its first channel and releases it once the client's
+     * channels have terminated; a channel it configures while no lease is open runs on gRPC's own
+     * group.
+     *
+     * @param existing the configurator to apply first, or {@code null}
+     * @return the composed configurator
+     */
+    @SuppressWarnings("rawtypes")
+    public static ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> channelConfigurator(
+            @Nullable ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> existing) {
+        return builder -> configure(existing == null ? builder : existing.apply(builder));
     }
 
     /**
@@ -342,14 +365,11 @@ public final class GrpcEventLoops {
          * @param provider the API's own transport provider builder
          * @return the same builder
          */
-        @SuppressWarnings({"rawtypes", "unchecked"})
         public InstantiatingGrpcChannelProvider.Builder applyTo(
                 InstantiatingGrpcChannelProvider.Builder provider) {
             Preconditions.checkNotNull(provider, "provider must not be null");
-            ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> existing =
-                    provider.getChannelConfigurator();
             return provider.setChannelConfigurator(
-                    builder -> configure(existing == null ? builder : existing.apply(builder)));
+                    channelConfigurator(provider.getChannelConfigurator()));
         }
 
         /**

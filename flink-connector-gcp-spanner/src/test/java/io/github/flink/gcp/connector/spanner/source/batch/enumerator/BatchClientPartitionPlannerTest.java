@@ -23,12 +23,20 @@ import com.google.cloud.spanner.PartitionOptions;
 import com.google.cloud.spanner.Statement;
 import com.google.cloud.spanner.TimestampBound;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
+import io.github.flink.gcp.connector.spanner.StallingSpannerServer;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -46,13 +54,124 @@ class BatchClientPartitionPlannerTest {
 
     private static final DatabaseDestination DATABASE = DatabaseDestination.of("p", "i", "db");
 
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isRunning()).as("a planner left its lease open").isFalse();
+    }
+
+    @Test
+    @Timeout(60)
+    void aCloseDuringAPlanningCallCancelsTheCallAndReleasesTheLease() throws Exception {
+        try (StallingSpannerServer server = StallingSpannerServer.start()) {
+            BatchClientPartitionPlanner planner =
+                    new BatchClientPartitionPlanner(DATABASE, server.endpoint());
+            CompletableFuture<PartitionPlan> planning =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                try {
+                                    return planner.plan(
+                                            SpannerReadOperation.query(Statement.of("SELECT 1")),
+                                            TimestampBound.strong(),
+                                            PartitionOptions.getDefaultInstance(),
+                                            false,
+                                            null);
+                                } catch (IOException e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+            long started;
+            try {
+                assertThat(server.awaitStalledCall(30))
+                        .as("the planning call reached the server")
+                        .isTrue();
+                assertThat(GrpcEventLoops.isRunning()).as("the call runs under a lease").isTrue();
+                started = System.nanoTime();
+            } finally {
+                planner.close();
+            }
+            // close() returns once the call has ended and released its handle's lease, whichever
+            // thread closed the handle.
+            assertThat(GrpcEventLoops.isRunning())
+                    .as("the call's lease was released before close returned")
+                    .isFalse();
+            // The call is cancelled rather than waited out: the client's close alone waits for its
+            // channels, up to 10 s per stub, which a call that is never answered keeps open.
+            assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
+                    .as("milliseconds from close to its return; calls %s", server.calls())
+                    .isLessThan(3_000);
+            assertThatThrownBy(() -> planning.get(1, TimeUnit.SECONDS))
+                    .isInstanceOf(ExecutionException.class)
+                    .satisfies(StallingSpannerServer::assertCancelled);
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void aPlanningFailureIsNotReplacedByTheClientsCloseFailure() throws Exception {
+        // Interrupting the planning thread fails the call, and the client's close then fails on
+        // the same interrupt; the planning failure, which for a query the service will not
+        // partition carries the service's reason, is the one reported.
+        try (StallingSpannerServer server = StallingSpannerServer.start()) {
+            BatchClientPartitionPlanner planner =
+                    new BatchClientPartitionPlanner(DATABASE, server.endpoint());
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread planning =
+                    new Thread(
+                            () -> {
+                                try {
+                                    planner.plan(
+                                            SpannerReadOperation.query(Statement.of("SELECT 1")),
+                                            TimestampBound.strong(),
+                                            PartitionOptions.getDefaultInstance(),
+                                            false,
+                                            null);
+                                } catch (Throwable e) {
+                                    failure.set(e);
+                                }
+                            },
+                            "planning");
+            try {
+                planning.start();
+                assertThat(server.awaitStalledCall(30)).isTrue();
+                planning.interrupt();
+                planning.join(TimeUnit.SECONDS.toMillis(20));
+                assertThat(planning.isAlive()).as("the interrupt ended the plan").isFalse();
+            } finally {
+                planner.close();
+                planning.join(TimeUnit.SECONDS.toMillis(20));
+            }
+
+            Throwable reported = failure.get();
+            assertThat(reported).as("the plan failed").isNotNull();
+            assertThat(closedTheClient(reported))
+                    .as(
+                            "the reported failure is the planning call's, not the close's: %s",
+                            reported)
+                    .isFalse();
+            assertThat(reported.getSuppressed())
+                    .as("the client's close failure rides on the planning failure: %s", reported)
+                    .anyMatch(BatchClientPartitionPlannerTest::closedTheClient);
+        }
+    }
+
+    /** Whether a failure was thrown from the client's own close. */
+    private static boolean closedTheClient(Throwable failure) {
+        for (StackTraceElement frame : failure.getStackTrace()) {
+            if (frame.getClassName().equals("com.google.cloud.spanner.SpannerImpl")
+                    && frame.getMethodName().equals("close")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Test
     void planningAfterCloseIsRefusedByName() throws Exception {
         BatchClientPartitionPlanner planner = planner();
         planner.close();
 
         // Refused before any client is built, which is what keeps a completion arriving after
-        // teardown from opening a batch transaction nothing will ever release.
+        // teardown from opening a client on the JobManager after the enumerator has gone.
         assertThatThrownBy(this::plan)
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("was closed before it was used");
@@ -75,9 +194,8 @@ class BatchClientPartitionPlannerTest {
 
         planner.close();
 
-        // The enumerator closes it once, but a teardown that overtook a planning call closes what
-        // that call left behind as well — so the second close has to be a no-op rather than a
-        // failure the job is told about.
+        // The enumerator closes it once, but a teardown may close it again — so the second close
+        // has to be a no-op rather than a failure the job is told about.
         assertThatCode(planner::close).doesNotThrowAnyException();
     }
 

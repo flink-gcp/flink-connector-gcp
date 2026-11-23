@@ -231,6 +231,11 @@ connector whose teardown is more than one seam. Its cost is nil against this cli
 obligation is kept anyway: it is the documented contract, and a client that stopped multiplexing
 would need it. Readers never call it — they close their own transaction handle, which the SDK
 does not route to the session.
+Superseded in part by
+[ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md)
+([#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265), 2026-11-23): the planner
+closes its client when `plan` returns, so nothing calls `cleanup()`; against 6.127.0 the session
+is multiplexed and the client never deletes it.
 
 **`INVALID_ARGUMENT` from the planning call is surfaced, not wrapped away.** A non-root-
 partitionable query is the user's to fix, and the service's message is the only thing that says

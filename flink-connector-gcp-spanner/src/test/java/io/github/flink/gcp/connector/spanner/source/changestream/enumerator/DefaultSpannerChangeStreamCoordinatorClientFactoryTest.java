@@ -26,19 +26,71 @@ import com.google.cloud.spanner.InstanceAdminClient;
 import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerOptions;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.spanner.ClientMetricsProbe;
 import io.github.flink.gcp.connector.spanner.ClosedEmulator;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.StallingSpannerServer;
+import io.github.flink.gcp.connector.spanner.TestLeasedSpanners;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DefaultSpannerChangeStreamCoordinatorClientFactoryTest {
+
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isRunning()).as("a client left its lease open").isFalse();
+    }
+
+    @Test
+    @Timeout(60)
+    void aCloseDuringInitializationCancelsTheReadAndReleasesTheLease() throws Exception {
+        // The server answers the session the client creates in the background, which no context
+        // of the caller's reaches; the read on it is the call in flight.
+        try (StallingSpannerServer server = StallingSpannerServer.startAnsweringSessions()) {
+            SpannerChangeStreamCoordinatorClient client =
+                    new DefaultSpannerChangeStreamCoordinatorClientFactory(
+                                    DatabaseDestination.of("project", "instance", "database"),
+                                    "orders",
+                                    server.endpoint())
+                            .create((ClientMetrics) null);
+            CompletableFuture<Duration> initializing =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                try {
+                                    return client.initialize();
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            });
+            long started;
+            try {
+                assertThat(server.awaitStalledCall(30)).as("a read reached the server").isTrue();
+                started = System.nanoTime();
+            } finally {
+                client.close();
+            }
+            // The read is cancelled rather than waited out: the client's close alone waits for
+            // its channels, up to 10 s per stub, which a read that is never answered keeps open.
+            assertThatThrownBy(() -> initializing.get(5, TimeUnit.SECONDS))
+                    .isInstanceOf(ExecutionException.class)
+                    .satisfies(StallingSpannerServer::assertCancelled);
+            assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
+                    .as("milliseconds from close to initialization's end; calls %s", server.calls())
+                    .isLessThan(3_000);
+        }
+    }
 
     @Test
     void usesSevenDaysWhenNoAbsentRetentionFallbackIsConfigured() {
@@ -66,8 +118,10 @@ class DefaultSpannerChangeStreamCoordinatorClientFactoryTest {
                         Duration.ofDays(7),
                         null);
 
-        assertThatThrownBy(() -> factory.create(spanner)).isSameAs(failure);
+        assertThatThrownBy(() -> factory.create(TestLeasedSpanners.leased(spanner)))
+                .isSameAs(failure);
         assertThat(spanner.closeCalls).hasValue(1);
+        assertThat(GrpcEventLoops.isRunning()).as("the handle's lease was released").isFalse();
     }
 
     private static final class FailingSpanner implements Spanner {

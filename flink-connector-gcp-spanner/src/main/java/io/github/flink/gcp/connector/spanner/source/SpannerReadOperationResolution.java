@@ -36,6 +36,16 @@ public final class SpannerReadOperationResolution {
                 Preconditions.checkNotNull(resolver, "resolver must not be null"));
     }
 
+    /**
+     * Returns whether the operation is resolved at plan time, and so needs a database client.
+     *
+     * @param operation the operation
+     * @return whether {@link #resolve} reads through its client for it
+     */
+    public static boolean isDeferred(SpannerReadOperation operation) {
+        return operation.getResolver() != null;
+    }
+
     /** Resolves the operation when necessary, otherwise returns it unchanged. */
     public static SpannerReadOperation resolve(
             SpannerReadOperation operation, DatabaseClient client, Timestamp readTimestamp)

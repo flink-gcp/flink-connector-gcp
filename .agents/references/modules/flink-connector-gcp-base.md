@@ -310,7 +310,11 @@ record — context, evidence, declined alternatives — is the named ADR under `
   `BackgroundResource`. A client that is not a gax `BackgroundResource` (Pub/Sub's
   `Publisher` and `Subscriber`) cannot be a `LeasedClient`: its owner holds the lease or the
   channel holder beside it and releases it after the client's own bounded shutdown, on the
-  give-up path too (`PubSubTransports`). Apply the lease to a settings *builder*: a gapic `toBuilder()` can drop
+  give-up path too (`PubSubTransports`). A client whose settings take a channel configurator
+  rather than a provider (Spanner's `SpannerOptions`) composes
+  `GrpcEventLoops.channelConfigurator(existing)`, which needs no lease to build and reaches the
+  group only while one is open, so its owner opens the lease before the client builds a channel
+  (`SpannerClients.open`). Apply the lease to a settings *builder*: a gapic `toBuilder()` can drop
   hand-written fields (`BigQueryReadSettings` drops its retry listener). The group is shared by
   every lease on one copy of `GrpcEventLoops` in a class loader (each SQL JAR relocates its own
   copy, so it has its own group) and refcounted, so a test opening leases closes every one in a `finally` (`GrpcEventLoopsTest`
@@ -328,8 +332,9 @@ record — context, evidence, declined alternatives — is the named ADR under `
   cluster's JobManager under `FAIL`
   (measured 8 of 8 on BigQuery's source before #2237's fix), and its `close()` cancels a call in
   flight through the call's `ApiFuture` before closing the client (`ReadClientSessionCreator`,
-  `PubSubSubscriptionAdmin`). BigQuery, Cloud Tasks and Pub/Sub are migrated; Bigtable, Spanner
-  and Firestore are #2243's remaining sub-issues.
+  `PubSubSubscriptionAdmin`); a client whose synchronous calls expose no `ApiFuture` (Spanner's)
+  cancels through the gRPC `Context` the call runs in. BigQuery, Cloud Tasks, Pub/Sub and Spanner
+  are migrated; Bigtable and Firestore are #2243's remaining sub-issues.
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

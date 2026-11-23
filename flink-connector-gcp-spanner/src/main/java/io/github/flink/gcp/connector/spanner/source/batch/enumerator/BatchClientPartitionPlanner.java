@@ -18,18 +18,17 @@ package io.github.flink.gcp.connector.spanner.source.batch.enumerator;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.util.Preconditions;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.spanner.BatchClient;
 import com.google.cloud.spanner.BatchReadOnlyTransaction;
-import com.google.cloud.spanner.DatabaseClient;
 import com.google.cloud.spanner.DatabaseId;
 import com.google.cloud.spanner.Options;
 import com.google.cloud.spanner.Options.QueryOption;
 import com.google.cloud.spanner.Options.ReadOption;
 import com.google.cloud.spanner.Partition;
 import com.google.cloud.spanner.PartitionOptions;
-import com.google.cloud.spanner.Spanner;
 import com.google.cloud.spanner.SpannerException;
 import com.google.cloud.spanner.SpannerOptions;
 import com.google.cloud.spanner.TimestampBound;
@@ -37,34 +36,56 @@ import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.spanner.DatabaseDestination;
+import io.github.flink.gcp.connector.spanner.LeasedSpanner;
 import io.github.flink.gcp.connector.spanner.SpannerClients;
 import io.github.flink.gcp.connector.spanner.SpannerRpcPriority;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperation;
 import io.github.flink.gcp.connector.spanner.source.SpannerReadOperationResolution;
+import io.grpc.Context;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Plans a read through a {@code google-cloud-spanner} {@link BatchClient}.
  *
- * <p>Named after the client its {@link #close()} releases, which is the connector's convention for
- * the real implementation of a seam.
+ * <p>Named after the client it plans through, which is the connector's convention for the real
+ * implementation of a seam.
  *
- * <p>The handle is built on first use and closed once, both on the coordinator's side of the job:
- * the enumerator plans a read once and then has no further use for it. Readers open handles of
- * their own and rejoin the snapshot by its id.
+ * <p><b>The handle lives as long as one {@link #plan} call.</b> The enumerator plans a read once
+ * and then has no further use for it, and on the JobManager a handle must not stay open until the
+ * enumerator closes: Flink 2.2.1 closes a source's enumerator on a thread of its own, does not wait
+ * for it, and in practice releases the job's class loader first, and a handle still open then can
+ * exit the JobManager (docs/adr/0208, measured on BigQuery's source in #2237). So {@link #plan}
+ * opens the handle, under a {@code GrpcEventLoops} lease, and closes it before it returns. Readers
+ * open handles of their own and rejoin the snapshot by its id; the snapshot does not depend on this
+ * handle staying open. A {@link #close()} that lands while a call is in flight cancels the call
+ * through the gRPC {@link Context} it runs in (gRPC cancels a call when the context it was started
+ * in is cancelled), closes the handle, and returns once the call has released it; that wait has no
+ * bound of its own beyond the client's shutdown, and an interrupt ends it.
  *
- * <p><b>What {@link #close()} owes.</b> A batch read holds a session on the service, and {@code
- * cleanup()} is what releases it. This connector calls it, and it is the enumerator's to call
- * rather than a reader's — a reader that released the session would end every other reader's read.
- * Against this client version the call happens to cost nothing, because {@code BatchClientImpl}
- * serves batch transactions from a multiplexed session and {@code SessionImpl.close()} returns
- * immediately for one; the call stays because it is the documented contract, and because a client
- * that stopped multiplexing would need it.
+ * <p>A deferred read operation (a Table API scan or FULL cache load that reads through {@code
+ * scan.index}, or whose primary-key filter depends on the key's sort order) resolves through the
+ * handle's database client, which creates a multiplexed session of its own in the background, out
+ * of the context's reach; a close while that creation is in flight waits for the client's bounded
+ * shutdown instead. Any other operation, every DataStream API read included, does not build the
+ * database client.
+ *
+ * <p><b>{@code cleanup()} is not called.</b> It is the documented way to release the session a
+ * batch read holds, and it would be the enumerator's to call rather than a reader's, since a reader
+ * that released the session would end every other reader's read. But it can only be called while
+ * the handle is open, which on the JobManager ends with {@link #plan}, before any reader has read.
+ * Against this client version (6.127.0) the call would cost nothing anyway: {@code BatchClientImpl}
+ * serves every batch transaction from a multiplexed session, which the client never deletes and
+ * which expires on its own, and {@code SessionImpl.close()} returns immediately for one. Were a
+ * later client to stop multiplexing, a session left behind here would idle out on the service,
+ * which is the cost to prefer over ending the readers' reads.
  *
  * <p>The client's retry configuration is left alone. It retries the partition calls on the
  * transient codes under a total timeout of its own, so a failure that reaches the enumerator has
@@ -83,13 +104,20 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     private final boolean exportClientMetricsToCloudMonitoring;
 
     /**
-     * The service handle and the batch transaction on it, both built by {@link #plan}.
+     * The call {@link #plan} is making, and the handle it opened for it, or {@code null} between
+     * calls.
      *
-     * <p>{@code volatile} and guarded by the monitor below because {@link #plan} runs on the
-     * executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()}
-     * runs on the scheduler thread and may overtake it.
+     * <p>Guarded by the monitor because {@link #plan} runs on the executor {@code
+     * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} runs on the
+     * scheduler thread and may overtake it.
      */
-    @Nullable private volatile Spanner spanner;
+    @GuardedBy("this")
+    @Nullable
+    private InFlight call;
+
+    @GuardedBy("this")
+    @Nullable
+    private LeasedSpanner spanner;
 
     /**
      * What the enumerator loaded and handed over, or {@code null} for application default
@@ -107,9 +135,8 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
      */
     @Nullable private volatile ClientMetrics clientMetrics;
 
-    @Nullable private volatile BatchReadOnlyTransaction transaction;
-
-    private volatile boolean closed;
+    @GuardedBy("this")
+    private boolean closed;
 
     /**
      * Creates the planner.
@@ -152,13 +179,72 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
             boolean dataBoostEnabled,
             @Nullable SpannerRpcPriority rpcPriority)
             throws IOException {
-        BatchReadOnlyTransaction txn = open(bound);
-        SpannerReadOperation resolved =
-                SpannerReadOperationResolution.resolve(
-                        operation, databaseClient(), txn.getReadTimestamp());
-        List<Partition> partitions =
-                partition(txn, resolved, partitionOptions, dataBoostEnabled, rpcPriority);
-        return new PartitionPlan(txn.getBatchTransactionId(), txn.getReadTimestamp(), partitions);
+        InFlight inFlight = new InFlight();
+        synchronized (this) {
+            checkOpen();
+            Preconditions.checkState(call == null, "A plan is already being made.");
+            call = inFlight;
+        }
+        Context previous = inFlight.context.attach();
+        try {
+            LeasedSpanner opened = openClient();
+            PartitionPlan plan;
+            try {
+                plan =
+                        planOn(
+                                opened,
+                                operation,
+                                bound,
+                                partitionOptions,
+                                dataBoostEnabled,
+                                rpcPriority);
+            } catch (Throwable e) {
+                // The planning failure is the one to report: a query the service will not
+                // partition says why in its message, and a close failure must not replace it.
+                Closers.closeAllSuppressing(e, () -> closeClient(opened));
+                throw e;
+            }
+            closeClient(opened);
+            return plan;
+        } finally {
+            inFlight.context.detach(previous);
+            synchronized (this) {
+                call = null;
+            }
+            // Releases what the context holds; the call is over either way.
+            inFlight.context.close();
+            inFlight.ended.countDown();
+        }
+    }
+
+    private PartitionPlan planOn(
+            LeasedSpanner opened,
+            SpannerReadOperation operation,
+            TimestampBound bound,
+            PartitionOptions partitionOptions,
+            boolean dataBoostEnabled,
+            @Nullable SpannerRpcPriority rpcPriority)
+            throws IOException {
+        DatabaseId databaseId =
+                DatabaseId.of(
+                        database.getProject(), database.getInstance(), database.getDatabase());
+        BatchClient batchClient = opened.spanner().getBatchClient(databaseId);
+        // The handle is closed with the call; cleanup() is not called (see the class javadoc).
+        try (BatchReadOnlyTransaction txn = batchClient.batchReadOnlyTransaction(bound)) {
+            // Only a deferred operation needs the database client, whose creation starts a
+            // multiplexed session of its own that the handle's close would then wait for.
+            SpannerReadOperation resolved =
+                    !SpannerReadOperationResolution.isDeferred(operation)
+                            ? operation
+                            : SpannerReadOperationResolution.resolve(
+                                    operation,
+                                    opened.spanner().getDatabaseClient(databaseId),
+                                    txn.getReadTimestamp());
+            List<Partition> partitions =
+                    partition(txn, resolved, partitionOptions, dataBoostEnabled, rpcPriority);
+            return new PartitionPlan(
+                    txn.getBatchTransactionId(), txn.getReadTimestamp(), partitions);
+        }
     }
 
     /**
@@ -244,41 +330,38 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
     }
 
     /**
-     * Opens the batch transaction, building the service handle on first use.
+     * Opens the handle for the call in flight, unless {@link #close()} came first.
      *
-     * <p>The monitor is this object rather than a lock field: one planner belongs to one
+     * <p>Opened outside the monitor, because building the handle can make a round trip (the client
+     * checks an emulator is answering) and {@link #close()} must not wait for it to cancel the
+     * call. The monitor is this object rather than a lock field: one planner belongs to one
      * enumerator, so the only contention is between that enumerator's planning call and its
      * teardown, and a separate lock would name nothing the object does not already name.
      */
-    private BatchReadOnlyTransaction open(TimestampBound bound) throws IOException {
-        BatchClient batchClient;
+    private LeasedSpanner openClient() throws IOException {
         synchronized (this) {
             checkOpen();
-            if (spanner == null) {
-                spanner = SpannerClients.open(database, settings());
-            }
-            batchClient =
-                    spanner.getBatchClient(
-                            DatabaseId.of(
-                                    database.getProject(),
-                                    database.getInstance(),
-                                    database.getDatabase()));
         }
-        // Opened outside the monitor, because this call begins the transaction on the service and
-        // close() runs on the scheduler thread: holding the monitor across it would make a job
-        // being torn down wait for a round trip to Spanner.
-        BatchReadOnlyTransaction opened = batchClient.batchReadOnlyTransaction(bound);
+        LeasedSpanner opened = SpannerClients.open(database, settings());
         synchronized (this) {
-            if (closed) {
-                // Teardown overtook this call and released what it could see, which did not include
-                // this transaction. Releasing it here is what keeps the session it holds from
-                // outliving the enumerator.
-                release(opened, null);
-                checkOpen();
+            if (!closed) {
+                spanner = opened;
+                return opened;
             }
-            transaction = opened;
         }
-        return opened;
+        // Teardown overtook the open and could not see this handle.
+        opened.close();
+        throw closedBeforeUse();
+    }
+
+    /** Closes the handle {@link #openClient()} opened, or waits for {@link #close()} to. */
+    private void closeClient(LeasedSpanner opened) {
+        synchronized (this) {
+            if (spanner == opened) {
+                spanner = null;
+            }
+        }
+        opened.close();
     }
 
     @Override
@@ -305,60 +388,66 @@ public final class BatchClientPartitionPlanner implements PartitionPlanner {
                 exportClientMetricsToCloudMonitoring);
     }
 
-    private DatabaseClient databaseClient() throws IOException {
-        synchronized (this) {
-            checkOpen();
-            if (spanner == null) {
-                throw new IOException(
-                        "The Spanner partition planner did not open its service handle.");
-            }
-            return spanner.getDatabaseClient(
-                    DatabaseId.of(
-                            database.getProject(), database.getInstance(), database.getDatabase()));
-        }
-    }
-
+    @GuardedBy("this")
     private void checkOpen() throws IOException {
         if (closed) {
-            throw new IOException(
-                    "The Spanner partition planner for "
-                            + database
-                            + " was closed before it was used.");
+            throw closedBeforeUse();
         }
     }
 
-    @Override
-    public void close() throws IOException {
-        BatchReadOnlyTransaction openTransaction;
-        Spanner openSpanner;
-        synchronized (this) {
-            closed = true;
-            openTransaction = transaction;
-            transaction = null;
-            openSpanner = spanner;
-            spanner = null;
-        }
-        release(openTransaction, openSpanner);
+    private IOException closedBeforeUse() {
+        return new IOException(
+                "The Spanner partition planner for "
+                        + database
+                        + " was closed before it was used.");
     }
 
     /**
-     * Releases a batch read, in three steps that are three different things: the transaction
-     * handle, the session the read holds on the service, and the client.
+     * Ends the planner: a call in flight is cancelled and its handle closed, and a later call
+     * fails.
      *
-     * <p>{@code Closers} continues past a failure in any of them, so a session that cannot be
-     * released still does not leak the channel behind it.
+     * <p>The cancellation comes first, so that the handle's close, which waits for its channels to
+     * finish their calls, does not wait out one the planner no longer wants. The close then waits
+     * for the call to end, so that the call's handle is closed and its lease released when it
+     * returns, whichever thread got to the handle; an interrupt ends that wait early and is
+     * restored.
      */
-    private void release(
-            @Nullable BatchReadOnlyTransaction openTransaction, @Nullable Spanner openSpanner)
-            throws IOException {
-        try {
-            Closers.closeAll(
-                    openTransaction,
-                    openTransaction == null ? null : openTransaction::cleanup,
-                    openSpanner);
-        } catch (Exception e) {
-            throw new IOException(
-                    "Failed to release the Spanner batch read of " + database + ".", e);
+    @Override
+    public void close() {
+        InFlight inFlight;
+        LeasedSpanner openSpanner;
+        synchronized (this) {
+            closed = true;
+            inFlight = call;
+            openSpanner = spanner;
+            spanner = null;
         }
+        if (inFlight != null) {
+            inFlight.context.cancel(
+                    new CancellationException(
+                            "The Spanner partition planner for " + database + " was closed."));
+        }
+        if (openSpanner != null) {
+            openSpanner.close();
+        }
+        if (inFlight != null) {
+            try {
+                inFlight.ended.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /** One {@link #plan} call: the context it runs in, and whether it has ended. */
+    private static final class InFlight {
+
+        /**
+         * Not the calling thread's context: Flink's threads carry none worth inheriting, and a
+         * deadline set on one would end the plan for a reason this class does not know about.
+         */
+        private final Context.CancellableContext context = Context.ROOT.withCancellation();
+
+        private final CountDownLatch ended = new CountDownLatch(1);
     }
 }

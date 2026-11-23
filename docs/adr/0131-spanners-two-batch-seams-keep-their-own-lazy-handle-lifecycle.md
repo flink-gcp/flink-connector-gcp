@@ -22,7 +22,9 @@ limitations under the License.
 - Issues: [#991](https://github.com/flink-gcp/flink-connector-gcp/issues/991),
   [#1046](https://github.com/flink-gcp/flink-connector-gcp/issues/1046)
 - Modules: bigquery, pubsub, cloudtasks, bigtable, spanner
-- Current behavior: unchanged; each batch seam owns its own `Spanner` handle and closes it
+- Current behavior: each batch seam owns its own `Spanner` handle and closes it; since
+  [#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265) the planner's handle lives
+  for one `plan` call (see the 2026-11-23 refinement)
 
 ## Context
 
@@ -174,3 +176,18 @@ settings builders, so a shared holder would remove only the per-builder emulator
 lazy-seam question does not arise there, and the counterpart matrix's routing of any consolidation
 appetite to [#1046](https://github.com/flink-gcp/flink-connector-gcp/issues/1046) closes with that
 answer.
+
+## Refinement (2026-11-23): the planner's handle lives for one call
+
+[#2265](https://github.com/flink-gcp/flink-connector-gcp/issues/2265) moved the Spanner clients onto
+the connector-owned event-loop group
+([ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md)), which requires a
+JobManager-side client to close when its call returns.
+`BatchClientPartitionPlanner` now opens its handle for each `plan` call and closes it, with the
+batch transaction's handle, before `plan` returns; it no longer opens a transaction outside the
+monitor or keeps a `transaction` field, and its re-check of `closed` only closes a handle opened
+after `close()`.
+Only `BatchClientStructStreamOpener` keeps the lazy lifecycle this record describes, so the
+argument from the planner's transaction interlock no longer applies.
+A holder for the opener alone has not been weighed; extracting one is still a decision to record
+here first.

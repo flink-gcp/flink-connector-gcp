@@ -119,6 +119,15 @@ limitations under the License.
             <groupId>com.google.api</groupId>
             <artifactId>gax</artifactId>
         </dependency>
+        <dependency>
+            <!-- ManagedChannelBuilder in the channel configurator that puts the client's channels
+                 on the connector's event-loop group, and the Context a JobManager-side call runs
+                 in so that a close can cancel it (#2265). The tests also build the raw
+                 StatusRuntimeException path of the error classifier with it. Version managed by
+                 the libraries BOM. -->
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-api</artifactId>
+        </dependency>
 
         <!-- Test dependencies -->
         <dependency>
@@ -144,13 +153,6 @@ limitations under the License.
                  Version managed by the libraries BOM. -->
             <groupId>com.google.api</groupId>
             <artifactId>gax-grpc</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <!-- The raw StatusRuntimeException path of the error classifier. Test scope, as
-                 gax-grpc above. Version managed by the libraries BOM. -->
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-api</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
