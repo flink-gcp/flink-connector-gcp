@@ -326,15 +326,17 @@ record — context, evidence, declined alternatives — is the named ADR under `
   cache load: 10 s), around every call that can release a lease there, and keep the
   uninterruptible part well under the deadline. A quiet-period-0 group terminates in
   milliseconds, so a test of the wait blocks a group thread with a latch (`executeOnGroup`).
-  **On the JobManager a client must close when its call returns**, not
-  when the enumerator closes: at the end of a job Flink 2.2.1 closes coordinators asynchronously and
+  **On the JobManager an enumerator's client must close when its call returns**, not
+  when the enumerator closes (a catalog is the exception: it holds its client until it is closed,
+  which the SQL Gateway does before the session's class loader, Flink 1.20.5 and 2.2.1): at the end of a job Flink 2.2.1 closes coordinators asynchronously and
   does not wait before releasing the job's class loader, and a client open then can exit a session
   cluster's JobManager under `FAIL`
   (measured 8 of 8 on BigQuery's source before #2237's fix), and its `close()` cancels a call in
   flight through the call's `ApiFuture` before closing the client (`ReadClientSessionCreator`,
-  `PubSubSubscriptionAdmin`); a client whose synchronous calls expose no `ApiFuture` (Spanner's)
-  cancels through the gRPC `Context` the call runs in. BigQuery, Cloud Tasks, Pub/Sub and Spanner
-  are migrated; Bigtable and Firestore are #2243's remaining sub-issues.
+  `PubSubSubscriptionAdmin`, Bigtable's `PerCallClientRunner`); a client whose synchronous calls
+  expose no `ApiFuture` (Spanner's) cancels through the gRPC `Context` the call runs in. BigQuery,
+  Bigtable, Cloud Tasks, Pub/Sub and Spanner are migrated; Firestore is #2243's remaining
+  sub-issue.
 
 ## `base.sink` (`docs/adr/0187`, `0190`)
 

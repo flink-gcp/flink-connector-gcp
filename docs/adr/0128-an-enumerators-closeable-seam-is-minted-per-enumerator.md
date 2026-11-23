@@ -19,7 +19,8 @@ limitations under the License.
 - Status: Accepted
 - Date: 2026-08-22 (measured 2026-08-22)
 - Updated: 2026-10-30 (the one-source-object premise holds under the default scheduler only; [ADR-0188])
-- Issues: [#990](https://github.com/flink-gcp/flink-connector-gcp/issues/990)
+- Issues: [#990](https://github.com/flink-gcp/flink-connector-gcp/issues/990),
+  [#2264](https://github.com/flink-gcp/flink-connector-gcp/issues/2264)
 - Modules: spanner, bigtable, bigquery (rule applies to all)
 - Current behavior: a global restore no longer fails the job with a closed-seam error
 
@@ -205,3 +206,14 @@ right under both. The Javadoc and the agent references now name the default sche
 source object outlives a coordinator reset.
 
 [ADR-0188]: 0188-enumerator-metrics-register-once-per-enumerator-metric-group.md
+
+## Refinement (2026-11-23, #2264): Bigtable's two enumerator seams hold no client between calls
+
+Bigtable's `RowKeySampler` and `ChangeStreamCoordinatorClient` are still minted per enumerator,
+but neither holds an SDK client any more.
+Each opens a client for every call and closes it when the call returns, because on the JobManager a
+client still open when Flink releases the job's class loader can exit the process
+([ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md)).
+Their one-way closed flag now lives in `PerCallClientRunner`, whose `close()` also cancels the call in
+flight, and the coordinator's lazy accessors described above are gone.
+A seam still opens nothing when it is minted, so the restore case above is unchanged.

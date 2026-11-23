@@ -35,6 +35,7 @@ import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.bigtable.BigtableClientReaper;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.sink.BigtableWriterOptions;
 import org.slf4j.Logger;
@@ -186,7 +187,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             throws IOException, InterruptedException {
         ClientState state = clientState(destination);
         try {
-            MutationBatcher batcher = create(destination, state.client);
+            MutationBatcher batcher = create(destination, state.leased.client());
             state.liveBatchers++;
             return batcher;
         } catch (RuntimeException | Error e) {
@@ -210,7 +211,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
     @VisibleForTesting
     BigtableDataClient client(TableDestination destination)
             throws IOException, InterruptedException {
-        return clientState(destination).client;
+        return clientState(destination).leased.client();
     }
 
     private ClientState clientState(TableDestination destination)
@@ -226,7 +227,9 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             // Built, then put: a failure leaves no entry, so the next record retries the creation
             // rather than finding a half-built cache.
             try {
-                state = new ClientState(BigtableDataClient.create(settings(destination)));
+                state =
+                        new ClientState(
+                                LeasedBigtableClient.openData(settingsBuilder(destination)));
             } catch (IOException | RuntimeException | Error e) {
                 reaper.releaseUnusedSlot();
                 throw e;
@@ -248,7 +251,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
         try {
             clientReaper()
                     .closeEventually(
-                            state.client,
+                            state.leased,
                             "orphaned Bigtable client "
                                     + BigtableDataClients.instanceKey(destination));
         } catch (RuntimeException schedulingFailure) {
@@ -279,7 +282,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
             return;
         }
         clients.remove(key);
-        clientReaper().closeEventually(state.client, "evicted Bigtable client " + key);
+        clientReaper().closeEventually(state.leased, "evicted Bigtable client " + key);
     }
 
     @VisibleForTesting
@@ -346,7 +349,7 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
         List<AutoCloseable> closeables = new ArrayList<>();
         if (clients != null) {
             for (ClientState state : clients.values()) {
-                closeables.add(state.client);
+                closeables.add(state.leased);
             }
         }
         clients = null;
@@ -359,11 +362,13 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
 
     private static final class ClientState {
 
-        private final BigtableDataClient client;
+        /** The client and its event-loop lease, released when the client closes (ADR-0208). */
+        private final LeasedBigtableClient<BigtableDataClient> leased;
+
         private int liveBatchers;
 
-        private ClientState(BigtableDataClient client) {
-            this.client = client;
+        private ClientState(LeasedBigtableClient<BigtableDataClient> leased) {
+            this.leased = leased;
         }
     }
 
@@ -380,13 +385,17 @@ public class DefaultMutationBatcherFactory implements MutationBatcherFactory {
      */
     @VisibleForTesting
     public BigtableDataSettings settings(TableDestination destination) {
+        return settingsBuilder(destination).build();
+    }
+
+    private BigtableDataSettings.Builder settingsBuilder(TableDestination destination) {
         BigtableDataSettings.Builder settings =
                 BigtableDataClients.settings(
                         destination, appProfileId, emulatorEndpoint, credentialsOverride);
         applyBatchThresholds(settings);
         BigtableDataClients.applyClientMetrics(
                 settings, clientMetrics, exportClientMetricsToCloudMonitoring);
-        return settings.build();
+        return settings;
     }
 
     /**

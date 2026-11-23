@@ -18,7 +18,8 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-23
-- Issues: [#1086](https://github.com/flink-gcp/flink-connector-gcp/issues/1086)
+- Issues: [#1086](https://github.com/flink-gcp/flink-connector-gcp/issues/1086),
+  [#2264](https://github.com/flink-gcp/flink-connector-gcp/issues/2264)
 - Modules: bigtable
 - Current behavior: each owner closes its lazy data client under its own teardown protocol, and the
   holder retains neither the client nor its credentials after close
@@ -123,3 +124,19 @@ new plan, rebuild a client, fall back to ADC, or retain the holder's client and 
 The owner-order tests are the executable boundary of this decision.
 A future change that introduces another thread, moves opener close ahead of cancellation, or acts
 on a late sampling completion must update or supersede this record.
+
+## Refinement (2026-11-23, #2264): the scan enumerator's sampler no longer holds a lazy client
+
+The row-key sampler left `LazyBigtableDataClient` when the Bigtable connector moved onto the
+connector-owned gRPC event-loop group
+([ADR-0208](0208-grpc-channels-run-on-a-connector-owned-event-loop-group.md)).
+On the JobManager a client must close when its call returns, so the sampler now opens a client for
+each `SampleRowKeys` call through `PerCallClientRunner`, and its `close()` cancels a sampling call still
+in flight and closes that call's client, rather than leaving the call to finish after teardown.
+The enumerator's handling of a late completion is unchanged.
+The sampler clears its credentials only after its runner is closed, so a sample that has not opened
+its client by then is refused instead of reaching Bigtable as application default credentials.
+
+The two reader-side owners, the scan reader's row-stream opener and the Change Streams reader's
+opener, keep this decision as written: each holds a `LazyBigtableDataClient`, now on the group with
+a lease released when the holder closes.

@@ -40,6 +40,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 import com.google.protobuf.ByteString;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.table.BigtableTableSchema;
 import io.github.flink.gcp.connector.bigtable.table.TrailingBytes;
@@ -173,6 +174,45 @@ class BigtableLookupCacheTest {
         } finally {
             function.close();
         }
+    }
+
+    /** Set by {@link #theFullCacheLoadsInsideInterruptibleReleases()}'s row stream opener. */
+    private static volatile boolean openedInsideInterruptibleReleases;
+
+    /**
+     * Flink stops a full cache load by interrupting it and fails the lookup's close 10 s later, so
+     * the load runs inside the scope where the release of the last gRPC lease stops waiting for the
+     * group once an interrupt has had its first second (#2269).
+     */
+    @Test
+    void theFullCacheLoadsInsideInterruptibleReleases() throws Exception {
+        openedInsideInterruptibleReleases = false;
+        BigtableFullCacheInputFormat inputFormat =
+                new BigtableFullCacheInputFormat(
+                        TableDestination.of("project", "instance", "table"),
+                        SCHEMA,
+                        null,
+                        "null",
+                        TrailingBytes.IGNORE,
+                        Filters.FILTERS.family().exactMatch("cf1"),
+                        Collections.singletonList(ByteStringRange.unbounded()),
+                        null,
+                        null,
+                        null,
+                        range -> {
+                            openedInsideInterruptibleReleases =
+                                    GrpcEventLoops.inInterruptibleReleases();
+                            return Collections.emptyIterator();
+                        },
+                        true);
+
+        inputFormat.open(new GenericInputSplit(0, 1));
+        inputFormat.close();
+
+        assertThat(openedInsideInterruptibleReleases).isTrue();
+        assertThat(GrpcEventLoops.inInterruptibleReleases())
+                .as("the scope ended with the load")
+                .isFalse();
     }
 
     @Test

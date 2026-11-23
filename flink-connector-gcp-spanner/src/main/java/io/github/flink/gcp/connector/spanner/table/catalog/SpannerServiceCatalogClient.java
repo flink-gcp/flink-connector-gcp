@@ -49,9 +49,11 @@ import java.util.function.Function;
  *
  * <p>The handle lives as long as the catalog, not one call, unlike the clients a source's
  * enumerator opens on the JobManager: the SQL Gateway and the SQL Client close a session's catalogs
- * synchronously before its class loader, so the handle's lease is released, and the event-loop
- * group stopped, in time (docs/adr/0208). A catalog registered in a program's own {@code
- * TableEnvironment} is never closed by Flink, and its handle stays open with the process.
+ * synchronously before its class loader, so the handle's lease is released before that loader
+ * closes (docs/adr/0208). In a program's own {@code TableEnvironment}, the handle stays open until
+ * the catalog instance is closed, whoever closes it: the program itself, or Flink when it drops the
+ * catalog or, during an {@code ALTER CATALOG}, before it opens the replacement; a catalog left open
+ * keeps its handle open with the process.
  */
 @Internal
 final class SpannerServiceCatalogClient implements SpannerCatalogClient {

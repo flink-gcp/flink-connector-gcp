@@ -26,7 +26,9 @@ import com.google.cloud.bigtable.data.v2.models.KeyOffset;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
-import io.github.flink.gcp.connector.bigtable.LazyBigtableDataClient;
+import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
+import io.github.flink.gcp.connector.bigtable.PerCallClientRunner;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 
 import javax.annotation.Nullable;
@@ -41,10 +43,17 @@ import java.util.List;
  * <p>Named after the client its {@link #close()} releases, which is the connector's convention for
  * the real implementation of a seam.
  *
- * <p>The client is built on first use and closed once, both on the coordinator's side of the job:
- * the enumerator samples a table once and then has no further use for it. That is also why there is
- * no client cache here — the sink caches per instance because it writes continuously to many
- * tables, while this makes one call to one table.
+ * <p>The sampler runs on the coordinator's side of the job, so its client lives only as long as the
+ * one call it is opened for: {@link #sample(TableDestination)} opens a client, samples and closes
+ * it, and {@link #close()} cancels a sample still in flight (ADR-0208, {@link
+ * PerCallClientRunner}). The enumerator samples a table once and then has no further use for a
+ * client, so nothing is lost by not keeping one.
+ *
+ * <p>That client never keeps the built-in Cloud Monitoring export, whatever the source's choice:
+ * the export's own {@code MetricServiceClient} would put a channel on gRPC's event-loop group on
+ * the JobManager, which the connector's group exists to avoid, and a client opened for one call
+ * would report under a client id of its own. The source's choice governs the readers' clients.
+ * Client metrics exported to Flink are unaffected.
  *
  * <p>The application profile is carried, and has to be: a Data Boost profile applies to {@code
  * SampleRowKeys} as well as to {@code ReadRows}, so a sampler that ignored it would plan a scan on
@@ -56,18 +65,27 @@ import java.util.List;
  *
  * <p>One sampler belongs to one enumerator: {@link DefaultRowKeySamplerFactory} mints it, and the
  * source mints one per {@code createEnumerator} and {@code restoreEnumerator}. That is what makes
- * the holder's one-way closed flag correct — it ends this object rather than poisoning one the next
+ * the one-way closed state correct — it ends this object rather than poisoning one the next
  * enumerator will also be handed ({@code docs/adr/0128}).
  */
 @Internal
 public final class DataClientRowKeySampler implements RowKeySampler {
 
+    @Nullable private final String appProfileId;
+    @Nullable private final EmulatorEndpoint emulatorEndpoint;
+
     /**
-     * The client this sampler reads through, and everything around building it: {@link #sample}
-     * runs on the executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link
-     * #close()} runs on the coordinator thread.
+     * Runs each sample on a client of its own: {@link #sample(TableDestination)} runs on the
+     * executor {@code SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()}
+     * runs on the coordinator thread.
      */
-    private final LazyBigtableDataClient client;
+    private final PerCallClientRunner runner = new PerCallClientRunner("row key sampler");
+
+    /** What the enumerator loaded and pushed in, or {@code null} for ADC; cleared on close. */
+    @Nullable private volatile CredentialsProvider credentials;
+
+    /** What the enumerator registered and pushed in; cleared on close. */
+    @Nullable private volatile ClientMetrics clientMetrics;
 
     /**
      * Creates the sampler.
@@ -76,26 +94,22 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      *     instance's default
      * @param emulatorEndpoint the emulator endpoint (plaintext, no credentials), or {@code null}
      *     for production Bigtable
-     * @param exportClientMetricsToCloudMonitoring whether the client keeps its built-in Cloud
-     *     Monitoring export
      */
     public DataClientRowKeySampler(
-            @Nullable String appProfileId,
-            @Nullable EmulatorEndpoint emulatorEndpoint,
-            boolean exportClientMetricsToCloudMonitoring) {
-        this.client =
-                new LazyBigtableDataClient(
-                        "row key sampler",
-                        appProfileId,
-                        emulatorEndpoint,
-                        exportClientMetricsToCloudMonitoring);
+            @Nullable String appProfileId, @Nullable EmulatorEndpoint emulatorEndpoint) {
+        this.appProfileId = appProfileId;
+        this.emulatorEndpoint = emulatorEndpoint;
     }
 
     @Override
     public List<RowKeySample> sample(TableDestination table) throws IOException {
         // The TargetId overload, not the String one: that one is deprecated. TableId is the
         // TargetId a table has; authorized views are the other one and are out of scope here.
-        List<KeyOffset> keyOffsets = client.get(table).sampleRowKeys(TableId.of(table.getTable()));
+        List<KeyOffset> keyOffsets =
+                runner.call(
+                        () -> settingsBuilder(table),
+                        LeasedBigtableClient::openData,
+                        client -> client.sampleRowKeysAsync(TableId.of(table.getTable())));
         List<RowKeySample> samples = new ArrayList<>(keyOffsets.size());
         for (KeyOffset keyOffset : keyOffsets) {
             samples.add(RowKeySample.of(keyOffset.getKey(), keyOffset.getOffsetBytes()));
@@ -104,8 +118,13 @@ public final class DataClientRowKeySampler implements RowKeySampler {
     }
 
     @Override
-    public void close() throws IOException {
-        client.close();
+    public void close() {
+        // Closed first: a sample that has not opened its client by now is refused, so none can
+        // build settings from the credentials cleared below and reach Bigtable as the process's
+        // application default credentials.
+        runner.close();
+        credentials = null;
+        clientMetrics = null;
     }
 
     /**
@@ -115,16 +134,23 @@ public final class DataClientRowKeySampler implements RowKeySampler {
      */
     @VisibleForTesting
     public BigtableDataSettings settings(TableDestination table) throws IOException {
-        return client.settings(table);
+        return settingsBuilder(table).build();
+    }
+
+    private BigtableDataSettings.Builder settingsBuilder(TableDestination table) {
+        BigtableDataSettings.Builder settings =
+                BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials);
+        BigtableDataClients.applyClientMetrics(settings, clientMetrics, false);
+        return settings;
     }
 
     @Override
     public void useCredentials(@Nullable CredentialsProvider credentials) {
-        client.useCredentials(credentials);
+        this.credentials = credentials;
     }
 
     @Override
     public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
-        client.useClientMetrics(clientMetrics);
+        this.clientMetrics = clientMetrics;
     }
 }

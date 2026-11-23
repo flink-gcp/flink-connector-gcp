@@ -35,34 +35,34 @@ import java.io.Serializable;
  * A {@link BigtableDataClient} built on first use and closed once, held by a seam implementation
  * that travels in the job graph.
  *
- * <p>The seams that read through the data client — the scan source's row-stream opener and row-key
- * sampler, and the change-stream source's opener — differ in the one call they make and share
+ * <p>The seams that read through the data client on a TaskManager — the scan source's row-stream
+ * opener and the change-stream source's opener — differ in the one call they make and share
  * everything around it: the settings they build, the provider their owner hands them, the lazy
  * construction and the close. That shared half lives here so that no seam owns a private copy of
- * client lifecycle code.
+ * client lifecycle code. The scan enumerator's row-key sampler does not hold a client here: on the
+ * JobManager a client closes when its call returns ({@link PerCallClientRunner}, ADR-0208).
+ *
+ * <p>The client runs on the connector's gRPC event-loop group, holding a lease from its creation
+ * until {@link #close()} (ADR-0208); each reader closes its seam from its own {@code close()},
+ * which Flink runs before it releases the job's class loader.
  *
  * <p>No key-file path travels here. The runtime component that owns the seam loads one provider for
  * every client family it owns and pushes it in, so this holder never loads a second one.
  *
- * <p>The client is {@code transient} because the reader-side holders, {@code
- * DataClientRowStreamOpener} and {@code DataClientChangeStreamOpener}, are serialized into the job
- * graph — the enumerator-side holder is not any more, since {@code docs/adr/0128} mints one sampler
- * per enumerator, so for that owner the marker is inert rather than load-bearing. It is {@code
- * volatile} because the thread that builds it may not be the thread that closes it, and built under
- * this object's monitor rather than a lock field, because a lock field would have to travel in the
- * job graph too. Which threads those are depends on the seam: a scan reader's split fetchers open
+ * <p>The client is {@code transient} because the holders, {@code DataClientRowStreamOpener} and
+ * {@code DataClientChangeStreamOpener}, are serialized into the job graph. It is {@code volatile}
+ * because the thread that builds it may not be the thread that closes it, and built under this
+ * object's monitor rather than a lock field, because a lock field would have to travel in the job
+ * graph too. Which threads those are depends on the seam: a scan reader's split fetchers open
  * streams from their own threads while {@code close()} runs on the task thread once the fetchers
- * are down; an enumerator samples from the executor {@code SplitEnumeratorContext#callAsync} hands
- * the work to while {@code close()} runs on the coordinator thread; the change-stream reader has no
- * fetcher pool and opens and closes on its one task thread, inheriting the guarding rather than
- * needing it.
+ * are down; the change-stream reader has no fetcher pool and opens and closes on its one task
+ * thread, inheriting the guarding rather than needing it.
  *
  * <p>The holder does not lease a client returned by {@link #get(TableDestination)}. Synchronizing
  * the return would still let {@code close()} run before the caller starts its operation, while
- * holding the monitor for an operation would make coordinator teardown wait for a service round
- * trip. Each owner therefore supplies the operation lifecycle: the scan reader stops its fetchers
- * before closing the opener, the change-stream reader cancels its active reads first, and an
- * enumerator ignores a sampling completion that arrives after teardown.
+ * holding the monitor for an operation would make a teardown wait for a service round trip. Each
+ * owner therefore supplies the operation lifecycle: the scan reader stops its fetchers before
+ * closing the opener, and the change-stream reader cancels its active reads first.
  *
  * <p>The client metrics the owner pushes in, through {@link #useClientMetrics(ClientMetrics)}, are
  * the owner's: this holder records into them and does not close them ({@code docs/adr/0186}).
@@ -77,7 +77,8 @@ public final class LazyBigtableDataClient implements Serializable {
     @Nullable private final EmulatorEndpoint emulatorEndpoint;
     private final boolean exportClientMetricsToCloudMonitoring;
 
-    @Nullable private transient volatile BigtableDataClient client;
+    /** The client with the event-loop lease covering its channels (ADR-0208). */
+    @Nullable private transient volatile LeasedBigtableClient<BigtableDataClient> client;
 
     /**
      * What the owning component loaded and pushed in.
@@ -118,7 +119,7 @@ public final class LazyBigtableDataClient implements Serializable {
 
     /** Returns the client, building it on first use. */
     public BigtableDataClient get(TableDestination table) throws IOException {
-        return get(table, BigtableDataClient::create);
+        return get(table, LeasedBigtableClient::openData);
     }
 
     /**
@@ -129,9 +130,9 @@ public final class LazyBigtableDataClient implements Serializable {
      */
     @VisibleForTesting
     BigtableDataClient get(TableDestination table, DataClientCreator creator) throws IOException {
-        BigtableDataClient existing = client;
+        LeasedBigtableClient<BigtableDataClient> existing = client;
         if (existing != null) {
-            return existing;
+            return existing.client();
         }
         synchronized (this) {
             if (closed) {
@@ -144,9 +145,9 @@ public final class LazyBigtableDataClient implements Serializable {
                                 + " used.");
             }
             if (client == null) {
-                client = creator.create(settings(table));
+                client = creator.create(settingsBuilder(table));
             }
-            return client;
+            return client.client();
         }
     }
 
@@ -160,11 +161,15 @@ public final class LazyBigtableDataClient implements Serializable {
      */
     @VisibleForTesting
     public BigtableDataSettings settings(TableDestination table) throws IOException {
+        return settingsBuilder(table).build();
+    }
+
+    private BigtableDataSettings.Builder settingsBuilder(TableDestination table) {
         BigtableDataSettings.Builder settings =
                 BigtableDataClients.settings(table, appProfileId, emulatorEndpoint, credentials);
         BigtableDataClients.applyClientMetrics(
                 settings, clientMetrics, exportClientMetricsToCloudMonitoring);
-        return settings.build();
+        return settings;
     }
 
     /**
@@ -194,9 +199,12 @@ public final class LazyBigtableDataClient implements Serializable {
         this.clientMetrics = clientMetrics;
     }
 
-    /** Closes the client if one was built, clears credentials, and refuses later use. */
+    /**
+     * Closes the client if one was built and releases its event-loop lease, clears credentials, and
+     * refuses later use.
+     */
     public void close() throws IOException {
-        BigtableDataClient toClose;
+        LeasedBigtableClient<BigtableDataClient> toClose;
         synchronized (this) {
             closed = true;
             toClose = client;
@@ -209,10 +217,11 @@ public final class LazyBigtableDataClient implements Serializable {
         }
     }
 
-    /** Creates a data client from settings prepared by this holder. */
+    /** Creates a data client, on the event-loop group, from settings prepared by this holder. */
     @FunctionalInterface
     interface DataClientCreator {
 
-        BigtableDataClient create(BigtableDataSettings settings) throws IOException;
+        LeasedBigtableClient<BigtableDataClient> create(BigtableDataSettings.Builder settings)
+                throws IOException;
     }
 }

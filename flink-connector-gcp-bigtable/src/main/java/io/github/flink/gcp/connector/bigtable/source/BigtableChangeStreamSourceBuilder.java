@@ -171,8 +171,13 @@ public final class BigtableChangeStreamSourceBuilder<T> {
     }
 
     /**
-     * Sets whether the Bigtable data client keeps exporting its built-in client-side metrics to
-     * Cloud Monitoring. Optional; on by default.
+     * Sets whether the readers' Bigtable data clients keep exporting their built-in client-side
+     * metrics to Cloud Monitoring. Optional; on by default.
+     *
+     * <p>The enumerator's data client never exports, whatever this says: it is opened for each
+     * partition listing on the JobManager, including the reconciliation scan every ten seconds,
+     * where the export's own channel would run on gRPC's event-loop group rather than the
+     * connector's and each client would report under a client id of its own (ADR-0208).
      *
      * <p>Off, the client creates no Cloud Monitoring exporter at all. Besides the export, that
      * removes the exporter's platform detection when a client closes: off Google Cloud, where
@@ -453,10 +458,7 @@ public final class BigtableChangeStreamSourceBuilder<T> {
                         coordinatorClientFactory != null
                                 ? coordinatorClientFactory
                                 : new DefaultChangeStreamCoordinatorClientFactory(
-                                        table,
-                                        appProfileId,
-                                        serviceAccountKeyFile,
-                                        exportClientMetricsToCloudMonitoring),
+                                        table, appProfileId, serviceAccountKeyFile),
                         exportClientMetricsToFlink,
                         firstCheckpointTimeout,
                         partitionHandoff));

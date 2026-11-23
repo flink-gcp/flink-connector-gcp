@@ -119,6 +119,14 @@ limitations under the License.
             <groupId>com.google.api</groupId>
             <artifactId>gax</artifactId>
         </dependency>
+        <dependency>
+            <!-- InstantiatingGrpcChannelProvider, which LeasedBigtableClient puts every client's
+                 channels on the connector's event-loop group through (ADR-0208); the writer
+                 tests also build gax exceptions with a transport status code from it.
+                 Version managed by the libraries BOM. -->
+            <groupId>com.google.api</groupId>
+            <artifactId>gax-grpc</artifactId>
+        </dependency>
 
         <!-- Test dependencies -->
         <dependency>
@@ -137,18 +145,10 @@ limitations under the License.
             <scope>test</scope>
         </dependency>
         <dependency>
-            <!-- Building the gax exceptions the writer tests script, which need a transport
-                 status code. Test scope, since no main source touches gRPC directly; test-scope
-                 declarations are not transitive, so this cannot demote the artifact out of a
-                 future SQL uber-jar the way one in the *shaded* module's pom would.
-                 Version managed by the libraries BOM. -->
-            <groupId>com.google.api</groupId>
-            <artifactId>gax-grpc</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <!-- The raw StatusRuntimeException path of the error classifier. Test scope, as
-                 gax-grpc above. Version managed by the libraries BOM. -->
+            <!-- The raw StatusRuntimeException path of the error classifier. Test scope, since
+                 no main source touches gRPC's own API; test-scope declarations are not
+                 transitive, so this cannot demote the artifact out of the SQL uber-jar the way
+                 one in the *shaded* module's pom would. Version managed by the libraries BOM. -->
             <groupId>io.grpc</groupId>
             <artifactId>grpc-api</artifactId>
             <scope>test</scope>

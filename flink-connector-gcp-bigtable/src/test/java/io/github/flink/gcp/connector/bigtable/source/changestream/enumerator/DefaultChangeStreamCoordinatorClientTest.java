@@ -29,6 +29,7 @@ import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.Duration;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import io.github.flink.gcp.connector.bigtable.source.TestSources;
@@ -60,12 +61,9 @@ class DefaultChangeStreamCoordinatorClientTest {
             TableDestination.of("project", "instance", "table");
 
     /**
-     * Pins the guard that makes the lazy accessors safe against a teardown that overtakes them.
-     *
-     * <p>{@code volatile} alone would not: the accessors are a check-then-create, so a teardown
-     * between the check and the assignment closed nothing and left the client the caller then
-     * assigned owned by no one. The reconciliation scan runs on the {@code callAsync} executor and
-     * {@code close()} on the coordinator thread, so that ordering is reachable.
+     * Pins the one-way closed state: a call that overtakes the teardown is refused rather than
+     * opening a client nothing would close. The reconciliation scan runs on the {@code callAsync}
+     * executor and {@code close()} on the coordinator thread, so that ordering is reachable.
      */
     @Test
     void refusesToBuildAClientAfterItHasBeenClosed() throws Exception {
@@ -77,11 +75,12 @@ class DefaultChangeStreamCoordinatorClientTest {
 
         assertThatThrownBy(client::generateInitialPartitions)
                 .isInstanceOf(java.io.IOException.class)
-                .hasMessageContaining("was closed before it was used")
+                .hasMessageContaining("was closed; the job is shutting down")
                 .hasMessageContaining(DESTINATION.toString());
-        assertThatThrownBy(client::retention).hasMessageContaining("was closed before it was used");
+        assertThatThrownBy(client::retention).hasMessageContaining("was closed;");
         assertThatThrownBy(client::validateSingleClusterAppProfile)
-                .hasMessageContaining("was closed before it was used");
+                .hasMessageContaining("was closed;");
+        assertThat(GrpcEventLoops.isRunning()).as("a refused call opened a client").isFalse();
     }
 
     @Test
@@ -89,7 +88,7 @@ class DefaultChangeStreamCoordinatorClientTest {
         DefaultChangeStreamCoordinatorClient client =
                 (DefaultChangeStreamCoordinatorClient)
                         new DefaultChangeStreamCoordinatorClientFactory(
-                                        DESTINATION, "single-cluster", null, false)
+                                        DESTINATION, "single-cluster", null)
                                 .create();
         ClientMetrics metrics = ClientMetrics.create("method");
 
@@ -100,7 +99,8 @@ class DefaultChangeStreamCoordinatorClientTest {
     }
 
     @Test
-    void theBuilderCarriesTheCloudMonitoringChoiceIntoTheCoordinatorsDataClient() throws Exception {
+    void theCoordinatorsDataClientNeverExportsToCloudMonitoringWhateverTheBuilderSays()
+            throws Exception {
         try (DefaultChangeStreamCoordinatorClient off =
                         (DefaultChangeStreamCoordinatorClient)
                                 TestSources.changeStreamConfig(
@@ -112,8 +112,10 @@ class DefaultChangeStreamCoordinatorClientTest {
                                 TestSources.changeStreamConfig(b -> b)
                                         .getCoordinatorClientFactory()
                                         .create()) {
+            // A client per call on the JobManager: the export's own channel would run on gRPC's
+            // event-loop group, and each client would report under a client id of its own.
             ClientMetricsSettings.assertExportsNothing(off.dataSettings());
-            ClientMetricsSettings.assertAsShipped(on.dataSettings());
+            ClientMetricsSettings.assertExportsNothing(on.dataSettings());
         }
     }
 

@@ -26,6 +26,7 @@ import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.TableId;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.bigtable.BigtableClientReaper;
 import io.github.flink.gcp.connector.bigtable.ClientMetricsSettings;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
@@ -256,6 +257,7 @@ class DefaultSingleRowClientFactoryTest {
         factory.awaitReleasedClients();
 
         assertThat(factory.activeClientCount()).isZero();
+        assertThat(GrpcEventLoops.isRunning()).as("the evicted client's lease was kept").isFalse();
         assertThatThrownBy(() -> client.newBulkMutationBatcher(TableId.of("closed")))
                 .isInstanceOf(RejectedExecutionException.class);
 

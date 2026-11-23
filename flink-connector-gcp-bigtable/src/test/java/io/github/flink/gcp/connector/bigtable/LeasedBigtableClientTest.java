@@ -1,0 +1,307 @@
+/*
+ * Copyright 2026 The flink-gcp authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.github.flink.gcp.connector.bigtable;
+
+import com.google.api.core.ApiFunction;
+import com.google.api.gax.grpc.GrpcTransportChannel;
+import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
+import com.google.api.gax.rpc.FixedTransportChannelProvider;
+import com.google.api.gax.rpc.StubSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
+import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
+import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
+import com.google.cloud.bigtable.data.v2.stub.EnhancedBigtableStubSettings;
+import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
+import io.github.flink.gcp.connector.testutils.GrpcEventLoopThreads;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/** Tests for {@link LeasedBigtableClient}. */
+@Timeout(60)
+class LeasedBigtableClientTest {
+
+    @BeforeEach
+    void noLeaseIsOpenBeforehand() {
+        assertThat(GrpcEventLoops.isRunning())
+                .as("a lease is open before the test: an earlier class in this fork leaked one")
+                .isFalse();
+    }
+
+    @AfterEach
+    void noLeaseIsLeftOpen() {
+        assertThat(GrpcEventLoops.isRunning()).as("a lease was left open").isFalse();
+    }
+
+    /**
+     * The production arm: the SDK's own provider, with the lease applied, builds a channel that
+     * runs on the group. The emulator arm is held by {@code BigtableEventLoopITCase}.
+     */
+    @Test
+    void theProductionProviderBuildsItsChannelsOnTheGroup() throws Exception {
+        GrpcEventLoops.Lease lease = GrpcEventLoops.acquire();
+        try (ServerSocket server = new ServerSocket(0)) {
+            EnhancedBigtableStubSettings.Builder stub =
+                    BigtableDataSettings.newBuilder().stubSettings();
+            LeasedBigtableClient.applyTo(lease, stub);
+            ManagedChannel channel =
+                    configurator(stub)
+                            .apply(
+                                    NettyChannelBuilder.forAddress(
+                                                    "127.0.0.1", server.getLocalPort())
+                                            .usePlaintext())
+                            .build();
+            try {
+                // Connecting registers the channel on an event loop, which starts its thread.
+                channel.getState(true);
+                assertThat(GrpcEventLoopThreads.awaitAlive())
+                        .as("a %s* thread while the channel connects", GrpcEventLoopThreads.PREFIX)
+                        .isTrue();
+            } finally {
+                channel.shutdownNow().awaitTermination(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            lease.close();
+        }
+        assertThat(GrpcEventLoopThreads.awaitNone()).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("rawtypes")
+    void keepsTheConfiguratorAndSettingsTheProviderAlreadyCarries() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        EnhancedBigtableStubSettings.Builder stub =
+                BigtableDataSettings.newBuilderForEmulator("localhost", 1).stubSettings();
+        ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> emulators = configurator(stub);
+        stub.setTransportChannelProvider(
+                ((InstantiatingGrpcChannelProvider) stub.getTransportChannelProvider())
+                        .toBuilder()
+                                .setChannelConfigurator(
+                                        builder -> {
+                                            calls.incrementAndGet();
+                                            return emulators.apply(builder);
+                                        })
+                                .build());
+
+        try (GrpcEventLoops.Lease lease = GrpcEventLoops.acquire()) {
+            LeasedBigtableClient.applyTo(lease, stub);
+            configurator(stub).apply(NettyChannelBuilder.forTarget("localhost:1"));
+        }
+
+        assertThat(calls).as("the emulator's plaintext configurator still runs").hasValue(1);
+        // The provider is copied whole: the emulator builder's inbound message limit survives.
+        assertThat(provider(stub).toBuilder().getMaxInboundMessageSize())
+                .isEqualTo(256 * 1024 * 1024);
+    }
+
+    @Test
+    void reachesEveryClientFamilysSettings() throws Exception {
+        try (GrpcEventLoops.Lease lease = GrpcEventLoops.acquire()) {
+            BigtableTableAdminSettings.Builder tables = BigtableTableAdminSettings.newBuilder();
+            BigtableInstanceAdminSettings.Builder instances =
+                    BigtableInstanceAdminSettings.newBuilder();
+            assertThat(provider(tables.stubSettings()).toBuilder().getChannelConfigurator())
+                    .isNull();
+
+            LeasedBigtableClient.applyTo(lease, tables.stubSettings());
+            LeasedBigtableClient.applyTo(lease, instances.stubSettings());
+
+            assertThat(provider(tables.stubSettings()).toBuilder().getChannelConfigurator())
+                    .isNotNull();
+            assertThat(provider(instances.stubSettings()).toBuilder().getChannelConfigurator())
+                    .isNotNull();
+        }
+    }
+
+    @Test
+    void refusesAProviderThatDoesNotBuildItsOwnChannels() {
+        EnhancedBigtableStubSettings.Builder stub =
+                BigtableDataSettings.newBuilder().stubSettings();
+        ManagedChannel channel = NettyChannelBuilder.forTarget("localhost:1").build();
+        try (GrpcEventLoops.Lease lease = GrpcEventLoops.acquire()) {
+            stub.setTransportChannelProvider(
+                    FixedTransportChannelProvider.create(GrpcTransportChannel.create(channel)));
+
+            assertThatThrownBy(() -> LeasedBigtableClient.applyTo(lease, stub))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("builds its own channels");
+        } finally {
+            channel.shutdownNow();
+        }
+    }
+
+    @Test
+    void closingClosesTheClientAndThenReleasesTheLease() throws Exception {
+        AtomicBoolean leaseHeldWhileClosing = new AtomicBoolean();
+        LeasedBigtableClient<AutoCloseable> leased =
+                LeasedBigtableClient.open(
+                        lease -> () -> leaseHeldWhileClosing.set(GrpcEventLoops.isRunning()));
+        assertThat(GrpcEventLoops.isRunning()).isTrue();
+
+        leased.close();
+        leased.close();
+
+        assertThat(leaseHeldWhileClosing).as("the lease outlived the client's close").isTrue();
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @Test
+    void aFailingCloseStillReleasesTheLeaseAndIsReported() throws Exception {
+        LeasedBigtableClient<AutoCloseable> leased =
+                LeasedBigtableClient.open(
+                        lease ->
+                                () -> {
+                                    throw new IllegalStateException("close failed");
+                                });
+
+        assertThatThrownBy(leased::close).hasMessage("close failed");
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    /**
+     * A data client's close consumes an interrupt it finds set; inside {@code
+     * GrpcEventLoops.interruptibleReleases()} that interrupt is what ends the release's wait, so it
+     * comes back before the lease is released.
+     */
+    @Test
+    void anInterruptTheClientsCloseConsumesIsRestored() throws Exception {
+        AtomicBoolean consumed = new AtomicBoolean();
+        LeasedBigtableClient<AutoCloseable> leased =
+                LeasedBigtableClient.open(lease -> () -> consumed.set(Thread.interrupted()));
+        Thread.currentThread().interrupt();
+        try {
+            leased.close();
+
+            assertThat(consumed).as("the fake's close saw and consumed the interrupt").isTrue();
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the interrupt was restored")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    /**
+     * An interrupt delivered while the data client's close waits for its channels ends that wait,
+     * which gax reports as a close failure caused by the {@link InterruptedException}; that
+     * interrupt comes back too.
+     */
+    @Test
+    void anInterruptDeliveredDuringTheClientsCloseIsRestored() throws Exception {
+        LeasedBigtableClient<AutoCloseable> leased =
+                LeasedBigtableClient.open(
+                        lease ->
+                                () -> {
+                                    throw new IllegalStateException(
+                                            "failed to close client context",
+                                            new InterruptedException());
+                                });
+        try {
+            assertThatThrownBy(leased::close).hasMessage("failed to close client context");
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the interrupt the close consumed was restored")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @Test
+    void aFailedCreationReleasesTheLease() {
+        assertThatThrownBy(
+                        () ->
+                                LeasedBigtableClient.open(
+                                        lease -> {
+                                            throw new IOException("cannot create");
+                                        }))
+                .hasMessage("cannot create");
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @Test
+    void aConcurrentCloseWaitsForTheFirst() throws Exception {
+        CountDownLatch closing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        LeasedBigtableClient<AutoCloseable> leased =
+                LeasedBigtableClient.open(
+                        lease ->
+                                () -> {
+                                    closing.countDown();
+                                    release.await();
+                                });
+        Thread first = new Thread(leased::close);
+        first.start();
+        assertThat(closing.await(10, TimeUnit.SECONDS)).isTrue();
+        AtomicBoolean secondReturned = new AtomicBoolean();
+        Thread second =
+                new Thread(
+                        () -> {
+                            leased.close();
+                            secondReturned.set(true);
+                        });
+        second.start();
+        try {
+            // It parks on the first close's latch, or blocks on a monitor in some other correct
+            // form; a second close that did not wait would have returned instead. Bounded, so a
+            // close that neither waits nor returns fails here rather than hanging the fork.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (second.getState() != Thread.State.WAITING
+                    && second.getState() != Thread.State.BLOCKED
+                    && second.isAlive()) {
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError("the second close neither waited nor returned");
+                }
+                Thread.onSpinWait();
+            }
+            assertThat(secondReturned)
+                    .as("the second close returned while the first ran")
+                    .isFalse();
+        } finally {
+            release.countDown();
+            first.join(10_000);
+            second.join(10_000);
+        }
+        assertThat(secondReturned).isTrue();
+        assertThat(GrpcEventLoops.isRunning()).isFalse();
+    }
+
+    @SuppressWarnings("rawtypes")
+    private static ApiFunction<ManagedChannelBuilder, ManagedChannelBuilder> configurator(
+            EnhancedBigtableStubSettings.Builder stub) {
+        return provider(stub).toBuilder().getChannelConfigurator();
+    }
+
+    private static InstantiatingGrpcChannelProvider provider(StubSettings.Builder<?, ?> stub) {
+        return (InstantiatingGrpcChannelProvider) stub.getTransportChannelProvider();
+    }
+}

@@ -28,16 +28,14 @@ import com.google.bigtable.admin.v2.GetAppProfileRequest;
 import com.google.bigtable.admin.v2.GetTableRequest;
 import com.google.bigtable.admin.v2.Table;
 import com.google.bigtable.admin.v2.TableName;
-import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableInstanceAdminSettings;
-import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
-import com.google.cloud.bigtable.data.v2.BigtableDataClient;
 import com.google.cloud.bigtable.data.v2.BigtableDataSettings;
 import com.google.cloud.bigtable.data.v2.models.Range.ByteStringRange;
-import io.github.flink.gcp.connector.base.lifecycle.Closers;
 import io.github.flink.gcp.connector.base.metrics.ClientMetrics;
 import io.github.flink.gcp.connector.bigtable.BigtableDataClients;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
+import io.github.flink.gcp.connector.bigtable.PerCallClientRunner;
 import io.github.flink.gcp.connector.bigtable.RowRanges;
 import io.github.flink.gcp.connector.bigtable.TableDestination;
 import org.slf4j.Logger;
@@ -47,7 +45,6 @@ import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
 
@@ -56,27 +53,30 @@ import java.util.concurrent.Callable;
  *
  * <p>One client belongs to one enumerator: {@link DefaultChangeStreamCoordinatorClientFactory}
  * mints it, and the source mints one per {@code createEnumerator} and {@code restoreEnumerator}
- * ({@code docs/adr/0128}). The three client families are built on first use, so minting one opens
- * nothing.
+ * ({@code docs/adr/0128}). It holds no SDK client between calls: each operation opens the client
+ * family it needs on the connector's gRPC event-loop group, makes its one call and closes it, and
+ * {@link #close()} cancels a call still in flight ({@link PerCallClientRunner}, ADR-0208). The
+ * enumerator runs on the JobManager, which Flink 2.2.1 lets release the job's class loader before
+ * the enumerator closes, so a client held until then could tear its group down on a closed loader
+ * and exit the JobManager. That includes the reconciliation scan, which opens a data client every
+ * {@code RECONCILIATION_SCAN_INTERVAL}; minting this object opens nothing.
  *
- * <p><b>What that does not settle.</b> Per-enumerator ownership removes the sharing between
- * enumerators; it does not order this object's own two threads. The enumerator's reconciliation
- * scan runs on the executor {@code SplitEnumeratorContext#callAsync} hands the work to, on an
- * interval, while {@link #close()} runs on the coordinator thread — and {@code
- * SourceCoordinator.close()} closes the enumerator before it shuts that executor down.
+ * <p>The data client never keeps the built-in Cloud Monitoring export, whatever the source's
+ * choice: the export's own {@code MetricServiceClient} would put a channel on gRPC's event-loop
+ * group on the JobManager at every call, each client would report under a client id of its own, and
+ * each close would flush the export. The source's choice governs its readers' clients. Client
+ * metrics exported to Flink are unaffected.
  *
- * <p>Building a client and closing one are therefore guarded by this object's monitor, and a
- * one-way {@code closed} flag makes a scan that overtakes the teardown refuse rather than build.
- * {@code volatile} alone would not have done it: the lazy accessors are a check-then-create, so a
- * teardown that ran between the check and the assignment saw {@code null}, closed nothing, and left
- * the client the scan then assigned owned by no one — a leaked JobManager-side channel and
- * executor, and with the credentials already nulled, one reaching Bigtable as the process's
- * application default credentials. The flag is one-way because this client belongs to one
- * enumerator ({@code docs/adr/0128}) and ends with it.
- *
- * <p>The monitor is held across the client's construction, as the module's other lazy holder does,
- * so a teardown racing a first use waits for it rather than racing it. Nothing here makes an RPC
- * under the monitor.
+ * <p><b>Threads.</b> The enumerator's calls run on the executor {@code
+ * SplitEnumeratorContext#callAsync} hands the work to, while {@link #close()} runs on the
+ * coordinator thread — and {@code SourceCoordinator.close()} closes the enumerator before it shuts
+ * that executor down. {@link PerCallClientRunner} prepares each call's settings and starts the call
+ * under its monitor, builds the client outside it, and makes its closed state one-way: a call that
+ * overtakes the teardown is refused, a client that finishes building after it is closed unused, and
+ * a call the teardown overtakes is cancelled. The teardown therefore never waits for a client being
+ * built, which for a data client includes channel priming. The credentials are cleared once the
+ * runner is closed, so no settings are built from them after it and nothing reaches Bigtable as the
+ * process's application default credentials.
  */
 @Internal
 public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamCoordinatorClient {
@@ -86,13 +86,8 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     private final TableDestination table;
     private final String appProfileId;
-    private final boolean exportClientMetricsToCloudMonitoring;
+    private final PerCallClientRunner runner;
 
-    private volatile boolean closed;
-
-    @Nullable private volatile BigtableDataClient dataClient;
-    @Nullable private volatile BigtableTableAdminClient tableAdminClient;
-    @Nullable private volatile BigtableInstanceAdminClient instanceAdminClient;
     @Nullable private volatile CredentialsProvider credentials;
 
     /** The enumerator's client metrics; only the data client records into them. */
@@ -114,36 +109,25 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
             TableDestination table,
             String appProfileId,
             @Nullable CredentialsProvider credentials) {
-        this(table, appProfileId, credentials, true);
-    }
-
-    /**
-     * Creates the client with the provider its owner loaded and the Cloud Monitoring choice.
-     *
-     * @param table the table whose change stream is coordinated
-     * @param appProfileId the single-cluster application profile to route through
-     * @param credentials the provider to build all three client families with, or {@code null} to
-     *     leave application default credentials in place
-     * @param exportClientMetricsToCloudMonitoring whether the data client keeps its built-in Cloud
-     *     Monitoring export; the admin clients have no such export
-     */
-    public DefaultChangeStreamCoordinatorClient(
-            TableDestination table,
-            String appProfileId,
-            @Nullable CredentialsProvider credentials,
-            boolean exportClientMetricsToCloudMonitoring) {
-        this.exportClientMetricsToCloudMonitoring = exportClientMetricsToCloudMonitoring;
         this.table = Preconditions.checkNotNull(table, "table must not be null");
         this.appProfileId =
                 Preconditions.checkNotNull(appProfileId, "appProfileId must not be null");
         Preconditions.checkArgument(!appProfileId.isBlank(), "appProfileId must not be blank");
         this.credentials = credentials;
+        this.runner = new PerCallClientRunner("Change Streams coordinator for " + table);
     }
 
     @Override
     public void validateSingleClusterAppProfile() throws Exception {
         validateSingleClusterAppProfile(
-                () -> instanceAdmin().getBaseClient().getAppProfile(appProfileRequest()));
+                () ->
+                        runner.call(
+                                this::instanceAdminSettingsBuilder,
+                                LeasedBigtableClient::openInstanceAdmin,
+                                client ->
+                                        client.getBaseClient()
+                                                .getAppProfileCallable()
+                                                .futureCall(appProfileRequest())));
     }
 
     /** The profile lookup the preflight sends. */
@@ -197,7 +181,15 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     @Override
     public Duration retention() throws Exception {
-        return retentionOf(tableAdmin().getBaseClient().getTable(tableRequest()), table);
+        Table description =
+                runner.call(
+                        this::tableAdminSettingsBuilder,
+                        LeasedBigtableClient::openTableAdmin,
+                        client ->
+                                client.getBaseClient()
+                                        .getTableCallable()
+                                        .futureCall(tableRequest()));
+        return retentionOf(description, table);
     }
 
     /**
@@ -227,10 +219,14 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
 
     @Override
     public List<ByteStringRange> generateInitialPartitions() throws Exception {
-        List<ByteStringRange> discovered = new ArrayList<>();
-        dataClient()
-                .generateInitialChangeStreamPartitions(table.getTable())
-                .forEach(discovered::add);
+        List<ByteStringRange> discovered =
+                runner.call(
+                        this::dataSettingsBuilder,
+                        LeasedBigtableClient::openData,
+                        client ->
+                                client.generateInitialChangeStreamPartitionsCallable()
+                                        .all()
+                                        .futureCall(table.getTable()));
         return foldInitialPartitions(discovered, table);
     }
 
@@ -254,92 +250,63 @@ public final class DefaultChangeStreamCoordinatorClient implements ChangeStreamC
         return partitions;
     }
 
-    private synchronized BigtableDataClient dataClient() throws Exception {
-        checkOpen();
-        if (dataClient == null) {
-            dataClient = BigtableDataClient.create(dataSettings());
-        }
-        return dataClient;
-    }
-
-    private synchronized BigtableTableAdminClient tableAdmin() throws Exception {
-        checkOpen();
-        if (tableAdminClient == null) {
-            tableAdminClient = BigtableTableAdminClient.create(tableAdminSettings());
-        }
-        return tableAdminClient;
-    }
-
-    private synchronized BigtableInstanceAdminClient instanceAdmin() throws Exception {
-        checkOpen();
-        if (instanceAdminClient == null) {
-            instanceAdminClient = BigtableInstanceAdminClient.create(instanceAdminSettings());
-        }
-        return instanceAdminClient;
-    }
-
-    private void checkOpen() throws IOException {
-        if (closed) {
-            throw new IOException(
-                    "The Bigtable Change Streams coordinator for "
-                            + table
-                            + " was closed before it was used.");
-        }
-    }
-
     /** Builds the data client's settings; public so the source's tests can read them. */
     @VisibleForTesting
     public BigtableDataSettings dataSettings() throws IOException {
+        return dataSettingsBuilder().build();
+    }
+
+    private BigtableDataSettings.Builder dataSettingsBuilder() {
         BigtableDataSettings.Builder settings =
                 BigtableDataClients.settings(table, appProfileId, null, credentials);
-        BigtableDataClients.applyClientMetrics(
-                settings, clientMetrics, exportClientMetricsToCloudMonitoring);
-        return settings.build();
+        BigtableDataClients.applyClientMetrics(settings, clientMetrics, false);
+        return settings;
     }
 
     @Override
-    public synchronized void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
+    public void useClientMetrics(@Nullable ClientMetrics clientMetrics) {
         this.clientMetrics = clientMetrics;
     }
 
+    @VisibleForTesting
     BigtableTableAdminSettings tableAdminSettings() throws IOException {
+        return tableAdminSettingsBuilder().build();
+    }
+
+    private BigtableTableAdminSettings.Builder tableAdminSettingsBuilder() {
         BigtableTableAdminSettings.Builder settings =
                 BigtableTableAdminSettings.newBuilder()
                         .setProjectId(table.getProject())
                         .setInstanceId(table.getInstance());
-        if (credentials != null) {
-            settings.setCredentialsProvider(credentials);
+        CredentialsProvider provider = credentials;
+        if (provider != null) {
+            settings.setCredentialsProvider(provider);
         }
-        return settings.build();
+        return settings;
     }
 
+    @VisibleForTesting
     BigtableInstanceAdminSettings instanceAdminSettings() throws IOException {
+        return instanceAdminSettingsBuilder().build();
+    }
+
+    private BigtableInstanceAdminSettings.Builder instanceAdminSettingsBuilder() {
         BigtableInstanceAdminSettings.Builder settings =
                 BigtableInstanceAdminSettings.newBuilder().setProjectId(table.getProject());
-        if (credentials != null) {
-            settings.setCredentialsProvider(credentials);
+        CredentialsProvider provider = credentials;
+        if (provider != null) {
+            settings.setCredentialsProvider(provider);
         }
-        return settings.build();
+        return settings;
     }
 
+    /** Refuses later calls, cancels the one in flight and closes its client. */
     @Override
-    public void close() throws Exception {
-        BigtableDataClient data;
-        BigtableTableAdminClient tableAdmin;
-        BigtableInstanceAdminClient instanceAdmin;
-        synchronized (this) {
-            closed = true;
-            data = dataClient;
-            tableAdmin = tableAdminClient;
-            instanceAdmin = instanceAdminClient;
-            dataClient = null;
-            tableAdminClient = null;
-            instanceAdminClient = null;
-            credentials = null;
-            clientMetrics = null;
-        }
-        // Released outside the monitor: a lazy build in flight holds it, and the flag above has
-        // already stopped anything new, so waiting here would only delay a teardown.
-        Closers.closeAll(data, tableAdmin, instanceAdmin);
+    public void close() {
+        // Closed first: a call that has not opened its client by now is refused, so none can
+        // build settings from the credentials cleared below.
+        runner.close();
+        credentials = null;
+        clientMetrics = null;
     }
 }

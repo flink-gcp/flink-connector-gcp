@@ -30,6 +30,7 @@ import com.google.bigtable.admin.v2.Type;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminClient;
 import com.google.cloud.bigtable.admin.v2.BigtableTableAdminSettings;
 import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
+import io.github.flink.gcp.connector.bigtable.LeasedBigtableClient;
 
 import javax.annotation.Nullable;
 
@@ -42,6 +43,15 @@ import java.util.Map;
 /**
  * {@link BigtableCatalogClient} over one instance's {@link BigtableTableAdminClient}.
  *
+ * <p>The client runs on the connector's gRPC event-loop group and is held, with its lease, from the
+ * catalog's first metadata request until the catalog closes (ADR-0208), as every connector catalog
+ * holds its client (ADR-0168). The SQL Gateway and the SQL Client close a session's catalogs before
+ * its class loader (Flink 1.20.5 and 2.2.1), so this catalog's lease is released before that loader
+ * closes. In a program's own {@code TableEnvironment}, the client stays open until the catalog
+ * instance is closed, whoever closes it: the program itself, or Flink when it drops the catalog or,
+ * during an {@code ALTER CATALOG}, before it opens the replacement; a catalog left open keeps its
+ * client for as long as the process runs.
+ *
  * <p>Both requests go through the protobuf client, not the client's model methods, which the pinned
  * client marks {@code @ObsoleteApi}: tables are listed with {@code NAME_ONLY}, and a table's
  * families are read with {@code SCHEMA_VIEW}, as the sink's table admin reads them, so a family
@@ -51,18 +61,23 @@ import java.util.Map;
 @Internal
 final class BigtableServiceCatalogClient implements BigtableCatalogClient {
 
-    private final BigtableTableAdminClient client;
+    /** The admin client and its event-loop lease, released when the catalog closes this. */
+    private final LeasedBigtableClient<BigtableTableAdminClient> client;
+
     private final String project;
     private final String instance;
 
-    BigtableServiceCatalogClient(BigtableTableAdminClient client, String project, String instance) {
+    private BigtableServiceCatalogClient(
+            LeasedBigtableClient<BigtableTableAdminClient> client,
+            String project,
+            String instance) {
         this.client = client;
         this.project = project;
         this.instance = instance;
     }
 
     /**
-     * Opens the admin client of one instance.
+     * Opens the admin client of one instance, on the connector's gRPC event-loop group.
      *
      * @param project the project that owns the instance
      * @param instance the instance
@@ -78,8 +93,8 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
             @Nullable CredentialsProvider credentials)
             throws IOException {
         return new BigtableServiceCatalogClient(
-                BigtableTableAdminClient.create(
-                        settings(project, instance, emulatorEndpoint, credentials)),
+                LeasedBigtableClient.openTableAdmin(
+                        settingsBuilder(project, instance, emulatorEndpoint, credentials)),
                 project,
                 instance);
     }
@@ -91,6 +106,14 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
             @Nullable EmulatorEndpoint emulatorEndpoint,
             @Nullable CredentialsProvider credentials)
             throws IOException {
+        return settingsBuilder(project, instance, emulatorEndpoint, credentials).build();
+    }
+
+    private static BigtableTableAdminSettings.Builder settingsBuilder(
+            String project,
+            String instance,
+            @Nullable EmulatorEndpoint emulatorEndpoint,
+            @Nullable CredentialsProvider credentials) {
         BigtableTableAdminSettings.Builder settings =
                 emulatorEndpoint == null
                         ? BigtableTableAdminSettings.newBuilder()
@@ -99,14 +122,15 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
         if (credentials != null) {
             settings.setCredentialsProvider(credentials);
         }
-        return settings.setProjectId(project).setInstanceId(instance).build();
+        return settings.setProjectId(project).setInstanceId(instance);
     }
 
     @Override
     public List<String> listTables() {
         List<String> tables = new ArrayList<>();
         for (Table table :
-                client.getBaseClient()
+                client.client()
+                        .getBaseClient()
                         .listTables(
                                 ListTablesRequest.newBuilder()
                                         .setParent(InstanceName.of(project, instance).toString())
@@ -124,7 +148,8 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
         Table found;
         try {
             found =
-                    client.getBaseClient()
+                    client.client()
+                            .getBaseClient()
                             .getTable(
                                     GetTableRequest.newBuilder()
                                             .setName(
@@ -141,6 +166,7 @@ final class BigtableServiceCatalogClient implements BigtableCatalogClient {
         return families;
     }
 
+    /** Closes the admin client and releases its lease on the event-loop group. */
     @Override
     public void close() {
         client.close();
