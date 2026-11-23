@@ -412,13 +412,14 @@ final class SubscriberRoster {
     /** Closes every open subscriber and drops every slot; the reader's {@code close()}. */
     void closeAll() throws Exception {
         try {
-            // Start every shutdown before waiting on any. shutdown() nacks the split's messages and
-            // returns at once, while the wait inside close() costs up to shutdownTimeout each.
-            // Waiting one subscriber at a time costs splits × timeout — past roughly six splits on
-            // one reader that exceeds Flink's source.reader.close.timeout (30 s by default), and
-            // the splits whose turn never came would not have been nacked at all, leaving their
-            // messages to expire instead. Starting them all first overlaps the waits, so the total
-            // is one timeout however many splits the reader owns.
+            // Start every shutdown before waiting on any. shutdown() nacks the split's messages,
+            // starts the clock on that subscriber's shutdownTimeout and returns at once, while the
+            // wait inside close() lasts until that clock runs out. Waiting one subscriber at a time
+            // costs splits × timeout — past roughly six splits on one reader that exceeds Flink's
+            // source.reader.close.timeout (30 s by default), and the splits whose turn never came
+            // would not have been nacked at all, leaving their messages to expire instead.
+            // Starting them all first starts every clock together, so the total is one timeout
+            // however many splits the reader owns, stuck or not (#2302).
             //
             // One list rather than a loop and then a call (#297): closeAll runs every entry before
             // reporting anything, so the later nacks and every close still run when a shutdown

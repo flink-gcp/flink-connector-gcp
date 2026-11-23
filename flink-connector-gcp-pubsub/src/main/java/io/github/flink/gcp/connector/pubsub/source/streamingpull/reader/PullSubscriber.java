@@ -100,13 +100,14 @@ public interface PullSubscriber extends AutoCloseable {
      * shape: it starts the shutdown and returns, and a separate call waits for it to finish.
      * Separate from {@link #close()} because the nack is what must not be skipped while the wait is
      * what costs time — a reader owning several splits shuts them all down before waiting on any,
-     * so the waits overlap instead of accumulating.
+     * so the waits overlap instead of accumulating. The shutdown timeout is counted from this call,
+     * so they share one budget (#2302).
      */
     void shutdown();
 
     /**
      * Shuts the subscriber down if it is not already shutting down, then waits for the client to
-     * finish, up to the configured shutdown timeout.
+     * finish, up to the configured shutdown timeout counted from {@link #shutdown()}.
      *
      * <p>An implementation must not report a failure it has already delivered through {@link
      * #pullMessages} or {@link #checkFailure}. The reader consumes that one and fails the job on

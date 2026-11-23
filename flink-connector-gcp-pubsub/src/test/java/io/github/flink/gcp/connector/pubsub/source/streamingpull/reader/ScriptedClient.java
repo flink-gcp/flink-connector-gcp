@@ -35,13 +35,14 @@ final class ScriptedClient implements SubscriberClient {
 
     private final List<String> calls;
 
-    final List<Long> awaitedMillis = new ArrayList<>();
+    final List<Long> awaitedNanos = new ArrayList<>();
     final List<TimeUnit> awaitedUnits = new ArrayList<>();
 
     @Nullable private Consumer<Throwable> onPermanentFailure;
     @Nullable private Throwable startFailure;
     @Nullable private Throwable terminationFailure;
     @Nullable private Throwable stopFailure;
+    private boolean stuck;
 
     ScriptedClient(List<String> calls) {
         this.calls = calls;
@@ -54,6 +55,17 @@ final class ScriptedClient implements SubscriberClient {
 
     void failTerminationWith(Throwable failure) {
         this.terminationFailure = failure;
+    }
+
+    /**
+     * Makes the wait behave as it does on a client stuck in shutdown: it sleeps for the whole
+     * timeout it is given and then throws {@link TimeoutException}, so the time a caller hands it
+     * is spent for real. Never less than that timeout, which a test's arithmetic relies on: the
+     * sleep is repeated against {@link System#nanoTime()}, the clock the production deadline is on,
+     * so the bound does not rest on how a JDK's {@code Thread.sleep} rounds.
+     */
+    void neverTerminate() {
+        this.stuck = true;
     }
 
     /** Delivers a permanent failure the way the client's own service listener would. */
@@ -88,8 +100,22 @@ final class ScriptedClient implements SubscriberClient {
     @Override
     public void awaitTerminated(long timeout, TimeUnit unit) throws TimeoutException {
         calls.add("awaitTerminated");
-        awaitedMillis.add(unit.toMillis(timeout));
+        awaitedNanos.add(unit.toNanos(timeout));
         awaitedUnits.add(unit);
+        if (stuck) {
+            long deadline = System.nanoTime() + unit.toNanos(timeout);
+            try {
+                for (long left = deadline - System.nanoTime();
+                        left > 0;
+                        left = deadline - System.nanoTime()) {
+                    TimeUnit.NANOSECONDS.sleep(left);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while playing a stuck client", e);
+            }
+            throw new TimeoutException("still shutting down after " + timeout + " " + unit);
+        }
         if (terminationFailure instanceof TimeoutException) {
             throw (TimeoutException) terminationFailure;
         }

@@ -161,6 +161,9 @@ completion — which never happens during shutdown — so it would stall every c
 `shutdownTimeout` is configurable, and it bounds the reader's wait for its subscribers as a whole
 rather than each split's: the reader nacks every split's messages and asks every client to stop
 before it waits on any, so the waits overlap however many splits it owns.
+Each subscriber's deadline falls `shutdownTimeout` after the reader shut it down, and its wait is
+handed only what is left, so clients stuck in shutdown cost the close one budget together, not one
+each.
 Each subscriber then lets go of the connector's gRPC event-loop group, which is not part of the
 budget: up to 10 s per subscriber against an emulator, for its channel, and up to 11 s more when
 that leaves the group with no client.

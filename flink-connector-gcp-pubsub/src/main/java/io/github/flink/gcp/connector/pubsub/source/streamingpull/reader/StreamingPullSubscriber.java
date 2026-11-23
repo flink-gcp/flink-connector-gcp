@@ -23,6 +23,7 @@ import org.apache.flink.util.ExceptionUtils;
 import com.google.cloud.pubsub.v1.Subscriber;
 import com.google.pubsub.v1.PubsubMessage;
 import io.github.flink.gcp.connector.base.lifecycle.Closers;
+import io.github.flink.gcp.connector.base.options.OptionChecks;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 
 import javax.annotation.Nullable;
@@ -142,7 +143,8 @@ final class StreamingPullSubscriber implements PullSubscriber {
      * @param ackTracker tracks the acknowledgement lifecycle of received messages
      * @param dataAvailableSignal invoked when messages become available or the subscriber fails, so
      *     a blocked fetch wakes up
-     * @param shutdownTimeout how long {@link #close()} waits for the client to release its messages
+     * @param shutdownTimeout how long {@link #close()} waits for the client to release its
+     *     messages, counted from {@link #shutdown()}
      * @param bufferBudget the shared hard bound for every subscriber opened by this reader
      * @throws IOException if the subscriber cannot be created or started
      */
@@ -205,6 +207,13 @@ final class StreamingPullSubscriber implements PullSubscriber {
         this.ackTracker = ackTracker;
         this.bufferBudget = bufferBudget;
         this.dataAvailableSignal = dataAvailableSignal;
+        // The setter's two checks again, before the client opens: the teardown converts the budget
+        // to nanoseconds, and a conversion that threw after the open, past either end of the range,
+        // would strand the client's transport with nothing left to close it. The setter refuses
+        // such a value; this is the backstop for an options object that never ran it (ADR-0068).
+        OptionChecks.checkAtLeastOneMilli(
+                OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout"),
+                "shutdownTimeout");
         this.client = clientOpener.open(this::receiveMessage);
         // this::isAlreadyReported leaks a half-built instance, harmlessly: the teardown stores the
         // predicate and calls it only from stopQuietly/awaitTerminated, never during construction.
@@ -453,6 +462,10 @@ final class StreamingPullSubscriber implements PullSubscriber {
             // Neither step declares a checked exception, so this is the unchecked one closeAll
             // collected; an Error leaves closeAll as itself and never reaches here.
             ExceptionUtils.rethrow(e);
+        } finally {
+            // Once the stop has been asked for, and here rather than in close(), so that the
+            // shutdowns the reader starts together share one budget (#2302; SubscriberTeardown).
+            teardown.startClock();
         }
     }
 

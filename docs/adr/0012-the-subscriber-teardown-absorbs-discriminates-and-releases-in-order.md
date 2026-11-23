@@ -18,8 +18,9 @@ limitations under the License.
 
 - Status: Accepted
 - Date: 2026-08-05 ([#297]) through 2026-08-07 ([#348], [#349], [#350], [#351], the [#348]
-  cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23)
-- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263]
+  cluster); revised by [#358] (2026-08-09); seam refined by [#2263] (2026-11-23); budget clock
+  refined by [#2302] (2026-11-23)
+- Issues: [#297], [#325], [#348], [#349], [#350], [#351], [#358], [#2263], [#2302]
 - Modules: pubsub (source); the cross-connector re-report contract is ADR-0003
 - Current behavior: `docs/content/docs/connectors/datastream/pubsub.md` (source lifecycle,
   including the four-outcome teardown message table, and the reader metrics)
@@ -58,6 +59,34 @@ transport opened. This change leaves untouched what that decision says about the
   ordering (every shutdown before any close, so the waits overlap) because `closeAll` runs
   entries in order, and it makes the ordering survive a failure — pinned by asserting the
   recorded call order in the failing case too.
+- **The budget's clock starts when `shutdown()` has asked the client to stop, and
+  `awaitTerminated()` waits only for what is left of it** ([#2302]). The ordering above
+  overlapped the waits only for clients that did stop: each `awaitTerminated()` handed the client
+  the full `shutdownTimeout` from the moment its turn came, so N clients stuck in shutdown cost N
+  budgets, and seven at the 5 s default outlast Flink's `source.reader.close.timeout`.
+  `SubscriberTeardown.startClock()` stamps a deadline in a `finally` after the nack and
+  `stopAsync()` — after them so the budget runs from the stop request, as the guide says, and in
+  a `finally` so a step that throws still leaves the wait a deadline — and it never restarts the
+  clock. The reader's deadlines therefore fall within the time its shutdowns take, which is the
+  shape `BoundedShutdown.start()` gives the sink's publishers (ADR-0007), and the remainder is
+  handed to the client in nanoseconds as there. With nothing left the client is still asked:
+  measured on Guava 33.6.0 and api-common 2.73.0's `AbstractApiService`, `awaitTerminated(0, …)`
+  returns for a terminated service and throws `TimeoutException` for one still stopping, so a
+  client that stopped while an earlier wait expired is not reported as abandoned. One exception
+  is read rather than measured: Guava's timed wait gives up without checking the state when it
+  cannot take the service's lock at once, as its source notes, so a client terminating at that
+  very instant can be reported as an expired wait. The budget is converted with `toNanos()`,
+  which makes the option's nanosecond ceiling load-bearing rather than a matter of consistency;
+  `StreamingPullSubscriber` re-checks the option's range before opening the client, so a forged
+  options object fails before there is a transport to strand. The deadline overflows at that
+  ceiling, and the subtraction that reads it wraps back, as ADR-0068 records for
+  `BoundedShutdown`. What the shared budget costs is a count: a client still stopping when its
+  turn comes after its deadline can now be counted in `subscriberShutdownsAbandoned`, because
+  the SDK's wait then times out at once, even when it would have finished within a full budget
+  counted from its turn; the counter's documented reading (raise `shutdownTimeout`) applies to it
+  unchanged. The failed-start release keeps its own full budget in milliseconds, and with it the
+  option's one-millisecond floor. Each subscriber's transport release still
+  follows its own wait and is outside the budget, as the Pub/Sub guide states.
 - **`awaitTerminated()` absorbs what the client raises because the client re-reports a failure
   this subscriber has already delivered** ([#325]; the mechanism and the eight SPIs measured not
   to share it are ADR-0003) — not only because the shutdown is best-effort, which was the whole
@@ -255,3 +284,4 @@ transport opened. This change leaves untouched what that decision says about the
 [#358]: https://github.com/flink-gcp/flink-connector-gcp/issues/358
 [#755]: https://github.com/flink-gcp/flink-connector-gcp/issues/755
 [#2263]: https://github.com/flink-gcp/flink-connector-gcp/issues/2263
+[#2302]: https://github.com/flink-gcp/flink-connector-gcp/issues/2302
