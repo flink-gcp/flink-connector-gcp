@@ -2689,8 +2689,19 @@ minutes of data typically finish in seconds to tens of seconds, well within the 
 2-5 minute intervals). Everything not yet loaded rides in Flink's committer state: on recovery
 the committables are re-committed and the deterministic job ids re-attach to jobs a previous
 attempt already created. A load-job failure fails the ongoing checkpoint (and the job), which
-restarts from the last checkpoint with the staged files still in place. On stop-with-savepoint
-without `--drain`, the final checkpoint's rows land when the savepoint is resumed.
+restarts from the last checkpoint with the staged files still in place.
+
+**Stop-with-savepoint.** With or without `--drain`, Flink notifies the savepoint complete before
+the job finishes, so the committer loads the savepoint's files during the stop, and a successful
+stop reaches `FINISHED` only after those loads complete. Resuming that savepoint commits its
+committables again, and, as on any restore, their deterministic job ids re-attach to the jobs the
+stop completed rather than loading twice, while BigQuery's job history still holds those jobs in the
+project they ran in (see **Job project** below).
+If the stop fails after the savepoint completed, for example because one of those loads failed,
+Flink 1.20.4 and 2.2.1 fail the job with a non-recoverable `StopWithSavepointStoppingException`.
+Resume from the savepoint it names rather than from an older checkpoint: the older checkpoint
+replays the savepoint's rows into new staged files, so a destination the stop already loaded
+receives them a second time.
 
 **Exactly-once.** Load jobs reference exactly the file URIs emitted by the writers — never a
 bucket prefix — so files from failed/restarted attempts (which use unique names: Flink job id,
