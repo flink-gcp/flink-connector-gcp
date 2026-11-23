@@ -25,9 +25,10 @@ import java.util.Objects;
  * (inclusive, per {@code FlushRows} semantics) visible in the destination table.
  *
  * <p>The stream name and offset are all a commit needs — {@code FlushRows} is naturally idempotent
- * (repeating a stream's last flush, to the same offset, succeeds, and the committer also takes an
- * {@code ALREADY_EXISTS} answer as already flushed), so unlike the FILE_LOADS committable no
- * originating Flink job id or checkpoint id is carried for deterministic re-attach.
+ * (repeating a stream's last flush, to the same offset, succeeds, and a flush below the offset the
+ * stream is already flushed to answers {@code ALREADY_EXISTS}, which the committer takes as already
+ * flushed), so unlike the FILE_LOADS committable no originating Flink job id or checkpoint id is
+ * carried for deterministic re-attach.
  *
  * <p>The subtask id is diagnostic only: it names the writer that appended the rows in log messages
  * and error reports.

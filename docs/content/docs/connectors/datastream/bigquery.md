@@ -2202,9 +2202,10 @@ connection; backpressure comes from the SDK's bounded in-flight window.
 `prepareCommit()` emits one committable per changed destination naming the offset the completed
 checkpoint may flush up to.
 `FlushRows` is naturally idempotent (repeating a stream's last flush, to the same offset,
-succeeds, and the committer also takes an `ALREADY_EXISTS` answer as already flushed), so
-re-commits after restarts need no deterministic-id machinery, no checkpoint stamping, and no global
-committer routing — the committer runs at the sink's parallelism.
+succeeds, and a flush below the offset the stream is already flushed to answers `ALREADY_EXISTS`,
+which the committer takes as already flushed), so re-commits after restarts need no
+deterministic-id machinery, no checkpoint stamping, and no global committer routing — the committer
+runs at the sink's parallelism.
 
 A checkpoint-clean destination that receives no record for longer than `destinationIdleTimeout`
 is evicted after the next successful non-end-of-input flush.
