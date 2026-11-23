@@ -21,6 +21,7 @@ import com.google.cloud.pubsub.v1.Subscriber;
 import io.github.flink.gcp.connector.pubsub.source.OrderingMode;
 import io.github.flink.gcp.connector.pubsub.source.PubSubSubscriberOptions;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
+import io.github.flink.gcp.connector.testutils.LogCapture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -106,18 +107,34 @@ class StreamingPullSubscriberFailedStartTest {
         List<Thread> wakeUps = new ArrayList<>();
         AtomicReference<StreamingPullSubscriber> started = new AtomicReference<>();
         try {
-            Throwable thrown =
-                    catchThrowable(
-                            () ->
-                                    started.set(
-                                            new StreamingPullSubscriber(
-                                                    "0",
-                                                    SUBSCRIPTION,
-                                                    recording,
-                                                    new RecordingAckTracker(new ArrayList<>()),
-                                                    () -> wakeUps.add(Thread.currentThread()),
-                                                    Duration.ofSeconds(1),
-                                                    SubscriberBufferBudget.unbounded())));
+            Throwable thrown;
+            try (LogCapture teardownLog =
+                    LogCapture.of(SubscriberTeardown.class, LogCapture.Level.DEBUG)) {
+                thrown =
+                        catchThrowable(
+                                () ->
+                                        started.set(
+                                                new StreamingPullSubscriber(
+                                                        "0",
+                                                        SUBSCRIPTION,
+                                                        recording,
+                                                        new RecordingAckTracker(new ArrayList<>()),
+                                                        () -> wakeUps.add(Thread.currentThread()),
+                                                        Duration.ofSeconds(1),
+                                                        SubscriberBufferBudget.unbounded())));
+                // The premise of the failed-start release's DEBUG line (#2307), on the real SDK
+                // rather than on exceptions shaped after a reading of it: the FAILED client's wait
+                // carries the start failure's own cause, so the release logs it as a repeat.
+                assertThat(teardownLog.getEvents())
+                        .as("what the failed-start release logged")
+                        .singleElement()
+                        .satisfies(
+                                event -> {
+                                    assertThat(event.toString()).startsWith("DEBUG ");
+                                    assertThat(event.getMessage())
+                                            .contains("repeated its start failure");
+                                });
+            }
             assertThat(thrown)
                     .as("the failed stub creation fails the start, not the build")
                     .isInstanceOf(IOException.class)

@@ -76,7 +76,8 @@ final class SubscriberBufferBudget {
     // Subscribers that have reserved before the roster registered them; the roster starts a
     // subscriber, waits for it to run and only then registers it, so its deliveries can precede
     // its registration. Counted by every reservation, not only their own, so that a peer's
-    // reservation in that window sees the share whose bytes are already in the aggregate.
+    // reservation in that window sees the share whose bytes are already in the aggregate. A
+    // subscriber whose start fails is never registered, so it leaves through releaseFailedStart.
     private final Set<String> starting = new HashSet<>();
     private long largestMessageBytes;
     private boolean coverageWarned;
@@ -217,6 +218,22 @@ final class SubscriberBufferBudget {
                             + " bytes.");
         }
         resetAfterParkIfEmpty();
+    }
+
+    /**
+     * Returns what a subscriber that failed to start had reserved, and its place among the starting
+     * holders (#2307). One step under this monitor, so that no peer's reservation sees the share
+     * gone while the bytes are still charged, or the bytes refunded while the share still counts.
+     *
+     * <p>The share goes even when nothing is returned: {@link #tryReserve(String, long)} adds a
+     * starting holder before it checks the limits, so a first delivery that was refused leaves one
+     * behind with no reservation. A registered entry is left alone; the subscriber never
+     * registered, and on a reopen after a park the roster had already unregistered the split.
+     */
+    synchronized void releaseFailedStart(
+            String splitId, long releasedMessages, long releasedBytes) {
+        starting.remove(splitId);
+        release(releasedMessages, releasedBytes);
     }
 
     synchronized boolean parkingRequested() {

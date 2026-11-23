@@ -115,6 +115,26 @@ class SubscriberBufferBudgetTest {
     }
 
     @Test
+    void aFailedStartTakesItsStartingShareWithItsReservation() {
+        // #2307: split-b reserves while starting and then fails to start, so it never registers.
+        // Usage alone cannot show that the share went: left behind, it would keep split-a on a
+        // two-subscriber cap of 8 rather than its own 4, with usage still reading zero.
+        SubscriberBufferBudget budget =
+                new SubscriberBufferBudget(limits(PubSubSubscriberOptions.builder()), event -> {});
+        budget.register("split-a", () -> {});
+        assertThat(budget.tryReserve("split-b", 1).isAdmitted()).isTrue();
+
+        budget.releaseFailedStart("split-b", 1, 1);
+
+        assertThat(budget.usage().messages()).isZero();
+        assertThat(budget.usage().bytes()).isZero();
+        for (int i = 0; i < 4; i++) {
+            assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isTrue();
+        }
+        assertThat(budget.tryReserve("split-a", 1).isAdmitted()).isFalse();
+    }
+
+    @Test
     void aMessageLargerThanTheFlowControlByteLimitWidensTheDerivedByteCap() {
         // The client admits one message larger than its byte limit once its window is free, so a
         // derived cap of twice the 1000-byte limit must not reject a healthy 3000-byte delivery.

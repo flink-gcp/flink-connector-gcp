@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Timeout;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.AbstractCollection;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -36,7 +37,9 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -59,6 +62,14 @@ class SubscriberRosterTest {
     /** Set to make the next opener call fail. */
     private IOException failNextOpen;
 
+    /**
+     * Set to make the next opener call build a real {@link StreamingPullSubscriber} whose client
+     * this factory creates, sharing the roster's budget.
+     */
+    private SubscriberFactory nextOpenThrough;
+
+    private final PubSubAckTracker ackTracker = new PubSubAckTracker(readerMetrics.metrics(), null);
+
     private SubscriberRoster roster(long maxMessages) {
         return roster(maxMessages, SubscriberBufferBudget.unbounded());
     }
@@ -70,6 +81,18 @@ class SubscriberRosterTest {
                         IOException failure = failNextOpen;
                         failNextOpen = null;
                         throw failure;
+                    }
+                    if (nextOpenThrough != null) {
+                        SubscriberFactory factory = nextOpenThrough;
+                        nextOpenThrough = null;
+                        return new StreamingPullSubscriber(
+                                split.splitId(),
+                                split.getSubscription(),
+                                factory,
+                                ackTracker,
+                                signal,
+                                Duration.ofSeconds(1),
+                                bufferBudget);
                     }
                     FakePullSubscriber subscriber =
                             new FakePullSubscriber(signal).named(split.splitId());
@@ -220,6 +243,48 @@ class SubscriberRosterTest {
 
         RecordsBySplits.Builder<PubsubMessage> builder = new RecordsBySplits.Builder<>();
         assertThat(roster.drainInto(builder).messages()).isZero();
+        assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
+        roster.closeAll();
+    }
+
+    @Test
+    void aFailedReopenReturnsWhatTheReplacementHadAdmitted() throws Exception {
+        // #2307 on the reopen path: the replacement's client delivers inside its start and then
+        // fails. The park has already unregistered the split, so the release must hand the
+        // reservation back without a registered entry to lean on, and leave the slot parked.
+        SubscriberBufferBudget bufferBudget = new SubscriberBufferBudget(100, 1 << 20, event -> {});
+        SubscriberRoster roster = roster(1, bufferBudget);
+        roster.addSplit(SPLIT);
+        roster.pauseOrResume(List.of(SPLIT), List.of());
+        subscribers.get(SPLIT.splitId()).deliver(message("1"), message("2"));
+        roster.parkOverfullPausedSplits();
+        RecordingAckHandle early = new RecordingAckHandle("3");
+        nextOpenThrough =
+                (subscription, receiver) ->
+                        new SubscriberClient() {
+                            @Override
+                            public void start(Consumer<Throwable> onPermanentFailure) {
+                                receiver.receive(message("3"), early);
+                                throw new IllegalStateException("a later stream was refused");
+                            }
+
+                            @Override
+                            public void stopAsync() {}
+
+                            @Override
+                            public void awaitTerminated(long timeout, TimeUnit unit) {}
+
+                            @Override
+                            public void close() {}
+                        };
+
+        assertThatThrownBy(() -> roster.pauseOrResume(List.of(), List.of(SPLIT)))
+                .isInstanceOf(RuntimeException.class)
+                .hasRootCauseMessage("a later stream was refused");
+
+        assertThat(bufferBudget.usage().messages()).isZero();
+        assertThat(ackTracker.outstandingAckCount()).isZero();
+        assertThat(early.nackCount()).isEqualTo(1);
         assertThat(readerMetrics.gauge("parkedSplits")).isEqualTo(1);
         roster.closeAll();
     }

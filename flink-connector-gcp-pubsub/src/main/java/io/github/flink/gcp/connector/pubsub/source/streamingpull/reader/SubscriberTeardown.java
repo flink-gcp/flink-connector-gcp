@@ -131,8 +131,8 @@ final class SubscriberTeardown {
     }
 
     /**
-     * Stops the client, tolerating a failure. Used only beneath a failed start (#349): everything
-     * the client raises here is part of a failure already going to the caller.
+     * Stops the client, tolerating a failure. Used only beneath a failed start (#349): what the
+     * client raises here accompanies a failure already going to the caller.
      *
      * <p>Deliberately <em>not</em> a {@code Closers.closeAll} list, unlike the subscriber's {@code
      * shutdown()} and {@code close()}: there, a step that throws skips one that is still needed,
@@ -140,35 +140,72 @@ final class SubscriberTeardown {
      * the right outcome, not a defect in the same shape.
      *
      * <p>It has its own absorb rather than {@link #awaitTerminated()}'s, because both of that
-     * method's messages are <em>false</em> here. There is no repeat to identify — the start failure
-     * is propagating as this runs, so everything the client raises is part of a failure already
-     * going to the caller, and asking {@code isAlreadyReported} would answer nothing: the flag it
-     * reads is set only when a reader call hands the failure over, and no reader call can have run
-     * on a subscriber still being constructed, whenever the failure listener ran. And nothing has
-     * been nacked, because {@code shutdown()} never ran; that message's "nothing is lost" holds
-     * anyway, for the different reason that a client which never started received nothing.
+     * method's messages are <em>false</em> here. There is no repeat of a <em>reported</em> failure
+     * to identify — the start failure is propagating as this runs, so asking {@code
+     * isAlreadyReported} would answer nothing: the flag it reads is set only when a reader call
+     * hands the failure over, and no reader call can have run on a subscriber still being
+     * constructed, whenever the failure listener ran. Nor does that method's reason for "nothing is
+     * lost" carry over as it stands: a client that failed to start can already have delivered
+     * messages (#2307), and they are nacked here only because the subscriber's failed-start release
+     * nacks the split before it calls this.
+     *
+     * <p><b>A wait that repeats the start failure is logged at {@code DEBUG}</b> (#2307). The usual
+     * failed start leaves the client {@code FAILED}, and on a {@code FAILED} client the wait throws
+     * as soon as it takes the service's lock: Guava's {@code checkCurrentState(TERMINATED)} raises
+     * an {@code IllegalStateException} carrying {@code failureCause()}, the same {@link Throwable}
+     * the {@code IllegalStateException} from the start's {@code awaitRunning()} carried, since
+     * Guava keeps the first cause. That is not a second problem, so the two are told apart by that
+     * cause's identity, the comparison {@link #awaitTerminated()}'s re-report case rests on too
+     * (read in Guava 33.6.0 and api-common 2.73.0, whose {@code AbstractApiService} hands both
+     * waits to that service, and measured on google-cloud-pubsub 1.160.0 by {@code
+     * StreamingPullSubscriberFailedStartTest}'s credentials failure). Anything else keeps the
+     * {@code WARN}: an expired wait (Guava's {@code TimeoutException} carries no cause), or a cause
+     * other than the start's.
      *
      * <p><b>Counted by nothing either</b> (#358), which is the same argument once more: the start
-     * failure this runs beneath is an {@code IOException} on its way to failing the job, so an
-     * expiry here is a footnote to something already reported, not a signal of its own. What it
-     * would otherwise report — resources stranded by a client that never ran — the SDK releases
-     * itself when a connection fails to start (#349), and when a client context's credentials or
-     * transport channel fail, the subscriber's executor has started no thread (#2291).
+     * failure this runs beneath is an {@code IOException} on its way to failing the job (barring
+     * the Flink 2.x window in which the reader misses a fetcher failure, #2324), so an expiry here
+     * is a footnote to something already reported, not a signal of its own. What it would otherwise
+     * report — resources stranded by a client that never ran — the SDK releases itself when a
+     * connection fails to start (#349), and when a client context's credentials or transport
+     * channel fail, the subscriber's executor has started no thread (#2291).
+     *
+     * @param startFailure the failure the start raised, which the caller propagates after this
      */
-    void stopQuietly() {
+    void stopQuietly(Throwable startFailure) {
         subscriberStopAsync.run();
         try {
             subscriberAwaitTerminated.await(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException | RuntimeException e) {
-            LOG.warn(
-                    "The Pub/Sub subscriber for subscription {} did not shut down cleanly after"
-                            + " failing to start. Nothing is lost — it received no messages — and"
-                            + " this is only the release of a client that never ran. The start"
-                            + " failure itself follows this line rather than preceding it, and is"
-                            + " the one to read.",
-                    subscription,
-                    e);
+            if (repeatsTheStartFailure(e, startFailure)) {
+                LOG.debug(
+                        "The Pub/Sub subscriber for subscription {} repeated its start failure"
+                                + " when its shutdown was awaited. The start failure follows this"
+                                + " line and is the one to read.",
+                        subscription,
+                        e);
+            } else {
+                LOG.warn(
+                        "The Pub/Sub subscriber for subscription {} did not shut down cleanly"
+                                + " after failing to start. The release nacked what this reader"
+                                + " still held of its deliveries, as an ordinary shutdown does."
+                                + " The start failure"
+                                + " itself follows this line rather than preceding it, and is the"
+                                + " one to read.",
+                        subscription,
+                        e);
+            }
         }
+    }
+
+    /**
+     * Whether the wait raised the start's own failure again: both exceptions carry the one cause
+     * the client recorded. A cause-less start failure, such as an {@link Error} from a first
+     * classload, repeats nothing.
+     */
+    private static boolean repeatsTheStartFailure(Exception waitFailure, Throwable startFailure) {
+        Throwable cause = waitFailure.getCause();
+        return cause != null && cause == startFailure.getCause();
     }
 
     /**
@@ -182,18 +219,18 @@ final class SubscriberTeardown {
      * take the service's lock at once, as its own source notes, so a client terminating at that
      * very instant can still be reported as an expired wait.
      *
-     * <p>Best-effort as {@link #stopQuietly()} describes, and — the reason this absorb is required
-     * rather than merely tolerable — <b>the client reports here a failure the subscriber has
-     * already delivered</b>. {@code Subscriber} extends gax's {@code AbstractApiService}, which
-     * holds a Guava {@code AbstractService} as a private inner field (redeclared so Guava can be
-     * shaded, so no Guava type is catchable here); {@code awaitTerminated} ends in that class's
-     * {@code checkCurrentState(TERMINATED)}, which on a {@code FAILED} service throws {@code
-     * IllegalStateException} carrying {@code failureCause()} — the very {@link Throwable} the
-     * failure listener already recorded and {@code pullMessages} already reported, wrapped in an
-     * {@code IOException}. Propagating it would report one failure twice — the contract {@link
-     * PullSubscriber#close()} states, and the repository-wide rule the detailed repository guidance
-     * carries (#325). Measured on {@code google-cloud-pubsub} 1.152.0, api-common 2.65.0 and Guava
-     * 33.5.0.
+     * <p>Best-effort as {@link #stopQuietly(Throwable)} describes, and — the reason this absorb is
+     * required rather than merely tolerable — <b>the client reports here a failure the subscriber
+     * has already delivered</b>. {@code Subscriber} extends api-common's {@code
+     * AbstractApiService}, which holds a Guava {@code AbstractService} as a private inner field
+     * (redeclared so Guava can be shaded, so no Guava type is catchable here); {@code
+     * awaitTerminated} ends in that class's {@code checkCurrentState(TERMINATED)}, which on a
+     * {@code FAILED} service throws {@code IllegalStateException} carrying {@code failureCause()} —
+     * the very {@link Throwable} the failure listener already recorded and {@code pullMessages} or
+     * {@code checkFailure} already reported, wrapped in an {@code IOException}. Propagating it
+     * would report one failure twice — the contract {@link PullSubscriber#close()} states, and the
+     * repository-wide rule the detailed repository guidance carries (#325). Measured on {@code
+     * google-cloud-pubsub} 1.152.0, api-common 2.65.0 and Guava 33.5.0.
      *
      * <p><b>The catch is wider than that one case, and the other two are not repeats of
      * anything</b> (#351). The wait has exactly three exits: the {@code FAILED} rethrow above, a

@@ -245,8 +245,11 @@ final class StreamingPullSubscriber implements PullSubscriber {
      *
      * <p>The no-op half: Guava's {@code stopAsync()} is guarded by {@code
      * state().compareTo(RUNNING) <= 0} and {@code FAILED} sorts last, so once the service has
-     * failed, {@code stopAsync()} enters nothing and {@code doStop()} never runs. A failed start is
-     * precisely what leaves it {@code FAILED}.
+     * failed, {@code stopAsync()} enters nothing and {@code doStop()} never runs. A failed start
+     * usually leaves it {@code FAILED}. A delivery that crosses the reader-wide budget during the
+     * start has already asked it to stop, and Guava then reports a service still starting as {@code
+     * STOPPING}, which {@code awaitRunning()} also throws on; that guard refuses {@code STOPPING}
+     * too, so the second stop is a no-op there as well (read in Guava 33.6.0, #2307).
      *
      * <p>The half that stops it being a leak: {@code Subscriber.startStreamingConnections()} adds
      * to every connection a listener whose {@code failed(...)} runs {@code runShutdown()} — {@code
@@ -305,12 +308,58 @@ final class StreamingPullSubscriber implements PullSubscriber {
      * replace it. The SDK's own {@code stopAsync()} cannot throw — Guava catches {@code Throwable}
      * inside it — but the client is injected, so what holds for the production client is not what
      * holds for the seam's.
+     *
+     * <p><b>A client that failed to start may already have delivered messages</b> (#2307). A
+     * connection is {@code RUNNING} once it has started its stream, without waiting for the service
+     * to answer, and it hands on whatever the stream delivers, so it can deliver while the
+     * subscriber is still {@code STARTING} and a later connection has yet to start; when that one
+     * fails, the start fails with the earlier deliveries already admitted to the buffer, the budget
+     * and the ack tracker. So the release returns them before it stops the client, in the order
+     * {@link #shutdown()} uses, and latches {@code closed} first, so that a delivery still arriving
+     * from a connection the SDK has not yet stopped is nacked rather than admitted to a subscriber
+     * nothing will drain. The split is not registered in the budget yet, so its reservation goes
+     * back together with its place among the starting holders.
      */
     private void releaseAfterFailedStart(Throwable failure) {
         // Closing the client releases its transport: nothing else holds this subscriber once the
         // constructor throws.
         // The client may still be stopping on it, which the group's shutdown cuts short.
-        Closers.closeAllSuppressing(failure, teardown::stopQuietly, client);
+        Closers.closeAllSuppressing(
+                failure,
+                this::returnWhatTheStartAdmitted,
+                () -> ackTracker.nackSplit(splitId),
+                () -> teardown.stopQuietly(failure),
+                client);
+    }
+
+    private void returnWhatTheStartAdmitted() {
+        // Never null here, since nothing else can have closed a subscriber still being
+        // constructed; the share goes either way.
+        BufferUsage released = closeAndEmptyBuffer();
+        bufferBudget.releaseFailedStart(
+                splitId,
+                released == null ? 0 : released.messages(),
+                released == null ? 0L : released.bytes());
+    }
+
+    /**
+     * Latches {@code closed} and empties the buffer, returning what it held, or {@code null} if
+     * this subscriber was already closed. It runs under the monitor every callback admits under, so
+     * a delivery either completes its admission before the buffer is emptied or finds {@code
+     * closed} set and is nacked.
+     */
+    @Nullable
+    private synchronized BufferUsage closeAndEmptyBuffer() {
+        if (closed) {
+            return null;
+        }
+        closed = true;
+        // Buffered messages were never emitted; the caller's nackSplit returns them for
+        // redelivery.
+        BufferUsage released = BufferUsage.of(messages.size(), bufferedBytes);
+        messages.clear();
+        bufferedBytes = 0L;
+        return released;
     }
 
     /**
@@ -447,20 +496,11 @@ final class StreamingPullSubscriber implements PullSubscriber {
 
     @Override
     public void shutdown() {
-        int releasedMessages;
-        long releasedBytes;
-        synchronized (this) {
-            if (closed) {
-                return;
-            }
-            closed = true;
-            // Buffered messages were never emitted; nackSplit below returns them for redelivery.
-            releasedMessages = messages.size();
-            releasedBytes = bufferedBytes;
-            messages.clear();
-            bufferedBytes = 0L;
+        BufferUsage released = closeAndEmptyBuffer();
+        if (released == null) {
+            return;
         }
-        bufferBudget.release(releasedMessages, releasedBytes);
+        bufferBudget.release(released.messages(), released.bytes());
         // One list rather than two calls, for the reason #297 gave the same shape one level up in
         // SubscriberRoster.closeAll(): closed is already true by the time these run, so the stop
         // must not be skipped when the nack throws. It would leave this method's idempotence guard

@@ -283,24 +283,67 @@ class SubscriberTeardownTest {
     }
 
     @Test
-    void aFailedStartsTeardownIsReportedAsTheReleaseOfAClientThatNeverRan() throws Exception {
-        // The release path has its own message because both of awaitTerminated()'s would be false
-        // here. There is no repeat to identify — the start failure is on its way to the caller —
-        // and asking would answer nothing: only a reader call marks a failure reported, and none
-        // has run on a subscriber still being constructed. Nor has anything been nacked,
-        // shutdown() never having run.
+    void aFailedStartsWaitRepeatingTheStartFailureIsNotWarned() throws Exception {
+        // What a FAILED client does on the usual failed start (#2307): awaitRunning() throws an
+        // IllegalStateException carrying failureCause(), and the wait then throws another
+        // carrying the same cause. That is the start failure again, which the caller is already
+        // propagating, so it is logged below WARN; a WARN here appeared on every failed start.
         ScriptedClient client = new ScriptedClient(calls);
-        IllegalStateException refused =
-                new IllegalStateException("could not reach the subscription");
-        client.failStartWith(refused);
+        RuntimeException denied = new RuntimeException("PERMISSION_DENIED: the stream was refused");
+        IllegalStateException startFailure =
+                new IllegalStateException(
+                        "Expected the service to be RUNNING, but the service has FAILED", denied);
+        IllegalStateException waitFailure =
+                new IllegalStateException(
+                        "Expected the service to be TERMINATED, but the service has FAILED",
+                        denied);
+        client.failStartWith(startFailure);
+        client.failTerminationWith(waitFailure);
+
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class, LogCapture.Level.DEBUG)) {
+            assertThatThrownBy(() -> subscriberOf(client))
+                    .isInstanceOf(IOException.class)
+                    .hasCause(startFailure);
+
+            // Event exposes its level only through toString(), which starts with it.
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> {
+                                assertThat(event.toString()).startsWith("DEBUG ");
+                                assertThat(event.getMessage())
+                                        .contains("repeated its start failure");
+                                assertThat(event.getThrowable()).isSameAs(waitFailure);
+                            });
+        }
+
+        // Counted by nothing, like the WARN case below (#358).
+        assertThat(abandonedShutdowns()).isZero();
+        assertThat(unreportedFailures()).isZero();
+    }
+
+    @Test
+    void aFailedStartsTeardownThatFailsOtherwiseIsWarned() throws Exception {
+        // The release path has its own message because both of awaitTerminated()'s would be false
+        // here. There is no repeat of a reported failure to identify — the start failure is on its
+        // way to the caller — and asking would answer nothing: only a reader call marks a failure
+        // reported, and none has run on a subscriber still being constructed. A wait whose cause
+        // is not the start's is not that start failure again, so it keeps the WARN.
+        ScriptedClient client = new ScriptedClient(calls);
+        IllegalStateException startFailure =
+                new IllegalStateException(
+                        "Expected the service to be RUNNING, but the service has FAILED",
+                        new RuntimeException("could not reach the subscription"));
+        client.failStartWith(startFailure);
         client.failTerminationWith(
                 new IllegalStateException(
-                        "Expected the service to be TERMINATED, but it FAILED", refused));
+                        "Expected the service to be TERMINATED, but the service has FAILED",
+                        new RuntimeException("and the shutdown failed differently")));
 
         try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
             assertThatThrownBy(() -> subscriberOf(client))
                     .isInstanceOf(IOException.class)
-                    .hasCause(refused);
+                    .hasCause(startFailure);
 
             assertThat(capture.getEvents())
                     .singleElement()
@@ -308,6 +351,10 @@ class SubscriberTeardownTest {
                             event ->
                                     assertThat(event.getMessage())
                                             .contains(QUOTED_FAILED_START)
+                                            // Nacked by the release (#2307): not "received no
+                                            // messages", which was false.
+                                            .contains("nacked what this reader still held")
+                                            .doesNotContain("received no messages")
                                             .doesNotContain("were nacked before the wait")
                                             .doesNotContain("had already reported to the reader"));
         }
@@ -319,6 +366,31 @@ class SubscriberTeardownTest {
         // start counting it silently.
         assertThat(abandonedShutdowns()).isZero();
         assertThat(unreportedFailures()).isZero();
+    }
+
+    @Test
+    void anExpiredWaitAfterAStartFailureWithoutACauseIsWarned() throws Exception {
+        // A start failure can carry no cause: an Error from a first classload, or the
+        // "but was STOPPING" a budget crossing during the start produces. An expired wait has no
+        // cause either, and two missing causes are not one failure repeated, so a client still
+        // stuck after a failed start keeps its WARN.
+        ScriptedClient client = new ScriptedClient(calls);
+        IllegalStateException stopping =
+                new IllegalStateException("Expected the service to be RUNNING, but was STOPPING");
+        client.failStartWith(stopping);
+        client.failTerminationWith(new TimeoutException("still shutting down"));
+
+        try (LogCapture capture = LogCapture.of(SubscriberTeardown.class)) {
+            assertThatThrownBy(() -> subscriberOf(client))
+                    .isInstanceOf(IOException.class)
+                    .hasCause(stopping);
+
+            assertThat(capture.getEvents())
+                    .singleElement()
+                    .satisfies(
+                            event -> assertThat(event.getMessage()).contains(QUOTED_FAILED_START));
+        }
+        assertThat(abandonedShutdowns()).isZero();
     }
 
     private static long abandonedShutdowns() {
