@@ -142,18 +142,18 @@ final class SubscriberTeardown {
      * <p>It has its own absorb rather than {@link #awaitTerminated()}'s, because both of that
      * method's messages are <em>false</em> here. There is no repeat to identify — the start failure
      * is propagating as this runs, so everything the client raises is part of a failure already
-     * going to the caller, and asking {@code isAlreadyReported} would be a race besides: Guava
-     * dispatches the failure listener from the SDK's own thread <em>after</em> leaving the monitor
-     * {@code awaitRunning()} is blocked on, so this can run before the latch is written. And
-     * nothing has been nacked, because {@code shutdown()} never ran; that message's "nothing is
-     * lost" holds anyway, for the different reason that a client which never started received
-     * nothing.
+     * going to the caller, and asking {@code isAlreadyReported} would answer nothing: the flag it
+     * reads is set only when a reader call hands the failure over, and no reader call can have run
+     * on a subscriber still being constructed, whenever the failure listener ran. And nothing has
+     * been nacked, because {@code shutdown()} never ran; that message's "nothing is lost" holds
+     * anyway, for the different reason that a client which never started received nothing.
      *
      * <p><b>Counted by nothing either</b> (#358), which is the same argument once more: the start
      * failure this runs beneath is an {@code IOException} on its way to failing the job, so an
      * expiry here is a footnote to something already reported, not a signal of its own. What it
      * would otherwise report — resources stranded by a client that never ran — the SDK releases
-     * itself on three of this path's four routes (#349).
+     * itself when a connection fails to start (#349), and when a client context's credentials or
+     * transport channel fail, the subscriber's executor has started no thread (#2291).
      */
     void stopQuietly() {
         subscriberStopAsync.run();

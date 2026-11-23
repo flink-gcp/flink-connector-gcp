@@ -286,9 +286,9 @@ class SubscriberTeardownTest {
     void aFailedStartsTeardownIsReportedAsTheReleaseOfAClientThatNeverRan() throws Exception {
         // The release path has its own message because both of awaitTerminated()'s would be false
         // here. There is no repeat to identify — the start failure is on its way to the caller —
-        // and asking would be a race besides: Guava dispatches the failure listener from the SDK's
-        // own thread after releasing the monitor awaitRunning() blocks on, so permanentError can
-        // still be unset, as it is here. Nor has anything been nacked, shutdown() never having run.
+        // and asking would answer nothing: only a reader call marks a failure reported, and none
+        // has run on a subscriber still being constructed. Nor has anything been nacked,
+        // shutdown() never having run.
         ScriptedClient client = new ScriptedClient(calls);
         IllegalStateException refused =
                 new IllegalStateException("could not reach the subscription");

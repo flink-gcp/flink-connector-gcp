@@ -259,14 +259,12 @@ public final class DefaultSubscriberFactory implements SubscriberFactory {
         }
 
         /**
-         * The production wiring, and the one thing in the subscriber's start that no unit test
-         * reaches — stated so it is not mistaken for pinned. {@code StreamingPullSubscriberTest}
-         * drives its seam constructor, so nothing checks that the listener is registered
-         * <em>before</em> the start (a failure raised in between would be lost, and the split would
-         * then stall silently rather than fail), or that the executor is a direct one. A fake
-         * {@link Subscriber} is what it would take, which is the thing that cannot be built. That
-         * the stop and the wait act on the client this starts is structural: all three use the one
-         * {@code subscriber} this adapter holds.
+         * The production wiring. {@code StreamingPullSubscriberTest} drives its seam constructor,
+         * so this is pinned by {@code StreamingPullSubscriberFailedStartTest}, whose failed start
+         * shows that the listener is registered <em>before</em> the start (a failure raised in
+         * between would be lost, and the split would then stall silently rather than fail) and that
+         * its executor is a direct one. That the stop and the wait act on the client this starts is
+         * structural: all three use the one {@code subscriber} this adapter holds.
          */
         @Override
         public void start(Consumer<Throwable> onPermanentFailure) {
