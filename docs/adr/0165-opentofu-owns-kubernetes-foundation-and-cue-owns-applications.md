@@ -2010,7 +2010,7 @@ The Datastore API also routes a named database by the `x-goog-request-params` he
 
 Both batch reads read at one read time planned at the job's first start, and without point-in-time recovery the service refuses a read time older than about an hour, so the seed is sized from both ends of that bound.
 Two reading subtasks must still be copying when the failover deletes its Pod, as in the Spanner trials of [#1878](https://github.com/flink-gcp/flink-connector-gcp/issues/1878), whose exercise and windows this one shares, and one reading subtask, which a read planned as one split gives, must finish inside the hour with both recoveries' downtime.
-The runbook's [Trial and estimate](../../kubernetes/apps/firestore/README.md#trial-and-estimate) gives the seed and the arithmetic.
+The [preregistration](evidence/0165-firestore-recovery-preregistration-2085.md#input-seed-and-window) gives the seed and its bounds, and links the runbook's arithmetic as it was.
 The read's span, from the plan's read time to the last copy's update time, is reported rather than judged: a read that outlives the bound fails the job, which the exercise already treats as a failed run.
 
 As for Spanner, the supervisor writes 16 late seed records into each database once a copy appears in its `batch_out`, and the upgrade waits for both commits.

@@ -5,7 +5,7 @@ It relays two pre-created subscriptions through the production Pub/Sub source an
 Its Table entry point, which no trial ever ran, was removed with the reviewed trial files ([#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240)).
 It is an unbounded streaming job over a bounded logical input domain: receiving every expected ID does not stop the job, Pods or Operator.
 An independently supervised lifecycle must bound execution and perform cleanup before deployment is admitted.
-Its `sequence` kind injects every fault in one run under ADR-0204 ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)); the four single-fault kinds keep ADR-0165's rules until the final cleanup of [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143) removes them.
+Its `sequence` kind injects every fault in one run under ADR-0204 ([#2151](https://github.com/flink-gcp/flink-connector-gcp/issues/2151)); it is the only kind dispatched, and the single-fault exercise, which can no longer run, still follows ADR-0165 until [#2278](https://github.com/flink-gcp/flink-connector-gcp/issues/2278) removes it.
 
 ## Build and local validation
 
@@ -93,7 +93,7 @@ Arguments use `--name=value`; unknown or repeated arguments fail.
 A delivery below `runs/` supplies `run.id`, `run.expiresAt`, `run.namespace: "tier3-pubsub"` and the application's `id`, `image`, `phase`, `recordsPerSubscription` and `parallelism` inputs.
 The lifecycle delivery also supplies `restoreDeduplication` and `recordDelayMillis`; the source runs at the connector's default flow control.
 The [synthetic fixture](../../tests/fixtures/pubsub.cue) demonstrates that binding; tests supply disposable values and render every initial/upgrade and parallelism 1/2 combination, and the lifecycle tests render the `sequence` kind.
-The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs the kind it names through the runner's [admission](#admission-and-effective-access) and the supervisor's [fault sequence](#fault-sequence) or single-fault [recovery exercise](#recovery-exercise).
+The lifecycle CLI renders an [offline trial proposal](#offline-trial-proposal), and [dispatch](#approval-dispatch) runs the kind it names through the runner's [admission](#admission-and-effective-access) and the supervisor's [fault sequence](#fault-sequence).
 
 The first verified image reference is:
 
@@ -136,12 +136,12 @@ The scenario takes two inputs beyond the common ones.
 
 | Input | Contract |
 | --- | --- |
-| `pubsub_trial` | The trial kind: `sequence`, or a single fault, `jm-replacement`, `tm-replacement`, `rescale-out` or `rescale-in`; `none`, the default, is refused |
+| `pubsub_trial` | The trial kind, `sequence`; `none`, the default, is refused |
 | `application_digest` | The published `pubsub-recovery` GAR digest, verified live at dispatch and never pinned |
 
 The CLI takes the kind as `--pubsub-trial`, checks it against the plan's kinds, which the workflow's choices mirror and a test holds to them, and builds the [trial](#offline-trial-proposal) the kind fixes; the offline renderer takes the same flag.
-A `rig_sha` that predates [#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) reads the flag as the name of a reviewed trial file: it refuses `sequence` while it resolves the trial, before the lock or any resource, and runs a single-fault kind from the file of that name, which held the same trial.
-Dispatching is the approval: the owner approves a single-fault trial's estimate before dispatching it, and a `sequence` proposal still carries its estimate, which nothing approves (ADR-0204).
+A `rig_sha` that predates [#2240](https://github.com/flink-gcp/flink-connector-gcp/issues/2240) reads the flag as the name of a reviewed trial file: it refuses `sequence` while it resolves the trial, before the lock or any resource.
+Dispatching is the approval, and no estimate is approved first (ADR-0204).
 
 The window starts when dispatch admits the run, on the whole second, and lasts exactly 90 minutes, so queueing before the job starts costs the run none of its startup budget; the last 15 minutes are cleanup's, which leaves a `sequence` run its full hour from admission to its verdict (ADR-0204), as in the other scenarios.
 
@@ -177,18 +177,9 @@ The proposal records the supplied source revision, exact application/supervisor 
 It does not prove that the installed package, checkout or application image came from the supplied revision.
 `approved` is always false and the ConfigMap's `approval.json` remains empty; neither output is an execution approval.
 
-| `trial` | Initial → recovery parallelism | Planned operation |
-| --- | --- | --- |
-| `jm-replacement` | 2 → 2 | Replace the JM after an externally observed completed checkpoint |
-| `tm-replacement` | 2 → 2 | Replace an active TM after an externally observed completed checkpoint |
-| `rescale-out` | 1 → 2 | Stop with a savepoint and restore the upgrade phase |
-| `rescale-in` | 2 → 1 | Stop with a savepoint and restore the upgrade phase |
-| `sequence` | 2 → 2, patched to 1 and back | Every fault of ADR-0204 in turn, as the [fault sequence](#fault-sequence) describes |
-
-JM/TM proposals keep both manifests identical: recovery is performed by the existing deployment, with no upgrade submission.
-For rescaling, `recovery_application` is also stored under the shared delivery key `upgrade-application.json` and requires restored state.
-The sequence's recovery manifest is its savepoint upgrade at two, which requires restored state too; the exercise patches its rescales from it.
-The kind fixes the rest of the trial, which the plan derives in `pubsub_plan.trial`: a single-fault kind reads 1,000 records per subscription with restore deduplication off, as [#1361](https://github.com/flink-gcp/flink-connector-gcp/issues/1361) ran them, and `sequence` 4,800 with it on, at 100 ms per input.
+The trial's kind, `sequence`, starts both manifests at parallelism two and runs every fault of ADR-0204 in turn, as the [fault sequence](#fault-sequence) describes.
+Its recovery manifest, `recovery_application`, which the delivery also stores under the shared key `upgrade-application.json`, is its savepoint upgrade at two and requires restored state; the exercise patches its rescales from it.
+The kind fixes the rest of the trial, which the plan derives in `pubsub_plan.trial`: 4,800 records per subscription with restore deduplication on, at 100 ms per input.
 Each plan covers two input subscriptions.
 Each subscription's domain splits into three disjoint, nonempty cohorts at `floor(records / 3)` and `floor(2 * records / 3)`, published in this order:
 
@@ -212,13 +203,9 @@ The proposal fixes a 90-minute window with the last 15 minutes reserved for clea
 Admission's temporary quotas hold seven Pods: three steady Flink Pods plus one Flink replacement allowance in `tier3-pubsub`, and the Operator, supervisor and one Operator replacement allowance in `tier3-system`; PVCs are zero.
 Terminating Pods can overlap their replacements and remain [charged to namespace quota](https://kubernetes.io/docs/concepts/policy/resource-quotas/#quota-on-object-count) until their phase is terminal, which is what the allowances are for.
 Each Flink Pod uses the existing one-vCPU, 2-GiB shape and the shared AMD64 constraint; only the TaskManagers select Spot.
-The proposal's `cost` is a planning estimate, USD 2.4805 for every trial; the owner approves a single-fault trial's before its dispatch, nothing approves the `sequence`'s (ADR-0204), and nothing at run time compares spend against either.
-It charges every Pod slot for the whole window at the conservative CPU, memory and ephemeral-storage rates, the four application slots at the Flink shape and the three control slots at the Operator's, with no Spot or commitment discount, and adds a USD 1.00 reserve.
-The reserve covers what the input domain and the window bound, each a fraction of it at the largest domain of 10,000 records per subscription and at the [recovery exercise](#recovery-exercise)'s pulls, at most five batches of 100 per 15-second poll until cleanup: Pub/Sub throughput at USD 40 per TiB with a 1 KB minimum per request, Cloud Storage operations at USD 0.005 per 1,000 and storage, Cloud Logging ingestion, and the logs and evidence leaving Google Cloud at USD 0.12 per GiB.
-The reviewed sources are [Pub/Sub pricing](https://cloud.google.com/pubsub/pricing), [Cloud Storage pricing](https://cloud.google.com/storage/pricing), [Google Cloud Observability pricing](https://cloud.google.com/products/observability/pricing), [network pricing](https://cloud.google.com/vpc/network-pricing) and [GKE pricing](https://cloud.google.com/kubernetes-engine/pricing), checked on 2026-10-10, when the Pod rates still exceeded the published Iowa Autopilot prices; the proposal records that date as the estimate's basis.
 A runnable approval also needs live image/provenance checks, stop enforcement, effective-access checks and independent cleanup supervision.
 A passed deadline, evidence failure, lost ownership, uncertain actor quiescence and expiry must stop a later trial rather than produce a success verdict.
-The [fault sequence](#fault-sequence) or the single-fault [recovery exercise](#recovery-exercise) injects the faults, orchestrates the savepoints and decides the trial's [verdict](#sequence-verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence.
+The [fault sequence](#fault-sequence) injects the faults, orchestrates the savepoints and decides the trial's [verdict](#sequence-verdict), which the [offline analysis](#offline-recomputation) recomputes from the exported evidence.
 
 #### Internal approval contract
 
@@ -238,8 +225,7 @@ Message evidence has no separate cap; its size follows from the input domain and
 Final settlement preserves `pubsub_trial` and the recovery observations even before service intent exists, and derives success only from the exercise's `usable` [verdict](#verdict).
 A finalization retry keeps the original receipt.
 
-The [proposal's estimate](#offline-trial-proposal) is what the owner approves before a single-fault trial's dispatch.
-The runner admits the trial and the supervisor joins it, as [admission](#admission-and-effective-access) describes, the supervisor runs the [fault sequence](#fault-sequence) or the [recovery exercise](#recovery-exercise), and [dispatch](#approval-dispatch) starts it.
+The runner admits the trial and the supervisor joins it, as [admission](#admission-and-effective-access) describes, the supervisor runs the [fault sequence](#fault-sequence), and [dispatch](#approval-dispatch) starts it.
 
 ### Owned resource operations
 

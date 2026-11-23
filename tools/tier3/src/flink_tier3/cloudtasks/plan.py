@@ -14,53 +14,39 @@
 """Offline, unapproved Cloud Tasks recovery proposal and delivery bundle."""
 
 from dataclasses import asdict
-from decimal import Decimal
 
 from ..common import digest, json_bytes, utc
-from ..model import Schedule, _hourly
+from ..model import Schedule
 from ..policy import (
     CLEANUP_SECONDS,
     CLOUDTASKS,
     CLOUDTASKS_OBSERVATIONS,
-    POD_RESOURCES,
     WINDOWS,
 )
 from ..proposal import check_inputs, render_verified
-from .queue import PAGE_SIZE
-from .trial import KINDS, SEQUENCE_KIND, Trial
+from .trial import KINDS, Trial
 
 NAMESPACE = CLOUDTASKS
 WINDOW_SECONDS = WINDOWS["cloudtasks-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Every single-fault trial's input: 30 minutes at the rate the application's
-# staged creation was measured keeping up with (#1246).
-INPUT = {"records": 180000, "records_per_second": 100}
 # The fault sequence's input (ADR-0204): six minutes, enough to outlast the
 # faults, as Spanner's is; the job finishes with it. The runbook's "Fault
 # sequence" section gives the timing behind it.
 SEQUENCE_INPUT = {"records": 3600, "records_per_second": 10}
-# The application's checkpoint interval, which bounds what one recovery replays.
-CHECKPOINT_SECONDS = 30
-REVIEWED_AT = "2026-10-12T00:00:00Z"
-# The published price beyond the monthly free tier, as #1241 and #1246 read it.
-OPERATION_USD_PER_MILLION = Decimal("0.40")
-RESERVE_USD = Decimal("1.00")
 
 
 def trial(kind, started_at=None):
-    """The approved trial of one kind: its fault and the fixed input.
+    """The approved trial of one kind: the fixed input.
 
     Dispatch passes every scenario its window's start; this trial needs none.
     """
     if kind not in KINDS:
         raise ValueError("Unknown Cloud Tasks trial: " + str(kind))
-    if kind == SEQUENCE_KIND:
-        return {"kind": kind, **SEQUENCE_INPUT}
-    return {"kind": kind, **INPUT}
+    return {"kind": kind, **SEQUENCE_INPUT}
 
 
 def validate_trial(value):
-    # Serialized, so `180000.0` or `True` cannot pass as a count.
+    # Serialized, so `3600.0` or `True` cannot pass as a count.
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in KINDS or json_bytes(value) != json_bytes(trial(kind)):
         raise ValueError(
@@ -68,38 +54,6 @@ def validate_trial(value):
             + ", ".join(KINDS)
             + " with its fixed input"
         )
-
-
-def estimate():
-    """Planning estimate for the trial; not a bound on bills or SDK retries.
-
-    Compute for the window, every task creation and listing call priced as a
-    billable operation without the monthly free tier, and a reserve for state,
-    evidence and telemetry, as the BigQuery estimate reserves. It is the same
-    for every trial: a rescale trial runs one TaskManager for part of the
-    window, which the estimate does not discount.
-    """
-    shapes = [
-        POD_RESOURCES["operator"],
-        POD_RESOURCES["supervisor"],
-        *[POD_RESOURCES["smoke"]] * 3,
-    ]
-    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    tasks = Decimal(operations()) / 1_000_000 * OPERATION_USD_PER_MILLION
-    return compute + tasks + RESERVE_USD
-
-
-def operations():
-    """The billable operations a single-fault trial plans: creates, listings and admin.
-
-    The `sequence` trial's proposal carries the same figure, which overstates
-    its 3,600 creates; ADR-0204 has nothing approve it. Replays after a recovery re-create tasks the service refuses as existing,
-    which are counted too, at most one checkpoint's records per recovery.
-    """
-    records = INPUT["records"]
-    replays = 2 * INPUT["records_per_second"] * CHECKPOINT_SECONDS
-    listings = 2 * -(-records // PAGE_SIZE)
-    return records + replays + listings + 10
 
 
 def prepare(
@@ -141,7 +95,6 @@ def prepare(
         application_image=application_image,
         cloudtasks_records=identity.records,
         cloudtasks_records_per_second=identity.records_per_second,
-        cloudtasks_trial=identity.kind,
     )
     proposal = {
         "kind": "cloudtasks-trial-proposal",
@@ -168,14 +121,6 @@ def prepare(
             "records": identity.records,
         },
         "observations": dict(CLOUDTASKS_OBSERVATIONS),
-        "cost": {
-            "kind": "planning-estimate",
-            "usd": str(estimate()),
-            "reviewed_at": REVIEWED_AT,
-            "operations": operations(),
-            "operation_usd_per_million": str(OPERATION_USD_PER_MILLION),
-            "other_reserve_usd": str(RESERVE_USD),
-        },
     }
     delivery["config"]["data"]["proposal.json"] = json_bytes(proposal).decode()
     return {

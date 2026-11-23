@@ -27,7 +27,7 @@ from flink_tier3.common import ApiError, Failure, TransportError
 
 from ..doubles import NOW, Http, Response
 
-TRIAL = Trial("ct-queue", 100, 10)
+TRIAL = Trial("ct-queue", 100, 10, "sequence")
 NAME = TRIAL.queue_path
 
 

@@ -28,7 +28,7 @@ import pytest
 from flink_tier3 import analyze
 from flink_tier3.common import INCONCLUSIVE, USABLE
 from flink_tier3.pubsub import analyze as pubsub_analyze
-from flink_tier3.pubsub.messages import COHORTS, cohort_ranges
+from flink_tier3.pubsub import plan
 from flink_tier3.pubsub.output import parse
 
 from ..test_lifecycle import env as env  # noqa: PLC0414
@@ -36,14 +36,17 @@ from ..test_lifecycle import rt
 from .test_actors import approval as approval  # noqa: PLC0414
 from .test_actors import prepared as prepared  # noqa: PLC0414
 from .test_admission import admitting as admitting  # noqa: PLC0414
-from .test_exercise import RECORDS, World, receipt
-from .test_exercise import trial as trial  # noqa: PLC0414
+from .test_exercise import World, receipt
 from .test_plan import inputs as inputs  # noqa: PLC0414
 from .test_plan import renderer as renderer  # noqa: PLC0414
 
+# The input per subscription, as small as the sequence's cohorts allow.
+RECORDS = 60
 
-def one(kind):
-    return pytest.mark.parametrize("trial", [kind], indirect=True)
+
+@pytest.fixture
+def trial():
+    return {**plan.trial("sequence"), "records_per_subscription": RECORDS}
 
 
 def export(world, control, root):
@@ -72,8 +75,8 @@ def assess(run_dir):
 
 @pytest.fixture
 def exported(admitting, monkeypatch, tmp_path):
-    """One completed trial's exported evidence, and the record it wrote."""
-    world = World(admitting, monkeypatch)
+    """One completed sequence run's exported evidence, and the record it wrote."""
+    world = World(admitting, monkeypatch, pace=1)
     control = world.run()
     assert control.recovery["stage"] == "complete", control.reason
     return export(world, control, tmp_path / "evidence"), control
@@ -149,38 +152,6 @@ def replace_line(path, old, new):
     response_path.write_text(json.dumps(response))
 
 
-def relay_line(run_dir, sequence, attempt, *, phase="initial", restored=False, index=0):
-    """A well-formed relay output for one input, as an attempt would publish it.
-
-    The input message ID is the one its publication receipt holds for that
-    sequence, found by the interval its path names rather than by glob order,
-    which differs between file systems.
-    """
-    for path in run_dir.glob(f"pubsub/messages/*/input/{index}/*/response.json"):
-        start, count = (int(part) for part in path.parent.name.split("-"))
-        if start <= sequence < start + count:
-            message_id = json.loads(path.read_text())["messageIds"][sequence - start]
-            break
-    else:
-        raise AssertionError(f"no publication receipt holds input {index}/{sequence}")
-    payload = "|".join(
-        [
-            "v1",
-            run_dir.name,
-            str(index),
-            str(sequence),
-            encode(message_id.encode()),
-            attempt,
-            "a0000000-0000-4000-8000-00000000000f",
-            phase,
-            *(("true", "1", "1") if restored else ("false", "0", "0")),
-            "0",
-            "1" if restored else "0",
-        ]
-    )
-    return encode(b"injected") + "\t" + encode(payload.encode())
-
-
 def lines_before(run_dir, path):
     return sum(
         json.loads(p.read_text())["count"] for p in all_batches(run_dir) if p < path
@@ -203,7 +174,7 @@ def batches(run_dir):
 DIFFERS = "verdict-differs-from-the-record"
 
 
-def test_each_trial_s_exported_evidence_recomputes_to_its_verdict(exported):
+def test_the_exported_evidence_recomputes_to_its_verdict(exported):
     run_dir, control = exported
     assessed = assess(run_dir)
     assert assessed["problems"] == []
@@ -220,136 +191,6 @@ def test_each_trial_s_exported_evidence_recomputes_to_its_verdict(exported):
     assert "pubsub runs: usable 1" in analyze.summary_line(report, run_dir)
 
 
-@pytest.mark.parametrize("trial", ["jm-replacement", "tm-replacement"], indirect=True)
-def test_a_lost_boundary_recomputes_inconclusive(admitting, monkeypatch, tmp_path):
-    world = World(admitting, monkeypatch, interval=15)
-    control = world.run()
-    assessed = assess(export(world, control, tmp_path))
-    assert (assessed["verdict"], assessed["problems"]) == (INCONCLUSIVE, [])
-    assert assessed["reasons"] == ["replay-unobserved"] == control.recovery["reasons"]
-
-
-@one("jm-replacement")
-def test_an_interrupted_run_is_inconclusive_not_an_evidence_problem(
-    admitting, monkeypatch, tmp_path
-):
-    world = World(admitting, monkeypatch, redeliver=False)
-    control = world.run()
-    assert control.recovery["stage"] == "recovering"
-    assessed = assess(export(world, control, tmp_path))
-    assert (assessed["verdict"], assessed["problems"]) == (INCONCLUSIVE, [])
-    assert "recovery-incomplete" in assessed["reasons"]
-
-
-@one("jm-replacement")
-def test_an_interrupted_run_s_lost_publication_response_is_not_unpublished(
-    admitting, monkeypatch, tmp_path
-):
-    """An output of an input whose publish response was lost is an unknown outcome."""
-    world = World(admitting, monkeypatch, redeliver=False)
-    control = world.run()
-    run_dir = export(world, control, tmp_path)
-    honest = assess(run_dir)
-    next(run_dir.glob("pubsub/messages/*/input/0/0-*/response.json")).unlink()
-    assessed = assess(run_dir)
-    assert (assessed["verdict"], assessed["problems"]) == (INCONCLUSIVE, [])
-    assert assessed["reasons"] == honest["reasons"]
-
-
-@pytest.fixture
-def lost_boundary(admitting, monkeypatch, tmp_path):
-    """An honest, completed, inconclusive run's export."""
-    world = World(admitting, monkeypatch, interval=15)
-    control = world.run()
-    return export(world, control, tmp_path / "evidence")
-
-
-@one("rescale-out")
-def test_a_rescale_s_replay_count_is_rebuilt_from_its_observations(
-    admitting, monkeypatch, tmp_path
-):
-    world = World(admitting, monkeypatch, savepoint_acks=False)
-    control = world.run()
-    run_dir = export(world, control, tmp_path)
-    honest = assess(run_dir)
-    assert (honest["verdict"], honest["problems"]) == (INCONCLUSIVE, [])
-    assert honest["reasons"] == ["replay-after-savepoint"]
-    # The record's count is not what the verdict reads, so a record claiming
-    # no redelivery changes nothing the analysis decides.
-    edit_record(
-        run_dir, lambda r: r["outcomes"]["after"].update(replay_by_new_attempts=0)
-    )
-    assert assess(run_dir) == honest
-
-
-@one("rescale-in")
-@pytest.mark.parametrize(
-    "line",
-    [
-        # A new attempt that restored nothing, and a restored one of the
-        # initial phase: neither is the upgraded job's.
-        {"phase": "initial", "restored": False},
-        {"phase": "initial", "restored": True},
-    ],
-)
-def test_only_the_rescale_s_upgraded_attempts_count_as_replay(exported, line):
-    run_dir, _ = exported
-    start = cohort_ranges(RECORDS)[COHORTS[1]]["start"]
-    append_line(
-        all_batches(run_dir)[-1],
-        relay_line(run_dir, start, "b0000000-0000-4000-8000-000000000001", **line),
-    )
-    edit_record(
-        run_dir, lambda r: r["observed"].update(foreign=r["observed"]["foreign"] + 1)
-    )
-    assessed = assess(run_dir)
-    assert (assessed["verdict"], assessed["problems"]) == (USABLE, [])
-
-
-@one("tm-replacement")
-def test_a_replacement_s_unrestored_new_attempt_is_not_replay(exported):
-    """On the input the fault did not displace, which no new attempt replayed."""
-    run_dir, control = exported
-    start = cohort_ranges(RECORDS)[COHORTS[1]]["start"]
-    before = control.recovery["outcomes"]["fault"]["before"]
-    seen = [
-        item
-        for path in all_batches(run_dir)
-        for line in json.loads(path.read_text())["tsv"].splitlines()
-        if (item := parse(line, run_dir.name, RECORDS))
-    ]
-    index = next(
-        i
-        for i in (0, 1)
-        if not any(
-            item["input_index"] == i
-            and item["sequence"] == start
-            and item["attempt"] not in before
-            for item in seen
-        )
-    )
-    append_line(
-        all_batches(run_dir)[-1],
-        relay_line(run_dir, start, "b0000000-0000-4000-8000-000000000002", index=index),
-    )
-    edit_record(
-        run_dir, lambda r: r["observed"].update(foreign=r["observed"]["foreign"] + 1)
-    )
-    assessed = assess(run_dir)
-    assert (assessed["verdict"], assessed["problems"]) == (USABLE, [])
-    # A replacement's verdict does not read the rebuilt count, so ask it directly.
-    lines = pubsub_analyze._collected(next(run_dir.glob("pubsub/messages/*")))[0]
-    outcomes = control.recovery["outcomes"]
-    rebuilt = pubsub_analyze._replayed(
-        outcomes, pubsub_analyze._observations(lines, run_dir.name, RECORDS), RECORDS
-    )
-    assert (
-        rebuilt["after"]["replay_by_new_attempts"]
-        == outcomes["after"]["replay_by_new_attempts"]
-    )
-
-
-@one("jm-replacement")
 def test_a_missing_output_batch_leaves_no_verdict(exported):
     run_dir, _ = exported
     path = batches(run_dir)[0]
@@ -364,7 +205,6 @@ def test_a_missing_output_batch_leaves_no_verdict(exported):
     ]
 
 
-@one("jm-replacement")
 def test_a_lost_last_batch_is_found_by_the_record_s_count(exported):
     """A lost tail leaves no gap in a counter; only the record's count shows it."""
     run_dir, _ = exported
@@ -378,21 +218,6 @@ def test_a_lost_last_batch_is_found_by_the_record_s_count(exported):
     assert assessed["problems"] == [f"missing-output-lines:{lost}"]
 
 
-@one("jm-replacement")
-def test_a_lost_measurement_sample_leaves_no_verdict(exported):
-    run_dir, _ = exported
-    # A sample taken while recovering counts in no window, so lose one that does.
-    next(
-        p
-        for p in sorted((run_dir / "supervisor").glob("*.json"))
-        if (document := json.loads(p.read_text()))["event"] == "pubsub-measurement"
-        and document["payload"]["stage"] == "after"
-    ).unlink()
-    assessed = assess(run_dir)
-    assert (assessed["verdict"], assessed["problems"]) == (None, ["missing-samples:1"])
-
-
-@one("jm-replacement")
 @pytest.mark.parametrize("count", ["observations", "foreign"])
 def test_every_line_the_record_counted_must_be_exported(exported, count):
     run_dir, _ = exported
@@ -406,7 +231,6 @@ def test_every_line_the_record_counted_must_be_exported(exported, count):
     )
 
 
-@one("jm-replacement")
 def test_an_export_holding_more_lines_than_the_record_counted_is_read(exported):
     run_dir, _ = exported
     edit_record(
@@ -417,7 +241,6 @@ def test_an_export_holding_more_lines_than_the_record_counted_is_read(exported):
     assert (assessed["verdict"], assessed["problems"]) == (USABLE, [])
 
 
-@one("jm-replacement")
 def test_a_pull_response_without_its_observations_file_is_not_the_collector_s(
     exported,
 ):
@@ -433,7 +256,6 @@ def test_a_pull_response_without_its_observations_file_is_not_the_collector_s(
     assert assess(run_dir) == honest
 
 
-@one("jm-replacement")
 def test_a_lost_empty_batch_is_found_by_its_counter(exported):
     """An empty pull lost from the middle changes no count; its number shows it."""
     run_dir, _ = exported
@@ -449,7 +271,6 @@ def test_a_lost_empty_batch_is_found_by_its_counter(exported):
     )
 
 
-@one("jm-replacement")
 @pytest.mark.parametrize("target", ["response", "interval"])
 def test_a_missing_input_receipt_leaves_no_verdict(exported, target):
     run_dir, _ = exported
@@ -463,7 +284,6 @@ def test_a_missing_input_receipt_leaves_no_verdict(exported, target):
     assert [p.split(":")[0] for p in assessed["problems"]] == ["missing-input-receipts"]
 
 
-@one("jm-replacement")
 def test_unreadable_documents_and_approvals_leave_no_verdict(exported):
     run_dir, _ = exported
     assert assess(run_dir)["verdict"] == USABLE
@@ -474,19 +294,16 @@ def test_unreadable_documents_and_approvals_leave_no_verdict(exported):
     assert assess(run_dir)["stored"] is None
     approval["pubsub_trial"]["records_per_subscription"] = RECORDS
     (run_dir / "approval.json").write_text(json.dumps(approval))
-    path = next(
-        p
-        for p in (run_dir / "supervisor").glob("*.json")
-        if json.loads(p.read_text())["event"] == "pubsub-measurement"
-    )
-    document = json.loads(path.read_text())
-    path.write_text(json.dumps({**document, "payload": "lost"}))
+    # A sequence run samples nothing, so a malformed sample is one that
+    # should not be there at all.
+    path = run_dir / "supervisor" / "zz-measurement.json"
+    path.write_text(json.dumps({"event": "pubsub-measurement", "payload": "lost"}))
     assessed = assess(run_dir)
     assert (assessed["stored"], assessed["problems"]) == (
         USABLE,
         ["malformed-evidence:1"],
     )
-    path.write_text(json.dumps(document))
+    path.unlink()
     receipt_path = next(run_dir.glob("pubsub/messages/*/input/*/*/response.json"))
     receipt_path.write_text(json.dumps({"messageIds": ["only-one"]}))
     assessed = assess(run_dir)
@@ -505,7 +322,6 @@ def test_unreadable_documents_and_approvals_leave_no_verdict(exported):
     )
 
 
-@one("jm-replacement")
 def test_a_missing_completion_record_leaves_no_verdict(exported):
     run_dir, _ = exported
     record_file(run_dir).unlink()
@@ -516,7 +332,6 @@ def test_a_missing_completion_record_leaves_no_verdict(exported):
     assert (assessed["verdict"], assessed["stored"]) == (None, USABLE)
 
 
-@one("jm-replacement")
 def test_an_output_of_an_unpublished_input_id_is_named(exported):
     run_dir, _ = exported
     # An input of the first cohort, processed before any fault, renamed to
@@ -538,10 +353,12 @@ def test_an_output_of_an_unpublished_input_id_is_named(exported):
     fields[4] = encode(other.encode())
     replace_line(path, line, message_id + "\t" + encode("|".join(fields).encode()))
     assessed = assess(run_dir)
-    assert assessed["problems"] == ["unpublished-input-ids:1"]
+    # The sequence's verdict checks every output's input ID against the
+    # receipts, so the recomputed verdict, not a problem, names it.
+    assert "input-ids-unpublished" in assessed["reasons"]
+    assert assessed["problems"] == [DIFFERS]
 
 
-@one("jm-replacement")
 def test_extra_publications_are_counted_apart_from_the_verdict(exported):
     run_dir, _ = exported
     interval = next(run_dir.glob("pubsub/messages/*/input/0/0-*"))
@@ -554,7 +371,6 @@ def test_extra_publications_are_counted_apart_from_the_verdict(exported):
     assert assessed["extra_publications"] == 1
 
 
-@one("jm-replacement")
 def test_the_oracle_reads_every_batch_in_collection_order(exported):
     run_dir, _ = exported
     path = batches(run_dir)[-1]
@@ -572,47 +388,52 @@ def test_the_oracle_reads_every_batch_in_collection_order(exported):
     assert assessed["oracle"]["rejected_line"] == position
 
 
-@one("rescale-out")
-def test_the_analysis_reads_the_pull_responses_not_the_observations_files(
-    admitting, monkeypatch, tmp_path
-):
-    """Upgraded attempts' lines rewritten as initial ones, the responses untouched."""
-    world = World(admitting, monkeypatch, savepoint_acks=False)
-    control = world.run()
-    run_dir = export(world, control, tmp_path)
+def test_the_analysis_reads_the_pull_responses_not_the_observations_files(exported):
+    """An input renamed to another published ID in the observations file only.
+
+    Read from that file, the output would name an input this run did not
+    publish under that ID, which the sequence's verdict refuses.
+    """
+    run_dir, _ = exported
     honest = assess(run_dir)
-    for path in all_batches(run_dir):
-        document = json.loads(path.read_text())
-        rewritten = []
-        for line in document["tsv"].splitlines():
-            message_id, payload = line.split("\t")
-            text = base64.urlsafe_b64decode(payload + "==").decode()
-            text = text.replace("|upgrade|", "|initial|")
-            rewritten.append(message_id + "\t" + encode(text.encode()))
-        document["tsv"] = "".join(line + "\n" for line in rewritten)
-        path.write_text(json.dumps(document))
+    path = batches(run_dir)[0]
+    document = json.loads(path.read_text())
+    lines = document["tsv"].splitlines()
+    index, item = next(
+        (i, item)
+        for i, line in enumerate(lines)
+        if (item := parse(line, run_dir.name, RECORDS)) and item["input_index"] == 0
+    )
+    other = json.loads(
+        next(run_dir.glob("pubsub/messages/*/input/1/0-*/response.json")).read_text()
+    )["messageIds"][item["sequence"]]
+    message_id, payload = lines[index].split("\t")
+    fields = base64.urlsafe_b64decode(payload + "==").decode().split("|")
+    fields[4] = encode(other.encode())
+    lines[index] = message_id + "\t" + encode("|".join(fields).encode())
+    document["tsv"] = "".join(line + "\n" for line in lines)
+    path.write_text(json.dumps(document))
     assert assess(run_dir) == honest
 
 
-@one("jm-replacement")
-def test_a_stored_verdict_its_evidence_does_not_recompute_to_differs(lost_boundary):
-    edit_record(lost_boundary, lambda r: r.update(verdict=USABLE, reasons=[]))
-    assessed = assess(lost_boundary)
+def test_a_stored_verdict_its_evidence_does_not_recompute_to_differs(exported):
+    run_dir, _ = exported
+    edit_record(run_dir, lambda r: r.update(verdict=INCONCLUSIVE, reasons=["x"]))
+    assessed = assess(run_dir)
     assert (assessed["verdict"], assessed["stored"], assessed["problems"]) == (
-        INCONCLUSIVE,
         USABLE,
+        INCONCLUSIVE,
         [DIFFERS],
     )
 
 
-@one("jm-replacement")
-def test_stored_reasons_its_evidence_does_not_recompute_to_differ(lost_boundary):
-    edit_record(lost_boundary, lambda r: r.update(reasons=["something-else"]))
-    assessed = assess(lost_boundary)
-    assert (assessed["verdict"], assessed["problems"]) == (INCONCLUSIVE, [DIFFERS])
+def test_stored_reasons_its_evidence_does_not_recompute_to_differ(exported):
+    run_dir, _ = exported
+    edit_record(run_dir, lambda r: r.update(reasons=["something-else"]))
+    assessed = assess(run_dir)
+    assert (assessed["verdict"], assessed["problems"]) == (USABLE, [DIFFERS])
 
 
-@one("jm-replacement")
 @pytest.mark.parametrize(
     "change",
     [
@@ -622,42 +443,28 @@ def test_stored_reasons_its_evidence_does_not_recompute_to_differ(lost_boundary)
     ],
     ids=["success", "scenario", "record"],
 )
-def test_the_receipt_s_own_claims_decide_nothing(lost_boundary, change):
-    honest = assess(lost_boundary)
-    edit_result(lost_boundary, change)
-    assert assess(lost_boundary) == honest
-
-
-@one("jm-replacement")
-def test_the_later_of_two_completion_records_is_the_one_read(lost_boundary):
-    path = record_file(lost_boundary)
-    (path.parent / ("z" + path.name)).write_text(path.read_text())
-    assessed = assess(lost_boundary)
-    assert (assessed["verdict"], assessed["problems"]) == (INCONCLUSIVE, [])
-
-
-@one("rescale-out")
-def test_the_verdict_is_decided_over_the_readings_not_the_record_s_coverage(
-    admitting, monkeypatch, tmp_path
-):
-    """A run that never read its connector metrics, recorded as having read them."""
-    world = World(admitting, monkeypatch)
-    world.relay.listed = ()
-    control = world.run()
-    run_dir = export(world, control, tmp_path)
+def test_the_receipt_s_own_claims_decide_nothing(exported, change):
+    run_dir, _ = exported
     honest = assess(run_dir)
-    assert (honest["verdict"], honest["problems"]) == (INCONCLUSIVE, [])
+    edit_result(run_dir, change)
+    assert assess(run_dir) == honest
 
-    def claim(record):
-        for window in record["coverage"].values():
-            window["observed"] = sorted({*window["observed"], "sink", "source"})
-        record.update(verdict=USABLE, reasons=[])
 
-    edit_record(run_dir, claim)
+def test_the_later_of_two_completion_records_is_the_one_read(exported):
+    run_dir, _ = exported
+    path = record_file(run_dir)
+    honest = path.read_text()
+    (path.parent / ("z" + path.name)).write_text(honest)
+    # The earlier copy disagrees; were it the one read, it would differ.
+    earlier = json.loads(honest)
+    earlier["payload"].update(verdict=INCONCLUSIVE, reasons=["something-else"])
+    path.write_text(json.dumps(earlier))
     assessed = assess(run_dir)
-    assert assessed["verdict"] == INCONCLUSIVE
-    assert assessed["reasons"] == honest["reasons"]
-    assert assessed["problems"] == [DIFFERS]
+    assert (assessed["verdict"], assessed["stored"], assessed["problems"]) == (
+        USABLE,
+        USABLE,
+        [],
+    )
 
 
 def test_the_section_states_what_the_verdict_does_not_establish():

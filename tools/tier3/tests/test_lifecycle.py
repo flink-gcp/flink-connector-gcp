@@ -18,7 +18,6 @@ import io
 import json
 import ssl
 import subprocess
-from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -994,21 +993,6 @@ def test_inventory_observations_survive_parent_disappearance(env):
     fresh.env.refresh().to_dict()
     fresh.cleanup.run("orphaned parents")
     assert not env[0].get("Pod", rt.SMOKE, pod["metadata"]["name"])
-
-
-def test_estimated_cost_and_the_rates_age(env):
-    # The supervisor shape carries the headroom that keeps it off a busy
-    # node; an hour of smoke is estimated well under a dollar.
-    assert rt.estimated_cost(3600) == Decimal("0.813125")
-    # The review date is the estimate's basis, not an admission deadline.
-    env[3].now = rt.timestamp(rt.PRICING_REVIEWED) + 31 * 86400
-    later = dict(
-        env[2],
-        started_at=rt.utc(env[3].now),
-        expires_at=rt.utc(env[3].now + 3600),
-        cleanup_at=rt.utc(env[3].now + 2700),
-    )
-    rt.validate_approval(later)
 
 
 def test_admission_quotas_cover_the_pods_each_namespace_will_hold(env):
@@ -3332,7 +3316,6 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     from flink_tier3.bigquery import plan as bigquery_plan
     from flink_tier3.bigtable import trial as bigtable_trial
     from flink_tier3.cloudtasks import trial as cloudtasks_trial
-    from flink_tier3.exercise import FAULTS
     from flink_tier3.firestore import trial as firestore_trial
     from flink_tier3.spanner import trial as spanner_trial
 
@@ -3352,17 +3335,6 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
     assert inputs["firestore_trial"]["default"] == "none"
     assert inputs["pubsub_trial"]["options"] == ["none", *cli.pubsub_plan.TRIALS]
     assert inputs["pubsub_trial"]["default"] == "none"
-    # The descriptions list the shared kinds.
-    *first, last = FAULTS
-    kinds = "(" + ", ".join(first) + " or " + last + ")"
-    for name in (
-        "pubsub_trial",
-        "cloudtasks_trial",
-        "bigtable_trial",
-        "spanner_trial",
-        "firestore_trial",
-    ):
-        assert inputs[name]["description"].endswith(kinds), name
     # Dispatching is the approval: no phrase, expiry or second copy of the
     # commit is typed.
     assert set(inputs) == {
@@ -3376,9 +3348,33 @@ def test_the_workflow_offers_exactly_what_dispatch_accepts():
         "bigtable_trial",
         "spanner_trial",
         "firestore_trial",
-        "campaign",
-        "repeats",
     }
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "cloudtasks-recovery",
+        "bigtable-recovery",
+        "spanner-recovery",
+        "firestore-recovery",
+    ],
+)
+def test_a_resource_trial_requires_the_sequence_kind(scenario):
+    """An approval that names no kind, or a single-fault one, is refused
+    rather than read as a sequence."""
+    from flink_tier3.render import RESOURCE_PLANS
+
+    plan = RESOURCE_PLANS[scenario]
+    fields = plan.trial("sequence", "2026-11-23T00:00:00Z")
+    plan.Trial("run-1", **fields)
+    kind = fields.pop("kind")
+    assert kind == "sequence"
+    with pytest.raises(TypeError, match="kind"):
+        plan.Trial("run-1", **fields)
+    for other in ("jm-replacement", "tm-replacement", "rescale-out", "rescale-in"):
+        with pytest.raises(ValueError, match="kind"):
+            plan.Trial("run-1", **fields, kind=other)
 
 
 def test_a_record_written_before_a_field_removal_is_still_read():
@@ -3829,11 +3825,6 @@ def test_reviewed_policy_preserves_the_fixed_windows_and_shapes():
     }
     assert CLEANUP_SECONDS == 900
     assert STATE_OBJECTS == 10000
-    assert rt.COST_RATES == {
-        "cpu": Decimal("0.10"),
-        "memory": Decimal("0.02"),
-        "ephemeral-storage": Decimal("0.001"),
-    }
     assert rt.POD_RESOURCES == {
         "smoke": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
         "operator": {"cpu": "1", "memory": "2Gi", "ephemeral-storage": "1Gi"},
@@ -4177,7 +4168,7 @@ WORKFLOW_INPUTS = {
     "smoke": [],
     "bigquery-recovery": [
         "--bigquery-trial",
-        "alo-10",
+        "alo-10-sequence",
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
@@ -4189,25 +4180,25 @@ WORKFLOW_INPUTS = {
     ],
     "cloudtasks-recovery": [
         "--cloudtasks-trial",
-        "rescale-in",
+        "sequence",
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
     "bigtable-recovery": [
         "--bigtable-trial",
-        "rescale-out",
+        "sequence",
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
     "spanner-recovery": [
         "--spanner-trial",
-        "tm-replacement",
+        "sequence",
         "--application-digest",
         "sha256:" + "d" * 64,
     ],
     "firestore-recovery": [
         "--firestore-trial",
-        "rescale-in",
+        "sequence",
         "--application-digest",
         "sha256:" + "d" * 64,
     ],

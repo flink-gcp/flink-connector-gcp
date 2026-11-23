@@ -59,7 +59,7 @@ def baseline(prepared, monkeypatch):
     """A Firestore exercise in its baseline, over a five-record input and six seed records."""
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
-    small = Trial(environment.approval.run_id, 5, 1, 6, 1)
+    small = Trial(environment.approval.run_id, 5, 1, 6, 1, "sequence")
     environment.approval = dataclasses.replace(
         environment.approval, scenario="firestore-recovery"
     )
@@ -203,11 +203,11 @@ def test_each_batch_plan_is_read_from_the_jobmanager_log(baseline):
     }
 
 
-def built(prepared, monkeypatch, kind):
-    """The exercise the supervisor builds for a small trial of `kind`."""
+def built(prepared, monkeypatch):
+    """The exercise the supervisor builds for a small sequence trial."""
     environment, _, upgrade, _ = prepared
     environment.actor = "supervisor"
-    small = Trial(environment.approval.run_id, 5, 1, 6, 1, kind=kind)
+    small = Trial(environment.approval.run_id, 5, 1, 6, 1, kind="sequence")
     environment.approval = dataclasses.replace(
         environment.approval, scenario="firestore-recovery"
     )
@@ -233,13 +233,7 @@ def built(prepared, monkeypatch, kind):
 @pytest.fixture
 def sequence(prepared, monkeypatch):
     """The fault-sequence exercise over the same small input."""
-    return built(prepared, monkeypatch, "sequence")
-
-
-@pytest.mark.parametrize("kind", ["jm-replacement", "tm-replacement", "rescale-in"])
-def test_a_single_fault_trial_keeps_its_exercise(prepared, monkeypatch, kind):
-    value, _ = built(prepared, monkeypatch, kind)
-    assert type(value) is FirestoreExercise
+    return built(prepared, monkeypatch)
 
 
 def test_the_sequence_trial_builds_the_sequence_exercise(sequence):

@@ -14,26 +14,8 @@
 
 package tier3
 
-// The fault kinds every recovery trial names, as `flink_tier3/exercise.py` declares them in its
-// `FAULTS` table, which a test holds this to: the direction a rescale moves the writers, or null,
-// and the writers' parallelism of each phase, one per single-slot TaskManager. A rescale moves it
-// between one and two, inside the three-Pod quota of the BigQuery, Cloud Tasks, Bigtable and
-// Spanner namespaces, which the Firestore one is to share, and every other kind keeps two.
-// A scenario indexes its sizes by kind rather than choosing them by comparing it: compared, a
-// kind outside the four rendered some fixed size instead of failing.
-faultKinds: {
-	"jm-replacement": {rescale: null, initial: 2, upgrade: 2}
-	"tm-replacement": {rescale: null, initial: 2, upgrade: 2}
-	"rescale-out": {rescale: "out", initial: 1, upgrade: 2}
-	"rescale-in": {rescale: "in", initial: 2, upgrade: 1}
-}
-// The kind of a trial that names none; a BigQuery, Cloud Tasks, Bigtable, Spanner or Firestore
-// trial of it runs the upgrade and then the JobManager failover.
-defaultFault: "jm-replacement"
-// The kinds of a scenario that also runs the fault sequence of ADR-0204: the single-fault kinds
-// and `sequence`, which runs every fault in one run, starting and upgrading at two as the default
-// fault does; the exercise patches its rescales from the upgrade.
-sequenceKinds: {
-	faultKinds
-	sequence: faultKinds[defaultFault]
-}
+// The writers' parallelism, and the TaskManager count, of both applications a recovery trial
+// renders, the initial one and the savepoint upgrade, as `flink_tier3/exercise.py` declares it in
+// `RENDERED_PARALLELISM`, which a test holds this to. The fault sequence of ADR-0204 patches only
+// its rescales away from it.
+renderedParallelism: 2

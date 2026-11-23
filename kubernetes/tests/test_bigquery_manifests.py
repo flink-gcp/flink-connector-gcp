@@ -479,24 +479,11 @@ def bigquery_proposal(module, *tags):
     )
 
 
-@pytest.mark.parametrize(
-    "fault,initial,upgrade",
-    [
-        (None, 2, 2),
-        ("none", 2, 2),
-        ("tm-replacement", 2, 2),
-        ("sequence", 2, 2),
-        ("rescale-out", 1, 2),
-        ("rescale-in", 2, 1),
-    ],
-)
 @pytest.mark.parametrize("mode", ["EO", "FILE_LOADS"])
-def test_bigquery_fault_renders_each_phase_size(module, fault, initial, upgrade, mode):
-    """A rescale moves the writers and TaskManagers between one and two."""
-    tags = ["-t", "bigquery_mode=" + mode]
-    if fault is not None:
-        tags += ["-t", "bigquery_fault=" + fault]
-    result = bigquery_proposal(module, *tags)
+def test_bigquery_renders_both_phases_at_two(module, mode):
+    """The fault sequence patches its rescales from these sizes (ADR-0204)."""
+    initial = upgrade = 2
+    result = bigquery_proposal(module, "-t", "bigquery_mode=" + mode)
     assert result.returncode == 0, result.stderr
     first, second = json.loads(result.stdout)
     for app, size in ((first, initial), (second, upgrade)):
@@ -514,13 +501,6 @@ def test_bigquery_fault_renders_each_phase_size(module, fault, initial, upgrade,
     args[args.index("--parallelism") + 1] = str(upgrade)
     args[args.index("--require-restored") + 1] = "true"
     assert second == expected
-
-
-@pytest.mark.parametrize("fault", ["jm-replacement", "rescale", ""])
-def test_bigquery_rejects_an_unknown_fault(module, fault):
-    result = bigquery_proposal(module, "-t", "bigquery_fault=" + fault)
-    assert result.returncode != 0
-    assert not result.stdout.strip()
 
 
 @pytest.mark.parametrize(
@@ -637,7 +617,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
         trial=trial,
     )
     proposal = bundle["proposal"]
-    assert proposal["resources"]["trial"]["fault"] == trial.get("fault")
+    assert proposal["resources"]["trial"]["fault"] == trial["fault"]
     assert proposal["approved"] is False
     assert proposal["resources"]["trial"]["mode"] == mode
     assert proposal["resources"]["trial"]["destinations"] == destinations
@@ -680,10 +660,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
             "attempt": "1",
             "sha": "b" * 40,
         },
-        "bigquery_trial": {
-            "mode": mode,
-            "destinations": destinations,
-        },
+        "bigquery_trial": trial,
     }
     validate_approval(approval)
     expected_delivery = json.loads(json.dumps(bundle["delivery"]))
@@ -711,7 +688,7 @@ def test_bigquery_prepare_accepts_real_cue_delivery(module, monkeypatch, name):
 @pytest.mark.parametrize("records", [None, 5760])
 def test_bigquery_records_tag_sets_the_input_or_keeps_the_default(module, records):
     """Dispatch names every trial's count; without it the mode's default renders."""
-    tags = ["-t", "bigquery_mode=ALO", "-t", "bigquery_fault=sequence"]
+    tags = ["-t", "bigquery_mode=ALO"]
     if records is not None:
         tags += ["-t", f"bigquery_records={records}"]
     result = bigquery_proposal(module, *tags)

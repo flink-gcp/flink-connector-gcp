@@ -16,7 +16,6 @@
 
 import re
 import tomllib
-from decimal import Decimal
 from importlib.resources import files
 
 with files(__package__).joinpath("policy.toml").open("rb") as stream:
@@ -33,8 +32,6 @@ STATE = _policy["environment"]["state"]
 ENVIRONMENT = _policy["environment"]["environment"]
 GAR = _policy["environment"]["gar"]
 REPOSITORY = _policy["environment"]["repository"]
-PRICING_REVIEWED = _policy["environment"]["pricing_reviewed"]
-COST_RATES = {key: Decimal(value) for key, value in _policy["cost_rates"].items()}
 WINDOWS = _policy["windows"]
 CLEANUP_SECONDS = _policy["cleanup"]["seconds"]
 STATE_OBJECTS = _policy["state"]["objects"]

@@ -15,13 +15,12 @@
 """The Firestore recovery delivery, rendered from disposable manifests."""
 
 import json
-import re
 import shutil
 
 import pytest
 import yaml
 from flink_tier3.bundle import delivered_sources
-from flink_tier3.exercise import DEFAULT_FAULT, FAULTS
+from flink_tier3.exercise import RENDERED_PARALLELISM
 from test_manifests import (
     KUBERNETES,
     SYNTHETIC_DIGEST,
@@ -350,17 +349,15 @@ def proposal(module, **inputs):
     )
 
 
-@pytest.mark.parametrize("name", list(FAULTS))
-def test_firestore_proposal_binds_both_phases_of_each_fault_kind(module, name):
-    """Each phase's job parallelism and TaskManagers are the kind's."""
-    fault = FAULTS[name]
-    result = proposal(module, firestore_trial=name)
+def test_firestore_proposal_binds_both_phases(module):
+    """Each phase's job parallelism and TaskManagers are the rendered two."""
+    result = proposal(module)
     assert result.returncode == 0, result.stderr
     initial, upgrade, delivery = json.loads(result.stdout)
     for app, phase, size in zip(
         (initial, upgrade),
         ("initial", "upgrade"),
-        (fault.initial, fault.upgrade),
+        (RENDERED_PARALLELISM, RENDERED_PARALLELISM),
         strict=True,
     ):
         assert_firestore_application(
@@ -391,9 +388,7 @@ def test_firestore_proposal_binds_both_phases_of_each_fault_kind(module, name):
     } | {"flink_tier3/" + name for name in delivered_sources()}
 
 
-def test_firestore_proposal_defaults_to_the_default_fault_and_takes_the_input_tags(
-    module,
-):
+def test_firestore_proposal_takes_the_input_tags(module):
     result = proposal(
         module,
         firestore_records="90000",
@@ -402,11 +397,7 @@ def test_firestore_proposal_defaults_to_the_default_fault_and_takes_the_input_ta
     )
     assert result.returncode == 0, result.stderr
     initial, upgrade, _ = json.loads(result.stdout)
-    fault = FAULTS[DEFAULT_FAULT]
-    for app, phase, size in (
-        (initial, "initial", fault.initial),
-        (upgrade, "upgrade", fault.upgrade),
-    ):
+    for app, phase in ((initial, "initial"), (upgrade, "upgrade")):
         assert_firestore_application(
             app,
             "proposal-1879",
@@ -414,18 +405,9 @@ def test_firestore_proposal_defaults_to_the_default_fault_and_takes_the_input_ta
             phase,
             90000,
             50,
-            size,
+            RENDERED_PARALLELISM,
             seed=150,
         )
-
-
-@pytest.mark.parametrize("trial", ["upgrade-failover", "rescale", "RESCALE-IN"])
-def test_firestore_proposal_refuses_an_unknown_trial(module, trial):
-    result = proposal(module, firestore_trial=trial)
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-    # The size table refuses it, as it does for the other scenarios.
-    assert re.search(rf'undefined field: "?{re.escape(trial)}"?:', result.stderr)
 
 
 @pytest.mark.parametrize(("active_seconds", "admitted"), [(5220, True), (5221, False)])
@@ -440,7 +422,6 @@ def test_the_sequence_trial_starts_and_upgrades_at_two(module):
     """The fault sequence (ADR-0204) patches its own rescales from the upgrade."""
     result = proposal(
         module,
-        firestore_trial="sequence",
         firestore_records="6000",
         firestore_records_per_second="10",
         firestore_seed_records_per_second="5",

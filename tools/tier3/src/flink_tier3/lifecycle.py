@@ -33,7 +33,7 @@ from pathlib import Path
 import flink_tier3 as rt
 
 from . import actors as resource_actors
-from . import bootstrap, campaign, repository
+from . import bootstrap, repository
 from . import runner as runner_api
 from . import workflow as wf
 from .bigquery import actors as bigquery_actors
@@ -277,8 +277,8 @@ def refuse_before_admission(args, store):
     The workflow always runs from `main`; the rig it checks out is the
     dispatched `main` commit unless `--rig-sha` names another. The workflow,
     not this code, verifies that such a commit heads a branch of this
-    repository, before it checks the rig out. The owner approves the run's
-    estimate before dispatching it; dispatching is that approval.
+    repository, before it checks the rig out. Dispatching is the owner's
+    approval of the run.
     """
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise rt.Failure("Dispatch must run from main")
@@ -435,9 +435,6 @@ def start_resource(args, store, scenario):
         raise rt.Failure(
             f"{service} trials need a --{field}-trial kind: " + ", ".join(plan.KINDS)
         )
-    campaign.parse(
-        args.run_id, kind, getattr(args, "campaign", ""), getattr(args, "repeats", "0")
-    )
     if not DIGEST.fullmatch(args.application_digest or ""):
         raise rt.Failure(f"{service} trials need a sha256 --application-digest")
     application_image = rt.GAR + scenario + "@" + args.application_digest
@@ -579,13 +576,6 @@ def start(args, store):
     scenario = getattr(args, "scenario", "smoke")
     if scenario not in SCENARIOS:
         raise rt.Failure("Unknown smoke scenario")
-    if (
-        campaign.requested(getattr(args, "campaign", ""), getattr(args, "repeats", "0"))
-        and scenario not in RESOURCE_SCENARIOS
-    ):
-        raise rt.Failure(
-            "Only a Cloud Tasks, Bigtable, Spanner or Firestore trial runs a campaign"
-        )
     if scenario == "bigquery-recovery":
         return start_bigquery(args, store)
     if scenario == "pubsub-recovery":
@@ -737,28 +727,6 @@ def idle_output(infrastructure=False):
                 output.write("infrastructure=true\n")
 
 
-def next_attempt(args, store):
-    """Print the campaign's next attempt as workflow outputs, or nothing.
-
-    Reads the finished attempt's receipt, which `finish` wrote once the
-    environment was idle and the lock released.
-    """
-    receipt, _ = store.read(f"runs/{args.run_id}/result.json")
-    if not isinstance(receipt, dict):
-        raise rt.Failure("The finished attempt has no receipt")
-    scenario = RESOURCE_SCENARIOS.get(receipt.get("scenario"))
-    trial = receipt.get(scenario.field + "_trial") if scenario else None
-    kind = trial.get("kind") if isinstance(trial, dict) else None
-    attempt = campaign.next_attempt(
-        receipt, args.run_id, kind, args.campaign, args.repeats
-    )
-    if attempt is not None:
-        # The workflow input that names the kind for this scenario.
-        attempt["trial_input"] = scenario.field + "_trial"
-        for key, value in attempt.items():
-            print(f"{key}={value}")
-
-
 def finish(args, store):
     owner = json.loads((args.directory / "owner.json").read_text())
     approval_path = args.directory / "approval.json"
@@ -770,10 +738,6 @@ def finish(args, store):
         # scale, its workloads), not that the infrastructure matches main: a
         # merge during the run is applied once the lock is released.
         success = runner.finalize()
-        # The receipt is written and the lock released: a campaign may go on.
-        if os.environ.get("GITHUB_OUTPUT"):
-            with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-                output.write("finished=true\n")
     elif owner["kind"] == "run":
         # A run that never wrote its approval admitted nothing.
         external(args.kubeconfig, idle=True)
@@ -888,7 +852,7 @@ def plans(args, store):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="flink-tier3 lifecycle", description=__doc__)
-    parser.add_argument("--kubeconfig", type=Path)
+    parser.add_argument("--kubeconfig", type=Path, required=True)
     parser.add_argument(
         "--directory",
         type=Path,
@@ -914,17 +878,6 @@ def main(argv=None):
         "--cloudtasks-trial",
         help="Cloud Tasks trial: " + ", ".join(cloudtasks_trial.KINDS),
     )
-    after = sub.add_parser("next")
-    after.add_argument("--run-id", required=True)
-    for command in (run, after):
-        command.add_argument(
-            "--campaign",
-            default="",
-            help="kinds the dispatch still runs after this attempt, comma-separated",
-        )
-        command.add_argument(
-            "--repeats", default="0", help="attempts the campaign may still repeat"
-        )
     run.add_argument(
         "--bigtable-trial",
         help="Bigtable trial: " + ", ".join(bigtable_trial.KINDS),
@@ -942,15 +895,12 @@ def main(argv=None):
     sub.add_parser("plans")
     sub.add_parser("finish")
     args = parser.parse_args(argv)
-    if args.command != "next" and args.kubeconfig is None:
-        parser.error("--kubeconfig is required")
     store = rt.Storage()
     {
         "start": start,
         "recover": recover,
         "plans": plans,
         "finish": finish,
-        "next": next_attempt,
     }[args.command](args, store)
 
 

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import yaml
 from flink_tier3.bundle import delivered_sources
-from flink_tier3.exercise import DEFAULT_FAULT, FAULTS
+from flink_tier3.exercise import RENDERED_PARALLELISM
 from flink_tier3.policy import GAR
 
 KUBERNETES = Path(__file__).resolve().parents[1]
@@ -748,59 +748,33 @@ def test_the_lifecycle_delivery_renders(module):
     )
 
 
-def test_the_lifecycle_fault_kinds_are_the_exercise_table(module):
-    """The CUE copy of `FAULTS`, so a kind added to or changed in one fails here."""
-    result = lifecycle_export(module, "[faultKinds, defaultFault]")
+def test_the_lifecycle_parallelism_is_the_exercise_constant(module):
+    """The CUE copy of `RENDERED_PARALLELISM`, so a change to either fails here."""
+    result = lifecycle_export(module, "renderedParallelism")
     assert result.returncode == 0, result.stderr
-    kinds, default = json.loads(result.stdout)
-    assert list(kinds) == list(FAULTS)
-    assert kinds == {
-        name: {
-            "rescale": fault.rescale,
-            "initial": fault.initial,
-            "upgrade": fault.upgrade,
-        }
-        for name, fault in FAULTS.items()
-    }
-    assert default == DEFAULT_FAULT
+    assert json.loads(result.stdout) == RENDERED_PARALLELISM
 
 
-@pytest.mark.parametrize("name", list(FAULTS))
 @pytest.mark.parametrize(
-    "scenario,tag,image",
-    [
-        ("bigquery-recovery", "bigquery_fault", "bigquery-recovery"),
-        ("cloudtasks-recovery", "cloudtasks_trial", "cloudtasks-recovery"),
-        ("pubsub-recovery", "pubsub_trial", "pubsub-recovery"),
-    ],
+    "scenario", ["bigquery-recovery", "cloudtasks-recovery", "pubsub-recovery"]
 )
-def test_every_scenario_renders_each_fault_kinds_sizes(
-    module, name, scenario, tag, image
+def test_every_scenario_renders_both_phases_at_the_rendered_parallelism(
+    module, scenario
 ):
-    """Each phase's job parallelism and TaskManagers are the kind's, in each scenario."""
-    fault = FAULTS[name]
-    # A BigQuery trial names no fault for the default kind.
-    value = "none" if tag == "bigquery_fault" and name == DEFAULT_FAULT else name
+    """Each phase's job parallelism and TaskManagers are two, in each scenario."""
     result = lifecycle_export(
         module,
         "[application, upgradeApplication]",
         scenario,
         run_id="proposal-1789",
         active_seconds="5220",
-        application_image=GAR + image + "@" + SYNTHETIC_DIGEST,
-        **{tag: value},
+        application_image=GAR + scenario + "@" + SYNTHETIC_DIGEST,
     )
     assert result.returncode == 0, result.stderr
-    # A Pub/Sub replacement's recovery manifest stays in the initial phase.
-    recovery = (
-        "initial" if tag == "pubsub_trial" and fault.rescale is None else "upgrade"
-    )
-    for app, phase, rendered in zip(
-        json.loads(result.stdout), ("initial", "upgrade"), ("initial", recovery)
-    ):
-        size = fault.parallelism(phase)
+    size = RENDERED_PARALLELISM
+    for app, phase in zip(json.loads(result.stdout), ("initial", "upgrade")):
         assert app["spec"]["job"]["parallelism"] == size
         assert app["spec"]["taskManager"]["replicas"] == size
         flags = " ".join(app["spec"]["job"]["args"]).replace("=", " ")
-        assert f"--phase {rendered} " in flags
+        assert f"--phase {phase} " in flags
         assert re.search(rf"--(sink-)?parallelism {size}( |$)", flags), flags

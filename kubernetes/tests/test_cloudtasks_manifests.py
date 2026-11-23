@@ -16,7 +16,6 @@
 """The Cloud Tasks recovery delivery, rendered from disposable manifests."""
 
 import json
-import re
 import shutil
 
 import pytest
@@ -329,14 +328,9 @@ def test_cloudtasks_namespace_policy_without_application_package(module, overrid
             50,
             (2, 2),
         ),
-        ({"cloudtasks_trial": "jm-replacement"}, 180000, 100, (2, 2)),
-        ({"cloudtasks_trial": "tm-replacement"}, 180000, 100, (2, 2)),
-        ({"cloudtasks_trial": "rescale-out"}, 180000, 100, (1, 2)),
-        ({"cloudtasks_trial": "rescale-in"}, 180000, 100, (2, 1)),
         # The fault sequence (ADR-0204) patches its own rescales from the upgrade.
         (
             {
-                "cloudtasks_trial": "sequence",
                 "cloudtasks_records": "3600",
                 "cloudtasks_records_per_second": "10",
             },
@@ -388,22 +382,3 @@ def test_cloudtasks_proposal_delivery_binds_both_phases(
         "upgrade-application.json",
         "proposal.json",
     } | {"flink_tier3/" + name for name in delivered_sources()}
-
-
-@pytest.mark.parametrize("trial", ["upgrade-failover", "rescale", "RESCALE-IN"])
-def test_cloudtasks_proposal_refuses_an_unknown_trial(module, trial):
-    result = lifecycle_export(
-        module,
-        "[application, upgradeApplication, delivery.resources]",
-        "cloudtasks-recovery",
-        run_id="proposal-1362",
-        active_seconds="5220",
-        application_image=f"{CLOUDTASKS_IMAGE}@{SYNTHETIC_DIGEST}",
-        cloudtasks_trial=trial,
-    )
-    assert result.returncode != 0
-    assert not result.stdout.strip()
-    # The size table refuses it. The tag's own disjunction does not: compared
-    # rather than indexed, `rescale` rendered two subtasks in both phases.
-    # A label that is not an identifier is quoted.
-    assert re.search(rf'undefined field: "?{re.escape(trial)}"?:', result.stderr)

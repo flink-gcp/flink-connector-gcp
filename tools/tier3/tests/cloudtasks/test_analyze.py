@@ -24,7 +24,6 @@ from flink_tier3.cloudtasks.trial import Trial
 from flink_tier3.cloudtasks.verdict import (
     COMPLETE_EVENT,
     MEASUREMENT_EVENT,
-    OBSERVED,
     PAGE_EVENT,
     SAMPLED_STAGES,
     sequence_verdict,
@@ -35,7 +34,7 @@ from flink_tier3.runs import discover_runs
 
 from .test_oracle import reading
 
-TRIAL = Trial("ct-analyze", 4, 1)
+TRIAL = Trial("ct-analyze", 4, 1, "sequence")
 PREFIX = TRIAL.queue_path + "/tasks/"
 
 
@@ -150,60 +149,12 @@ def run_directory(
     return directory
 
 
-def test_a_usable_run_recomputes_to_its_stored_verdict(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])])
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["verdict"] == "usable"
-    assert result["stored"] == "usable"
-    assert result["problems"] == []
-    assert result["report"]["matched"] == 4
-    assert result["samples"] == 3
-
-
-def test_a_window_whose_readings_returned_nothing_is_inconclusive(tmp_path):
-    readings = [(stage, reading()) for stage in SAMPLED_STAGES]
-    readings[1] = ("upgraded", {"vertices": {"unavailable": "503"}})
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])], readings=readings)
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["verdict"] == "inconclusive"
-    assert result["stored"] == "inconclusive"
-    assert result["reasons"] == [
-        f"unobserved-{family}-in-upgraded" for family in OBSERVED
-    ]
-    assert result["problems"] == []
-
-
-def test_a_reading_missing_from_the_export_leaves_no_verdict(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])])
-    (directory / "supervisor/measurement-2.json").unlink()
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["verdict"] is None
-    assert result["problems"] == ["missing-samples:1"]
-
-
-def test_the_coverage_is_rebuilt_from_the_readings_not_the_record(tmp_path):
-    readings = [(stage, reading()) for stage in SAMPLED_STAGES]
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])], readings=readings)
-    # The export holds a reading that returned no connector metric where the
-    # record claims one did.
-    measurement = json.loads((directory / "supervisor/measurement-0.json").read_text())
-    measurement["payload"]["sink"] = measurement["payload"]["sink"][:2]
-    (directory / "supervisor/measurement-0.json").write_text(json.dumps(measurement))
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["verdict"] == "inconclusive"
-    assert result["reasons"] == ["unobserved-connector-in-baseline"]
-    assert result["problems"] == ["verdict-differs-from-the-record"]
-
-
 def test_pages_that_contradict_the_stored_report_are_a_problem(tmp_path):
     directory = run_directory(
         tmp_path,
         [tasks([0, 1]), tasks([2, 2])],
         stored_pages=[tasks([0, 1]), tasks([2, 3])],
+        faults=FAULTS,
     )
     [run] = discover_runs(directory)
     result = analyze.assess(run)
@@ -214,7 +165,7 @@ def test_pages_that_contradict_the_stored_report_are_a_problem(tmp_path):
 
 
 def test_a_missing_page_leaves_the_run_without_a_verdict(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])])
+    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
     (directory / "supervisor/page-2-1.json").unlink()
     [run] = discover_runs(directory)
     result = analyze.assess(run)
@@ -222,20 +173,8 @@ def test_a_missing_page_leaves_the_run_without_a_verdict(tmp_path):
     assert result["problems"] == ["missing-pages:1"]
 
 
-def test_an_unfinished_run_is_inconclusive_without_problems(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])], complete=False)
-    result_path = directory / "result.json"
-    result = json.loads(result_path.read_text())
-    result["recovery"] = {"stage": "failover", "outcomes": {"upgrade": {}}}
-    result_path.write_text(json.dumps(result))
-    [run] = discover_runs(directory)
-    assessed = analyze.assess(run)
-    assert assessed["verdict"] == "inconclusive"
-    assert assessed["problems"] == []
-
-
 def test_the_shared_report_carries_the_section(tmp_path):
-    run_directory(tmp_path, [tasks([0, 1, 2, 3])])
+    run_directory(tmp_path, [tasks([0, 1, 2, 3])], faults=FAULTS)
     report = shared.analyze(tmp_path)
     assert [item["verdict"] for item in report["cloudtasks"]] == ["usable"]
     assert "## Deployed Cloud Tasks runs" in shared.render_markdown(report)
@@ -243,7 +182,7 @@ def test_the_shared_report_carries_the_section(tmp_path):
 
 
 def test_unreadable_evidence_leaves_the_run_without_a_verdict(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])])
+    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
     page = json.loads((directory / "supervisor/page-2-1.json").read_text())
     page["payload"]["ids"] = "not a list"
     (directory / "supervisor/page-2-1.json").write_text(json.dumps(page))
@@ -251,7 +190,7 @@ def test_unreadable_evidence_leaves_the_run_without_a_verdict(tmp_path):
     result = analyze.assess(run)
     assert result["verdict"] is None
     assert result["problems"] == ["malformed-pages:1"]
-    assert result["samples"] == 3
+    assert result["samples"] == 0
 
     approval = json.loads((directory / "approval.json").read_text())
     del approval["cloudtasks_trial"]
@@ -261,7 +200,7 @@ def test_unreadable_evidence_leaves_the_run_without_a_verdict(tmp_path):
 
 
 def test_a_page_beyond_the_recorded_count_is_reported(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])])
+    directory = run_directory(tmp_path, [tasks([0, 1]), tasks([2, 3])], faults=FAULTS)
     write(
         directory,
         "supervisor/page-2-2.json",
@@ -306,44 +245,6 @@ def with_recoveries(directory, upgrade, failover, polls):
                 "payload": {"job_id": "1" * 32, **poll},
             },
         )
-
-
-def test_each_replay_began_between_the_restore_and_the_next_checkpoint(tmp_path):
-    directory = run_directory(tmp_path, [tasks([0, 1, 2, 3])])
-    savepoint = checkpoint(2, 100_000, 101_000, is_savepoint=True)
-    with_recoveries(
-        directory,
-        upgrade={"restored": {"id": 2, "restore_timestamp": 130_000}},
-        failover={"restored": {"id": 4, "restore_timestamp": 300_000}},
-        polls=[
-            # The initial job: its savepoint, in the latest statistics only.
-            {"latest": {"savepoint": savepoint}, "history": []},
-            # The upgraded job's history: two checkpoints after its restore.
-            {"history": [checkpoint(3, 150_000, 152_000)]},
-            {"history": [checkpoint(4, 180_000, 181_000), {"status": "FAILED"}]},
-            # The recovered job's history starts again after the failover.
-            {"history": [checkpoint(5, 340_000, 341_000)]},
-        ],
-    )
-    [run] = discover_runs(directory)
-    result = analyze.assess(run)
-    assert result["verdict"] == "usable"
-    assert result["replay"] == {
-        "upgrade": {
-            "restored_id": 2,
-            "first_checkpoint_id": 3,
-            "from_ms": 29_000,
-            "to_ms": 49_000,
-        },
-        "failover": {
-            "restored_id": 4,
-            "first_checkpoint_id": 5,
-            "from_ms": 119_000,
-            "to_ms": 159_000,
-        },
-    }
-    rendered = analyze.render([result])
-    assert f"| {TRIAL.run_id} | upgrade | 2 | 29.0 to 49.0 s | chk-3 |" in rendered
 
 
 @pytest.mark.parametrize(
@@ -536,14 +437,9 @@ def test_the_report_table_keeps_its_columns_for_both_kinds(tmp_path):
     assert any("samples no window" in line for line in lines)
 
 
-@pytest.mark.parametrize("kind", ["sequence", "single-fault"])
-def test_a_completed_record_without_a_listing_has_no_verdict(
-    kind,
-    tmp_path,
-):
+def test_a_completed_record_without_a_listing_has_no_verdict(tmp_path):
     """A completed run is decided by its listing, which this export lacks."""
-    faults = FAULTS if kind == "sequence" else None
-    directory = run_directory(tmp_path, [tasks([0, 1])], faults=faults)
+    directory = run_directory(tmp_path, [tasks([0, 1])], faults=FAULTS)
     record = {"stage": "complete", "outcomes": {"faults": FAULTS}, "coverage": {}}
     record.update(sequence_verdict(record))
     write(

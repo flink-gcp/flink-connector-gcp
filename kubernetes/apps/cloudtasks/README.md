@@ -84,7 +84,7 @@ The rerun, [preregistered](../../../docs/adr/evidence/0165-cloudtasks-rescale-ou
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2152](https://github.com/flink-gcp/flink-connector-gcp/issues/2152)), and it is the only kind dispatched; the single-fault kinds above ran under ADR-0165, whose exercise the rest of this section still describes.
 Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale of the sink from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism, its TaskManager count and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 A restore can make the sink create some tasks again; the service refuses a name it already holds, and the connector counts that as success, which is how a replay still leaves one task per record, as the listing checks.
@@ -97,23 +97,12 @@ The first `sequence` run, `ct2152-seq-a1`, began its input 541 seconds into the 
 When the job has finished after the last fault, with its whole input processed, the [oracle](#exercise-and-oracle) lists the queue as it does for the other kinds, and `usable` means the queue read back paused and the oracle passed: every sequence listed once as its own task with its own body, nothing else listed and nothing dispatched.
 That is the exactly-once rule of ADR-0204, so the sink's `EXACTLY_ONCE` mode is judged in this scenario, and ADR-0204 records why no fault is aimed at its commits ([Alternatives declined](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md#alternatives-declined), [#2148](https://github.com/flink-gcp/flink-connector-gcp/issues/2148)).
 The run records each restore it observes with the job's restore count, which counts restores between two polls too, so the findings can report the restarts a committer defect causes, as [#1794](https://github.com/flink-gcp/flink-connector-gcp/issues/1794) and [#1796](https://github.com/flink-gcp/flink-connector-gcp/issues/1796) surfaced, beside a passing end state.
-`just tier3-analyze` decides a `sequence` run by its listing and lists its faults; its proposal still carries the estimate below, priced for the single-fault input, which nothing approves.
+`just tier3-analyze` decides a `sequence` run by its listing and lists its faults.
 
-### Trial and estimate
+### Trial and proposal
 
-Every single-fault trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and runs a savepoint upgrade and then deletes a Pod.
-Its kind names the fault that makes it a trial of its own:
-
-| Kind | Upgrade | Pod deleted | Sink subtasks, initial then upgrade |
-| --- | --- | --- | --- |
-| `jm-replacement` | Keeps its sizes | The JobManager | 2, 2 |
-| `tm-replacement` | Keeps its sizes | The TaskManager that reported the latest input | 2, 2 |
-| `rescale-out` | Rescales the sink | The JobManager | 1, 2 |
-| `rescale-in` | Rescales the sink | The JobManager | 2, 1 |
-
-Each sink subtask runs on a single-slot TaskManager of its own, so a phase with one subtask runs one TaskManager.
-`jm-replacement` is the trial `ct-1362-a1` ran.
-Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
+The trial's kind is `sequence`, with the input above, and both phases run two sink subtasks, each on a single-slot TaskManager of its own.
+Render a trial's offline proposal from the repository root:
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
@@ -122,19 +111,15 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
   --started-at 2026-10-13T00:00:00Z --expires-at 2026-10-13T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
   --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/cloudtasks-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --cloudtasks-trial rescale-in > /tmp/cloudtasks-proposal.json
+  --cloudtasks-trial sequence > /tmp/cloudtasks-proposal.json
 ```
 
 A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
 
-The estimate is the same for every kind, `sequence` included.
-It prices the operator, the supervisor and the three application Pods for the window, which a rescale trial's phase with one TaskManager does not use in full, at the reviewed Autopilot rates, every task operation the trial plans at USD 0.40 per million without the monthly free tier, and a USD 1.00 reserve for state, evidence and telemetry.
-The operations are the 180,000 creates, one checkpoint's records re-created for each of the two recoveries, two whole listings in pages of 1,000, and ten queue calls.
-
 ### Dispatch
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `cloudtasks-recovery` with two inputs beyond the common ones: `cloudtasks_trial`, the kind, which the dispatch refuses when it is left at `none`; and `application_digest`, the published `cloudtasks-recovery` GAR digest, verified live at dispatch and never pinned.
-For a single-fault kind, the owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios. A `sequence` run needs no estimate approval, since ADR-0204 bounds it by its time limit.
+Dispatching is the approval, as for the other scenarios, and no estimate is approved first, since ADR-0204 bounds the run by its time limit.
 The workflow job runs for up to 120 minutes, because the 90-minute window's serial budget is 114 minutes.
 
 Dispatch checks the trial kind, the digest, the run ID and an existing run's evidence first, then snapshots the foundation, renders and verifies the proposal, takes live image receipts and binds the approval into the delivery before it takes the environment lock.
@@ -142,10 +127,9 @@ A `rig_sha` older than the trial kinds takes no `--cloudtasks-trial` and fails a
 The application has taken the sink's subtasks as `--parallelism` since [#2250](https://github.com/flink-gcp/flink-connector-gcp/issues/2250), and before it as `--sink-parallelism`, so a rig and an image from either side of that change refuse each other's arguments: the application fails as it parses them, and the run reaches no verdict. Dispatch an image published from the same side as the rig.
 The run's queue is `ct1362-<run-id>` in `flink-gcp/us-central1`.
 Choose a run ID that has not been used: a deleted queue's name can stay unavailable for a tombstone window of up to three days, and a used ID already has evidence, which dispatch refuses.
-A single-fault dispatch can also carry a campaign of the remaining single-fault kinds and a repeat budget, as the [Bigtable dispatch section](../bigtable/README.md#dispatch) describes for both scenarios; a `sequence` dispatch takes none.
 
-The [`cloudtasks-recovery`](../../lifecycle/cloudtasks.cue) delivery takes the input from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input, and the kind from the `cloudtasks_trial` tag, `jm-replacement` unless given, which sizes each phase's sink and TaskManagers from [faults.cue](../../lifecycle/faults.cue).
-Dispatch renders it at the dispatched kind and that kind's fixed input: the sequence's own, or the one every single-fault kind shares.
+The [`cloudtasks-recovery`](../../lifecycle/cloudtasks.cue) delivery takes the input from the optional `cloudtasks_records` and `cloudtasks_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input, and sizes both phases' sink and TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+Dispatch renders it at the sequence's fixed input.
 
 ### Queue lifecycle
 

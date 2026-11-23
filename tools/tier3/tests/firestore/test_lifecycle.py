@@ -20,7 +20,6 @@ from types import SimpleNamespace
 import pytest
 import requests
 from flink_tier3.common import ApiError, Failure, digest
-from flink_tier3.firestore import plan
 from flink_tier3.firestore.database import Databases
 from flink_tier3.firestore.lifecycle import FirestoreLifecycle
 from flink_tier3.firestore.trial import MODES, Trial
@@ -31,7 +30,9 @@ from ..doubles import NOW, Response
 from .test_documents import Firestore
 
 # The seed every dispatched trial writes.
-TRIAL = Trial("fs-lifecycle", 100, 10, **plan.SEED)
+# A seed larger than the sequence's, so that it takes several batches.
+SEED = {"seed_records": 108000, "seed_records_per_second": 50}
+TRIAL = Trial("fs-lifecycle", 100, 10, **SEED, kind="sequence")
 DEADLINE = NOW + 600
 
 

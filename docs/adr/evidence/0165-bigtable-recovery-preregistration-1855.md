@@ -30,7 +30,7 @@ The owner approved the campaign's spend on 2026-10-19.
 | 3 | `rescale-out` | savepoint rescale out | JobManager | 1, 2 | `bt1855-ro-a1` |
 | 4 | `rescale-in` | savepoint rescale in | JobManager | 2, 1 | `bt1855-ri-a1` |
 
-Every trial has the same input, 180,000 records at 100 records per second with checkpoints every 30 seconds, and its change stream ends 3,900 seconds into its 90-minute window, as the [runbook](../../../kubernetes/apps/bigtable/README.md#trial-and-estimate) describes.
+Every trial has the same input, 180,000 records at 100 records per second with checkpoints every 30 seconds, and its change stream ends 3,900 seconds into its 90-minute window, as the [runbook](https://github.com/flink-gcp/flink-connector-gcp/blob/79af2befed14838c7422a6b270beb393e1083083/kubernetes/apps/bigtable/README.md#trial-and-estimate) describes.
 Each trial runs a savepoint upgrade and then deletes a Pod, so the four together give each component the five faults of the Tier-3 measurement set: a savepoint upgrade, a JobManager replacement, a TaskManager replacement, a rescale out and a rescale in.
 
 The oracles answer different questions, and each reaches only part of a fault:

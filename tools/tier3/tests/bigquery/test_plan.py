@@ -17,7 +17,6 @@
 import copy
 import json
 import re
-from decimal import Decimal
 
 import pytest
 from flink_tier3 import render as command
@@ -26,13 +25,13 @@ from flink_tier3.bigquery.oracle import Trial
 from flink_tier3.bigquery.resources import ResourcePlan
 from flink_tier3.common import Failure, digest
 from flink_tier3.model import validate_approval
-from flink_tier3.policy import BIGQUERY_OBSERVATIONS, POLL
+from flink_tier3.policy import POD_RESOURCES
 from flink_tier3.repository import ROOT
 
 
 @pytest.fixture
 def trial():
-    return plan.trial("eo-10")
+    return plan.trial("eo-10-sequence")
 
 
 @pytest.fixture
@@ -56,15 +55,9 @@ def renderer(monkeypatch):
     def render(run_id, nonce, expiry, seconds, **options):
         calls.append((run_id, nonce, expiry, seconds, options))
         mode = options["bigquery_mode"]
-        # What `lifecycle/bigquery.cue` renders for each fault, written out
-        # rather than read from the plan the proposal checks against.
-        sizes = {
-            "none": (2, 2),
-            "tm-replacement": (2, 2),
-            "rescale-out": (1, 2),
-            "rescale-in": (2, 1),
-            "sequence": (2, 2),
-        }[options["bigquery_fault"]]
+        # What `lifecycle/bigquery.cue` renders, written out rather than read
+        # from the plan the proposal checks against.
+        sizes = (2, 2)
         initial = {
             "metadata": {
                 "name": run_id,
@@ -135,7 +128,7 @@ def renderer(monkeypatch):
                     "containers": [
                         {
                             "resources": {
-                                category: dict(plan.POD_RESOURCES["smoke"])
+                                category: dict(POD_RESOURCES["smoke"])
                                 for category in ("requests", "limits")
                             }
                         }
@@ -164,7 +157,7 @@ def renderer(monkeypatch):
                             "containers": [
                                 {
                                     "resources": {
-                                        category: dict(plan.POD_RESOURCES["supervisor"])
+                                        category: dict(POD_RESOURCES["supervisor"])
                                         for category in ("requests", "limits")
                                     },
                                     "image": plan.GAR
@@ -183,20 +176,11 @@ def renderer(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize(
-    "mode,records,destinations",
-    [
-        ("ALO", 28800, 10),
-        ("ALO", 28800, 50),
-        ("EO", 1843200, 10),
-        ("EO", 1843200, 50),
-        ("FILE_LOADS", 1843200, 10),
-    ],
-)
-def test_complete_identity_and_budget_bindings(
-    inputs, renderer, mode, records, destinations
-):
-    inputs["trial"].update(mode=mode, destinations=destinations)
+@pytest.mark.parametrize("name", list(plan.TRIALS))
+def test_complete_identity_and_budget_bindings(inputs, renderer, name):
+    inputs["trial"] = plan.trial(name)
+    mode, destinations, uploader = plan.TRIALS[name]
+    records = plan.SEQUENCE_RECORDS[mode]
     bundle = plan.prepare(**inputs)
     proposal = bundle["proposal"]
     assert proposal["kind"] == "bigquery-trial-proposal"
@@ -213,14 +197,14 @@ def test_complete_identity_and_budget_bindings(
         "mode": mode,
         "destinations": destinations,
         "records": records,
-        "fault": None,
-        "uploader": False,
+        "fault": "sequence",
+        "uploader": uploader,
     }
     adapter_plan = ResourcePlan(**{**resource, "trial": Trial(**resource["trial"])})
     assert adapter_plan.job_body(11)["configuration"]["query"][
         "maximumBytesBilled"
     ] == str(4 * 1024**3)
-    assert proposal["limits"]["input_bytes"] == 1800 * 1024**2
+    assert proposal["limits"]["input_bytes"] == 360 * 1024**2
     assert proposal["limits"]["query_bytes"] == 48 * 1024**3
     assert proposal["cleanup_at"] == "2026-09-21T01:15:00Z"
     # The ResourceQuotas bound what a run may hold; the proposal counts no Pods.
@@ -230,9 +214,7 @@ def test_complete_identity_and_budget_bindings(
         "input_bytes",
         "query_bytes",
     }
-    # The supervisor's shape is shared, and it grew so the scheduler cannot
-    # squeeze it onto a busy node; the trial's estimate grows with it.
-    assert proposal["cost"]["usd"] == "2.34915625"
+    assert "cost" not in proposal
     assert json.loads(bundle["delivery"]["config"]["data"]["proposal.json"]) == proposal
     assert len(renderer) == 1
     with pytest.raises(Failure, match="Incomplete run approval"):
@@ -283,7 +265,7 @@ def test_invalid_delivery_identity_refused_before_render(
 
 
 def test_a_late_start_renders_and_a_fractional_one_does_not(inputs, renderer):
-    """The rates' age informs the estimate; it no longer closes the proposal."""
+    """No review date closes the proposal; a whole-second window is all it needs."""
     inputs.update(started_at="2027-01-21T00:00:00Z", expires_at="2027-01-21T01:30:00Z")
     assert plan.prepare(**inputs)["proposal"]["started_at"] == inputs["started_at"]
     renderer.clear()
@@ -296,48 +278,18 @@ def test_a_late_start_renders_and_a_fractional_one_does_not(inputs, renderer):
 
 
 @pytest.mark.parametrize("destinations", [10.0, True, "10"])
-def test_a_trial_is_one_of_the_four_by_type_as_well_as_value(destinations):
+def test_a_trial_is_one_of_the_three_by_type_as_well_as_value(destinations):
     """An approval is JSON read back; `10.0` compares equal to `10` in Python."""
-    with pytest.raises(ValueError, match="ALO/EO and 10/50"):
-        plan.validate_trial({"mode": "EO", "destinations": destinations})
-    plan.validate_trial({"mode": "EO", "destinations": 10})
+    with pytest.raises(ValueError, match="Trial must be one of"):
+        plan.validate_trial(
+            {**plan.trial("eo-10-sequence"), "destinations": destinations}
+        )
+    plan.validate_trial(plan.trial("eo-10-sequence"))
 
 
-def test_the_estimate_charges_the_whole_query_budget():
-    # 12 slots of 4 GiB at USD 6.25 per TiB, on top of the Pods and the reserve.
-    query = Decimal(48) / 1024 * Decimal("6.25")
-    assert plan.estimate() - query - plan.RESERVE_USD > 0
-    assert plan.estimate().quantize(Decimal("0.01")) == Decimal("2.35")
-
-
-def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
-    """With and without the uploader, and each fault in place of one recovery."""
-    faults = ("tm-replacement", "rescale-out", "rescale-in")
+def test_the_trials_are_the_sequence_once_per_delivery_method():
+    """FILE_LOADS with the uploader on, as the connector runs it by default."""
     assert {name: plan.trial(name) for name in plan.TRIALS} == {
-        **{
-            f"{mode.lower()}-{count}": {"mode": mode, "destinations": count}
-            for mode in ("ALO", "EO")
-            for count in (10, 50)
-        },
-        "fl-10": {"mode": "FILE_LOADS", "destinations": 10},
-        "fl-10-uploader": {"mode": "FILE_LOADS", "destinations": 10, "uploader": True},
-        **{
-            f"eo-10-{fault}": {"mode": "EO", "destinations": 10, "fault": fault}
-            for fault in faults
-        },
-        **{
-            f"fl-10-{fault}": {"mode": "FILE_LOADS", "destinations": 10, "fault": fault}
-            for fault in faults
-        },
-        **{
-            f"fl-10-uploader-{fault}": {
-                "mode": "FILE_LOADS",
-                "destinations": 10,
-                "fault": fault,
-                "uploader": True,
-            }
-            for fault in faults
-        },
         "alo-10-sequence": {
             "mode": "ALO",
             "destinations": 10,
@@ -358,30 +310,32 @@ def test_the_trials_are_each_storage_write_mode_at_each_count_and_fl_10():
             "records": 368640,
         },
     }
-    with pytest.raises(Failure, match="one of alo-10, eo-10, alo-50, eo-50, fl-10, "):
-        plan.trial("none")
+    message = "one of alo-10-sequence, eo-10-sequence, fl-10-uploader-sequence$"
+    for name in ("none", "eo-10", "fl-10-uploader", "eo-10-tm-replacement"):
+        with pytest.raises(Failure, match=message):
+            plan.trial(name)
 
 
 def test_file_loads_is_a_trial_at_ten_destinations_only():
     """One FILE_LOADS trial asks about recovery, not about scale."""
-    with pytest.raises(ValueError, match="FILE_LOADS and 10"):
-        plan.validate_trial({"mode": "FILE_LOADS", "destinations": 50})
+    with pytest.raises(ValueError, match="Trial must be one of"):
+        plan.validate_trial(
+            {**plan.trial("fl-10-uploader-sequence"), "destinations": 50}
+        )
 
 
 def test_a_file_loads_upgrade_changes_only_phase_and_restoration(inputs, renderer):
     """The sink inputs follow the restoration flag, so it is not the last one."""
-    inputs["trial"] = plan.trial("fl-10")
+    inputs["trial"] = plan.trial("fl-10-uploader-sequence")
     bundle = plan.prepare(**inputs)
     initial = bundle["application"]["spec"]["job"]["args"]
     upgrade = bundle["upgrade_application"]["spec"]["job"]["args"]
-    assert (
-        initial[-2:] == ["--background-staging-upload-enabled", "false"] == upgrade[-2:]
-    )
+    assert initial[-4:] == upgrade[-4:]
     assert [i for i, (a, b) in enumerate(zip(initial, upgrade)) if a != b] == [
         3,
         initial.index("--require-restored") + 1,
     ]
-    assert bundle["proposal"]["limits"]["input_bytes"] == 1800 * 1024**2
+    assert bundle["proposal"]["limits"]["input_bytes"] == 360 * 1024**2
 
 
 @pytest.mark.parametrize(
@@ -434,7 +388,7 @@ def test_cli_emits_proposal_and_rejects_cross_scenario_flags(renderer, capsys):
         "--application-image",
         plan.GAR + "bigquery-recovery@sha256:" + "c" * 64,
         "--bigquery-trial",
-        "eo-10",
+        "eo-10-sequence",
     ]
     command.main(args)
     assert json.loads(capsys.readouterr().out)["proposal"]["approved"] is False
@@ -595,40 +549,22 @@ def test_shared_template_containers_are_rejected(inputs, renderer, monkeypatch, 
 
 
 @pytest.mark.parametrize(
-    "value",
-    [
-        # A fault only for the cells that offer one, and only a known one.
-        {"mode": "ALO", "destinations": 10, "fault": "tm-replacement"},
-        {"mode": "EO", "destinations": 50, "fault": "rescale-in"},
-        {"mode": "EO", "destinations": 10, "fault": "jm-replacement"},
-        {"mode": "EO", "destinations": 10, "fault": None},
-    ],
-)
-def test_a_fault_is_refused_outside_the_cells_that_offer_it(value):
-    with pytest.raises(
-        ValueError, match="a fault only for eo-10 or fl-10 or fl-10-uploader"
-    ):
-        plan.validate_trial(value)
-
-
-@pytest.mark.parametrize(
-    "value",
+    "name,uploader",
     [
         # The uploader only for FILE_LOADS, only as true, and never as a string.
-        {"mode": "EO", "destinations": 10, "uploader": True},
-        {"mode": "FILE_LOADS", "destinations": 10, "uploader": False},
-        {"mode": "FILE_LOADS", "destinations": 10, "uploader": "true"},
-        {"mode": "FILE_LOADS", "destinations": 10, "uploader": 1},
+        ("eo-10-sequence", True),
+        ("fl-10-uploader-sequence", False),
+        ("fl-10-uploader-sequence", "true"),
+        ("fl-10-uploader-sequence", 1),
     ],
 )
-def test_the_uploader_is_refused_outside_its_cells(value):
-    with pytest.raises(ValueError, match="with or without the uploader"):
-        plan.validate_trial(value)
+def test_the_uploader_is_refused_outside_its_cells(name, uploader):
+    with pytest.raises(ValueError, match="Trial must be one of"):
+        plan.validate_trial({**plan.trial(name), "uploader": uploader})
 
 
-@pytest.mark.parametrize("name", ["fl-10-uploader", "fl-10-uploader-rescale-out"])
-def test_an_uploader_trial_renders_and_proposes_the_uploader(inputs, renderer, name):
-    inputs["trial"] = plan.trial(name)
+def test_an_uploader_trial_renders_and_proposes_the_uploader(inputs, renderer):
+    inputs["trial"] = plan.trial("fl-10-uploader-sequence")
     bundle = plan.prepare(**inputs)
     assert renderer[0][4]["bigquery_uploader"] == "true"
     assert bundle["proposal"]["resources"]["trial"]["uploader"] is True
@@ -639,25 +575,6 @@ def test_an_uploader_trial_renders_and_proposes_the_uploader(inputs, renderer, n
             "--max-in-flight-upload-operations",
             "2",
         ]
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "eo-10-tm-replacement",
-        "eo-10-rescale-out",
-        "fl-10-rescale-in",
-        "fl-10-uploader-tm-replacement",
-    ],
-)
-def test_a_fault_trial_proposes_its_fault_at_the_same_estimate(inputs, renderer, name):
-    """The rendered sizes are held against the real CUE in the manifest tests."""
-    inputs["trial"] = plan.trial(name)
-    bundle = plan.prepare(**inputs)
-    assert renderer[0][4]["bigquery_fault"] == inputs["trial"]["fault"]
-    assert bundle["proposal"]["resources"]["trial"]["fault"] == inputs["trial"]["fault"]
-    # The Pods the quota and the estimate charge are the same for every trial.
-    assert bundle["proposal"]["cost"]["usd"] == "2.34915625"
 
 
 @pytest.mark.parametrize(
@@ -672,25 +589,18 @@ def test_a_fault_trial_proposes_its_fault_at_the_same_estimate(inputs, renderer,
 def test_a_rendered_size_other_than_the_trials_is_refused(
     inputs, renderer, monkeypatch, phase, field, match
 ):
-    inputs["trial"] = plan.trial("eo-10-rescale-out")
     render = plan.render
 
     def altered(*args, **kwargs):
         initial, upgrade, delivery = render(*args, **kwargs)
         app = initial if phase == "initial" else upgrade
         key = "parallelism" if field == "job" else "replicas"
-        app["spec"][field][key] = 2 if phase == "initial" else 1
+        app["spec"][field][key] = 1
         return initial, upgrade, delivery
 
     monkeypatch.setattr(plan, "render", altered)
     with pytest.raises(Failure, match=match):
         plan.prepare(**inputs)
-
-
-# The longest end-to-end checkpoint duration measured for each mode, in whole
-# seconds rounded up: 5.4 s for alo-50 and 15.6 s for eo-50 in the #1312
-# findings, and 3.3 s for a FILE_LOADS writer in the #1313 findings.
-MEASURED_CHECKPOINT = {"ALO": 6, "EO": 16, "FILE_LOADS": 4}
 
 
 def checkpoint_intervals():
@@ -706,50 +616,13 @@ def test_the_intervals_are_the_packages():
     assert checkpoint_intervals() == {"ALO": 30, "EO": 30, "FILE_LOADS": 120}
 
 
-@pytest.mark.parametrize("mode", ["ALO", "EO", "FILE_LOADS"])
-def test_the_input_outlasts_every_window_and_both_recoveries(mode):
-    """An estimate of the input left after the last window, per mode.
-
-    The input pauses while the job recovers, so a recovery's length moves the
-    windows and the input's end alike. What separates them is estimated as the
-    sum of every fixed delay, each wait for a completed checkpoint taken as a whole interval,
-    the longest end-to-end duration measured for the mode and a poll: a
-    completed checkpoint before the baseline opens, the warm-up and the
-    baseline, a checkpoint triggered after it, the upgrade's proving
-    checkpoint, the window after the upgrade and the poll that ends it,
-    FILE_LOADS's wait for a running load, the failover's proving checkpoint and
-    the window after it. The input the failover replays from its checkpoint
-    only adds to the margin. The estimate is not a bound: it leaves out the
-    supervisor's own work in each poll, its Kubernetes and REST reads, and a
-    checkpoint that ran toward its 120-second timeout would take most of the
-    FILE_LOADS margin and two such checkpoints more than all of it.
-    """
-    timing = BIGQUERY_OBSERVATIONS
-    checkpoint = checkpoint_intervals()[mode] + MEASURED_CHECKPOINT[mode] + POLL
-    worst = (
-        checkpoint
-        + timing["warmup_seconds"]
-        + timing["baseline_seconds"]
-        + checkpoint
-        + checkpoint
-        + timing["post_upgrade_seconds"]
-        + POLL
-        + (timing["in_flight_seconds"] if mode == "FILE_LOADS" else 0)
-        + checkpoint
-        + timing["post_recovery_seconds"]
-    )
-    # Thirty minutes of input at 1 MiB/s, whatever the row size.
-    input_seconds = plan.RECORDS[mode] * plan.ROW_BYTES[mode] / 1024**2
-    assert input_seconds - worst == {"ALO": 621, "EO": 581, "FILE_LOADS": 139}[mode]
-    # The deadline for the checkpoint after the baseline is two intervals and a
-    # poll each.
-    assert timing["upgrade_wait_seconds"] >= 2 * (checkpoint_intervals()[mode] + POLL)
-
-
 @pytest.mark.parametrize(
     "value",
     [
-        # The sequence only at its cells and with its mode's input.
+        # The sequence only at its cells and with its mode's input, and no
+        # trial without it.
+        {"mode": "ALO", "destinations": 10},
+        {"mode": "EO", "destinations": 10, "fault": "tm-replacement"},
         {"mode": "ALO", "destinations": 10, "fault": "sequence"},
         {"mode": "ALO", "destinations": 10, "fault": "sequence", "records": 5761},
         {"mode": "EO", "destinations": 10, "fault": "sequence", "records": 5760},
@@ -769,7 +642,7 @@ def test_the_input_outlasts_every_window_and_both_recoveries(mode):
 def test_the_sequence_is_refused_outside_its_cell(value):
     with pytest.raises(
         ValueError,
-        match="or be alo-10-sequence or eo-10-sequence or fl-10-uploader-sequence",
+        match="one of alo-10-sequence, eo-10-sequence, fl-10-uploader-sequence$",
     ):
         plan.validate_trial(value)
 
@@ -790,10 +663,8 @@ def test_the_sequence_proposes_its_input_at_the_default_sizes(
     inputs["trial"] = plan.trial(name)
     bundle = plan.prepare(**inputs)
     options = renderer[0][4]
-    assert (options["bigquery_fault"], options["bigquery_records"]) == (
-        "sequence",
-        records,
-    )
+    assert "bigquery_fault" not in options
+    assert options["bigquery_records"] == records
     resources = bundle["proposal"]["resources"]["trial"]
     assert (resources["fault"], resources["records"]) == ("sequence", records)
     assert bundle["proposal"]["limits"]["input_bytes"] == 360 * 1024**2
@@ -819,12 +690,18 @@ PROPOSAL = [
     [
         (
             "smoke",
-            ["--bigquery-trial", "eo-10"],
+            ["--bigquery-trial", "eo-10-sequence"],
             "trial inputs apply only to service trial proposals",
         ),
         (
             "pubsub-recovery",
-            [*PROPOSAL, "--pubsub-trial", "sequence", "--bigquery-trial", "eo-10"],
+            [
+                *PROPOSAL,
+                "--pubsub-trial",
+                "sequence",
+                "--bigquery-trial",
+                "eo-10-sequence",
+            ],
             "pubsub-recovery requires --pubsub-trial, --started-at",
         ),
     ],

@@ -21,10 +21,8 @@ import (
 	runPolicy "github.com/flink-gcp/flink-connector-gcp/kubernetes/runs:tier3"
 )
 
-// The trial's inputs, which dispatch and the offline renderer supply: its kind, a single fault
-// or `sequence`, which runs every fault in one run (ADR-0204), and the input and relay settings
-// that `flink_tier3/pubsub/plan.py` fixes for that kind.
-pubsubTrial: *defaultFault | or([for kind, _ in sequenceKinds {kind}]) @tag(pubsub_trial)
+// The trial's inputs, which dispatch and the offline renderer supply: the input and relay
+// settings that `flink_tier3/pubsub/plan.py` fixes for the fault sequence (ADR-0204).
 pubsubRecords:              *1000 | (int & >=3 & <=10000) @tag(pubsub_records,type=int)
 pubsubRestoreDeduplication: *false | bool                 @tag(pubsub_restore_deduplication,type=bool)
 pubsubRecordDelayMillis:    *0 | (int & >=0 & <=1000)     @tag(pubsub_record_delay_millis,type=int)
@@ -42,11 +40,10 @@ if scenario == "pubsub-recovery" {
 					id:                   runID, image: applicationImage, recordsPerSubscription: pubsubRecords
 					restoreDeduplication: pubsubRestoreDeduplication
 					recordDelayMillis:    pubsubRecordDelayMillis
-					// The recovery manifest takes the kind's upgrade size, and only a rescale's runs the
-					// upgrade phase. The sequence's patches its rescales from the upgrade (ADR-0204), so
-					// its recovery manifest is the upgrade at two.
-					parallelism: sequenceKinds[pubsubTrial][[if recovery {"upgrade"}, "initial"][0]]
-					phase: [if recovery && (pubsubTrial == "sequence" || sequenceKinds[pubsubTrial].rescale != null) {"upgrade"}, "initial"][0]
+					// The recovery manifest is the savepoint upgrade, from which the exercise patches
+					// the sequence's rescales (ADR-0204).
+					parallelism: renderedParallelism
+					phase: [if recovery {"upgrade"}, "initial"][0]
 				}
 			}).resource & {
 				metadata: annotations: "flink-gcp.io/approval": nonce

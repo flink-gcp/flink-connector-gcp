@@ -251,7 +251,7 @@ That first application also granted `update`, and `get` and `watch` on events; C
 A cluster rebuilt with this root's state retained needs the installer objects again before its first plan; the plan then recreates `tier3-node-events`.
 With the state lost as well, the import blocks need `tier3-node-events` to exist, so the administrator also creates it from `lifecycle.tf`.
 `kubectl auth can-i --as=system:serviceaccount:tier3-system:tier3-supervisor` answers yes for `list events -n default` and no for `create events -n default` and `list pods -n default`.
-The supervisor lists the events only when a workload Pod is lost outside a planned recovery; without the Role that read is refused, and the run stops on the refusal instead of either stop, which a campaign does not repeat.
+The supervisor lists the events only when a workload Pod is lost outside a planned recovery; without the Role that read is refused, and the run stops on the refusal instead of either stop.
 
 ## PR plan and merge apply
 

@@ -23,7 +23,7 @@ from flink_tier3.common import Failure, TransportError
 
 from ..doubles import NOW, Http
 
-TRIAL = Trial("bt-oracle", 20, 10, "2026-10-20T01:05:00Z")
+TRIAL = Trial("bt-oracle", 20, 10, "2026-10-20T01:05:00Z", "sequence")
 ONE = (1).to_bytes(8, "big")
 
 

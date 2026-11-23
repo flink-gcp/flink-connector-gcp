@@ -26,9 +26,6 @@ state = 'flink-gcp-tier3-smoke'
 environment = '_control/environment.json'
 gar = 'us-central1-docker.pkg.dev/flink-gcp/flink-tier3/'
 repository = 'flink-gcp/flink-connector-gcp'
-# When the rates below were checked: the basis of the estimate the owner
-# approves before a dispatch, not an admission deadline (ADR-0165).
-pricing_reviewed = '2026-09-14T00:00:00Z'
 cloudtasks = 'tier3-cloudtasks'
 cloudtasks_state = 'flink-gcp-tier3-cloudtasks'
 bigquery = 'tier3-bigquery'
@@ -41,13 +38,6 @@ spanner = 'tier3-spanner'
 spanner_state = 'flink-gcp-tier3-spanner'
 firestore = 'tier3-firestore'
 firestore_state = 'flink-gcp-tier3-firestore'
-
-# Conservative normal-capacity rates, including for Spot.
-# Exceed published Iowa Autopilot prices reviewed on 2026-09-14.
-[cost_rates]
-cpu = "0.10"
-memory = "0.02"
-ephemeral-storage = "0.001"
 
 # Each scenario's run, from admission to the end of its cleanup reserve. The
 # ResourceQuotas, not a count here, bound what a run may hold.

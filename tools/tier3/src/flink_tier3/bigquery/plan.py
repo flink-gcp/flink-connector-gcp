@@ -18,22 +18,20 @@ import copy
 import json
 import re
 from dataclasses import asdict
-from decimal import Decimal
 
 from ..common import Failure, digest, json_bytes, timestamp, utc
-from ..model import Schedule, _hourly
+from ..model import Schedule
 from ..policy import (
     BIGQUERY_OBSERVATIONS,
     CLEANUP_SECONDS,
     GAR,
-    POD_RESOURCES,
     RUN_ID,
     SHA,
     WINDOWS,
 )
 from ..proposal import verify_resources
 from ..workflow import render
-from .oracle import FAULTS, ROW_BYTES, SEQUENCE_KIND, Trial
+from .oracle import ROW_BYTES, SEQUENCE_KIND, Trial
 from .resources import ResourcePlan
 
 WINDOW_SECONDS = WINDOWS["bigquery-recovery"]
@@ -41,46 +39,18 @@ ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
 QUERY_SLOTS = 12
 BYTES_PER_QUERY = 4 * 1024**3
 QUERY_TIMEOUT_MS = 60000
-REVIEWED_AT = "2026-09-20T00:00:00Z"
-QUERY_USD_PER_TIB = Decimal("6.25")
-RESERVE_USD = Decimal("1.00")
-# The dispatchable trials; the query budget above is every trial's. FILE_LOADS
-# has two cells at ten destinations, one with the sink inputs at the connector's
-# defaults but the background staging uploader off, and one that turns it on
-# (#2030), as the connector now does by default: they ask whether
-# finalization is correct across recovery, not how it scales. The exactly-once
-# cells at ten destinations also run each fault the shared exercise offers in
-# place of one recovery (#1779), named `<cell>-<fault>`; the owner chooses which
-# of them run. A trial is (mode, destinations, fault, uploader).
-FAULT_CELLS = ("eo-10", "fl-10", "fl-10-uploader")
+# The dispatchable trials, the fault sequence of ADR-0204 once per delivery
+# method: the at-least-once path (#2150), and the exactly-once paths (#2148),
+# FILE_LOADS with the background staging uploader on, as the connector runs it
+# by default. Each method runs alone, since one job holding both exactly-once
+# sinks would need TaskManagers the namespace's quota has no room for. The
+# query budget above is every trial's. A trial is (mode, destinations,
+# uploader).
 TRIALS = {
-    **{
-        f"{mode.lower()}-{destinations}": (mode, destinations, None, False)
-        for destinations in (10, 50)
-        for mode in ("ALO", "EO")
-    },
-    "fl-10": ("FILE_LOADS", 10, None, False),
-    "fl-10-uploader": ("FILE_LOADS", 10, None, True),
+    f"alo-10-{SEQUENCE_KIND}": ("ALO", 10, False),
+    f"eo-10-{SEQUENCE_KIND}": ("EO", 10, False),
+    f"fl-10-uploader-{SEQUENCE_KIND}": ("FILE_LOADS", 10, True),
 }
-TRIALS.update(
-    {
-        f"{cell}-{fault}": (*TRIALS[cell][:2], fault, TRIALS[cell][3])
-        for cell in FAULT_CELLS
-        for fault in FAULTS
-    }
-)
-# The fault sequence of ADR-0204, one trial per delivery method: the
-# at-least-once path (#2150), and the exactly-once paths (#2148), FILE_LOADS
-# with the background staging uploader on, as the connector runs it by
-# default. Each method runs alone, since one job holding both exactly-once
-# sinks would need TaskManagers the namespace's quota has no room for.
-SEQUENCE_TRIALS = {
-    f"{cell}-{SEQUENCE_KIND}": (*TRIALS[cell][:2], SEQUENCE_KIND, TRIALS[cell][3])
-    for cell in ("alo-10", "eo-10", "fl-10-uploader")
-}
-TRIALS.update(SEQUENCE_TRIALS)
-# A trial's offered input: 30 minutes at 1 MiB/s of its mode's row size.
-RECORDS = {mode: 1800 * 1024**2 // size for mode, size in ROW_BYTES.items()}
 # The fault sequence's input: six minutes at 1 MiB/s of its mode's rows, 16
 # a second of 64 KiB or 1,024 of 1 KiB. The job finishes with its input, so
 # the input only has to outlast the faults; the runbook's "Fault sequence"
@@ -89,53 +59,21 @@ SEQUENCE_RECORDS = {mode: 360 * 1024**2 // size for mode, size in ROW_BYTES.item
 
 
 def trial(name):
-    """The approved trial a dispatch names, such as `alo-10`."""
+    """The approved trial a dispatch names, such as `alo-10-sequence`."""
     if name not in TRIALS:
         raise Failure("BigQuery trial must be one of " + ", ".join(TRIALS))
-    mode, destinations, fault, uploader = TRIALS[name]
-    # A trial without a fault or the uploader keeps the shape every earlier
-    # approval carried; only the sequence names its own input.
-    value = {"mode": mode, "destinations": destinations}
-    if fault is not None:
-        value["fault"] = fault
+    mode, destinations, uploader = TRIALS[name]
+    value = {"mode": mode, "destinations": destinations, "fault": SEQUENCE_KIND}
     if uploader:
         value["uploader"] = True
-    if fault == SEQUENCE_KIND:
-        value["records"] = SEQUENCE_RECORDS[mode]
+    value["records"] = SEQUENCE_RECORDS[mode]
     return value
 
 
 def validate_trial(value):
     # Serialized, so `10.0` or `True` cannot pass as a destination count.
     if json_bytes(value) not in {json_bytes(trial(name)) for name in TRIALS}:
-        raise ValueError(
-            "Trial must select ALO/EO and 10/50 destinations, or FILE_LOADS and 10 "
-            "with or without the uploader, and a fault only for "
-            + " or ".join(FAULT_CELLS)
-            + ", or be "
-            + " or ".join(SEQUENCE_TRIALS)
-        )
-
-
-def estimate():
-    """Planning estimate for one trial; not a bound on bills or SDK retries.
-
-    It is the same for every trial. FILE_LOADS adds load jobs, which use the
-    shared free slot pool, and staged objects under the run prefix, each held
-    until the commit that loads it: on the order of the trial's 1,800 MiB input
-    for under 90 minutes, and some hundreds of writes. The estimate prices
-    neither and assumes both fit the reserve; the fl-10 trial ran 190 load jobs
-    on the free pool and staged 380 files, and no trial has read the resulting
-    charges from billing.
-    """
-    shapes = [
-        POD_RESOURCES["operator"],
-        POD_RESOURCES["supervisor"],
-        *[POD_RESOURCES["smoke"]] * 3,
-    ]
-    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    query = Decimal(QUERY_SLOTS * BYTES_PER_QUERY) / 1024**4 * QUERY_USD_PER_TIB
-    return compute + query + RESERVE_USD
+        raise ValueError("Trial must be one of " + ", ".join(TRIALS))
 
 
 def resource_plan(run_id, nonce, expires_at, trial):
@@ -146,8 +84,8 @@ def resource_plan(run_id, nonce, expires_at, trial):
             run_id,
             trial["mode"],
             trial["destinations"],
-            trial.get("records", RECORDS[trial["mode"]]),
-            trial.get("fault"),
+            trial["records"],
+            trial["fault"],
             trial.get("uploader", False),
         ),
         nonce,
@@ -195,7 +133,6 @@ def prepare(
         "application_image": application_image,
         "bigquery_mode": identity.mode,
         "bigquery_destinations": identity.destinations,
-        "bigquery_fault": identity.fault or "none",
         "bigquery_records": identity.records,
         "bigquery_uploader": "true" if identity.uploader else "false",
     }
@@ -282,13 +219,6 @@ def prepare(
             "query_bytes": QUERY_SLOTS * BYTES_PER_QUERY,
         },
         "observations": dict(BIGQUERY_OBSERVATIONS),
-        "cost": {
-            "kind": "planning-estimate",
-            "usd": str(estimate()),
-            "reviewed_at": REVIEWED_AT,
-            "query_usd_per_tib": str(QUERY_USD_PER_TIB),
-            "other_reserve_usd": str(RESERVE_USD),
-        },
     }
     delivery["config"]["data"]["proposal.json"] = json_bytes(proposal).decode()
     return {

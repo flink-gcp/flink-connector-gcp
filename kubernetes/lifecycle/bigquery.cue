@@ -23,25 +23,12 @@ import (
 // The trial's inputs, which dispatch and the offline renderer supply.
 bigqueryMode:         *"EO" | "ALO" | "FILE_LOADS" @tag(bigquery_mode)
 bigqueryDestinations: *10 | 50                     @tag(bigquery_destinations,type=int)
-// The fault a trial runs in place of one of the two recoveries every trial has run, or none, or
-// `sequence`, which runs every fault in one run (ADR-0204).
-bigqueryFault: *"none" | or([for kind, _ in sequenceKinds if kind != defaultFault {kind}]) @tag(bigquery_fault)
 // The trial's record count, which dispatch always names; without it, the package's default for
 // the mode.
 bigqueryRecords: int @tag(bigquery_records,type=int)
 // Whether a FILE_LOADS trial runs the background staging uploader; a Storage Write mode
 // refuses it, because the application package refuses any FILE_LOADS knob there.
 bigqueryUploader: *false | true @tag(bigquery_uploader,type=bool)
-
-// The writers' parallelism of each phase, the fault kind's; a trial without a fault, and the
-// sequence, keep the default kind's. Indexed, because with the package sources on standard input,
-// as every render supplies them, the tag's disjunction alone refused no fault in an export of the
-// applications.
-_bigqueryFaults: {
-	"none": faultKinds[defaultFault]
-	for kind, sizes in sequenceKinds if kind != defaultFault {(kind): sizes}
-}
-_bigqueryParallelism: _bigqueryFaults[bigqueryFault]
 
 // Both BigQuery phases come from the same input identity and fixed package.
 // approval.json stays empty in a proposal; dispatch embeds the approval when it
@@ -52,7 +39,7 @@ if scenario == "bigquery-recovery" {
 			run: {id: runID, expiresAt: expires, namespace: "tier3-bigquery", image: applicationImage}
 			delivery: resources: app: (bigquery.#Application & {
 				run: {id: runID, image: applicationImage, phase: trialPhase
-					mode:    bigqueryMode, destinations: bigqueryDestinations, parallelism: _bigqueryParallelism[trialPhase]
+					mode:    bigqueryMode, destinations: bigqueryDestinations, parallelism: renderedParallelism
 					records: bigqueryRecords
 					if bigqueryUploader {fileLoads: backgroundStagingUploadEnabled: true}
 				}

@@ -79,12 +79,11 @@ def prepared(env, inputs, renderer):
     return environment, application, upgrade, proposal
 
 
-@pytest.mark.parametrize("mode", ["ALO", "EO"])
-@pytest.mark.parametrize("destinations", [10, 50])
-def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinations):
+@pytest.mark.parametrize("name", list(plan.TRIALS))
+def test_approval_and_proposal_share_exact_service_plan(prepared, name):
     environment, _, _, _ = prepared
     value = environment.approval.to_dict()
-    value["bigquery_trial"].update(mode=mode, destinations=destinations)
+    value["bigquery_trial"] = plan.trial(name)
     approval = Approval.from_dict(value)
     expected = plan.prepare(
         run_id=approval.run_id,
@@ -107,6 +106,8 @@ def test_approval_and_proposal_share_exact_service_plan(prepared, mode, destinat
         approval.schedule.started
     )
     assert Approval.from_dict(approval.to_dict()) == approval
+    # The approval holds its own copy of the trial.
+    mode = value["bigquery_trial"]["mode"]
     value["bigquery_trial"]["mode"] = "EO" if mode == "ALO" else "ALO"
     assert approval.bigquery_plan.trial.mode == mode
 
@@ -150,7 +151,7 @@ def test_unreviewed_trial_is_rejected(prepared, key, value):
     approval = environment.approval.to_dict()
     approval["bigquery_trial"][key] = value
     # The plan is derived from the trial, so no actor can bind an unreviewed one.
-    with pytest.raises(ValueError, match="Trial must select"):
+    with pytest.raises(ValueError, match="Trial must be one of"):
         _ = Approval.from_dict(approval).bigquery_plan
 
 
@@ -167,14 +168,14 @@ def test_wrong_namespace_and_image_are_rejected(prepared):
             validate_approval(value)
 
 
-def test_admission_window_is_enforced_and_the_rates_age_is_not(prepared):
+def test_admission_window_is_enforced_and_a_later_date_is_not(prepared):
     environment, *_ = prepared
     value = environment.approval.to_dict()
     for now in (environment.schedule.started - 31, environment.schedule.cleanup_at):
         with pytest.raises(Failure, match="admission window"):
             check_window(Approval.from_dict(value), now)
-    # Spend is approved from the estimate before dispatch; a run long after
-    # the rates were reviewed is admitted like any other.
+    # Only the window bounds admission; a run months later is admitted like
+    # any other.
     value.update(
         started_at="2027-01-21T00:00:00Z",
         expires_at="2027-01-21T01:30:00Z",

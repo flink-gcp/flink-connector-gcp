@@ -19,20 +19,17 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
-from decimal import Decimal
 from enum import Enum
 from typing import ClassVar
 
-from .common import Failure, quantity, timestamp
+from .common import Failure, timestamp
 from .policy import (
     BIGQUERY,
     BIGTABLE,
     CLEANUP_SECONDS,
     CLOUDTASKS,
-    COST_RATES,
     FIRESTORE,
     GAR,
-    POD_RESOURCES,
     PUBSUB,
     RUN_ID,
     SHA,
@@ -41,38 +38,6 @@ from .policy import (
     SYSTEM,
     WINDOWS,
 )
-
-
-def estimated_cost(seconds):
-    resources = {
-        key: sum(
-            quantity(values[key]) * (2 if role == "smoke" else 1)
-            for role, values in POD_RESOURCES.items()
-        )
-        for key in COST_RATES
-    }
-    compute = (
-        sum(
-            resources[key] / (1024**3 if key != "cpu" else 1) * rate
-            for key, rate in COST_RATES.items()
-        )
-        * Decimal(str(seconds))
-        / 3600
-    )
-    # Reserve covers bounded GCS storage, operations and telemetry transfer;
-    # the already-running cluster's standing fee is outside incremental cost.
-    return compute + Decimal("0.25")
-
-
-def _hourly(shapes):
-    resources = {
-        key: sum(quantity(values[key]) for values in shapes) for key in COST_RATES
-    }
-    return sum(
-        resources[key] / (1024**3 if key != "cpu" else 1) * rate
-        for key, rate in COST_RATES.items()
-    )
-
 
 # The approval schema every scenario writes. Nothing gates on it: recovery
 # reads a held run's approval as written.

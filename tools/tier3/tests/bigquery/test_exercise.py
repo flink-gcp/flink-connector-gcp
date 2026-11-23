@@ -17,7 +17,6 @@ import copy
 import json
 from dataclasses import replace
 
-import google.auth.exceptions
 import pytest
 import requests
 from flink_tier3 import analyze
@@ -548,6 +547,9 @@ class World:
             json.dumps(
                 {
                     "scenario": self.approval.scenario,
+                    # The runner copies the trial into the receipt, which is
+                    # where the analyzer reads a run's kind.
+                    "bigquery_trial": self.approval.bigquery_trial,
                     "success": record.success
                     and record.recovery.get("verdict") == rt.USABLE,
                     "recovery": record.recovery,
@@ -621,449 +623,6 @@ class World:
     def run(self):
         self.supervisor.supervise(self.supervisor_pod["metadata"]["uid"])
         return self.env.refresh()
-
-
-@pytest.mark.parametrize(
-    "mode,destinations",
-    [("ALO", 10), ("ALO", 50), ("EO", 10), ("EO", 50), ("FILE_LOADS", 10)],
-)
-def test_bigquery_recovery_and_query_then_cleanup(
-    prepared, monkeypatch, mode, destinations
-):
-    # The parameterized input is supplied by the trial fixture before rendering below.
-    world = World(prepared, monkeypatch)
-    assert world.plan.trial.mode == mode
-    assert world.plan.trial.destinations == destinations
-    exercise = world.supervisor.exercise
-    advance, opened = exercise.advance_baseline, []
-
-    def advance_baseline(cp):
-        passed = advance(cp)
-        if exercise.baseline_until is not None and not opened:
-            opened.append((exercise.baseline_until, exercise.deadline))
-        return passed
-
-    monkeypatch.setattr(exercise, "advance_baseline", advance_baseline)
-    record = world.run()
-    # The upgrade waited up to two FILE_LOADS checkpoint intervals and a poll
-    # each for a checkpoint after the baseline, in every mode.
-    [(until, deadline)] = opened
-    assert (
-        deadline
-        == until + BIGQUERY_OBSERVATIONS["upgrade_wait_seconds"]
-        == (until + 270)
-    )
-    assert record.success, record.reason
-    assert record.recovery["stage"] == "complete"
-    assert set(record.recovery["outcomes"]) == {"upgrade", "failover", "query"} | (
-        {"failover_in_flight"} if mode == "FILE_LOADS" else set()
-    )
-    # The verdict the production path produced, not one typed into a fixture:
-    # a run that proves both recoveries, passes the oracle and reads every
-    # family in each sampled window is the usable measurement.
-    assert record.recovery["verdict"] == rt.USABLE
-    assert record.recovery["reasons"] == []
-    assert set(record.recovery["coverage"]) == {"baseline", "upgraded", "finishing"}
-    for stage in ("baseline", "upgraded", "finishing"):
-        window = record.recovery["coverage"][stage]
-        assert window["observed"] == (
-            ["checkpoint", "committer", "connector", "memory", "network", "task"]
-            if mode == "FILE_LOADS"
-            else ["connector", "memory", "network", "task"]
-        )
-        assert window["attempts"] >= 1
-    if mode == "FILE_LOADS":
-        # The JobManager went only once a load was RUNNING, and the load was
-        # still running when the listing after the delete looked again.
-        assert world.armed_listings == 3
-        armed = world.listings[0][0]
-        waits = world.listings[:3]
-        # Gapless: one listing a second, each under the wait's own deadline.
-        assert [at - armed for at, _ in waits] == [0, 1, 2]
-        assert {d for _, d in waits} == {
-            armed + BIGQUERY_OBSERVATIONS["in_flight_seconds"]
-        }
-        failover_at = world.failover_at
-        assert world.listings[3] == (
-            failover_at,
-            failover_at + BIGQUERY_OBSERVATIONS["recovery_seconds"],
-        )
-        in_flight = record.recovery["outcomes"]["failover_in_flight"]
-        assert in_flight == {
-            "listed_at": rt.utc(armed + 2),
-            "running_before": [LOAD["id"]],
-            "listing_errors": 0,
-            "failover_at": rt.utc(failover_at),
-            "relisted_at": rt.utc(failover_at + 0.4),
-            "running_after": [LOAD["id"]],
-            "running_through": [LOAD["id"]],
-        }
-        assert failover_at == armed + 2.4
-        events = world.evidence()
-        assert [
-            v["payload"]
-            for v in events.values()
-            if isinstance(v, dict) and v.get("event") == "bigquery-failover-in-flight"
-        ] == [in_flight]
-        # The failover record, written before the delete, already holds what
-        # the wait saw.
-        [failover] = [
-            v["payload"]
-            for v in events.values()
-            if isinstance(v, dict) and v.get("event") == "recovery-failover"
-        ]
-        assert failover["outcomes"]["failover_in_flight"] == {
-            "listed_at": rt.utc(armed + 2),
-            "running_before": [LOAD["id"]],
-            "listing_errors": 0,
-        }
-        # The oracle asked before each read, and cleanup before any delete.
-        assert False in world.connector_listings and True in world.connector_listings
-        assert record.bigquery["file_loads"]["staging"] == {
-            "objects": 0,
-            "bytes": 0,
-            "names": [],
-        }
-    else:
-        assert world.connector_listings == []
-    assert [name for name, _ in world.calls] == ["upgrade", "failover"]
-    # The deployed measurements the issue asks for: sampled through the run's
-    # own windows, with every reading named even when it is absent.
-    samples = world.measurements()
-    assert len(samples) > 1
-    assert {sample["payload"]["stage"] for sample in samples} >= {"baseline"}
-    readings = [s["payload"]["sink"] for s in samples if "sink" in s["payload"]]
-    assert readings, "no sample carried a sink reading"
-    # A sample taken when the plan could not be read says so rather than
-    # reporting an empty measurement.
-    for sample in samples:
-        assert "sink" in sample["payload"] or "vertices" in sample["payload"]
-    assert any(s["payload"].get("taskmanagers") for s in samples)
-    timing = BIGQUERY_OBSERVATIONS
-    assert (
-        world.upgrade_at - world.start
-        >= timing["warmup_seconds"] + timing["baseline_seconds"]
-    )
-    [upgraded] = [
-        v["payload"]
-        for v in world.evidence().values()
-        if isinstance(v, dict) and v.get("event") == "recovery-upgraded"
-    ]
-    # The deletion waited for the window after the upgrade.
-    assert (
-        world.failover_at - rt.timestamp(upgraded["at"])
-        >= (timing["post_upgrade_seconds"])
-    )
-    assert (
-        world.query_calls[0][1] - world.failover_at >= (timing["post_recovery_seconds"])
-    )
-    assert record.phase == Phase.CLEANED
-    assert world.resources.tables == {}
-    assert record.bigquery["handoff"]["released"]
-    assert world.store.read(rt.ENVIRONMENT)[0] is not None
-    # Every sample taken inside a window is accounted for by the record it
-    # wrote, and only those: startup and the recoveries count toward none.
-    windowed = [s for s in samples if s["payload"]["window"] is not None]
-    # The warm-up and the input after the last window are read and counted
-    # toward no window.
-    assert any(
-        s["payload"]["stage"] == "baseline" and s["payload"]["window"] is None
-        for s in samples
-    )
-    assert any(
-        s["payload"]["stage"] == "finishing" and s["payload"]["window"] is None
-        for s in samples
-    )
-    [baseline_window] = [
-        v["payload"]
-        for v in world.evidence().values()
-        if isinstance(v, dict) and v.get("event") == "bigquery-baseline-window"
-    ]
-    assert rt.timestamp(baseline_window["until"]) == until
-    assert sum(w["attempts"] for w in record.recovery["coverage"].values()) == len(
-        windowed
-    )
-    assert len(windowed) < len(samples)
-    for sample in windowed:
-        assert sample["payload"]["window"] in record.recovery["coverage"]
-    # Every transition carries the coverage so far, so a run that stops before
-    # its verdict still records what it read.
-    transitions = [
-        value["payload"]
-        for value in world.evidence().values()
-        if isinstance(value, dict)
-        and str(value.get("event", "")).startswith("recovery-")
-        and isinstance(value.get("payload"), dict)
-        and "stage" in value["payload"]
-    ]
-    assert transitions
-    assert all("coverage" in payload for payload in transitions)
-
-
-def test_the_exported_evidence_recomputes_to_the_verdict_the_run_wrote(
-    prepared, monkeypatch, tmp_path
-):
-    """The one test that crosses the producer/consumer seam.
-
-    Every constant coupling the exercise to the offline analyzer -- the event
-    names, the record's shape, the receipt's copy of it and the per-stage
-    sample counts -- is proved here against evidence the run itself wrote,
-    rather than against a fixture that spells them a second time.
-    """
-    world = World(prepared, monkeypatch)
-    record = world.run()
-    exported = world.export(tmp_path, record)
-    assert sorted(path.name for path in exported.iterdir()) == [world.approval.run_id]
-    report = analyze.analyze(exported)
-    assert [item["verdict"] for item in report["bigquery"]] == [rt.USABLE]
-    item = report["bigquery"][0]
-    assert item["run_id"] == world.approval.run_id
-    assert item["verdict"] == rt.USABLE
-    assert item["reasons"] == []
-    assert item["problems"] == []
-    assert item["samples"] == len(world.measurements())
-    # Each recovery's timing is measured from the start its own stage record
-    # holds, which precedes the fault the World saw, to the restore and the
-    # proving checkpoint the record's proof holds.
-    events = world.evidence().values()
-    faults = {"upgrade": world.upgrade_at, "failover": world.failover_at}
-    defaults = {"upgrade": "savepoint-upgrade", "failover": "jm-replacement"}
-    for name, fault in defaults.items():
-        [began] = [
-            v["payload"]["at"]
-            for v in events
-            if isinstance(v, dict) and v.get("event") == "recovery-" + name
-        ]
-        assert rt.timestamp(began) <= faults[name]
-        proof = record.recovery["outcomes"][name]
-        start = round(rt.timestamp(began) * 1000)
-        assert item["recoveries"][name] == {
-            "fault": fault,
-            "began_at": began,
-            "restored_from": "savepoint" if name == "upgrade" else "checkpoint",
-            "restored_id": proof["restored"]["id"],
-            "restored_ms": proof["restored"]["restore_timestamp"] - start,
-            "checkpoint_id": proof["checkpoint"]["id"],
-            "checkpoint_ms": proof["checkpoint"]["latest_ack_timestamp"] - start,
-        }
-        # The World restores 30 seconds after the fault.
-        assert item["recoveries"][name]["restored_ms"] >= 30_000
-    rendered = analyze.render_markdown(report)
-    assert rendered.startswith("# Tier-3 evidence analysis")
-    assert "0162-cloudtasks-assessment-1246.md" not in rendered
-    assert f"| {world.approval.run_id} | usable | usable |" in rendered
-    assert (
-        "| run | recovery | fault | began | restored from | restored after " in rendered
-    )
-    assert f"| {world.approval.run_id} | upgrade | savepoint-upgrade | " in rendered
-    out = analyze.write_reports(report, tmp_path / "analysis")
-    assert "Deployed BigQuery runs" in (out / "report.md").read_text()
-    assert (
-        json.loads((out / "report.json").read_text())["bigquery"] == report["bigquery"]
-    )
-    assert "bigquery runs: usable 1" in analyze.summary_line(report, out)
-
-
-def test_a_listed_metric_the_job_stopped_publishing_is_not_observed(
-    prepared, monkeypatch, tmp_path
-):
-    """Discovery keeps the id; the answer omits it; the family is not read."""
-    world = World(prepared, monkeypatch, withheld="inPoolUsage")
-    record = world.run()
-    assert record.recovery["verdict"] == INCONCLUSIVE
-    assert record.recovery["reasons"] == [
-        f"unobserved-network-in-{stage}"
-        for stage in ("baseline", "upgraded", "finishing")
-    ]
-    report = analyze.analyze(world.export(tmp_path, record))
-    item = report["bigquery"][0]
-    assert item["verdict"] == INCONCLUSIVE
-    assert item["problems"] == []
-    assert item["reasons"] == record.recovery["reasons"]
-
-
-@pytest.fixture(autouse=True)
-def select_trial(request, trial):
-    for key in ("mode", "destinations"):
-        if key in request.fixturenames:
-            trial[key] = request.getfixturevalue(key)
-    if "trial_fault" in request.fixturenames:
-        trial["fault"] = request.getfixturevalue("trial_fault")
-
-
-@pytest.mark.parametrize(
-    "mode,trial_fault,subtasks,replaced",
-    [
-        ("EO", "tm-replacement", None, "tm-1"),
-        ("EO", "rescale-out", (2, 3), None),
-        ("EO", "rescale-in", (3, 2), None),
-        ("FILE_LOADS", "tm-replacement", None, "tm-1"),
-        ("FILE_LOADS", "rescale-out", (3, 5), None),
-        ("FILE_LOADS", "rescale-in", (5, 3), None),
-    ],
-)
-def test_each_fault_replaces_one_recovery_and_proves_it(
-    prepared, monkeypatch, tmp_path, mode, trial_fault, subtasks, replaced
-):
-    """The trial's fault reaches the exercise, which proves it in its place."""
-    world = World(prepared, monkeypatch)
-    assert world.plan.trial.fault == trial_fault
-    upgrade = world.plan.trial.parallelism("upgrade")
-    record = world.run()
-    assert record.success, record.reason
-    assert record.recovery["verdict"] == rt.USABLE
-    outcomes = record.recovery["outcomes"]
-    if subtasks is None:
-        assert "rescale" not in outcomes["upgrade"]
-    else:
-        assert outcomes["upgrade"]["rescale"] == {
-            "direction": trial_fault.removeprefix("rescale-"),
-            "subtasks_before": subtasks[0],
-            "subtasks_after": subtasks[1],
-        }
-    if replaced is None:
-        assert "replaced" not in outcomes["failover"]
-        assert world.failover_kind == "jobmanager"
-    else:
-        # The TaskManager that reported the input went, and the JobManager
-        # that held the job stayed.
-        assert outcomes["failover"]["replaced"]["name"] == replaced
-        assert world.failover_kind == "taskmanager"
-        assert outcomes["failover"]["jm_uid"] == outcomes["upgrade"]["jm_uid"]
-    assert [name for name, _ in world.calls] == ["upgrade", "failover"]
-    # The upgrade asked for the upgrade phase's sizes, and only a rescale's differ.
-    assert world.patched["job"]["parallelism"] == upgrade
-    assert world.patched["taskManager"]["replicas"] == upgrade
-    # The offline analysis names the fault from the proof the run exported.
-    report = analyze.analyze(world.export(tmp_path, record))
-    recoveries = report["bigquery"][0]["recoveries"]
-    assert {name: timing["fault"] for name, timing in recoveries.items()} == {
-        "upgrade": trial_fault if subtasks else "savepoint-upgrade",
-        "failover": trial_fault if replaced else "jm-replacement",
-    }
-
-
-@pytest.mark.parametrize("mode,trial_fault", [("FILE_LOADS", "tm-replacement")])
-def test_a_file_loads_failover_without_a_pod_to_delete_waits_for_no_load(
-    prepared, monkeypatch, mode, trial_fault
-):
-    """The in-flight wait and its record precede the deletion, so they wait for
-    a Pod to delete as the failover itself does."""
-    world = World(prepared, monkeypatch)
-    exercise = world.supervisor.exercise
-    assert exercise.trial.mode == "FILE_LOADS"
-    assert exercise.failover == "taskmanager"
-    waited = []
-    monkeypatch.setattr(exercise, "active_input", lambda phase: True)
-    monkeypatch.setattr(exercise, "_await_running_load", lambda: waited.append(1))
-    # No TaskManager reported the upgraded input yet, so none can be named.
-    assert exercise.failover_target([]) is None
-    exercise.begin_failover(world.app(), {}, [])
-    assert waited == []
-    assert "failover_in_flight" not in exercise.outcomes
-    assert exercise.stage == "baseline"
-
-
-@pytest.mark.parametrize(
-    "fault,reason",
-    [
-        ("no-progress", "deadline"),
-        ("fresh-lineage", "lineage"),
-        ("wrong-state", "savepoint"),
-        ("early-finish", "post-recovery"),
-        ("restart", "container restart"),
-        ("shutdown", "Unplanned workload interruption"),
-        ("evicted", "Unplanned workload eviction"),
-        ("job-restart", "Unplanned job restart"),
-        ("upgrade-conflict", "precondition"),
-        ("invisible", "query slots"),
-        ("duplicates", "uniqueness"),
-        ("invalid", "routing"),
-    ],
-)
-def test_incomplete_trials_fail_and_cleanup(prepared, monkeypatch, fault, reason):
-    world = World(prepared, monkeypatch, fault)
-    record = world.run()
-    assert not record.success
-    assert reason in record.reason
-    assert record.phase == Phase.CLEANED
-    assert world.resources.tables == {}
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-def test_cleanup_waits_for_a_load_job_that_outlived_the_workload(
-    prepared, monkeypatch, mode, destinations
-):
-    """A load the committer submitted just before its Pods stopped."""
-    world = World(prepared, monkeypatch, "load-outlives")
-    deleted = []
-    delete_table = world.resources.delete_table
-
-    def delete(destination):
-        deleted.append(world.connector_listings.count(True))
-        return delete_table(destination)
-
-    monkeypatch.setattr(world.resources, "delete_table", delete)
-    record = world.run()
-    assert record.success, record.reason
-    # Two listings after the Pods were gone still showed it; no table was
-    # deleted until a third showed it DONE.
-    assert world.connector_listings.count(True) >= 3
-    assert deleted and min(deleted) >= 3
-    assert record.bigquery["file_loads"]["unfinished_jobs"] == [LOAD["id"]]
-    assert world.resources.tables == {}
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-def test_the_oracle_refuses_to_read_while_a_load_job_still_runs(
-    prepared, monkeypatch, mode, destinations
-):
-    """FINISHED says the committer is done; a running load says otherwise."""
-    world = World(prepared, monkeypatch, "load-after-finished")
-    record = world.run()
-    assert not record.success
-    assert "outlived the finished application" in record.reason
-    assert world.query_calls == []
-    events = [
-        value["payload"]
-        for value in world.evidence().values()
-        if isinstance(value, dict)
-        and value.get("event") == "bigquery-unfinished-connector-jobs"
-    ]
-    assert events == [{"jobs": [LOAD]}]
-    assert record.phase == Phase.CLEANED
-    assert world.resources.tables == {}
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-def test_the_oracle_asks_again_before_every_read(
-    prepared, monkeypatch, mode, destinations
-):
-    """A visibility retry is a later read; a load that started since is refused."""
-    world = World(prepared, monkeypatch, "load-between-reads")
-    record = world.run()
-    assert not record.success
-    assert "outlived the finished application" in record.reason
-    assert [slot for slot, _ in world.query_calls] == [0]
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-def test_file_loads_duplicates_fail_the_oracle(
-    prepared, monkeypatch, mode, destinations
-):
-    world = World(prepared, monkeypatch, "duplicates")
-    record = world.run()
-    assert not record.success
-    assert "uniqueness" in record.reason
-
-
-def test_visibility_retries_use_distinct_slots(prepared, monkeypatch):
-    world = World(prepared, monkeypatch, "late-visibility")
-    record = world.run()
-    assert record.success, record.reason
-    assert [slot for slot, _ in world.query_calls] == [0, 1]
-    requests = record.bigquery["handoff"]["requests"]
-    assert requests["final-0"] == requests["final-1"]
 
 
 def test_unresolved_writer_barrier_retains_control_and_tables(prepared, monkeypatch):
@@ -1237,30 +796,6 @@ def test_visibility_refuses_before_recovery_and_input_completion(prepared):
     environment, _, upgrade, _ = prepared
     with pytest.raises(Failure, match="both recoveries"):
         BigQueryExercise(environment, upgrade, None).verify_rows(None)
-
-
-@pytest.mark.parametrize("mode", ["ALO"])
-def test_alo_duplicate_rows_are_reported_without_failing(prepared, mode):
-    environment, _, upgrade, _ = prepared
-    assert environment.approval.bigquery_plan.trial.mode == mode
-    exercise = BigQueryExercise(environment, upgrade, None)
-    exercise.stage, exercise.initialized = "visibility", True
-    environment.records.set_phase(Phase.READY)
-    environment.records.set_phase(Phase.RUNNING)
-    environment.records.recovery_step(None, {"stage": "visibility"})
-
-    class Queries:
-        def query(self, _name, *, deadline):
-            assert deadline <= environment.schedule.cleanup_at
-            data = rows(exercise.trial, duplicate=True)
-            return {"rows": data, "report": assess(exercise.trial, data)}
-
-    exercise.verify_rows(Queries())
-    assert (
-        exercise.outcomes["query"]["report"]["duplicate_rows"]
-        == exercise.trial.destinations
-    )
-    assert exercise.stage == "complete"
 
 
 @pytest.mark.parametrize("fault", ["future", "invalid-lineage"])
@@ -1494,128 +1029,6 @@ def test_stop_racing_resource_initialization_keeps_supervisor_cleanup(
     assert not observer_env.refresh().success
 
 
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-@pytest.mark.parametrize(
-    "fault,after,through",
-    [
-        # The load finished between the listing and the delete.
-        ("load-finished-before-delete", [], []),
-        # Another load started after the delete: it was not running through it.
-        (
-            "another-load-after-delete",
-            sorted([LOAD["id"], LOAD["id"][:-1] + "1"]),
-            [LOAD["id"]],
-        ),
-    ],
-)
-def test_only_a_load_running_on_both_sides_of_the_delete_is_in_flight(
-    prepared, monkeypatch, mode, destinations, fault, after, through
-):
-    world = World(prepared, monkeypatch, fault)
-    record = world.run()
-    assert record.success, record.reason
-    in_flight = record.recovery["outcomes"]["failover_in_flight"]
-    assert in_flight["running_before"] == [LOAD["id"]]
-    assert (in_flight["running_after"], in_flight["running_through"]) == (
-        after,
-        through,
-    )
-
-
-def storage_timeout():
-    """What the storage adapter raises for a control read that timed out."""
-    try:
-        raise requests.exceptions.ReadTimeout("read timed out")
-    except requests.exceptions.ReadTimeout as error:
-        try:
-            raise Failure("GET storage request failed: ReadTimeout") from error
-        except Failure as wrapped:
-            return wrapped
-
-
-def refresh_unreachable():
-    """A control read whose token refresh found the metadata server down.
-
-    google-auth raises a RefreshError from its own TransportError, and the
-    storage adapter wraps that as a plain failure.
-    """
-    try:
-        try:
-            raise google.auth.exceptions.TransportError("metadata server down")
-        except google.auth.exceptions.TransportError as transport:
-            raise google.auth.exceptions.RefreshError("refresh failed") from transport
-    except google.auth.exceptions.RefreshError as error:
-        try:
-            raise Failure("GET storage request failed: RefreshError") from error
-        except Failure as wrapped:
-            return wrapped
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-@pytest.mark.parametrize(
-    "error",
-    [
-        lambda: TransportError("GET BigQuery request failed: ReadTimeout"),
-        storage_timeout,
-        refresh_unreachable,
-    ],
-    ids=["bigquery", "storage", "refresh"],
-)
-def test_transient_listing_errors_neither_stop_the_wait_nor_lose_the_record(
-    prepared, monkeypatch, mode, destinations, error
-):
-    world = World(prepared, monkeypatch, "listing-error")
-    world.listing_error = error
-    record = world.run()
-    assert record.success, record.reason
-    in_flight = record.recovery["outcomes"]["failover_in_flight"]
-    assert in_flight["listing_errors"] == 1
-    assert in_flight["running_before"] == [LOAD["id"]]
-    assert in_flight["running_after"] is in_flight["running_through"] is None
-    assert in_flight["relisting_error"] == str(error())
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-def test_a_listing_that_refuses_its_answer_stops_the_wait(
-    prepared, monkeypatch, mode, destinations
-):
-    """An invariant, unlike a transport error, is not a listing that saw nothing."""
-    world = World(prepared, monkeypatch, "listing-refused")
-    record = world.run()
-    assert not record.success
-    assert "no readable id" in record.reason
-    assert [name for name, _ in world.calls] == ["upgrade"]
-
-
-@pytest.mark.parametrize("mode,destinations", [("FILE_LOADS", 10)])
-@pytest.mark.parametrize(
-    "fault,reason",
-    [
-        ("no-load-in-flight", "No load job of the run ran within the in-flight wait"),
-        ("stop-while-waiting", "stopped"),
-    ],
-)
-def test_a_file_loads_failover_waits_for_a_running_load_and_no_longer(
-    prepared, monkeypatch, mode, destinations, fault, reason
-):
-    """No load runs, or the run stops: the JobManager is never deleted."""
-    world = World(prepared, monkeypatch, fault)
-    record = world.run()
-    assert not record.success
-    assert reason in record.reason
-    assert [name for name, _ in world.calls] == ["upgrade"]
-    armed = world.listings[0][0]
-    if fault == "no-load-in-flight":
-        # One listing a second, without a gap, for the whole wait and no longer.
-        wait = BIGQUERY_OBSERVATIONS["in_flight_seconds"]
-        # One checkpoint interval and a margin, as the runbook states it.
-        assert wait == 130
-        assert [at - armed for at, _ in world.listings] == list(range(wait))
-    else:
-        # A stop is checked once a poll, not on every listing.
-        assert len(world.listings) == rt.POLL
-
-
 def supervised(prepared):
     """The exercise the supervisor builds for the approved trial."""
     environment, _, upgrade, _ = prepared
@@ -1627,19 +1040,8 @@ def supervised(prepared):
     return value
 
 
-@pytest.mark.parametrize(
-    "trial",
-    [
-        plan.trial(name)
-        for name in ("eo-10", "eo-10-tm-replacement", "fl-10-rescale-in")
-    ],
-)
-def test_a_single_fault_trial_keeps_its_exercise(prepared, trial):
-    assert type(supervised(prepared)) is BigQueryExercise
-
-
 # Every delivery method's fault sequence, at its own input.
-SEQUENCE_TRIALS = [plan.trial(name) for name in plan.SEQUENCE_TRIALS]
+SEQUENCE_TRIALS = [plan.trial(name) for name in plan.TRIALS]
 
 
 @pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
@@ -1649,6 +1051,89 @@ def test_the_sequence_trial_builds_the_sequence_exercise(prepared, trial):
     assert value.measurement_event is None
     assert value.records == trial["records"]
     assert value.deadline == value.env.schedule.started + TIME_LIMIT_SECONDS
+
+
+def finishing(world, monkeypatch):
+    """The sequence as finished on the supervisor's first poll that observes it.
+
+    The fault sequence itself is driven in `test_fault_sequence.py`; this
+    world only needs the loop to reach the read.
+    """
+    exercise = world.supervisor.exercise
+
+    def finished(app, rest, pods):
+        exercise.persist("complete")
+        return True
+
+    monkeypatch.setattr(exercise, "observe", finished)
+
+
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
+def test_the_supervisor_reads_a_finished_sequence_through_its_handoff(
+    prepared, monkeypatch, trial
+):
+    """The supervisor's loop reads the rows through its own handoff, after
+    listing FILE_LOADS's loads through it, and the run cleans up."""
+    world = World(prepared, monkeypatch)
+    finishing(world, monkeypatch)
+    record = world.run()
+    assert record.recovery["verdict"] == rt.USABLE, record.reason
+    assert record.recovery["outcomes"]["query"]["observation"] == "final-0"
+    assert [slot for slot, _ in world.query_calls] == [0]
+    # The service saw one listing while the application still existed: the
+    # supervisor's, which cleanup's later ones follow.
+    listed = world.connector_listings.count(False)
+    assert listed == (1 if trial["mode"] == "FILE_LOADS" else 0)
+    assert record.phase == Phase.CLEANED
+    assert world.resources.tables == {}
+
+
+@pytest.mark.parametrize("trial", SEQUENCE_TRIALS)
+def test_the_exported_evidence_recomputes_to_the_verdict_the_run_wrote(
+    prepared, monkeypatch, tmp_path, trial
+):
+    """The test that crosses the producer/consumer seam.
+
+    The event names and the record's shape are proved against evidence the
+    run itself wrote, rather than against a fixture that spells them a second
+    time; the receipt is the one `World.export` writes, and the runner's own
+    is held by `test_runtime_approval.py`. The run injects no fault, since
+    `finishing` skips the sequence, so its fault list is empty here; the
+    faults' order is held by `test_fault_sequence.py` and the analyzer's
+    report of it by `test_analyze.py`.
+    """
+    world = World(prepared, monkeypatch)
+    finishing(world, monkeypatch)
+    record = world.run()
+    exported = world.export(tmp_path, record)
+    report = analyze.analyze(exported)
+    [item] = report["bigquery"]
+    assert item["run_id"] == world.approval.run_id
+    assert (item["verdict"], item["reasons"], item["problems"]) == (rt.USABLE, [], [])
+    assert item["faults"] == []
+    rendered = analyze.render_markdown(report)
+    assert f"| {world.approval.run_id} | usable | usable |" in rendered
+
+
+@pytest.mark.parametrize("trial", [plan.trial("fl-10-uploader-sequence")])
+def test_the_supervisor_refuses_a_load_its_listing_finds_running(
+    prepared, monkeypatch, trial
+):
+    """The listing goes through the supervisor's handoff to the service."""
+    world = World(prepared, monkeypatch, "load-after-finished")
+    finishing(world, monkeypatch)
+    record = world.run()
+    assert not record.success
+    assert "outlived the finished application" in record.reason
+    assert world.query_calls == []
+    events = [
+        value["payload"]
+        for value in world.evidence().values()
+        if isinstance(value, dict)
+        and value.get("event") == "bigquery-unfinished-connector-jobs"
+    ]
+    assert events == [{"jobs": [LOAD]}]
+    assert record.phase == Phase.CLEANED
 
 
 class Rows:

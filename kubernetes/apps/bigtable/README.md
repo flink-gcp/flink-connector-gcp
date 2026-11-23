@@ -107,7 +107,7 @@ It follows the [Cloud Tasks recovery trial](../cloudtasks/README.md#recovery-tri
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2153](https://github.com/flink-gcp/flink-connector-gcp/issues/2153)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165, whose exercise the rest of this section still describes.
 Once a completed checkpoint follows the initial input, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again; it records the faults and everything it waits out, and stops a run, as the [Firestore fault sequence](../firestore/README.md#fault-sequence) does, and the job's restart strategy is unbounded.
 
@@ -126,26 +126,13 @@ The relay is judged only when the input's latest progress line, the one that sho
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
 A restore after the input's latest progress line also leaves the relay unjudged: it can commit rows its state carried without logging a line, and its recorded time, when the JobManager assigned the state, precedes those commits by as long as the tasks take to deploy; such a run can run again as it is too.
 The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
-`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults.
 
-### Trial and estimate
+### Trial and proposal
 
-Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and runs a savepoint upgrade and then deletes a Pod.
-Its kind names the fault that makes it a trial of its own:
-
-| Kind | Upgrade | Pod deleted | Subtasks of every vertex but the input, initial then upgrade |
-| --- | --- | --- | --- |
-| `jm-replacement` | Keeps its sizes | The JobManager | 2, 2 |
-| `tm-replacement` | Keeps its sizes | The TaskManager that reported the latest input | 2, 2 |
-| `rescale-out` | Rescales the job | The JobManager | 1, 2 |
-| `rescale-in` | Rescales the job | The JobManager | 2, 1 |
-
-The change-stream end is 3,900 seconds after the window's start, so dispatch derives it from the window and the trial carries it.
-The input begins within the 1,200 seconds the exercise allows and runs 1,800 seconds, and each recovery pauses it for up to the exercise's 600-second recovery budget.
-In the usable trials the input finished 1,250 to 1,485 seconds before the end, but a trial whose input starts late and whose recoveries both run long can finish past it, and its relay is then unjudged rather than judged on a partial stream.
-The job then finishes at the end, which leaves the table reads 540 seconds, up to a minute before the cleanup start; a job whose input finishes past the end finishes with the input and leaves them less.
-A partition the connector is still reconciling at the end holds the job past it, as [the graph](#graph-and-what-each-table-records) describes, and a job held past the cleanup start ends the run without a verdict.
-Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
+The trial's kind is `sequence`, with the input and change-stream end of the [fault sequence](#fault-sequence), and both phases run two subtasks of every vertex but the input.
+Dispatch derives the change-stream end from the window, and the trial carries it.
+Render a trial's offline proposal from the repository root:
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
@@ -154,35 +141,20 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
   --started-at 2026-10-20T00:00:00Z --expires-at 2026-10-20T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
   --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/bigtable-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --bigtable-trial rescale-out > /tmp/bigtable-proposal.json
+  --bigtable-trial sequence > /tmp/bigtable-proposal.json
 ```
 
 A proposal is not an approval: it carries `approved: false` and an empty `approval.json`, and rendering calls no cloud API.
-The estimate is the same for every kind, about USD 3.36: the Pods for the window as the Cloud Tasks estimate prices them, two node-hours of the one-node instance at USD 0.65, since the window is billed as two hours, and a USD 1.00 reserve for storage, state, evidence and telemetry.
 
 ### Dispatch
 
 The [run workflow](../../../.github/workflows/tier3-run.yaml) admits `bigtable-recovery` with two inputs beyond the common ones: `bigtable_trial`, the kind, which the dispatch refuses when it is left at `none`; and `application_digest`, the published `bigtable-recovery` GAR digest, verified live at dispatch and never pinned.
-The owner approves the run's estimate before dispatching it; dispatching is the approval, as for the other scenarios.
+Dispatching is the approval, as for the other scenarios, and no estimate is approved first, since ADR-0204 bounds the run by its time limit.
 The workflow job runs for up to 120 minutes, as for the other 90-minute trials.
 The run ID has at most 26 characters, because the run's instance is `bt1316-<run-id>` and an instance ID has at most 33.
 
-One dispatch can carry a campaign: `campaign` lists the kinds to run after the dispatched one, comma-separated, and `repeats`, 0 to 9, the attempts it may repeat.
-The run ID then reads `<prefix>-<kind>-a<attempt>`, with `jm`, `tm`, `ro` or `ri` for the kind, which dispatch checks before anything runs.
-Once an attempt is idle and has released the lock, its receipt decides the next one, which the workflow dispatches itself and which waits behind the current run in the workflow's concurrency group:
-
-- **`usable`**: the next kind, at attempt 1.
-- **A stop the platform caused, while repeats remain**: the same kind at the next attempt. A stop before the application existed counts as one, because no connector code ran, whether a system Pod preempted the supervisor or a service call never answered. So does "Unplanned workload interruption", which the exercise raises only for a workload Pod the scheduler preempted, a node drain or upgrade evicted, or whose node shut down or was lost; a Pod replaced outside a planned recovery counts when its node recorded the kubelet's `Shutdown` while it held the Pod, as a Spot reclamation does, even though Flink has already replaced the Pod.
-- **Anything else**: the campaign ends for the owner to read. This covers "Unplanned workload replacement", since a TaskManager whose JVM died is replaced too, "Unplanned workload eviction", which may follow the Pod's own storage limit, "Unplanned container restart", a failed oracle, and a run that did not reach idle.
-
-The owner approves the campaign's estimate once, for its kinds and its repeats, by dispatching it.
-A cause that recurs before the application exists, such as a refused grant, spends the repeats, which bound what it costs.
-Two things end a campaign early, each before its next attempt holds anything: another dispatch of the run workflow while a campaign runs, which GitHub's one pending run in the concurrency group replaces or is replaced by, and a run ID that would exceed 26 characters or already has evidence.
-Each attempt checks out `main` as it is at its own dispatch unless `rig_sha` names a commit, so merge no rig change while a campaign runs.
-For example, `bigtable_trial=tm-replacement`, `run_id=bt1855-tm-a4`, `campaign=rescale-out,rescale-in` and `repeats=2` run the three remaining trials from one dispatch, for at most five attempts.
-
-The [`bigtable-recovery`](../../lifecycle/bigtable.cue) delivery takes the input that the [deployment definition](#deployment-definition) describes from the optional `bigtable_records` and `bigtable_records_per_second` tags, the change-stream end from the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and the kind from the `bigtable_trial` tag, `jm-replacement` unless given, which sizes every vertex but the input and the TaskManagers from [faults.cue](../../lifecycle/faults.cue).
-Dispatch renders it at the dispatched kind, the input every kind shares and a change-stream end 3,900 seconds into the run's window.
+The [`bigtable-recovery`](../../lifecycle/bigtable.cue) delivery takes the input that the [deployment definition](#deployment-definition) describes from the optional `bigtable_records` and `bigtable_records_per_second` tags, the change-stream end from the required `bigtable_change_stream_end` tag, a UTC instant at which the Change Streams source stops, and sizes every vertex but the input and the TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+Dispatch renders it at the sequence's fixed input and a change-stream end 1,800 seconds into the run's window.
 
 ### Instance lifecycle
 

@@ -23,7 +23,6 @@ import json
 
 import pytest
 from flink_tier3 import analyze
-from flink_tier3.bigquery import plan
 from flink_tier3.bigquery.analyze import SCENARIO, render
 from flink_tier3.bigquery.verdict import (
     COMPLETE_EVENT,
@@ -541,11 +540,18 @@ def test_a_sequence_run_is_decided_by_its_query_and_lists_its_faults(
     )
 
 
-@pytest.mark.parametrize("trial", ["alo-10", "eo-10-tm-replacement"])
+@pytest.mark.parametrize(
+    "trial",
+    [
+        # Archived single-fault trials, which no plan offers any more.
+        {"mode": "ALO", "destinations": 10},
+        {"mode": "EO", "destinations": 10, "fault": "tm-replacement"},
+    ],
+)
 def test_the_same_record_without_the_sequence_trial_asks_for_coverage(tmp_path, trial):
     """The trial in the receipt, not the record's shape, picks the rule."""
     value = sequence_record()
-    write_run(tmp_path, value, receipt_for(value, bigquery_trial=plan.trial(trial)))
+    write_run(tmp_path, value, receipt_for(value, bigquery_trial=trial))
     _, item = assessed(tmp_path)
     assert item["verdict"] == INCONCLUSIVE
     assert "missing-upgrade" in item["reasons"]

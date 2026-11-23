@@ -128,7 +128,7 @@ def test_the_controller_binds_to_the_approved_trial_and_application(env, api):
     controller(env, api)
     with pytest.raises(Failure, match="approved application"):
         CloudTasksLifecycle(env, api, {**application(), "metadata": {"name": "x"}})
-    other = Trial("ct-other", 100, 10)
+    other = Trial("ct-other", 100, 10, "sequence")
     with pytest.raises(Failure, match="approved application"):
         CloudTasksLifecycle(env, FakeQueue(other), application())
 

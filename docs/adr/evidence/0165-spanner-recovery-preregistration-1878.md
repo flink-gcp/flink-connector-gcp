@@ -30,7 +30,7 @@ It is posted on #1360, and nothing is dispatched until the owner approves it the
 | 3 | campaign | `rescale-out` | savepoint rescale out | JobManager | 1, 2 | `sp1878-ro-a1` |
 | 4 | campaign | `rescale-in` | savepoint rescale in | JobManager | 2, 1 | `sp1878-ri-a1` |
 
-The pilot is dispatched alone through the [run workflow](../../../.github/workflows/tier3-run.yaml): `scenario=spanner-recovery`, `spanner_trial=jm-replacement`, `run_id=sp1878-jm-a1`, the `application_digest` under [Campaign window](#campaign-window), no `campaign` input and `repeats=0`, as the [runbook's dispatch section](../../../kubernetes/apps/spanner/README.md#dispatch) describes.
+The pilot is dispatched alone through the [run workflow](../../../.github/workflows/tier3-run.yaml): `scenario=spanner-recovery`, `spanner_trial=jm-replacement`, `run_id=sp1878-jm-a1`, the `application_digest` under [Campaign window](#campaign-window), no `campaign` input and `repeats=0`, as the [runbook's dispatch section](https://github.com/flink-gcp/flink-connector-gcp/blob/79af2befed14838c7422a6b270beb393e1083083/kubernetes/apps/spanner/README.md#dispatch) describes.
 With neither a campaign nor a repeat, the workflow chooses no next attempt, so the pilot runs once whatever its result.
 Only after the operator has read its receipt and it is `usable`, or the owner has decided otherwise on what it shows, is one campaign dispatched for the other three: `spanner_trial=tm-replacement`, `run_id=sp1878-tm-a1`, `campaign=rescale-out,rescale-in`, `repeats=2` and the same `application_digest`.
 The campaign runs `tm-replacement` and then the kinds of its `campaign` input in the order named, `rescale-out` and then `rescale-in`.
@@ -40,7 +40,7 @@ A repeat takes the next attempt suffix, such as `sp1878-tm-a2`.
 Every run ID fits the 40-character limit, and the run's instance is always `sp1360-<run-id>`, such as `sp1360-sp1878-jm-a1`, 19 of the 64 characters Spanner allows, with the display name `sp1360 <run-id>`.
 Each trial runs a savepoint upgrade and then deletes a Pod, so the four together give each component the five faults of the Tier-3 measurement set: a savepoint upgrade, a JobManager replacement, a TaskManager replacement, a rescale out and a rescale in.
 
-Once a campaign attempt is idle and has released the environment lock, the campaign reads its receipt, as the [Bigtable dispatch section](../../../kubernetes/apps/bigtable/README.md#dispatch) describes:
+Once a campaign attempt is idle and has released the environment lock, the campaign reads its receipt, as the [Bigtable dispatch section](https://github.com/flink-gcp/flink-connector-gcp/blob/79af2befed14838c7422a6b270beb393e1083083/kubernetes/apps/bigtable/README.md#dispatch) describes:
 
 - a `usable` verdict dispatches the next kind at attempt 1;
 - while repeats remain, a stop before the application existed, or "Unplanned workload interruption", dispatches the same kind at the next attempt;

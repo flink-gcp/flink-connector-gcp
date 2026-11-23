@@ -26,7 +26,7 @@ from flink_tier3.resource import require_resources_clean
 from ..controller_environment import Environment as QueueEnvironment
 from ..doubles import NOW
 
-TRIAL = Trial("bt-lifecycle", 100, 10, "2026-10-20T01:05:00Z")
+TRIAL = Trial("bt-lifecycle", 100, 10, "2026-10-20T01:05:00Z", "sequence")
 DEADLINE = NOW + 600
 
 

@@ -15,36 +15,21 @@
 """Offline, unapproved Spanner recovery proposal and delivery bundle."""
 
 from dataclasses import asdict
-from decimal import Decimal
 
 from ..common import digest, json_bytes, timestamp, utc
-from ..model import Schedule, _hourly
+from ..model import Schedule
 from ..policy import (
     CLEANUP_SECONDS,
-    POD_RESOURCES,
     SPANNER,
     SPANNER_OBSERVATIONS,
     WINDOWS,
 )
 from ..proposal import check_inputs, render_verified
-from .instance import PROCESSING_UNITS
-from .trial import KINDS, SEQUENCE_KIND, Trial
+from .trial import KINDS, Trial
 
 NAMESPACE = SPANNER
 WINDOW_SECONDS = WINDOWS["spanner-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Every dispatchable trial's input: 30 minutes at the rate of the other
-# recovery trials in the same window.
-INPUT = {"records": 180000, "records_per_second": 100}
-# The seed the runner writes and the copy's pace per reading subtask, the
-# package's default: one subtask copies the 120,000 rows in 40 minutes, two in
-# 20.
-SEED = {"seed_rows": 120000, "seed_rows_per_second": 50}
-# Where the change-stream source stops, from the window's start, as the
-# Bigtable plan derives it: the oracles' `visibility_seconds` then end a minute
-# before the cleanup start at 4,500 seconds, and an input that starts late and has
-# two slow recoveries can finish past it.
-CHANGE_STREAM_END_SECONDS = 3900
 # The fault sequence's input, seed and change-stream end (ADR-0204). The job
 # cannot finish before the change stream's end, which the input must precede
 # by the relay's commit margin, so the input and the seed copy are six minutes
@@ -52,33 +37,23 @@ CHANGE_STREAM_END_SECONDS = 3900
 SEQUENCE_INPUT = {"records": 3600, "records_per_second": 10}
 SEQUENCE_SEED = {"seed_rows": 3600, "seed_rows_per_second": 5}
 SEQUENCE_CHANGE_STREAM_END_SECONDS = 1800
-REVIEWED_AT = "2026-10-28T00:00:00Z"
-# 100 processing units of a regional Standard instance in us-central1: the
-# 90-minute window rounded up to hours, on the unmeasured assumption that the
-# instance is billed for at least an hour.
-INSTANCE_USD_PER_HOUR = Decimal("0.09")
-INSTANCE_HOURS = 2
-RESERVE_USD = Decimal("1.00")
 
 
 def trial(kind, started_at):
-    """The approved trial of one kind: its fault, the fixed input, seed and end."""
+    """The approved trial of one kind: the fixed input, seed and end."""
     if kind not in KINDS:
         raise ValueError("Unknown Spanner trial: " + str(kind))
-    if kind == SEQUENCE_KIND:
-        end = utc(timestamp(started_at) + SEQUENCE_CHANGE_STREAM_END_SECONDS)
-        return {
-            "kind": kind,
-            **SEQUENCE_INPUT,
-            **SEQUENCE_SEED,
-            "change_stream_end": end,
-        }
-    end = utc(timestamp(started_at) + CHANGE_STREAM_END_SECONDS)
-    return {"kind": kind, **INPUT, **SEED, "change_stream_end": end}
+    end = utc(timestamp(started_at) + SEQUENCE_CHANGE_STREAM_END_SECONDS)
+    return {
+        "kind": kind,
+        **SEQUENCE_INPUT,
+        **SEQUENCE_SEED,
+        "change_stream_end": end,
+    }
 
 
 def validate_trial(value, started_at):
-    # Serialized, so `180000.0` or `True` cannot pass as a count.
+    # Serialized, so `3600.0` or `True` cannot pass as a count.
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in KINDS or json_bytes(value) != json_bytes(trial(kind, started_at)):
         raise ValueError(
@@ -87,21 +62,6 @@ def validate_trial(value, started_at):
             + " with its fixed input and seed, ending its change stream at its"
             " fixed offset into the window"
         )
-
-
-def estimate():
-    """Planning estimate for the trial; not a bound on bills.
-
-    Compute for the window, as the Bigtable estimate prices it, the
-    instance's hours and a reserve for storage, state, evidence and telemetry.
-    """
-    shapes = [
-        POD_RESOURCES["operator"],
-        POD_RESOURCES["supervisor"],
-        *[POD_RESOURCES["smoke"]] * 3,
-    ]
-    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    return compute + INSTANCE_USD_PER_HOUR * INSTANCE_HOURS + RESERVE_USD
 
 
 def prepare(
@@ -143,7 +103,6 @@ def prepare(
         spanner_records_per_second=identity.records_per_second,
         spanner_change_stream_end=identity.change_stream_end,
         spanner_seed_rows_per_second=identity.seed_rows_per_second,
-        spanner_trial=identity.kind,
     )
     proposal = {
         "kind": "spanner-trial-proposal",
@@ -172,15 +131,6 @@ def prepare(
             "seed_rows": identity.seed_rows,
         },
         "observations": dict(SPANNER_OBSERVATIONS),
-        "cost": {
-            "kind": "planning-estimate",
-            "usd": str(estimate()),
-            "reviewed_at": REVIEWED_AT,
-            "processing_units": PROCESSING_UNITS,
-            "instance_usd_per_hour": str(INSTANCE_USD_PER_HOUR),
-            "instance_hours": INSTANCE_HOURS,
-            "other_reserve_usd": str(RESERVE_USD),
-        },
     }
     delivery["config"]["data"]["proposal.json"] = json_bytes(proposal).decode()
     return {

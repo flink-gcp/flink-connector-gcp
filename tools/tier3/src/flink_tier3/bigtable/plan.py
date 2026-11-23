@@ -15,62 +15,39 @@
 """Offline, unapproved Bigtable recovery proposal and delivery bundle."""
 
 from dataclasses import asdict
-from decimal import Decimal
 
 from ..common import digest, json_bytes, timestamp, utc
-from ..model import Schedule, _hourly
+from ..model import Schedule
 from ..policy import (
     BIGTABLE,
     BIGTABLE_OBSERVATIONS,
     CLEANUP_SECONDS,
-    POD_RESOURCES,
     WINDOWS,
 )
 from ..proposal import check_inputs, render_verified
-from .trial import KINDS, SEQUENCE_KIND, Trial
+from .trial import KINDS, Trial
 
 NAMESPACE = BIGTABLE
 WINDOW_SECONDS = WINDOWS["bigtable-recovery"]
 ACTIVE_SECONDS = Schedule.for_window(0, WINDOW_SECONDS).active_seconds(0)
-# Every single-fault trial's input: 30 minutes at the rate of the other
-# recovery trials in the same window.
-INPUT = {"records": 180000, "records_per_second": 100}
-# Where the change-stream source stops, from the window's start. The input
-# starts within `input_seconds` and runs for 30 minutes, 3,000 seconds in all,
-# and each recovery pauses it for up to `recovery_seconds`; the job finishes at
-# the end, and the oracles' `visibility_seconds` then fit before the cleanup
-# start at 4,500 seconds. In the usable trials the input finished 1,250 to
-# 1,485 seconds before the end; one that starts late and has two slow
-# recoveries can finish past it, which leaves the relay unjudged and the
-# job, finishing with the input, less time for the oracles' reads.
-CHANGE_STREAM_END_SECONDS = 3900
 # The fault sequence's input and change-stream end (ADR-0204). The job cannot
 # finish before the change stream's end, which the input must precede by the
 # relay's commit margin, so the input is four minutes, enough to outlast the
 # faults; the runbook's "Fault sequence" section gives the timing behind it.
 SEQUENCE_INPUT = {"records": 2400, "records_per_second": 10}
 SEQUENCE_CHANGE_STREAM_END_SECONDS = 1800
-REVIEWED_AT = "2026-10-18T00:00:00Z"
-# A one-node SSD cluster in us-central1, billed by the hour: the 90-minute
-# window, rounded up (#1316's scope).
-NODE_USD_PER_HOUR = Decimal("0.65")
-NODE_HOURS = 2
-RESERVE_USD = Decimal("1.00")
 
 
 def trial(kind, started_at):
-    """The approved trial of one kind: its fault, the fixed input and its end."""
+    """The approved trial of one kind: the fixed input and its end."""
     if kind not in KINDS:
         raise ValueError("Unknown Bigtable trial: " + str(kind))
-    if kind == SEQUENCE_KIND:
-        end = utc(timestamp(started_at) + SEQUENCE_CHANGE_STREAM_END_SECONDS)
-        return {"kind": kind, **SEQUENCE_INPUT, "change_stream_end": end}
-    end = utc(timestamp(started_at) + CHANGE_STREAM_END_SECONDS)
-    return {"kind": kind, **INPUT, "change_stream_end": end}
+    end = utc(timestamp(started_at) + SEQUENCE_CHANGE_STREAM_END_SECONDS)
+    return {"kind": kind, **SEQUENCE_INPUT, "change_stream_end": end}
 
 
 def validate_trial(value, started_at):
-    # Serialized, so `180000.0` or `True` cannot pass as a count.
+    # Serialized, so `2400.0` or `True` cannot pass as a count.
     kind = value.get("kind") if isinstance(value, dict) else None
     if kind not in KINDS or json_bytes(value) != json_bytes(trial(kind, started_at)):
         raise ValueError(
@@ -79,23 +56,6 @@ def validate_trial(value, started_at):
             + " with its fixed input, ending its change stream at its fixed offset"
             " into the window"
         )
-
-
-def estimate():
-    """Planning estimate for the trial; not a bound on bills.
-
-    Compute for the window, as the Cloud Tasks estimate prices it, the
-    instance's node-hours and a reserve for storage, state, evidence and
-    telemetry. It is the same for every trial: a rescale trial runs one
-    TaskManager for part of the window, which the estimate does not discount.
-    """
-    shapes = [
-        POD_RESOURCES["operator"],
-        POD_RESOURCES["supervisor"],
-        *[POD_RESOURCES["smoke"]] * 3,
-    ]
-    compute = _hourly(shapes) * Decimal(WINDOW_SECONDS) / 3600
-    return compute + NODE_USD_PER_HOUR * NODE_HOURS + RESERVE_USD
 
 
 def prepare(
@@ -136,7 +96,6 @@ def prepare(
         bigtable_records=identity.records,
         bigtable_records_per_second=identity.records_per_second,
         bigtable_change_stream_end=identity.change_stream_end,
-        bigtable_trial=identity.kind,
     )
     proposal = {
         "kind": "bigtable-trial-proposal",
@@ -163,14 +122,6 @@ def prepare(
             "records": identity.records,
         },
         "observations": dict(BIGTABLE_OBSERVATIONS),
-        "cost": {
-            "kind": "planning-estimate",
-            "usd": str(estimate()),
-            "reviewed_at": REVIEWED_AT,
-            "node_usd_per_hour": str(NODE_USD_PER_HOUR),
-            "node_hours": NODE_HOURS,
-            "other_reserve_usd": str(RESERVE_USD),
-        },
     }
     delivery["config"]["data"]["proposal.json"] = json_bytes(proposal).decode()
     return {

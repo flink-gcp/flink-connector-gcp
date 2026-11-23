@@ -31,9 +31,9 @@ import (
 		// At most 30 minutes of input, as the other trials in the same 90-minute window have. The
 		// bounds apply to the default too, which a lower rate makes too long.
 		records: (*180000 | int) & >=2 & <=360000 & <=(recordsPerSecond * 1800)
-		// Every vertex but the input, one subtask per single-slot TaskManager; a rescale trial's
-		// phases differ. No default: the Flink package's own parallelism default would contradict
-		// one.
+		// Every vertex but the input, one subtask per single-slot TaskManager; the fault sequence
+		// patches its rescales on the running application. No default: the Flink package's own
+		// parallelism default would contradict one.
 		parallelism: 1 | 2
 		// Where the Change Streams source stops, so the job can finish; the lifecycle chooses it
 		// after the input's last commit. UTC, which the application parses as an instant.

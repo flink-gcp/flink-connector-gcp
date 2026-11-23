@@ -25,7 +25,7 @@ from flink_tier3.spanner.trial import Trial, row_key
 
 from ..doubles import NOW, Response
 
-TRIAL = Trial("sp-oracle", 20, 10, "2026-10-28T01:05:00Z", 30, 1)
+TRIAL = Trial("sp-oracle", 20, 10, "2026-10-28T01:05:00Z", 30, 1, "sequence")
 SESSION = TRIAL.database_path + "/sessions/s"
 READ_AT = "2026-10-28T01:20:00.123456Z"
 END = micros(TRIAL.change_stream_end)

@@ -14,17 +14,9 @@
 """The change-stream end a dispatched trial carries, against the run's window."""
 
 from flink_tier3.exercise import RECORD_SECONDS, TIME_LIMIT_SECONDS
-from flink_tier3.policy import CLEANUP_SECONDS, SPANNER_OBSERVATIONS
+from flink_tier3.policy import SPANNER_OBSERVATIONS
 from flink_tier3.spanner import plan
 from flink_tier3.spanner.exercise import COMMIT_SECONDS
-
-
-def test_the_change_stream_end_leaves_the_oracles_time_before_cleanup():
-    """A late end would leave the oracles no time before cleanup."""
-    assert (
-        plan.CHANGE_STREAM_END_SECONDS + SPANNER_OBSERVATIONS["visibility_seconds"]
-        <= plan.WINDOW_SECONDS - CLEANUP_SECONDS
-    )
 
 
 def test_the_sequence_input_and_oracles_fit_around_its_change_stream_end():

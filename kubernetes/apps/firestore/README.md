@@ -94,12 +94,12 @@ The [GCP grants](../../../opentofu/flink-gcp/tier3-firestore.tf) and the [`fires
 
 The `firestore-recovery` scenario of the [lifecycle](../../lifecycle/README.md) runs this application once as a FlinkDeployment in `tier3-firestore` against two databases it creates for the run, measures the job before and after each recovery, and judges each of the four components on its own collection or kind.
 It is the trial set of [#1879](https://github.com/flink-gcp/flink-connector-gcp/issues/1879), and [ADR-0165](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#firestore-recovery-trial) records its design ([#2084](https://github.com/flink-gcp/flink-connector-gcp/issues/2084)).
-It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise, measurement windows and campaign it shares; this section names what differs.
+It follows the [Spanner recovery trial](../spanner/README.md#recovery-trial), whose resource lifecycle, finite-input exercise and measurement windows it shares; this section names what differs.
 The [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md) of [#2085](https://github.com/flink-gcp/flink-connector-gcp/issues/2085) fixed its deployed single-fault runs, which stopped when the owner paused them for the rework of [#2143](https://github.com/flink-gcp/flink-connector-gcp/issues/2143); the [findings](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) list every attempt.
 
 ### Fault sequence
 
-The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)); the kinds after it, which the rest of this section describes, still follow ADR-0165.
+The `sequence` kind runs the trial under [ADR-0204](../../../docs/adr/0204-tier3-recovery-trials-tolerate-faults-and-fail-only-on-lost-data.md) ([#2146](https://github.com/flink-gcp/flink-connector-gcp/issues/2146)), and it is the only kind dispatched; the single-fault kinds ran under ADR-0165, whose exercise the rest of this section still describes.
 Once a completed checkpoint follows the initial input and both late seeds are written, one run injects the savepoint upgrade, the JobManager's deletion, the deletion of the TaskManager reporting the input, and a rescale from two subtasks to one and back; the rescales are the approved upgrade with only its parallelism and its `--parallelism` argument changed.
 Before each fault, and before the end, the supervisor waits until the job runs again, which includes progress logged after a restore that followed the fault.
 It records each fault as `recovery-<kind>` and its return as `recovery-recovered-<kind>`, and records the rest without judging it: an interruption as `unplanned-recovery`, a restore as `job-restore`, a patch that conflicted with the Operator's own write or whose answer was lost unapplied as `patch-conflict` or `patch-unconfirmed`, sent again, a Pod gone or not deleted as `fault-target-gone`, injected again, and a job restarted before its first checkpoint, which reads its input again under a new lineage, as `fresh-start`; REST and API failures are waited out, and the job's restart strategy is unbounded.
@@ -108,19 +108,13 @@ The input is 6,000 records at 10 records per second, ten minutes of input, and e
 When the job has finished its whole input after the last fault, the four oracles below read the databases, and `usable` means all four pass.
 A `FINISHED` state counts only once the job's own progress shows the whole input done and, after a savepoint fault, the replacement job's own REST status is `FINISHED`, since the Operator may still report the stopped job's.
 A run stops abnormally when the job reaches `FAILED`, the application is deleted or rolled back, or an hour has passed since its admission, and without a verdict when the job finishes with its input done before it ran again after the last fault; no fault is injected once the input is done.
-`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults; its proposal still carries the estimate below, which nothing approves.
+`just tier3-analyze` decides a `sequence` run by its oracles and lists its faults.
 The first `sequence` run, `fs2147-seq-a1`, reached `usable`, as its [findings](../../../docs/adr/evidence/0204-firestore-fault-sequence-findings-2147.md) record.
 
-### Trial and estimate
+### Trial and proposal
 
-Every trial has the same input, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, and the same seed in each database, 108,000 records copied at 50 records per second per reading subtask.
-Its kinds, their faults and their subtask counts are the [Spanner trial's](../spanner/README.md#trial-and-estimate).
-
-Both reads read at one read time planned when the job first starts, and the service refuses a read time older than about an hour, as [Database layout](#database-layout) describes, so the seed is sized from both ends.
-Two reading subtasks copy a seed in 1,080 seconds, past the failover's Pod deletion, which the Spanner trials made about 830 seconds into the input, so the copies are still reading through both recoveries.
-One reading subtask, which a read the service plans as one split gives, copies it in 2,160 seconds; with both recoveries' downtime, at most 114 and 101 seconds in the Spanner trials, and a checkpoint interval read again after each restore, the read ends about 2,440 seconds after the first start, inside 45 minutes.
-The job finishes once both copies are done, and the oracles then have up to 1,200 seconds, which the slowest job still leaves before the cleanup start.
-Render a trial's offline proposal, which carries the estimate the owner approves, from the repository root:
+The trial's kind is `sequence`, with the input and seed of the [fault sequence](#fault-sequence), and both phases run two subtasks of every vertex but the input.
+Render a trial's offline proposal from the repository root:
 
 ```sh
 mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 render \
@@ -129,22 +123,18 @@ mise x cue uv -- uv run --locked --package flink-tier3 --no-dev flink-tier3 rend
   --started-at 2026-11-08T00:00:00Z --expires-at 2026-11-08T01:30:00Z \
   --active-seconds 5220 --revision "$(git rev-parse HEAD)" \
   --application-image us-central1-docker.pkg.dev/flink-gcp/flink-tier3/firestore-recovery@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  --firestore-trial tm-replacement > /tmp/firestore-proposal.json
+  --firestore-trial sequence > /tmp/firestore-proposal.json
 ```
 
-The proposal is not an approval, as for the [Spanner trial](../spanner/README.md#trial-and-estimate).
-The estimate is the same for every kind, about USD 3.07: the Pods for the window as the Spanner estimate prices them, about USD 1.06, the planned operations, about USD 1.02, and a USD 1.00 reserve for storage, state, evidence and telemetry.
-The operations are 792,032 writes, each database's input, seed, late records and copies, at USD 0.09 per 100,000, and 1,008,032 reads, each copy's read of its seed and the oracles' reads of `input`, `seed` and `batch_out`, at USD 0.03 per 100,000.
-Both prices are planning assumptions for Standard-edition operations without the free tier; on 2026-11-08 they matched the `us-central1` prices on the [pricing page](https://cloud.google.com/firestore/pricing), which the [preregistration](../../../docs/adr/evidence/0165-firestore-recovery-preregistration-2085.md#estimate) records.
-A database is billed by operation and storage, so the estimate has no instance hours.
+The proposal is not an approval, as for the [Spanner trial](../spanner/README.md#trial-and-proposal).
 
 ### Dispatch
 
 A run is dispatched as the [Spanner trial](../spanner/README.md#dispatch) is, with `firestore_trial` naming the kind and `application_digest` the published `firestore-recovery` GAR digest.
 Any run ID fits, because the databases are `fs1879-<run-id>-n` and `fs1879-<run-id>-d`, at most 49 of the 63 characters a database ID takes.
 
-The [`firestore-recovery`](../../lifecycle/firestore.cue) delivery takes the input from the optional `firestore_records` and `firestore_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input; each seed copy's pace per reading subtask from the optional `firestore_seed_records_per_second` tag, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass; and the kind from the `firestore_trial` tag, `jm-replacement` unless given, which sizes every vertex but the input and the TaskManagers from [faults.cue](../../lifecycle/faults.cue), where `sequence` (ADR-0204) takes `jm-replacement`'s sizes.
-Dispatch renders it at the dispatched kind and the input and seed pace every kind shares.
+The [`firestore-recovery`](../../lifecycle/firestore.cue) delivery takes the input from the optional `firestore_records` and `firestore_records_per_second` tags, 180,000 records at 100 per second unless given and at most 30 minutes of input; each seed copy's pace per reading subtask from the optional `firestore_seed_records_per_second` tag, 50 unless given and at most 200, below what the copy sinks' ramp-up throttles pass; and sizes every vertex but the input and the TaskManagers at the parallelism in [faults.cue](../../lifecycle/faults.cue).
+Dispatch renders it at the sequence's fixed input and seed pace.
 
 ### Database lifecycle
 

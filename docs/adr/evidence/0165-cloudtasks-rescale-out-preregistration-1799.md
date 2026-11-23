@@ -39,7 +39,7 @@ None of the three changes addresses the platform causes, so the attempt budget b
 | --- | --- | --- | --- | --- |
 | `rescale-out` | savepoint rescale out | JobManager | 1, 2 | `ct1799-rescale-out-a1` |
 
-The trial has the input of `ct-1362-a1` and of the #1778 trials, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, with checkpoints every 30 seconds and the sink's default staged options, as the [Cloud Tasks runbook](../../../kubernetes/apps/cloudtasks/README.md#trial-and-estimate) lists it.
+The trial has the input of `ct-1362-a1` and of the #1778 trials, 180,000 records at 100 records per second, which is 30 minutes of input in a 90-minute window, with checkpoints every 30 seconds and the sink's default staged options, as the [Cloud Tasks runbook](https://github.com/flink-gcp/flink-connector-gcp/blob/79af2befed14838c7422a6b270beb393e1083083/kubernetes/apps/cloudtasks/README.md#trial-and-estimate) lists it.
 The queue is created and paused for the run, so no task is dispatched and no handler runs, and the oracle maps each listed task id back to its input sequence through the SHA-256 of `<run-id>/<sequence>`.
 With the TaskManager replacement and the rescale in that #1778 brought to `usable`, and the savepoint upgrade and JobManager failover of `ct-1362-a1`, a `usable` rescale out completes the five faults the Tier-3 measurement set [aligned on 2026-10-13](https://github.com/flink-gcp/flink-connector-gcp/issues/1360#issuecomment-6133736842) asks of every connector.
 

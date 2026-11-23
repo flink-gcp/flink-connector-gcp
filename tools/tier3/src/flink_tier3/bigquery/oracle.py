@@ -20,8 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..exercise import DEFAULT_FAULT, SEQUENCE_KIND
-from ..exercise import FAULTS as SHARED_FAULTS
+from ..exercise import DEFAULT_FAULT, FAULTS, SEQUENCE_KIND, rendered_parallelism
 
 PROJECT = "flink-gcp"
 DATASET = "flink_gcp_tier3_bigquery"
@@ -58,10 +57,6 @@ UPLOADER_ARGS = {
         "2",
     ),
 }
-# The faults a trial may run in place of one of the two recoveries: every
-# shared kind but the one a trial without a fault runs, the savepoint upgrade
-# and the JobManager failover.
-FAULTS = tuple(kind for kind in SHARED_FAULTS if kind != DEFAULT_FAULT)
 FIELDS = {
     "run_id",
     "mode",
@@ -82,7 +77,7 @@ class Trial:
     mode: str
     destinations: int
     records: int
-    fault: str | None = None
+    fault: str = SEQUENCE_KIND
     uploader: bool = False
 
     def __post_init__(self):
@@ -98,13 +93,9 @@ class Trial:
             2 * self.destinations <= self.records <= 2 * 1024**3 // ROW_BYTES[self.mode]
         ):
             raise ValueError("records must cover two writers and fit 2 GiB")
-        # A single fault, or the fault sequence of ADR-0204, which runs every
-        # fault in one run.
-        faults = (*FAULTS, SEQUENCE_KIND)
-        if self.fault is not None and (
-            not isinstance(self.fault, str) or self.fault not in faults
-        ):
-            raise ValueError("fault must be one of " + ", ".join(faults))
+        # The fault sequence of ADR-0204, which runs every fault in one run.
+        if self.fault != SEQUENCE_KIND:
+            raise ValueError("fault must be " + SEQUENCE_KIND)
         if type(self.uploader) is not bool or (
             self.uploader and self.mode != "FILE_LOADS"
         ):
@@ -112,36 +103,26 @@ class Trial:
 
     @property
     def kind(self):
-        """The trial's kind: its fault, the default fault, or the sequence."""
-        return self.fault or DEFAULT_FAULT
-
-    @property
-    def _sizes(self):
-        """The shared fault whose sizes the run starts and upgrades at.
-
-        The fault sequence starts and upgrades at two, as a JobManager
-        replacement does, and patches its rescales itself.
-        """
-        return SHARED_FAULTS[DEFAULT_FAULT if self.kind == SEQUENCE_KIND else self.kind]
+        """The trial's kind, the sequence."""
+        return self.fault
 
     @property
     def failover(self):
-        """The Pod the second recovery deletes, as the shared exercise names it."""
-        return self._sizes.failover
+        """The exercise base's failover, which the sequence leaves unused."""
+        return FAULTS[DEFAULT_FAULT].failover
 
     @property
     def rescale(self):
-        """The direction the upgrade rescales in, or None."""
-        return self._sizes.rescale
+        """The exercise base's rescale, which the sequence leaves unused."""
+        return FAULTS[DEFAULT_FAULT].rescale
 
     def parallelism(self, phase):
         """The writers' parallelism, and TaskManager count, of `initial` or `upgrade`.
 
-        The fault kind's, so a rescale stays inside the namespace's three-Pod
-        quota; `lifecycle/bigquery.cue` renders the same, and the proposal checks
-        the render against this.
+        `lifecycle/bigquery.cue` renders the same, and the proposal checks the
+        render against this.
         """
-        return self._sizes.parallelism(phase)
+        return rendered_parallelism(phase)
 
     def table(self, destination):
         return f"{PROJECT}.{DATASET}.bq_{self.run_id.replace('-', '_')}_d{destination}"

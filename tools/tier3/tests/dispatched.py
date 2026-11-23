@@ -13,7 +13,7 @@
 # limitations under the License.
 """A dispatched approval the shared rig tests run on, over the shared fake cluster.
 
-The approval is a Cloud Tasks `jm-replacement` trial's, the scenario that
+The approval is a Cloud Tasks `sequence` trial's, the scenario that
 needs nothing beyond its one queue; the exercise, fault-sequence and other
 scenarios' tests change what they need of it. `renderer` stands in for what
 `lifecycle/cloudtasks.cue` renders, as the CUE suite pins it.
@@ -29,7 +29,7 @@ from flink_tier3.cloudtasks.trial import Trial
 from flink_tier3.common import digest
 from flink_tier3.environment import Environment
 from flink_tier3.model import APPROVAL_VERSION
-from flink_tier3.policy import CLOUDTASKS, GAR
+from flink_tier3.policy import CLOUDTASKS, GAR, POD_RESOURCES
 
 from .test_lifecycle import rt
 
@@ -46,7 +46,7 @@ def inputs():
         "active_seconds": 5220,
         "revision": "b" * 40,
         "application_image": GAR + "cloudtasks-recovery@sha256:" + "c" * 64,
-        "trial": plan.trial("jm-replacement"),
+        "trial": plan.trial("sequence"),
     }
 
 
@@ -61,11 +61,11 @@ def renderer(monkeypatch):
             run_id,
             options["cloudtasks_records"],
             options["cloudtasks_records_per_second"],
-            options["cloudtasks_trial"],
+            "sequence",
         )
         size = trial.parallelism("initial")
         resources = {
-            category: dict(plan.POD_RESOURCES["smoke"])
+            category: dict(POD_RESOURCES["smoke"])
             for category in ("requests", "limits")
         }
         initial = {
@@ -110,7 +110,7 @@ def renderer(monkeypatch):
                             "containers": [
                                 {
                                     "resources": {
-                                        category: dict(plan.POD_RESOURCES["supervisor"])
+                                        category: dict(POD_RESOURCES["supervisor"])
                                         for category in ("requests", "limits")
                                     },
                                     "image": GAR + "lifecycle-tools@sha256:" + "d" * 64,
@@ -153,7 +153,7 @@ def prepared(env, inputs, renderer):
         started_at=proposal["started_at"],
         expires_at=proposal["expires_at"],
         cleanup_at=proposal["cleanup_at"],
-        cloudtasks_trial=plan.trial("jm-replacement"),
+        cloudtasks_trial=plan.trial("sequence"),
         application_sha256=digest(application),
         upgrade_application_sha256=digest(upgrade),
     )
