@@ -44,6 +44,17 @@ import java.util.function.Predicate;
  * reader's close path every subscriber's {@code shutdown()} runs before any {@code close()}, so the
  * snapshot would be taken after {@code stopAsync()} — and a failure the teardown itself produced in
  * that window would be in it, reported as a repeat of something nobody had read.
+ *
+ * <p>The budget {@link #awaitTerminated()} spends is counted from {@link #startClock()}, which the
+ * subscriber's {@code shutdown()} calls once it has asked the client to stop, not from the wait
+ * itself (#2302). The reader shuts every subscriber down before it closes any, so their deadlines
+ * fall within the time those shutdowns take, and the waits share one budget: a wait that comes
+ * after another subscriber's expired one has at most the time between the two shutdowns left.
+ * Counted from the wait, as it was, each stuck subscriber cost a full budget of its own. The sink's
+ * {@code BoundedShutdown.start()} likewise stamps one deadline before any wait and never resets it.
+ *
+ * <p>Confined to the fetcher thread, as the {@link SubscriberRoster} that drives every shutdown and
+ * close is, so the clock's two fields are plain.
  */
 @Internal
 final class SubscriberTeardown {
@@ -52,15 +63,34 @@ final class SubscriberTeardown {
 
     private final SubscriptionDestination subscription;
     private final Duration shutdownTimeout;
+
+    /**
+     * The budget in nanoseconds. {@link StreamingPullSubscriber} checks the budget against the
+     * option's range before it opens the client, so this conversion cannot throw.
+     */
+    private final long shutdownTimeoutNanos;
+
     private final Runnable subscriberStopAsync;
     private final StreamingPullSubscriber.TerminationWait subscriberAwaitTerminated;
     private final Predicate<Throwable> isAlreadyReported;
+
+    /** Whether {@link #startClock()} has run, so a second call keeps the first deadline. */
+    private boolean clockStarted;
+
+    /**
+     * When the budget runs out, on the {@link System#nanoTime()} scale. It overflows at the largest
+     * budget the option accepts, {@code Duration.ofNanos(Long.MAX_VALUE)}, and that is benign: the
+     * subtraction in {@link #remainingNanos()} wraps a second time and the two cancel to the true
+     * remainder, as in {@code BoundedShutdown} (ADR-0068).
+     */
+    private long deadlineNanos;
 
     /**
      * Creates the teardown.
      *
      * @param subscription the subscription, named in every warning
-     * @param shutdownTimeout how long either wait gives the client
+     * @param shutdownTimeout how long either wait gives the client — for {@link
+     *     #awaitTerminated()}, counted from {@link #startClock()}
      * @param subscriberStopAsync the client's {@code stopAsync}
      * @param subscriberAwaitTerminated the client's own bounded wait for termination
      * @param isAlreadyReported whether a cause is the failure the subscriber already handed to a
@@ -74,9 +104,30 @@ final class SubscriberTeardown {
             Predicate<Throwable> isAlreadyReported) {
         this.subscription = subscription;
         this.shutdownTimeout = shutdownTimeout;
+        this.shutdownTimeoutNanos = shutdownTimeout.toNanos();
         this.subscriberStopAsync = subscriberStopAsync;
         this.subscriberAwaitTerminated = subscriberAwaitTerminated;
         this.isAlreadyReported = isAlreadyReported;
+    }
+
+    /**
+     * Starts the clock on the budget {@link #awaitTerminated()} waits out, without waiting.
+     * Idempotent, because {@link #remainingNanos()} calls it too, for a wait no shutdown started
+     * the clock for; that call must not restart a clock a shutdown did start, or the wait would get
+     * a full budget of its own again.
+     */
+    void startClock() {
+        if (clockStarted) {
+            return;
+        }
+        clockStarted = true;
+        deadlineNanos = System.nanoTime() + shutdownTimeoutNanos;
+    }
+
+    /** Returns what is left of the budget, never negative, starting the clock if nothing has. */
+    private long remainingNanos() {
+        startClock();
+        return Math.max(deadlineNanos - System.nanoTime(), 0);
     }
 
     /**
@@ -122,6 +173,14 @@ final class SubscriberTeardown {
 
     /**
      * Waits out the client's shutdown, reporting anything it raises to the log alone.
+     *
+     * <p>Waits only for what is left of the budget {@link #startClock()} started, which once
+     * another subscriber's wait has expired is at most the time between the two shutdowns. The
+     * client is still asked when nothing is left: a zero wait returns for a terminated client and
+     * throws {@code TimeoutException} for one still stopping (measured on Guava 33.6.0 and
+     * api-common 2.73.0). Guava's timed wait gives up without checking the state when it cannot
+     * take the service's lock at once, as its own source notes, so a client terminating at that
+     * very instant can still be reported as an expired wait.
      *
      * <p>Best-effort as {@link #stopQuietly()} describes, and — the reason this absorb is required
      * rather than merely tolerable — <b>the client reports here a failure the subscriber has
@@ -175,7 +234,7 @@ final class SubscriberTeardown {
      */
     void awaitTerminated() {
         try {
-            subscriberAwaitTerminated.await(shutdownTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            subscriberAwaitTerminated.await(remainingNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.increment();
             LOG.warn(

@@ -18,10 +18,15 @@ package io.github.flink.gcp.connector.pubsub.source.streamingpull.reader;
 
 import com.google.protobuf.ByteString;
 import com.google.pubsub.v1.PubsubMessage;
+import io.github.flink.gcp.connector.pubsub.PubSubShutdownResidue;
 import io.github.flink.gcp.connector.pubsub.source.SubscriptionDestination;
 import io.github.flink.gcp.connector.pubsub.source.streamingpull.SubscriberBufferLimitExceededEvent;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -32,6 +37,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -56,6 +62,21 @@ class StreamingPullSubscriberTest {
 
     private final List<String> calls = new ArrayList<>();
     private final RecordingAckTracker ackTracker = new RecordingAckTracker(calls);
+
+    /**
+     * A stuck client's expired wait counts into a process-wide residue, which two tests here assert
+     * absolutely. Before and after, so the fork is also left as it was found for the other classes
+     * that assert on those counts.
+     */
+    @BeforeEach
+    void clearTheResidues() {
+        PubSubShutdownResidue.resetForTests();
+    }
+
+    @AfterEach
+    void clearTheResiduesAgain() {
+        PubSubShutdownResidue.resetForTests();
+    }
 
     @Test
     void aPermanentFailureReachesTheReaderThroughPullMessages() throws Exception {
@@ -117,13 +138,138 @@ class StreamingPullSubscriberTest {
     @Test
     void waitsOutTheShutdownForTheConfiguredTimeout() throws Exception {
         ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client);
 
-        subscriberOf(client).close();
+        long before = System.nanoTime();
+        subscriber.close();
+        long elapsed = System.nanoTime() - before;
 
         // The budget is a knob (PubSubSubscriberOptions.shutdownTimeout), so a hand-off that
-        // dropped it would leave the client's own default in force and look identical.
-        assertThat(client.awaitedMillis).containsExactly(SHUTDOWN_TIMEOUT.toMillis());
-        assertThat(client.awaitedUnits).containsExactly(TimeUnit.MILLISECONDS);
+        // dropped it would leave the client's own default in force and look identical. A range
+        // rather than the exact value, because the clock starts in shutdown(), which close() runs
+        // before the wait (#2302): the wait gets what is left.
+        assertThat(client.awaitedNanos)
+                .singleElement()
+                .satisfies(
+                        nanos ->
+                                assertThat(nanos)
+                                        .isBetween(
+                                                SHUTDOWN_TIMEOUT.toNanos() - elapsed,
+                                                SHUTDOWN_TIMEOUT.toNanos()));
+        assertThat(client.awaitedUnits).containsExactly(TimeUnit.NANOSECONDS);
+    }
+
+    @Test
+    void stuckSubscribersShutDownTogetherShareOneBudget() throws Exception {
+        // #2302: the reader shuts every subscriber down before it closes any, so that their waits
+        // overlap. They overlapped only for clients that did stop: each close() used to wait a
+        // full budget from the moment its turn came, so N stuck clients cost N budgets, and seven
+        // at the 5 s default outlast source.reader.close.timeout.
+        Duration budget = Duration.ofMillis(300);
+        ScriptedClient first = new ScriptedClient(calls);
+        ScriptedClient second = new ScriptedClient(calls);
+        first.neverTerminate();
+        second.neverTerminate();
+        StreamingPullSubscriber firstSubscriber = subscriberOf(first, budget);
+        StreamingPullSubscriber secondSubscriber = subscriberOf(second, budget);
+
+        long shutdownsBegan = System.nanoTime();
+        firstSubscriber.shutdown();
+        secondSubscriber.shutdown();
+        long shutdownsEnded = System.nanoTime();
+        firstSubscriber.close();
+        secondSubscriber.close();
+
+        // The first wait sleeps until its own deadline, which is at least one budget after
+        // shutdownsBegan. The second deadline is at most one budget after shutdownsEnded, so all
+        // the second wait can have left is the time the two shutdowns took. A full budget there —
+        // a clock started by the wait, or restarted by it — fails.
+        assertThat(second.awaitedNanos)
+                .singleElement()
+                .satisfies(n -> assertThat(n).isLessThanOrEqualTo(shutdownsEnded - shutdownsBegan));
+        // Both are still expired waits, each counted: the second was asked, with nothing left,
+        // rather than skipped.
+        assertThat(PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.sum()).isEqualTo(2);
+    }
+
+    @Test
+    void aClientThatStoppedWhileAnotherWaitExpiredIsNotCalledAbandoned() throws Exception {
+        // With the budget shared, a wait that follows an expired one has nothing left. It must
+        // still ask the client, which returns at once if it has terminated, rather than count
+        // the subscriber as abandoned without asking.
+        Duration budget = Duration.ofMillis(300);
+        ScriptedClient stuck = new ScriptedClient(calls);
+        ScriptedClient stopped = new ScriptedClient(calls);
+        stuck.neverTerminate();
+        StreamingPullSubscriber stuckSubscriber = subscriberOf(stuck, budget);
+        StreamingPullSubscriber stoppedSubscriber = subscriberOf(stopped, budget);
+
+        // The stopped client's clock starts first, so its deadline is passed by the time the
+        // stuck client's wait has slept to its own: the wait it then gets is exactly zero.
+        stoppedSubscriber.shutdown();
+        stuckSubscriber.shutdown();
+        stuckSubscriber.close();
+        stoppedSubscriber.close();
+
+        assertThat(stopped.awaitedNanos).containsExactly(0L);
+        assertThat(PubSubShutdownResidue.SUBSCRIBER_SHUTDOWNS_ABANDONED.sum()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @MethodSource("budgetsOutsideTheOptionsRange")
+    void aBudgetOutsideTheOptionsRangeIsRefusedBeforeTheClientOpens(Duration outOfRange) {
+        // The setter refuses both, so only an options object that never ran the setter carries one.
+        // The teardown converts the budget to nanoseconds, and a conversion that threw after the
+        // client opened, past either end of the range, would leave its transport with nothing to
+        // close it.
+        List<String> opened = new ArrayList<>();
+        SubscriberFactory factory =
+                (subscription, consumer) -> {
+                    opened.add("create");
+                    return new ScriptedClient(calls);
+                };
+
+        assertThatThrownBy(
+                        () ->
+                                new StreamingPullSubscriber(
+                                        SPLIT_ID,
+                                        SUBSCRIPTION,
+                                        factory,
+                                        ackTracker,
+                                        () -> {},
+                                        outOfRange,
+                                        SubscriberBufferBudget.unbounded()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shutdownTimeout");
+        assertThat(opened).isEmpty();
+    }
+
+    static Stream<Duration> budgetsOutsideTheOptionsRange() {
+        return Stream.of(
+                Duration.ofNanos(Long.MAX_VALUE).plusNanos(1),
+                Duration.ofNanos(Long.MIN_VALUE).minusNanos(1),
+                // Expressible, but under the floor, which the failed-start release relies on: it
+                // spends the budget as await(toMillis()), and this one would wait for nothing.
+                Duration.ofNanos(500_000));
+    }
+
+    @Test
+    void theLargestBudgetIsNotSpentTheInstantItStarts() throws Exception {
+        // The deadline is nanoTime() plus the budget, which overflows at the largest budget the
+        // option accepts; the subtraction that reads it wraps back. Clamping the remainder instead
+        // hands the client a wait of zero, and saturating the deadline cuts the budget by the
+        // clock's origin, which on Linux is the uptime.
+        Duration largest = Duration.ofNanos(Long.MAX_VALUE);
+        ScriptedClient client = new ScriptedClient(calls);
+        StreamingPullSubscriber subscriber = subscriberOf(client, largest);
+
+        long before = System.nanoTime();
+        subscriber.close();
+        long elapsed = System.nanoTime() - before;
+
+        assertThat(client.awaitedNanos)
+                .singleElement()
+                .satisfies(n -> assertThat(n).isGreaterThanOrEqualTo(Long.MAX_VALUE - elapsed));
     }
 
     @Test
@@ -368,14 +514,25 @@ class StreamingPullSubscriberTest {
         return subscriberOf(client, SubscriberBufferBudget.unbounded());
     }
 
+    private StreamingPullSubscriber subscriberOf(ScriptedClient client, Duration shutdownTimeout)
+            throws IOException {
+        return subscriberOf(client, SubscriberBufferBudget.unbounded(), shutdownTimeout);
+    }
+
     private StreamingPullSubscriber subscriberOf(
             ScriptedClient client, SubscriberBufferBudget bufferBudget) throws IOException {
+        return subscriberOf(client, bufferBudget, SHUTDOWN_TIMEOUT);
+    }
+
+    private StreamingPullSubscriber subscriberOf(
+            ScriptedClient client, SubscriberBufferBudget bufferBudget, Duration shutdownTimeout)
+            throws IOException {
         return new StreamingPullSubscriber(
                 SPLIT_ID,
                 SUBSCRIPTION,
                 ackTracker,
                 () -> calls.add("dataAvailable"),
-                SHUTDOWN_TIMEOUT,
+                shutdownTimeout,
                 bufferBudget,
                 client);
     }

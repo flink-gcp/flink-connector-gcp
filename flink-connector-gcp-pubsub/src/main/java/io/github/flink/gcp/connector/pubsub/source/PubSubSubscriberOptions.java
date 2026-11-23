@@ -623,7 +623,11 @@ public final class PubSubSubscriberOptions implements Serializable {
          *
          * <p>It bounds a reader's whole close, not each split's: the reader nacks every split and
          * asks every client to stop before it waits on any, so the waits overlap however many
-         * splits it owns. Keep it under Flink's {@code source.reader.close.timeout} (30 s by
+         * splits it owns. Each subscriber's deadline falls this long after the reader shut it down,
+         * and its wait is handed only what is left, so clients stuck in shutdown cost the close one
+         * budget together, not one each. Each subscriber then releases its transport, one after
+         * another and outside the budget (the Pub/Sub guide gives the times). Keep the budget plus
+         * all of those releases under Flink's {@code source.reader.close.timeout} (30 s by
          * default), past which a reader is abandoned mid-close and the messages it had not yet
          * released only return after their acknowledgement deadline.
          *
@@ -632,20 +636,18 @@ public final class PubSubSubscriberOptions implements Serializable {
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
-            // Unlike the sink's knob of the same name, this one is spent in milliseconds — a
-            // range a million times wider, and the wait it is handed to (SubscriberTeardown, over
-            // the SDK's own awaitTerminated) saturates rather than throwing when it converts them
-            // back. So this ceiling is far tighter than that conversion needs, and it is the rule
-            // (ADR-0068) rather than a crash: one answer for one knob name, whose "effectively
-            // unbounded" reading is the same on both sides.
+            // The same ceiling as the sink's knob of this name, and for the same reason since
+            // #2302: SubscriberTeardown converts it with toNanos(), which StreamingPullSubscriber
+            // would otherwise refuse on a TaskManager as each subscriber is built (ADR-0068).
             //
-            // Keep the tighter nanosecond ceiling first so an oversized budget names this knob's
-            // own limit rather than the whole-millisecond conversion limit (ADR-0180).
+            // Keep the nanosecond ceiling first so an oversized budget names this knob's own limit
+            // rather than the whole-millisecond conversion limit (ADR-0180).
             OptionChecks.checkExpressibleInNanos(shutdownTimeout, "shutdownTimeout");
-            // The floor, unlike that ceiling, is not shared with the sink's knob of this name: this
-            // budget is spent as await(toMillis()), where a sub-millisecond value waits for nothing
-            // at all, and the sink's is spent in nanoseconds, where it waits for what it says. The
-            // check follows the conversion rather than the name (ADR-0068).
+            // The floor, unlike that ceiling, is not shared with the sink's knob of this name: the
+            // release after a failed start spends this budget as await(toMillis()), where a
+            // sub-millisecond value waits for nothing at all, and the sink's is spent in
+            // nanoseconds, where it waits for what it says. The check follows the conversion
+            // rather than the name (ADR-0068).
             this.shutdownTimeout =
                     OptionChecks.checkAtLeastOneMilli(shutdownTimeout, "shutdownTimeout");
             return this;

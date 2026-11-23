@@ -166,8 +166,10 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   unannotated). Both are internal calls, tier-irrelevant under `docs/adr/0141`; reread them on a
   BOM bump.
 - Teardown rules (`docs/adr/0012`): shutdowns and closes go in **one `Closers.closeAll` list**
-  (#297/#350 — never a loop then a call, at every level); `awaitTerminated()` absorbs the
-  client's re-report and discriminates by `permanentErrorReported`, a flag set where the failure
+  (#297/#350 — never a loop then a call, at every level); the budget's clock starts once
+  `shutdown()` has asked the client to stop and is never restarted, so `awaitTerminated()` waits
+  only for the remainder and stuck clients share one budget (#2302); `awaitTerminated()` absorbs
+  the client's re-report and discriminates by `permanentErrorReported`, a flag set where the failure
   is **handed to a caller** — never replace it with a pre-shutdown snapshot; a paused split is
   still watched via `checkFailure()` from `fetch()` (#348); the failed-start release is kept
   although mostly a no-op (#349); `BoundedShutdown` is deliberately not adopted here.
