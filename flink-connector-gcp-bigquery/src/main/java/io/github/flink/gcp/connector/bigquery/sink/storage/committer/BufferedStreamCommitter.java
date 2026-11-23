@@ -63,8 +63,9 @@ import java.util.Collection;
  * stream. The disposition is what gates it: under {@link CreateDisposition#CREATE_NEVER} nothing
  * here creates a table, so the code can only mean a genuine denial or a table that disappeared, and
  * failing at once is the better answer. What the allowance costs a genuinely denied caller is the
- * recovery budget before the failure surfaces — with the defaults about 55 s per committable,
- * serially — which is the trade the writer already makes.
+ * recovery budget before the failure surfaces — with the defaults about 55 s per commit, since a
+ * commit stops at the first committable that exhausts it — which is the trade the writer already
+ * makes.
  *
  * <p>Runs at the sink's parallelism — flushes of distinct streams are independent, so no global
  * routing is needed (unlike FILE_LOADS, whose load jobs must see all files of a table at once).

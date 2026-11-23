@@ -165,7 +165,8 @@ declined alternatives — is the named ADR under `docs/adr/` or the docs page.
   whether the table is absent: three observations, `TABLES_GET` once and `TABLES_UPDATE_DATA`
   twice), exclude failures naming rows, and keep `scheduleFor`'s budget bounds at both
   `retryBatches` sites. The propagation window after auto-creation reaches
-  **`BufferedStreamCommitter.flush` too** (~55 s per committable, serially, at the defaults), which
+  **`BufferedStreamCommitter.flush` too** (~55 s per failing commit at the defaults: a commit stops
+  at the first committable that exhausts the budget), which
   gates on `CREATE_IF_NEEDED` (no `tableCreated` flag to key on) and takes the narrower
   **`isExistenceMasked`** on a **widen-only-what-was-observed** rule — never on a claim about what
   an expired stream answers, which is unmeasured (`docs/adr/0030`, both halves measured). **Never

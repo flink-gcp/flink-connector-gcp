@@ -1811,10 +1811,11 @@ The propagation window is not confined to opening a stream. On the exactly-once 
 reach the `FlushRows` that commits a checkpoint, so under `CREATE_IF_NEEDED` the committer waits it
 out on the same **recovery** budget rather than failing the checkpoint — it creates nothing itself,
 so the wait is its whole repair. Price it before relying on it: with the default `recovery*` values
-that budget is **about 55 s per committable**, spent serially, so a job whose credentials genuinely
-lack the write permission reports that much later than it used to — and on a restart, where the
-committer re-commits every pending checkpoint during task initialization, once per pending
-checkpoint before the task fails again. Shorten it with `recoveryMaxAttempts`/`recoveryMaxBackoff`,
+that budget is **about 55 s**, and a commit fails at the first committable that exhausts it, so a
+job whose credentials genuinely lack the write permission reports that much later than it used to.
+A restart pays it again, once, because the committer re-commits the restored committables during
+task initialization and the task fails at the first one that exhausts the budget.
+Shorten it with `recoveryMaxAttempts`/`recoveryMaxBackoff`,
 or opt out of both the wait and auto-creation with `CreateDisposition.CREATE_NEVER`, under which the
 committer fails immediately since nothing in such a job creates tables.
 
@@ -2184,7 +2185,8 @@ Method-specific settings live in `BufferedStreamOptions` (required for this writ
 rejected for the others; all knobs are defaulted): `maxAppendRequestBytes` (512 KiB default),
 `destinationIdleTimeout` (one hour), and the connector-driven recovery schedule
 (`recoveryInitialBackoff` 500 ms, `recoveryMaxBackoff` 10 s, `recoveryMaxAttempts` 10, each backoff
-jittered by ±25%) governing stream creation, transient re-appends and the restore probe.
+jittered by ±25%) governing stream creation, transient re-appends, the restore probe and the
+committer's flush retries.
 The SDK's in-stream retries below that budget are configured by the same `retry*` and
 `maxRetryDuration` knobs `DefaultStreamOptions` carries, with the same defaults — see
 [Tuning](#tuning).
@@ -2254,8 +2256,12 @@ checkpoints-after-tasks-finish enabled (the final batch of a bounded job rides t
 checkpoint); a slow flush delays the next checkpoint — that is the backpressure, and `commit()`
 returning means the rows are visible.
 `BATCH` execution is supported: the end-of-input committables are committed when the job completes.
-There is no checkpoint-cadence quota guard: each changed destination contributes one `FlushRows`
-call per checkpoint, unlike FILE_LOADS' per-table daily load-job limit.
+There is no checkpoint-cadence quota guard, unlike FILE_LOADS' per-table daily load-job limit.
+When every flush succeeds at once, a checkpoint's commit makes one `FlushRows` call for each writer
+subtask's stream that received rows since the previous checkpoint.
+A failed flush can add calls, through the client library's own retries and the committer's
+in-place ones on the recovery schedule, and a restore re-commits the restored checkpoint's
+committables.
 
 **Scope.** Fixed `table(...)` and per-record `destinationResolver(...)` are both supported.
 Each destination has independent batching, offsets, recovery, checkpoint state and committables.
