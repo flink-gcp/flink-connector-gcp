@@ -19,10 +19,20 @@ returns them, and reports counts and the first few offending row keys. The
 sinks write one row per input record, so a row is an input identity.
 """
 
+import re
+from datetime import UTC, datetime, timedelta
+
 from .trial import MARKER_FAMILY, RELAY_FAMILY, SUM_FAMILY, SUM_QUALIFIER
 
 # The row keys a report names for each kind of deviation, at most.
 EXAMPLES = 20
+# A relay cell's value: its change's commit time in microseconds, in decimal,
+# as `Long.toString` writes a non-negative `long`: no sign, no leading zero,
+# and at most `Long.MAX_VALUE`.
+_COMMIT = re.compile(rb"0|[1-9][0-9]{0,18}")
+_LONG_MAX = 2**63 - 1
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_MICROSECOND = timedelta(microseconds=1)
 
 
 def _sum(cells):
@@ -31,6 +41,14 @@ def _sum(cells):
     if len(sums) != 1 or sums[0][1] != SUM_QUALIFIER or len(sums[0][3]) != 8:
         return None
     return int.from_bytes(sums[0][3], "big", signed=True)
+
+
+def _commit(cell):
+    """A relay cell's commit time in microseconds, or None for any other value."""
+    if not _COMMIT.fullmatch(cell[3]):
+        return None
+    commit = int(cell[3])
+    return commit if commit <= _LONG_MAX else None
 
 
 class _Check:
@@ -127,29 +145,51 @@ class AtLeastOnce(_Check):
 
 
 class Relay(_Check):
-    """`relay`: every identity `eo` applied was relayed; replays are counted.
+    """`relay`: every identity `eo` applied was relayed, and no commit after the end.
 
-    Each delivery is a cell of its own, so a row's cells count its
-    deliveries, and a row of an identity `eo` did not apply is reported as
-    unapplied. No delivery count above one fails the check: the source does
-    not claim exactly-once delivery.
+    Each delivery is a cell of its own, holding its change's commit time, so a
+    row's cells count its deliveries, and a row of an identity `eo` did not
+    apply is reported as unapplied. A row with a delivery whose value is not a
+    commit time is counted as `wrong_value`, which fails the check. The change
+    stream's end is inclusive, so a commit after it, which the source must not
+    relay, fails the check too. A foreign row or a cell outside the relay's
+    family is reported as such, and its value is not interpreted as a commit time.
+    No delivery count above one fails the check: the source does not claim
+    exactly-once delivery.
     """
 
     families = frozenset((RELAY_FAMILY,))
 
     def __init__(self, trial):
         super().__init__(trial)
-        self.counts.update(deliveries=0, replayed_rows=0, extra_deliveries=0)
+        # Exact: the trial's end has at most microsecond precision.
+        self.end = (
+            datetime.fromisoformat(trial.change_stream_end) - _EPOCH
+        ) // _MICROSECOND
+        self.counts.update(
+            deliveries=0,
+            replayed_rows=0,
+            extra_deliveries=0,
+            wrong_value=0,
+            after_end=0,
+        )
 
     def row(self, key, cells):
-        deliveries = sum(cell[0] == RELAY_FAMILY for cell in cells)
+        commits = [_commit(cell) for cell in cells if cell[0] == RELAY_FAMILY]
+        deliveries = len(commits)
         self.counts["deliveries"] += deliveries
         if deliveries > 1:
             self.counts["replayed_rows"] += 1
             self.counts["extra_deliveries"] += deliveries - 1
+        if None in commits:
+            self._note("wrong_value", key)
+        if any(commit is not None and commit > self.end for commit in commits):
+            self._note("after_end", key)
 
     def report(self, applied, judged):
-        result = super().report(("foreign", "foreign_families"), applied)
+        result = super().report(
+            ("foreign", "foreign_families", "wrong_value", "after_end"), applied
+        )
         unapplied = sorted(self.matched - set(applied))
         result.update(
             unapplied=len(unapplied),

@@ -57,7 +57,8 @@ A restore resumes from the checkpointed positions instead, so the start is chose
 The source signals its end only when no partition is missing, so a partition the connector is still reconciling holds the job past the end.
 The connector recovers a gap 2 minutes after it first observes it when pending merges' continuation tokens cover it and 20 minutes after when they do not, and then replays it; neither grace is measured from the end, so neither bounds when the job finishes.
 A restored partition whose position has fallen outside the table's retention fails the job rather than skipping ahead; the connector's restart of a partition that lost its token is instead moved forward to a minute inside the retention, which a position from a trial of a few hours never needs.
-A change committed after the end is not relayed, so the rig chooses an end after the input's last commit and judges the relay oracle only when the input finished before it.
+The service treats the end as inclusive, in whole microseconds, so the service's read includes a change committed at the end and none committed after it.
+The rig therefore fixes an end it expects the input's last commit to precede, and judges the relay oracle only when the input finished in time, as the [fault sequence](#fault-sequence) describes.
 
 Flink chains the graph into four vertices, whose names the rig's vertex selection reads:
 
@@ -125,7 +126,7 @@ The Change Streams relay reads `eo`, so the exactly-once path runs in this scena
 The relay is judged only when the input's latest progress line, the one that showed it whole, came at least 120 seconds before the change stream's end; a restore after the input finished can replay it and commit rows whose staged commit it discarded only then, so the latest line counts, not the first.
 A run whose input finished later leaves the relay unjudged and is not `usable`, and it can run again as it is.
 A restore after the input's latest progress line also leaves the relay unjudged: it can commit rows its state carried without logging a line, and its recorded time, when the JobManager assigned the state, precedes those commits by as long as the tasks take to deploy; such a run can run again as it is too.
-Timing explains only a missing row, so an unjudged relay that counts a foreign row, a cell outside its family or a row `eo` did not apply has not passed, and the run does not run again as it is ([#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279)).
+Timing explains only a missing row, so an unjudged relay that counts a foreign row, a cell outside its family, a row `eo` did not apply, a delivery that holds no commit time or a commit after the change stream's end has not passed, and the run does not run again as it is ([#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279), [#2321](https://github.com/flink-gcp/flink-connector-gcp/issues/2321)).
 The run completes only on a poll whose checkpoint statistics answered, so that the latest restore is read.
 `just tier3-analyze` decides a `sequence` run by its oracles and lists its faults.
 
@@ -182,18 +183,20 @@ Each oracle reports counts and the first 20 row keys of each kind of deviation:
 
 - **`eo`:** every input row is present, its `agg:count` SUM is 1, it has exactly one marker, and no row or family lies outside the input.
 - **`alo`:** every input row is present with a SUM of at least 1; contributions beyond one are counted and reported, not failed.
-- **`relay`:** every row `eo` applied was relayed at least once and no row lies outside the input; deliveries beyond one are counted and reported, not failed, and a relayed row that `eo` did not apply fails it.
+- **`relay`:** every row `eo` applied was relayed at least once, no row lies outside the input, and every delivery of an input row holds a commit time, none after the change stream's end; deliveries beyond one are counted and reported, not failed, and a relayed row that `eo` did not apply fails it.
+  A delivery holds a commit time when its value is the decimal number of microseconds the application writes; a row with a delivery of any other value is counted as `wrong_value`, and a foreign row or a cell outside family `r` is reported as such, without its value being interpreted as a commit time.
 
 The relay is judged only when the input's latest progress line came at least 120 seconds before the change stream's end and no restore followed that line, as the [fault sequence](#fault-sequence) describes.
 
 ### Verdict and analysis
 
-The run is `usable` when it completed and all three oracles passed, the relay's having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `relay-oracle-unjudged` or `<component>-oracle-not-passed`, for `eo`, `alo` or `relay`, as its reasons; an unjudged relay reads as `relay-oracle-unjudged` unless it counts a foreign row, a cell outside its family or a row `eo` did not apply, which read as `relay-oracle-not-passed`.
+The run is `usable` when it completed and all three oracles passed, the relay's having been judged; anything short of that is `inconclusive`, with `recovery-incomplete`, `relay-oracle-unjudged` or `<component>-oracle-not-passed`, for `eo`, `alo` or `relay`, as its reasons; an unjudged relay reads as `relay-oracle-unjudged` unless it counts a foreign row, a cell outside its family, a row `eo` did not apply, a delivery that holds no commit time or a commit after the change stream's end, which read as `relay-oracle-not-passed`.
 The exercise decides the verdict with the transition that completes the run, and the final receipt's `success` needs that verdict to be `usable` and the run's settlement to succeed, so a failed evidence write or state cleanup makes it false beside a `usable` verdict; a run whose cleanup is not confirmed writes no receipt and keeps the environment lock.
 
 `just tier3-analyze <dir>` recomputes the verdict from a downloaded evidence directory and lists the faults the run injected, and it reports a single-fault run as the [Cloud Tasks section](../cloudtasks/README.md#verdict-and-analysis) does, without a verdict and as `single-fault-trial`.
 It reads the oracle reports from the record rather than rebuilding them: the supervisor exports no rows, and the instance's deletion removes the tables.
 A record written before [#2279](https://github.com/flink-gcp/flink-connector-gcp/issues/2279) stored `relay-oracle-unjudged` for an unjudged relay that also counted a definitive failure, so it now reads as `relay-oracle-not-passed` with `verdict-differs-from-the-record`.
+A record written before [#2321](https://github.com/flink-gcp/flink-connector-gcp/issues/2321) holds no `wrong_value` or `after_end` count, which the analyzer cannot add, so its verdict does not cover a delivery's commit time.
 
 The four trials of [#1855](https://github.com/flink-gcp/flink-connector-gcp/issues/1855) are preregistered in the [Bigtable recovery trial preregistration](../../../docs/adr/evidence/0165-bigtable-recovery-preregistration-1855.md), and each kind reached `usable`, as their [findings](../../../docs/adr/evidence/0165-bigtable-recovery-findings-1855.md) record.
 Their pilot showed the unconditional creator role enough for the runner to create its `bt1316-` instance, which does not test whether IAM checks a create against the project, one of the premises the grants' [ADR section](../../../docs/adr/0165-opentofu-owns-kubernetes-foundation-and-cue-owns-applications.md#bigtable-recovery-foundation) left unmeasured; it did measure the other, that the instance-name conditions admit the workload's and the supervisor's data-plane calls, which the oracles' reads depend on.
