@@ -86,6 +86,13 @@ public class FakeBufferedStreamService implements BufferedStreamService {
     public boolean closed;
 
     /**
+     * The appenders already closed when {@link #close()} first ran, or {@code null} before it ran;
+     * a later close does not overwrite it, so a writer that closes the service early and again at
+     * the end is still seen closing it early.
+     */
+    public List<String> appendersClosedBeforeService;
+
+    /**
      * When set, {@link #close()} throws it after recording the close. Typed {@code Throwable} so a
      * test can script an {@code Error}, which is thrown as itself.
      */
@@ -169,6 +176,9 @@ public class FakeBufferedStreamService implements BufferedStreamService {
     @Override
     public void close() {
         closed = true;
+        if (appendersClosedBeforeService == null) {
+            appendersClosedBeforeService = new ArrayList<>(closedAppenders);
+        }
         if (closeFailure != null) {
             ExceptionUtils.rethrow(closeFailure);
         }

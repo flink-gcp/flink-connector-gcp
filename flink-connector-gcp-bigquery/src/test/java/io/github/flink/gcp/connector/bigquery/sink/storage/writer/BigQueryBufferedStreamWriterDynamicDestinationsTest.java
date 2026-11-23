@@ -44,6 +44,26 @@ class BigQueryBufferedStreamWriterDynamicDestinationsTest {
             TableDestination.of("p", "d", "other");
 
     @Test
+    void closeClosesEveryAppenderBeforeTheService() throws Exception {
+        // On an emulator the SDK's StreamWriter builds its connection's client from the service's
+        // client settings, so every appender runs on the channel the service's close shuts down
+        // (#2267); closing the service before any appender would cut that appender's last appends
+        // off. Two destinations, so a service close placed between appenders fails too.
+        FakeBufferedStreamService service = new FakeBufferedStreamService();
+        BigQueryBufferedStreamWriter<String> writer = writer(service);
+        writer.write("a-1", CONTEXT);
+        writer.write("b-1", CONTEXT);
+        writer.flush(false);
+        assertThat(service.openedAppenders).hasSize(2);
+        assertThat(service.closedAppenders).isEmpty();
+
+        writer.close();
+
+        assertThat(service.appendersClosedBeforeService)
+                .containsExactlyInAnyOrderElementsOf(service.openedAppenders);
+    }
+
+    @Test
     void keepsIndependentStreamsOffsetsStateAndCommittables() throws Exception {
         FakeBufferedStreamService service = new FakeBufferedStreamService();
         BigQueryBufferedStreamWriter<String> writer = writer(service);

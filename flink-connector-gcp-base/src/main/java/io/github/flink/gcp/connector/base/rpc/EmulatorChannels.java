@@ -55,8 +55,8 @@ import java.util.concurrent.TimeUnit;
  * EmulatorClientFactory)} takes it for a gax client and closes the two in order. The second route
  * is the one to take. The first hands the target to gax, which parses it as {@code host:port}, so a
  * {@code dns:///} target fails, and builds TLS credentials when a client certificate is configured,
- * which the plaintext configurator cannot override (ADR-0208); it stays only for the BigQuery and
- * Datastore emulator arms until they move (#2266, #2267).
+ * which the plaintext configurator cannot override (ADR-0208); it stays only for the Datastore
+ * emulator arm until that moves (#2266).
  *
  * <p>Nothing here reaches a client library, so one signature covers Pub/Sub, BigQuery, Cloud Tasks
  * and whatever arrives next. Products whose SDK offers its own emulator entry point use that

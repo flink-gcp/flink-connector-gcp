@@ -16,7 +16,6 @@
 
 package io.github.flink.gcp.connector.bigquery.source;
 
-import com.google.api.gax.core.NoCredentialsProvider;
 import com.google.api.gax.grpc.InstantiatingGrpcChannelProvider;
 import com.google.api.gax.retrying.RetrySettings;
 import com.google.api.gax.rpc.StatusCode;
@@ -24,7 +23,6 @@ import com.google.auth.Credentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
 import com.google.cloud.bigquery.storage.v1.stub.readrows.ReadRowsResumptionStrategy;
-import io.github.flink.gcp.connector.base.rpc.EmulatorEndpoint;
 import io.github.flink.gcp.connector.base.rpc.GrpcEventLoops;
 import io.github.flink.gcp.connector.testutils.ServiceAccountKeyFiles;
 import io.grpc.Metadata;
@@ -63,7 +61,7 @@ class BigQueryReadClientsTest {
     void configuredCredentialsReachTheStorageReadSettings() throws Exception {
         BigQueryReadSettings settings =
                 BigQueryReadClients.readSettings(
-                        ServiceAccountKeyFiles.create(tempDir).toString(), null, 7, null, lease);
+                        ServiceAccountKeyFiles.create(tempDir).toString(), 7, null, lease);
 
         Credentials credentials = settings.getCredentialsProvider().getCredentials();
         assertThat(credentials instanceof ServiceAccountCredentials).isTrue();
@@ -72,34 +70,8 @@ class BigQueryReadClientsTest {
     }
 
     @Test
-    void theEmulatorSettingsKeepTheStorageReadApisInboundMessageSize() throws IOException {
-        // Storage Read responses carry whole row batches, and the API's own transport builder
-        // raises the limit to Integer.MAX_VALUE for that reason. A provider built from a bare
-        // InstantiatingGrpcChannelProvider.newBuilder() drops back to gRPC's 4 MiB default, which
-        // fails only on the emulator and only once a batch grows past it.
-        BigQueryReadSettings settings =
-                BigQueryReadClients.emulatorSettings(
-                        EmulatorEndpoint.parse("localhost:9060", "emulatorEndpoint"));
-
-        assertThat(provider(settings).toBuilder().getMaxInboundMessageSize())
-                .isEqualTo(Integer.MAX_VALUE);
-    }
-
-    @Test
-    void theEmulatorSettingsDialTheEmulatorWithoutCredentials() throws IOException {
-        BigQueryReadSettings settings =
-                BigQueryReadClients.emulatorSettings(
-                        EmulatorEndpoint.parse("localhost:9060", "emulatorEndpoint"));
-
-        assertThat(provider(settings).getEndpoint()).isEqualTo("localhost:9060");
-        assertThat(provider(settings).toBuilder().getChannelConfigurator()).isNotNull();
-        assertThat(settings.getCredentialsProvider()).isInstanceOf(NoCredentialsProvider.class);
-    }
-
-    @Test
     void theReadingSettingsBoundTheClientsOwnRetry() throws IOException {
-        BigQueryReadSettings settings =
-                BigQueryReadClients.readSettings(null, null, 7, null, lease);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null, lease);
 
         assertThat(settings.readRowsSettings().getRetrySettings().getMaxAttempts()).isEqualTo(7);
     }
@@ -113,7 +85,7 @@ class BigQueryReadClientsTest {
                 BigQueryReadSettings.newBuilder().build().readRowsSettings().getRetrySettings();
 
         RetrySettings ours =
-                BigQueryReadClients.readSettings(null, null, 7, null, lease)
+                BigQueryReadClients.readSettings(null, 7, null, lease)
                         .readRowsSettings()
                         .getRetrySettings();
 
@@ -138,8 +110,7 @@ class BigQueryReadClientsTest {
         // own: the client resumes a broken ReadRows at originalOffset + rowsProcessed. Were this
         // strategy to disappear, a retried attempt would re-read the stream from the top and every
         // row already handed downstream would be emitted twice.
-        BigQueryReadSettings settings =
-                BigQueryReadClients.readSettings(null, null, 7, null, lease);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null, lease);
 
         assertThat(settings.readRowsSettings().getResumptionStrategy())
                 .isInstanceOf(ReadRowsResumptionStrategy.class);
@@ -151,8 +122,7 @@ class BigQueryReadClientsTest {
         // resumes a handful of INTERNAL messages and a RESOURCE_EXHAUSTED carrying RetryInfo,
         // through its own algorithm rather than through this set. A bump that adds a code here is
         // worth reading before it ships.
-        BigQueryReadSettings settings =
-                BigQueryReadClients.readSettings(null, null, 7, null, lease);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, null, lease);
 
         assertThat(settings.readRowsSettings().getRetryableCodes())
                 .containsExactly(StatusCode.Code.UNAVAILABLE);
@@ -163,7 +133,7 @@ class BigQueryReadClientsTest {
         AtomicInteger retries = new AtomicInteger();
 
         BigQueryReadSettings settings =
-                BigQueryReadClients.readSettings(null, null, 7, retries::incrementAndGet, lease);
+                BigQueryReadClients.readSettings(null, 7, retries::incrementAndGet, lease);
 
         settings.getReadRowsRetryAttemptListener()
                 .onRetryAttempt(Status.UNAVAILABLE, new Metadata());
@@ -173,15 +143,9 @@ class BigQueryReadClientsTest {
     @Test
     void noRetryListenerIsWiredWhenNoneIsGiven() throws IOException {
         assertThat(
-                        BigQueryReadClients.readSettings(null, null, 7, null, lease)
+                        BigQueryReadClients.readSettings(null, 7, null, lease)
                                 .getReadRowsRetryAttemptListener())
                 .isNull();
-    }
-
-    private static InstantiatingGrpcChannelProvider provider(BigQueryReadSettings settings) {
-        // The cast is safe by construction: the settings come from EmulatorChannels, whose
-        // plaintextProvider returns this type.
-        return (InstantiatingGrpcChannelProvider) settings.getTransportChannelProvider();
     }
 
     /**
@@ -191,8 +155,7 @@ class BigQueryReadClientsTest {
      */
     @Test
     void theReadingSettingsRunOnTheEventLoopGroupAndKeepTheRetryListener() throws IOException {
-        BigQueryReadSettings settings =
-                BigQueryReadClients.readSettings(null, null, 7, () -> {}, lease);
+        BigQueryReadSettings settings = BigQueryReadClients.readSettings(null, 7, () -> {}, lease);
 
         assertThat(settings.getReadRowsRetryAttemptListener()).isNotNull();
         // The SDK's default provider carries no configurator, so one here is the group's.
@@ -205,7 +168,7 @@ class BigQueryReadClientsTest {
     /** The session client's channels run on the connector's event-loop group too (#2237). */
     @Test
     void theSessionSettingsRunOnTheEventLoopGroup() throws IOException {
-        BigQueryReadSettings settings = BigQueryReadClients.sessionSettings(null, null, lease);
+        BigQueryReadSettings settings = BigQueryReadClients.sessionSettings(null, lease);
 
         // The SDK's default provider carries no configurator, so one here is the group's.
         assertThat(
